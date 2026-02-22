@@ -1,0 +1,8 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ox-core",
+    "crates/ox-emscripten",
+    "crates/ox-wasi",
+    "crates/ox-web",
+]

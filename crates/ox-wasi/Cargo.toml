@@ -1,0 +1,7 @@
+[package]
+name = "ox-wasi"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ox-core = { path = "../ox-core" }

@@ -1,0 +1,8 @@
+[package]
+name = "ox-web"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ox-core = { path = "../ox-core" }
+wasm-bindgen = "0.2"
