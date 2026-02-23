@@ -5,15 +5,27 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 WATCH=true
-for arg in "$@"; do
-    case "$arg" in
-        --no-watch) WATCH=false ;;
+PORT=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --no-watch) WATCH=false; shift ;;
+        --port)
+            if [[ -z "${2:-}" ]]; then
+                echo "error: --port requires a value" >&2
+                exit 1
+            fi
+            PORT="$2"; shift 2 ;;
         *)
-            echo "usage: $0 [--no-watch]" >&2
+            echo "usage: $0 [--no-watch] [--port PORT]" >&2
             exit 1
             ;;
     esac
 done
+
+SERVER_ARGS=()
+if [[ -n "$PORT" ]]; then
+    SERVER_ARGS+=(-- --port "$PORT")
+fi
 
 # ---------------------------------------------------------------------------
 # Preflight checks
@@ -53,7 +65,7 @@ wasm-pack build crates/ox-web --target web --out-dir ../../target/wasm-pkg
 
 if "$WATCH"; then
     echo ""
-    echo "==> starting ox-dev-server on http://localhost:3000 (watching for changes)"
+    echo "==> starting ox-dev-server (watching for changes)"
     echo "    the server will rebuild and restart when source files change"
     echo "    watching: crates/ox-dev-server/, crates/ox-core/, crates/ox-kernel/,"
     echo "              crates/ox-context/, crates/ox-history/"
@@ -61,7 +73,7 @@ if "$WATCH"; then
     echo "    note: changes to crates/ox-web/ require a manual wasm-pack rebuild"
     echo "          (the watcher does not re-run wasm-pack automatically)"
     echo ""
-    echo "    open http://localhost:3000 and try: \"reverse the word hello\""
+    echo "    the server will print its URL when ready — try: \"reverse the word hello\""
     echo "    press Ctrl-C to stop"
     echo ""
 
@@ -71,12 +83,12 @@ if "$WATCH"; then
         -w crates/ox-kernel \
         -w crates/ox-context \
         -w crates/ox-history \
-        -x "run -p ox-dev-server"
+        -x "run -p ox-dev-server ${SERVER_ARGS[*]:-}"
 else
     echo ""
-    echo "==> starting ox-dev-server on http://localhost:3000"
-    echo "    open that URL in a browser and try: \"reverse the word hello\""
+    echo "==> starting ox-dev-server"
+    echo "    the server will print its URL when ready — try: \"reverse the word hello\""
     echo ""
 
-    exec cargo run -p ox-dev-server
+    exec cargo run -p ox-dev-server "${SERVER_ARGS[@]}"
 fi

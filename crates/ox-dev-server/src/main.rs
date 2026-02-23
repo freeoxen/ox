@@ -6,9 +6,77 @@ use axum::{
     response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
+use clap::Parser;
+use figment::{
+    Figment,
+    providers::{Env, Format, Serialized, Toml},
+};
 use futures::StreamExt;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
+
+#[derive(Debug, Deserialize)]
+struct Config {
+    port: u16,
+    host: String,
+    api_key: String,
+    static_dir: Option<String>,
+    wasm_pkg_dir: Option<String>,
+    js_pkg_dir: Option<String>,
+}
+
+#[derive(Debug, Parser, Serialize)]
+#[command(name = "ox-dev-server")]
+struct CliArgs {
+    #[arg(long)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    port: Option<u16>,
+
+    #[arg(long)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    host: Option<String>,
+
+    #[arg(long)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    api_key: Option<String>,
+
+    #[arg(long, default_value = "ox-dev-server.toml")]
+    #[serde(skip)]
+    config: String,
+
+    #[arg(long)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    static_dir: Option<String>,
+
+    #[arg(long)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wasm_pkg_dir: Option<String>,
+
+    #[arg(long)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    js_pkg_dir: Option<String>,
+}
+
+fn load_config() -> Result<Config, Box<figment::Error>> {
+    let cli = CliArgs::parse();
+
+    Figment::new()
+        .merge(Serialized::defaults(serde_json::json!({
+            "port": 0,
+            "host": "127.0.0.1"
+        })))
+        .merge(Toml::file(&cli.config))
+        .merge(
+            Env::raw()
+                .only(&["ANTHROPIC_API_KEY"])
+                .map(|_| "api_key".into()),
+        )
+        .merge(Env::prefixed("OX_"))
+        .merge(Serialized::defaults(&cli))
+        .extract()
+        .map_err(Box::new)
+}
 
 struct AppState {
     api_key: String,
@@ -23,13 +91,18 @@ struct AppState {
 
 #[tokio::main]
 async fn main() {
-    let api_key = std::env::var("ANTHROPIC_API_KEY").expect("ANTHROPIC_API_KEY must be set");
+    let config = load_config().unwrap_or_else(|e| {
+        eprintln!("configuration error: {e}");
+        std::process::exit(1);
+    });
 
-    // Resolve the static and wasm directories relative to the workspace root.
-    // When run via `cargo run -p ox-dev-server` the CWD is the workspace root.
-    let static_dir = find_dir(&["crates/ox-web/static", "static"]);
-    let wasm_pkg_dir = find_dir(&["target/wasm-pkg", "pkg"]);
-    let js_pkg_dir = find_dir(&["target/js-pkg"]);
+    let static_dir = config
+        .static_dir
+        .or_else(|| find_dir(&["crates/ox-web/static", "static"]));
+    let wasm_pkg_dir = config
+        .wasm_pkg_dir
+        .or_else(|| find_dir(&["target/wasm-pkg", "pkg"]));
+    let js_pkg_dir = config.js_pkg_dir.or_else(|| find_dir(&["target/js-pkg"]));
 
     if static_dir.is_none() {
         eprintln!("warning: could not find static dir (crates/ox-web/static)");
@@ -44,7 +117,7 @@ async fn main() {
     }
 
     let state = Arc::new(AppState {
-        api_key,
+        api_key: config.api_key,
         client: reqwest::Client::new(),
         wasm_pkg_dir,
         js_pkg_dir,
@@ -65,9 +138,11 @@ async fn main() {
         .layer(cors)
         .with_state(state);
 
-    let addr = "0.0.0.0:3000";
+    let listener = tokio::net::TcpListener::bind(format!("{}:{}", config.host, config.port))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
     println!("ox-dev-server listening on http://{addr}");
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
 
@@ -185,7 +260,6 @@ fn find_dir(candidates: &[&str]) -> Option<String> {
         if path.is_dir() {
             return Some(candidate.to_string());
         }
-        // Also try relative to CARGO_MANIFEST_DIR at compile time
     }
     None
 }

@@ -1,0 +1,11 @@
+# ox-dev-server configuration
+#
+# Overridden by env vars (OX_PORT, OX_API_KEY, ANTHROPIC_API_KEY)
+# and CLI flags (--port, --api-key). See: cargo run -p ox-dev-server -- --help
+
+# port = 3000
+# host = "127.0.0.1"
+# api_key = ""
+# static_dir = "crates/ox-web/static"
+# wasm_pkg_dir = "target/wasm-pkg"
+# js_pkg_dir = "target/js-pkg"
