@@ -2,7 +2,11 @@
 resolver = "2"
 members = [
     "crates/ox-core",
+    "crates/ox-context",
+    "crates/ox-dev-server",
     "crates/ox-emscripten",
+    "crates/ox-history",
+    "crates/ox-kernel",
     "crates/ox-wasi",
     "crates/ox-web",
 ]

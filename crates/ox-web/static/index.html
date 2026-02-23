@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>ox prototype</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: monospace;
+            max-width: 720px;
+            margin: 40px auto;
+            padding: 0 20px;
+            background: #1a1a2e;
+            color: #e0e0e0;
+        }
+        h1 { margin-bottom: 20px; color: #7fdbca; }
+        #output {
+            background: #16213e;
+            border: 1px solid #333;
+            border-radius: 4px;
+            padding: 16px;
+            min-height: 300px;
+            max-height: 600px;
+            overflow-y: auto;
+            margin-bottom: 16px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            line-height: 1.5;
+        }
+        .user-msg { color: #82aaff; }
+        .assistant-msg { color: #c3e88d; }
+        .tool-call { color: #ffcb6b; }
+        .tool-result { color: #c792ea; }
+        .error { color: #ff5370; }
+        .system { color: #546e7a; font-style: italic; }
+        #input-row {
+            display: flex;
+            gap: 8px;
+        }
+        #input {
+            flex: 1;
+            padding: 10px;
+            font-family: monospace;
+            font-size: 14px;
+            background: #16213e;
+            color: #e0e0e0;
+            border: 1px solid #333;
+            border-radius: 4px;
+            outline: none;
+        }
+        #input:focus { border-color: #7fdbca; }
+        button {
+            padding: 10px 20px;
+            font-family: monospace;
+            font-size: 14px;
+            background: #7fdbca;
+            color: #1a1a2e;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        button:hover { background: #5fb8a0; }
+        button:disabled { background: #546e7a; cursor: not-allowed; }
+    </style>
+</head>
+<body>
+    <h1>ox prototype</h1>
+    <div id="output"><span class="system">Loading wasm module...</span>
+</div>
+    <div id="input-row">
+        <input id="input" type="text" placeholder="Type a message..." disabled />
+        <button id="send" disabled>Send</button>
+    </div>
+
+    <script type="module">
+        import init, { create_agent } from '/pkg/ox_web.js';
+
+        const output = document.getElementById('output');
+        const input = document.getElementById('input');
+        const sendBtn = document.getElementById('send');
+
+        function append(text, cls) {
+            const span = document.createElement('span');
+            span.className = cls || '';
+            span.textContent = text;
+            output.appendChild(span);
+            output.scrollTop = output.scrollHeight;
+        }
+
+        function appendLine(text, cls) {
+            append(text + '\n', cls);
+        }
+
+        async function main() {
+            await init('/pkg/ox_web_bg.wasm');
+
+            const systemPrompt = [
+                'You are a helpful assistant with access to a tool called reverse_text.',
+                'When the user asks you to reverse text, use the reverse_text tool.',
+                'After getting the tool result, report it to the user.',
+            ].join(' ');
+
+            const serverUrl = window.location.origin;
+            const agent = create_agent(systemPrompt, serverUrl);
+
+            // Stream events to the output
+            let currentAssistantSpan = null;
+            agent.on_event(function(event) {
+                switch (event.type) {
+                    case 'text_delta':
+                        if (!currentAssistantSpan) {
+                            currentAssistantSpan = document.createElement('span');
+                            currentAssistantSpan.className = 'assistant-msg';
+                            output.appendChild(currentAssistantSpan);
+                        }
+                        currentAssistantSpan.textContent += event.data;
+                        output.scrollTop = output.scrollHeight;
+                        break;
+                    case 'tool_call_start':
+                        currentAssistantSpan = null;
+                        appendLine('\n[tool call: ' + event.data + ']', 'tool-call');
+                        break;
+                    case 'tool_call_result':
+                        appendLine('[tool result: ' + event.data + ']', 'tool-result');
+                        break;
+                    case 'turn_end':
+                        currentAssistantSpan = null;
+                        append('\n');
+                        break;
+                    case 'error':
+                        currentAssistantSpan = null;
+                        appendLine('Error: ' + event.data, 'error');
+                        break;
+                }
+            });
+
+            output.textContent = '';
+            appendLine('Ready. Try: "reverse the word hello"', 'system');
+
+            input.disabled = false;
+            sendBtn.disabled = false;
+            input.focus();
+
+            async function send() {
+                const text = input.value.trim();
+                if (!text) return;
+
+                input.value = '';
+                input.disabled = true;
+                sendBtn.disabled = true;
+                currentAssistantSpan = null;
+
+                appendLine('\n> ' + text, 'user-msg');
+
+                try {
+                    await agent.prompt(text);
+                } catch (e) {
+                    appendLine('Error: ' + e, 'error');
+                }
+
+                input.disabled = false;
+                sendBtn.disabled = false;
+                input.focus();
+            }
+
+            sendBtn.addEventListener('click', send);
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') send();
+            });
+        }
+
+        main().catch(e => {
+            output.textContent = 'Failed to load: ' + e;
+        });
+    </script>
+</body>
+</html>

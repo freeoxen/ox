@@ -1,10 +1,8 @@
 [package]
-name = "ox-core"
+name = "ox-history"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 ox-kernel = { path = "../ox-kernel" }
-ox-context = { path = "../ox-context" }
-ox-history = { path = "../ox-history" }
 serde_json = "1"
