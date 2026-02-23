@@ -254,6 +254,53 @@
             border-color: #e0e0e0;
         }
 
+        /* --- tool registration form --- */
+        .tool-form-field {
+            margin-bottom: 8px;
+        }
+        .tool-form-field label {
+            display: block;
+            color: #546e7a;
+            font-size: 11px;
+            margin-bottom: 2px;
+        }
+        .tool-form-field input,
+        .tool-form-field textarea {
+            width: 100%;
+            padding: 6px;
+            font-family: monospace;
+            font-size: 12px;
+            background: #0d1a30;
+            color: #e0e0e0;
+            border: 1px solid #333;
+            border-radius: 2px;
+            outline: none;
+        }
+        .tool-form-field input:focus,
+        .tool-form-field textarea:focus {
+            border-color: #7fdbca;
+        }
+        .tool-form-field textarea {
+            resize: vertical;
+            min-height: 60px;
+        }
+        .tool-form-actions {
+            display: flex;
+            gap: 6px;
+        }
+        .tool-form-actions button {
+            padding: 4px 12px;
+            font-size: 11px;
+            font-family: monospace;
+            font-weight: normal;
+            border-radius: 2px;
+        }
+        .tool-form-error {
+            color: #ff5370;
+            font-size: 11px;
+            margin-top: 4px;
+        }
+
         /* --- request log --- */
         .debug-panel .request-json {
             background: #0d1a30;
@@ -291,6 +338,33 @@
             </div>
             <div>
                 <div class="debug-header">
+                    <h2>register tool</h2>
+                </div>
+                <div id="tool-form" class="debug-panel">
+                    <div class="tool-form-field">
+                        <label>name</label>
+                        <input id="tool-name" type="text" placeholder="my_tool" />
+                    </div>
+                    <div class="tool-form-field">
+                        <label>description</label>
+                        <input id="tool-desc" type="text" placeholder="What this tool does" />
+                    </div>
+                    <div class="tool-form-field">
+                        <label>parameters schema (JSON)</label>
+                        <textarea id="tool-schema" rows="4" placeholder='{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}'></textarea>
+                    </div>
+                    <div class="tool-form-field">
+                        <label>function body (input is parsed JSON object; return a string)</label>
+                        <textarea id="tool-body" rows="4" placeholder='return String(input.text.length);'></textarea>
+                    </div>
+                    <div class="tool-form-actions">
+                        <button id="tool-register" class="save-btn" disabled>register</button>
+                    </div>
+                    <div id="tool-error" class="tool-form-error"></div>
+                </div>
+            </div>
+            <div>
+                <div class="debug-header">
                     <h2>request log</h2>
                 </div>
                 <div id="request-log" class="debug-panel"><span class="empty">no requests yet</span></div>
@@ -306,6 +380,12 @@
         const sendBtn = document.getElementById('send');
         const debugger_ = document.getElementById('debugger');
         const requestLogEl = document.getElementById('request-log');
+        const toolNameInput = document.getElementById('tool-name');
+        const toolDescInput = document.getElementById('tool-desc');
+        const toolSchemaInput = document.getElementById('tool-schema');
+        const toolBodyInput = document.getElementById('tool-body');
+        const toolRegisterBtn = document.getElementById('tool-register');
+        const toolErrorEl = document.getElementById('tool-error');
 
         let requestLog = [];
 
@@ -695,6 +775,55 @@
                         refreshDebugger(agent);
                         break;
                 }
+            });
+
+            // Tool registration
+            toolRegisterBtn.disabled = false;
+            toolRegisterBtn.addEventListener('click', () => {
+                toolErrorEl.textContent = '';
+                const name = toolNameInput.value.trim();
+                const desc = toolDescInput.value.trim();
+                const schemaStr = toolSchemaInput.value.trim();
+                const bodyStr = toolBodyInput.value.trim();
+
+                if (!name || !desc || !schemaStr || !bodyStr) {
+                    toolErrorEl.textContent = 'All fields are required.';
+                    return;
+                }
+
+                // Validate schema is valid JSON
+                try { JSON.parse(schemaStr); } catch (e) {
+                    toolErrorEl.textContent = 'Invalid schema JSON: ' + e.message;
+                    return;
+                }
+
+                // Build callback: wraps user-provided body in a function
+                // that receives the raw JSON string from Rust, parses it,
+                // runs the body, and returns a string.
+                let userFn;
+                try {
+                    userFn = new Function('input', bodyStr);
+                } catch (e) {
+                    toolErrorEl.textContent = 'Invalid function body: ' + e.message;
+                    return;
+                }
+                const callback = (inputJson) => {
+                    const input = JSON.parse(inputJson);
+                    return String(userFn(input));
+                };
+
+                try {
+                    agent.register_tool(name, desc, schemaStr, callback);
+                } catch (e) {
+                    toolErrorEl.textContent = 'Registration failed: ' + e;
+                    return;
+                }
+
+                // Clear form on success
+                toolNameInput.value = '';
+                toolDescInput.value = '';
+                toolSchemaInput.value = '';
+                toolBodyInput.value = '';
             });
 
             output.textContent = '';

@@ -1,11 +1,12 @@
 use ox_context::{ModelProvider, Namespace, SystemProvider, ToolsProvider};
 use ox_core::{
-    AgentEvent, CompletionRequest, ContentBlock, EventStream, StreamEvent, Transport,
+    AgentEvent, CompletionRequest, ContentBlock, EventStream, StreamEvent, ToolSchema, Transport,
     serialize_assistant_message, serialize_tool_results,
 };
 use ox_history::HistoryProvider;
-use ox_kernel::{Reader, Record, ToolResult, Value, Writer, path};
+use ox_kernel::{Reader, Record, Tool, ToolRegistry, ToolResult, Value, Writer, path};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use structfs_serde_store::{json_to_value, value_to_json};
 use wasm_bindgen::prelude::*;
@@ -137,6 +138,75 @@ fn parse_sse_events(body: &str) -> Vec<StreamEvent> {
 }
 
 // ---------------------------------------------------------------------------
+// Demo tool: reverse_text (shell-provided)
+// ---------------------------------------------------------------------------
+
+struct ReverseTextTool;
+
+impl Tool for ReverseTextTool {
+    fn name(&self) -> &str {
+        "reverse_text"
+    }
+
+    fn description(&self) -> &str {
+        "Reverse the characters in a string"
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string",
+                    "description": "The text to reverse"
+                }
+            },
+            "required": ["text"]
+        })
+    }
+
+    fn execute(&self, input: serde_json::Value) -> Result<String, String> {
+        let text = input
+            .get("text")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "missing 'text' parameter".to_string())?;
+        Ok(text.chars().rev().collect())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// JS tool wrapper — allows tools defined in browser JS
+// ---------------------------------------------------------------------------
+
+struct JsTool {
+    name: String,
+    description: String,
+    parameters_schema: serde_json::Value,
+    callback: js_sys::Function,
+}
+
+impl JsTool {
+    fn execute(&self, input: &serde_json::Value) -> Result<String, String> {
+        let input_str = serde_json::to_string(input).map_err(|e| e.to_string())?;
+        let result = self
+            .callback
+            .call1(&JsValue::NULL, &JsValue::from_str(&input_str))
+            .map_err(|e| format!("{e:?}"))?;
+        result
+            .as_string()
+            .ok_or_else(|| "tool callback must return a string".to_string())
+    }
+
+    fn schema(&self) -> ToolSchema {
+        ToolSchema {
+            name: self.name.clone(),
+            description: self.description.clone(),
+            input_schema: self.parameters_schema.clone(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Wasm-bindgen exports
 // ---------------------------------------------------------------------------
 
@@ -145,6 +215,8 @@ pub struct OxAgent {
     server_url: String,
     context: Rc<RefCell<Namespace>>,
     event_callback: Option<js_sys::Function>,
+    rust_tools: Rc<RefCell<ToolRegistry>>,
+    js_tools: Rc<RefCell<HashMap<String, JsTool>>>,
 }
 
 #[wasm_bindgen]
@@ -154,9 +226,8 @@ impl OxAgent {
         let model = "claude-sonnet-4-20250514".to_string();
         let max_tokens = 4096;
 
-        // Build tool schemas snapshot for the namespace
-        let mut tool_registry = ox_kernel::ToolRegistry::new();
-        tool_registry.register(Box::new(ox_kernel::ReverseTextTool));
+        let mut tool_registry = ToolRegistry::new();
+        tool_registry.register(Box::new(ReverseTextTool));
         let schemas = tool_registry.schemas();
 
         let mut context = Namespace::new();
@@ -172,12 +243,46 @@ impl OxAgent {
             server_url: server_url.to_string(),
             context: Rc::new(RefCell::new(context)),
             event_callback: None,
+            rust_tools: Rc::new(RefCell::new(tool_registry)),
+            js_tools: Rc::new(RefCell::new(HashMap::new())),
         }
     }
 
     /// Register a JS callback to receive agent events.
     pub fn on_event(&mut self, callback: js_sys::Function) {
         self.event_callback = Some(callback);
+    }
+
+    /// Register a tool implemented in JS.
+    ///
+    /// The callback receives a JSON string of the tool input and must return
+    /// a string result.
+    pub fn register_tool(
+        &self,
+        name: &str,
+        description: &str,
+        parameters_schema_json: &str,
+        callback: js_sys::Function,
+    ) -> Result<(), JsValue> {
+        let schema: serde_json::Value = serde_json::from_str(parameters_schema_json)
+            .map_err(|e| JsValue::from_str(&format!("invalid parameters_schema JSON: {e}")))?;
+
+        self.js_tools.borrow_mut().insert(
+            name.to_string(),
+            JsTool {
+                name: name.to_string(),
+                description: description.to_string(),
+                parameters_schema: schema,
+                callback,
+            },
+        );
+
+        self.rebuild_tools_provider();
+
+        if let Some(ref cb) = self.event_callback {
+            emit_js(Some(cb), "context_changed", "");
+        }
+        Ok(())
     }
 
     /// Read the full namespace state for debugging.
@@ -251,14 +356,40 @@ impl OxAgent {
         let server_url = self.server_url.clone();
         let callback = self.event_callback.clone();
         let context = self.context.clone();
+        let rust_tools = self.rust_tools.clone();
+        let js_tools = self.js_tools.clone();
         wasm_bindgen_futures::future_to_promise(async move {
-            let result = run_agentic_loop(&server_url, &input, &context, callback.as_ref()).await;
+            let result = run_agentic_loop(
+                &server_url,
+                &input,
+                &context,
+                &rust_tools,
+                &js_tools,
+                callback.as_ref(),
+            )
+            .await;
 
             match result {
                 Ok(text) => Ok(JsValue::from_str(&text)),
                 Err(e) => Err(JsValue::from_str(&e)),
             }
         })
+    }
+}
+
+impl OxAgent {
+    /// Rebuild the ToolsProvider in the namespace from both Rust and JS tools.
+    fn rebuild_tools_provider(&self) {
+        let schemas = {
+            let mut schemas = self.rust_tools.borrow().schemas();
+            for jt in self.js_tools.borrow().values() {
+                schemas.push(jt.schema());
+            }
+            schemas
+        };
+        self.context
+            .borrow_mut()
+            .mount("tools", Box::new(ToolsProvider::new(schemas)));
     }
 }
 
@@ -299,7 +430,18 @@ async fn fetch_completion(server_url: &str, request_body: &str) -> Result<String
 
     let resp_value = wasm_bindgen_futures::JsFuture::from(window.fetch_with_request(&request))
         .await
-        .map_err(|e| format!("{e:?}"))?;
+        .map_err(|e| {
+            // Network errors (server down, DNS failure, CORS) surface as TypeError
+            let msg = js_sys::Reflect::get(&e, &"message".into())
+                .ok()
+                .and_then(|v| v.as_string())
+                .unwrap_or_default();
+            if msg.contains("Failed to fetch") {
+                format!("Could not reach server at {server_url} — is the dev server running?")
+            } else {
+                format!("fetch error: {msg}")
+            }
+        })?;
 
     let resp: web_sys::Response = resp_value
         .dyn_into()
@@ -324,11 +466,41 @@ async fn fetch_completion(server_url: &str, request_body: &str) -> Result<String
         .ok_or_else(|| "response body not a string".into())
 }
 
+/// Execute a tool call against the Rust registry first, then JS tools.
+fn execute_tool(
+    rust_tools: &Rc<RefCell<ToolRegistry>>,
+    js_tools: &Rc<RefCell<HashMap<String, JsTool>>>,
+    name: &str,
+    input: &serde_json::Value,
+) -> String {
+    {
+        let registry = rust_tools.borrow();
+        if let Some(tool) = registry.get(name) {
+            return match tool.execute(input.clone()) {
+                Ok(r) => r,
+                Err(e) => format!("error: {e}"),
+            };
+        }
+    }
+    {
+        let js = js_tools.borrow();
+        if let Some(jt) = js.get(name) {
+            return match jt.execute(input) {
+                Ok(r) => r,
+                Err(e) => format!("error: {e}"),
+            };
+        }
+    }
+    format!("error: unknown tool '{name}'")
+}
+
 /// Run the full agentic loop: prompt -> stream -> tool call -> result -> loop.
 async fn run_agentic_loop(
     server_url: &str,
     user_input: &str,
     context_ref: &Rc<RefCell<Namespace>>,
+    rust_tools: &Rc<RefCell<ToolRegistry>>,
+    js_tools: &Rc<RefCell<HashMap<String, JsTool>>>,
     callback: Option<&js_sys::Function>,
 ) -> Result<String, String> {
     // Write user message to the namespace
@@ -342,12 +514,6 @@ async fn run_agentic_loop(
         .write(&path!("history/append"), record)
         .map_err(|e| e.to_string())?;
     emit_js(callback, "context_changed", "");
-
-    let tools = {
-        let mut registry = ox_kernel::ToolRegistry::new();
-        registry.register(Box::new(ox_kernel::ReverseTextTool));
-        registry
-    };
 
     loop {
         // Read the prompt from the namespace
@@ -442,17 +608,11 @@ async fn run_agentic_loop(
             return Ok(text);
         }
 
-        // Execute tools locally and write results to the namespace
+        // Execute tools and write results to the namespace
         let mut results = Vec::new();
         for tc in &tool_calls {
             emit_js(callback, "tool_call_start", &tc.name);
-            let result_str = match tools.get(&tc.name) {
-                Some(tool) => match tool.execute(tc.input.clone()) {
-                    Ok(r) => r,
-                    Err(e) => format!("error: {e}"),
-                },
-                None => format!("error: unknown tool '{}'", tc.name),
-            };
+            let result_str = execute_tool(rust_tools, js_tools, &tc.name, &tc.input);
             emit_js(
                 callback,
                 "tool_call_result",

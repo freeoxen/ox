@@ -2,9 +2,8 @@ pub use ox_context::{ModelProvider, Namespace, SystemProvider, ToolsProvider};
 pub use ox_history::HistoryProvider;
 pub use ox_kernel::{
     AgentEvent, CompletionRequest, ContentBlock, EventStream, Kernel, Message, Path, Reader,
-    Record, ReverseTextTool, Store, StoreError, StreamEvent, Tool, ToolCall, ToolRegistry,
-    ToolResult, Transport, Value, Writer, path, serialize_assistant_message,
-    serialize_tool_results,
+    Record, Store, StoreError, StreamEvent, Tool, ToolCall, ToolRegistry, ToolResult, ToolSchema,
+    Transport, Value, Writer, path, serialize_assistant_message, serialize_tool_results,
 };
 
 use structfs_serde_store::json_to_value;
@@ -22,10 +21,13 @@ pub struct Agent<T: Transport> {
 }
 
 impl<T: Transport> Agent<T> {
-    pub fn new(system_prompt: String, model: String, max_tokens: u32, transport: T) -> Self {
-        let mut tools = ToolRegistry::new();
-        tools.register(Box::new(ReverseTextTool));
-
+    pub fn new(
+        system_prompt: String,
+        model: String,
+        max_tokens: u32,
+        transport: T,
+        tools: ToolRegistry,
+    ) -> Self {
         let mut context = Namespace::new();
         context.mount("system", Box::new(SystemProvider::new(system_prompt)));
         context.mount("history", Box::new(HistoryProvider::new()));
