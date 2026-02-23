@@ -11,9 +11,12 @@
     "rootDir": "src",
     "declaration": false,
     "sourceMap": true,
+    "skipLibCheck": true,
+    "types": ["@types/bun"],
     "paths": {
       "/pkg/ox_web.js": ["./src/wasm.d.ts"]
     }
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/**/*.test.ts", "src/test-setup.ts"]
 }
