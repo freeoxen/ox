@@ -254,7 +254,7 @@
             border-color: #e0e0e0;
         }
 
-        /* --- tool registration form --- */
+        /* --- tool panel --- */
         .tool-form-field {
             margin-bottom: 8px;
         }
@@ -300,6 +300,85 @@
             font-size: 11px;
             margin-top: 4px;
         }
+        .profile-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 8px;
+        }
+        .profile-row select {
+            flex: 1;
+            padding: 4px 6px;
+            font-family: monospace;
+            font-size: 12px;
+            background: #0d1a30;
+            color: #e0e0e0;
+            border: 1px solid #333;
+            border-radius: 2px;
+            outline: none;
+        }
+        .profile-row select:focus { border-color: #7fdbca; }
+        .profile-row button {
+            padding: 2px 8px;
+            font-size: 11px;
+            font-family: monospace;
+            font-weight: normal;
+            border-radius: 2px;
+        }
+        .profile-name-input {
+            flex: 1;
+            padding: 4px 6px;
+            font-family: monospace;
+            font-size: 12px;
+            background: #0d1a30;
+            color: #e0e0e0;
+            border: 1px solid #7fdbca;
+            border-radius: 2px;
+            outline: none;
+        }
+        .tool-library-list {
+            margin-bottom: 8px;
+        }
+        .tool-library-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 3px 0;
+        }
+        .tool-library-row input[type="checkbox"] {
+            accent-color: #7fdbca;
+        }
+        .tool-library-row .tool-lib-name {
+            flex: 1;
+            color: #ffcb6b;
+            font-size: 12px;
+        }
+        .tool-library-row .tool-lib-del {
+            padding: 1px 6px;
+            font-size: 10px;
+            font-family: monospace;
+            background: transparent;
+            color: #546e7a;
+            border: 1px solid #546e7a;
+            border-radius: 2px;
+            cursor: pointer;
+            font-weight: normal;
+        }
+        .tool-library-row .tool-lib-del:hover {
+            color: #ff5370;
+            border-color: #ff5370;
+        }
+        .tool-panel-divider {
+            border: none;
+            border-top: 1px solid #2a2a4a;
+            margin: 8px 0;
+        }
+        .tool-panel-empty {
+            color: #546e7a;
+            font-size: 11px;
+            font-style: italic;
+            margin-bottom: 8px;
+        }
 
         /* --- request log --- */
         .debug-panel .request-json {
@@ -338,30 +417,9 @@
             </div>
             <div>
                 <div class="debug-header">
-                    <h2>register tool</h2>
+                    <h2>tools</h2>
                 </div>
-                <div id="tool-form" class="debug-panel">
-                    <div class="tool-form-field">
-                        <label>name</label>
-                        <input id="tool-name" type="text" placeholder="my_tool" />
-                    </div>
-                    <div class="tool-form-field">
-                        <label>description</label>
-                        <input id="tool-desc" type="text" placeholder="What this tool does" />
-                    </div>
-                    <div class="tool-form-field">
-                        <label>parameters schema (JSON)</label>
-                        <textarea id="tool-schema" rows="4" placeholder='{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}'></textarea>
-                    </div>
-                    <div class="tool-form-field">
-                        <label>function body (input is parsed JSON object; return a string)</label>
-                        <textarea id="tool-body" rows="4" placeholder='return String(input.text.length);'></textarea>
-                    </div>
-                    <div class="tool-form-actions">
-                        <button id="tool-register" class="save-btn" disabled>register</button>
-                    </div>
-                    <div id="tool-error" class="tool-form-error"></div>
-                </div>
+                <div id="tool-panel" class="debug-panel"></div>
             </div>
             <div>
                 <div class="debug-header">
@@ -380,14 +438,519 @@
         const sendBtn = document.getElementById('send');
         const debugger_ = document.getElementById('debugger');
         const requestLogEl = document.getElementById('request-log');
-        const toolNameInput = document.getElementById('tool-name');
-        const toolDescInput = document.getElementById('tool-desc');
-        const toolSchemaInput = document.getElementById('tool-schema');
-        const toolBodyInput = document.getElementById('tool-body');
-        const toolRegisterBtn = document.getElementById('tool-register');
-        const toolErrorEl = document.getElementById('tool-error');
+        const toolPanelEl = document.getElementById('tool-panel');
 
         let requestLog = [];
+
+        // --- Tool library persistence (localStorage) ---
+
+        const ToolStore = {
+            loadLibrary() {
+                try { return JSON.parse(localStorage.getItem('ox:tool-library')) || {}; }
+                catch (_) { return {}; }
+            },
+            saveLibrary(lib) { localStorage.setItem('ox:tool-library', JSON.stringify(lib)); },
+            saveTool(def) {
+                const lib = this.loadLibrary();
+                lib[def.name] = def;
+                this.saveLibrary(lib);
+            },
+            deleteTool(name) {
+                const lib = this.loadLibrary();
+                delete lib[name];
+                this.saveLibrary(lib);
+                // Also remove from all profiles
+                const data = this.loadProfiles();
+                for (const pname of Object.keys(data.profiles)) {
+                    data.profiles[pname] = data.profiles[pname].filter(n => n !== name);
+                }
+                this.saveProfiles(data);
+            },
+            loadProfiles() {
+                try {
+                    const data = JSON.parse(localStorage.getItem('ox:profiles'));
+                    if (data && data.profiles && Object.keys(data.profiles).length > 0) {
+                        return data;
+                    }
+                } catch (_) {}
+                return { active: 'default', profiles: { 'default': [] } };
+            },
+            saveProfiles(data) {
+                localStorage.setItem('ox:profiles', JSON.stringify(data));
+            },
+            getActiveProfile() { return this.loadProfiles().active; },
+            setActiveProfile(name) {
+                const data = this.loadProfiles();
+                if (data.profiles[name] !== undefined) data.active = name;
+                this.saveProfiles(data);
+            },
+            getProfileTools(name) {
+                const data = this.loadProfiles();
+                return data.profiles[name] || [];
+            },
+            setProfileTools(name, toolNames) {
+                const data = this.loadProfiles();
+                data.profiles[name] = toolNames;
+                this.saveProfiles(data);
+            },
+            createProfile(name) {
+                const data = this.loadProfiles();
+                if (!data.profiles[name]) data.profiles[name] = [];
+                this.saveProfiles(data);
+            },
+            deleteProfile(name) {
+                const data = this.loadProfiles();
+                const names = Object.keys(data.profiles);
+                if (names.length <= 1) return; // can't delete the last profile
+                delete data.profiles[name];
+                const remaining = Object.keys(data.profiles);
+                data.active = remaining[0];
+                this.saveProfiles(data);
+            },
+            profileNames() {
+                return Object.keys(this.loadProfiles().profiles);
+            },
+        };
+
+        // Set of currently registered JS tool names (for unregistering)
+        let activeJsTools = new Set();
+
+        function compileTool(def) {
+            const schemaObj = parseParamSignature(def.params);
+            const paramNames = Object.keys(schemaObj.properties);
+            const destructureArg = paramNames.length > 0
+                ? '{' + paramNames.join(', ') + '}'
+                : '_';
+            const userFn = new Function(destructureArg, def.body);
+            const callback = (inputJson) => {
+                try {
+                    return String(userFn(JSON.parse(inputJson)));
+                } catch (e) {
+                    return 'error: ' + (e.message || e);
+                }
+            };
+            return { schemaJson: JSON.stringify(schemaObj), callback };
+        }
+
+        function applyProfile(agent, profileName) {
+            // Unregister all current JS tools
+            for (const name of activeJsTools) {
+                agent.unregister_tool(name);
+            }
+            activeJsTools.clear();
+            // Register the profile's tools from the library
+            const toolNames = ToolStore.getProfileTools(profileName);
+            const lib = ToolStore.loadLibrary();
+            for (const name of toolNames) {
+                const def = lib[name];
+                if (!def) continue;
+                try {
+                    const { schemaJson, callback } = compileTool(def);
+                    agent.register_tool(name, def.description, schemaJson, callback);
+                    activeJsTools.add(name);
+                } catch (_) {
+                    // Skip tools that fail to compile
+                }
+            }
+            ToolStore.setActiveProfile(profileName);
+        }
+
+        function refreshToolPanel(agent) {
+            toolPanelEl.textContent = '';
+            const activeProfile = ToolStore.getActiveProfile();
+            const lib = ToolStore.loadLibrary();
+            const profileTools = ToolStore.getProfileTools(activeProfile);
+
+            // Profile row
+            const profileRow = document.createElement('div');
+            profileRow.className = 'profile-row';
+            const select = document.createElement('select');
+            for (const pname of ToolStore.profileNames()) {
+                const opt = document.createElement('option');
+                opt.value = pname;
+                opt.textContent = pname;
+                if (pname === activeProfile) opt.selected = true;
+                select.appendChild(opt);
+            }
+            select.addEventListener('change', () => {
+                applyProfile(agent, select.value);
+                refreshToolPanel(agent);
+            });
+            profileRow.appendChild(select);
+
+            const newBtn = document.createElement('button');
+            newBtn.className = 'edit-btn';
+            newBtn.textContent = 'new';
+            newBtn.addEventListener('click', () => {
+                showNewProfileInput(agent, profileRow);
+            });
+            profileRow.appendChild(newBtn);
+
+            const delBtn = document.createElement('button');
+            delBtn.className = 'edit-btn';
+            delBtn.textContent = 'del';
+            delBtn.disabled = ToolStore.profileNames().length <= 1;
+            delBtn.addEventListener('click', () => {
+                const fallback = ToolStore.profileNames().find(n => n !== activeProfile);
+                if (!fallback) return;
+                ToolStore.deleteProfile(activeProfile);
+                applyProfile(agent, fallback);
+                refreshToolPanel(agent);
+            });
+            profileRow.appendChild(delBtn);
+
+            const resetBtn = document.createElement('button');
+            resetBtn.className = 'edit-btn';
+            resetBtn.textContent = 'reset';
+            resetBtn.addEventListener('click', () => {
+                // Unregister all tools but stay on current profile
+                for (const name of activeJsTools) {
+                    agent.unregister_tool(name);
+                }
+                activeJsTools.clear();
+                ToolStore.setProfileTools(activeProfile, []);
+                refreshToolPanel(agent);
+            });
+            profileRow.appendChild(resetBtn);
+
+            toolPanelEl.appendChild(profileRow);
+
+            // Divider
+            const hr1 = document.createElement('hr');
+            hr1.className = 'tool-panel-divider';
+            toolPanelEl.appendChild(hr1);
+
+            // Tool library list
+            const toolNames = Object.keys(lib).sort();
+            if (toolNames.length > 0) {
+                const listDiv = document.createElement('div');
+                listDiv.className = 'tool-library-list';
+                for (const name of toolNames) {
+                    const wrapper = document.createElement('div');
+                    const row = document.createElement('div');
+                    row.className = 'tool-library-row';
+                    const cb = document.createElement('input');
+                    cb.type = 'checkbox';
+                    cb.checked = profileTools.includes(name);
+                    cb.addEventListener('change', () => {
+                        if (cb.checked) {
+                            // Enable: compile and register
+                            const def = lib[name];
+                            try {
+                                const { schemaJson, callback } = compileTool(def);
+                                agent.register_tool(name, def.description, schemaJson, callback);
+                                activeJsTools.add(name);
+                                const updated = ToolStore.getProfileTools(activeProfile);
+                                if (!updated.includes(name)) updated.push(name);
+                                ToolStore.setProfileTools(activeProfile, updated);
+                            } catch (e) {
+                                cb.checked = false;
+                            }
+                        } else {
+                            // Disable: unregister
+                            agent.unregister_tool(name);
+                            activeJsTools.delete(name);
+                            const updated = ToolStore.getProfileTools(activeProfile).filter(n => n !== name);
+                            ToolStore.setProfileTools(activeProfile, updated);
+                        }
+                    });
+                    row.appendChild(cb);
+                    const nameSpan = document.createElement('span');
+                    nameSpan.className = 'tool-lib-name';
+                    nameSpan.textContent = name;
+                    row.appendChild(nameSpan);
+                    const copyToolBtn = document.createElement('button');
+                    copyToolBtn.className = 'tool-lib-del';
+                    copyToolBtn.textContent = 'copy';
+                    copyToolBtn.addEventListener('click', () => {
+                        prefillAddForm(lib[name]);
+                    });
+                    row.appendChild(copyToolBtn);
+                    const editToolBtn = document.createElement('button');
+                    editToolBtn.className = 'tool-lib-del';
+                    editToolBtn.textContent = 'edit';
+                    editToolBtn.addEventListener('click', () => {
+                        showToolEditForm(agent, wrapper, lib[name]);
+                    });
+                    row.appendChild(editToolBtn);
+                    const delToolBtn = document.createElement('button');
+                    delToolBtn.className = 'tool-lib-del';
+                    delToolBtn.textContent = 'del';
+                    delToolBtn.addEventListener('click', () => {
+                        if (activeJsTools.has(name)) {
+                            agent.unregister_tool(name);
+                            activeJsTools.delete(name);
+                        }
+                        ToolStore.deleteTool(name);
+                        refreshToolPanel(agent);
+                    });
+                    row.appendChild(delToolBtn);
+                    wrapper.appendChild(row);
+                    listDiv.appendChild(wrapper);
+                }
+                toolPanelEl.appendChild(listDiv);
+            } else {
+                const emptyDiv = document.createElement('div');
+                emptyDiv.className = 'tool-panel-empty';
+                emptyDiv.textContent = 'no tools in library';
+                toolPanelEl.appendChild(emptyDiv);
+            }
+
+            // Divider
+            const hr2 = document.createElement('hr');
+            hr2.className = 'tool-panel-divider';
+            toolPanelEl.appendChild(hr2);
+
+            // Add new tool form (collapsed)
+            const addDetails = document.createElement('details');
+            const addSummary = document.createElement('summary');
+            addSummary.textContent = 'add new tool...';
+            addSummary.style.cursor = 'pointer';
+            addSummary.style.color = '#7fdbca';
+            addSummary.style.fontSize = '12px';
+            addSummary.style.userSelect = 'none';
+            addDetails.appendChild(addSummary);
+
+            const formDiv = document.createElement('div');
+            formDiv.style.paddingTop = '8px';
+
+            const fields = [
+                { id: 'add-tool-name', label: 'name', placeholder: 'my_tool', tag: 'input' },
+                { id: 'add-tool-desc', label: 'description', placeholder: 'What this tool does', tag: 'input' },
+                { id: 'add-tool-params', label: 'parameters (TypeScript style)', placeholder: '(text: string, count?: number)', tag: 'input' },
+                { id: 'add-tool-body', label: 'function body (params available by name; return a string)', placeholder: 'return String(n + 2);', tag: 'textarea' },
+            ];
+            const inputs = {};
+            for (const f of fields) {
+                const fieldDiv = document.createElement('div');
+                fieldDiv.className = 'tool-form-field';
+                const lbl = document.createElement('label');
+                lbl.textContent = f.label;
+                fieldDiv.appendChild(lbl);
+                const el = document.createElement(f.tag);
+                el.placeholder = f.placeholder;
+                if (f.tag === 'textarea') el.rows = 4;
+                fieldDiv.appendChild(el);
+                formDiv.appendChild(fieldDiv);
+                inputs[f.id] = el;
+            }
+
+            const errorEl = document.createElement('div');
+            errorEl.className = 'tool-form-error';
+
+            const actionsDiv = document.createElement('div');
+            actionsDiv.className = 'tool-form-actions';
+            const saveBtn = document.createElement('button');
+            saveBtn.className = 'save-btn';
+            saveBtn.textContent = 'save';
+            saveBtn.addEventListener('click', () => {
+                errorEl.textContent = '';
+                const name = inputs['add-tool-name'].value.trim();
+                const description = inputs['add-tool-desc'].value.trim();
+                const params = inputs['add-tool-params'].value.trim();
+                const body = inputs['add-tool-body'].value.trim();
+
+                if (!name || !description || !params || !body) {
+                    errorEl.textContent = 'All fields are required.';
+                    return;
+                }
+
+                const def = { name, description, params, body };
+
+                // Validate: try to compile
+                try {
+                    compileTool(def);
+                } catch (e) {
+                    errorEl.textContent = 'Invalid: ' + e.message;
+                    return;
+                }
+
+                // Save to library, add to current profile, and register
+                ToolStore.saveTool(def);
+                try {
+                    const { schemaJson, callback } = compileTool(def);
+                    agent.register_tool(name, description, schemaJson, callback);
+                    activeJsTools.add(name);
+                    const updated = ToolStore.getProfileTools(activeProfile);
+                    if (!updated.includes(name)) updated.push(name);
+                    ToolStore.setProfileTools(activeProfile, updated);
+                } catch (e) {
+                    errorEl.textContent = 'Saved to library but registration failed: ' + e.message;
+                    refreshToolPanel(agent);
+                    return;
+                }
+
+                refreshToolPanel(agent);
+            });
+            actionsDiv.appendChild(saveBtn);
+            formDiv.appendChild(actionsDiv);
+            formDiv.appendChild(errorEl);
+            addDetails.appendChild(formDiv);
+            toolPanelEl.appendChild(addDetails);
+
+            // Pre-fill the add form from an existing tool definition (used by copy)
+            function prefillAddForm(srcDef) {
+                // Pick a unique name
+                let copyName = srcDef.name + '_copy';
+                while (lib[copyName]) copyName += '_copy';
+                inputs['add-tool-name'].value = copyName;
+                inputs['add-tool-desc'].value = srcDef.description;
+                inputs['add-tool-params'].value = srcDef.params;
+                inputs['add-tool-body'].value = srcDef.body;
+                addDetails.open = true;
+                inputs['add-tool-name'].focus();
+                inputs['add-tool-name'].select();
+            }
+        }
+
+        function showToolEditForm(agent, wrapper, def) {
+            // Remove any existing edit form in this wrapper
+            const existing = wrapper.querySelector('.tool-edit-form');
+            if (existing) { existing.remove(); return; }
+
+            const form = document.createElement('div');
+            form.className = 'tool-edit-form';
+            form.style.paddingLeft = '22px';
+            form.style.paddingTop = '4px';
+            form.style.paddingBottom = '4px';
+
+            const editFields = [
+                { key: 'description', label: 'description', val: def.description, tag: 'input' },
+                { key: 'params', label: 'parameters', val: def.params, tag: 'input' },
+                { key: 'body', label: 'body', val: def.body, tag: 'textarea' },
+            ];
+            const editInputs = {};
+            for (const f of editFields) {
+                const fieldDiv = document.createElement('div');
+                fieldDiv.className = 'tool-form-field';
+                const lbl = document.createElement('label');
+                lbl.textContent = f.label;
+                fieldDiv.appendChild(lbl);
+                const el = document.createElement(f.tag);
+                el.value = f.val;
+                if (f.tag === 'textarea') el.rows = 3;
+                fieldDiv.appendChild(el);
+                form.appendChild(fieldDiv);
+                editInputs[f.key] = el;
+            }
+
+            const errEl = document.createElement('div');
+            errEl.className = 'tool-form-error';
+
+            const actions = document.createElement('div');
+            actions.className = 'edit-actions';
+            const saveBtn = document.createElement('button');
+            saveBtn.className = 'save-btn';
+            saveBtn.textContent = 'save';
+            saveBtn.addEventListener('click', () => {
+                errEl.textContent = '';
+                const updated = {
+                    name: def.name,
+                    description: editInputs.description.value.trim(),
+                    params: editInputs.params.value.trim(),
+                    body: editInputs.body.value.trim(),
+                };
+                if (!updated.description || !updated.params || !updated.body) {
+                    errEl.textContent = 'All fields are required.';
+                    return;
+                }
+                try { compileTool(updated); } catch (e) {
+                    errEl.textContent = 'Invalid: ' + e.message;
+                    return;
+                }
+                ToolStore.saveTool(updated);
+                // Re-register if currently active
+                if (activeJsTools.has(def.name)) {
+                    const { schemaJson, callback } = compileTool(updated);
+                    agent.unregister_tool(def.name);
+                    agent.register_tool(def.name, updated.description, schemaJson, callback);
+                }
+                refreshToolPanel(agent);
+            });
+            const cancelBtn = document.createElement('button');
+            cancelBtn.className = 'cancel-btn';
+            cancelBtn.textContent = 'cancel';
+            cancelBtn.addEventListener('click', () => form.remove());
+            actions.appendChild(saveBtn);
+            actions.appendChild(cancelBtn);
+            form.appendChild(actions);
+            form.appendChild(errEl);
+            wrapper.appendChild(form);
+        }
+
+        function showNewProfileInput(agent, profileRow) {
+            // Replace the profile row content with a text input
+            const container = profileRow.parentElement;
+            const inputRow = document.createElement('div');
+            inputRow.className = 'profile-row';
+            const nameInput = document.createElement('input');
+            nameInput.type = 'text';
+            nameInput.className = 'profile-name-input';
+            nameInput.placeholder = 'profile name';
+            inputRow.appendChild(nameInput);
+            const okBtn = document.createElement('button');
+            okBtn.className = 'save-btn';
+            okBtn.textContent = 'ok';
+            okBtn.style.fontSize = '11px';
+            okBtn.style.padding = '2px 8px';
+            okBtn.style.fontWeight = 'normal';
+            okBtn.addEventListener('click', () => {
+                const name = nameInput.value.trim();
+                if (!name || name === 'default') {
+                    nameInput.style.borderColor = '#ff5370';
+                    return;
+                }
+                ToolStore.createProfile(name);
+                applyProfile(agent, name);
+                refreshToolPanel(agent);
+            });
+            inputRow.appendChild(okBtn);
+            const cancelBtn = document.createElement('button');
+            cancelBtn.className = 'cancel-btn';
+            cancelBtn.textContent = 'cancel';
+            cancelBtn.style.fontSize = '11px';
+            cancelBtn.style.padding = '2px 8px';
+            cancelBtn.style.fontWeight = 'normal';
+            cancelBtn.addEventListener('click', () => refreshToolPanel(agent));
+            inputRow.appendChild(cancelBtn);
+            container.replaceChild(inputRow, profileRow);
+            nameInput.focus();
+            nameInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') okBtn.click();
+                if (e.key === 'Escape') cancelBtn.click();
+            });
+        }
+
+        // --- TS-style parameter signature → JSON Schema ---
+
+        const TS_TYPE_MAP = {
+            string: 'string',
+            number: 'number',
+            boolean: 'boolean',
+            integer: 'integer',
+        };
+
+        function parseParamSignature(sig) {
+            sig = sig.trim();
+            if (sig.startsWith('(') && sig.endsWith(')')) {
+                sig = sig.slice(1, -1);
+            }
+            const properties = {};
+            const required = [];
+            if (!sig) return { type: 'object', properties, required };
+            for (const param of sig.split(',')) {
+                const trimmed = param.trim();
+                if (!trimmed) continue;
+                const m = trimmed.match(/^(\w+)(\?)?\s*:\s*(\w+)$/);
+                if (!m) throw new Error('cannot parse "' + trimmed + '"');
+                const [, name, optional, tsType] = m;
+                const jsonType = TS_TYPE_MAP[tsType.toLowerCase()];
+                if (!jsonType) throw new Error('unknown type "' + tsType + '"');
+                properties[name] = { type: jsonType };
+                if (!optional) required.push(name);
+            }
+            return { type: 'object', properties, required };
+        }
 
         function append(text, cls) {
             const span = document.createElement('span');
@@ -777,54 +1340,9 @@
                 }
             });
 
-            // Tool registration
-            toolRegisterBtn.disabled = false;
-            toolRegisterBtn.addEventListener('click', () => {
-                toolErrorEl.textContent = '';
-                const name = toolNameInput.value.trim();
-                const desc = toolDescInput.value.trim();
-                const schemaStr = toolSchemaInput.value.trim();
-                const bodyStr = toolBodyInput.value.trim();
-
-                if (!name || !desc || !schemaStr || !bodyStr) {
-                    toolErrorEl.textContent = 'All fields are required.';
-                    return;
-                }
-
-                // Validate schema is valid JSON
-                try { JSON.parse(schemaStr); } catch (e) {
-                    toolErrorEl.textContent = 'Invalid schema JSON: ' + e.message;
-                    return;
-                }
-
-                // Build callback: wraps user-provided body in a function
-                // that receives the raw JSON string from Rust, parses it,
-                // runs the body, and returns a string.
-                let userFn;
-                try {
-                    userFn = new Function('input', bodyStr);
-                } catch (e) {
-                    toolErrorEl.textContent = 'Invalid function body: ' + e.message;
-                    return;
-                }
-                const callback = (inputJson) => {
-                    const input = JSON.parse(inputJson);
-                    return String(userFn(input));
-                };
-
-                try {
-                    agent.register_tool(name, desc, schemaStr, callback);
-                } catch (e) {
-                    toolErrorEl.textContent = 'Registration failed: ' + e;
-                    return;
-                }
-
-                // Clear form on success
-                toolNameInput.value = '';
-                toolDescInput.value = '';
-                toolSchemaInput.value = '';
-                toolBodyInput.value = '';
-            });
+            // Restore persisted tools and render tool panel
+            applyProfile(agent, ToolStore.getActiveProfile());
+            refreshToolPanel(agent);
 
             output.textContent = '';
             appendLine('Ready. Try: "reverse the word hello"', 'system');

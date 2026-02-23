@@ -191,7 +191,13 @@ impl JsTool {
         let result = self
             .callback
             .call1(&JsValue::NULL, &JsValue::from_str(&input_str))
-            .map_err(|e| format!("{e:?}"))?;
+            .map_err(|e| {
+                let msg = js_sys::Reflect::get(&e, &"message".into())
+                    .ok()
+                    .and_then(|v| v.as_string())
+                    .unwrap_or_else(|| format!("{e:?}"));
+                format!("tool threw: {msg}")
+            })?;
         result
             .as_string()
             .ok_or_else(|| "tool callback must return a string".to_string())
@@ -251,6 +257,15 @@ impl OxAgent {
     /// Register a JS callback to receive agent events.
     pub fn on_event(&mut self, callback: js_sys::Function) {
         self.event_callback = Some(callback);
+    }
+
+    /// Unregister a JS tool by name.
+    pub fn unregister_tool(&self, name: &str) {
+        self.js_tools.borrow_mut().remove(name);
+        self.rebuild_tools_provider();
+        if let Some(ref cb) = self.event_callback {
+            emit_js(Some(cb), "context_changed", "");
+        }
     }
 
     /// Register a tool implemented in JS.
