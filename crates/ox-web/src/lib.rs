@@ -1,4 +1,10 @@
-use ox_core::{AgentEvent, CompletionRequest, EventStream, StreamEvent, Transport};
+use ox_context::{ModelProvider, Namespace, SystemProvider, ToolsProvider};
+use ox_core::{
+    AgentEvent, CompletionRequest, ContentBlock, EventStream, StreamEvent, Transport,
+    serialize_assistant_message, serialize_tool_results,
+};
+use ox_history::HistoryProvider;
+use ox_kernel::{Provider, ToolResult};
 use std::cell::RefCell;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
@@ -136,11 +142,7 @@ fn parse_sse_events(body: &str) -> Vec<StreamEvent> {
 #[wasm_bindgen]
 pub struct OxAgent {
     server_url: String,
-    system_prompt: String,
-    model: String,
-    max_tokens: u32,
-    history_messages: Rc<RefCell<Vec<serde_json::Value>>>,
-    tool_schemas: Vec<ox_kernel::ToolSchema>,
+    context: Rc<RefCell<Namespace>>,
     event_callback: Option<js_sys::Function>,
 }
 
@@ -150,17 +152,24 @@ impl OxAgent {
     pub fn new(system_prompt: &str, server_url: &str) -> Self {
         let model = "claude-sonnet-4-20250514".to_string();
         let max_tokens = 4096;
-        let mut tools = ox_core::ToolRegistry::new();
-        tools.register(Box::new(ox_kernel::ReverseTextTool));
-        let tool_schemas = tools.schemas();
+
+        // Build tool schemas snapshot for the namespace
+        let mut tool_registry = ox_kernel::ToolRegistry::new();
+        tool_registry.register(Box::new(ox_kernel::ReverseTextTool));
+        let schemas = tool_registry.schemas();
+
+        let mut context = Namespace::new();
+        context.mount(
+            "system",
+            Box::new(SystemProvider::new(system_prompt.to_string())),
+        );
+        context.mount("history", Box::new(HistoryProvider::new()));
+        context.mount("tools", Box::new(ToolsProvider::new(schemas)));
+        context.mount("model", Box::new(ModelProvider::new(model, max_tokens)));
 
         Self {
             server_url: server_url.to_string(),
-            system_prompt: system_prompt.to_string(),
-            model,
-            max_tokens,
-            history_messages: Rc::new(RefCell::new(Vec::new())),
-            tool_schemas,
+            context: Rc::new(RefCell::new(context)),
             event_callback: None,
         }
     }
@@ -175,23 +184,10 @@ impl OxAgent {
     pub fn prompt(&self, input: &str) -> js_sys::Promise {
         let input = input.to_string();
         let server_url = self.server_url.clone();
-        let system_prompt = self.system_prompt.clone();
-        let model = self.model.clone();
-        let max_tokens = self.max_tokens;
-        let tool_schemas = self.tool_schemas.clone();
         let callback = self.event_callback.clone();
-        let history_messages = self.history_messages.clone();
-
+        let context = self.context.clone();
         wasm_bindgen_futures::future_to_promise(async move {
-            let cfg = LoopConfig {
-                server_url: &server_url,
-                system_prompt: &system_prompt,
-                model: &model,
-                max_tokens,
-                tool_schemas,
-                callback: callback.as_ref(),
-            };
-            let result = run_agentic_loop(&cfg, &input, &history_messages).await;
+            let result = run_agentic_loop(&server_url, &input, &context, callback.as_ref()).await;
 
             match result {
                 Ok(text) => Ok(JsValue::from_str(&text)),
@@ -255,49 +251,42 @@ async fn fetch_completion(server_url: &str, request_body: &str) -> Result<String
         .ok_or_else(|| "response body not a string".into())
 }
 
-struct LoopConfig<'a> {
-    server_url: &'a str,
-    system_prompt: &'a str,
-    model: &'a str,
-    max_tokens: u32,
-    tool_schemas: Vec<ox_kernel::ToolSchema>,
-    callback: Option<&'a js_sys::Function>,
-}
-
 /// Run the full agentic loop: prompt -> stream -> tool call -> result -> loop.
 async fn run_agentic_loop(
-    cfg: &LoopConfig<'_>,
+    server_url: &str,
     user_input: &str,
-    history_ref: &Rc<RefCell<Vec<serde_json::Value>>>,
+    context_ref: &Rc<RefCell<Namespace>>,
+    callback: Option<&js_sys::Function>,
 ) -> Result<String, String> {
-    // Add the user message to history
-    history_ref.borrow_mut().push(serde_json::json!({
+    // Write user message to the namespace
+    let user_wire = serde_json::json!({
         "role": "user",
         "content": user_input,
-    }));
+    });
+    context_ref
+        .borrow_mut()
+        .write("history/append", user_wire)?;
 
     let tools = {
-        let mut registry = ox_core::ToolRegistry::new();
+        let mut registry = ox_kernel::ToolRegistry::new();
         registry.register(Box::new(ox_kernel::ReverseTextTool));
         registry
     };
 
     loop {
-        let messages = history_ref.borrow().clone();
-        let request = ox_kernel::CompletionRequest {
-            model: cfg.model.to_string(),
-            max_tokens: cfg.max_tokens,
-            system: cfg.system_prompt.to_string(),
-            messages,
-            tools: cfg.tool_schemas.clone(),
-            stream: true,
-        };
+        // Read the prompt from the namespace
+        let prompt_value = context_ref
+            .borrow()
+            .read("prompt")
+            .ok_or("failed to read prompt from context")?;
+        let request: CompletionRequest =
+            serde_json::from_value(prompt_value).map_err(|e| e.to_string())?;
 
         let request_body = serde_json::to_string(&request).map_err(|e| e.to_string())?;
 
-        emit_js(cfg.callback, "turn_start", "");
+        emit_js(callback, "turn_start", "");
 
-        let response_body = fetch_completion(cfg.server_url, &request_body).await?;
+        let response_body = fetch_completion(server_url, &request_body).await?;
         let events = parse_sse_events(&response_body);
 
         // Use Kernel::stream_once to accumulate the SSE events into content
@@ -308,36 +297,34 @@ async fn run_agentic_loop(
             stream: RefCell::new(Some(stream)),
         };
 
-        let mut kernel = ox_kernel::Kernel::new(cfg.model.to_string());
-        let accumulate_request = ox_kernel::CompletionRequest {
-            model: cfg.model.to_string(),
-            max_tokens: cfg.max_tokens,
-            system: cfg.system_prompt.to_string(),
-            messages: history_ref.borrow().clone(),
-            tools: cfg.tool_schemas.clone(),
-            stream: true,
-        };
+        let model_id = context_ref
+            .borrow()
+            .read("model/id")
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .unwrap_or_default();
+        let mut kernel = ox_kernel::Kernel::new(model_id);
 
+        // Build a minimal request just for stream_once (it only needs the
+        // transport, not the actual request content — PreloadedTransport
+        // ignores it). We reuse the one we already built.
         let mut emit = |event: AgentEvent| match &event {
-            AgentEvent::TextDelta(text) => emit_js(cfg.callback, "text_delta", text),
-            AgentEvent::ToolCallStart { name } => emit_js(cfg.callback, "tool_call_start", name),
-            AgentEvent::ToolCallResult { name, result } => emit_js(
-                cfg.callback,
-                "tool_call_result",
-                &format!("{name}: {result}"),
-            ),
-            AgentEvent::TurnEnd => emit_js(cfg.callback, "turn_end", ""),
-            AgentEvent::Error(e) => emit_js(cfg.callback, "error", e),
+            AgentEvent::TextDelta(text) => emit_js(callback, "text_delta", text),
+            AgentEvent::ToolCallStart { name } => emit_js(callback, "tool_call_start", name),
+            AgentEvent::ToolCallResult { name, result } => {
+                emit_js(callback, "tool_call_result", &format!("{name}: {result}"))
+            }
+            AgentEvent::TurnEnd => emit_js(callback, "turn_end", ""),
+            AgentEvent::Error(e) => emit_js(callback, "error", e),
             _ => {}
         };
 
-        let content = kernel.stream_once(accumulate_request, &preloaded, &mut emit)?;
+        let content = kernel.stream_once(request, &preloaded, &mut emit)?;
 
         // Extract tool calls
         let tool_calls: Vec<ox_kernel::ToolCall> = content
             .iter()
             .filter_map(|b| {
-                if let ox_core::ContentBlock::ToolUse(tc) = b {
+                if let ContentBlock::ToolUse(tc) = b {
                     Some(tc.clone())
                 } else {
                     None
@@ -345,33 +332,17 @@ async fn run_agentic_loop(
             })
             .collect();
 
-        // Append assistant message to history
-        let assistant_content: Vec<serde_json::Value> = content
-            .iter()
-            .map(|b| match b {
-                ox_core::ContentBlock::Text { text } => serde_json::json!({
-                    "type": "text",
-                    "text": text,
-                }),
-                ox_core::ContentBlock::ToolUse(tc) => serde_json::json!({
-                    "type": "tool_use",
-                    "id": tc.id,
-                    "name": tc.name,
-                    "input": tc.input,
-                }),
-            })
-            .collect();
-
-        history_ref.borrow_mut().push(serde_json::json!({
-            "role": "assistant",
-            "content": assistant_content,
-        }));
+        // Write assistant message to the namespace
+        let assistant_value = serialize_assistant_message(&content);
+        context_ref
+            .borrow_mut()
+            .write("history/append", assistant_value)?;
 
         if tool_calls.is_empty() {
             let text = content
                 .iter()
                 .filter_map(|b| {
-                    if let ox_core::ContentBlock::Text { text } = b {
+                    if let ContentBlock::Text { text } = b {
                         Some(text.as_str())
                     } else {
                         None
@@ -380,14 +351,14 @@ async fn run_agentic_loop(
                 .collect::<Vec<_>>()
                 .join("");
 
-            emit_js(cfg.callback, "turn_end", "");
+            emit_js(callback, "turn_end", "");
             return Ok(text);
         }
 
-        // Execute tools locally and append results
-        let mut tool_results = Vec::new();
+        // Execute tools locally and write results to the namespace
+        let mut results = Vec::new();
         for tc in &tool_calls {
-            emit_js(cfg.callback, "tool_call_start", &tc.name);
+            emit_js(callback, "tool_call_start", &tc.name);
             let result_str = match tools.get(&tc.name) {
                 Some(tool) => match tool.execute(tc.input.clone()) {
                     Ok(r) => r,
@@ -396,21 +367,20 @@ async fn run_agentic_loop(
                 None => format!("error: unknown tool '{}'", tc.name),
             };
             emit_js(
-                cfg.callback,
+                callback,
                 "tool_call_result",
                 &format!("{}: {}", tc.name, result_str),
             );
-            tool_results.push(serde_json::json!({
-                "type": "tool_result",
-                "tool_use_id": tc.id,
-                "content": result_str,
-            }));
+            results.push(ToolResult {
+                tool_use_id: tc.id.clone(),
+                content: result_str,
+            });
         }
 
-        history_ref.borrow_mut().push(serde_json::json!({
-            "role": "user",
-            "content": tool_results,
-        }));
+        let tool_results_value = serialize_tool_results(&results);
+        context_ref
+            .borrow_mut()
+            .write("history/append", tool_results_value)?;
 
         // Loop back for next completion
     }

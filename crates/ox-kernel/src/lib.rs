@@ -2,6 +2,23 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
+// StructFS Provider trait
+// ---------------------------------------------------------------------------
+
+/// JSON value — the interchange format for all namespace reads/writes.
+pub type Value = serde_json::Value;
+
+/// A provider exposes data at paths within a namespace.
+///
+/// - `read` takes `&self` (shared borrow — multiple reads are fine)
+/// - `write` takes `&mut self` (exclusive borrow — one write at a time)
+/// - No `Send + Sync` bound — the kernel is single-threaded.
+pub trait Provider {
+    fn read(&self, path: &str) -> Option<Value>;
+    fn write(&mut self, path: &str, value: Value) -> Result<(), String>;
+}
+
+// ---------------------------------------------------------------------------
 // Message types
 // ---------------------------------------------------------------------------
 
@@ -210,45 +227,42 @@ impl Kernel {
         Ok(content)
     }
 
-    /// Run one full agentic turn: stream a response from the transport,
-    /// execute any tool calls, and loop until the model produces end_turn.
+    /// Run one full agentic turn: read the prompt from the context namespace,
+    /// stream a response from the transport, execute any tool calls, write
+    /// results back to the namespace, and loop until the model produces
+    /// end_turn (no more tool calls).
     ///
-    /// Returns the sequence of AgentEvents produced during the turn.
-    /// The caller provides the completion request and the kernel drives
-    /// the loop.
+    /// The namespace is the single source of truth. The kernel writes
+    /// assistant messages and tool results to `history/append` and re-reads
+    /// the prompt each iteration.
+    ///
+    /// Returns the final assistant content blocks.
     pub fn run_turn<T: Transport>(
         &mut self,
-        request: CompletionRequest,
+        context: &mut dyn Provider,
         transport: &T,
         tools: &ToolRegistry,
         emit: &mut dyn FnMut(AgentEvent),
-    ) -> Result<TurnResult, String> {
+    ) -> Result<Vec<ContentBlock>, String> {
         assert_eq!(
             self.state,
             KernelState::Idle,
             "kernel must be idle to start a turn"
         );
 
-        let mut messages = request.messages.clone();
-        let system = request.system.clone();
-        let tool_schemas = request.tools.clone();
-
         loop {
-            // Build the request for this iteration
-            let req = CompletionRequest {
-                model: self.model.clone(),
-                max_tokens: request.max_tokens,
-                system: system.clone(),
-                messages: messages.clone(),
-                tools: tool_schemas.clone(),
-                stream: true,
-            };
+            // Read the prompt from the namespace (re-reads each iteration)
+            let prompt_value = context
+                .read("prompt")
+                .ok_or("failed to read prompt from context")?;
+            let request: CompletionRequest =
+                serde_json::from_value(prompt_value).map_err(|e| e.to_string())?;
 
             // Stream phase
             self.state = KernelState::Streaming;
             emit(AgentEvent::TurnStart);
 
-            let mut stream = transport.send(req).inspect_err(|_| {
+            let mut stream = transport.send(request).inspect_err(|_| {
                 self.state = KernelState::Idle;
             })?;
 
@@ -266,18 +280,15 @@ impl Kernel {
                 })
                 .collect();
 
-            // Append assistant message to conversation
+            // Write assistant message to the namespace
             let assistant_value = serialize_assistant_message(&assistant_msg);
-            messages.push(assistant_value);
+            context.write("history/append", assistant_value)?;
 
             if tool_calls.is_empty() {
                 // No tool calls — turn is done
                 self.state = KernelState::Idle;
                 emit(AgentEvent::TurnEnd);
-                return Ok(TurnResult {
-                    content: assistant_msg,
-                    messages,
-                });
+                return Ok(assistant_msg);
             }
 
             // Execute tools
@@ -305,9 +316,9 @@ impl Kernel {
                 });
             }
 
-            // Append tool results to conversation
+            // Write tool results to the namespace
             let tool_results_value = serialize_tool_results(&results);
-            messages.push(tool_results_value);
+            context.write("history/append", tool_results_value)?;
 
             // Loop: go back to streaming with the updated conversation
             self.state = KernelState::Idle;
@@ -396,17 +407,11 @@ impl Kernel {
     }
 }
 
-/// The result of running one turn.
-pub struct TurnResult {
-    pub content: Vec<ContentBlock>,
-    pub messages: Vec<serde_json::Value>,
-}
-
 // ---------------------------------------------------------------------------
 // Serialization helpers (produce Anthropic Messages API format)
 // ---------------------------------------------------------------------------
 
-fn serialize_assistant_message(blocks: &[ContentBlock]) -> serde_json::Value {
+pub fn serialize_assistant_message(blocks: &[ContentBlock]) -> serde_json::Value {
     let content: Vec<serde_json::Value> = blocks
         .iter()
         .map(|b| match b {
@@ -429,7 +434,7 @@ fn serialize_assistant_message(blocks: &[ContentBlock]) -> serde_json::Value {
     })
 }
 
-fn serialize_tool_results(results: &[ToolResult]) -> serde_json::Value {
+pub fn serialize_tool_results(results: &[ToolResult]) -> serde_json::Value {
     let content: Vec<serde_json::Value> = results
         .iter()
         .map(|r| {
