@@ -185,134 +185,190 @@ export function refreshToolPanel(agent: OxAgent): void {
     toolPanelEl.appendChild(emptyDiv);
   }
 
-  // Add form — only on non-factory profiles
-  if (!isFactory) {
-    const hr2 = document.createElement('hr');
-    hr2.className = 'tool-panel-divider';
-    toolPanelEl.appendChild(hr2);
+  // Add form — always visible
+  const hr2 = document.createElement('hr');
+  hr2.className = 'tool-panel-divider';
+  toolPanelEl.appendChild(hr2);
 
-    const addDetails = document.createElement('details');
-    const addSummary = document.createElement('summary');
-    addSummary.textContent = 'add new tool...';
-    addSummary.style.cursor = 'pointer';
-    addSummary.style.color = '#7fdbca';
-    addSummary.style.fontSize = '12px';
-    addSummary.style.userSelect = 'none';
-    addDetails.appendChild(addSummary);
+  const addDetails = document.createElement('details');
+  const addSummary = document.createElement('summary');
+  addSummary.textContent = 'add new tool...';
+  addSummary.style.cursor = 'pointer';
+  addDetails.appendChild(addSummary);
 
-    const formDiv = document.createElement('div');
-    formDiv.style.paddingTop = '8px';
+  const formDiv = document.createElement('div');
+  formDiv.style.paddingTop = '8px';
 
-    const fields = [
-      {
-        id: 'add-tool-name',
-        label: 'name',
-        placeholder: 'my_tool',
-        tag: 'input',
-      },
-      {
-        id: 'add-tool-desc',
-        label: 'description',
-        placeholder: 'What this tool does',
-        tag: 'input',
-      },
-      {
-        id: 'add-tool-params',
-        label: 'parameters (TypeScript style)',
-        placeholder: '(text: string, count?: number)',
-        tag: 'input',
-      },
-      {
-        id: 'add-tool-body',
-        label: 'function body (params available by name; return a string)',
-        placeholder: 'return String(n + 2);',
-        tag: 'textarea',
-      },
-    ];
-    const inputs: Record<string, HTMLInputElement | HTMLTextAreaElement> = {};
-    for (const f of fields) {
-      const fieldDiv = document.createElement('div');
-      fieldDiv.className = 'tool-form-field';
-      const lbl = document.createElement('label');
-      lbl.textContent = f.label;
-      fieldDiv.appendChild(lbl);
-      const el = document.createElement(f.tag) as
-        | HTMLInputElement
-        | HTMLTextAreaElement;
-      el.placeholder = f.placeholder;
-      if (f.tag === 'textarea') (el as HTMLTextAreaElement).rows = 4;
-      fieldDiv.appendChild(el);
-      formDiv.appendChild(fieldDiv);
-      inputs[f.id] = el;
+  const fields = [
+    {
+      id: 'add-tool-name',
+      label: 'name',
+      placeholder: 'my_tool',
+      tag: 'input',
+    },
+    {
+      id: 'add-tool-desc',
+      label: 'description',
+      placeholder: 'What this tool does',
+      tag: 'input',
+    },
+    {
+      id: 'add-tool-params',
+      label: 'parameters (TypeScript style)',
+      placeholder: '(text: string, count?: number)',
+      tag: 'input',
+    },
+    {
+      id: 'add-tool-body',
+      label: 'function body (params available by name; return a string)',
+      placeholder: 'return String(n + 2);',
+      tag: 'textarea',
+    },
+  ];
+  const inputs: Record<string, HTMLInputElement | HTMLTextAreaElement> = {};
+  for (const f of fields) {
+    const fieldDiv = document.createElement('div');
+    fieldDiv.className = 'tool-form-field';
+    const lbl = document.createElement('label');
+    lbl.textContent = f.label;
+    fieldDiv.appendChild(lbl);
+    const el = document.createElement(f.tag) as
+      | HTMLInputElement
+      | HTMLTextAreaElement;
+    el.placeholder = f.placeholder;
+    if (f.tag === 'textarea') (el as HTMLTextAreaElement).rows = 4;
+    fieldDiv.appendChild(el);
+    formDiv.appendChild(fieldDiv);
+    inputs[f.id] = el;
+  }
+
+  const errorEl = document.createElement('div');
+  errorEl.className = 'tool-form-error';
+
+  const actionsDiv = document.createElement('div');
+  actionsDiv.className = 'tool-form-actions';
+
+  function validateForm(): ToolDef | null {
+    errorEl.textContent = '';
+    const name = inputs['add-tool-name'].value.trim();
+    const description = inputs['add-tool-desc'].value.trim();
+    const params = inputs['add-tool-params'].value.trim();
+    const body = inputs['add-tool-body'].value.trim();
+    if (!name || !description || !params || !body) {
+      errorEl.textContent = 'All fields are required.';
+      return null;
     }
+    const def: ToolDef = { name, description, params, body };
+    try {
+      compileTool(def);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      errorEl.textContent = 'Invalid: ' + msg;
+      return null;
+    }
+    return def;
+  }
 
-    const errorEl = document.createElement('div');
-    errorEl.className = 'tool-form-error';
+  function saveToolToProfile(def: ToolDef, targetProfile: string): void {
+    ToolStore.saveTool(def);
+    try {
+      const { schemaJson, callback } = compileTool(def);
+      agent.register_tool(def.name, def.description, schemaJson, callback);
+      activeJsTools.add(def.name);
+      const updated = ToolStore.getProfileTools(targetProfile);
+      if (!updated.includes(def.name)) updated.push(def.name);
+      ToolStore.setProfileTools(targetProfile, updated);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      errorEl.textContent =
+        'Saved to library but registration failed: ' + msg;
+      refreshToolPanel(agent);
+      return;
+    }
+    refreshToolPanel(agent);
+  }
 
-    const actionsDiv = document.createElement('div');
-    actionsDiv.className = 'tool-form-actions';
+  function showSaveActions(): void {
+    actionsDiv.textContent = '';
     const saveBtn = document.createElement('button');
     saveBtn.className = 'save-btn';
     saveBtn.textContent = 'save';
     saveBtn.addEventListener('click', () => {
-      errorEl.textContent = '';
-      const name = inputs['add-tool-name'].value.trim();
-      const description = inputs['add-tool-desc'].value.trim();
-      const params = inputs['add-tool-params'].value.trim();
-      const body = inputs['add-tool-body'].value.trim();
-
-      if (!name || !description || !params || !body) {
-        errorEl.textContent = 'All fields are required.';
-        return;
+      const def = validateForm();
+      if (!def) return;
+      if (ToolStore.isFactory(ToolStore.getActiveProfile())) {
+        showProfileStep(def);
+      } else {
+        saveToolToProfile(def, ToolStore.getActiveProfile());
       }
-
-      const def: ToolDef = { name, description, params, body };
-
-      try {
-        compileTool(def);
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        errorEl.textContent = 'Invalid: ' + msg;
-        return;
-      }
-
-      ToolStore.saveTool(def);
-      try {
-        const { schemaJson, callback } = compileTool(def);
-        agent.register_tool(name, description, schemaJson, callback);
-        activeJsTools.add(name);
-        const updated = ToolStore.getProfileTools(activeProfile);
-        if (!updated.includes(name)) updated.push(name);
-        ToolStore.setProfileTools(activeProfile, updated);
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        errorEl.textContent =
-          'Saved to library but registration failed: ' + msg;
-        refreshToolPanel(agent);
-        return;
-      }
-
-      refreshToolPanel(agent);
     });
     actionsDiv.appendChild(saveBtn);
-    formDiv.appendChild(actionsDiv);
-    formDiv.appendChild(errorEl);
-    addDetails.appendChild(formDiv);
-    toolPanelEl.appendChild(addDetails);
-
-    // Wire up prefillAddForm now that addDetails and inputs exist
-    prefillAddForm = (srcDef: ToolDef) => {
-      let copyName = srcDef.name + '_copy';
-      while (lib[copyName]) copyName += '_copy';
-      inputs['add-tool-name'].value = copyName;
-      inputs['add-tool-desc'].value = srcDef.description;
-      inputs['add-tool-params'].value = srcDef.params;
-      inputs['add-tool-body'].value = srcDef.body;
-      addDetails.open = true;
-      inputs['add-tool-name'].focus();
-      (inputs['add-tool-name'] as HTMLInputElement).select();
-    };
   }
+
+  function showProfileStep(def: ToolDef): void {
+    actionsDiv.textContent = '';
+    errorEl.textContent = '';
+
+    const hint = document.createElement('div');
+    hint.className = 'tool-form-field';
+    const hintLabel = document.createElement('label');
+    hintLabel.textContent = 'new profile name';
+    hint.appendChild(hintLabel);
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.placeholder = 'my profile';
+    hint.appendChild(nameInput);
+    actionsDiv.appendChild(hint);
+
+    const btnRow = document.createElement('div');
+    btnRow.className = 'tool-form-actions';
+    const createBtn = document.createElement('button');
+    createBtn.className = 'save-btn';
+    createBtn.textContent = 'create & save';
+    createBtn.addEventListener('click', () => {
+      const profileName = nameInput.value.trim();
+      if (!profileName || profileName === FACTORY_PROFILE) {
+        nameInput.style.borderColor = 'var(--vermillion)';
+        return;
+      }
+      ToolStore.createProfile(profileName);
+      applyProfile(agent, profileName);
+      saveToolToProfile(def, profileName);
+    });
+    btnRow.appendChild(createBtn);
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'cancel-btn';
+    cancelBtn.textContent = 'cancel';
+    cancelBtn.addEventListener('click', () => showSaveActions());
+    btnRow.appendChild(cancelBtn);
+    actionsDiv.appendChild(btnRow);
+
+    nameInput.focus();
+    nameInput.addEventListener('keydown', (e: KeyboardEvent) => {
+      if (e.key === 'Enter') createBtn.click();
+      if (e.key === 'Escape') cancelBtn.click();
+    });
+  }
+
+  showSaveActions();
+  formDiv.appendChild(actionsDiv);
+  formDiv.appendChild(errorEl);
+  addDetails.appendChild(formDiv);
+  toolPanelEl.appendChild(addDetails);
+
+  // Wire up prefillAddForm now that addDetails and inputs exist
+  prefillAddForm = (srcDef: ToolDef) => {
+    let copyName = srcDef.name + '_copy';
+    while (lib[copyName]) copyName += '_copy';
+    inputs['add-tool-name'].value = copyName;
+    inputs['add-tool-desc'].value = srcDef.description;
+    inputs['add-tool-params'].value = srcDef.params;
+    inputs['add-tool-body'].value = srcDef.body;
+    addDetails.open = true;
+    inputs['add-tool-name'].focus();
+    (inputs['add-tool-name'] as HTMLInputElement).select();
+  };
 }
 
 function showToolEditForm(
@@ -418,7 +474,7 @@ function showNewProfileInput(agent: OxAgent, profileRow: HTMLElement): void {
   okBtn.addEventListener('click', () => {
     const name = nameInput.value.trim();
     if (!name || name === FACTORY_PROFILE) {
-      nameInput.style.borderColor = '#ff5370';
+      nameInput.style.borderColor = 'var(--vermillion)';
       return;
     }
     ToolStore.createProfile(name);

@@ -1,415 +1,930 @@
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body {
-    font-family: monospace;
-    background: #1a1a2e;
-    color: #e0e0e0;
-    padding: 40px 20px;
+/* ============================================================
+   ox — Brand Book Themes
+   Five colors. Flat. Opaque. No ornament. Five interpretations.
+   ============================================================ */
+
+/* --- local fonts --- */
+@font-face {
+  font-family: 'Syne';
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url(/dist/fonts/syne-latin.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
+@font-face {
+  font-family: 'Outfit';
+  font-style: normal;
+  font-weight: 300 600;
+  font-display: swap;
+  src: url(/dist/fonts/outfit-latin.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(/dist/fonts/ibm-plex-mono-400-latin.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url(/dist/fonts/ibm-plex-mono-500-latin.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url(/dist/fonts/ibm-plex-mono-600-latin.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* --- brand palette (constant) --- */
+:root {
+  --indigo:      #2B2D7C;
+  --amber:       #F5A623;
+  --vermillion:  #E8471B;
+  --white:       #FFFFFF;
+  --beige:       #E8D5C0;
+
+  --font-display: 'Syne', sans-serif;
+  --font-body:    'Outfit', sans-serif;
+  --font-mono:    'IBM Plex Mono', monospace;
+
+  --step-0: clamp(1rem, 0.95rem + 0.25vw, 1.125rem);
+  --step-1: clamp(1.25rem, 1.15rem + 0.5vw, 1.5rem);
+  --step-2: clamp(1.5rem, 1.3rem + 1vw, 2rem);
+
+  --space-xs:  0.5rem;
+  --space-sm:  1rem;
+  --space-md:  2rem;
+
+  --ease-enter:  cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-pulse:  ease-in-out;
+  --duration-enter:   0.8s;
+  --duration-hover:   0.2s;
+  --duration-pulse:   1.2s;
+}
+
+/* ============================================================
+   THEME TOKENS
+   --t-bg           page background
+   --t-surface      panel / card / chat background
+   --t-inset        code blocks, inputs inside panels
+   --t-field        standalone inputs on page bg
+   --t-on-bg        text on page background
+   --t-on-surface   text on panel surfaces
+   --t-on-inset     text on inset / field elements
+   --t-on-accent    text on accent-colored backgrounds
+   --t-heading      heading / section title color
+   --t-accent       primary interactive accent
+   --t-danger       error / alert
+   --t-border       subtle structural borders
+   --t-border-strong bold structural / column dividers
+   --t-stripe       panel bottom accent stripe
+   --t-btn-bg       primary action button background
+   --t-btn-text     primary action button text
+   ============================================================ */
+
+/* --- Noon (12): stark white, vermillion burns, maximum poster clarity --- */
+[data-theme="noon"] {
+  --t-bg:            var(--white);
+  --t-surface:       var(--white);
+  --t-inset:         var(--beige);
+  --t-field:         var(--beige);
+  --t-on-bg:         var(--indigo);
+  --t-on-surface:    var(--indigo);
+  --t-on-inset:      var(--indigo);
+  --t-on-accent:     var(--white);
+  --t-heading:       var(--vermillion);
+  --t-accent:        var(--vermillion);
+  --t-danger:        var(--vermillion);
+  --t-border:        var(--beige);
+  --t-border-strong: var(--vermillion);
+  --t-stripe:        var(--vermillion);
+  --t-btn-bg:        var(--indigo);
+  --t-btn-text:      var(--beige);
+}
+
+/* --- Early Afternoon (1, default): white canvas, amber warms in --- */
+[data-theme="early-afternoon"], :root {
+  --t-bg:            var(--white);
+  --t-surface:       var(--white);
+  --t-inset:         var(--beige);
+  --t-field:         var(--beige);
+  --t-on-bg:         var(--indigo);
+  --t-on-surface:    var(--indigo);
+  --t-on-inset:      var(--indigo);
+  --t-on-accent:     var(--indigo);
+  --t-heading:       var(--indigo);
+  --t-accent:        var(--amber);
+  --t-danger:        var(--vermillion);
+  --t-border:        var(--beige);
+  --t-border-strong: var(--indigo);
+  --t-stripe:        var(--amber);
+  --t-btn-bg:        var(--vermillion);
+  --t-btn-text:      var(--white);
+}
+
+/* --- Late Afternoon (2): beige earth appears, amber glow building --- */
+[data-theme="late-afternoon"] {
+  --t-bg:            var(--beige);
+  --t-surface:       var(--white);
+  --t-inset:         var(--beige);
+  --t-field:         var(--white);
+  --t-on-bg:         var(--indigo);
+  --t-on-surface:    var(--indigo);
+  --t-on-inset:      var(--indigo);
+  --t-on-accent:     var(--indigo);
+  --t-heading:       var(--indigo);
+  --t-accent:        var(--amber);
+  --t-danger:        var(--vermillion);
+  --t-border:        var(--white);
+  --t-border-strong: var(--indigo);
+  --t-stripe:        var(--amber);
+  --t-btn-bg:        var(--amber);
+  --t-btn-text:      var(--indigo);
+}
+
+/* --- Golden Hour (3): everything amber, warmest light theme --- */
+[data-theme="golden-hour"] {
+  --t-bg:            var(--beige);
+  --t-surface:       var(--white);
+  --t-inset:         var(--beige);
+  --t-field:         var(--white);
+  --t-on-bg:         var(--indigo);
+  --t-on-surface:    var(--indigo);
+  --t-on-inset:      var(--indigo);
+  --t-on-accent:     var(--indigo);
+  --t-heading:       var(--amber);
+  --t-accent:        var(--amber);
+  --t-danger:        var(--vermillion);
+  --t-border:        var(--white);
+  --t-border-strong: var(--amber);
+  --t-stripe:        var(--amber);
+  --t-btn-bg:        var(--vermillion);
+  --t-btn-text:      var(--white);
+}
+
+/* --- Sunset (4): beige sky, indigo shadows rise, vermillion marks --- */
+[data-theme="sunset"] {
+  --t-bg:            var(--beige);
+  --t-surface:       var(--indigo);
+  --t-inset:         var(--white);
+  --t-field:         var(--white);
+  --t-on-bg:         var(--indigo);
+  --t-on-surface:    var(--beige);
+  --t-on-inset:      var(--indigo);
+  --t-on-accent:     var(--white);
+  --t-heading:       var(--vermillion);
+  --t-accent:        var(--vermillion);
+  --t-danger:        var(--vermillion);
+  --t-border:        var(--beige);
+  --t-border-strong: var(--vermillion);
+  --t-stripe:        var(--vermillion);
+  --t-btn-bg:        var(--amber);
+  --t-btn-text:      var(--indigo);
+}
+
+/* --- Dusk (5): indigo canvas, white surfaces float like last light --- */
+[data-theme="dusk"] {
+  --t-bg:            var(--indigo);
+  --t-surface:       var(--white);
+  --t-inset:         var(--beige);
+  --t-field:         var(--white);
+  --t-on-bg:         var(--beige);
+  --t-on-surface:    var(--indigo);
+  --t-on-inset:      var(--indigo);
+  --t-on-accent:     var(--indigo);
+  --t-heading:       var(--amber);
+  --t-accent:        var(--amber);
+  --t-danger:        var(--vermillion);
+  --t-border:        var(--beige);
+  --t-border-strong: var(--amber);
+  --t-stripe:        var(--vermillion);
+  --t-btn-bg:        var(--vermillion);
+  --t-btn-text:      var(--white);
+}
+
+/* --- Twilight (6): full indigo, amber the only warmth --- */
+[data-theme="twilight"] {
+  --t-bg:            var(--indigo);
+  --t-surface:       var(--indigo);
+  --t-inset:         var(--white);
+  --t-field:         var(--white);
+  --t-on-bg:         var(--beige);
+  --t-on-surface:    var(--beige);
+  --t-on-inset:      var(--indigo);
+  --t-on-accent:     var(--indigo);
+  --t-heading:       var(--amber);
+  --t-accent:        var(--amber);
+  --t-danger:        var(--vermillion);
+  --t-border:        var(--beige);
+  --t-border-strong: var(--amber);
+  --t-stripe:        var(--amber);
+  --t-btn-bg:        var(--vermillion);
+  --t-btn-text:      var(--white);
+}
+
+/* --- Evening (7): softer borders, amber buttons, settling --- */
+[data-theme="evening"] {
+  --t-bg:            var(--indigo);
+  --t-surface:       var(--indigo);
+  --t-inset:         var(--white);
+  --t-field:         var(--white);
+  --t-on-bg:         var(--beige);
+  --t-on-surface:    var(--beige);
+  --t-on-inset:      var(--indigo);
+  --t-on-accent:     var(--indigo);
+  --t-heading:       var(--amber);
+  --t-accent:        var(--amber);
+  --t-danger:        var(--vermillion);
+  --t-border:        var(--beige);
+  --t-border-strong: var(--beige);
+  --t-stripe:        var(--amber);
+  --t-btn-bg:        var(--amber);
+  --t-btn-text:      var(--indigo);
+}
+
+/* --- Night (8): white text for sharpness, beige insets warm the dark --- */
+[data-theme="night"] {
+  --t-bg:            var(--indigo);
+  --t-surface:       var(--indigo);
+  --t-inset:         var(--beige);
+  --t-field:         var(--beige);
+  --t-on-bg:         var(--white);
+  --t-on-surface:    var(--white);
+  --t-on-inset:      var(--indigo);
+  --t-on-accent:     var(--indigo);
+  --t-heading:       var(--amber);
+  --t-accent:        var(--amber);
+  --t-danger:        var(--vermillion);
+  --t-border:        var(--beige);
+  --t-border-strong: var(--amber);
+  --t-stripe:        var(--vermillion);
+  --t-btn-bg:        var(--vermillion);
+  --t-btn-text:      var(--white);
+}
+
+/* --- Midnight (9): coldest, white headings, amber accent --- */
+[data-theme="midnight"] {
+  --t-bg:            var(--indigo);
+  --t-surface:       var(--indigo);
+  --t-inset:         var(--white);
+  --t-field:         var(--white);
+  --t-on-bg:         var(--white);
+  --t-on-surface:    var(--white);
+  --t-on-inset:      var(--indigo);
+  --t-on-accent:     var(--indigo);
+  --t-heading:       var(--white);
+  --t-accent:        var(--amber);
+  --t-danger:        var(--vermillion);
+  --t-border:        var(--beige);
+  --t-border-strong: var(--amber);
+  --t-stripe:        var(--vermillion);
+  --t-btn-bg:        var(--amber);
+  --t-btn-text:      var(--indigo);
+}
+
+/* --- Dawn (10): indigo bg, beige surfaces emerge, amber first light --- */
+[data-theme="dawn"] {
+  --t-bg:            var(--indigo);
+  --t-surface:       var(--beige);
+  --t-inset:         var(--white);
+  --t-field:         var(--white);
+  --t-on-bg:         var(--beige);
+  --t-on-surface:    var(--indigo);
+  --t-on-inset:      var(--indigo);
+  --t-on-accent:     var(--indigo);
+  --t-heading:       var(--amber);
+  --t-accent:        var(--amber);
+  --t-danger:        var(--vermillion);
+  --t-border:        var(--white);
+  --t-border-strong: var(--amber);
+  --t-stripe:        var(--amber);
+  --t-btn-bg:        var(--vermillion);
+  --t-btn-text:      var(--white);
+}
+
+/* --- Late Morning (11): white canvas, beige surfaces, building toward noon --- */
+[data-theme="late-morning"] {
+  --t-bg:            var(--white);
+  --t-surface:       var(--beige);
+  --t-inset:         var(--white);
+  --t-field:         var(--white);
+  --t-on-bg:         var(--indigo);
+  --t-on-surface:    var(--indigo);
+  --t-on-inset:      var(--indigo);
+  --t-on-accent:     var(--indigo);
+  --t-heading:       var(--indigo);
+  --t-accent:        var(--amber);
+  --t-danger:        var(--vermillion);
+  --t-border:        var(--beige);
+  --t-border-strong: var(--indigo);
+  --t-stripe:        var(--indigo);
+  --t-btn-bg:        var(--amber);
+  --t-btn-text:      var(--indigo);
+}
+
+/* --- reset --- */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* --- canvas --- */
+body {
+  font-family: var(--font-body);
+  font-size: var(--step-0);
+  line-height: 1.6;
+  background: var(--t-bg);
+  color: var(--t-on-bg);
+  padding: var(--space-md) var(--space-sm);
+}
+
+/* --- page-load stagger --- */
+@keyframes ox-enter {
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* --- layout --- */
 .container {
-    display: flex;
-    gap: 16px;
-    max-width: 1200px;
-    margin: 0 auto;
+  display: flex;
+  gap: 2px;
+  max-width: 1200px;
+  margin: 0 auto;
 }
 .chat-column {
-    flex: 1;
-    min-width: 0;
-    max-width: 720px;
+  flex: 1;
+  min-width: 0;
+  max-width: 720px;
+  display: flex;
+  flex-direction: column;
+  animation: ox-enter var(--duration-enter) var(--ease-enter) both;
 }
 .debug-column {
-    width: 420px;
-    flex-shrink: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
+  width: 420px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-left: 3px solid var(--t-border-strong);
+  padding-left: var(--space-sm);
 }
-h1 { margin-bottom: 20px; color: #7fdbca; }
+.debug-column > div:nth-child(1) {
+  animation: ox-enter var(--duration-enter) var(--ease-enter) 0.15s both;
+}
+.debug-column > div:nth-child(2) {
+  animation: ox-enter var(--duration-enter) var(--ease-enter) 0.3s both;
+}
+.debug-column > div:nth-child(3) {
+  animation: ox-enter var(--duration-enter) var(--ease-enter) 0.45s both;
+}
+
+/* --- header row + theme picker --- */
+.header-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-sm);
+}
+h1 {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: var(--step-2);
+  letter-spacing: -0.03em;
+  line-height: 1;
+  color: var(--t-on-bg);
+}
+#theme-picker {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+}
+
+/* --- analog clock --- */
+.clock {
+  display: block;
+  cursor: default;
+}
+.clock-face {
+  fill: var(--t-surface);
+  stroke: var(--t-border-strong);
+  stroke-width: 3;
+}
+.clock-hand {
+  stroke: var(--t-accent);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+}
+.clock-hand-group {
+  transition: transform 0.4s var(--ease-spring);
+}
+.clock-center {
+  fill: var(--t-accent);
+}
+.clock-dot {
+  fill: var(--t-on-surface);
+  opacity: 0.4;
+  transition: r 0.2s var(--ease-spring), opacity 0.2s, fill 0.2s;
+}
+.clock-dot-active {
+  fill: var(--t-accent);
+  opacity: 1;
+}
+.clock-hour {
+  cursor: pointer;
+  outline: none;
+}
+.clock-hour:focus .clock-dot {
+  opacity: 0.8;
+}
+.clock-hit {
+  pointer-events: all;
+}
+
+/* --- chat output --- */
 #output {
-    background: #16213e;
-    border: 1px solid #333;
-    border-radius: 4px;
-    padding: 16px;
-    min-height: 300px;
-    max-height: 600px;
-    overflow-y: auto;
-    margin-bottom: 16px;
-    white-space: pre-wrap;
-    word-wrap: break-word;
-    line-height: 1.5;
+  background: var(--t-surface);
+  border: 2px solid var(--t-border);
+  padding: var(--space-sm);
+  min-height: 300px;
+  max-height: 600px;
+  overflow-y: auto;
+  margin-bottom: var(--space-sm);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  font-family: var(--font-body);
+  font-size: var(--step-0);
+  line-height: 1.6;
+  color: var(--t-on-surface);
 }
-.user-msg { color: #82aaff; }
-.assistant-msg { color: #c3e88d; }
-.tool-call { color: #ffcb6b; }
-.tool-result { color: #c792ea; }
-.error { color: #ff5370; }
-.system { color: #546e7a; font-style: italic; }
-#input-row {
-    display: flex;
-    gap: 8px;
-}
-#input {
-    flex: 1;
-    padding: 10px;
-    font-family: monospace;
-    font-size: 14px;
-    background: #16213e;
-    color: #e0e0e0;
-    border: 1px solid #333;
-    border-radius: 4px;
-    outline: none;
-}
-#input:focus { border-color: #7fdbca; }
-button {
-    padding: 10px 20px;
-    font-family: monospace;
-    font-size: 14px;
-    background: #7fdbca;
-    color: #1a1a2e;
-    border: none;
-    border-radius: 4px;
-    cursor: pointer;
-    font-weight: bold;
-}
-button:hover { background: #5fb8a0; }
-button:disabled { background: #546e7a; cursor: not-allowed; }
+.user-msg      { color: var(--t-accent); }
+.assistant-msg { color: var(--t-on-surface); }
+.tool-call     { color: var(--t-heading); }
+.tool-result   { color: var(--t-on-surface); opacity: 0.7; }
+.error         { color: var(--t-danger); }
+.system        { color: var(--t-on-surface); opacity: 0.35; }
 
 /* --- status bar --- */
 #status-bar {
-    height: 24px;
-    margin-bottom: 8px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 12px;
-    color: #546e7a;
+  height: 24px;
+  margin-bottom: var(--space-xs);
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--t-on-bg);
 }
 #status-bar:empty { margin-bottom: 0; }
 #status-bar .status-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: #7fdbca;
-    animation: pulse 1.2s ease-in-out infinite;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--t-accent);
+  animation: pulse var(--duration-pulse) var(--ease-pulse) infinite;
 }
-#status-bar .status-label { color: #7fdbca; }
-#status-bar .status-detail { color: #546e7a; }
+#status-bar .status-label {
+  color: var(--t-accent);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+#status-bar .status-detail {
+  color: var(--t-on-bg);
+  opacity: 0.5;
+}
 @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.3; }
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.3; }
 }
 
-/* --- context debugger --- */
+/* --- input row --- */
+#input-row {
+  display: flex;
+  gap: var(--space-xs);
+}
+#input {
+  flex: 1;
+  padding: 0.7em 1em;
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+  background: var(--t-field);
+  color: var(--t-on-inset);
+  border: 2px solid var(--t-border);
+  outline: none;
+  transition: border-color 0.3s;
+}
+#input:focus { border-color: var(--t-accent); }
+#input::placeholder { color: var(--t-on-inset); opacity: 0.3; }
+#input:disabled { opacity: 0.5; }
+
+/* --- buttons (primary action) --- */
+button {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.9rem;
+  letter-spacing: 0.02em;
+  border: none;
+  cursor: pointer;
+  padding: 0.7em 1.8em;
+  transition: transform var(--duration-hover);
+  background: var(--t-btn-bg);
+  color: var(--t-btn-text);
+}
+button:hover  { transform: translateY(-2px); }
+button:active { transform: translateY(0); }
+button:disabled {
+  background: var(--t-border);
+  color: var(--t-on-inset);
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* --- debug panel headers --- */
 .debug-header {
-    color: #7fdbca;
-    font-size: 14px;
-    margin-bottom: 12px;
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.9rem;
+  letter-spacing: -0.03em;
+  color: var(--t-heading);
+  margin-bottom: var(--space-xs);
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-xs);
+  padding-top: var(--space-xs);
 }
 .debug-header h2 {
-    font-size: 14px;
-    color: #7fdbca;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.9rem;
+  letter-spacing: -0.03em;
+  color: var(--t-heading);
+  text-transform: uppercase;
 }
 .debug-header .path {
-    color: #546e7a;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--t-on-bg);
+  opacity: 0.5;
 }
+
+/* --- debug panels (shared) --- */
 .debug-panel {
-    background: #16213e;
-    border: 1px solid #333;
-    border-radius: 4px;
-    padding: 12px;
-    max-height: 720px;
-    overflow-y: auto;
-    font-size: 12px;
-    line-height: 1.6;
+  background: var(--t-surface);
+  border: 2px solid var(--t-border);
+  border-bottom: 4px solid var(--t-stripe);
+  padding: var(--space-xs);
+  max-height: 720px;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.6;
+  color: var(--t-on-surface);
 }
 .debug-panel details {
-    margin-bottom: 2px;
+  margin-bottom: 2px;
 }
 .debug-panel summary {
-    cursor: pointer;
-    color: #7fdbca;
-    padding: 4px 0;
-    user-select: none;
-    list-style: none;
+  cursor: pointer;
+  color: var(--t-accent);
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: 0.75rem;
+  padding: 4px 0;
+  user-select: none;
+  list-style: none;
 }
 .debug-panel summary::before {
-    content: '\25b8 ';
-    color: #546e7a;
+  content: '\25b8 ';
+  color: var(--t-on-surface);
+  opacity: 0.5;
 }
 .debug-panel details[open] > summary::before {
-    content: '\25be ';
+  content: '\25be ';
 }
 .debug-panel .section-body {
-    padding-left: 16px;
-    border-left: 1px solid #2a2a4a;
-    margin-left: 4px;
-    margin-bottom: 8px;
+  padding-left: var(--space-sm);
+  border-left: 2px solid var(--t-border);
+  margin-left: 4px;
+  margin-bottom: var(--space-xs);
 }
+
+/* --- key-value pairs --- */
 .debug-panel .kv {
-    display: flex;
-    gap: 8px;
+  display: flex;
+  gap: var(--space-xs);
 }
 .debug-panel .kv .k {
-    color: #546e7a;
-    flex-shrink: 0;
+  color: var(--t-on-surface);
+  opacity: 0.5;
+  flex-shrink: 0;
 }
 .debug-panel .kv .v {
-    color: #e0e0e0;
-    word-break: break-all;
+  color: var(--t-on-surface);
+  word-break: break-all;
 }
-.debug-panel .str-val {
-    color: #c3e88d;
-}
-.debug-panel .num-val {
-    color: #f78c6c;
-}
-.debug-panel .empty {
-    color: #546e7a;
-    font-style: italic;
-}
+.debug-panel .str-val { color: var(--t-accent); }
+.debug-panel .num-val { color: var(--t-danger); }
+.debug-panel .empty   { color: var(--t-on-surface); opacity: 0.35; }
 
-/* --- context debugger (messages) --- */
+/* --- history messages --- */
 .debug-panel .msg-entry {
-    margin-bottom: 4px;
+  margin-bottom: 4px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--t-border);
 }
+.debug-panel .msg-entry:last-child { border-bottom: none; }
+
 .debug-panel .role-badge {
-    display: inline-block;
-    padding: 0 4px;
-    border-radius: 2px;
-    font-size: 11px;
-    font-weight: bold;
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 0.3em 0.8em;
 }
 .debug-panel .role-user {
-    background: #1a2744;
-    color: #82aaff;
+  background: transparent;
+  color: var(--t-on-surface);
+  border: 1.5px solid currentColor;
 }
 .debug-panel .role-assistant {
-    background: #1a2e1a;
-    color: #c3e88d;
+  background: var(--t-accent);
+  color: var(--t-on-accent);
 }
 .debug-panel .role-tool-result {
-    background: #2a1a2e;
-    color: #c792ea;
+  background: var(--t-danger);
+  color: var(--white);
 }
 .debug-panel .block-tag {
-    color: #546e7a;
-    font-size: 11px;
+  color: var(--t-on-surface);
+  opacity: 0.5;
+  font-size: 0.65rem;
 }
 .debug-panel .tool-name {
-    color: #ffcb6b;
+  color: var(--t-accent);
+  font-weight: 600;
 }
 .debug-panel .msg-content {
-    padding-left: 16px;
-    color: #e0e0e0;
-    white-space: pre-wrap;
-    word-break: break-word;
+  padding-left: var(--space-sm);
+  color: var(--t-on-surface);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 .debug-panel .msg-content-trunc {
-    color: #546e7a;
-    font-style: italic;
-}
-.debug-panel .section-header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-.debug-panel .edit-btn {
-    padding: 1px 6px;
-    font-size: 11px;
-    font-family: monospace;
-    background: transparent;
-    color: #546e7a;
-    border: 1px solid #546e7a;
-    border-radius: 2px;
-    cursor: pointer;
-    font-weight: normal;
-}
-.debug-panel .edit-btn:hover {
-    color: #7fdbca;
-    border-color: #7fdbca;
-}
-.debug-panel .system-textarea {
-    width: 100%;
-    min-height: 120px;
-    padding: 8px;
-    font-family: monospace;
-    font-size: 12px;
-    background: #0d1a30;
-    color: #c3e88d;
-    border: 1px solid #7fdbca;
-    border-radius: 2px;
-    resize: vertical;
-    outline: none;
-}
-.debug-panel .edit-actions {
-    display: flex;
-    gap: 6px;
-    margin-top: 6px;
-}
-.debug-panel .edit-actions button {
-    padding: 2px 10px;
-    font-size: 11px;
-    font-family: monospace;
-    border-radius: 2px;
-    font-weight: normal;
-}
-.debug-panel .save-btn {
-    background: #7fdbca;
-    color: #1a1a2e;
-    border: none;
-    cursor: pointer;
-}
-.debug-panel .save-btn:hover { background: #5fb8a0; }
-.debug-panel .cancel-btn {
-    background: transparent;
-    color: #546e7a;
-    border: 1px solid #546e7a;
-    cursor: pointer;
-}
-.debug-panel .cancel-btn:hover {
-    color: #e0e0e0;
-    border-color: #e0e0e0;
+  color: var(--t-on-surface);
+  opacity: 0.35;
 }
 
-/* --- tool panel --- */
+/* --- section header (with edit button) --- */
+.debug-panel .section-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+/* --- ghost buttons (edit, del, new, copy, reset) --- */
+.edit-btn,
+.debug-panel .edit-btn {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.75rem;
+  padding: 0.3em 0.8em;
+  background: transparent;
+  color: var(--t-on-surface);
+  border: 1.5px solid currentColor;
+  cursor: pointer;
+  transition: transform var(--duration-hover), color 0.2s;
+}
+.edit-btn:hover,
+.debug-panel .edit-btn:hover {
+  color: var(--t-accent);
+  transform: translateY(-1px);
+}
+.edit-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+  transform: none;
+}
+.edit-btn:disabled:hover {
+  color: var(--t-on-surface);
+  transform: none;
+}
+
+/* --- system prompt editor --- */
+.debug-panel .system-textarea {
+  width: 100%;
+  min-height: 120px;
+  padding: var(--space-xs);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  background: var(--t-inset);
+  color: var(--t-on-inset);
+  border: 2px solid var(--t-accent);
+  resize: vertical;
+  outline: none;
+}
+.debug-panel .edit-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+.debug-panel .edit-actions button {
+  font-size: 0.75rem;
+  padding: 0.3em 0.8em;
+}
+
+/* --- save / cancel buttons --- */
+.save-btn,
+.debug-panel .save-btn {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.75rem;
+  background: var(--t-accent);
+  color: var(--t-on-accent);
+  border: none;
+  cursor: pointer;
+  padding: 0.3em 0.8em;
+  transition: transform var(--duration-hover);
+}
+.save-btn:hover { transform: translateY(-1px); }
+
+.cancel-btn,
+.debug-panel .cancel-btn {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.75rem;
+  background: transparent;
+  color: var(--t-on-surface);
+  border: 1.5px solid currentColor;
+  cursor: pointer;
+  padding: 0.3em 0.8em;
+  transition: transform var(--duration-hover), color 0.2s;
+}
+.cancel-btn:hover {
+  color: var(--t-accent);
+  transform: translateY(-1px);
+}
+
+/* --- tool panel forms --- */
 .tool-form-field {
-    margin-bottom: 8px;
+  margin-bottom: var(--space-xs);
 }
 .tool-form-field label {
-    display: block;
-    color: #546e7a;
-    font-size: 11px;
-    margin-bottom: 2px;
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--t-on-surface);
+  opacity: 0.5;
+  margin-bottom: 2px;
 }
 .tool-form-field input,
 .tool-form-field textarea {
-    width: 100%;
-    padding: 6px;
-    font-family: monospace;
-    font-size: 12px;
-    background: #0d1a30;
-    color: #e0e0e0;
-    border: 1px solid #333;
-    border-radius: 2px;
-    outline: none;
+  width: 100%;
+  padding: 0.5em 0.7em;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  background: var(--t-inset);
+  color: var(--t-on-inset);
+  border: 2px solid var(--t-border);
+  outline: none;
+  transition: border-color 0.3s;
 }
 .tool-form-field input:focus,
 .tool-form-field textarea:focus {
-    border-color: #7fdbca;
+  border-color: var(--t-accent);
 }
 .tool-form-field textarea {
-    resize: vertical;
-    min-height: 60px;
+  resize: vertical;
+  min-height: 60px;
 }
 .tool-form-actions {
-    display: flex;
-    gap: 6px;
+  display: flex;
+  gap: 6px;
 }
 .tool-form-actions button {
-    padding: 4px 12px;
-    font-size: 11px;
-    font-family: monospace;
-    font-weight: normal;
-    border-radius: 2px;
+  font-size: 0.75rem;
+  padding: 0.3em 0.8em;
 }
 .tool-form-error {
-    color: #ff5370;
-    font-size: 11px;
-    margin-top: 4px;
+  color: var(--t-danger);
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  margin-top: 4px;
 }
+
+/* --- profile row --- */
 .profile-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: var(--space-xs);
 }
 .profile-row select {
-    flex: 1;
-    padding: 4px 6px;
-    font-family: monospace;
-    font-size: 12px;
-    background: #0d1a30;
-    color: #e0e0e0;
-    border: 1px solid #333;
-    border-radius: 2px;
-    outline: none;
+  flex: 1;
+  padding: 0.4em 0.6em;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  background: var(--t-inset);
+  color: var(--t-on-inset);
+  border: 2px solid var(--t-border);
+  outline: none;
+  transition: border-color 0.3s;
 }
-.profile-row select:focus { border-color: #7fdbca; }
+.profile-row select:focus { border-color: var(--t-accent); }
 .profile-row button {
-    padding: 2px 8px;
-    font-size: 11px;
-    font-family: monospace;
-    font-weight: normal;
-    border-radius: 2px;
+  padding: 0.3em 0.8em;
+  font-size: 0.75rem;
 }
 .profile-name-input {
-    flex: 1;
-    padding: 4px 6px;
-    font-family: monospace;
-    font-size: 12px;
-    background: #0d1a30;
-    color: #e0e0e0;
-    border: 1px solid #7fdbca;
-    border-radius: 2px;
-    outline: none;
+  flex: 1;
+  padding: 0.4em 0.6em;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  background: var(--t-inset);
+  color: var(--t-on-inset);
+  border: 2px solid var(--t-accent);
+  outline: none;
 }
+
+/* --- tool library list --- */
 .tool-library-list {
-    margin-bottom: 8px;
+  margin-bottom: var(--space-xs);
 }
 .tool-library-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 3px 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--t-border);
 }
+.tool-library-row:last-child { border-bottom: none; }
 .tool-library-row input[type="checkbox"] {
-    accent-color: #7fdbca;
+  accent-color: var(--t-accent);
 }
 .tool-library-row .tool-lib-name {
-    flex: 1;
-    color: #ffcb6b;
-    font-size: 12px;
+  flex: 1;
+  color: var(--t-accent);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 500;
 }
 .tool-library-row .tool-lib-del {
-    padding: 1px 6px;
-    font-size: 10px;
-    font-family: monospace;
-    background: transparent;
-    color: #546e7a;
-    border: 1px solid #546e7a;
-    border-radius: 2px;
-    cursor: pointer;
-    font-weight: normal;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.65rem;
+  padding: 0.2em 0.6em;
+  background: transparent;
+  color: var(--t-on-surface);
+  border: 1.5px solid currentColor;
+  cursor: pointer;
+  transition: color 0.2s;
 }
 .tool-library-row .tool-lib-del:hover {
-    color: #ff5370;
-    border-color: #ff5370;
+  color: var(--t-danger);
 }
 .tool-panel-divider {
-    border: none;
-    border-top: 1px solid #2a2a4a;
-    margin: 8px 0;
+  border: none;
+  border-top: 2px solid var(--t-border);
+  margin: var(--space-xs) 0;
 }
 .tool-panel-empty {
-    color: #546e7a;
-    font-size: 11px;
-    font-style: italic;
-    margin-bottom: 8px;
+  color: var(--t-on-surface);
+  opacity: 0.35;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  margin-bottom: var(--space-xs);
 }
 
 /* --- request log --- */
 .debug-panel .request-json {
-    background: #0d1a30;
-    color: #e0e0e0;
-    padding: 8px;
-    margin: 4px 0;
-    border-radius: 2px;
-    font-size: 11px;
-    line-height: 1.4;
-    white-space: pre-wrap;
-    word-break: break-all;
-    max-height: 400px;
-    overflow-y: auto;
+  background: var(--t-inset);
+  color: var(--t-on-inset);
+  padding: var(--space-xs);
+  margin: 4px 0;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+/* --- utility --- */
+.text-muted {
+  color: var(--t-on-surface);
+  opacity: 0.5;
 }

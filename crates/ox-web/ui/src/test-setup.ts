@@ -17,6 +17,12 @@ const globals = [
   'Element',
   'Node',
   'localStorage',
+  'SVGElement',
+  'SVGSVGElement',
+  'SVGCircleElement',
+  'SVGLineElement',
+  'SVGGElement',
+  'SVGRectElement',
 ] as const;
 
 for (const name of globals) {

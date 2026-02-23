@@ -6,9 +6,11 @@ import { refreshDebugger } from './debugger';
 import { addRequestLogEntry, refreshRequestLog } from './request-log';
 import { applyProfile, refreshToolPanel } from './tool-panel';
 import { ToolStore } from './tool-store';
+import { initThemePicker } from './theme';
 import type { AgentEvent } from './types';
 
 async function main(): Promise<void> {
+  initThemePicker();
   await init('/pkg/ox_web_bg.wasm');
 
   const systemPrompt = [

@@ -3,7 +3,7 @@
   "scripts": {
     "build": "bun run build:js && bun run build:css",
     "build:js": "bun build src/main.ts --outdir ../../../target/js-pkg --format esm --sourcemap=external --external '/pkg/*'",
-    "build:css": "cp styles/main.css ../../../target/js-pkg/main.css",
+    "build:css": "cp styles/main.css ../../../target/js-pkg/main.css && mkdir -p ../../../target/js-pkg/fonts && cp fonts/*.woff2 ../../../target/js-pkg/fonts/",
     "check": "bun x tsc --noEmit",
     "test": "bun test",
     "test:coverage": "bun test --coverage",

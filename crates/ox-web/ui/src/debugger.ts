@@ -177,7 +177,7 @@ function renderMessage(index: number, msg: DebugMessage): HTMLDivElement {
   const headerDiv = document.createElement('div');
 
   const idx = document.createElement('span');
-  idx.style.color = '#546e7a';
+  idx.className = 'text-muted';
   idx.textContent = '#' + index + ' ';
 
   headerDiv.appendChild(idx);
@@ -216,13 +216,13 @@ function renderMessage(index: number, msg: DebugMessage): HTMLDivElement {
     for (const r of msg.content as DebugContentBlock[]) {
       const line = document.createElement('div');
       const tid = document.createElement('span');
-      tid.style.color = '#546e7a';
+      tid.className = 'text-muted';
       tid.textContent = r.tool_use_id
         ? r.tool_use_id.slice(0, 12) + '...'
         : '?';
       line.appendChild(tid);
       const arrow = document.createElement('span');
-      arrow.style.color = '#546e7a';
+      arrow.className = 'text-muted';
       arrow.textContent = ' \u2192 ';
       line.appendChild(arrow);
       const val = document.createElement('span');
@@ -253,7 +253,7 @@ function renderMessage(index: number, msg: DebugMessage): HTMLDivElement {
         nameEl.textContent = block.name + ' ';
         line.appendChild(nameEl);
         const inputEl = document.createElement('span');
-        inputEl.style.color = '#546e7a';
+        inputEl.className = 'text-muted';
         inputEl.textContent = JSON.stringify(block.input);
         line.appendChild(inputEl);
       }
