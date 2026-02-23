@@ -179,6 +179,25 @@ impl OxAgent {
         self.event_callback = Some(callback);
     }
 
+    /// Read the full namespace state for debugging.
+    /// Returns a JSON string with system, model, tools, and history.
+    pub fn debug_context(&self) -> String {
+        let ctx = self.context.borrow();
+        let snapshot = serde_json::json!({
+            "system": ctx.read("system"),
+            "model": {
+                "id": ctx.read("model/id"),
+                "max_tokens": ctx.read("model/max_tokens"),
+            },
+            "tools": ctx.read("tools/schemas"),
+            "history": {
+                "count": ctx.read("history/count"),
+                "messages": ctx.read("history/messages"),
+            },
+        });
+        snapshot.to_string()
+    }
+
     /// Send a user prompt and run the agentic loop to completion.
     /// Returns a Promise that resolves with the final assistant text.
     pub fn prompt(&self, input: &str) -> js_sys::Promise {
@@ -266,6 +285,7 @@ async fn run_agentic_loop(
     context_ref
         .borrow_mut()
         .write("history/append", user_wire)?;
+    emit_js(callback, "context_changed", "");
 
     let tools = {
         let mut registry = ox_kernel::ToolRegistry::new();
@@ -337,6 +357,7 @@ async fn run_agentic_loop(
         context_ref
             .borrow_mut()
             .write("history/append", assistant_value)?;
+        emit_js(callback, "context_changed", "");
 
         if tool_calls.is_empty() {
             let text = content
@@ -381,6 +402,7 @@ async fn run_agentic_loop(
         context_ref
             .borrow_mut()
             .write("history/append", tool_results_value)?;
+        emit_js(callback, "context_changed", "");
 
         // Loop back for next completion
     }
