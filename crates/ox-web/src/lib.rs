@@ -231,6 +231,19 @@ impl OxAgent {
         snapshot.to_string()
     }
 
+    /// Replace the system prompt in the namespace.
+    pub fn set_system_prompt(&self, new_prompt: &str) -> Result<(), JsValue> {
+        let record = Record::parsed(Value::String(new_prompt.to_string()));
+        self.context
+            .borrow_mut()
+            .write(&path!("system"), record)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        if let Some(ref cb) = self.event_callback {
+            emit_js(Some(cb), "context_changed", "");
+        }
+        Ok(())
+    }
+
     /// Send a user prompt and run the agentic loop to completion.
     /// Returns a Promise that resolves with the final assistant text.
     pub fn prompt(&self, input: &str) -> js_sys::Promise {
