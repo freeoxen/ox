@@ -4,7 +4,7 @@ use ox_core::{
     serialize_assistant_message, serialize_tool_results,
 };
 use ox_history::HistoryProvider;
-use ox_kernel::{Reader, Record, Tool, ToolRegistry, ToolResult, Value, Writer, path};
+use ox_kernel::{Reader, Record, ToolRegistry, ToolResult, Value, Writer, path};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -138,43 +138,6 @@ fn parse_sse_events(body: &str) -> Vec<StreamEvent> {
 }
 
 // ---------------------------------------------------------------------------
-// Demo tool: reverse_text (shell-provided)
-// ---------------------------------------------------------------------------
-
-struct ReverseTextTool;
-
-impl Tool for ReverseTextTool {
-    fn name(&self) -> &str {
-        "reverse_text"
-    }
-
-    fn description(&self) -> &str {
-        "Reverse the characters in a string"
-    }
-
-    fn parameters_schema(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "text": {
-                    "type": "string",
-                    "description": "The text to reverse"
-                }
-            },
-            "required": ["text"]
-        })
-    }
-
-    fn execute(&self, input: serde_json::Value) -> Result<String, String> {
-        let text = input
-            .get("text")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| "missing 'text' parameter".to_string())?;
-        Ok(text.chars().rev().collect())
-    }
-}
-
-// ---------------------------------------------------------------------------
 // JS tool wrapper — allows tools defined in browser JS
 // ---------------------------------------------------------------------------
 
@@ -232,8 +195,7 @@ impl OxAgent {
         let model = "claude-sonnet-4-20250514".to_string();
         let max_tokens = 4096;
 
-        let mut tool_registry = ToolRegistry::new();
-        tool_registry.register(Box::new(ReverseTextTool));
+        let tool_registry = ToolRegistry::new();
         let schemas = tool_registry.schemas();
 
         let mut context = Namespace::new();
