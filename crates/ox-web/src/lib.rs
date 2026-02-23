@@ -366,6 +366,7 @@ async fn run_agentic_loop(
         let request_body = serde_json::to_string(&request).map_err(|e| e.to_string())?;
 
         emit_js(callback, "turn_start", "");
+        emit_js(callback, "request_sent", &request_body);
 
         let response_body = fetch_completion(server_url, &request_body).await?;
         let events = parse_sse_events(&response_body);
