@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "outDir": "../../../target/js-pkg",
+    "rootDir": "src",
+    "declaration": false,
+    "sourceMap": true,
+    "paths": {
+      "/pkg/ox_web.js": ["./src/wasm.d.ts"]
+    }
+  },
+  "include": ["src/**/*.ts"]
+}

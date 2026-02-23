@@ -81,6 +81,21 @@ gate "test"                       cargo test --workspace
 # 7. wasm-pack build
 gate "wasm-pack build"            wasm-pack build crates/ox-web --target web --out-dir ../../target/wasm-pkg
 
+# Resolve bun binary
+BUN="$(command -v bun 2>/dev/null || echo "${HOME}/.bun/bin/bun")"
+
+# 8. Install UI dependencies
+gate "bun install (ui)"           "$BUN" install --cwd crates/ox-web/ui
+
+# 9. TypeScript type check
+gate "tsc check (ui)"             bash -c "cd crates/ox-web/ui && \"$BUN\" x tsc --noEmit"
+
+# 10. Bundle UI
+gate "bun build (ui)"             "$BUN" build crates/ox-web/ui/src/main.ts --outdir target/js-pkg --format esm --sourcemap=external --external '/pkg/*'
+
+# 11. Copy CSS
+gate "copy css (ui)"              cp crates/ox-web/ui/styles/main.css target/js-pkg/main.css
+
 # Summary
 echo ""
 if [ "$FAILED" -ne 0 ]; then

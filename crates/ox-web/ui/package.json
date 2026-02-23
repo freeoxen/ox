@@ -1,0 +1,12 @@
+{
+  "private": true,
+  "scripts": {
+    "build": "bun run build:js && bun run build:css",
+    "build:js": "bun build src/main.ts --outdir ../../../target/js-pkg --format esm --sourcemap=external --external '/pkg/*'",
+    "build:css": "cp styles/main.css ../../../target/js-pkg/main.css",
+    "check": "bun x tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}

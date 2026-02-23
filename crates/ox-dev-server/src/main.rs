@@ -15,6 +15,8 @@ struct AppState {
     client: reqwest::Client,
     /// Directory where wasm-pack output lives.
     wasm_pkg_dir: Option<String>,
+    /// Directory where the bundled JS/CSS output lives.
+    js_pkg_dir: Option<String>,
     /// Directory where static HTML files live.
     static_dir: Option<String>,
 }
@@ -27,6 +29,7 @@ async fn main() {
     // When run via `cargo run -p ox-dev-server` the CWD is the workspace root.
     let static_dir = find_dir(&["crates/ox-web/static", "static"]);
     let wasm_pkg_dir = find_dir(&["target/wasm-pkg", "pkg"]);
+    let js_pkg_dir = find_dir(&["target/js-pkg"]);
 
     if static_dir.is_none() {
         eprintln!("warning: could not find static dir (crates/ox-web/static)");
@@ -36,11 +39,15 @@ async fn main() {
             "warning: could not find wasm pkg dir (target/wasm-pkg). Run wasm-pack build first."
         );
     }
+    if js_pkg_dir.is_none() {
+        eprintln!("warning: could not find js pkg dir (target/js-pkg). Run bun build first.");
+    }
 
     let state = Arc::new(AppState {
         api_key,
         client: reqwest::Client::new(),
         wasm_pkg_dir,
+        js_pkg_dir,
         static_dir,
     });
 
@@ -52,6 +59,7 @@ async fn main() {
     let app = Router::new()
         .route("/", get(serve_index))
         .route("/pkg/{*path}", get(serve_wasm_pkg))
+        .route("/dist/{*path}", get(serve_js_pkg))
         .route("/complete", post(proxy_complete))
         .route("/health", get(health))
         .layer(cors)
@@ -88,6 +96,30 @@ async fn serve_wasm_pkg(
                 Some("js") => "application/javascript",
                 Some("wasm") => "application/wasm",
                 Some("json") => "application/json",
+                _ => "application/octet-stream",
+            };
+            return (
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, content_type)],
+                contents,
+            )
+                .into_response();
+        }
+    }
+    (StatusCode::NOT_FOUND, "not found").into_response()
+}
+
+async fn serve_js_pkg(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(path): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    if let Some(ref dir) = state.js_pkg_dir {
+        let file_path = format!("{dir}/{path}");
+        if let Ok(contents) = tokio::fs::read(&file_path).await {
+            let content_type = match file_path.rsplit('.').next() {
+                Some("js") => "application/javascript",
+                Some("css") => "text/css",
+                Some("map") => "application/json",
                 _ => "application/octet-stream",
             };
             return (
