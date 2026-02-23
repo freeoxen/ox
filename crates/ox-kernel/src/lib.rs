@@ -2,21 +2,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
-// StructFS Provider trait
+// StructFS re-exports
 // ---------------------------------------------------------------------------
 
-/// JSON value — the interchange format for all namespace reads/writes.
-pub type Value = serde_json::Value;
-
-/// A provider exposes data at paths within a namespace.
-///
-/// - `read` takes `&self` (shared borrow — multiple reads are fine)
-/// - `write` takes `&mut self` (exclusive borrow — one write at a time)
-/// - No `Send + Sync` bound — the kernel is single-threaded.
-pub trait Provider {
-    fn read(&self, path: &str) -> Option<Value>;
-    fn write(&mut self, path: &str, value: Value) -> Result<(), String>;
-}
+pub use structfs_core_store::{
+    self as structfs, Error as StoreError, Path, Reader, Record, Store, Value, Writer, path,
+};
 
 // ---------------------------------------------------------------------------
 // Message types
@@ -239,7 +230,7 @@ impl Kernel {
     /// Returns the final assistant content blocks.
     pub fn run_turn<T: Transport>(
         &mut self,
-        context: &mut dyn Provider,
+        context: &mut dyn Store,
         transport: &T,
         tools: &ToolRegistry,
         emit: &mut dyn FnMut(AgentEvent),
@@ -252,11 +243,16 @@ impl Kernel {
 
         loop {
             // Read the prompt from the namespace (re-reads each iteration)
-            let prompt_value = context
-                .read("prompt")
+            let record = context
+                .read(&path!("prompt"))
+                .map_err(|e| e.to_string())?
                 .ok_or("failed to read prompt from context")?;
+            let prompt_json = match record {
+                Record::Parsed(v) => structfs_serde_store::value_to_json(v),
+                _ => return Err("expected parsed prompt record".into()),
+            };
             let request: CompletionRequest =
-                serde_json::from_value(prompt_value).map_err(|e| e.to_string())?;
+                serde_json::from_value(prompt_json).map_err(|e| e.to_string())?;
 
             // Stream phase
             self.state = KernelState::Streaming;
@@ -281,8 +277,11 @@ impl Kernel {
                 .collect();
 
             // Write assistant message to the namespace
-            let assistant_value = serialize_assistant_message(&assistant_msg);
-            context.write("history/append", assistant_value)?;
+            let assistant_json = serialize_assistant_message(&assistant_msg);
+            let record = Record::parsed(structfs_serde_store::json_to_value(assistant_json));
+            context
+                .write(&path!("history/append"), record)
+                .map_err(|e| e.to_string())?;
 
             if tool_calls.is_empty() {
                 // No tool calls — turn is done
@@ -317,8 +316,11 @@ impl Kernel {
             }
 
             // Write tool results to the namespace
-            let tool_results_value = serialize_tool_results(&results);
-            context.write("history/append", tool_results_value)?;
+            let results_json = serialize_tool_results(&results);
+            let record = Record::parsed(structfs_serde_store::json_to_value(results_json));
+            context
+                .write(&path!("history/append"), record)
+                .map_err(|e| e.to_string())?;
 
             // Loop: go back to streaming with the updated conversation
             self.state = KernelState::Idle;

@@ -6,3 +6,5 @@ edition = "2024"
 [dependencies]
 ox-kernel = { path = "../ox-kernel" }
 serde_json = "1"
+structfs-core-store = { workspace = true }
+structfs-serde-store = { workspace = true }

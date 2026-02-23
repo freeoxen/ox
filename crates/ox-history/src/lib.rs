@@ -1,17 +1,19 @@
-use ox_kernel::{ContentBlock, Message, Provider, ToolResult, Value};
+use ox_kernel::{ContentBlock, Message, ToolResult};
+use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer};
+use structfs_serde_store::{json_to_value, value_to_json};
 
 // ---------------------------------------------------------------------------
-// HistoryProvider — Provider impl over Vec<Message>
+// HistoryProvider — Reader/Writer impl over Vec<Message>
 // ---------------------------------------------------------------------------
 
-/// Stores conversation history and exposes it via the Provider interface.
+/// Stores conversation history and exposes it via the Reader/Writer interface.
 ///
 /// Read paths:
-/// - `""` or `"messages"` → wire-format JSON array
-/// - `"count"` → message count
+/// - `""` or `"messages"` → wire-format JSON array (as StructFS Value)
+/// - `"count"` → message count (as Value::Integer)
 ///
 /// Write paths:
-/// - `""` or `"append"` → parse wire JSON into Message, append
+/// - `""` or `"append"` → parse StructFS Value → wire JSON → Message, append
 /// - `"clear"` → clear all
 pub struct HistoryProvider {
     messages: Vec<Message>,
@@ -161,27 +163,62 @@ fn parse_assistant_content(wire: &serde_json::Value) -> Vec<ContentBlock> {
         .collect()
 }
 
-impl Provider for HistoryProvider {
-    fn read(&self, path: &str) -> Option<Value> {
-        match path {
-            "" | "messages" => serde_json::to_value(self.to_wire_messages()).ok(),
-            "count" => Some(serde_json::json!(self.messages.len())),
-            _ => None,
+impl Reader for HistoryProvider {
+    fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
+        let key = if from.is_empty() {
+            ""
+        } else {
+            from.components[0].as_str()
+        };
+        match key {
+            "" | "messages" => {
+                let wire = self.to_wire_messages();
+                let json = serde_json::to_value(wire)
+                    .map_err(|e| StoreError::store("history", "read", e.to_string()))?;
+                Ok(Some(Record::parsed(json_to_value(json))))
+            }
+            "count" => Ok(Some(Record::parsed(Value::Integer(
+                self.messages.len() as i64
+            )))),
+            _ => Ok(None),
         }
     }
+}
 
-    fn write(&mut self, path: &str, value: Value) -> Result<(), String> {
-        match path {
+impl Writer for HistoryProvider {
+    fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
+        let key = if to.is_empty() {
+            ""
+        } else {
+            to.components[0].as_str()
+        };
+        match key {
             "" | "append" => {
-                let msg = parse_wire_message(&value)?;
+                let value = match data {
+                    Record::Parsed(v) => v,
+                    _ => {
+                        return Err(StoreError::store(
+                            "history",
+                            "write",
+                            "expected parsed record",
+                        ));
+                    }
+                };
+                let json = value_to_json(value);
+                let msg = parse_wire_message(&json)
+                    .map_err(|e| StoreError::store("history", "write", e))?;
                 self.messages.push(msg);
-                Ok(())
+                Ok(to.clone())
             }
             "clear" => {
                 self.messages.clear();
-                Ok(())
+                Ok(to.clone())
             }
-            _ => Err(format!("unknown write path: {path}")),
+            _ => Err(StoreError::store(
+                "history",
+                "write",
+                format!("unknown write path: {to}"),
+            )),
         }
     }
 }

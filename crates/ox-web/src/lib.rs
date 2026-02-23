@@ -4,9 +4,10 @@ use ox_core::{
     serialize_assistant_message, serialize_tool_results,
 };
 use ox_history::HistoryProvider;
-use ox_kernel::{Provider, ToolResult};
+use ox_kernel::{Reader, Record, ToolResult, Value, Writer, path};
 use std::cell::RefCell;
 use std::rc::Rc;
+use structfs_serde_store::{json_to_value, value_to_json};
 use wasm_bindgen::prelude::*;
 
 // ---------------------------------------------------------------------------
@@ -182,17 +183,49 @@ impl OxAgent {
     /// Read the full namespace state for debugging.
     /// Returns a JSON string with system, model, tools, and history.
     pub fn debug_context(&self) -> String {
-        let ctx = self.context.borrow();
+        let mut ctx = self.context.borrow_mut();
+
+        let system = ctx
+            .read(&path!("system"))
+            .ok()
+            .flatten()
+            .map(record_to_json);
+        let model_id = ctx
+            .read(&path!("model/id"))
+            .ok()
+            .flatten()
+            .map(record_to_json);
+        let model_max_tokens = ctx
+            .read(&path!("model/max_tokens"))
+            .ok()
+            .flatten()
+            .map(record_to_json);
+        let tools = ctx
+            .read(&path!("tools/schemas"))
+            .ok()
+            .flatten()
+            .map(record_to_json);
+        let history_count = ctx
+            .read(&path!("history/count"))
+            .ok()
+            .flatten()
+            .map(record_to_json);
+        let history_messages = ctx
+            .read(&path!("history/messages"))
+            .ok()
+            .flatten()
+            .map(record_to_json);
+
         let snapshot = serde_json::json!({
-            "system": ctx.read("system"),
+            "system": system,
             "model": {
-                "id": ctx.read("model/id"),
-                "max_tokens": ctx.read("model/max_tokens"),
+                "id": model_id,
+                "max_tokens": model_max_tokens,
             },
-            "tools": ctx.read("tools/schemas"),
+            "tools": tools,
             "history": {
-                "count": ctx.read("history/count"),
-                "messages": ctx.read("history/messages"),
+                "count": history_count,
+                "messages": history_messages,
             },
         });
         snapshot.to_string()
@@ -213,6 +246,14 @@ impl OxAgent {
                 Err(e) => Err(JsValue::from_str(&e)),
             }
         })
+    }
+}
+
+/// Convert a Record to serde_json::Value for debug output.
+fn record_to_json(record: Record) -> serde_json::Value {
+    match record {
+        Record::Parsed(v) => value_to_json(v),
+        _ => serde_json::Value::Null,
     }
 }
 
@@ -278,13 +319,15 @@ async fn run_agentic_loop(
     callback: Option<&js_sys::Function>,
 ) -> Result<String, String> {
     // Write user message to the namespace
-    let user_wire = serde_json::json!({
+    let user_json = serde_json::json!({
         "role": "user",
         "content": user_input,
     });
+    let record = Record::parsed(json_to_value(user_json));
     context_ref
         .borrow_mut()
-        .write("history/append", user_wire)?;
+        .write(&path!("history/append"), record)
+        .map_err(|e| e.to_string())?;
     emit_js(callback, "context_changed", "");
 
     let tools = {
@@ -295,12 +338,17 @@ async fn run_agentic_loop(
 
     loop {
         // Read the prompt from the namespace
-        let prompt_value = context_ref
-            .borrow()
-            .read("prompt")
+        let prompt_record = context_ref
+            .borrow_mut()
+            .read(&path!("prompt"))
+            .map_err(|e| e.to_string())?
             .ok_or("failed to read prompt from context")?;
+        let prompt_json = match prompt_record {
+            Record::Parsed(v) => value_to_json(v),
+            _ => return Err("expected parsed prompt record".into()),
+        };
         let request: CompletionRequest =
-            serde_json::from_value(prompt_value).map_err(|e| e.to_string())?;
+            serde_json::from_value(prompt_json).map_err(|e| e.to_string())?;
 
         let request_body = serde_json::to_string(&request).map_err(|e| e.to_string())?;
 
@@ -317,16 +365,18 @@ async fn run_agentic_loop(
             stream: RefCell::new(Some(stream)),
         };
 
-        let model_id = context_ref
-            .borrow()
-            .read("model/id")
-            .and_then(|v| v.as_str().map(|s| s.to_string()))
-            .unwrap_or_default();
+        let model_id = {
+            let record = context_ref
+                .borrow_mut()
+                .read(&path!("model/id"))
+                .map_err(|e| e.to_string())?;
+            match record {
+                Some(Record::Parsed(Value::String(s))) => s,
+                _ => String::new(),
+            }
+        };
         let mut kernel = ox_kernel::Kernel::new(model_id);
 
-        // Build a minimal request just for stream_once (it only needs the
-        // transport, not the actual request content — PreloadedTransport
-        // ignores it). We reuse the one we already built.
         let mut emit = |event: AgentEvent| match &event {
             AgentEvent::TextDelta(text) => emit_js(callback, "text_delta", text),
             AgentEvent::ToolCallStart { name } => emit_js(callback, "tool_call_start", name),
@@ -353,10 +403,12 @@ async fn run_agentic_loop(
             .collect();
 
         // Write assistant message to the namespace
-        let assistant_value = serialize_assistant_message(&content);
+        let assistant_json = serialize_assistant_message(&content);
+        let record = Record::parsed(json_to_value(assistant_json));
         context_ref
             .borrow_mut()
-            .write("history/append", assistant_value)?;
+            .write(&path!("history/append"), record)
+            .map_err(|e| e.to_string())?;
         emit_js(callback, "context_changed", "");
 
         if tool_calls.is_empty() {
@@ -398,10 +450,12 @@ async fn run_agentic_loop(
             });
         }
 
-        let tool_results_value = serialize_tool_results(&results);
+        let results_json = serialize_tool_results(&results);
+        let record = Record::parsed(json_to_value(results_json));
         context_ref
             .borrow_mut()
-            .write("history/append", tool_results_value)?;
+            .write(&path!("history/append"), record)
+            .map_err(|e| e.to_string())?;
         emit_js(callback, "context_changed", "");
 
         // Loop back for next completion

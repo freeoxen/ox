@@ -10,3 +10,7 @@ members = [
     "crates/ox-wasi",
     "crates/ox-web",
 ]
+
+[workspace.dependencies]
+structfs-core-store = { git = "https://github.com/StructFS/structfs" }
+structfs-serde-store = { git = "https://github.com/StructFS/structfs" }

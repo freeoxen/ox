@@ -1,19 +1,21 @@
-use ox_kernel::{CompletionRequest, Provider, Value};
+use ox_kernel::CompletionRequest;
 use std::collections::BTreeMap;
+use structfs_core_store::{Error as StoreError, Path, Reader, Record, Store, Value, Writer, path};
+use structfs_serde_store::{to_value, value_to_json};
 
 // ---------------------------------------------------------------------------
-// Namespace — routes reads/writes to mounted providers by path prefix
+// Namespace — routes reads/writes to mounted stores by path prefix
 // ---------------------------------------------------------------------------
 
-/// A namespace routes reads and writes to mounted providers by path prefix.
+/// A namespace routes reads and writes to mounted stores by path prefix.
 ///
-/// Paths are split on the first `/`: `"history/messages"` routes to the
-/// provider mounted at `"history"` with sub-path `"messages"`.
+/// Paths are split on the first component: `path!("history/messages")` routes
+/// to the store mounted at `"history"` with sub-path `path!("messages")`.
 ///
 /// The special path `"prompt"` is synthetic — it assembles a CompletionRequest
-/// by reading from sibling providers (system, history, tools, model).
+/// by reading from sibling stores (system, history, tools, model).
 pub struct Namespace {
-    mounts: BTreeMap<String, Box<dyn Provider>>,
+    mounts: BTreeMap<String, Box<dyn Store>>,
 }
 
 impl Namespace {
@@ -23,34 +25,134 @@ impl Namespace {
         }
     }
 
-    pub fn mount(&mut self, prefix: &str, provider: Box<dyn Provider>) {
-        self.mounts.insert(prefix.to_string(), provider);
+    pub fn mount(&mut self, prefix: &str, store: Box<dyn Store>) {
+        self.mounts.insert(prefix.to_string(), store);
     }
 
-    fn synthesize_prompt(&self) -> Option<Value> {
-        let system = self.mounts.get("system")?.read("")?;
-        let messages = self.mounts.get("history")?.read("messages")?;
-        let tools = self.mounts.get("tools")?.read("schemas")?;
-        let model_id = self.mounts.get("model")?.read("id")?;
-        let max_tokens = self.mounts.get("model")?.read("max_tokens")?;
+    fn synthesize_prompt(&mut self) -> Result<Option<Record>, StoreError> {
+        let empty = path!("");
+
+        // Read system prompt
+        let system_str = {
+            let store = self.mounts.get_mut("system").ok_or_else(|| {
+                StoreError::store("namespace", "read", "no store mounted at 'system'")
+            })?;
+            let record = store.read(&empty)?.ok_or_else(|| {
+                StoreError::store("namespace", "read", "system store returned None")
+            })?;
+            match record {
+                Record::Parsed(Value::String(s)) => s,
+                _ => {
+                    return Err(StoreError::store(
+                        "namespace",
+                        "read",
+                        "expected string from system store",
+                    ));
+                }
+            }
+        };
+
+        // Read history messages
+        let messages_json = {
+            let store = self.mounts.get_mut("history").ok_or_else(|| {
+                StoreError::store("namespace", "read", "no store mounted at 'history'")
+            })?;
+            let record = store.read(&path!("messages"))?.ok_or_else(|| {
+                StoreError::store("namespace", "read", "history store returned None")
+            })?;
+            match record {
+                Record::Parsed(v) => value_to_json(v),
+                _ => {
+                    return Err(StoreError::store(
+                        "namespace",
+                        "read",
+                        "expected parsed record from history",
+                    ));
+                }
+            }
+        };
+
+        // Read tool schemas
+        let tools_json = {
+            let store = self.mounts.get_mut("tools").ok_or_else(|| {
+                StoreError::store("namespace", "read", "no store mounted at 'tools'")
+            })?;
+            let record = store.read(&path!("schemas"))?.ok_or_else(|| {
+                StoreError::store("namespace", "read", "tools store returned None")
+            })?;
+            match record {
+                Record::Parsed(v) => value_to_json(v),
+                _ => {
+                    return Err(StoreError::store(
+                        "namespace",
+                        "read",
+                        "expected parsed record from tools",
+                    ));
+                }
+            }
+        };
+
+        // Read model ID
+        let model_id = {
+            let store = self.mounts.get_mut("model").ok_or_else(|| {
+                StoreError::store("namespace", "read", "no store mounted at 'model'")
+            })?;
+            let record = store.read(&path!("id"))?.ok_or_else(|| {
+                StoreError::store("namespace", "read", "model store returned None for id")
+            })?;
+            match record {
+                Record::Parsed(Value::String(s)) => s,
+                _ => {
+                    return Err(StoreError::store(
+                        "namespace",
+                        "read",
+                        "expected string from model store for id",
+                    ));
+                }
+            }
+        };
+
+        // Read max_tokens
+        let max_tokens = {
+            let store = self.mounts.get_mut("model").ok_or_else(|| {
+                StoreError::store("namespace", "read", "no store mounted at 'model'")
+            })?;
+            let record = store.read(&path!("max_tokens"))?.ok_or_else(|| {
+                StoreError::store(
+                    "namespace",
+                    "read",
+                    "model store returned None for max_tokens",
+                )
+            })?;
+            match record {
+                Record::Parsed(Value::Integer(n)) => n as u32,
+                _ => {
+                    return Err(StoreError::store(
+                        "namespace",
+                        "read",
+                        "expected integer from model store for max_tokens",
+                    ));
+                }
+            }
+        };
+
+        let messages: Vec<serde_json::Value> = serde_json::from_value(messages_json)
+            .map_err(|e| StoreError::store("namespace", "read", e.to_string()))?;
+        let tools: Vec<ox_kernel::ToolSchema> = serde_json::from_value(tools_json)
+            .map_err(|e| StoreError::store("namespace", "read", e.to_string()))?;
 
         let request = CompletionRequest {
-            model: system.as_str()?.to_string(), // placeholder — replaced below
-            max_tokens: 0,                       // placeholder — replaced below
-            system: system.as_str()?.to_string(),
-            messages: messages.as_array()?.clone(),
-            tools: serde_json::from_value(tools).ok()?,
+            model: model_id,
+            max_tokens,
+            system: system_str,
+            messages,
+            tools,
             stream: true,
         };
 
-        // Fix model and max_tokens from their actual values
-        let request = CompletionRequest {
-            model: model_id.as_str()?.to_string(),
-            max_tokens: max_tokens.as_u64()? as u32,
-            ..request
-        };
-
-        serde_json::to_value(&request).ok()
+        let value = to_value(&request)
+            .map_err(|e| StoreError::store("namespace", "read", e.to_string()))?;
+        Ok(Some(Record::parsed(value)))
     }
 }
 
@@ -60,38 +162,45 @@ impl Default for Namespace {
     }
 }
 
-impl Provider for Namespace {
-    fn read(&self, path: &str) -> Option<Value> {
-        // Special synthetic reads
-        if path == "prompt" {
+impl Reader for Namespace {
+    fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
+        if from == &path!("prompt") {
             return self.synthesize_prompt();
         }
 
-        let (prefix, sub) = split_path(path);
-        self.mounts.get(prefix)?.read(sub)
-    }
-
-    fn write(&mut self, path: &str, value: Value) -> Result<(), String> {
-        let (prefix, sub) = split_path(path);
-        self.mounts
-            .get_mut(prefix)
-            .ok_or_else(|| format!("no provider mounted at '{prefix}'"))?
-            .write(sub, value)
+        let (prefix, sub) = split_path(from);
+        if prefix.is_empty() {
+            return Ok(None);
+        }
+        match self.mounts.get_mut(prefix) {
+            Some(store) => store.read(&sub),
+            None => Ok(None),
+        }
     }
 }
 
-/// Split `"history/messages"` into `("history", "messages")`.
-/// A bare `"history"` yields `("history", "")`.
-fn split_path(path: &str) -> (&str, &str) {
-    let path = path.strip_prefix('/').unwrap_or(path);
-    match path.split_once('/') {
-        Some((prefix, rest)) => (prefix, rest),
-        None => (path, ""),
+impl Writer for Namespace {
+    fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
+        let (prefix, sub) = split_path(to);
+        match self.mounts.get_mut(prefix) {
+            Some(store) => store.write(&sub, data),
+            None => Err(StoreError::NoRoute { path: to.clone() }),
+        }
     }
+}
+
+/// Split a path into the first component (prefix) and the remaining sub-path.
+fn split_path(path: &Path) -> (&str, Path) {
+    if path.is_empty() {
+        return ("", Path::from_components(vec![]));
+    }
+    let prefix = path.components[0].as_str();
+    let sub = Path::from_components(path.components[1..].to_vec());
+    (prefix, sub)
 }
 
 // ---------------------------------------------------------------------------
-// Concrete providers: System, Tools, Model
+// Concrete stores: System, Tools, Model
 // ---------------------------------------------------------------------------
 
 /// Provides the system prompt string.
@@ -105,14 +214,25 @@ impl SystemProvider {
     }
 }
 
-impl Provider for SystemProvider {
-    fn read(&self, _path: &str) -> Option<Value> {
-        Some(Value::String(self.prompt.clone()))
+impl Reader for SystemProvider {
+    fn read(&mut self, _from: &Path) -> Result<Option<Record>, StoreError> {
+        Ok(Some(Record::parsed(Value::String(self.prompt.clone()))))
     }
+}
 
-    fn write(&mut self, _path: &str, value: Value) -> Result<(), String> {
-        self.prompt = value.as_str().ok_or("expected string")?.to_string();
-        Ok(())
+impl Writer for SystemProvider {
+    fn write(&mut self, _to: &Path, data: Record) -> Result<Path, StoreError> {
+        match data {
+            Record::Parsed(Value::String(s)) => {
+                self.prompt = s;
+                Ok(Path::from_components(vec![]))
+            }
+            _ => Err(StoreError::store(
+                "system",
+                "write",
+                "expected string value",
+            )),
+        }
     }
 }
 
@@ -127,16 +247,31 @@ impl ToolsProvider {
     }
 }
 
-impl Provider for ToolsProvider {
-    fn read(&self, path: &str) -> Option<Value> {
-        match path {
-            "" | "schemas" => serde_json::to_value(&self.schemas).ok(),
-            _ => None,
+impl Reader for ToolsProvider {
+    fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
+        let key = if from.is_empty() {
+            ""
+        } else {
+            from.components[0].as_str()
+        };
+        match key {
+            "" | "schemas" => {
+                let value = to_value(&self.schemas)
+                    .map_err(|e| StoreError::store("tools", "read", e.to_string()))?;
+                Ok(Some(Record::parsed(value)))
+            }
+            _ => Ok(None),
         }
     }
+}
 
-    fn write(&mut self, _path: &str, _value: Value) -> Result<(), String> {
-        Err("tools provider is read-only".to_string())
+impl Writer for ToolsProvider {
+    fn write(&mut self, _to: &Path, _data: Record) -> Result<Path, StoreError> {
+        Err(StoreError::store(
+            "tools",
+            "write",
+            "tools store is read-only",
+        ))
     }
 }
 
@@ -152,26 +287,56 @@ impl ModelProvider {
     }
 }
 
-impl Provider for ModelProvider {
-    fn read(&self, path: &str) -> Option<Value> {
-        match path {
-            "" | "id" => Some(Value::String(self.model.clone())),
-            "max_tokens" => Some(serde_json::json!(self.max_tokens)),
-            _ => None,
+impl Reader for ModelProvider {
+    fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
+        let key = if from.is_empty() {
+            ""
+        } else {
+            from.components[0].as_str()
+        };
+        match key {
+            "" | "id" => Ok(Some(Record::parsed(Value::String(self.model.clone())))),
+            "max_tokens" => Ok(Some(Record::parsed(Value::Integer(self.max_tokens as i64)))),
+            _ => Ok(None),
         }
     }
+}
 
-    fn write(&mut self, path: &str, value: Value) -> Result<(), String> {
-        match path {
-            "" | "id" => {
-                self.model = value.as_str().ok_or("expected string")?.to_string();
-                Ok(())
-            }
-            "max_tokens" => {
-                self.max_tokens = value.as_u64().ok_or("expected number")? as u32;
-                Ok(())
-            }
-            _ => Err(format!("unknown path: {path}")),
+impl Writer for ModelProvider {
+    fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
+        let key = if to.is_empty() {
+            ""
+        } else {
+            to.components[0].as_str()
+        };
+        match key {
+            "" | "id" => match data {
+                Record::Parsed(Value::String(s)) => {
+                    self.model = s;
+                    Ok(to.clone())
+                }
+                _ => Err(StoreError::store(
+                    "model",
+                    "write",
+                    "expected string for id",
+                )),
+            },
+            "max_tokens" => match data {
+                Record::Parsed(Value::Integer(n)) => {
+                    self.max_tokens = n as u32;
+                    Ok(to.clone())
+                }
+                _ => Err(StoreError::store(
+                    "model",
+                    "write",
+                    "expected integer for max_tokens",
+                )),
+            },
+            _ => Err(StoreError::store(
+                "model",
+                "write",
+                format!("unknown path: {to}"),
+            )),
         }
     }
 }
