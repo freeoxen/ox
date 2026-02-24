@@ -50,6 +50,7 @@ echo ""
 echo "==> watching for changes (Ctrl-C to stop)"
 echo "    [site] site/{src,styles,index.html}        → bun run build"
 echo "    [ui]   crates/ox-web/ui/{src,styles}       → bun run build"
+echo "    [brand] BRAND_BOOK.md                      → bun run build"
 echo ""
 
 # Watcher — rebuilds on any source change
@@ -57,6 +58,7 @@ cargo watch -q \
     -w "$SITE/src" \
     -w "$SITE/styles" \
     -w "$SITE/index.html" \
+    -w "$ROOT/BRAND_BOOK.md" \
     -w "$ROOT/crates/ox-web/ui/src" \
     -w "$ROOT/crates/ox-web/ui/styles" \
     -s "echo '[site] rebuilding...' && cd '$SITE' && bun run build 2>&1 && echo '[site] rebuilt ok' || echo '[site] BUILD FAILED'" &

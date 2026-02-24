@@ -1,5 +1,6 @@
 import { rmSync, mkdirSync, copyFileSync, readFileSync, writeFileSync } from "fs";
 import path from "path";
+import { renderBrandBook } from "./src/brand-render";
 
 const ROOT = import.meta.dir;
 const DIST = path.join(ROOT, "dist");
@@ -40,9 +41,11 @@ copyFileSync(
 );
 console.log("Copied site.css");
 
-// 5. Copy index.html
+// 5. Copy HTML pages + generate brand book
 copyFileSync(path.join(ROOT, "index.html"), path.join(DIST, "index.html"));
-console.log("Copied index.html");
+const brandMd = readFileSync(path.join(ROOT, "..", "BRAND_BOOK.md"), "utf-8");
+writeFileSync(path.join(DIST, "brand.html"), renderBrandBook(brandMd));
+console.log("Copied index.html, generated brand.html");
 
 // 6. Copy font files
 const fonts = [

@@ -45,10 +45,37 @@ function initThemeChips(): void {
   }
 }
 
+// --- Motion demos (easing tracks) ---
+
+function initMotionDemos(): void {
+  const observer = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        const track = entry.target as HTMLElement;
+        if (entry.isIntersecting) {
+          const easing = track.dataset.easing ?? "ease";
+          const duration = track.dataset.duration ?? "1.2s";
+          track.style.setProperty("--easing-fn", easing);
+          track.style.setProperty("--easing-duration", duration);
+          track.classList.add("easing-active");
+        } else {
+          track.classList.remove("easing-active");
+        }
+      }
+    },
+    { threshold: 0.3 },
+  );
+
+  for (const el of document.querySelectorAll(".easing-track")) {
+    observer.observe(el);
+  }
+}
+
 // --- Init ---
 
 document.addEventListener("DOMContentLoaded", () => {
   initThemePicker();
   initScrollAnimations();
   initThemeChips();
+  initMotionDemos();
 });

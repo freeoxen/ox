@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ox — patient, grounded, immovably strong</title>
+  <title>ox — agentic AI on a filesystem</title>
   <meta name="description" content="ox is an agentic AI framework built on StructFS. Every capability is a filesystem path.">
   <link rel="stylesheet" href="/theme.css">
   <link rel="stylesheet" href="/site.css">
@@ -18,165 +18,101 @@
     <div class="hero-tagline">patient, grounded, immovably strong</div>
     <p class="hero-lead">
       An agentic AI framework where every capability is a filesystem path.
-      Built on StructFS. Read a path to inspect state. Write a path to change it.
+      Built on <a href="https://github.com/StructFS/structfs">StructFS</a>.
+      Read a path to inspect state. Write a path to change it.
     </p>
+    <div class="hero-links">
+      <a class="hero-link" href="https://github.com/freeoxen/ox">GitHub</a>
+      <a class="hero-link hero-link-muted" href="/brand.html">Brand Book</a>
+    </div>
   </section>
 
-  <!-- About -->
-  <section class="site-section section-surface">
+  <!-- How it works -->
+  <section class="site-section">
     <div class="site-inner animate-in">
-      <h2 class="section-title">The ox walks</h2>
+      <h2 class="section-title">The namespace is the agent</h2>
       <div class="section-body">
         <p>
-          ox is a composable agent runtime where system prompts, conversation history,
-          tool definitions, and model configuration all live as paths in a virtual filesystem.
-          Read a path to inspect state. Write a path to change it. The namespace <em>is</em> the agent.
+          System prompt, conversation history, tool definitions, and model config
+          all live as paths in a virtual namespace. Read a path to inspect state.
+          Write a path to change it.
         </p>
         <p>
-          Tools are shell-provided, not baked in. The kernel runs an agentic loop &mdash;
-          reading a prompt from the namespace, streaming a completion, writing results back,
-          repeating until the model stops calling tools. Every shell (browser, WASI, native)
-          brings its own tools and transport.
+          The kernel reads <code>/prompt</code>, streams a completion, writes results
+          back, and loops until the model stops calling tools. Tools are shell-provided,
+          not baked in &mdash; every shell (browser, WASI, native) brings its own tools
+          and transport. The ox carries what it needs and nothing extra.
         </p>
       </div>
+      <pre class="code-block"><span class="code-comment">// Read the assembled prompt from the namespace</span>
+namespace.read(&amp;path!("prompt"))
+
+<span class="code-comment">// Append to conversation history</span>
+namespace.write(&amp;path!("history/append"), record)
+
+<span class="code-comment">// Tools are shell-provided — register from JS, WASI, or native</span>
+agent.register_tool("search", search_tool)</pre>
     </div>
   </section>
 
   <!-- Architecture -->
-  <section class="site-section section-bg">
+  <section class="site-section">
     <div class="site-inner animate-in">
-      <h2 class="section-title">Architecture</h2>
-      <div class="arch-grid">
-        <div class="arch-card">
-          <div class="arch-card-name">ox-kernel</div>
-          <span class="arch-card-badge">core</span>
-          <div class="arch-card-desc">
-            State machine, Tool and Transport traits, ToolRegistry, agentic loop,
-            StructFS re-exports. The bedrock everything rests on.
-          </div>
-        </div>
-        <div class="arch-card">
-          <div class="arch-card-name">ox-context</div>
-          <span class="arch-card-badge">namespace</span>
-          <div class="arch-card-desc">
-            Namespace store router, SystemProvider, ToolsProvider, ModelProvider.
-            Prompt synthesis &mdash; read <code>/prompt</code> and get a complete request.
-          </div>
-        </div>
-        <div class="arch-card">
-          <div class="arch-card-name">ox-history</div>
-          <span class="arch-card-badge">memory</span>
-          <div class="arch-card-desc">
-            HistoryProvider with Reader/Writer impl. Conversation state
-            as a StructFS store you can read and append to.
-          </div>
-        </div>
-        <div class="arch-card">
-          <div class="arch-card-name">ox-core</div>
-          <span class="arch-card-badge">agent</span>
-          <div class="arch-card-desc">
-            Agent composition &mdash; wires kernel, namespace, and stores together.
-            Re-exports all public types. The yoke that connects everything.
-          </div>
-        </div>
-        <div class="arch-card">
-          <div class="arch-card-name">ox-web</div>
-          <span class="arch-card-badge">browser</span>
-          <div class="arch-card-desc">
-            WASM shell with JS tool registration, theme picker, and debug UI.
-            The playground where you can talk to the agent in your browser.
-          </div>
-        </div>
-        <div class="arch-card">
-          <div class="arch-card-name">ox-dev-server</div>
-          <span class="arch-card-badge">proxy</span>
-          <div class="arch-card-desc">
-            Axum binary that proxies to the Anthropic API. Serves the WASM
-            playground and handles API key management.
-          </div>
-        </div>
-        <div class="arch-card">
-          <div class="arch-card-name">ox-wasi</div>
-          <span class="arch-card-badge">stub</span>
-          <div class="arch-card-desc">
-            WASI target shell. Re-exports ox-core for server-side
-            WebAssembly environments.
-          </div>
-        </div>
-        <div class="arch-card">
-          <div class="arch-card-name">ox-emscripten</div>
-          <span class="arch-card-badge">stub</span>
-          <div class="arch-card-desc">
-            Emscripten target shell. Re-exports ox-core for legacy
-            WASM compilation pipelines.
-          </div>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- Design -->
-  <section class="site-section section-surface">
-    <div class="site-inner animate-in">
-      <h2 class="section-title">Design</h2>
-      <div class="section-body">
-        <p>Seven colors. No gradients. No tricks. Every surface is exactly as it appears.</p>
-      </div>
-      <div class="palette-grid">
-        <div class="swatch" style="background: #2B2D7C;">
-          <span class="swatch-name" style="color: #FFFFFF;">Indigo</span>
-          <span class="swatch-hex" style="color: #E8D5C0;">#2B2D7C</span>
-        </div>
-        <div class="swatch" style="background: #6B6D8F;">
-          <span class="swatch-name" style="color: #FFFFFF;">Slate</span>
-          <span class="swatch-hex" style="color: #E8D5C0;">#6B6D8F</span>
-        </div>
-        <div class="swatch" style="background: #E8471B;">
-          <span class="swatch-name" style="color: #FFFFFF;">Vermillion</span>
-          <span class="swatch-hex" style="color: #FFFFFF;">#E8471B</span>
-        </div>
-        <div class="swatch" style="background: #B8926E;">
-          <span class="swatch-name" style="color: #2B2D7C;">Clay</span>
-          <span class="swatch-hex" style="color: #2B2D7C;">#B8926E</span>
-        </div>
-        <div class="swatch" style="background: #F5A623;">
-          <span class="swatch-name" style="color: #2B2D7C;">Amber</span>
-          <span class="swatch-hex" style="color: #2B2D7C;">#F5A623</span>
-        </div>
-        <div class="swatch" style="background: #E8D5C0;">
-          <span class="swatch-name" style="color: #2B2D7C;">Beige</span>
-          <span class="swatch-hex" style="color: #6B6D8F;">#E8D5C0</span>
-        </div>
-        <div class="swatch" style="background: #FFFFFF; border-color: #E8D5C0;">
-          <span class="swatch-name" style="color: #2B2D7C;">White</span>
-          <span class="swatch-hex" style="color: #6B6D8F;">#FFFFFF</span>
-        </div>
-      </div>
-      <div class="section-body" style="margin-top: var(--space-md);">
-        <p>One theme for each hour on the dial. The sun rises, crosses overhead, and sets. Try them.</p>
-      </div>
-      <div class="theme-chip-grid">
-        <button class="theme-chip" data-theme="noon">noon</button>
-        <button class="theme-chip" data-theme="early-afternoon">early-afternoon</button>
-        <button class="theme-chip" data-theme="late-afternoon">late-afternoon</button>
-        <button class="theme-chip" data-theme="golden-hour">golden-hour</button>
-        <button class="theme-chip" data-theme="sunset">sunset</button>
-        <button class="theme-chip" data-theme="dusk">dusk</button>
-        <button class="theme-chip" data-theme="twilight">twilight</button>
-        <button class="theme-chip" data-theme="evening">evening</button>
-        <button class="theme-chip" data-theme="night">night</button>
-        <button class="theme-chip" data-theme="midnight">midnight</button>
-        <button class="theme-chip" data-theme="dawn">dawn</button>
-        <button class="theme-chip" data-theme="late-morning">late-morning</button>
-      </div>
+      <h2 class="section-title">Crates</h2>
+      <table class="arch-table">
+        <thead>
+          <tr><th>Crate</th><th>Role</th><th></th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="crate-name">ox-kernel</td>
+            <td><span class="arch-badge">core</span></td>
+            <td>State machine, Tool/Transport traits, ToolRegistry, agentic loop, StructFS re-exports</td>
+          </tr>
+          <tr>
+            <td class="crate-name">ox-context</td>
+            <td><span class="arch-badge">namespace</span></td>
+            <td>Namespace store router, providers (System, Tools, Model), prompt synthesis</td>
+          </tr>
+          <tr>
+            <td class="crate-name">ox-history</td>
+            <td><span class="arch-badge">memory</span></td>
+            <td>HistoryProvider &mdash; conversation state as a StructFS store</td>
+          </tr>
+          <tr>
+            <td class="crate-name">ox-core</td>
+            <td><span class="arch-badge">agent</span></td>
+            <td>Agent composition &mdash; wires kernel + namespace + stores, re-exports public types</td>
+          </tr>
+          <tr>
+            <td class="crate-name">ox-web</td>
+            <td><span class="arch-badge">browser</span></td>
+            <td>Wasm shell, JS tool registration, theme picker, debug UI</td>
+          </tr>
+          <tr>
+            <td class="crate-name">ox-dev-server</td>
+            <td><span class="arch-badge">proxy</span></td>
+            <td>Axum binary &mdash; Anthropic API proxy, serves the playground</td>
+          </tr>
+          <tr>
+            <td class="crate-name">ox-wasi</td>
+            <td><span class="arch-badge">stub</span></td>
+            <td>WASI target shell</td>
+          </tr>
+          <tr>
+            <td class="crate-name">ox-emscripten</td>
+            <td><span class="arch-badge">stub</span></td>
+            <td>Emscripten target shell</td>
+          </tr>
+        </tbody>
+      </table>
     </div>
   </section>
 
   <!-- Footer -->
   <footer class="site-footer">
-    <div class="footer-brand">ox</div>
-    <div class="footer-by">by AdjectiveNoun</div>
-    <a class="footer-link" href="https://github.com/AdjectiveNoun/ox">GitHub</a>
+    <span class="footer-brand">ox</span>
+    <span class="footer-by">by AdjectiveNoun</span>
   </footer>
 
   <script type="module" src="/main.js"></script>
