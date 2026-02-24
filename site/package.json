@@ -1,0 +1,10 @@
+{
+  "name": "ox-site",
+  "private": true,
+  "scripts": {
+    "build": "bun run build.ts"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}

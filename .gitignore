@@ -3,3 +3,4 @@ Cargo.lock
 /local
 *.swp
 node_modules
+site/dist

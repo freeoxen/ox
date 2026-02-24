@@ -26,34 +26,35 @@ type TokenKey =
 interface ThemeDef {
   hour: number;
   name: string;
+  desc: string;
   tokens: Record<TokenKey, string>;
 }
 
 // --- 12 themes, indexed by hour (0 = 12 o'clock) ---
 const THEMES: ThemeDef[] = [
-  { hour: 0, name: 'noon', tokens:
+  { hour: 0, name: 'noon', desc: 'Stark white, vermillion burns', tokens:
     { bg: W, surface: W, inset: B, field: B, onBg: I, onSurface: I, onInset: I, onAccent: W, heading: V, accent: V, danger: V, border: S, borderStrong: I, stripe: V, btnBg: I, btnText: W, muted: S, faint: C } },
-  { hour: 1, name: 'early-afternoon', tokens:
+  { hour: 1, name: 'early-afternoon', desc: 'White canvas, amber warms in', tokens:
     { bg: W, surface: W, inset: B, field: B, onBg: I, onSurface: I, onInset: I, onAccent: I, heading: I, accent: A, danger: V, border: C, borderStrong: I, stripe: A, btnBg: V, btnText: W, muted: S, faint: C } },
-  { hour: 2, name: 'late-afternoon', tokens:
+  { hour: 2, name: 'late-afternoon', desc: 'Beige earth appears', tokens:
     { bg: B, surface: W, inset: B, field: W, onBg: I, onSurface: I, onInset: I, onAccent: I, heading: I, accent: A, danger: V, border: S, borderStrong: I, stripe: A, btnBg: A, btnText: I, muted: S, faint: C } },
-  { hour: 3, name: 'golden-hour', tokens:
+  { hour: 3, name: 'golden-hour', desc: 'Everything amber, warmest light', tokens:
     { bg: B, surface: W, inset: B, field: W, onBg: I, onSurface: I, onInset: I, onAccent: I, heading: I, accent: A, danger: V, border: S, borderStrong: I, stripe: A, btnBg: V, btnText: W, muted: S, faint: C } },
-  { hour: 4, name: 'sunset', tokens:
+  { hour: 4, name: 'sunset', desc: 'Beige sky, indigo shadows rise', tokens:
     { bg: B, surface: I, inset: W, field: W, onBg: I, onSurface: B, onInset: I, onAccent: I, heading: V, accent: A, danger: V, border: S, borderStrong: V, stripe: A, btnBg: V, btnText: W, muted: C, faint: S } },
-  { hour: 5, name: 'dusk', tokens:
+  { hour: 5, name: 'dusk', desc: 'Indigo canvas, white surfaces float', tokens:
     { bg: I, surface: W, inset: B, field: W, onBg: B, onSurface: I, onInset: I, onAccent: I, heading: A, accent: A, danger: V, border: S, borderStrong: A, stripe: V, btnBg: V, btnText: W, muted: S, faint: C } },
-  { hour: 6, name: 'twilight', tokens:
+  { hour: 6, name: 'twilight', desc: 'Full indigo, amber the only warmth', tokens:
     { bg: I, surface: I, inset: W, field: W, onBg: B, onSurface: B, onInset: I, onAccent: I, heading: A, accent: A, danger: V, border: S, borderStrong: A, stripe: A, btnBg: V, btnText: W, muted: C, faint: S } },
-  { hour: 7, name: 'evening', tokens:
+  { hour: 7, name: 'evening', desc: 'Softer borders, settling in', tokens:
     { bg: I, surface: I, inset: B, field: B, onBg: B, onSurface: B, onInset: I, onAccent: I, heading: A, accent: A, danger: V, border: S, borderStrong: B, stripe: A, btnBg: A, btnText: I, muted: C, faint: S } },
-  { hour: 8, name: 'night', tokens:
+  { hour: 8, name: 'night', desc: 'White text, beige warms the dark', tokens:
     { bg: I, surface: I, inset: B, field: B, onBg: W, onSurface: W, onInset: I, onAccent: I, heading: A, accent: A, danger: V, border: S, borderStrong: A, stripe: V, btnBg: V, btnText: W, muted: C, faint: S } },
-  { hour: 9, name: 'midnight', tokens:
+  { hour: 9, name: 'midnight', desc: 'The coldest hour', tokens:
     { bg: I, surface: I, inset: W, field: W, onBg: W, onSurface: W, onInset: I, onAccent: I, heading: W, accent: A, danger: V, border: S, borderStrong: A, stripe: V, btnBg: A, btnText: I, muted: C, faint: S } },
-  { hour: 10, name: 'dawn', tokens:
+  { hour: 10, name: 'dawn', desc: 'Beige surfaces emerge, first light', tokens:
     { bg: I, surface: B, inset: W, field: W, onBg: B, onSurface: I, onInset: I, onAccent: W, heading: A, accent: V, danger: V, border: S, borderStrong: A, stripe: A, btnBg: A, btnText: I, muted: S, faint: C } },
-  { hour: 11, name: 'late-morning', tokens:
+  { hour: 11, name: 'late-morning', desc: 'Brightening toward noon', tokens:
     { bg: W, surface: B, inset: W, field: W, onBg: I, onSurface: I, onInset: I, onAccent: W, heading: I, accent: V, danger: V, border: S, borderStrong: I, stripe: I, btnBg: A, btnText: I, muted: S, faint: C } },
 ];
 
@@ -169,8 +170,12 @@ function buildClock(
   svg.setAttribute('width', String(CLOCK_SIZE));
   svg.setAttribute('height', String(CLOCK_SIZE));
   svg.setAttribute('role', 'group');
-  svg.setAttribute('aria-label', 'Theme clock');
+  svg.setAttribute('aria-label', 'Theme clock — drag or click an hour to switch themes');
   svg.classList.add('clock');
+
+  const svgTitle = svgEl('title');
+  svgTitle.textContent = 'Theme clock — drag or click an hour to switch themes';
+  svg.appendChild(svgTitle);
 
   // Face
   const face = svgEl('circle');
@@ -207,8 +212,9 @@ function buildClock(
     const g = svgEl('g');
     g.setAttribute('role', 'button');
     g.setAttribute('tabindex', '0');
-    g.setAttribute('aria-label', theme.name);
+    g.setAttribute('aria-label', `${theme.name} — ${theme.desc}`);
     g.dataset.themeName = theme.name;
+    g.dataset.themeDesc = theme.desc;
     g.classList.add('clock-hour');
 
     // Invisible hit area
@@ -437,6 +443,7 @@ export function initThemePicker(): void {
 
   const picker = document.getElementById('theme-picker');
   if (!picker) return;
+  picker.title = 'Theme picker';
 
   let wallInterval: ReturnType<typeof setInterval> | null = null;
 

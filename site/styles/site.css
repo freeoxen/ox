@@ -1,0 +1,243 @@
+/* ============================================================
+   ox — Static Site Styles
+   Extends theme.css tokens for the landing page.
+   ============================================================ */
+
+/* --- Override body padding from playground CSS --- */
+body {
+  padding: 0;
+  overflow-x: hidden;
+}
+
+/* --- Shared section rhythm --- */
+.site-section {
+  padding: var(--space-xl) var(--space-md);
+}
+.section-surface,
+.section-bg {
+  background: var(--t-bg);
+  color: var(--t-on-bg);
+}
+.site-inner {
+  max-width: 960px;
+  margin: 0 auto;
+}
+
+/* --- Scroll animation --- */
+.animate-in {
+  opacity: 0;
+  transform: translateY(24px);
+  transition: opacity 0.8s var(--ease-enter), transform 0.8s var(--ease-enter);
+}
+.animate-in.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* --- Hero --- */
+.hero {
+  min-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  padding: var(--space-2xl) var(--space-md);
+  background: var(--t-bg);
+  color: var(--t-on-bg);
+}
+.hero-brand {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: clamp(5rem, 12vw, 10rem);
+  letter-spacing: -0.03em;
+  line-height: 0.9;
+  color: var(--t-heading);
+  animation: ox-enter var(--duration-enter) var(--ease-enter) both;
+}
+.hero-tagline {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: var(--step-2);
+  color: var(--t-muted);
+  margin-top: var(--space-sm);
+  animation: ox-enter var(--duration-enter) var(--ease-enter) 0.15s both;
+}
+.hero-lead {
+  font-family: var(--font-body);
+  font-size: var(--step-1);
+  font-weight: 300;
+  color: var(--t-on-bg);
+  max-width: 600px;
+  margin-top: var(--space-md);
+  line-height: 1.6;
+  animation: ox-enter var(--duration-enter) var(--ease-enter) 0.3s both;
+}
+
+/* --- Section headings --- */
+.section-title {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: clamp(2rem, 1.6rem + 2vw, 3rem);
+  letter-spacing: -0.03em;
+  color: var(--t-heading);
+  margin-bottom: var(--space-md);
+}
+.section-body {
+  font-family: var(--font-body);
+  font-size: var(--step-0);
+  line-height: 1.6;
+}
+.section-body p + p {
+  margin-top: var(--space-sm);
+}
+
+/* --- Architecture cards --- */
+.arch-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: var(--space-md);
+  margin-top: var(--space-md);
+}
+.arch-card {
+  background: var(--t-surface);
+  border: 1px solid var(--t-border);
+  border-bottom: 2px solid var(--t-stripe);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: var(--space-sm) var(--space-sm) var(--space-md);
+  transition: transform 0.3s var(--ease-enter);
+}
+.arch-card:hover {
+  transform: translateY(-4px);
+}
+.arch-card-name {
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--t-on-surface);
+  margin-bottom: var(--space-xs);
+}
+.arch-card-badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 0.3em 0.8em;
+  border-radius: 3px;
+  background: var(--t-accent);
+  color: var(--t-on-accent);
+  margin-bottom: var(--space-xs);
+}
+.arch-card-desc {
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  color: var(--t-muted);
+  line-height: 1.5;
+}
+
+/* --- Palette swatches --- */
+.palette-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: var(--space-sm);
+  margin-top: var(--space-md);
+}
+.swatch {
+  aspect-ratio: 1;
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding: var(--space-xs);
+  box-shadow: var(--shadow);
+  border: 1px solid var(--t-border);
+}
+.swatch-name {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.8rem;
+  line-height: 1.2;
+}
+.swatch-hex {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  opacity: 0.8;
+}
+
+/* --- Theme chips --- */
+.theme-chip-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  margin-top: var(--space-md);
+}
+.theme-chip {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 0.5em 1em;
+  border-radius: var(--radius);
+  cursor: pointer;
+  border: 1px solid var(--t-border);
+  background: var(--t-surface);
+  color: var(--t-on-surface);
+  transition: transform var(--duration-hover), border-color 0.2s;
+}
+.theme-chip:hover {
+  transform: translateY(-2px);
+  border-color: var(--t-accent);
+}
+
+/* --- Footer --- */
+.site-footer {
+  padding: var(--space-lg) var(--space-md);
+  text-align: center;
+  background: var(--t-bg);
+  color: var(--t-on-bg);
+}
+.footer-brand {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: var(--step-2);
+  letter-spacing: -0.03em;
+  color: var(--t-heading);
+}
+.footer-by {
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  color: var(--t-muted);
+  margin-top: var(--space-xs);
+}
+.footer-link {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--t-accent);
+  text-decoration: none;
+  margin-top: var(--space-sm);
+  transition: transform var(--duration-hover);
+}
+.footer-link:hover {
+  transform: translateY(-2px);
+}
+
+/* --- Responsive --- */
+@media (max-width: 640px) {
+  .site-section {
+    padding: var(--space-lg) var(--space-sm);
+  }
+  .hero {
+    min-height: 60vh;
+    padding: var(--space-xl) var(--space-sm);
+  }
+  .arch-grid {
+    grid-template-columns: 1fr;
+  }
+  .palette-grid {
+    grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+  }
+}
