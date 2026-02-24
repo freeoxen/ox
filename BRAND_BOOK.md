@@ -16,7 +16,7 @@ The ox does not decorate. It works.
 
 ### Steady Ground, Not Gloss
 
-The ox stands on solid earth. UI elements should feel the same way — geological layers, overlapping, opaque, organic. Depth comes from stacking flat shapes, the way terrain stacks against the horizon. Never from shadows, gradients, or chrome. The interface is ground you stand on, not glass you look through.
+The ox stands on solid earth. UI elements should feel the same way — geological layers, overlapping, opaque, organic. Depth comes from stacking flat shapes, the way terrain stacks against the horizon. A whisper of shadow lifts panels from the ground — barely there, like the ox's shadow at noon. Never gradients or chrome. The interface is ground you stand on, not glass you look through.
 
 ### Seven Colors, No More
 
@@ -75,7 +75,7 @@ Each theme assigns the seven palette colors to 18 semantic tokens. The clock fac
 
 #### Contrast Rules
 
-With five opaque colors, only certain pairings produce readable text. These rules are absolute.
+With seven opaque colors, only certain pairings produce readable text. These rules are absolute.
 
 | Pairing | Ratio | Verdict |
 |---------|-------|---------|
@@ -135,9 +135,9 @@ The wall-clock mode maps each of the 24 system hours onto this 12-hour narrative
 
 Three faces. Sturdy, legible, purposeful. Like the ox, each typeface has a clear job and does it without complaint.
 
-### Syne — Display / Headlines
+### Manrope — Display / Headlines
 
-The ox's bellow. Heavy, geometric, unmistakable from a distance.
+The ox's steady gaze. Semi-condensed, geometric, sturdy at every weight.
 
 **Use for:** All headlines, section titles, brand marks, buttons, card headers.
 
@@ -149,6 +149,14 @@ The ox's bellow. Heavy, geometric, unmistakable from a distance.
 | ExtraBold | 800   | Hero display, brand mark  |
 
 Tight letter-spacing at large sizes (`-0.03em`). Line-height `0.95–1.1` for display.
+
+### Brand Title Pattern
+
+The "ox playground" header splits into two voices: "ox" in ExtraBold (800) at `--t-heading` with tight letter-spacing (`-0.03em`), and "playground" in Regular (400) at `--t-muted` with neutral letter-spacing (`0`). The brand name is the ox — heavy, colored, unmistakable. The descriptor is the path — lighter, quieter, present.
+
+```html
+<h1>ox <span>playground</span></h1>
+```
 
 ### Outfit — Body / Prose
 
@@ -189,7 +197,7 @@ Fluid, modular scale using `clamp()`. Ratio approximately 1.333 (perfect fourth)
 ### Font Loading
 
 ```html
-<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=Outfit:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Outfit:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 ```
 
 ---
@@ -291,17 +299,18 @@ When generating illustrations with any tool, reinforce:
 
 ## 05 — UI Components
 
-The ox's gear is simple, functional, and built to last. No decorative stitching, no polished buckles. Every component earns its place through use. Flat, opaque, layered. No rounded corners on rectangles — the only curves belong to organic forms, the way the ox's body curves but its yoke does not.
+The ox's gear is simple, functional, and built to last. No decorative stitching, no polished buckles. Every component earns its place through use. Flat, opaque, layered. Corners are gently rounded (`--radius: 6px`) — softened like river stones, not sharp-hewn like quarry blocks. Borders are thin (`1px`) and structural, not heavy. Panels float with a whisper of shadow (`--shadow`) to suggest depth without drama.
 
 ### Buttons
 
 ```css
 .btn {
-  font-family: 'Syne', sans-serif;
+  font-family: 'Manrope', sans-serif;
   font-weight: 600;
   font-size: 0.9rem;
   letter-spacing: 0.02em;
   border: none;
+  border-radius: var(--radius);
   cursor: pointer;
   padding: 0.7em 1.8em;
   transition: transform 0.2s;
@@ -320,7 +329,7 @@ The ox's gear is simple, functional, and built to last. No decorative stitching,
 
 Small variant: `font-size: 0.75rem; padding: 0.5em 1.2em;`
 
-No border-radius on any button. Sharp rectangular geometry. The yoke is square-hewn.
+All buttons use `border-radius: var(--radius)`. Ghost buttons use `1px solid currentColor`.
 
 ### Inputs
 
@@ -331,7 +340,8 @@ No border-radius on any button. Sharp rectangular geometry. The yoke is square-h
   padding: 0.7em 1em;
   background: var(--white);
   color: var(--indigo);
-  border: 2px solid var(--beige);
+  border: 1px solid var(--t-border);
+  border-radius: var(--radius);
   outline: none;
   transition: border-color 0.3s;
 }
@@ -353,6 +363,9 @@ When focused, the border shifts to amber — the sun falling on the place where 
 ```css
 .ox-card {
   background: var(--white);
+  border: 1px solid var(--t-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
   padding: var(--space-md);
   position: relative;
   transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1);
@@ -363,7 +376,7 @@ When focused, the border shifts to amber — the sun falling on the place where 
 }
 ```
 
-Cards have a 4px bottom stripe — a thin band of earth color identifying what the card carries:
+Cards have a 2px bottom stripe — a thin band of earth color identifying what the card carries:
 - `--amber` for tools and active items
 - `--indigo` for system/configuration items
 - `--vermillion` for errors and alerts
@@ -380,6 +393,7 @@ Card tags use IBM Plex Mono, `0.65rem`, uppercase, `letter-spacing: 0.1em`, colo
   letter-spacing: 0.08em;
   text-transform: uppercase;
   padding: 0.3em 0.8em;
+  border-radius: 3px;
 }
 ```
 
@@ -388,7 +402,7 @@ Card tags use IBM Plex Mono, `0.65rem`, uppercase, `letter-spacing: 0.1em`, colo
 | Indigo     | `--indigo`     | `--beige`  |
 | Amber      | `--amber`      | `--indigo` |
 | Vermillion | `--vermillion` | `--white`  |
-| Ghost      | transparent    | `--indigo` (with 1.5px indigo border) |
+| Ghost      | transparent    | `--indigo` (with 1px indigo border) |
 
 ### Status Indicators
 
@@ -437,10 +451,9 @@ The ox sees the world as open terrain with features on the horizon. The interfac
 +------------------------------------------+------------------+
 ```
 
-- **Chat column:** `flex: 1`, max-width `720px` for readability. The open pasture — room to think.
-- **Debug column:** Fixed `420px`, contains three collapsible panels. The fence line — structure at the boundary.
-- **Gap between columns:** `2px` beige. Dry earth between fields.
-- **Active panel indicator:** `3px` amber left border. Sunlight marking the panel under attention.
+- **Chat column:** `flex: 1`, max-width `720px` for readability. The open pasture — room to think. `padding-right: var(--space-sm)`.
+- **Debug column:** Fixed `420px`, contains three collapsible panels. The fence line — structure at the boundary. `padding-left: var(--space-sm)`.
+- **Column divider:** `1px solid var(--t-border-strong)` on the debug column's left edge, with equal `--space-sm` padding on both sides. A thin fenceline — present but not heavy.
 
 ### Spacing System
 
@@ -457,12 +470,13 @@ Geometric progression. No arbitrary values. The ox's stride is even and predicta
 
 ### Borders and Dividers
 
-- **Beige** (`2px`): Subtle dividers between same-surface elements. Furrows in the field.
-- **Amber** (`2px`): Active/focused borders, selected panel indicators. Where the sun falls.
-- **Indigo** (`3px`): Strong structural dividers, section breaks. The ridgeline.
-- **Vermillion** (`2px`): Error state borders only. The brand mark — only when it matters.
+- **Slate/Clay** (`1px`): Subtle structural borders on panels and inputs. Worn paths between fields.
+- **Amber** (`1px`): Active/focused borders, selected panel indicators. Where the sun falls.
+- **Indigo** (`1px`): Strong structural dividers, section breaks. The ridgeline.
+- **Vermillion** (`1px`): Error state borders only. The brand mark — only when it matters.
+- **Stripe** (`2px`): Bottom accent band on panels. The thin stratum that tells you what the card carries.
 
-No rounded borders. Sharp geometry for all rectangular UI elements. The ox's world has round hills and square fences.
+All bordered containers use `border-radius: var(--radius)` and `box-shadow: var(--shadow)` for gentle elevation.
 
 ---
 
@@ -555,7 +569,7 @@ The full harness. Every token the system needs, nothing it doesn't.
 
 ```css
 :root {
-  --font-display: 'Syne', sans-serif;
+  --font-display: 'Manrope', sans-serif;
   --font-body:    'Outfit', sans-serif;
   --font-mono:    'IBM Plex Mono', monospace;
 
@@ -578,6 +592,15 @@ The full harness. Every token the system needs, nothing it doesn't.
   --space-lg:  4rem;
   --space-xl:  6rem;
   --space-2xl: 10rem;
+}
+```
+
+### Shape
+
+```css
+:root {
+  --radius:    6px;
+  --shadow:    0 1px 3px rgba(0,0,0,0.06);
 }
 ```
 

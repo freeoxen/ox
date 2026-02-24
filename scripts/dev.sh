@@ -37,7 +37,7 @@ if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
     exit 1
 fi
 
-required_cmds=(cargo wasm-pack)
+required_cmds=(cargo wasm-pack bun)
 if "$WATCH"; then
     required_cmds+=(cargo-watch)
 fi
@@ -53,41 +53,70 @@ for cmd in "${required_cmds[@]}"; do
 done
 
 # ---------------------------------------------------------------------------
-# Build wasm (must happen before the server starts serving /pkg/)
+# Initial builds
 # ---------------------------------------------------------------------------
 
 echo "==> wasm-pack build (ox-web)"
 wasm-pack build crates/ox-web --target web --out-dir ../../target/wasm-pkg
+
+echo "==> bun build (UI)"
+(cd crates/ox-web/ui && bun run build)
 
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 
 if "$WATCH"; then
+    # On any exit (Ctrl-C, error, normal), kill all background jobs and their
+    # process trees, then wait for them to finish.
+    cleanup() {
+        local pids
+        pids=$(jobs -p 2>/dev/null) || true
+        if [[ -n "$pids" ]]; then
+            # SIGTERM the direct children (cargo-watch instances).
+            # cargo-watch/watchexec forwards signals to its spawned commands.
+            kill $pids 2>/dev/null || true
+            # Give them a moment, then force-kill stragglers.
+            sleep 0.3
+            kill -9 $pids 2>/dev/null || true
+        fi
+        wait 2>/dev/null || true
+    }
+    trap cleanup EXIT
+
     echo ""
-    echo "==> starting ox-dev-server (watching for changes)"
-    echo "    the server will rebuild and restart when source files change"
-    echo "    watching: crates/ox-dev-server/, crates/ox-core/, crates/ox-kernel/,"
-    echo "              crates/ox-context/, crates/ox-history/"
-    echo ""
-    echo "    note: changes to crates/ox-web/ require a manual wasm-pack rebuild"
-    echo "          (the watcher does not re-run wasm-pack automatically)"
-    echo ""
-    echo "    the server will print its URL when ready — try: \"reverse the word hello\""
-    echo "    press Ctrl-C to stop"
+    echo "==> watching for changes (Ctrl-C to stop)"
+    echo "    [ui]     crates/ox-web/ui/{src,styles,fonts} → bun build"
+    echo "    [wasm]   crates/ox-web/src/                  → wasm-pack"
+    echo "    [server] Rust crates                         → cargo run"
     echo ""
 
-    exec cargo watch \
+    # UI watcher — quiet mode, tagged output
+    cargo watch -q \
+        -w crates/ox-web/ui/src \
+        -w crates/ox-web/ui/styles \
+        -w crates/ox-web/ui/fonts \
+        -s 'echo "[ui] rebuilding..." && cd crates/ox-web/ui && bun run build 2>&1 && echo "[ui] rebuilt ok" || echo "[ui] BUILD FAILED"' &
+
+    # Wasm watcher — quiet mode, tagged output
+    cargo watch -q \
+        -w crates/ox-web/src \
+        -s 'echo "[wasm] rebuilding..." && wasm-pack build crates/ox-web --target web --out-dir ../../target/wasm-pkg 2>&1 && echo "[wasm] rebuilt ok" || echo "[wasm] BUILD FAILED"' &
+
+    # Server watcher — shows full cargo/server output (the primary stream)
+    cargo watch \
         -w crates/ox-dev-server \
         -w crates/ox-core \
         -w crates/ox-kernel \
         -w crates/ox-context \
         -w crates/ox-history \
-        -x "run -p ox-dev-server ${SERVER_ARGS[*]:-}"
+        -x "run -p ox-dev-server ${SERVER_ARGS[*]:-}" &
+
+    wait
 else
     echo ""
     echo "==> starting ox-dev-server"
-    echo "    the server will print its URL when ready — try: \"reverse the word hello\""
+    echo "    the server will print its URL when ready"
     echo ""
 
     exec cargo run -p ox-dev-server "${SERVER_ARGS[@]}"

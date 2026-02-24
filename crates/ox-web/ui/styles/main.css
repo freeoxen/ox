@@ -1,15 +1,15 @@
 /* ============================================================
    ox — Brand Book Themes
-   Seven colors. Flat. Opaque. No ornament. Twelve interpretations.
+   Seven colors. Flat. Opaque. Crisp. Twelve interpretations.
    ============================================================ */
 
 /* --- local fonts --- */
 @font-face {
-  font-family: 'Syne';
+  font-family: 'Manrope';
   font-style: normal;
   font-weight: 400 800;
   font-display: swap;
-  src: url(/dist/fonts/syne-latin.woff2) format('woff2');
+  src: url(/dist/fonts/manrope-latin.woff2) format('woff2');
   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
@@ -55,7 +55,7 @@
   --beige:       #E8D5C0;
   --white:       #FFFFFF;
 
-  --font-display: 'Syne', sans-serif;
+  --font-display: 'Manrope', sans-serif;
   --font-body:    'Outfit', sans-serif;
   --font-mono:    'IBM Plex Mono', monospace;
 
@@ -66,6 +66,9 @@
   --space-xs:  0.5rem;
   --space-sm:  1rem;
   --space-md:  2rem;
+
+  --radius:      6px;
+  --shadow:      0 1px 3px rgba(0,0,0,0.06);
 
   --ease-enter:  cubic-bezier(0.22, 1, 0.36, 1);
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
@@ -383,7 +386,6 @@ body {
 /* --- layout --- */
 .container {
   display: flex;
-  gap: 2px;
   max-width: 1200px;
   margin: 0 auto;
 }
@@ -393,6 +395,7 @@ body {
   max-width: 720px;
   display: flex;
   flex-direction: column;
+  padding-right: var(--space-sm);
   animation: ox-enter var(--duration-enter) var(--ease-enter) both;
 }
 .debug-column {
@@ -401,7 +404,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  border-left: 3px solid var(--t-border-strong);
+  border-left: 1px solid var(--t-border-strong);
   padding-left: var(--space-sm);
 }
 .debug-column > div:nth-child(1) {
@@ -427,7 +430,12 @@ h1 {
   font-size: var(--step-2);
   letter-spacing: -0.03em;
   line-height: 1;
-  color: var(--t-on-bg);
+  color: var(--t-heading);
+}
+h1 span {
+  font-weight: 400;
+  color: var(--t-muted);
+  letter-spacing: 0;
 }
 #theme-picker {
   position: fixed;
@@ -444,7 +452,7 @@ h1 {
 .clock-face {
   fill: var(--t-surface);
   stroke: var(--t-border-strong);
-  stroke-width: 3;
+  stroke-width: 2;
 }
 .clock-hand {
   stroke: var(--t-accent);
@@ -513,7 +521,9 @@ h1 {
 /* --- chat output --- */
 #output {
   background: var(--t-surface);
-  border: 2px solid var(--t-border);
+  border: 1px solid var(--t-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
   padding: var(--space-sm);
   min-height: 300px;
   max-height: 600px;
@@ -578,7 +588,8 @@ h1 {
   font-size: 0.95rem;
   background: var(--t-field);
   color: var(--t-on-inset);
-  border: 2px solid var(--t-border);
+  border: 1px solid var(--t-border);
+  border-radius: var(--radius);
   outline: none;
   transition: border-color 0.3s;
 }
@@ -593,6 +604,7 @@ button {
   font-size: 0.9rem;
   letter-spacing: 0.02em;
   border: none;
+  border-radius: var(--radius);
   cursor: pointer;
   padding: 0.7em 1.8em;
   transition: transform var(--duration-hover);
@@ -639,8 +651,10 @@ button:disabled {
 /* --- debug panels (shared) --- */
 .debug-panel {
   background: var(--t-surface);
-  border: 2px solid var(--t-border);
-  border-bottom: 4px solid var(--t-stripe);
+  border: 1px solid var(--t-border);
+  border-bottom: 2px solid var(--t-stripe);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
   padding: var(--space-xs);
   max-height: 720px;
   overflow-y: auto;
@@ -671,7 +685,7 @@ button:disabled {
 }
 .debug-panel .section-body {
   padding-left: var(--space-sm);
-  border-left: 2px solid var(--t-border);
+  border-left: 1px solid var(--t-border);
   margin-left: 4px;
   margin-bottom: var(--space-xs);
 }
@@ -709,11 +723,12 @@ button:disabled {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   padding: 0.3em 0.8em;
+  border-radius: 3px;
 }
 .debug-panel .role-user {
   background: transparent;
   color: var(--t-on-surface);
-  border: 1.5px solid currentColor;
+  border: 1px solid currentColor;
 }
 .debug-panel .role-assistant {
   background: var(--t-accent);
@@ -757,7 +772,8 @@ button:disabled {
   padding: 0.3em 0.8em;
   background: transparent;
   color: var(--t-on-surface);
-  border: 1.5px solid currentColor;
+  border: 1px solid currentColor;
+  border-radius: var(--radius);
   cursor: pointer;
   transition: transform var(--duration-hover), color 0.2s;
 }
@@ -785,7 +801,8 @@ button:disabled {
   font-size: 0.8rem;
   background: var(--t-inset);
   color: var(--t-on-inset);
-  border: 2px solid var(--t-accent);
+  border: 1px solid var(--t-accent);
+  border-radius: var(--radius);
   resize: vertical;
   outline: none;
 }
@@ -808,6 +825,7 @@ button:disabled {
   background: var(--t-accent);
   color: var(--t-on-accent);
   border: none;
+  border-radius: var(--radius);
   cursor: pointer;
   padding: 0.3em 0.8em;
   transition: transform var(--duration-hover);
@@ -821,7 +839,8 @@ button:disabled {
   font-size: 0.75rem;
   background: transparent;
   color: var(--t-on-surface);
-  border: 1.5px solid currentColor;
+  border: 1px solid currentColor;
+  border-radius: var(--radius);
   cursor: pointer;
   padding: 0.3em 0.8em;
   transition: transform var(--duration-hover), color 0.2s;
@@ -853,7 +872,8 @@ button:disabled {
   font-size: 0.8rem;
   background: var(--t-inset);
   color: var(--t-on-inset);
-  border: 2px solid var(--t-border);
+  border: 1px solid var(--t-border);
+  border-radius: var(--radius);
   outline: none;
   transition: border-color 0.3s;
 }
@@ -894,7 +914,8 @@ button:disabled {
   font-size: 0.75rem;
   background: var(--t-inset);
   color: var(--t-on-inset);
-  border: 2px solid var(--t-border);
+  border: 1px solid var(--t-border);
+  border-radius: var(--radius);
   outline: none;
   transition: border-color 0.3s;
 }
@@ -910,7 +931,8 @@ button:disabled {
   font-size: 0.75rem;
   background: var(--t-inset);
   color: var(--t-on-inset);
-  border: 2px solid var(--t-accent);
+  border: 1px solid var(--t-accent);
+  border-radius: var(--radius);
   outline: none;
 }
 
@@ -943,7 +965,8 @@ button:disabled {
   padding: 0.2em 0.6em;
   background: transparent;
   color: var(--t-on-surface);
-  border: 1.5px solid currentColor;
+  border: 1px solid currentColor;
+  border-radius: var(--radius);
   cursor: pointer;
   transition: color 0.2s;
 }
@@ -952,7 +975,7 @@ button:disabled {
 }
 .tool-panel-divider {
   border: none;
-  border-top: 2px solid var(--t-border);
+  border-top: 1px solid var(--t-border);
   margin: var(--space-xs) 0;
 }
 .tool-panel-empty {
@@ -966,6 +989,7 @@ button:disabled {
 .debug-panel .request-json {
   background: var(--t-inset);
   color: var(--t-on-inset);
+  border-radius: var(--radius);
   padding: var(--space-xs);
   margin: 4px 0;
   font-family: var(--font-mono);
