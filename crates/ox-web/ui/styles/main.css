@@ -1,6 +1,6 @@
 /* ============================================================
    ox — Brand Book Themes
-   Five colors. Flat. Opaque. No ornament. Five interpretations.
+   Seven colors. Flat. Opaque. No ornament. Twelve interpretations.
    ============================================================ */
 
 /* --- local fonts --- */
@@ -48,10 +48,12 @@
 /* --- brand palette (constant) --- */
 :root {
   --indigo:      #2B2D7C;
-  --amber:       #F5A623;
+  --slate:       #6B6D8F;
   --vermillion:  #E8471B;
-  --white:       #FFFFFF;
+  --clay:        #B8926E;
+  --amber:       #F5A623;
   --beige:       #E8D5C0;
+  --white:       #FFFFFF;
 
   --font-display: 'Syne', sans-serif;
   --font-body:    'Outfit', sans-serif;
@@ -91,6 +93,8 @@
    --t-stripe       panel bottom accent stripe
    --t-btn-bg       primary action button background
    --t-btn-text     primary action button text
+   --t-muted        secondary text (labels, keys, metadata)
+   --t-faint        tertiary text (system messages, empty states)
    ============================================================ */
 
 /* --- Noon (12): stark white, vermillion burns, maximum poster clarity --- */
@@ -106,11 +110,13 @@
   --t-heading:       var(--vermillion);
   --t-accent:        var(--vermillion);
   --t-danger:        var(--vermillion);
-  --t-border:        var(--beige);
-  --t-border-strong: var(--vermillion);
+  --t-border:        var(--slate);
+  --t-border-strong: var(--indigo);
   --t-stripe:        var(--vermillion);
   --t-btn-bg:        var(--indigo);
-  --t-btn-text:      var(--beige);
+  --t-btn-text:      var(--white);
+  --t-muted:         var(--slate);
+  --t-faint:         var(--clay);
 }
 
 /* --- Early Afternoon (1, default): white canvas, amber warms in --- */
@@ -126,11 +132,13 @@
   --t-heading:       var(--indigo);
   --t-accent:        var(--amber);
   --t-danger:        var(--vermillion);
-  --t-border:        var(--beige);
+  --t-border:        var(--clay);
   --t-border-strong: var(--indigo);
   --t-stripe:        var(--amber);
   --t-btn-bg:        var(--vermillion);
   --t-btn-text:      var(--white);
+  --t-muted:         var(--slate);
+  --t-faint:         var(--clay);
 }
 
 /* --- Late Afternoon (2): beige earth appears, amber glow building --- */
@@ -146,11 +154,13 @@
   --t-heading:       var(--indigo);
   --t-accent:        var(--amber);
   --t-danger:        var(--vermillion);
-  --t-border:        var(--white);
+  --t-border:        var(--slate);
   --t-border-strong: var(--indigo);
   --t-stripe:        var(--amber);
   --t-btn-bg:        var(--amber);
   --t-btn-text:      var(--indigo);
+  --t-muted:         var(--slate);
+  --t-faint:         var(--clay);
 }
 
 /* --- Golden Hour (3): everything amber, warmest light theme --- */
@@ -163,14 +173,16 @@
   --t-on-surface:    var(--indigo);
   --t-on-inset:      var(--indigo);
   --t-on-accent:     var(--indigo);
-  --t-heading:       var(--amber);
+  --t-heading:       var(--indigo);
   --t-accent:        var(--amber);
   --t-danger:        var(--vermillion);
-  --t-border:        var(--white);
-  --t-border-strong: var(--amber);
+  --t-border:        var(--slate);
+  --t-border-strong: var(--indigo);
   --t-stripe:        var(--amber);
   --t-btn-bg:        var(--vermillion);
   --t-btn-text:      var(--white);
+  --t-muted:         var(--slate);
+  --t-faint:         var(--clay);
 }
 
 /* --- Sunset (4): beige sky, indigo shadows rise, vermillion marks --- */
@@ -182,15 +194,17 @@
   --t-on-bg:         var(--indigo);
   --t-on-surface:    var(--beige);
   --t-on-inset:      var(--indigo);
-  --t-on-accent:     var(--white);
+  --t-on-accent:     var(--indigo);
   --t-heading:       var(--vermillion);
-  --t-accent:        var(--vermillion);
+  --t-accent:        var(--amber);
   --t-danger:        var(--vermillion);
-  --t-border:        var(--beige);
+  --t-border:        var(--slate);
   --t-border-strong: var(--vermillion);
-  --t-stripe:        var(--vermillion);
-  --t-btn-bg:        var(--amber);
-  --t-btn-text:      var(--indigo);
+  --t-stripe:        var(--amber);
+  --t-btn-bg:        var(--vermillion);
+  --t-btn-text:      var(--white);
+  --t-muted:         var(--clay);
+  --t-faint:         var(--slate);
 }
 
 /* --- Dusk (5): indigo canvas, white surfaces float like last light --- */
@@ -206,11 +220,13 @@
   --t-heading:       var(--amber);
   --t-accent:        var(--amber);
   --t-danger:        var(--vermillion);
-  --t-border:        var(--beige);
+  --t-border:        var(--slate);
   --t-border-strong: var(--amber);
   --t-stripe:        var(--vermillion);
   --t-btn-bg:        var(--vermillion);
   --t-btn-text:      var(--white);
+  --t-muted:         var(--slate);
+  --t-faint:         var(--clay);
 }
 
 /* --- Twilight (6): full indigo, amber the only warmth --- */
@@ -226,19 +242,21 @@
   --t-heading:       var(--amber);
   --t-accent:        var(--amber);
   --t-danger:        var(--vermillion);
-  --t-border:        var(--beige);
+  --t-border:        var(--slate);
   --t-border-strong: var(--amber);
   --t-stripe:        var(--amber);
   --t-btn-bg:        var(--vermillion);
   --t-btn-text:      var(--white);
+  --t-muted:         var(--clay);
+  --t-faint:         var(--slate);
 }
 
 /* --- Evening (7): softer borders, amber buttons, settling --- */
 [data-theme="evening"] {
   --t-bg:            var(--indigo);
   --t-surface:       var(--indigo);
-  --t-inset:         var(--white);
-  --t-field:         var(--white);
+  --t-inset:         var(--beige);
+  --t-field:         var(--beige);
   --t-on-bg:         var(--beige);
   --t-on-surface:    var(--beige);
   --t-on-inset:      var(--indigo);
@@ -246,11 +264,13 @@
   --t-heading:       var(--amber);
   --t-accent:        var(--amber);
   --t-danger:        var(--vermillion);
-  --t-border:        var(--beige);
+  --t-border:        var(--slate);
   --t-border-strong: var(--beige);
   --t-stripe:        var(--amber);
   --t-btn-bg:        var(--amber);
   --t-btn-text:      var(--indigo);
+  --t-muted:         var(--clay);
+  --t-faint:         var(--slate);
 }
 
 /* --- Night (8): white text for sharpness, beige insets warm the dark --- */
@@ -266,11 +286,13 @@
   --t-heading:       var(--amber);
   --t-accent:        var(--amber);
   --t-danger:        var(--vermillion);
-  --t-border:        var(--beige);
+  --t-border:        var(--slate);
   --t-border-strong: var(--amber);
   --t-stripe:        var(--vermillion);
   --t-btn-bg:        var(--vermillion);
   --t-btn-text:      var(--white);
+  --t-muted:         var(--clay);
+  --t-faint:         var(--slate);
 }
 
 /* --- Midnight (9): coldest, white headings, amber accent --- */
@@ -286,11 +308,13 @@
   --t-heading:       var(--white);
   --t-accent:        var(--amber);
   --t-danger:        var(--vermillion);
-  --t-border:        var(--beige);
+  --t-border:        var(--slate);
   --t-border-strong: var(--amber);
   --t-stripe:        var(--vermillion);
   --t-btn-bg:        var(--amber);
   --t-btn-text:      var(--indigo);
+  --t-muted:         var(--clay);
+  --t-faint:         var(--slate);
 }
 
 /* --- Dawn (10): indigo bg, beige surfaces emerge, amber first light --- */
@@ -302,15 +326,17 @@
   --t-on-bg:         var(--beige);
   --t-on-surface:    var(--indigo);
   --t-on-inset:      var(--indigo);
-  --t-on-accent:     var(--indigo);
+  --t-on-accent:     var(--white);
   --t-heading:       var(--amber);
-  --t-accent:        var(--amber);
+  --t-accent:        var(--vermillion);
   --t-danger:        var(--vermillion);
-  --t-border:        var(--white);
+  --t-border:        var(--slate);
   --t-border-strong: var(--amber);
   --t-stripe:        var(--amber);
-  --t-btn-bg:        var(--vermillion);
-  --t-btn-text:      var(--white);
+  --t-btn-bg:        var(--amber);
+  --t-btn-text:      var(--indigo);
+  --t-muted:         var(--slate);
+  --t-faint:         var(--clay);
 }
 
 /* --- Late Morning (11): white canvas, beige surfaces, building toward noon --- */
@@ -322,15 +348,17 @@
   --t-on-bg:         var(--indigo);
   --t-on-surface:    var(--indigo);
   --t-on-inset:      var(--indigo);
-  --t-on-accent:     var(--indigo);
+  --t-on-accent:     var(--white);
   --t-heading:       var(--indigo);
-  --t-accent:        var(--amber);
+  --t-accent:        var(--vermillion);
   --t-danger:        var(--vermillion);
-  --t-border:        var(--beige);
+  --t-border:        var(--slate);
   --t-border-strong: var(--indigo);
   --t-stripe:        var(--indigo);
   --t-btn-bg:        var(--amber);
   --t-btn-text:      var(--indigo);
+  --t-muted:         var(--slate);
+  --t-faint:         var(--clay);
 }
 
 /* --- reset --- */
@@ -501,9 +529,9 @@ h1 {
 .user-msg      { color: var(--t-accent); }
 .assistant-msg { color: var(--t-on-surface); }
 .tool-call     { color: var(--t-heading); }
-.tool-result   { color: var(--t-on-surface); opacity: 0.7; }
+.tool-result   { color: var(--t-muted); }
 .error         { color: var(--t-danger); }
-.system        { color: var(--t-on-surface); opacity: 0.35; }
+.system        { color: var(--t-faint); }
 
 /* --- status bar --- */
 #status-bar {
@@ -531,8 +559,7 @@ h1 {
   letter-spacing: 0.08em;
 }
 #status-bar .status-detail {
-  color: var(--t-on-bg);
-  opacity: 0.5;
+  color: var(--t-muted);
 }
 @keyframes pulse {
   0%, 100% { opacity: 1; }
@@ -606,8 +633,7 @@ button:disabled {
 .debug-header .path {
   font-family: var(--font-mono);
   font-size: 0.65rem;
-  color: var(--t-on-bg);
-  opacity: 0.5;
+  color: var(--t-muted);
 }
 
 /* --- debug panels (shared) --- */
@@ -638,8 +664,7 @@ button:disabled {
 }
 .debug-panel summary::before {
   content: '\25b8 ';
-  color: var(--t-on-surface);
-  opacity: 0.5;
+  color: var(--t-muted);
 }
 .debug-panel details[open] > summary::before {
   content: '\25be ';
@@ -657,8 +682,7 @@ button:disabled {
   gap: var(--space-xs);
 }
 .debug-panel .kv .k {
-  color: var(--t-on-surface);
-  opacity: 0.5;
+  color: var(--t-muted);
   flex-shrink: 0;
 }
 .debug-panel .kv .v {
@@ -667,7 +691,7 @@ button:disabled {
 }
 .debug-panel .str-val { color: var(--t-accent); }
 .debug-panel .num-val { color: var(--t-danger); }
-.debug-panel .empty   { color: var(--t-on-surface); opacity: 0.35; }
+.debug-panel .empty   { color: var(--t-faint); }
 
 /* --- history messages --- */
 .debug-panel .msg-entry {
@@ -700,8 +724,7 @@ button:disabled {
   color: var(--white);
 }
 .debug-panel .block-tag {
-  color: var(--t-on-surface);
-  opacity: 0.5;
+  color: var(--t-muted);
   font-size: 0.65rem;
 }
 .debug-panel .tool-name {
@@ -715,8 +738,7 @@ button:disabled {
   word-break: break-word;
 }
 .debug-panel .msg-content-trunc {
-  color: var(--t-on-surface);
-  opacity: 0.35;
+  color: var(--t-faint);
 }
 
 /* --- section header (with edit button) --- */
@@ -820,8 +842,7 @@ button:disabled {
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: var(--t-on-surface);
-  opacity: 0.5;
+  color: var(--t-muted);
   margin-bottom: 2px;
 }
 .tool-form-field input,
@@ -935,8 +956,7 @@ button:disabled {
   margin: var(--space-xs) 0;
 }
 .tool-panel-empty {
-  color: var(--t-on-surface);
-  opacity: 0.35;
+  color: var(--t-faint);
   font-family: var(--font-mono);
   font-size: 0.65rem;
   margin-bottom: var(--space-xs);
@@ -959,6 +979,5 @@ button:disabled {
 
 /* --- utility --- */
 .text-muted {
-  color: var(--t-on-surface);
-  opacity: 0.5;
+  color: var(--t-muted);
 }

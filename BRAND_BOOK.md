@@ -6,7 +6,7 @@ The ox is the oldest working animal. It does not sprint. It does not perform. It
 
 This brand identity is built in that image. A visual language of landscapes and earth — the terrain the ox walks. Mid-century modern poster art rendered through flat vector minimalism. Broad, solid, warm. Every surface is opaque. Every form is deliberate. Nothing is ornamental. Nothing is wasted.
 
-Five colors. Layered silhouettes. Infinite depth through honest weight.
+Seven colors. Layered silhouettes. Infinite depth through honest weight.
 
 ---
 
@@ -18,9 +18,9 @@ The ox does not decorate. It works.
 
 The ox stands on solid earth. UI elements should feel the same way — geological layers, overlapping, opaque, organic. Depth comes from stacking flat shapes, the way terrain stacks against the horizon. Never from shadows, gradients, or chrome. The interface is ground you stand on, not glass you look through.
 
-### Five Colors, No More
+### Seven Colors, No More
 
-An ox is not a peacock. The palette is five values and absolutely nothing else. Deep indigo, warm amber, vermillion, white, beige. No grays. No tints. No opacity tricks that produce off-palette colors. The ox carries what it needs and nothing extra. Constraint is strength.
+An ox is not a peacock. The palette is seven values and absolutely nothing else. Deep indigo, slate, vermillion, clay, warm amber, beige, white. No grays. No tints. No opacity tricks that produce off-palette colors. The mid-tones — slate and clay — are the shadow and path, bridging the extremes so no element needs to fake its weight. The ox carries what it needs and nothing extra. Constraint is strength.
 
 ### Poster Clarity
 
@@ -30,15 +30,17 @@ The ox is legible from any distance — broad shoulders, unmistakable silhouette
 
 ## 02 — Color Palette
 
-Five colors. The earth the ox walks, the sky it works under, the sun that warms its back.
+Five primary colors plus two mid-tones. The earth the ox walks, the sky it works under, the sun that warms its back — and the shadow and path beneath its hooves.
 
-| Name            | Hex       | CSS Variable     | Role                                              |
-|-----------------|-----------|------------------|---------------------------------------------------|
-| Deep Indigo     | `#2B2D7C` | `--indigo`       | The bedrock. Backgrounds, deep surfaces, text, receding layers. Everything rests on it the way weight rests on the ox's shoulders. |
-| Warm Amber      | `#F5A623` | `--amber`        | The sun overhead. Interactive elements, highlights, active states, progress indicators. Warm and directional — it draws the eye where the work is. |
-| Vermillion      | `#E8471B` | `--vermillion`   | The brand on the flank. Errors, destructive actions, critical badges, emphasis. Used sparingly. A mark that means something because it's rare. |
-| White           | `#FFFFFF` | `--white`        | Open sky. Cards, panels, input fields, clouds. Clear, clean space where content breathes. |
-| Warm Beige      | `#E8D5C0` | `--beige`        | Dry earth. Page background, subtle borders, secondary surfaces. The ground between features — warm, neutral, endless. |
+| Name            | Hex       | CSS Variable     | L*  | Role                                              |
+|-----------------|-----------|------------------|-----|----------------------------------------------------|
+| Deep Indigo     | `#2B2D7C` | `--indigo`       | ~22 | The bedrock. Backgrounds, deep surfaces, text, receding layers. Everything rests on it the way weight rests on the ox's shoulders. |
+| Slate           | `#6B6D8F` | `--slate`        | ~47 | The ox's shadow on worn stone. Cool mid-tone for muted text, secondary labels, and gentle borders on light surfaces. |
+| Vermillion      | `#E8471B` | `--vermillion`   | ~48 | The brand on the flank. Errors, destructive actions, critical badges, emphasis. Used sparingly. A mark that means something because it's rare. |
+| Clay            | `#B8926E` | `--clay`         | ~63 | Dry earth, the path under hooves. Warm mid-tone for muted text and gentle borders on dark surfaces. |
+| Warm Amber      | `#F5A623` | `--amber`        | ~72 | The sun overhead. Interactive elements, highlights, active states, progress indicators. Warm and directional — it draws the eye where the work is. |
+| Warm Beige      | `#E8D5C0` | `--beige`        | ~86 | Dry earth. Page background, subtle borders, secondary surfaces. The ground between features — warm, neutral, endless. |
+| White           | `#FFFFFF` | `--white`        | 100 | Open sky. Cards, panels, input fields, clouds. Clear, clean space where content breathes. |
 
 ### Functional Aliases
 
@@ -48,6 +50,8 @@ Five colors. The earth the ox walks, the sky it works under, the sun that warms 
 --bg-surface:    var(--white);
 --text-primary:  var(--indigo);
 --text-inverse:  var(--beige);
+--text-muted:    var(--slate);    /* or var(--clay) on dark surfaces */
+--text-faint:    var(--clay);     /* or var(--slate) on dark surfaces */
 --accent-warm:   var(--amber);
 --accent-hot:    var(--vermillion);
 ```
@@ -55,19 +59,75 @@ Five colors. The earth the ox walks, the sky it works under, the sun that warms 
 ### Color Rules
 
 - No gradients, ever. The ox is solid through and through. Flat fills only.
-- No opacity to blend colors. Each surface is one of the five, fully opaque. No half-measures.
-- No derived shades (lighter indigo, darker beige). The five are the five. The ox does not carry optional accessories.
+- No opacity to blend colors. Each surface is one of the seven, fully opaque. No half-measures.
+- No derived shades (lighter indigo, darker beige). The seven are the seven. The ox does not carry optional accessories.
 - Depth comes from overlapping shapes, the way hills overlap at the horizon. Not from color manipulation.
-- Text on indigo/vermillion: beige or white.
-- Text on beige/white/amber: indigo.
+- Text on indigo/vermillion: beige, white, or clay.
+- Text on beige/white/amber: indigo or slate.
+- Muted/secondary text: slate on light surfaces, clay on dark surfaces.
+- Faint/tertiary text: clay on light surfaces, slate on dark surfaces.
 
-### Application Modes
+### Application Modes — The 12-Hour Clock
 
-These are not "light mode" and "dark mode." The ox works at all hours. They are **Day** and **Dusk**.
+These are not "light mode" and "dark mode." The ox works at all hours. The interface follows a 12-theme clock — one for each hour on the dial. The sun rises, crosses overhead, and sets. The ox keeps walking.
 
-**Day (Amber Dominant):** Beige canvas, white content surfaces, amber accents, indigo text and buttons. The ox under a warm sun. Use for primary UI states, content-heavy screens, editing workflows.
+Each theme assigns the seven palette colors to 18 semantic tokens. The clock face in the UI lets you pick any hour manually, or follow the wall clock as the day turns.
 
-**Dusk (Indigo Dominant):** Indigo canvas, amber-bordered content surfaces, vermillion and amber accents, beige text. The ox still pulling as the sky deepens. Use for focused states, immersive views, the chat experience when in active conversation.
+#### Contrast Rules
+
+With five opaque colors, only certain pairings produce readable text. These rules are absolute.
+
+| Pairing | Ratio | Verdict |
+|---------|-------|---------|
+| I on W | 20.68:1 | Excellent |
+| I on B | 15.31:1 | Excellent |
+| I on A | 7.94:1 | Good |
+| W on I | 23.68:1 | Excellent |
+| B on I | 10.53:1 | Good |
+| W on V | 7.13:1 | Good |
+| V on W | 5.56:1 | AA pass |
+| I on C | 5.5:1 | AA pass |
+| V on I | 5.38:1 | AA pass |
+| S on W | 5.3:1 | AA pass |
+| A on I | 18.71:1 | Excellent |
+| A on W | 4.35:1 | Borderline AA (accepted for accent) |
+| V on B | 4.25:1 | Borderline AA (accepted for accent) |
+| S on B | 3.8:1 | AA for UI components |
+| S on I | 3.6:1 | AA for UI components |
+| C on W | 3.0:1 | AA for UI components |
+| A on B | 2.18:1 | **Never use** |
+| C on B | 1.7:1 | Accepted for faint text on beige (dawn/late-morning only) |
+| B on W | 1.35:1 | **Never use** |
+| I on V | 2.61:1 | **Never use** |
+
+**Accepted limitations:** Amber on white (4.35:1) and vermillion on beige (4.25:1) fall 0.15–0.25 below the 4.5:1 text AA threshold but pass the 3:1 UI component threshold. Both are used only for interactive accent highlights, never for body text. Clay on beige (1.7:1) is used only for `--t-faint` in the dawn and late-morning themes — very subtle, like faded writing on old paper. The muted/faint hierarchy collapses slightly on beige surfaces but remains functional. These are deliberate brand trade-offs — the ox carries what it must.
+
+#### The Twelve Themes
+
+The tokens: **bg**, **surface**, **inset**, **field**, **onBg**, **onSurface**, **onInset**, **onAccent**, **heading**, **accent**, **danger**, **border**, **borderStrong**, **stripe**, **btnBg**, **btnText**, **muted**, **faint**.
+
+| # | Name | bg | surface | inset | field | onBg | onSurf | onInset | onAcc | heading | accent | danger | border | borderS | stripe | btnBg | btnText | muted | faint |
+|---|------|----|---------|----|-------|------|--------|---------|-------|---------|--------|--------|--------|---------|--------|-------|---------|-------|-------|
+| 0 | noon | W | W | B | B | I | I | I | W | V | V | V | S | I | V | I | W | S | C |
+| 1 | early-afternoon | W | W | B | B | I | I | I | I | I | A | V | C | I | A | V | W | S | C |
+| 2 | late-afternoon | B | W | B | W | I | I | I | I | I | A | V | S | I | A | A | I | S | C |
+| 3 | golden-hour | B | W | B | W | I | I | I | I | I | A | V | S | I | A | V | W | S | C |
+| 4 | sunset | B | I | W | W | I | B | I | I | V | A | V | S | V | A | V | W | C | S |
+| 5 | dusk | I | W | B | W | B | I | I | I | A | A | V | S | A | V | V | W | S | C |
+| 6 | twilight | I | I | W | W | B | B | I | I | A | A | V | S | A | A | V | W | C | S |
+| 7 | evening | I | I | B | B | B | B | I | I | A | A | V | S | B | A | A | I | C | S |
+| 8 | night | I | I | B | B | W | W | I | I | A | A | V | S | A | V | V | W | C | S |
+| 9 | midnight | I | I | W | W | W | W | I | I | W | A | V | S | A | V | A | I | C | S |
+| 10 | dawn | I | B | W | W | B | I | I | W | A | V | V | S | A | A | A | I | S | C |
+| 11 | late-morning | W | B | W | W | I | I | I | W | I | V | V | S | I | I | A | I | S | C |
+
+**I** = indigo, **S** = slate, **V** = vermillion, **C** = clay, **A** = amber, **B** = beige, **W** = white.
+
+#### Narrative Arc
+
+The themes tell a day in the ox's life. Noon is stark white poster clarity — vermillion burns, indigo anchors. Through the afternoon, amber warms in and beige earth appears. At golden hour, amber saturates everything. Sunset splits the world: beige sky above, indigo shadows below. Dusk and twilight deepen into full indigo. Evening settles with warm beige insets. Night is sharp — white text on indigo, beige code blocks. Midnight is the coldest hour, white headings on indigo void. Dawn breaks with vermillion accents on beige surfaces. Late morning brightens back toward noon.
+
+The wall-clock mode maps each of the 24 system hours onto this 12-hour narrative, compressing the full day into the clock's arc.
 
 ---
 
@@ -286,7 +346,7 @@ No border-radius on any button. Sharp rectangular geometry. The yoke is square-h
 }
 ```
 
-When focused, the border shifts to amber — the sun falling on the place where work happens. Textareas use IBM Plex Mono at `0.85rem`. Labels use IBM Plex Mono at `0.75rem`, uppercase, `letter-spacing: 0.08em`, color `--indigo` at 50% opacity.
+When focused, the border shifts to amber — the sun falling on the place where work happens. Textareas use IBM Plex Mono at `0.85rem`. Labels use IBM Plex Mono at `0.75rem`, uppercase, `letter-spacing: 0.08em`, color `--t-muted` (slate on light, clay on dark).
 
 ### Cards
 
@@ -344,7 +404,7 @@ Messages are separated by 1px beige borders — thin lines of earth between stra
 
 | Role         | Label Color    | Label Format                         |
 |--------------|----------------|--------------------------------------|
-| system       | `--indigo` @ 35% opacity | IBM Plex Mono, 0.65rem, uppercase |
+| system       | `--t-faint` (clay or slate) | IBM Plex Mono, 0.65rem, uppercase |
 | user         | `--indigo`     | IBM Plex Mono, 0.65rem, uppercase    |
 | assistant    | `--amber`      | IBM Plex Mono, 0.65rem, uppercase    |
 | tool_result  | `--vermillion` | IBM Plex Mono, 0.65rem, uppercase    |
@@ -472,16 +532,20 @@ The full harness. Every token the system needs, nothing it doesn't.
 ```css
 :root {
   --indigo:      #2B2D7C;
-  --amber:       #F5A623;
+  --slate:       #6B6D8F;
   --vermillion:  #E8471B;
-  --white:       #FFFFFF;
+  --clay:        #B8926E;
+  --amber:       #F5A623;
   --beige:       #E8D5C0;
+  --white:       #FFFFFF;
 
   --bg-primary:    var(--beige);
   --bg-deep:       var(--indigo);
   --bg-surface:    var(--white);
   --text-primary:  var(--indigo);
   --text-inverse:  var(--beige);
+  --text-muted:    var(--slate);
+  --text-faint:    var(--clay);
   --accent-warm:   var(--amber);
   --accent-hot:    var(--vermillion);
 }

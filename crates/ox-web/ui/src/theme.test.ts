@@ -253,8 +253,8 @@ describe('themeByName', () => {
     expect(themeByName('xyz')).toBeUndefined();
   });
 
-  test('every theme has all 16 token keys', () => {
-    const keys = ['bg', 'surface', 'inset', 'field', 'onBg', 'onSurface', 'onInset', 'onAccent', 'heading', 'accent', 'danger', 'border', 'borderStrong', 'stripe', 'btnBg', 'btnText'];
+  test('every theme has all 18 token keys', () => {
+    const keys = ['bg', 'surface', 'inset', 'field', 'onBg', 'onSurface', 'onInset', 'onAccent', 'heading', 'accent', 'danger', 'border', 'borderStrong', 'stripe', 'btnBg', 'btnText', 'muted', 'faint'];
     for (const name of themeNames()) {
       const t = themeByName(name)!;
       for (const k of keys) {

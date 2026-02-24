@@ -7,10 +7,12 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 
 // --- Brand palette (mirrors CSS :root) ---
 const I = '#2B2D7C'; // indigo
-const A = '#F5A623'; // amber
+const S = '#6B6D8F'; // slate
 const V = '#E8471B'; // vermillion
-const W = '#FFFFFF'; // white
+const C = '#B8926E'; // clay
+const A = '#F5A623'; // amber
 const B = '#E8D5C0'; // beige
+const W = '#FFFFFF'; // white
 
 // --- Theme token keys ---
 type TokenKey =
@@ -18,7 +20,8 @@ type TokenKey =
   | 'onBg' | 'onSurface' | 'onInset' | 'onAccent'
   | 'heading' | 'accent' | 'danger'
   | 'border' | 'borderStrong' | 'stripe'
-  | 'btnBg' | 'btnText';
+  | 'btnBg' | 'btnText'
+  | 'muted' | 'faint';
 
 interface ThemeDef {
   hour: number;
@@ -29,29 +32,29 @@ interface ThemeDef {
 // --- 12 themes, indexed by hour (0 = 12 o'clock) ---
 const THEMES: ThemeDef[] = [
   { hour: 0, name: 'noon', tokens:
-    { bg: W, surface: W, inset: B, field: B, onBg: I, onSurface: I, onInset: I, onAccent: W, heading: V, accent: V, danger: V, border: B, borderStrong: V, stripe: V, btnBg: I, btnText: B } },
+    { bg: W, surface: W, inset: B, field: B, onBg: I, onSurface: I, onInset: I, onAccent: W, heading: V, accent: V, danger: V, border: S, borderStrong: I, stripe: V, btnBg: I, btnText: W, muted: S, faint: C } },
   { hour: 1, name: 'early-afternoon', tokens:
-    { bg: W, surface: W, inset: B, field: B, onBg: I, onSurface: I, onInset: I, onAccent: I, heading: I, accent: A, danger: V, border: B, borderStrong: I, stripe: A, btnBg: V, btnText: W } },
+    { bg: W, surface: W, inset: B, field: B, onBg: I, onSurface: I, onInset: I, onAccent: I, heading: I, accent: A, danger: V, border: C, borderStrong: I, stripe: A, btnBg: V, btnText: W, muted: S, faint: C } },
   { hour: 2, name: 'late-afternoon', tokens:
-    { bg: B, surface: W, inset: B, field: W, onBg: I, onSurface: I, onInset: I, onAccent: I, heading: I, accent: A, danger: V, border: W, borderStrong: I, stripe: A, btnBg: A, btnText: I } },
+    { bg: B, surface: W, inset: B, field: W, onBg: I, onSurface: I, onInset: I, onAccent: I, heading: I, accent: A, danger: V, border: S, borderStrong: I, stripe: A, btnBg: A, btnText: I, muted: S, faint: C } },
   { hour: 3, name: 'golden-hour', tokens:
-    { bg: B, surface: W, inset: B, field: W, onBg: I, onSurface: I, onInset: I, onAccent: I, heading: A, accent: A, danger: V, border: W, borderStrong: A, stripe: A, btnBg: V, btnText: W } },
+    { bg: B, surface: W, inset: B, field: W, onBg: I, onSurface: I, onInset: I, onAccent: I, heading: I, accent: A, danger: V, border: S, borderStrong: I, stripe: A, btnBg: V, btnText: W, muted: S, faint: C } },
   { hour: 4, name: 'sunset', tokens:
-    { bg: B, surface: I, inset: W, field: W, onBg: I, onSurface: B, onInset: I, onAccent: W, heading: V, accent: V, danger: V, border: B, borderStrong: V, stripe: V, btnBg: A, btnText: I } },
+    { bg: B, surface: I, inset: W, field: W, onBg: I, onSurface: B, onInset: I, onAccent: I, heading: V, accent: A, danger: V, border: S, borderStrong: V, stripe: A, btnBg: V, btnText: W, muted: C, faint: S } },
   { hour: 5, name: 'dusk', tokens:
-    { bg: I, surface: W, inset: B, field: W, onBg: B, onSurface: I, onInset: I, onAccent: I, heading: A, accent: A, danger: V, border: B, borderStrong: A, stripe: V, btnBg: V, btnText: W } },
+    { bg: I, surface: W, inset: B, field: W, onBg: B, onSurface: I, onInset: I, onAccent: I, heading: A, accent: A, danger: V, border: S, borderStrong: A, stripe: V, btnBg: V, btnText: W, muted: S, faint: C } },
   { hour: 6, name: 'twilight', tokens:
-    { bg: I, surface: I, inset: W, field: W, onBg: B, onSurface: B, onInset: I, onAccent: I, heading: A, accent: A, danger: V, border: B, borderStrong: A, stripe: A, btnBg: V, btnText: W } },
+    { bg: I, surface: I, inset: W, field: W, onBg: B, onSurface: B, onInset: I, onAccent: I, heading: A, accent: A, danger: V, border: S, borderStrong: A, stripe: A, btnBg: V, btnText: W, muted: C, faint: S } },
   { hour: 7, name: 'evening', tokens:
-    { bg: I, surface: I, inset: W, field: W, onBg: B, onSurface: B, onInset: I, onAccent: I, heading: A, accent: A, danger: V, border: B, borderStrong: B, stripe: A, btnBg: A, btnText: I } },
+    { bg: I, surface: I, inset: B, field: B, onBg: B, onSurface: B, onInset: I, onAccent: I, heading: A, accent: A, danger: V, border: S, borderStrong: B, stripe: A, btnBg: A, btnText: I, muted: C, faint: S } },
   { hour: 8, name: 'night', tokens:
-    { bg: I, surface: I, inset: B, field: B, onBg: W, onSurface: W, onInset: I, onAccent: I, heading: A, accent: A, danger: V, border: B, borderStrong: A, stripe: V, btnBg: V, btnText: W } },
+    { bg: I, surface: I, inset: B, field: B, onBg: W, onSurface: W, onInset: I, onAccent: I, heading: A, accent: A, danger: V, border: S, borderStrong: A, stripe: V, btnBg: V, btnText: W, muted: C, faint: S } },
   { hour: 9, name: 'midnight', tokens:
-    { bg: I, surface: I, inset: W, field: W, onBg: W, onSurface: W, onInset: I, onAccent: I, heading: W, accent: A, danger: V, border: B, borderStrong: A, stripe: V, btnBg: A, btnText: I } },
+    { bg: I, surface: I, inset: W, field: W, onBg: W, onSurface: W, onInset: I, onAccent: I, heading: W, accent: A, danger: V, border: S, borderStrong: A, stripe: V, btnBg: A, btnText: I, muted: C, faint: S } },
   { hour: 10, name: 'dawn', tokens:
-    { bg: I, surface: B, inset: W, field: W, onBg: B, onSurface: I, onInset: I, onAccent: I, heading: A, accent: A, danger: V, border: W, borderStrong: A, stripe: A, btnBg: V, btnText: W } },
+    { bg: I, surface: B, inset: W, field: W, onBg: B, onSurface: I, onInset: I, onAccent: W, heading: A, accent: V, danger: V, border: S, borderStrong: A, stripe: A, btnBg: A, btnText: I, muted: S, faint: C } },
   { hour: 11, name: 'late-morning', tokens:
-    { bg: W, surface: B, inset: W, field: W, onBg: I, onSurface: I, onInset: I, onAccent: I, heading: I, accent: A, danger: V, border: B, borderStrong: I, stripe: I, btnBg: A, btnText: I } },
+    { bg: W, surface: B, inset: W, field: W, onBg: I, onSurface: I, onInset: I, onAccent: W, heading: I, accent: V, danger: V, border: S, borderStrong: I, stripe: I, btnBg: A, btnText: I, muted: S, faint: C } },
 ];
 
 // --- Migration map: old 5-theme names → new names ---
