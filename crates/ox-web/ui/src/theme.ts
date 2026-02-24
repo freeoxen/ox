@@ -90,6 +90,36 @@ export function shortestRotation(from: number, to: number): number {
   return ((to - from + 540) % 360) - 180;
 }
 
+/**
+ * Convert a clock-face angle (0 = 12 o'clock, clockwise degrees) to
+ * the nearest hour (0–11). Rounds to the closest 30-degree sector.
+ */
+export function angleToHour(degrees: number): number {
+  const norm = ((degrees % 360) + 360) % 360;
+  return Math.round(norm / 30) % 12;
+}
+
+// --- Wall-clock mapping ---
+
+/**
+ * Maps each of the 24 system hours to one of the 12 theme hours.
+ * Compresses a full day into the clock's narrative arc:
+ * noon → afternoon → sunset → night → midnight → dawn → morning
+ */
+const WALL_MAP: readonly number[] = [
+//  0h  1h  2h  3h  4h  5h  6h  7h  8h  9h 10h 11h
+     9,  9,  9,  9, 10, 10, 10, 11, 11, 11, 11, 11,
+// 12h 13h 14h 15h 16h 17h 18h 19h 20h 21h 22h 23h
+     0,  1,  1,  2,  3,  4,  5,  6,  7,  8,  8,  9,
+];
+
+/** Map a 24-hour system hour (0–23) to a theme hour (0–11). */
+export function wallClockToThemeHour(systemHour: number): number {
+  return WALL_MAP[((systemHour % 24) + 24) % 24];
+}
+
+const MODE_KEY = 'ox:clock-mode';
+
 // --- Lookup ---
 
 export function themeByName(name: string): ThemeDef | undefined {
@@ -113,7 +143,7 @@ export function migrateThemeName(raw: string | null): string {
 
 // --- SVG Clock Builder ---
 
-const CLOCK_SIZE = 80;
+const CLOCK_SIZE = 54;
 const VIEW = 100; // viewBox 0 0 100 100
 const CX = 50;
 const CY = 50;
@@ -213,6 +243,7 @@ function buildClock(
   // Set initial hand rotation
   const initialHour = THEMES.find((t) => t.name === activeTheme)?.hour ?? 1;
   let currentAngle = hourAngle(initialHour);
+  let activeHour = initialHour;
   handGroup.style.transform = `rotate(${currentAngle}deg)`;
   handGroup.style.transformOrigin = `${CX}px ${CY}px`;
 
@@ -220,6 +251,7 @@ function buildClock(
     const theme = THEMES.find((t) => t.name === name);
     if (!theme) return;
 
+    activeHour = theme.hour;
     const targetAngle = hourAngle(theme.hour);
     const delta = shortestRotation(currentAngle, targetAngle);
     currentAngle += delta;
@@ -238,7 +270,145 @@ function buildClock(
     }
   }
 
+  // --- Drag interaction ---
+
+  let dragging = false;
+
+  /** Convert a pointer event to a clock-face angle (0 = 12 o'clock, CW). */
+  function pointerToClockAngle(e: PointerEvent): number {
+    const rect = svg.getBoundingClientRect();
+    const svgX = (e.clientX - rect.left) / rect.width * VIEW;
+    const svgY = (e.clientY - rect.top) / rect.height * VIEW;
+    const dx = svgX - CX;
+    const dy = -(svgY - CY); // flip Y so up is positive
+    // atan2 with (dx, dy) gives 0 = up, positive = clockwise
+    const rad = Math.atan2(dx, dy);
+    return ((rad * 180 / Math.PI) + 360) % 360;
+  }
+
+  function handleDragMove(e: PointerEvent): void {
+    const angle = pointerToClockAngle(e);
+    const hour = angleToHour(angle);
+    if (hour !== activeHour) {
+      const theme = THEMES[hour];
+      if (theme) onSelect(theme.name);
+    }
+  }
+
+  svg.addEventListener('pointerdown', (e: Event) => {
+    const pe = e as PointerEvent;
+    dragging = true;
+    svg.classList.add('clock-dragging');
+    handGroup.classList.add('clock-hand-no-transition');
+    svg.setPointerCapture(pe.pointerId);
+    handleDragMove(pe);
+  });
+
+  svg.addEventListener('pointermove', (e: Event) => {
+    if (!dragging) return;
+    handleDragMove(e as PointerEvent);
+  });
+
+  svg.addEventListener('pointerup', (e: Event) => {
+    if (!dragging) return;
+    dragging = false;
+    svg.classList.remove('clock-dragging');
+    handGroup.classList.remove('clock-hand-no-transition');
+    svg.releasePointerCapture((e as PointerEvent).pointerId);
+  });
+
+  svg.addEventListener('pointercancel', (e: Event) => {
+    if (!dragging) return;
+    dragging = false;
+    svg.classList.remove('clock-dragging');
+    handGroup.classList.remove('clock-hand-no-transition');
+    svg.releasePointerCapture((e as PointerEvent).pointerId);
+  });
+
   return { svg, setActive };
+}
+
+// --- Mode toggle icons ---
+
+function sunIcon(): SVGSVGElement {
+  const s = svgEl('svg');
+  s.setAttribute('viewBox', '0 0 16 16');
+  s.setAttribute('width', '14');
+  s.setAttribute('height', '14');
+  s.classList.add('clock-mode-icon');
+
+  const c = svgEl('circle');
+  c.setAttribute('cx', '8');
+  c.setAttribute('cy', '8');
+  c.setAttribute('r', '2.5');
+  c.setAttribute('fill', 'currentColor');
+  s.appendChild(c);
+
+  const rays: [number, number, number, number][] = [
+    [8, 1.5, 8, 4],   [8, 12, 8, 14.5],
+    [1.5, 8, 4, 8],   [12, 8, 14.5, 8],
+    [3.6, 3.6, 5.1, 5.1], [10.9, 10.9, 12.4, 12.4],
+    [3.6, 12.4, 5.1, 10.9], [10.9, 5.1, 12.4, 3.6],
+  ];
+  for (const [x1, y1, x2, y2] of rays) {
+    const l = svgEl('line');
+    l.setAttribute('x1', String(x1));
+    l.setAttribute('y1', String(y1));
+    l.setAttribute('x2', String(x2));
+    l.setAttribute('y2', String(y2));
+    l.setAttribute('stroke', 'currentColor');
+    l.setAttribute('stroke-width', '1.5');
+    l.setAttribute('stroke-linecap', 'round');
+    s.appendChild(l);
+  }
+  return s;
+}
+
+function wandIcon(): SVGSVGElement {
+  const s = svgEl('svg');
+  s.setAttribute('viewBox', '0 0 16 16');
+  s.setAttribute('width', '14');
+  s.setAttribute('height', '14');
+  s.classList.add('clock-mode-icon');
+
+  // Wand shaft
+  const shaft = svgEl('line');
+  shaft.setAttribute('x1', '2');
+  shaft.setAttribute('y1', '14');
+  shaft.setAttribute('x2', '9.5');
+  shaft.setAttribute('y2', '6.5');
+  shaft.setAttribute('stroke', 'currentColor');
+  shaft.setAttribute('stroke-width', '2');
+  shaft.setAttribute('stroke-linecap', 'round');
+  s.appendChild(shaft);
+
+  // Sparkle cross at tip
+  const sparkles: [number, number, number, number][] = [
+    [12, 1.5, 12, 6.5],
+    [9.5, 4, 14.5, 4],
+  ];
+  for (const [x1, y1, x2, y2] of sparkles) {
+    const l = svgEl('line');
+    l.setAttribute('x1', String(x1));
+    l.setAttribute('y1', String(y1));
+    l.setAttribute('x2', String(x2));
+    l.setAttribute('y2', String(y2));
+    l.setAttribute('stroke', 'currentColor');
+    l.setAttribute('stroke-width', '1.2');
+    l.setAttribute('stroke-linecap', 'round');
+    s.appendChild(l);
+  }
+
+  // Small sparkle dots
+  for (const [cx, cy] of [[10, 2], [14.2, 6]] as [number, number][]) {
+    const d = svgEl('circle');
+    d.setAttribute('cx', String(cx));
+    d.setAttribute('cy', String(cy));
+    d.setAttribute('r', '0.8');
+    d.setAttribute('fill', 'currentColor');
+    s.appendChild(d);
+  }
+  return s;
 }
 
 // --- Apply theme to DOM ---
@@ -251,20 +421,88 @@ function applyTheme(name: string): void {
 // --- Public init ---
 
 export function initThemePicker(): void {
-  // Migrate saved theme
   const raw = localStorage.getItem(STORAGE_KEY);
-  const initial = migrateThemeName(raw);
+  const migratedName = migrateThemeName(raw);
+  const savedMode = localStorage.getItem(MODE_KEY);
+  let mode: 'wall' | 'manual' = savedMode === 'wall' ? 'wall' : 'manual';
 
-  // Persist migrated name (clears old value)
-  applyTheme(initial);
+  const wallName = (): string =>
+    THEMES[wallClockToThemeHour(new Date().getHours())].name;
+
+  const initialTheme = mode === 'wall' ? wallName() : migratedName;
+  applyTheme(initialTheme);
 
   const picker = document.getElementById('theme-picker');
   if (!picker) return;
 
-  const { svg, setActive } = buildClock(initial, (name) => {
+  let wallInterval: ReturnType<typeof setInterval> | null = null;
+
+  const { svg, setActive } = buildClock(initialTheme, (name) => {
+    // Any manual interaction exits wall-time mode
+    if (mode === 'wall') {
+      switchMode('manual');
+    }
     applyTheme(name);
     setActive(name);
   });
 
+  // --- Mode toggle button ---
+
+  const toggle = document.createElement('button');
+  toggle.className = 'clock-mode-toggle';
+
+  function updateToggle(): void {
+    toggle.innerHTML = '';
+    if (mode === 'wall') {
+      toggle.appendChild(sunIcon());
+      toggle.title = 'Following time of day';
+      toggle.setAttribute('aria-label', 'Switch to manual theme');
+      svg.classList.add('clock-live');
+    } else {
+      toggle.appendChild(wandIcon());
+      toggle.title = 'Manual theme';
+      toggle.setAttribute('aria-label', 'Follow time of day');
+      svg.classList.remove('clock-live');
+    }
+  }
+
+  function startWall(): void {
+    const tick = (): void => {
+      const name = wallName();
+      applyTheme(name);
+      setActive(name);
+    };
+    tick();
+    wallInterval = setInterval(tick, 60_000);
+  }
+
+  function stopWall(): void {
+    if (wallInterval !== null) {
+      clearInterval(wallInterval);
+      wallInterval = null;
+    }
+  }
+
+  function switchMode(newMode: 'wall' | 'manual'): void {
+    mode = newMode;
+    localStorage.setItem(MODE_KEY, mode);
+    if (mode === 'wall') {
+      startWall();
+    } else {
+      stopWall();
+    }
+    updateToggle();
+  }
+
+  toggle.addEventListener('click', () => {
+    switchMode(mode === 'wall' ? 'manual' : 'wall');
+  });
+
+  updateToggle();
   picker.appendChild(svg);
+  picker.appendChild(toggle);
+
+  if (mode === 'wall') {
+    startWall();
+  }
 }

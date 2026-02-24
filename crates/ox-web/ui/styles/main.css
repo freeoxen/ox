@@ -389,7 +389,7 @@ body {
 /* --- header row + theme picker --- */
 .header-row {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: var(--space-sm);
   margin-bottom: var(--space-sm);
 }
@@ -402,9 +402,10 @@ h1 {
   color: var(--t-on-bg);
 }
 #theme-picker {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
+  position: fixed;
+  top: var(--space-sm);
+  right: var(--space-sm);
+  z-index: 100;
 }
 
 /* --- analog clock --- */
@@ -446,6 +447,39 @@ h1 {
 }
 .clock-hit {
   pointer-events: all;
+}
+.clock-dragging {
+  cursor: grabbing;
+}
+.clock-dragging .clock-hour {
+  cursor: grabbing;
+}
+.clock-hand-no-transition {
+  transition: none !important;
+}
+
+/* --- mode toggle (centered on clock face) --- */
+.clock-mode-toggle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: transparent;
+  border: none;
+  padding: 2px;
+  color: var(--t-accent);
+  opacity: 0.45;
+  cursor: pointer;
+  transition: opacity var(--duration-hover);
+}
+.clock-mode-toggle:hover {
+  opacity: 1;
+  transform: translate(-50%, -50%);
+}
+
+/* subtle pulse on center dot when following wall clock */
+.clock-live .clock-center {
+  animation: pulse var(--duration-pulse) var(--ease-pulse) infinite;
 }
 
 /* --- chat output --- */
