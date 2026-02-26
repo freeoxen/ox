@@ -423,6 +423,7 @@ function wandIcon(): SVGSVGElement {
 // --- Apply theme to DOM ---
 
 function applyTheme(name: string): void {
+  document.documentElement.dataset.theme = name;
   document.body.dataset.theme = name;
   localStorage.setItem(STORAGE_KEY, name);
 }

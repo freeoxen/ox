@@ -17,16 +17,6 @@ body {
   margin: 0 auto;
 }
 
-/* --- Scroll animation --- */
-.animate-in {
-  opacity: 0;
-  transform: translateY(16px);
-  transition: opacity 0.6s var(--ease-enter), transform 0.6s var(--ease-enter);
-}
-.animate-in.visible {
-  opacity: 1;
-  transform: translateY(0);
-}
 
 /* --- Hero --- */
 .hero {
@@ -43,7 +33,6 @@ body {
   letter-spacing: -0.03em;
   line-height: 0.9;
   color: var(--t-heading);
-  animation: ox-enter var(--duration-enter) var(--ease-enter) both;
 }
 .hero-tagline {
   font-family: var(--font-display);
@@ -51,7 +40,6 @@ body {
   font-size: var(--step-1);
   color: var(--t-muted);
   margin-top: var(--space-xs);
-  animation: ox-enter var(--duration-enter) var(--ease-enter) 0.1s both;
 }
 .hero-lead {
   font-family: var(--font-body);
@@ -60,7 +48,6 @@ body {
   max-width: 520px;
   margin-top: var(--space-sm);
   line-height: 1.6;
-  animation: ox-enter var(--duration-enter) var(--ease-enter) 0.2s both;
 }
 .hero-lead a {
   color: var(--t-accent);
@@ -73,7 +60,6 @@ body {
   display: flex;
   gap: var(--space-sm);
   margin-top: var(--space-sm);
-  animation: ox-enter var(--duration-enter) var(--ease-enter) 0.35s both;
 }
 .hero-link {
   font-family: var(--font-mono);
@@ -232,6 +218,73 @@ body {
   font-weight: 400;
   color: var(--t-muted);
   letter-spacing: 0;
+}
+
+/* --- Brand book hero --- */
+.hero-brand-hero {
+  padding: var(--space-xl) var(--space-md) var(--space-lg);
+}
+.hero-brand-hero .hero-brand {
+  font-size: clamp(6rem, 18vw, 12rem);
+  line-height: 0.82;
+  margin-bottom: 0;
+}
+.hero-manifesto {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: var(--step-2);
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  color: var(--t-accent);
+  max-width: 560px;
+  margin-top: var(--space-sm);
+}
+
+/* Palette — terrain band: flat, layered, no tricks */
+.hero-terrain {
+  display: flex;
+  width: 100%;
+  max-width: 420px;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  margin-top: var(--space-md);
+}
+.hero-terrain-band {
+  flex: 1;
+}
+
+/* Narrative prose */
+.hero-prose {
+  max-width: 540px;
+  margin-top: var(--space-md);
+}
+.hero-brand-hero .hero-links {
+  margin-top: var(--space-sm);
+}
+
+/* --- Section header with number marker --- */
+.section-header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-sm);
+}
+.section-num {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: var(--step-4);
+  letter-spacing: -0.03em;
+  line-height: 1;
+  color: var(--t-border);
+}
+.section-header .section-title {
+  margin-bottom: 0;
+}
+
+/* --- Alternating section surfaces (subtle terrain layers) --- */
+.section-inset {
+  background: color-mix(in srgb, var(--t-surface) 40%, var(--t-bg));
 }
 
 /* --- Inline swatches (in tables) --- */
@@ -885,11 +938,6 @@ body {
   font-family: var(--font-body);
   font-size: 0.85rem;
   color: var(--t-on-surface);
-  animation: enter-rise 1s cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-@keyframes enter-rise {
-  from { opacity: 0; transform: translateY(20px); }
-  to { opacity: 1; transform: translateY(0); }
 }
 
 /* --- Section sub-headings & stripes --- */
@@ -957,6 +1005,18 @@ body {
   }
   .hero-compact {
     padding: var(--space-md) var(--space-sm);
+  }
+  .hero-brand-hero {
+    padding: var(--space-lg) var(--space-sm) var(--space-md);
+  }
+  .hero-manifesto {
+    font-size: var(--step-1);
+  }
+  .hero-terrain {
+    max-width: 100%;
+  }
+  .section-num {
+    font-size: var(--step-3);
   }
   .arch-table td:last-child {
     font-size: 0.8rem;

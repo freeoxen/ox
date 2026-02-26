@@ -217,17 +217,64 @@ function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+// --- Section shell ---
+// Wraps content in a section with number marker, stripe, and alternating surface.
+// Even sections (02,04,06,08) get an inset background — terrain layers.
+
+function sectionShell(num: string, title: string, inner: string, wide = false): string {
+  const n = parseInt(num, 10);
+  const inset = n % 2 === 0;
+  const surfaceClass = inset ? " section-inset" : "";
+  const innerClass = wide ? "site-inner-wide" : "site-inner";
+  return `
+  <section class="site-section${surfaceClass}">
+    <div class="${innerClass} animate-in">
+      <div class="section-header">
+        <span class="section-num">${esc(num)}</span>
+        <h2 class="section-title">${esc(title)}</h2>
+      </div>
+${inner}
+    </div>
+  </section>`;
+}
+
 // --- Section Renderers ---
 
 function renderPreamble(raw: string): string {
-  const lines = raw.split("\n").filter((l) => l.trim() !== "" && !l.startsWith("#") && !l.startsWith("**v") && l.trim() !== "---");
   const version = raw.match(/\*\*(.+?)\*\*/)?.[1] ?? "";
-  const prose = lines.join(" ").trim();
+
+  // Split into paragraphs on blank lines, filtering out heading/version/rule lines
+  const paragraphs: string[] = [];
+  let buf: string[] = [];
+  for (const line of raw.split("\n")) {
+    const t = line.trim();
+    if (t === "" || t === "---") {
+      if (buf.length > 0) { paragraphs.push(buf.join(" ")); buf = []; }
+    } else if (!t.startsWith("#") && !t.startsWith("**v")) {
+      buf.push(t);
+    }
+  }
+  if (buf.length > 0) paragraphs.push(buf.join(" "));
+
+  // Last paragraph is the manifesto — short, punchy, stands alone
+  const manifesto = paragraphs.length > 1 ? paragraphs.pop()! : "";
+  const narrative = paragraphs;
+
+  // Palette as a horizontal terrain band — flat, layered, no tricks
+  let paletteBar = `\n    <div class="hero-terrain">`;
+  for (const c of PALETTE) {
+    paletteBar += `<div class="hero-terrain-band" style="background:${c.hex}"></div>`;
+  }
+  paletteBar += `</div>`;
 
   return `
-  <section class="hero hero-compact">
-    <div class="hero-brand">ox <span class="hero-brand-sub">brand book</span></div>
-    <p class="hero-lead">${fmt(prose)}</p>
+  <section class="hero hero-brand-hero">
+    <div class="hero-brand">ox</div>
+    <div class="hero-tagline">brand book</div>
+    <p class="hero-manifesto">${fmt(manifesto)}</p>${paletteBar}
+    <div class="hero-prose">
+${narrative.map((p) => `      <p class="hero-lead">${fmt(p)}</p>`).join("\n")}
+    </div>
     <div class="hero-links">
       <span class="arch-badge">${esc(version)}</span>
       <a class="hero-link hero-link-muted" href="/">Home</a>
@@ -240,69 +287,58 @@ function renderSection01(raw: string): string {
   const subs = parseSubheadings(raw);
   const introProse = raw.split("###")[0].split("\n").filter((l) => l.trim() && !l.startsWith("#") && l.trim() !== "---").join(" ").trim();
 
-  let html = `
-  <section class="site-section">
-    <div class="site-inner animate-in">
-      <h2 class="section-title">01 &mdash; Essence</h2>`;
-
+  let inner = "";
   if (introProse) {
-    html += `\n      <div class="section-body"><p>${fmt(introProse)}</p></div>`;
+    inner += `      <div class="section-body"><p>${fmt(introProse)}</p></div>\n`;
   }
 
   for (let i = 0; i < subs.length; i++) {
     const sub = subs[i];
     const prose = extractProse(sub.content);
-    html += `\n      <div class="essence-block">`;
-    html += `\n        <h3>${fmt(sub.heading)}</h3>`;
+    inner += `      <div class="essence-block">\n`;
+    inner += `        <h3>${fmt(sub.heading)}</h3>\n`;
     for (const p of prose) {
-      html += `\n        <p>${fmt(p)}</p>`;
+      inner += `        <p>${fmt(p)}</p>\n`;
     }
-    html += `\n      </div>`;
-    if (i < subs.length - 1) html += `\n      <hr class="section-stripe">`;
+    inner += `      </div>\n`;
+    if (i < subs.length - 1) inner += `      <hr class="section-stripe">\n`;
   }
 
-  html += `\n    </div>\n  </section>`;
-  return html;
+  return sectionShell("01", "Essence", inner);
 }
 
 function renderSection02(raw: string): string {
-  const tables = parseTables(raw);
   const subs = parseSubheadings(raw);
   const codeBlocks = parseCodeBlocks(raw);
   const introProse = raw.split("###")[0].split("\n").filter((l) => l.trim() && !l.startsWith("#") && !l.includes("|") && l.trim() !== "---").join(" ").trim();
 
-  let html = `
-  <section class="site-section">
-    <div class="site-inner animate-in">
-      <h2 class="section-title">02 &mdash; Color Palette</h2>`;
-
+  let inner = "";
   if (introProse) {
-    html += `\n      <div class="section-body"><p>${fmt(introProse)}</p></div>`;
+    inner += `      <div class="section-body"><p>${fmt(introProse)}</p></div>\n`;
   }
 
   // Large swatch grid
-  html += `\n      <div class="palette-grid">`;
+  inner += `      <div class="palette-grid">\n`;
   for (const c of PALETTE) {
     const border = c.hex === "#FFFFFF" ? " border: 1px solid var(--t-border);" : "";
     const textColor = contrastText(c.hex);
-    html += `
-        <div class="palette-swatch">
+    inner += `        <div class="palette-swatch">
           <div class="palette-swatch-color" style="background: ${c.hex};${border}">
             <span class="palette-swatch-hex" style="color: ${textColor}">${c.hex}</span>
           </div>
           <div class="palette-swatch-name">${esc(c.name)}</div>
           <div class="palette-swatch-var"><code>${esc(c.cssVar)}</code></div>
           <div class="palette-swatch-desc">${esc(c.description)}</div>
-        </div>`;
+        </div>\n`;
   }
-  html += `\n      </div>`;
+  inner += `      </div>\n`;
 
   // Functional aliases
   if (codeBlocks.length > 0) {
     const aliasSub = subs.find((s) => s.heading.includes("Functional"));
     if (aliasSub) {
-      html += `\n      <h3>Functional Aliases</h3>`;
-      html += `\n      <pre class="code-block">${syntaxHighlightCss(codeBlocks[0])}</pre>`;
+      inner += `      <h3>Functional Aliases</h3>\n`;
+      inner += `      <pre class="code-block">${syntaxHighlightCss(codeBlocks[0])}</pre>\n`;
     }
   }
 
@@ -310,10 +346,10 @@ function renderSection02(raw: string): string {
   const rulesSub = subs.find((s) => s.heading.includes("Color Rules"));
   if (rulesSub) {
     const bullets = parseBullets(rulesSub.content);
-    html += `\n      <h3>Color Rules</h3>`;
-    html += `\n      <ul class="brand-list">`;
-    for (const b of bullets) html += `\n        <li>${fmt(b)}</li>`;
-    html += `\n      </ul>`;
+    inner += `      <h3>Color Rules</h3>\n`;
+    inner += `      <ul class="brand-list">\n`;
+    for (const b of bullets) inner += `        <li>${fmt(b)}</li>\n`;
+    inner += `      </ul>\n`;
   }
 
   // Contrast Rules
@@ -321,34 +357,37 @@ function renderSection02(raw: string): string {
   if (contrastSub) {
     const contrastTable = parseTables(contrastSub.content);
     if (contrastTable.length > 0) {
-      html += `\n      <h3>Contrast Rules</h3>`;
-      html += `\n      <div class="section-body"><p>With seven opaque colors, only certain pairings produce readable text. These rules are absolute.</p></div>`;
-      html += renderContrastTable(contrastTable[0]);
+      inner += `      <h3>Contrast Rules</h3>\n`;
+      inner += `      <div class="section-body"><p>With seven opaque colors, only certain pairings produce readable text. These rules are absolute.</p></div>\n`;
+      inner += renderContrastTable(contrastTable[0]) + "\n";
     }
   }
 
   // Theme chips
-  html += `\n      <h3>The Twelve Themes</h3>`;
-  html += `\n      <div class="theme-chip-grid">`;
+  inner += `      <h3>The Twelve Themes</h3>\n`;
+  inner += `      <div class="theme-chip-grid">\n`;
   for (const name of themeNames()) {
-    html += `\n        <button class="theme-chip" data-theme="${esc(name)}">${esc(name)}</button>`;
+    inner += `        <button class="theme-chip" data-theme="${esc(name)}">${esc(name)}</button>\n`;
   }
-  html += `\n      </div>`;
+  inner += `      </div>\n`;
 
-  // Token matrix
-  html += `\n    </div>\n  </section>`;
+  let html = sectionShell("02", "Color Palette", inner);
+
+  // Token matrix — gets its own wide section
   html += renderTokenMatrix();
 
   // Narrative arc
   const narrativeSub = subs.find((s) => s.heading.includes("Narrative"));
   if (narrativeSub) {
     const prose = extractProse(narrativeSub.content);
+    let narInner = `      <div class="section-body">\n`;
+    for (const p of prose) narInner += `        <p>${fmt(p)}</p>\n`;
+    narInner += `      </div>\n`;
     html += `
   <section class="site-section">
     <div class="site-inner animate-in">
-      <div class="section-body">`;
-    for (const p of prose) html += `\n        <p>${fmt(p)}</p>`;
-    html += `\n      </div>\n    </div>\n  </section>`;
+${narInner}    </div>
+  </section>`;
   }
 
   return html;
@@ -458,17 +497,13 @@ function renderSection03(raw: string): string {
   const codeBlocks = parseCodeBlocks(raw);
   const introProse = raw.split("###")[0].split("\n").filter((l) => l.trim() && !l.startsWith("#") && l.trim() !== "---").join(" ").trim();
 
-  let html = `
-  <section class="site-section">
-    <div class="site-inner animate-in">
-      <h2 class="section-title">03 &mdash; Typography</h2>`;
-
+  let inner = "";
   if (introProse) {
-    html += `\n      <div class="section-body"><p>${fmt(introProse)}</p></div>`;
+    inner += `      <div class="section-body"><p>${fmt(introProse)}</p></div>\n`;
   }
 
   // Type specimens
-  html += `\n      <div class="type-specimens">`;
+  inner += `      <div class="type-specimens">\n`;
 
   const fonts: { heading: string; cssClass: string; badge: string; sub: (typeof subs)[0] | undefined }[] = [
     { heading: "Manrope", cssClass: "type-sample-display", badge: "display", sub: subs.find((s) => s.heading.includes("Manrope")) },
@@ -482,171 +517,140 @@ function renderSection03(raw: string): string {
     const prose = sub ? extractProse(sub.content) : [];
     const description = prose[0] ?? "";
 
-    html += `
-        <div class="type-specimen">
+    inner += `        <div class="type-specimen">
           <div class="type-sample ${f.cssClass}">${esc(f.heading)}</div>
           <div class="type-meta">
             <span class="arch-badge">${f.badge}</span>
             <span class="type-detail">${fmt(description)}</span>
-          </div>`;
+          </div>\n`;
 
-    // Weight strip
     if (tables.length > 0) {
-      html += `\n          <div class="weight-strip">`;
+      inner += `          <div class="weight-strip">\n`;
       for (const row of tables[0].rows) {
         const weight = row[1]?.trim() ?? "400";
         const name = row[0]?.trim() ?? "";
-        html += `\n            <div class="weight-strip-item" style="font-family: var(--font-${f.badge === "display" ? "display" : f.badge === "body" ? "body" : "mono"}); font-weight: ${weight};">`;
-        html += `<span class="weight-strip-sample">${esc(f.heading)}</span>`;
-        html += `<span class="weight-strip-label">${esc(name)} (${weight})</span></div>`;
+        inner += `            <div class="weight-strip-item" style="font-family: var(--font-${f.badge === "display" ? "display" : f.badge === "body" ? "body" : "mono"}); font-weight: ${weight};"><span class="weight-strip-sample">${esc(f.heading)}</span><span class="weight-strip-label">${esc(name)} (${weight})</span></div>\n`;
       }
-      html += `\n          </div>`;
+      inner += `          </div>\n`;
     }
 
-    html += `\n        </div>`;
+    inner += `        </div>\n`;
   }
-  html += `\n      </div>`;
+  inner += `      </div>\n`;
 
-  // Brand title pattern
   const brandSub = subs.find((s) => s.heading.includes("Brand Title"));
   if (brandSub) {
-    html += `\n      <h3>Brand Title Pattern</h3>`;
-    html += `\n      <div class="brand-title-demo"><span class="brand-title-ox">ox</span> <span class="brand-title-desc">playground</span></div>`;
+    inner += `      <h3>Brand Title Pattern</h3>\n`;
+    inner += `      <div class="brand-title-demo"><span class="brand-title-ox">ox</span> <span class="brand-title-desc">playground</span></div>\n`;
     const brandCode = parseCodeBlocks(brandSub.content);
     if (brandCode.length > 0) {
-      html += `\n      <pre class="code-block">${esc(brandCode[0].trim())}</pre>`;
+      inner += `      <pre class="code-block">${esc(brandCode[0].trim())}</pre>\n`;
     }
   }
 
-  // Type scale demo
   const scaleSub = subs.find((s) => s.heading.includes("Type Scale"));
   if (scaleSub) {
-    html += `\n      <h3>Type Scale</h3>`;
+    inner += `      <h3>Type Scale</h3>\n`;
     const steps = [
-      { name: "--step-0", label: "Body text", clamp: "clamp(1rem, 0.95rem + 0.25vw, 1.125rem)" },
-      { name: "--step-1", label: "Lead text, subheads", clamp: "clamp(1.25rem, 1.15rem + 0.5vw, 1.5rem)" },
-      { name: "--step-2", label: "Section subheads", clamp: "clamp(1.5rem, 1.3rem + 1vw, 2rem)" },
-      { name: "--step-3", label: "Section titles", clamp: "clamp(2rem, 1.6rem + 2vw, 3rem)" },
-      { name: "--step-4", label: "Page titles", clamp: "clamp(2.5rem, 1.8rem + 3.5vw, 4.5rem)" },
-      { name: "--step-5", label: "Hero / brand display", clamp: "clamp(3rem, 2rem + 5vw, 7rem)" },
+      { name: "--step-0", label: "Body text" },
+      { name: "--step-1", label: "Lead text, subheads" },
+      { name: "--step-2", label: "Section subheads" },
+      { name: "--step-3", label: "Section titles" },
+      { name: "--step-4", label: "Page titles" },
+      { name: "--step-5", label: "Hero / brand display" },
     ];
-    html += `\n      <div class="type-scale-demo">`;
+    inner += `      <div class="type-scale-demo">\n`;
     for (const step of steps) {
-      html += `\n        <div class="type-scale-step" style="font-size: var(${step.name});">`;
-      html += `<span class="type-scale-label">${esc(step.name)}</span> ${esc(step.label)}</div>`;
+      inner += `        <div class="type-scale-step" style="font-size: var(${step.name});"><span class="type-scale-label">${esc(step.name)}</span> ${esc(step.label)}</div>\n`;
     }
-    html += `\n      </div>`;
-
+    inner += `      </div>\n`;
     const scaleCode = parseCodeBlocks(scaleSub.content);
     if (scaleCode.length > 0) {
-      html += `\n      <pre class="code-block">${syntaxHighlightCss(scaleCode[0])}</pre>`;
+      inner += `      <pre class="code-block">${syntaxHighlightCss(scaleCode[0])}</pre>\n`;
     }
   }
 
-  // Font loading
   const fontLoadSub = subs.find((s) => s.heading.includes("Font Loading"));
   if (fontLoadSub) {
     const fontCode = parseCodeBlocks(fontLoadSub.content);
     if (fontCode.length > 0) {
-      html += `\n      <h3>Font Loading</h3>`;
-      html += `\n      <pre class="code-block">${esc(fontCode[0].trim())}</pre>`;
+      inner += `      <h3>Font Loading</h3>\n`;
+      inner += `      <pre class="code-block">${esc(fontCode[0].trim())}</pre>\n`;
     }
   }
 
-  html += `\n    </div>\n  </section>`;
-  return html;
+  return sectionShell("03", "Typography", inner);
 }
 
 function renderSection04(raw: string): string {
   const subs = parseSubheadings(raw);
   const introProse = raw.split("###")[0].split("\n").filter((l) => l.trim() && !l.startsWith("#") && l.trim() !== "---").join(" ").trim();
 
-  let html = `
-  <section class="site-section">
-    <div class="site-inner animate-in">
-      <h2 class="section-title">04 &mdash; Illustration Style</h2>`;
-
+  let inner = "";
   if (introProse) {
-    html += `\n      <div class="section-body"><p>${fmt(introProse)}</p></div>`;
+    inner += `      <div class="section-body"><p>${fmt(introProse)}</p></div>\n`;
   }
 
-  // Core Style Preamble — blockquote
   const preambleSub = subs.find((s) => s.heading.includes("Core Style Preamble"));
   if (preambleSub) {
     const blockquote = preambleSub.content.split("\n").filter((l) => l.startsWith("> ")).map((l) => l.substring(2)).join(" ").trim();
     if (blockquote) {
-      html += `\n      <h3>Core Style Preamble</h3>`;
-      html += `\n      <blockquote class="brand-callout">${fmt(blockquote)}</blockquote>`;
+      inner += `      <h3>Core Style Preamble</h3>\n`;
+      inner += `      <blockquote class="brand-callout">${fmt(blockquote)}</blockquote>\n`;
     }
   }
 
-  // Shape Language
   const shapeSub = subs.find((s) => s.heading.includes("Shape Language"));
   if (shapeSub) {
     const bullets = parseBullets(shapeSub.content);
-    html += `\n      <h3>Shape Language</h3>`;
-    html += `\n      <dl class="shape-dl">`;
+    inner += `      <h3>Shape Language</h3>\n      <dl class="shape-dl">\n`;
     for (const b of bullets) {
       const cm = b.match(/^\*\*(.+?)\*\*[:\s]*(.+)$/);
-      if (cm) {
-        html += `\n        <dt>${esc(cm[1])}</dt><dd>${fmt(cm[2])}</dd>`;
-      } else {
-        html += `\n        <dd>${fmt(b)}</dd>`;
-      }
+      if (cm) inner += `        <dt>${esc(cm[1])}</dt><dd>${fmt(cm[2])}</dd>\n`;
+      else inner += `        <dd>${fmt(b)}</dd>\n`;
     }
-    html += `\n      </dl>`;
+    inner += `      </dl>\n`;
   }
 
-  // Depth Method
   const depthSub = subs.find((s) => s.heading.includes("Depth"));
   if (depthSub) {
     const prose = extractProse(depthSub.content);
-    html += `\n      <h3>Depth Method</h3>`;
-    for (const p of prose) html += `\n      <div class="section-body"><p>${fmt(p)}</p></div>`;
+    inner += `      <h3>Depth Method</h3>\n`;
+    for (const p of prose) inner += `      <div class="section-body"><p>${fmt(p)}</p></div>\n`;
   }
 
-  // Composition Variables
   const compSub = subs.find((s) => s.heading.includes("Composition"));
   if (compSub) {
     const tables = parseTables(compSub.content);
     if (tables.length > 0) {
-      html += `\n      <h3>Composition Variables</h3>`;
-      html += renderArchTable(tables[0]);
+      inner += `      <h3>Composition Variables</h3>\n`;
+      inner += renderArchTable(tables[0]) + "\n";
     }
   }
 
-  // Scene Prompts
   const sceneSub = subs.find((s) => s.heading.includes("Scene Prompts"));
   if (sceneSub) {
-    html += `\n      <h3>Scene Prompts</h3>`;
-    // Parse scenes from bold headings
+    inner += `      <h3>Scene Prompts</h3>\n      <div class="scene-card-grid">\n`;
     const sceneRegex = /\*\*(.+?):\*\*\n(.+?)(?=\n\n\*\*|\n\n###|$)/gs;
     let sm: RegExpExecArray | null;
-    html += `\n      <div class="scene-card-grid">`;
     while ((sm = sceneRegex.exec(sceneSub.content)) !== null) {
-      html += `
-        <div class="scene-card">
-          <div class="scene-card-name">${esc(sm[1].trim())}</div>
-          <p>${fmt(sm[2].trim())}</p>
-        </div>`;
+      inner += `        <div class="scene-card"><div class="scene-card-name">${esc(sm[1].trim())}</div><p>${fmt(sm[2].trim())}</p></div>\n`;
     }
-    html += `\n      </div>`;
+    inner += `      </div>\n`;
   }
 
-  // Generation Parameters
   const genSub = subs.find((s) => s.heading.includes("Generation"));
   if (genSub) {
     const tables = parseTables(genSub.content);
     if (tables.length > 0) {
-      html += `\n      <h3>Generation Parameters</h3>`;
-      html += renderArchTable(tables[0]);
+      inner += `      <h3>Generation Parameters</h3>\n`;
+      inner += renderArchTable(tables[0]) + "\n";
     }
   }
 
-  // Do / Never
   const doSub = subs.find((s) => s.heading.includes("Do / Never"));
   if (doSub) {
-    html += `\n      <h3>Do / Never</h3>`;
+    inner += `      <h3>Do / Never</h3>\n`;
     const lines = doSub.content.split("\n");
     const doItems: string[] = [];
     const neverItems: string[] = [];
@@ -658,104 +662,80 @@ function renderSection04(raw: string): string {
       if (bm && mode === "do") doItems.push(bm[1]);
       if (bm && mode === "never") neverItems.push(bm[1]);
     }
-    html += `\n      <div class="do-never-grid">`;
-    html += `\n        <div class="do-column"><h4 class="do-heading">Do</h4><ul>`;
-    for (const item of doItems) html += `<li class="do-item">${fmt(item)}</li>`;
-    html += `</ul></div>`;
-    html += `\n        <div class="never-column"><h4 class="never-heading">Never</h4><ul>`;
-    for (const item of neverItems) html += `<li class="never-item">${fmt(item)}</li>`;
-    html += `</ul></div>`;
-    html += `\n      </div>`;
+    inner += `      <div class="do-never-grid">\n`;
+    inner += `        <div class="do-column"><h4 class="do-heading">Do</h4><ul>`;
+    for (const item of doItems) inner += `<li class="do-item">${fmt(item)}</li>`;
+    inner += `</ul></div>\n`;
+    inner += `        <div class="never-column"><h4 class="never-heading">Never</h4><ul>`;
+    for (const item of neverItems) inner += `<li class="never-item">${fmt(item)}</li>`;
+    inner += `</ul></div>\n      </div>\n`;
   }
 
-  html += `\n    </div>\n  </section>`;
-  return html;
+  return sectionShell("04", "Illustration Style", inner);
 }
 
 function renderSection05(raw: string): string {
   const subs = parseSubheadings(raw);
-  const codeBlocks = parseCodeBlocks(raw);
   const introProse = raw.split("###")[0].split("\n").filter((l) => l.trim() && !l.startsWith("#") && l.trim() !== "---").join(" ").trim();
 
-  let html = `
-  <section class="site-section">
-    <div class="site-inner animate-in">
-      <h2 class="section-title">05 &mdash; UI Components</h2>`;
-
+  let inner = "";
   if (introProse) {
-    html += `\n      <div class="section-body"><p>${fmt(introProse)}</p></div>`;
+    inner += `      <div class="section-body"><p>${fmt(introProse)}</p></div>\n`;
   }
 
-  // Buttons
   const btnSub = subs.find((s) => s.heading === "Buttons");
   if (btnSub) {
-    html += `\n      <h3>Buttons</h3>`;
-    html += `\n      <div class="specimen-row">`;
-    html += `\n        <div class="specimen-item"><button class="btn btn-primary">Primary</button><span class="specimen-label">Primary</span></div>`;
-    html += `\n        <div class="specimen-item"><button class="btn btn-secondary">Secondary</button><span class="specimen-label">Secondary</span></div>`;
-    html += `\n        <div class="specimen-item"><button class="btn btn-accent">Accent</button><span class="specimen-label">Accent</span></div>`;
-    html += `\n        <div class="specimen-item"><button class="btn btn-ghost">Ghost</button><span class="specimen-label">Ghost</span></div>`;
-    html += `\n      </div>`;
+    inner += `      <h3>Buttons</h3>\n      <div class="specimen-row">\n`;
+    inner += `        <div class="specimen-item"><button class="btn btn-primary">Primary</button><span class="specimen-label">Primary</span></div>\n`;
+    inner += `        <div class="specimen-item"><button class="btn btn-secondary">Secondary</button><span class="specimen-label">Secondary</span></div>\n`;
+    inner += `        <div class="specimen-item"><button class="btn btn-accent">Accent</button><span class="specimen-label">Accent</span></div>\n`;
+    inner += `        <div class="specimen-item"><button class="btn btn-ghost">Ghost</button><span class="specimen-label">Ghost</span></div>\n`;
+    inner += `      </div>\n`;
     const btnCode = parseCodeBlocks(btnSub.content);
-    if (btnCode.length > 0) {
-      html += `\n      <pre class="code-block">${syntaxHighlightCss(btnCode[0])}</pre>`;
-    }
+    if (btnCode.length > 0) inner += `      <pre class="code-block">${syntaxHighlightCss(btnCode[0])}</pre>\n`;
   }
 
-  // Inputs
   const inputSub = subs.find((s) => s.heading === "Inputs");
   if (inputSub) {
-    html += `\n      <h3>Inputs</h3>`;
-    html += `\n      <div class="specimen-row specimen-row-inputs">`;
-    html += `\n        <div class="specimen-item specimen-item-wide"><input class="ox-input" type="text" placeholder="Text input specimen"><span class="specimen-label">Text Input</span></div>`;
-    html += `\n        <div class="specimen-item specimen-item-wide"><textarea class="ox-input ox-textarea" placeholder="Textarea specimen" rows="2"></textarea><span class="specimen-label">Textarea</span></div>`;
-    html += `\n      </div>`;
+    inner += `      <h3>Inputs</h3>\n      <div class="specimen-row specimen-row-inputs">\n`;
+    inner += `        <div class="specimen-item specimen-item-wide"><input class="ox-input" type="text" placeholder="Text input specimen"><span class="specimen-label">Text Input</span></div>\n`;
+    inner += `        <div class="specimen-item specimen-item-wide"><textarea class="ox-input ox-textarea" placeholder="Textarea specimen" rows="2"></textarea><span class="specimen-label">Textarea</span></div>\n`;
+    inner += `      </div>\n`;
     const inputCode = parseCodeBlocks(inputSub.content);
-    if (inputCode.length > 0) {
-      html += `\n      <pre class="code-block">${syntaxHighlightCss(inputCode[0])}</pre>`;
-    }
+    if (inputCode.length > 0) inner += `      <pre class="code-block">${syntaxHighlightCss(inputCode[0])}</pre>\n`;
   }
 
-  // Badges
   const badgeSub = subs.find((s) => s.heading === "Badges");
   if (badgeSub) {
-    html += `\n      <h3>Badges</h3>`;
-    html += `\n      <div class="specimen-row">`;
-    html += `\n        <div class="specimen-item"><span class="ox-badge ox-badge-indigo">Indigo</span><span class="specimen-label">Indigo</span></div>`;
-    html += `\n        <div class="specimen-item"><span class="ox-badge ox-badge-amber">Amber</span><span class="specimen-label">Amber</span></div>`;
-    html += `\n        <div class="specimen-item"><span class="ox-badge ox-badge-vermillion">Vermillion</span><span class="specimen-label">Vermillion</span></div>`;
-    html += `\n        <div class="specimen-item"><span class="ox-badge ox-badge-ghost">Ghost</span><span class="specimen-label">Ghost</span></div>`;
-    html += `\n      </div>`;
+    inner += `      <h3>Badges</h3>\n      <div class="specimen-row">\n`;
+    inner += `        <div class="specimen-item"><span class="ox-badge ox-badge-indigo">Indigo</span><span class="specimen-label">Indigo</span></div>\n`;
+    inner += `        <div class="specimen-item"><span class="ox-badge ox-badge-amber">Amber</span><span class="specimen-label">Amber</span></div>\n`;
+    inner += `        <div class="specimen-item"><span class="ox-badge ox-badge-vermillion">Vermillion</span><span class="specimen-label">Vermillion</span></div>\n`;
+    inner += `        <div class="specimen-item"><span class="ox-badge ox-badge-ghost">Ghost</span><span class="specimen-label">Ghost</span></div>\n`;
+    inner += `      </div>\n`;
   }
 
-  // Status Indicators
   const statusSub = subs.find((s) => s.heading.includes("Status"));
   if (statusSub) {
-    html += `\n      <h3>Status Indicators</h3>`;
-    html += `\n      <div class="specimen-row">`;
-    html += `\n        <div class="specimen-item"><span class="status-dot status-active"></span><span class="specimen-label">Active</span></div>`;
-    html += `\n        <div class="specimen-item"><span class="status-dot status-idle"></span><span class="specimen-label">Idle</span></div>`;
-    html += `\n        <div class="specimen-item"><span class="status-dot status-error"></span><span class="specimen-label">Error</span></div>`;
-    html += `\n      </div>`;
+    inner += `      <h3>Status Indicators</h3>\n      <div class="specimen-row">\n`;
+    inner += `        <div class="specimen-item"><span class="status-dot status-active"></span><span class="specimen-label">Active</span></div>\n`;
+    inner += `        <div class="specimen-item"><span class="status-dot status-idle"></span><span class="specimen-label">Idle</span></div>\n`;
+    inner += `        <div class="specimen-item"><span class="status-dot status-error"></span><span class="specimen-label">Error</span></div>\n`;
+    inner += `      </div>\n`;
   }
 
-  // Cards
   const cardSub = subs.find((s) => s.heading === "Cards");
   if (cardSub) {
-    html += `\n      <h3>Cards</h3>`;
-    html += `\n      <div class="specimen-card-demo">`;
-    html += `\n        <div class="ox-card ox-card-amber"><div class="ox-card-tag">tool</div><div class="ox-card-body">A card with an amber stripe. The thin band of earth color identifies what the card carries.</div></div>`;
-    html += `\n        <div class="ox-card ox-card-indigo"><div class="ox-card-tag">system</div><div class="ox-card-body">Indigo stripe for system and configuration items.</div></div>`;
-    html += `\n        <div class="ox-card ox-card-vermillion"><div class="ox-card-tag">error</div><div class="ox-card-body">Vermillion stripe for errors and alerts.</div></div>`;
-    html += `\n      </div>`;
+    inner += `      <h3>Cards</h3>\n      <div class="specimen-card-demo">\n`;
+    inner += `        <div class="ox-card ox-card-amber"><div class="ox-card-tag">tool</div><div class="ox-card-body">A card with an amber stripe. The thin band of earth color identifies what the card carries.</div></div>\n`;
+    inner += `        <div class="ox-card ox-card-indigo"><div class="ox-card-tag">system</div><div class="ox-card-body">Indigo stripe for system and configuration items.</div></div>\n`;
+    inner += `        <div class="ox-card ox-card-vermillion"><div class="ox-card-tag">error</div><div class="ox-card-body">Vermillion stripe for errors and alerts.</div></div>\n`;
+    inner += `      </div>\n`;
     const cardCode = parseCodeBlocks(cardSub.content);
-    if (cardCode.length > 0) {
-      html += `\n      <pre class="code-block">${syntaxHighlightCss(cardCode[0])}</pre>`;
-    }
+    if (cardCode.length > 0) inner += `      <pre class="code-block">${syntaxHighlightCss(cardCode[0])}</pre>\n`;
   }
 
-  html += `\n    </div>\n  </section>`;
-  return html;
+  return sectionShell("05", "UI Components", inner);
 }
 
 function renderSection06(raw: string): string {
@@ -763,201 +743,133 @@ function renderSection06(raw: string): string {
   const codeBlocks = parseCodeBlocks(raw);
   const introProse = raw.split("###")[0].split("\n").filter((l) => l.trim() && !l.startsWith("#") && l.trim() !== "---").join(" ").trim();
 
-  let html = `
-  <section class="site-section">
-    <div class="site-inner animate-in">
-      <h2 class="section-title">06 &mdash; Layout</h2>`;
-
+  let inner = "";
   if (introProse) {
-    html += `\n      <div class="section-body"><p>${fmt(introProse)}</p></div>`;
+    inner += `      <div class="section-body"><p>${fmt(introProse)}</p></div>\n`;
   }
 
-  // Structure ASCII
   if (codeBlocks.length > 0) {
-    html += `\n      <h3>Structure</h3>`;
-    html += `\n      <pre class="code-block">${esc(codeBlocks[0].trim())}</pre>`;
+    inner += `      <h3>Structure</h3>\n`;
+    inner += `      <pre class="code-block">${esc(codeBlocks[0].trim())}</pre>\n`;
   }
 
-  // Spacing system
   const spacingSub = subs.find((s) => s.heading.includes("Spacing"));
   if (spacingSub) {
-    html += `\n      <h3>Spacing System</h3>`;
-
+    inner += `      <h3>Spacing System</h3>\n`;
     const spacingTokens = [
-      { name: "--space-xs", value: "0.5rem", px: 8 },
-      { name: "--space-sm", value: "1rem", px: 16 },
-      { name: "--space-md", value: "2rem", px: 32 },
-      { name: "--space-lg", value: "4rem", px: 64 },
-      { name: "--space-xl", value: "6rem", px: 96 },
-      { name: "--space-2xl", value: "10rem", px: 160 },
+      { name: "--space-xs", px: 8 }, { name: "--space-sm", px: 16 },
+      { name: "--space-md", px: 32 }, { name: "--space-lg", px: 64 },
+      { name: "--space-xl", px: 96 }, { name: "--space-2xl", px: 160 },
     ];
-
-    // Visual spacing demo
-    html += `\n      <div class="spacing-demo">`;
-    const maxPx = 160;
+    inner += `      <div class="spacing-demo">\n`;
     for (const token of spacingTokens) {
-      const pct = Math.round((token.px / maxPx) * 100);
-      html += `
-        <div class="spacing-bar-row">
-          <div class="spacing-bar" style="width: ${pct}%;"><span class="spacing-bar-label">${esc(token.name)}</span></div>
-          <span class="spacing-bar-value">${token.px}px</span>
-        </div>`;
+      const pct = Math.round((token.px / 160) * 100);
+      inner += `        <div class="spacing-bar-row"><div class="spacing-bar" style="width: ${pct}%;"><span class="spacing-bar-label">${esc(token.name)}</span></div><span class="spacing-bar-value">${token.px}px</span></div>\n`;
     }
-    html += `\n      </div>`;
-
-    // Spacing table
+    inner += `      </div>\n`;
     const tables = parseTables(spacingSub.content);
-    if (tables.length > 0) {
-      html += renderArchTable(tables[0]);
-    }
+    if (tables.length > 0) inner += renderArchTable(tables[0]) + "\n";
   }
 
-  // Borders
   const borderSub = subs.find((s) => s.heading.includes("Borders"));
   if (borderSub) {
-    html += `\n      <h3>Borders and Dividers</h3>`;
+    inner += `      <h3>Borders and Dividers</h3>\n`;
     const bullets = parseBullets(borderSub.content);
-    html += `\n      <ul class="brand-list">`;
-    for (const b of bullets) html += `\n        <li>${fmt(b)}</li>`;
-    html += `\n      </ul>`;
+    inner += `      <ul class="brand-list">\n`;
+    for (const b of bullets) inner += `        <li>${fmt(b)}</li>\n`;
+    inner += `      </ul>\n`;
     const prose = extractProse(borderSub.content);
-    for (const p of prose) {
-      html += `\n      <div class="section-body"><p>${fmt(p)}</p></div>`;
-    }
+    for (const p of prose) inner += `      <div class="section-body"><p>${fmt(p)}</p></div>\n`;
   }
 
-  html += `\n    </div>\n  </section>`;
-  return html;
+  return sectionShell("06", "Layout", inner);
 }
 
 function renderSection07(raw: string): string {
   const subs = parseSubheadings(raw);
   const introProse = raw.split("###")[0].split("\n").filter((l) => l.trim() && !l.startsWith("#") && l.trim() !== "---").join(" ").trim();
 
-  let html = `
-  <section class="site-section">
-    <div class="site-inner animate-in">
-      <h2 class="section-title">07 &mdash; Motion</h2>`;
-
+  let inner = "";
   if (introProse) {
-    html += `\n      <div class="section-body"><p>${fmt(introProse)}</p></div>`;
+    inner += `      <div class="section-body"><p>${fmt(introProse)}</p></div>\n`;
   }
 
-  // Easing Functions
   const easingSub = subs.find((s) => s.heading.includes("Easing"));
   if (easingSub) {
     const tables = parseTables(easingSub.content);
     if (tables.length > 0) {
-      html += `\n      <h3>Easing Functions</h3>`;
-      html += renderArchTable(tables[0]);
+      inner += `      <h3>Easing Functions</h3>\n`;
+      inner += renderArchTable(tables[0]) + "\n";
     }
   }
 
-  // Easing demos
   const easings = [
-    { name: "Enter", value: "cubic-bezier(0.22, 1, 0.36, 1)", duration: "1.2s", desc: "The long approach" },
-    { name: "Spring", value: "cubic-bezier(0.34, 1.56, 0.64, 1)", duration: "0.8s", desc: "The head toss" },
-    { name: "Pulse", value: "ease-in-out", duration: "1.2s", desc: "The heartbeat" },
+    { name: "Enter", value: "cubic-bezier(0.22, 1, 0.36, 1)", duration: "1.2s" },
+    { name: "Spring", value: "cubic-bezier(0.34, 1.56, 0.64, 1)", duration: "0.8s" },
+    { name: "Pulse", value: "ease-in-out", duration: "1.2s" },
   ];
-
-  html += `\n      <div class="easing-demos">`;
+  inner += `      <div class="easing-demos">\n`;
   for (const e of easings) {
-    html += `
-        <div class="easing-demo">
-          <div class="easing-label"><strong>${esc(e.name)}</strong> <code>${esc(e.value)}</code></div>
-          <div class="easing-track" data-easing="${esc(e.value)}" data-duration="${esc(e.duration)}">
-            <div class="easing-dot"></div>
-          </div>
-        </div>`;
+    inner += `        <div class="easing-demo"><div class="easing-label"><strong>${esc(e.name)}</strong> <code>${esc(e.value)}</code></div><div class="easing-track" data-easing="${esc(e.value)}" data-duration="${esc(e.duration)}"><div class="easing-dot"></div></div></div>\n`;
   }
-  html += `\n      </div>`;
+  inner += `      </div>\n`;
 
-  // Patterns
   const patternsSub = subs.find((s) => s.heading.includes("Patterns"));
   if (patternsSub) {
-    html += `\n      <h3>Motion Patterns</h3>`;
-    html += `\n      <div class="motion-patterns">`;
-    // Enter demo
-    html += `\n        <div class="motion-pattern-demo">`;
-    html += `\n          <div class="motion-enter-card">Enter &mdash; rise from below with fade</div>`;
-    html += `\n        </div>`;
-    // Hover demo
-    html += `\n        <div class="motion-pattern-demo">`;
-    html += `\n          <button class="btn btn-primary motion-hover-btn">Hover me</button>`;
-    html += `\n        </div>`;
-    // Pulse demo
-    html += `\n        <div class="motion-pattern-demo">`;
-    html += `\n          <span class="status-dot status-active"></span> <span class="specimen-label">Pulse &mdash; the steady breath</span>`;
-    html += `\n        </div>`;
-    html += `\n      </div>`;
+    inner += `      <h3>Motion Patterns</h3>\n      <div class="motion-patterns">\n`;
+    inner += `        <div class="motion-pattern-demo"><div class="motion-enter-card">Enter &mdash; rise from below with fade</div></div>\n`;
+    inner += `        <div class="motion-pattern-demo"><button class="btn btn-primary motion-hover-btn">Hover me</button></div>\n`;
+    inner += `        <div class="motion-pattern-demo"><span class="status-dot status-active"></span> <span class="specimen-label">Pulse &mdash; the steady breath</span></div>\n`;
+    inner += `      </div>\n`;
   }
 
-  html += `\n    </div>\n  </section>`;
-  return html;
+  return sectionShell("07", "Motion", inner);
 }
 
 function renderSection08(raw: string): string {
   const subs = parseSubheadings(raw);
   const introProse = raw.split("###")[0].split("\n").filter((l) => l.trim() && !l.startsWith("#") && l.trim() !== "---").join(" ").trim();
 
-  let html = `
-  <section class="site-section">
-    <div class="site-inner animate-in">
-      <h2 class="section-title">08 &mdash; Iconography</h2>`;
-
+  let inner = "";
   if (introProse) {
-    html += `\n      <div class="section-body"><p>${fmt(introProse)}</p></div>`;
+    inner += `      <div class="section-body"><p>${fmt(introProse)}</p></div>\n`;
   }
 
-  // Icon Metaphors
   const metSub = subs.find((s) => s.heading.includes("Icon Metaphors"));
   if (metSub) {
     const tables = parseTables(metSub.content);
     if (tables.length > 0) {
-      html += `\n      <h3>Icon Metaphors</h3>`;
-      html += renderArchTable(tables[0]);
+      inner += `      <h3>Icon Metaphors</h3>\n`;
+      inner += renderArchTable(tables[0]) + "\n";
     }
   }
 
-  // Construction Rules
   const rulesSub = subs.find((s) => s.heading.includes("Construction"));
   if (rulesSub) {
-    html += `\n      <h3>Construction Rules</h3>`;
+    inner += `      <h3>Construction Rules</h3>\n`;
     const bullets = parseBullets(rulesSub.content);
-    html += `\n      <ul class="brand-list">`;
-    for (const b of bullets) html += `\n        <li>${fmt(b)}</li>`;
-    html += `\n      </ul>`;
+    inner += `      <ul class="brand-list">\n`;
+    for (const b of bullets) inner += `        <li>${fmt(b)}</li>\n`;
+    inner += `      </ul>\n`;
   }
 
-  html += `\n    </div>\n  </section>`;
-  return html;
+  return sectionShell("08", "Iconography", inner);
 }
 
 function renderSection09(raw: string): string {
   const subs = parseSubheadings(raw);
   const codeBlocks = parseCodeBlocks(raw);
 
-  let html = `
-  <section class="site-section">
-    <div class="site-inner animate-in">
-      <h2 class="section-title">09 &mdash; CSS Variable Reference</h2>
-      <div class="section-body"><p>The full harness. Every token the system needs, nothing it doesn't.</p></div>`;
+  let inner = `      <div class="section-body"><p>The full harness. Every token the system needs, nothing it doesn't.</p></div>\n`;
 
   const subNames = ["Colors", "Typography", "Spacing", "Shape", "Motion"];
   for (let i = 0; i < subs.length && i < codeBlocks.length; i++) {
     const label = subNames[i] ?? subs[i].heading;
-    html += `\n      <h3>${esc(label)}</h3>`;
-    html += `\n      <pre class="code-block">${syntaxHighlightCss(codeBlocks[i])}</pre>`;
+    inner += `      <h3>${esc(label)}</h3>\n`;
+    inner += `      <pre class="code-block">${syntaxHighlightCss(codeBlocks[i])}</pre>\n`;
   }
 
-  // Theme tokens list (from markdown prose at end)
-  const lastProse = raw.split("###").pop() ?? "";
-  if (lastProse.includes("--t-")) {
-    // Already covered by code blocks above
-  }
-
-  html += `\n    </div>\n  </section>`;
-  return html;
+  return sectionShell("09", "CSS Variable Reference", inner);
 }
 
 // --- Helper: render an arch-table from parsed MdTable ---
@@ -995,8 +907,15 @@ function pageShell(body: string): string {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ox &mdash; Brand Book</title>
   <meta name="description" content="ox brand book. Seven colors, twelve themes, three typefaces. The design system for the ox agentic AI framework.">
+  <link rel="preload" href="/fonts/manrope-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/fonts/outfit-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/theme.css">
   <link rel="stylesheet" href="/site.css">
+  <script>
+    // Apply saved theme before first paint to prevent flash.
+    (function(){var t=localStorage.getItem('ox:theme');if(t)document.documentElement.dataset.theme=t})();
+  </script>
 </head>
 <body>
 

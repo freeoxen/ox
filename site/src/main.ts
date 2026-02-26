@@ -1,25 +1,5 @@
 import { initThemePicker, themeByName } from "../../crates/ox-web/ui/src/theme";
 
-// --- Scroll animations ---
-
-function initScrollAnimations(): void {
-  const observer = new IntersectionObserver(
-    (entries) => {
-      for (const entry of entries) {
-        if (entry.isIntersecting) {
-          entry.target.classList.add("visible");
-          observer.unobserve(entry.target);
-        }
-      }
-    },
-    { threshold: 0.15 },
-  );
-
-  for (const el of document.querySelectorAll(".animate-in")) {
-    observer.observe(el);
-  }
-}
-
 // --- Theme chips ---
 
 function initThemeChips(): void {
@@ -75,7 +55,6 @@ function initMotionDemos(): void {
 
 document.addEventListener("DOMContentLoaded", () => {
   initThemePicker();
-  initScrollAnimations();
   initThemeChips();
   initMotionDemos();
 });
