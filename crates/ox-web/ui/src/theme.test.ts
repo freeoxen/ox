@@ -296,27 +296,28 @@ describe('initThemePicker', () => {
     }
   });
 
-  test('sets data-theme on body', () => {
+  test('sets data-theme on html and body', () => {
     initThemePicker();
+    expect(document.documentElement.dataset.theme).toBeTruthy();
     expect(document.body.dataset.theme).toBeTruthy();
   });
 
   test('defaults to early-afternoon when no saved theme', () => {
     initThemePicker();
-    expect(document.body.dataset.theme).toBe('early-afternoon');
+    expect(document.documentElement.dataset.theme).toBe('early-afternoon');
   });
 
   test('migrates old saved theme', () => {
     localStorage.setItem('ox:theme', 'high-noon');
     initThemePicker();
-    expect(document.body.dataset.theme).toBe('noon');
+    expect(document.documentElement.dataset.theme).toBe('noon');
     expect(localStorage.getItem('ox:theme')).toBe('noon');
   });
 
   test('preserves valid new theme name', () => {
     localStorage.setItem('ox:theme', 'midnight');
     initThemePicker();
-    expect(document.body.dataset.theme).toBe('midnight');
+    expect(document.documentElement.dataset.theme).toBe('midnight');
   });
 
   test('clicking an hour group switches theme', () => {
@@ -324,7 +325,7 @@ describe('initThemePicker', () => {
     const twilight = document.querySelector('[data-theme-name="twilight"]') as Element;
     expect(twilight).not.toBeNull();
     twilight.dispatchEvent(new Event('click', { bubbles: true }));
-    expect(document.body.dataset.theme).toBe('twilight');
+    expect(document.documentElement.dataset.theme).toBe('twilight');
     expect(localStorage.getItem('ox:theme')).toBe('twilight');
   });
 

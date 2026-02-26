@@ -9,9 +9,19 @@ import { ToolStore } from './tool-store';
 import { initThemePicker } from './theme';
 import type { AgentEvent } from './types';
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 async function main(): Promise<void> {
   initThemePicker();
+  const started = Date.now();
   await init('/pkg/ox_web_bg.wasm');
+
+  const MIN_SPINNER_MS = 400;
+  const elapsed = Date.now() - started;
+  if (elapsed < MIN_SPINNER_MS) await sleep(MIN_SPINNER_MS - elapsed);
+  setStatus('', '');
 
   const systemPrompt = [
     'You are a helpful assistant with access to a tool called reverse_text.',
@@ -81,6 +91,7 @@ async function main(): Promise<void> {
   // Restore persisted tools and render tool panel
   applyProfile(agent, ToolStore.getActiveProfile());
   refreshToolPanel(agent);
+  refreshRequestLog();
 
   output.textContent = '';
   appendLine('Ready. Try: "reverse the word hello"', 'system');

@@ -13,13 +13,14 @@
   <link rel="stylesheet" href="/theme.css">
   <link rel="stylesheet" href="/site.css">
   <script>
-    // Apply saved theme before first paint to prevent flash.
-    (function(){var t=localStorage.getItem('ox:theme');if(t)document.documentElement.dataset.theme=t})();
+    (function(){
+      var t=localStorage.getItem('ox:theme');if(t)document.documentElement.dataset.theme=t;
+    })();
   </script>
 </head>
 <body>
 
-  <div id="theme-picker"></div>
+  <div id="theme-picker"><svg viewBox="0 0 100 100" width="54" height="54" class="clock" aria-hidden="true"><circle cx="50" cy="50" r="45" class="clock-face"/><g class="clock-hand-group" style="transform:rotate(30deg);transform-origin:50px 50px"><line x1="50" y1="50" x2="50" y2="20" class="clock-hand"/></g><circle cx="50" cy="50" r="3" class="clock-center"/><circle cx="50" cy="12" r="3" class="clock-dot"/><circle cx="69" cy="17.1" r="3" class="clock-dot"/><circle cx="82.9" cy="31" r="3" class="clock-dot"/><circle cx="88" cy="50" r="3" class="clock-dot"/><circle cx="82.9" cy="69" r="3" class="clock-dot"/><circle cx="69" cy="82.9" r="3" class="clock-dot"/><circle cx="50" cy="88" r="3" class="clock-dot"/><circle cx="31" cy="82.9" r="3" class="clock-dot"/><circle cx="17.1" cy="69" r="3" class="clock-dot"/><circle cx="12" cy="50" r="3" class="clock-dot"/><circle cx="17.1" cy="31" r="3" class="clock-dot"/><circle cx="31" cy="17.1" r="3" class="clock-dot"/></svg></div>
 
   <!-- Hero -->
   <section class="hero">

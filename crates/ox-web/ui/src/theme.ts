@@ -510,6 +510,7 @@ export function initThemePicker(): void {
   });
 
   updateToggle();
+  picker.textContent = '';
   picker.appendChild(svg);
   picker.appendChild(toggle);
 
