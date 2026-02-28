@@ -13,8 +13,5 @@ export class OxAgent {
   unregister_tool(name: string): void;
   set_api_key(api_key: string): void;
 }
-export function create_agent(
-  system_prompt: string,
-  api_key: string,
-): OxAgent;
+export function create_agent(system_prompt: string, api_key: string): OxAgent;
 export default function init(module_or_path?: string): Promise<unknown>;

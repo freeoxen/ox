@@ -1,17 +1,17 @@
-import type { ToolDef } from './types';
+import type { ToolDef } from "./types";
 
 export const BUILTIN_TOOLS: ToolDef[] = [
   {
-    name: 'reverse_text',
-    description: 'Reverse the characters in a string',
-    params: '(text: string)',
+    name: "reverse_text",
+    description: "Reverse the characters in a string",
+    params: "(text: string)",
     body: 'return text.split("").reverse().join("");',
   },
 ];
 
 const BUILTIN_NAMES = new Set(BUILTIN_TOOLS.map((t) => t.name));
 
-export const FACTORY_PROFILE = 'factory default';
+export const FACTORY_PROFILE = "factory default";
 
 interface ProfileData {
   active: string;
@@ -32,7 +32,7 @@ export const ToolStore = {
     for (const t of BUILTIN_TOOLS) lib[t.name] = t;
     try {
       const user = JSON.parse(
-        localStorage.getItem('ox:tool-library') as string,
+        localStorage.getItem("ox:tool-library") as string,
       );
       if (user) Object.assign(lib, user);
     } catch (_) {
@@ -44,7 +44,7 @@ export const ToolStore = {
   _loadUserLibrary(): Record<string, ToolDef> {
     try {
       return (
-        JSON.parse(localStorage.getItem('ox:tool-library') as string) || {}
+        JSON.parse(localStorage.getItem("ox:tool-library") as string) || {}
       );
     } catch (_) {
       return {};
@@ -52,7 +52,7 @@ export const ToolStore = {
   },
 
   saveLibrary(lib: Record<string, ToolDef>): void {
-    localStorage.setItem('ox:tool-library', JSON.stringify(lib));
+    localStorage.setItem("ox:tool-library", JSON.stringify(lib));
   },
 
   saveTool(def: ToolDef): void {
@@ -76,7 +76,7 @@ export const ToolStore = {
   _loadUserProfiles(): ProfileData {
     try {
       const data = JSON.parse(
-        localStorage.getItem('ox:profiles') as string,
+        localStorage.getItem("ox:profiles") as string,
       ) as ProfileData;
       if (data && data.profiles && Object.keys(data.profiles).length > 0) {
         return data;
@@ -88,7 +88,7 @@ export const ToolStore = {
   },
 
   _saveUserProfiles(data: ProfileData): void {
-    localStorage.setItem('ox:profiles', JSON.stringify(data));
+    localStorage.setItem("ox:profiles", JSON.stringify(data));
   },
 
   getActiveProfile(): string {

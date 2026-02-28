@@ -441,9 +441,7 @@ async fn fetch_completion(api_key: &str, request_body: &str) -> Result<String, S
             .map_err(|e| format!("{e:?}"))?;
         let body = text.as_string().unwrap_or_default();
         return match status {
-            401 => {
-                Err("Invalid API key — check your Anthropic API key and try again".to_string())
-            }
+            401 => Err("Invalid API key — check your Anthropic API key and try again".to_string()),
             _ => Err(format!("HTTP {status}: {body}")),
         };
     }

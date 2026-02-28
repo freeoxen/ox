@@ -1,27 +1,27 @@
-import type { ToolDef, CompiledTool } from './types';
+import type { ToolDef, CompiledTool } from "./types";
 
 const TS_TYPE_MAP: Record<string, string> = {
-  string: 'string',
-  number: 'number',
-  boolean: 'boolean',
-  integer: 'integer',
+  string: "string",
+  number: "number",
+  boolean: "boolean",
+  integer: "integer",
 };
 
 interface ParamSchema {
-  type: 'object';
+  type: "object";
   properties: Record<string, { type: string }>;
   required: string[];
 }
 
 export function parseParamSignature(sig: string): ParamSchema {
   sig = sig.trim();
-  if (sig.startsWith('(') && sig.endsWith(')')) {
+  if (sig.startsWith("(") && sig.endsWith(")")) {
     sig = sig.slice(1, -1);
   }
   const properties: Record<string, { type: string }> = {};
   const required: string[] = [];
-  if (!sig) return { type: 'object', properties, required };
-  for (const param of sig.split(',')) {
+  if (!sig) return { type: "object", properties, required };
+  for (const param of sig.split(",")) {
     const trimmed = param.trim();
     if (!trimmed) continue;
     const m = trimmed.match(/^(\w+)(\?)?\s*:\s*(\w+)$/);
@@ -32,21 +32,21 @@ export function parseParamSignature(sig: string): ParamSchema {
     properties[name] = { type: jsonType };
     if (!optional) required.push(name);
   }
-  return { type: 'object', properties, required };
+  return { type: "object", properties, required };
 }
 
 export function compileTool(def: ToolDef): CompiledTool {
   const schemaObj = parseParamSignature(def.params);
   const paramNames = Object.keys(schemaObj.properties);
   const destructureArg =
-    paramNames.length > 0 ? '{' + paramNames.join(', ') + '}' : '_';
+    paramNames.length > 0 ? "{" + paramNames.join(", ") + "}" : "_";
   const userFn = new Function(destructureArg, def.body);
   const callback = (inputJson: string): string => {
     try {
       return String(userFn(JSON.parse(inputJson)));
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      return 'error: ' + msg;
+      return "error: " + msg;
     }
   };
   return { schemaJson: JSON.stringify(schemaObj), callback };

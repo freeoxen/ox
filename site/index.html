@@ -1,61 +1,126 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ox — agentic AI on a filesystem</title>
-  <meta name="description" content="ox is an agentic AI framework built on StructFS. Every capability is a filesystem path.">
-  <link rel="preload" href="/fonts/manrope-latin.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="preload" href="/fonts/outfit-latin.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="preload" href="/fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="preload" href="/fonts/ibm-plex-mono-500-latin.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="preload" href="/fonts/ibm-plex-mono-600-latin.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="/theme.css">
-  <link rel="stylesheet" href="/site.css">
-  <script>
-    (function(){
-      var t=localStorage.getItem('ox:theme');if(t)document.documentElement.dataset.theme=t;
-    })();
-  </script>
-</head>
-<body>
-
-  <div id="theme-picker"><svg viewBox="0 0 100 100" width="54" height="54" class="clock" aria-hidden="true"><circle cx="50" cy="50" r="45" class="clock-face"/><g class="clock-hand-group" style="transform:rotate(30deg);transform-origin:50px 50px"><line x1="50" y1="50" x2="50" y2="20" class="clock-hand"/></g><circle cx="50" cy="50" r="3" class="clock-center"/><circle cx="50" cy="12" r="3" class="clock-dot"/><circle cx="69" cy="17.1" r="3" class="clock-dot"/><circle cx="82.9" cy="31" r="3" class="clock-dot"/><circle cx="88" cy="50" r="3" class="clock-dot"/><circle cx="82.9" cy="69" r="3" class="clock-dot"/><circle cx="69" cy="82.9" r="3" class="clock-dot"/><circle cx="50" cy="88" r="3" class="clock-dot"/><circle cx="31" cy="82.9" r="3" class="clock-dot"/><circle cx="17.1" cy="69" r="3" class="clock-dot"/><circle cx="12" cy="50" r="3" class="clock-dot"/><circle cx="17.1" cy="31" r="3" class="clock-dot"/><circle cx="31" cy="17.1" r="3" class="clock-dot"/></svg></div>
-
-  <!-- Hero -->
-  <section class="hero">
-    <div class="hero-brand">ox</div>
-    <div class="hero-tagline">patient, grounded, immovably strong</div>
-    <p class="hero-lead">
-      An agentic AI framework where every capability is a filesystem path.
-      Built on <a href="https://github.com/StructFS/structfs">StructFS</a>.
-      Read a path to inspect state. Write a path to change it.
-    </p>
-    <div class="hero-links">
-      <a class="hero-link" href="https://github.com/freeoxen/ox">GitHub</a>
-      <a class="hero-link" href="/playground/">Playground</a>
-      <a class="hero-link hero-link-muted" href="/brand.html">Brand Book</a>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ox — agentic AI on a filesystem</title>
+    <meta
+      name="description"
+      content="ox is an agentic AI framework built on StructFS. Every capability is a filesystem path."
+    />
+    <link
+      rel="preload"
+      href="/fonts/manrope-latin.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link
+      rel="preload"
+      href="/fonts/outfit-latin.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link
+      rel="preload"
+      href="/fonts/ibm-plex-mono-400-latin.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link
+      rel="preload"
+      href="/fonts/ibm-plex-mono-500-latin.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link
+      rel="preload"
+      href="/fonts/ibm-plex-mono-600-latin.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link rel="stylesheet" href="/theme.css" />
+    <link rel="stylesheet" href="/site.css" />
+    <script>
+      (function () {
+        var t = localStorage.getItem("ox:theme");
+        if (t) document.documentElement.dataset.theme = t;
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="theme-picker">
+      <svg
+        viewBox="0 0 100 100"
+        width="54"
+        height="54"
+        class="clock"
+        aria-hidden="true"
+      >
+        <circle cx="50" cy="50" r="45" class="clock-face" />
+        <g
+          class="clock-hand-group"
+          style="transform: rotate(30deg); transform-origin: 50px 50px"
+        >
+          <line x1="50" y1="50" x2="50" y2="20" class="clock-hand" />
+        </g>
+        <circle cx="50" cy="50" r="3" class="clock-center" />
+        <circle cx="50" cy="12" r="3" class="clock-dot" />
+        <circle cx="69" cy="17.1" r="3" class="clock-dot" />
+        <circle cx="82.9" cy="31" r="3" class="clock-dot" />
+        <circle cx="88" cy="50" r="3" class="clock-dot" />
+        <circle cx="82.9" cy="69" r="3" class="clock-dot" />
+        <circle cx="69" cy="82.9" r="3" class="clock-dot" />
+        <circle cx="50" cy="88" r="3" class="clock-dot" />
+        <circle cx="31" cy="82.9" r="3" class="clock-dot" />
+        <circle cx="17.1" cy="69" r="3" class="clock-dot" />
+        <circle cx="12" cy="50" r="3" class="clock-dot" />
+        <circle cx="17.1" cy="31" r="3" class="clock-dot" />
+        <circle cx="31" cy="17.1" r="3" class="clock-dot" />
+      </svg>
     </div>
-  </section>
 
-  <!-- How it works -->
-  <section class="site-section">
-    <div class="site-inner animate-in">
-      <h2 class="section-title">The namespace is the agent</h2>
-      <div class="section-body">
-        <p>
-          System prompt, conversation history, tool definitions, and model config
-          all live as paths in a virtual namespace. Read a path to inspect state.
-          Write a path to change it.
-        </p>
-        <p>
-          The kernel reads <code>/prompt</code>, streams a completion, writes results
-          back, and loops until the model stops calling tools. Tools are shell-provided,
-          not baked in &mdash; every shell (browser, WASI, native) brings its own tools
-          and transport. The ox carries what it needs and nothing extra.
-        </p>
+    <!-- Hero -->
+    <section class="hero">
+      <div class="hero-brand">ox</div>
+      <div class="hero-tagline">patient, grounded, immovably strong</div>
+      <p class="hero-lead">
+        An agentic AI framework where every capability is a filesystem path.
+        Built on <a href="https://github.com/StructFS/structfs">StructFS</a>.
+        Read a path to inspect state. Write a path to change it.
+      </p>
+      <div class="hero-links">
+        <a class="hero-link" href="https://github.com/freeoxen/ox">GitHub</a>
+        <a class="hero-link" href="/playground/">Playground</a>
+        <a class="hero-link hero-link-muted" href="/brand.html">Brand Book</a>
       </div>
-      <pre class="code-block"><span class="code-comment">// Read the assembled prompt from the namespace</span>
+    </section>
+
+    <!-- How it works -->
+    <section class="site-section">
+      <div class="site-inner animate-in">
+        <h2 class="section-title">The namespace is the agent</h2>
+        <div class="section-body">
+          <p>
+            System prompt, conversation history, tool definitions, and model
+            config all live as paths in a virtual namespace. Read a path to
+            inspect state. Write a path to change it.
+          </p>
+          <p>
+            The kernel reads <code>/prompt</code>, streams a completion, writes
+            results back, and loops until the model stops calling tools. Tools
+            are shell-provided, not baked in &mdash; every shell (browser, WASI,
+            native) brings its own tools and transport. The ox carries what it
+            needs and nothing extra.
+          </p>
+        </div>
+        <pre
+          class="code-block"
+        ><span class="code-comment">// Read the assembled prompt from the namespace</span>
 namespace.read(&amp;path!("prompt"))
 
 <span class="code-comment">// Append to conversation history</span>
@@ -63,69 +128,86 @@ namespace.write(&amp;path!("history/append"), record)
 
 <span class="code-comment">// Tools are shell-provided — register from JS, WASI, or native</span>
 agent.register_tool("search", search_tool)</pre>
-    </div>
-  </section>
+      </div>
+    </section>
 
-  <!-- Architecture -->
-  <section class="site-section">
-    <div class="site-inner animate-in">
-      <h2 class="section-title">Crates</h2>
-      <table class="arch-table">
-        <thead>
-          <tr><th>Crate</th><th>Role</th><th></th></tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td class="crate-name">ox-kernel</td>
-            <td><span class="arch-badge">core</span></td>
-            <td>State machine, Tool/Transport traits, ToolRegistry, agentic loop, StructFS re-exports</td>
-          </tr>
-          <tr>
-            <td class="crate-name">ox-context</td>
-            <td><span class="arch-badge">namespace</span></td>
-            <td>Namespace store router, providers (System, Tools, Model), prompt synthesis</td>
-          </tr>
-          <tr>
-            <td class="crate-name">ox-history</td>
-            <td><span class="arch-badge">memory</span></td>
-            <td>HistoryProvider &mdash; conversation state as a StructFS store</td>
-          </tr>
-          <tr>
-            <td class="crate-name">ox-core</td>
-            <td><span class="arch-badge">agent</span></td>
-            <td>Agent composition &mdash; wires kernel + namespace + stores, re-exports public types</td>
-          </tr>
-          <tr>
-            <td class="crate-name">ox-web</td>
-            <td><span class="arch-badge">browser</span></td>
-            <td>Wasm shell, JS tool registration, theme picker, debug UI</td>
-          </tr>
-          <tr>
-            <td class="crate-name">ox-dev-server</td>
-            <td><span class="arch-badge">proxy</span></td>
-            <td>Axum binary &mdash; Anthropic API proxy, serves the playground</td>
-          </tr>
-          <tr>
-            <td class="crate-name">ox-wasi</td>
-            <td><span class="arch-badge">stub</span></td>
-            <td>WASI target shell</td>
-          </tr>
-          <tr>
-            <td class="crate-name">ox-emscripten</td>
-            <td><span class="arch-badge">stub</span></td>
-            <td>Emscripten target shell</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-  </section>
+    <!-- Architecture -->
+    <section class="site-section">
+      <div class="site-inner animate-in">
+        <h2 class="section-title">Crates</h2>
+        <table class="arch-table">
+          <thead>
+            <tr>
+              <th>Crate</th>
+              <th>Role</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="crate-name">ox-kernel</td>
+              <td><span class="arch-badge">core</span></td>
+              <td>
+                State machine, Tool/Transport traits, ToolRegistry, agentic
+                loop, StructFS re-exports
+              </td>
+            </tr>
+            <tr>
+              <td class="crate-name">ox-context</td>
+              <td><span class="arch-badge">namespace</span></td>
+              <td>
+                Namespace store router, providers (System, Tools, Model), prompt
+                synthesis
+              </td>
+            </tr>
+            <tr>
+              <td class="crate-name">ox-history</td>
+              <td><span class="arch-badge">memory</span></td>
+              <td>
+                HistoryProvider &mdash; conversation state as a StructFS store
+              </td>
+            </tr>
+            <tr>
+              <td class="crate-name">ox-core</td>
+              <td><span class="arch-badge">agent</span></td>
+              <td>
+                Agent composition &mdash; wires kernel + namespace + stores,
+                re-exports public types
+              </td>
+            </tr>
+            <tr>
+              <td class="crate-name">ox-web</td>
+              <td><span class="arch-badge">browser</span></td>
+              <td>Wasm shell, JS tool registration, theme picker, debug UI</td>
+            </tr>
+            <tr>
+              <td class="crate-name">ox-dev-server</td>
+              <td><span class="arch-badge">proxy</span></td>
+              <td>
+                Axum binary &mdash; Anthropic API proxy, serves the playground
+              </td>
+            </tr>
+            <tr>
+              <td class="crate-name">ox-wasi</td>
+              <td><span class="arch-badge">stub</span></td>
+              <td>WASI target shell</td>
+            </tr>
+            <tr>
+              <td class="crate-name">ox-emscripten</td>
+              <td><span class="arch-badge">stub</span></td>
+              <td>Emscripten target shell</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
 
-  <!-- Footer -->
-  <footer class="site-footer">
-    <span class="footer-brand">ox</span>
-    <span class="footer-by">by AdjectiveNoun</span>
-  </footer>
+    <!-- Footer -->
+    <footer class="site-footer">
+      <span class="footer-brand">ox</span>
+      <span class="footer-by">by AdjectiveNoun</span>
+    </footer>
 
-  <script type="module" src="/main.js"></script>
-</body>
+    <script type="module" src="/main.js"></script>
+  </body>
 </html>

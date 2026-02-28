@@ -17,13 +17,61 @@ interface PaletteColor {
 }
 
 const PALETTE: PaletteColor[] = [
-  { name: "Deep Indigo", hex: "#2B2D7C", cssVar: "--indigo", initial: "I", description: "The bedrock. Backgrounds, deep surfaces, text, receding layers." },
-  { name: "Slate", hex: "#6B6D8F", cssVar: "--slate", initial: "S", description: "The ox's shadow on worn stone. Cool mid-tone for muted text." },
-  { name: "Vermillion", hex: "#E8471B", cssVar: "--vermillion", initial: "V", description: "The brand on the flank. Errors, emphasis. Rare because it means something." },
-  { name: "Clay", hex: "#B8926E", cssVar: "--clay", initial: "C", description: "Dry earth, the path under hooves. Warm mid-tone for muted text." },
-  { name: "Warm Amber", hex: "#F5A623", cssVar: "--amber", initial: "A", description: "The sun overhead. Interactive elements, highlights, active states." },
-  { name: "Warm Beige", hex: "#E8D5C0", cssVar: "--beige", initial: "B", description: "Dry earth. Page background, subtle borders, secondary surfaces." },
-  { name: "White", hex: "#FFFFFF", cssVar: "--white", initial: "W", description: "Open sky. Cards, panels, input fields. Space where content breathes." },
+  {
+    name: "Deep Indigo",
+    hex: "#2B2D7C",
+    cssVar: "--indigo",
+    initial: "I",
+    description:
+      "The bedrock. Backgrounds, deep surfaces, text, receding layers.",
+  },
+  {
+    name: "Slate",
+    hex: "#6B6D8F",
+    cssVar: "--slate",
+    initial: "S",
+    description: "The ox's shadow on worn stone. Cool mid-tone for muted text.",
+  },
+  {
+    name: "Vermillion",
+    hex: "#E8471B",
+    cssVar: "--vermillion",
+    initial: "V",
+    description:
+      "The brand on the flank. Errors, emphasis. Rare because it means something.",
+  },
+  {
+    name: "Clay",
+    hex: "#B8926E",
+    cssVar: "--clay",
+    initial: "C",
+    description:
+      "Dry earth, the path under hooves. Warm mid-tone for muted text.",
+  },
+  {
+    name: "Warm Amber",
+    hex: "#F5A623",
+    cssVar: "--amber",
+    initial: "A",
+    description:
+      "The sun overhead. Interactive elements, highlights, active states.",
+  },
+  {
+    name: "Warm Beige",
+    hex: "#E8D5C0",
+    cssVar: "--beige",
+    initial: "B",
+    description:
+      "Dry earth. Page background, subtle borders, secondary surfaces.",
+  },
+  {
+    name: "White",
+    hex: "#FFFFFF",
+    cssVar: "--white",
+    initial: "W",
+    description:
+      "Open sky. Cards, panels, input fields. Space where content breathes.",
+  },
 ];
 
 const HEX_TO_INITIAL: Record<string, string> = {};
@@ -95,11 +143,19 @@ function parseTables(raw: string): MdTable[] {
     if (line.includes("|") && !line.startsWith("```")) {
       // Potential table header
       const headerCells = splitTableRow(line);
-      if (headerCells.length > 1 && i + 1 < lines.length && lines[i + 1].match(/^\|[\s\-:|]+\|/)) {
+      if (
+        headerCells.length > 1 &&
+        i + 1 < lines.length &&
+        lines[i + 1].match(/^\|[\s\-:|]+\|/)
+      ) {
         // Skip separator
         i += 2;
         const rows: string[][] = [];
-        while (i < lines.length && lines[i].includes("|") && !lines[i].startsWith("```")) {
+        while (
+          i < lines.length &&
+          lines[i].includes("|") &&
+          !lines[i].startsWith("```")
+        ) {
           const cells = splitTableRow(lines[i]);
           if (cells.length > 1) rows.push(cells);
           else break;
@@ -153,7 +209,8 @@ function parseSubheadings(raw: string): { heading: string; content: string }[] {
   const parts = raw.split(/^### /m);
   for (let i = 1; i < parts.length; i++) {
     const nlIdx = parts[i].indexOf("\n");
-    const heading = nlIdx >= 0 ? parts[i].substring(0, nlIdx).trim() : parts[i].trim();
+    const heading =
+      nlIdx >= 0 ? parts[i].substring(0, nlIdx).trim() : parts[i].trim();
     const content = nlIdx >= 0 ? parts[i].substring(nlIdx + 1).trim() : "";
     result.push({ heading, content });
   }
@@ -168,10 +225,16 @@ function extractProse(raw: string): string[] {
   let inTable = false;
 
   for (const line of lines) {
-    if (line.startsWith("```")) { inCode = !inCode; continue; }
+    if (line.startsWith("```")) {
+      inCode = !inCode;
+      continue;
+    }
     if (inCode) continue;
     if (line.match(/^\|.*\|/) || line.match(/^###/) || line.match(/^>/)) {
-      if (buf.length > 0) { paragraphs.push(buf.join(" ")); buf = []; }
+      if (buf.length > 0) {
+        paragraphs.push(buf.join(" "));
+        buf = [];
+      }
       inTable = line.includes("|");
       continue;
     }
@@ -180,8 +243,15 @@ function extractProse(raw: string): string[] {
 
     const trimmed = line.trim();
     if (trimmed === "" || trimmed === "---") {
-      if (buf.length > 0) { paragraphs.push(buf.join(" ")); buf = []; }
-    } else if (!trimmed.startsWith("- ") && !trimmed.startsWith("**") && !trimmed.startsWith("#")) {
+      if (buf.length > 0) {
+        paragraphs.push(buf.join(" "));
+        buf = [];
+      }
+    } else if (
+      !trimmed.startsWith("- ") &&
+      !trimmed.startsWith("**") &&
+      !trimmed.startsWith("#")
+    ) {
       buf.push(trimmed);
     }
   }
@@ -204,7 +274,7 @@ function fmt(s: string): string {
   let out = s;
   out = out.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
   out = out.replace(/\*(.+?)\*/g, "<em>$1</em>");
-  out = out.replace(/`([^`]+)`/g, '<code>$1</code>');
+  out = out.replace(/`([^`]+)`/g, "<code>$1</code>");
   out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
   out = out.replace(/&mdash;/g, "&mdash;");
   out = out.replace(/&ndash;/g, "&ndash;");
@@ -214,14 +284,23 @@ function fmt(s: string): string {
 }
 
 function esc(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 // --- Section shell ---
 // Wraps content in a section with number marker, stripe, and alternating surface.
 // Even sections (02,04,06,08) get an inset background — terrain layers.
 
-function sectionShell(num: string, title: string, inner: string, wide = false): string {
+function sectionShell(
+  num: string,
+  title: string,
+  inner: string,
+  wide = false,
+): string {
   const n = parseInt(num, 10);
   const inset = n % 2 === 0;
   const surfaceClass = inset ? " section-inset" : "";
@@ -249,7 +328,10 @@ function renderPreamble(raw: string): string {
   for (const line of raw.split("\n")) {
     const t = line.trim();
     if (t === "" || t === "---") {
-      if (buf.length > 0) { paragraphs.push(buf.join(" ")); buf = []; }
+      if (buf.length > 0) {
+        paragraphs.push(buf.join(" "));
+        buf = [];
+      }
     } else if (!t.startsWith("#") && !t.startsWith("**v")) {
       buf.push(t);
     }
@@ -285,7 +367,12 @@ ${narrative.map((p) => `      <p class="hero-lead">${fmt(p)}</p>`).join("\n")}
 
 function renderSection01(raw: string): string {
   const subs = parseSubheadings(raw);
-  const introProse = raw.split("###")[0].split("\n").filter((l) => l.trim() && !l.startsWith("#") && l.trim() !== "---").join(" ").trim();
+  const introProse = raw
+    .split("###")[0]
+    .split("\n")
+    .filter((l) => l.trim() && !l.startsWith("#") && l.trim() !== "---")
+    .join(" ")
+    .trim();
 
   let inner = "";
   if (introProse) {
@@ -310,7 +397,18 @@ function renderSection01(raw: string): string {
 function renderSection02(raw: string): string {
   const subs = parseSubheadings(raw);
   const codeBlocks = parseCodeBlocks(raw);
-  const introProse = raw.split("###")[0].split("\n").filter((l) => l.trim() && !l.startsWith("#") && !l.includes("|") && l.trim() !== "---").join(" ").trim();
+  const introProse = raw
+    .split("###")[0]
+    .split("\n")
+    .filter(
+      (l) =>
+        l.trim() &&
+        !l.startsWith("#") &&
+        !l.includes("|") &&
+        l.trim() !== "---",
+    )
+    .join(" ")
+    .trim();
 
   let inner = "";
   if (introProse) {
@@ -320,7 +418,8 @@ function renderSection02(raw: string): string {
   // Large swatch grid
   inner += `      <div class="palette-grid">\n`;
   for (const c of PALETTE) {
-    const border = c.hex === "#FFFFFF" ? " border: 1px solid var(--t-border);" : "";
+    const border =
+      c.hex === "#FFFFFF" ? " border: 1px solid var(--t-border);" : "";
     const textColor = contrastText(c.hex);
     inner += `        <div class="palette-swatch">
           <div class="palette-swatch-color" style="background: ${c.hex};${border}">
@@ -395,8 +494,13 @@ ${narInner}    </div>
 
 function renderContrastTable(table: MdTable): string {
   const pairColorMap: Record<string, string> = {
-    I: "#2B2D7C", S: "#6B6D8F", V: "#E8471B", C: "#B8926E",
-    A: "#F5A623", B: "#E8D5C0", W: "#FFFFFF",
+    I: "#2B2D7C",
+    S: "#6B6D8F",
+    V: "#E8471B",
+    C: "#B8926E",
+    A: "#F5A623",
+    B: "#E8D5C0",
+    W: "#FFFFFF",
   };
 
   // Split into two columns
@@ -424,9 +528,16 @@ function renderContrastTable(table: MdTable): string {
 
       let verdictClass = "verdict-ok";
       const vl = verdict.toLowerCase();
-      if (vl.includes("excellent") || vl.includes("good")) verdictClass = "verdict-good";
+      if (vl.includes("excellent") || vl.includes("good"))
+        verdictClass = "verdict-good";
       else if (vl.includes("never")) verdictClass = "verdict-never";
-      else if (vl.includes("borderline") || vl.includes("accent") || vl.includes("ui") || vl.includes("faint")) verdictClass = "verdict-warn";
+      else if (
+        vl.includes("borderline") ||
+        vl.includes("accent") ||
+        vl.includes("ui") ||
+        vl.includes("faint")
+      )
+        verdictClass = "verdict-warn";
 
       h += `\n            <tr><td class="crate-name">${esc(pairing)}</td><td>${esc(ratio)}</td><td>${demo}</td><td class="${verdictClass}">${esc(verdict.replace(/\*\*/g, ""))}</td></tr>`;
     }
@@ -444,18 +555,44 @@ function renderContrastTable(table: MdTable): string {
 function renderTokenMatrix(): string {
   const names = themeNames();
   const tokenKeys = [
-    "bg", "surface", "inset", "field",
-    "onBg", "onSurface", "onInset", "onAccent",
-    "heading", "accent", "danger",
-    "border", "borderStrong", "stripe",
-    "btnBg", "btnText", "muted", "faint",
+    "bg",
+    "surface",
+    "inset",
+    "field",
+    "onBg",
+    "onSurface",
+    "onInset",
+    "onAccent",
+    "heading",
+    "accent",
+    "danger",
+    "border",
+    "borderStrong",
+    "stripe",
+    "btnBg",
+    "btnText",
+    "muted",
+    "faint",
   ];
   const shortLabels = [
-    "bg", "srf", "ins", "fld",
-    "onBg", "onSrf", "onIns", "onAcc",
-    "head", "acc", "dng",
-    "bdr", "bdrS", "strp",
-    "btn", "btnT", "mut", "fnt",
+    "bg",
+    "srf",
+    "ins",
+    "fld",
+    "onBg",
+    "onSrf",
+    "onIns",
+    "onAcc",
+    "head",
+    "acc",
+    "dng",
+    "bdr",
+    "bdrS",
+    "strp",
+    "btn",
+    "btnT",
+    "mut",
+    "fnt",
   ];
 
   let html = `
@@ -495,7 +632,12 @@ function renderTokenMatrix(): string {
 function renderSection03(raw: string): string {
   const subs = parseSubheadings(raw);
   const codeBlocks = parseCodeBlocks(raw);
-  const introProse = raw.split("###")[0].split("\n").filter((l) => l.trim() && !l.startsWith("#") && l.trim() !== "---").join(" ").trim();
+  const introProse = raw
+    .split("###")[0]
+    .split("\n")
+    .filter((l) => l.trim() && !l.startsWith("#") && l.trim() !== "---")
+    .join(" ")
+    .trim();
 
   let inner = "";
   if (introProse) {
@@ -505,10 +647,30 @@ function renderSection03(raw: string): string {
   // Type specimens
   inner += `      <div class="type-specimens">\n`;
 
-  const fonts: { heading: string; cssClass: string; badge: string; sub: (typeof subs)[0] | undefined }[] = [
-    { heading: "Manrope", cssClass: "type-sample-display", badge: "display", sub: subs.find((s) => s.heading.includes("Manrope")) },
-    { heading: "Outfit", cssClass: "type-sample-body", badge: "body", sub: subs.find((s) => s.heading.includes("Outfit")) },
-    { heading: "IBM Plex Mono", cssClass: "type-sample-mono", badge: "code", sub: subs.find((s) => s.heading.includes("IBM Plex Mono")) },
+  const fonts: {
+    heading: string;
+    cssClass: string;
+    badge: string;
+    sub: (typeof subs)[0] | undefined;
+  }[] = [
+    {
+      heading: "Manrope",
+      cssClass: "type-sample-display",
+      badge: "display",
+      sub: subs.find((s) => s.heading.includes("Manrope")),
+    },
+    {
+      heading: "Outfit",
+      cssClass: "type-sample-body",
+      badge: "body",
+      sub: subs.find((s) => s.heading.includes("Outfit")),
+    },
+    {
+      heading: "IBM Plex Mono",
+      cssClass: "type-sample-mono",
+      badge: "code",
+      sub: subs.find((s) => s.heading.includes("IBM Plex Mono")),
+    },
   ];
 
   for (const f of fonts) {
@@ -584,16 +746,28 @@ function renderSection03(raw: string): string {
 
 function renderSection04(raw: string): string {
   const subs = parseSubheadings(raw);
-  const introProse = raw.split("###")[0].split("\n").filter((l) => l.trim() && !l.startsWith("#") && l.trim() !== "---").join(" ").trim();
+  const introProse = raw
+    .split("###")[0]
+    .split("\n")
+    .filter((l) => l.trim() && !l.startsWith("#") && l.trim() !== "---")
+    .join(" ")
+    .trim();
 
   let inner = "";
   if (introProse) {
     inner += `      <div class="section-body"><p>${fmt(introProse)}</p></div>\n`;
   }
 
-  const preambleSub = subs.find((s) => s.heading.includes("Core Style Preamble"));
+  const preambleSub = subs.find((s) =>
+    s.heading.includes("Core Style Preamble"),
+  );
   if (preambleSub) {
-    const blockquote = preambleSub.content.split("\n").filter((l) => l.startsWith("> ")).map((l) => l.substring(2)).join(" ").trim();
+    const blockquote = preambleSub.content
+      .split("\n")
+      .filter((l) => l.startsWith("> "))
+      .map((l) => l.substring(2))
+      .join(" ")
+      .trim();
     if (blockquote) {
       inner += `      <h3>Core Style Preamble</h3>\n`;
       inner += `      <blockquote class="brand-callout">${fmt(blockquote)}</blockquote>\n`;
@@ -616,7 +790,8 @@ function renderSection04(raw: string): string {
   if (depthSub) {
     const prose = extractProse(depthSub.content);
     inner += `      <h3>Depth Method</h3>\n`;
-    for (const p of prose) inner += `      <div class="section-body"><p>${fmt(p)}</p></div>\n`;
+    for (const p of prose)
+      inner += `      <div class="section-body"><p>${fmt(p)}</p></div>\n`;
   }
 
   const compSub = subs.find((s) => s.heading.includes("Composition"));
@@ -656,18 +831,26 @@ function renderSection04(raw: string): string {
     const neverItems: string[] = [];
     let mode: "do" | "never" | null = null;
     for (const line of lines) {
-      if (line.startsWith("**Do:**")) { mode = "do"; continue; }
-      if (line.startsWith("**Never:**")) { mode = "never"; continue; }
+      if (line.startsWith("**Do:**")) {
+        mode = "do";
+        continue;
+      }
+      if (line.startsWith("**Never:**")) {
+        mode = "never";
+        continue;
+      }
       const bm = line.match(/^- (.+)$/);
       if (bm && mode === "do") doItems.push(bm[1]);
       if (bm && mode === "never") neverItems.push(bm[1]);
     }
     inner += `      <div class="do-never-grid">\n`;
     inner += `        <div class="do-column"><h4 class="do-heading">Do</h4><ul>`;
-    for (const item of doItems) inner += `<li class="do-item">${fmt(item)}</li>`;
+    for (const item of doItems)
+      inner += `<li class="do-item">${fmt(item)}</li>`;
     inner += `</ul></div>\n`;
     inner += `        <div class="never-column"><h4 class="never-heading">Never</h4><ul>`;
-    for (const item of neverItems) inner += `<li class="never-item">${fmt(item)}</li>`;
+    for (const item of neverItems)
+      inner += `<li class="never-item">${fmt(item)}</li>`;
     inner += `</ul></div>\n      </div>\n`;
   }
 
@@ -676,7 +859,12 @@ function renderSection04(raw: string): string {
 
 function renderSection05(raw: string): string {
   const subs = parseSubheadings(raw);
-  const introProse = raw.split("###")[0].split("\n").filter((l) => l.trim() && !l.startsWith("#") && l.trim() !== "---").join(" ").trim();
+  const introProse = raw
+    .split("###")[0]
+    .split("\n")
+    .filter((l) => l.trim() && !l.startsWith("#") && l.trim() !== "---")
+    .join(" ")
+    .trim();
 
   let inner = "";
   if (introProse) {
@@ -692,7 +880,8 @@ function renderSection05(raw: string): string {
     inner += `        <div class="specimen-item"><button class="btn btn-ghost">Ghost</button><span class="specimen-label">Ghost</span></div>\n`;
     inner += `      </div>\n`;
     const btnCode = parseCodeBlocks(btnSub.content);
-    if (btnCode.length > 0) inner += `      <pre class="code-block">${syntaxHighlightCss(btnCode[0])}</pre>\n`;
+    if (btnCode.length > 0)
+      inner += `      <pre class="code-block">${syntaxHighlightCss(btnCode[0])}</pre>\n`;
   }
 
   const inputSub = subs.find((s) => s.heading === "Inputs");
@@ -702,7 +891,8 @@ function renderSection05(raw: string): string {
     inner += `        <div class="specimen-item specimen-item-wide"><textarea class="ox-input ox-textarea" placeholder="Textarea specimen" rows="2"></textarea><span class="specimen-label">Textarea</span></div>\n`;
     inner += `      </div>\n`;
     const inputCode = parseCodeBlocks(inputSub.content);
-    if (inputCode.length > 0) inner += `      <pre class="code-block">${syntaxHighlightCss(inputCode[0])}</pre>\n`;
+    if (inputCode.length > 0)
+      inner += `      <pre class="code-block">${syntaxHighlightCss(inputCode[0])}</pre>\n`;
   }
 
   const badgeSub = subs.find((s) => s.heading === "Badges");
@@ -732,7 +922,8 @@ function renderSection05(raw: string): string {
     inner += `        <div class="ox-card ox-card-vermillion"><div class="ox-card-tag">error</div><div class="ox-card-body">Vermillion stripe for errors and alerts.</div></div>\n`;
     inner += `      </div>\n`;
     const cardCode = parseCodeBlocks(cardSub.content);
-    if (cardCode.length > 0) inner += `      <pre class="code-block">${syntaxHighlightCss(cardCode[0])}</pre>\n`;
+    if (cardCode.length > 0)
+      inner += `      <pre class="code-block">${syntaxHighlightCss(cardCode[0])}</pre>\n`;
   }
 
   return sectionShell("05", "UI Components", inner);
@@ -741,7 +932,12 @@ function renderSection05(raw: string): string {
 function renderSection06(raw: string): string {
   const subs = parseSubheadings(raw);
   const codeBlocks = parseCodeBlocks(raw);
-  const introProse = raw.split("###")[0].split("\n").filter((l) => l.trim() && !l.startsWith("#") && l.trim() !== "---").join(" ").trim();
+  const introProse = raw
+    .split("###")[0]
+    .split("\n")
+    .filter((l) => l.trim() && !l.startsWith("#") && l.trim() !== "---")
+    .join(" ")
+    .trim();
 
   let inner = "";
   if (introProse) {
@@ -757,9 +953,12 @@ function renderSection06(raw: string): string {
   if (spacingSub) {
     inner += `      <h3>Spacing System</h3>\n`;
     const spacingTokens = [
-      { name: "--space-xs", px: 8 }, { name: "--space-sm", px: 16 },
-      { name: "--space-md", px: 32 }, { name: "--space-lg", px: 64 },
-      { name: "--space-xl", px: 96 }, { name: "--space-2xl", px: 160 },
+      { name: "--space-xs", px: 8 },
+      { name: "--space-sm", px: 16 },
+      { name: "--space-md", px: 32 },
+      { name: "--space-lg", px: 64 },
+      { name: "--space-xl", px: 96 },
+      { name: "--space-2xl", px: 160 },
     ];
     inner += `      <div class="spacing-demo">\n`;
     for (const token of spacingTokens) {
@@ -779,7 +978,8 @@ function renderSection06(raw: string): string {
     for (const b of bullets) inner += `        <li>${fmt(b)}</li>\n`;
     inner += `      </ul>\n`;
     const prose = extractProse(borderSub.content);
-    for (const p of prose) inner += `      <div class="section-body"><p>${fmt(p)}</p></div>\n`;
+    for (const p of prose)
+      inner += `      <div class="section-body"><p>${fmt(p)}</p></div>\n`;
   }
 
   return sectionShell("06", "Layout", inner);
@@ -787,7 +987,12 @@ function renderSection06(raw: string): string {
 
 function renderSection07(raw: string): string {
   const subs = parseSubheadings(raw);
-  const introProse = raw.split("###")[0].split("\n").filter((l) => l.trim() && !l.startsWith("#") && l.trim() !== "---").join(" ").trim();
+  const introProse = raw
+    .split("###")[0]
+    .split("\n")
+    .filter((l) => l.trim() && !l.startsWith("#") && l.trim() !== "---")
+    .join(" ")
+    .trim();
 
   let inner = "";
   if (introProse) {
@@ -804,8 +1009,16 @@ function renderSection07(raw: string): string {
   }
 
   const easings = [
-    { name: "Enter", value: "cubic-bezier(0.22, 1, 0.36, 1)", duration: "1.2s" },
-    { name: "Spring", value: "cubic-bezier(0.34, 1.56, 0.64, 1)", duration: "0.8s" },
+    {
+      name: "Enter",
+      value: "cubic-bezier(0.22, 1, 0.36, 1)",
+      duration: "1.2s",
+    },
+    {
+      name: "Spring",
+      value: "cubic-bezier(0.34, 1.56, 0.64, 1)",
+      duration: "0.8s",
+    },
     { name: "Pulse", value: "ease-in-out", duration: "1.2s" },
   ];
   inner += `      <div class="easing-demos">\n`;
@@ -828,7 +1041,12 @@ function renderSection07(raw: string): string {
 
 function renderSection08(raw: string): string {
   const subs = parseSubheadings(raw);
-  const introProse = raw.split("###")[0].split("\n").filter((l) => l.trim() && !l.startsWith("#") && l.trim() !== "---").join(" ").trim();
+  const introProse = raw
+    .split("###")[0]
+    .split("\n")
+    .filter((l) => l.trim() && !l.startsWith("#") && l.trim() !== "---")
+    .join(" ")
+    .trim();
 
   let inner = "";
   if (introProse) {
@@ -893,8 +1111,10 @@ function renderArchTable(table: MdTable): string {
 // --- Syntax highlighting for CSS code blocks ---
 
 function syntaxHighlightCss(code: string): string {
-  return esc(code.trim())
-    .replace(/(\/\*.*?\*\/)/g, '<span class="code-comment">$1</span>');
+  return esc(code.trim()).replace(
+    /(\/\*.*?\*\/)/g,
+    '<span class="code-comment">$1</span>',
+  );
 }
 
 // --- Page shell ---

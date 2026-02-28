@@ -1,4 +1,4 @@
-const STORAGE_KEY = 'ox:api-key';
+const STORAGE_KEY = "ox:api-key";
 
 export function getStoredApiKey(): string | null {
   return sessionStorage.getItem(STORAGE_KEY);
@@ -15,11 +15,11 @@ export function clearApiKey(): void {
 /** Show a modal overlay prompting the user for their Anthropic API key. */
 export function showApiKeyPrompt(): Promise<string | null> {
   return new Promise((resolve) => {
-    const overlay = document.createElement('div');
-    overlay.className = 'api-key-overlay';
+    const overlay = document.createElement("div");
+    overlay.className = "api-key-overlay";
 
-    const dialog = document.createElement('div');
-    dialog.className = 'api-key-dialog';
+    const dialog = document.createElement("div");
+    dialog.className = "api-key-dialog";
 
     dialog.innerHTML = `
       <h3>Anthropic API Key</h3>
@@ -34,9 +34,11 @@ export function showApiKeyPrompt(): Promise<string | null> {
     overlay.appendChild(dialog);
     document.body.appendChild(overlay);
 
-    const input = dialog.querySelector<HTMLInputElement>('.api-key-input')!;
-    const submitBtn = dialog.querySelector<HTMLButtonElement>('.api-key-submit')!;
-    const cancelBtn = dialog.querySelector<HTMLButtonElement>('.api-key-cancel')!;
+    const input = dialog.querySelector<HTMLInputElement>(".api-key-input")!;
+    const submitBtn =
+      dialog.querySelector<HTMLButtonElement>(".api-key-submit")!;
+    const cancelBtn =
+      dialog.querySelector<HTMLButtonElement>(".api-key-cancel")!;
 
     function cleanup(result: string | null) {
       overlay.remove();
@@ -50,11 +52,11 @@ export function showApiKeyPrompt(): Promise<string | null> {
       }
     }
 
-    submitBtn.addEventListener('click', submit);
-    input.addEventListener('keydown', (e: KeyboardEvent) => {
-      if (e.key === 'Enter') submit();
+    submitBtn.addEventListener("click", submit);
+    input.addEventListener("keydown", (e: KeyboardEvent) => {
+      if (e.key === "Enter") submit();
     });
-    cancelBtn.addEventListener('click', () => cleanup(null));
+    cancelBtn.addEventListener("click", () => cleanup(null));
 
     // Focus the input after a frame so the overlay is rendered
     requestAnimationFrame(() => input.focus());

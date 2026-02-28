@@ -1,4 +1,10 @@
-import { rmSync, mkdirSync, copyFileSync, readFileSync, writeFileSync } from "fs";
+import {
+  rmSync,
+  mkdirSync,
+  copyFileSync,
+  readFileSync,
+  writeFileSync,
+} from "fs";
 import path from "path";
 import { renderBrandBook } from "./src/brand-render";
 
@@ -57,10 +63,7 @@ const fonts = [
   "ibm-plex-mono-600-latin.woff2",
 ];
 for (const font of fonts) {
-  copyFileSync(
-    path.join(UI, "fonts", font),
-    path.join(DIST, "fonts", font),
-  );
+  copyFileSync(path.join(UI, "fonts", font), path.join(DIST, "fonts", font));
 }
 console.log(`Copied ${fonts.length} font files`);
 
@@ -106,17 +109,11 @@ writeFileSync(pgMainJs, pgJs.replaceAll("/pkg/", "./pkg/"));
 console.log("Bundled playground main.js");
 
 // 7d. Copy playground CSS (font paths are already relative ./fonts/)
-copyFileSync(
-  path.join(UI, "styles", "main.css"),
-  path.join(PG, "main.css"),
-);
+copyFileSync(path.join(UI, "styles", "main.css"), path.join(PG, "main.css"));
 
 // 7e. Copy fonts into playground
 for (const font of fonts) {
-  copyFileSync(
-    path.join(UI, "fonts", font),
-    path.join(PG, "fonts", font),
-  );
+  copyFileSync(path.join(UI, "fonts", font), path.join(PG, "fonts", font));
 }
 console.log("Playground build complete");
 

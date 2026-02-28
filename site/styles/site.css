@@ -17,7 +17,6 @@ body {
   margin: 0 auto;
 }
 
-
 /* --- Hero --- */
 .hero {
   display: flex;
@@ -203,7 +202,9 @@ body {
   border: 1px solid var(--t-border);
   background: var(--t-surface);
   color: var(--t-on-surface);
-  transition: transform var(--duration-hover), border-color 0.2s;
+  transition:
+    transform var(--duration-hover),
+    border-color 0.2s;
 }
 .theme-chip:hover {
   transform: translateY(-1px);
@@ -307,10 +308,20 @@ body {
 .contrast-table {
   margin-top: 0 !important;
 }
-.verdict-good { color: var(--t-accent); font-weight: 500; }
-.verdict-ok { color: var(--t-on-bg); }
-.verdict-warn { color: var(--t-muted); }
-.verdict-never { color: var(--t-danger); font-weight: 500; }
+.verdict-good {
+  color: var(--t-accent);
+  font-weight: 500;
+}
+.verdict-ok {
+  color: var(--t-on-bg);
+}
+.verdict-warn {
+  color: var(--t-muted);
+}
+.verdict-never {
+  color: var(--t-danger);
+  font-weight: 500;
+}
 
 /* --- Token table (wide, scrollable) --- */
 .site-inner-wide {
@@ -368,9 +379,19 @@ body {
   color: var(--t-heading);
   margin-bottom: 4px;
 }
-.type-sample-display { font-family: var(--font-display); font-weight: 800; letter-spacing: -0.03em; }
-.type-sample-body { font-family: var(--font-body); font-weight: 300; }
-.type-sample-mono { font-family: var(--font-mono); font-weight: 400; }
+.type-sample-display {
+  font-family: var(--font-display);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+}
+.type-sample-body {
+  font-family: var(--font-body);
+  font-weight: 300;
+}
+.type-sample-mono {
+  font-family: var(--font-mono);
+  font-weight: 400;
+}
 .type-meta {
   display: flex;
   align-items: center;
@@ -666,22 +687,29 @@ body {
   color: var(--t-danger);
   margin-bottom: var(--space-xs);
 }
-.do-column ul, .never-column ul {
+.do-column ul,
+.never-column ul {
   list-style: none;
   padding: 0;
 }
-.do-item, .never-item {
+.do-item,
+.never-item {
   font-family: var(--font-body);
   font-size: 0.85rem;
   line-height: 1.5;
   padding: 4px 0;
   border-bottom: 1px solid var(--t-border);
 }
-.do-item:last-child, .never-item:last-child {
+.do-item:last-child,
+.never-item:last-child {
   border-bottom: none;
 }
-.do-item { color: var(--t-on-bg); }
-.never-item { color: var(--t-muted); }
+.do-item {
+  color: var(--t-on-bg);
+}
+.never-item {
+  color: var(--t-muted);
+}
 
 /* --- Specimen rows (live components) --- */
 .specimen-row {
@@ -725,12 +753,29 @@ body {
   padding: 0.7em 1.8em;
   transition: transform 0.2s;
 }
-.btn:hover { transform: translateY(-2px); }
-.btn:active { transform: translateY(0); }
-.btn-primary { background: var(--vermillion); color: var(--white); }
-.btn-secondary { background: var(--indigo); color: var(--beige); }
-.btn-accent { background: var(--amber); color: var(--indigo); }
-.btn-ghost { background: transparent; color: var(--indigo); border: 1px solid currentColor; }
+.btn:hover {
+  transform: translateY(-2px);
+}
+.btn:active {
+  transform: translateY(0);
+}
+.btn-primary {
+  background: var(--vermillion);
+  color: var(--white);
+}
+.btn-secondary {
+  background: var(--indigo);
+  color: var(--beige);
+}
+.btn-accent {
+  background: var(--amber);
+  color: var(--indigo);
+}
+.btn-ghost {
+  background: transparent;
+  color: var(--indigo);
+  border: 1px solid currentColor;
+}
 
 /* --- Live input specimens --- */
 .ox-input {
@@ -744,9 +789,18 @@ body {
   outline: none;
   transition: border-color 0.3s;
 }
-.ox-input:focus { border-color: var(--amber); }
-.ox-input::placeholder { color: var(--t-muted); opacity: 0.5; }
-.ox-textarea { font-family: var(--font-mono); font-size: 0.85rem; resize: vertical; }
+.ox-input:focus {
+  border-color: var(--amber);
+}
+.ox-input::placeholder {
+  color: var(--t-muted);
+  opacity: 0.5;
+}
+.ox-textarea {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  resize: vertical;
+}
 
 /* --- Badge specimens --- */
 .ox-badge {
@@ -759,10 +813,23 @@ body {
   border-radius: 3px;
   display: inline-block;
 }
-.ox-badge-indigo { background: var(--indigo); color: var(--beige); }
-.ox-badge-amber { background: var(--amber); color: var(--indigo); }
-.ox-badge-vermillion { background: var(--vermillion); color: var(--white); }
-.ox-badge-ghost { background: transparent; color: var(--indigo); border: 1px solid var(--indigo); }
+.ox-badge-indigo {
+  background: var(--indigo);
+  color: var(--beige);
+}
+.ox-badge-amber {
+  background: var(--amber);
+  color: var(--indigo);
+}
+.ox-badge-vermillion {
+  background: var(--vermillion);
+  color: var(--white);
+}
+.ox-badge-ghost {
+  background: transparent;
+  color: var(--indigo);
+  border: 1px solid var(--indigo);
+}
 
 /* --- Status dots --- */
 .status-dot {
@@ -784,8 +851,13 @@ body {
   background: var(--vermillion);
 }
 @keyframes pulse-status {
-  0%, 100% { opacity: 0.3; }
-  50% { opacity: 1; }
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 /* --- Card specimens --- */
@@ -804,9 +876,11 @@ body {
   position: relative;
   transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1);
 }
-.ox-card:hover { transform: translateY(-4px); }
+.ox-card:hover {
+  transform: translateY(-4px);
+}
 .ox-card::after {
-  content: '';
+  content: "";
   position: absolute;
   bottom: 0;
   left: 0;
@@ -814,9 +888,15 @@ body {
   height: 2px;
   border-radius: 0 0 var(--radius) var(--radius);
 }
-.ox-card-amber::after { background: var(--amber); }
-.ox-card-indigo::after { background: var(--indigo); }
-.ox-card-vermillion::after { background: var(--vermillion); }
+.ox-card-amber::after {
+  background: var(--amber);
+}
+.ox-card-indigo::after {
+  background: var(--indigo);
+}
+.ox-card-vermillion::after {
+  background: var(--vermillion);
+}
 .ox-card-tag {
   font-family: var(--font-mono);
   font-size: 0.65rem;
@@ -910,11 +990,16 @@ body {
   transform: translate(-50%, -50%);
 }
 .easing-track.easing-active .easing-dot {
-  animation: easing-traverse var(--easing-duration, 1.2s) var(--easing-fn, ease) infinite alternate;
+  animation: easing-traverse var(--easing-duration, 1.2s) var(--easing-fn, ease)
+    infinite alternate;
 }
 @keyframes easing-traverse {
-  from { left: 0; }
-  to { left: 100%; }
+  from {
+    left: 0;
+  }
+  to {
+    left: 100%;
+  }
 }
 
 /* --- Motion pattern demos --- */

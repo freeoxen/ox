@@ -53,47 +53,54 @@ gate() {
     rm -f "$tmpfile"
 }
 
+# Resolve bun binary
+BUN="$(command -v bun 2>/dev/null || echo "${HOME}/.bun/bin/bun")"
+
 echo "running quality gates..."
 echo ""
 
-# 1. Format
+# 1. Format (Rust)
 if "$FIX"; then
     gate "fmt"                    cargo fmt --all
 else
     gate "fmt --check"            cargo fmt --all -- --check
 fi
 
-# 2. Lint (native)
+# 2. Format (prettier)
+if "$FIX"; then
+    gate "prettier"               "$BUN" x prettier --write 'crates/ox-web/ui/src/**/*.{ts,js}' 'site/**/*.{ts,js,css,html}'
+else
+    gate "prettier --check"       "$BUN" x prettier --check 'crates/ox-web/ui/src/**/*.{ts,js}' 'site/**/*.{ts,js,css,html}'
+fi
+
+# 3. Lint (native)
 gate "clippy (native)"            cargo clippy --workspace -- -D warnings
 
-# 3. Lint (wasm, ox-web)
+# 4. Lint (wasm, ox-web)
 gate "clippy (wasm)"              cargo clippy --target wasm32-unknown-unknown -p ox-web -- -D warnings
 
-# 4. Check (native)
+# 5. Check (native)
 gate "check (native)"            cargo check --workspace
 
-# 5. Check (wasm)
+# 6. Check (wasm)
 gate "check (wasm)"              cargo check --target wasm32-unknown-unknown -p ox-web
 
-# 6. Tests
+# 7. Tests
 gate "test"                       cargo test --workspace
 
-# 7. wasm-pack build
+# 8. wasm-pack build
 gate "wasm-pack build"            wasm-pack build crates/ox-web --target web --out-dir ../../target/wasm-pkg
 
-# Resolve bun binary
-BUN="$(command -v bun 2>/dev/null || echo "${HOME}/.bun/bin/bun")"
-
-# 8. Install UI dependencies
+# 9. Install UI dependencies
 gate "bun install (ui)"           "$BUN" install --cwd crates/ox-web/ui
 
-# 9. TypeScript type check
+# 10. TypeScript type check
 gate "tsc check (ui)"             bash -c "cd crates/ox-web/ui && \"$BUN\" x tsc --noEmit"
 
-# 10. Bundle UI
+# 11. Bundle UI
 gate "bun build (ui)"             "$BUN" build crates/ox-web/ui/src/main.ts --outdir target/js-pkg --format esm --sourcemap=external --external '/pkg/*'
 
-# 11. Copy CSS
+# 12. Copy CSS
 gate "copy css (ui)"              cp crates/ox-web/ui/styles/main.css target/js-pkg/main.css
 
 # Summary
