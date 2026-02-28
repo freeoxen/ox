@@ -155,7 +155,7 @@ Tight letter-spacing at large sizes (`-0.03em`). Line-height `0.95–1.1` for di
 The "ox™ playground" header splits into two voices: "ox™" in ExtraBold (800) at `--t-heading` with tight letter-spacing (`-0.03em`), and "playground" in Regular (400) at `--t-muted` with neutral letter-spacing (`0`). The brand name is the ox — heavy, colored, unmistakable. The descriptor is the path — lighter, quieter, present.
 
 ```html
-<h1>ox<sup style="font-size:.4em">™</sup> <span>playground</span></h1>
+<h1>ox<span style="font-size:.2em;vertical-align:2.5em;margin-left:.15em">tm</span> <span>playground</span></h1>
 ```
 
 ### Outfit — Body / Prose
