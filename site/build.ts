@@ -73,11 +73,15 @@ const PG = path.join(DIST, "playground");
 mkdirSync(path.join(PG, "pkg"), { recursive: true });
 mkdirSync(path.join(PG, "fonts"), { recursive: true });
 
-// 7a. Copy playground index.html
-copyFileSync(
+// 7a. Copy playground index.html with home link
+const pgHtml = readFileSync(
   path.join(ROOT, "..", "crates", "ox-web", "static", "index.html"),
-  path.join(PG, "index.html"),
+  "utf-8",
+).replace(
+  /(<h1>)(ox)/,
+  '$1<a href="/" style="color:inherit;text-decoration:none">$2</a>',
 );
+writeFileSync(path.join(PG, "index.html"), pgHtml);
 
 // 7b. Copy wasm-pack output
 for (const file of ["ox_web_bg.wasm", "ox_web.js", "ox_web.d.ts"]) {

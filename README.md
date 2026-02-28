@@ -1,8 +1,8 @@
-# ox
+# ox<sup>™</sup>
 
 The ox is the oldest working animal. It does not sprint. It lowers its head, leans into the yoke, and pulls.
 
-**ox** is an agentic AI framework where every capability is a filesystem path. Built on [StructFS](https://github.com/StructFS/structfs), the agent's system prompt, conversation history, tool definitions, and model configuration all live as paths in a virtual namespace. Read a path to inspect state. Write a path to change it.
+**ox**<sup>™</sup> is an agentic AI framework where every capability is a filesystem path. Built on [StructFS](https://github.com/StructFS/structfs), the agent's system prompt, conversation history, tool definitions, and model configuration all live as paths in a virtual namespace. Read a path to inspect state. Write a path to change it.
 
 ## Architecture
 

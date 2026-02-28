@@ -1,4 +1,4 @@
-# ox — Brand Book
+# ox<sup>™</sup> — Brand Book
 
 **v1.0 — February 2026 — AdjectiveNoun**
 
@@ -152,10 +152,10 @@ Tight letter-spacing at large sizes (`-0.03em`). Line-height `0.95–1.1` for di
 
 ### Brand Title Pattern
 
-The "ox playground" header splits into two voices: "ox" in ExtraBold (800) at `--t-heading` with tight letter-spacing (`-0.03em`), and "playground" in Regular (400) at `--t-muted` with neutral letter-spacing (`0`). The brand name is the ox — heavy, colored, unmistakable. The descriptor is the path — lighter, quieter, present.
+The "ox™ playground" header splits into two voices: "ox™" in ExtraBold (800) at `--t-heading` with tight letter-spacing (`-0.03em`), and "playground" in Regular (400) at `--t-muted` with neutral letter-spacing (`0`). The brand name is the ox — heavy, colored, unmistakable. The descriptor is the path — lighter, quieter, present.
 
 ```html
-<h1>ox <span>playground</span></h1>
+<h1>ox<sup style="font-size:.4em">™</sup> <span>playground</span></h1>
 ```
 
 ### Outfit — Body / Prose
@@ -437,7 +437,7 @@ The ox sees the world as open terrain with features on the horizon. The interfac
 
 ```
 +-------------------------------------------------------------+
-|                        HEADER: ox                            |
+|                        HEADER: ox™                            |
 +------------------------------------------+------------------+
 |                                          |    CONTEXT       |
 |    Chat                                  |    DEBUGGER      |

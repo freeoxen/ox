@@ -351,7 +351,7 @@ function renderPreamble(raw: string): string {
 
   return `
   <section class="hero hero-brand-hero">
-    <div class="hero-brand">ox</div>
+    <div class="hero-brand">ox<sup style="font-size:.4em">™</sup></div>
     <div class="hero-tagline">brand book</div>
     <p class="hero-manifesto">${fmt(manifesto)}</p>${paletteBar}
     <div class="hero-prose">
@@ -703,7 +703,7 @@ function renderSection03(raw: string): string {
   const brandSub = subs.find((s) => s.heading.includes("Brand Title"));
   if (brandSub) {
     inner += `      <h3>Brand Title Pattern</h3>\n`;
-    inner += `      <div class="brand-title-demo"><span class="brand-title-ox">ox</span> <span class="brand-title-desc">playground</span></div>\n`;
+    inner += `      <div class="brand-title-demo"><span class="brand-title-ox">ox<sup style="font-size:.4em">™</sup></span> <span class="brand-title-desc">playground</span></div>\n`;
     const brandCode = parseCodeBlocks(brandSub.content);
     if (brandCode.length > 0) {
       inner += `      <pre class="code-block">${esc(brandCode[0].trim())}</pre>\n`;
@@ -1125,8 +1125,8 @@ function pageShell(body: string): string {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ox &mdash; Brand Book</title>
-  <meta name="description" content="ox brand book. Seven colors, twelve themes, three typefaces. The design system for the ox agentic AI framework.">
+  <title>ox™ &mdash; Brand Book</title>
+  <meta name="description" content="ox™ brand book. Seven colors, twelve themes, three typefaces. The design system for the ox™ agentic AI framework.">
   <link rel="preload" href="/fonts/manrope-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/fonts/outfit-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
@@ -1145,7 +1145,7 @@ function pageShell(body: string): string {
   <div id="theme-picker"><svg viewBox="0 0 100 100" width="54" height="54" class="clock" aria-hidden="true"><circle cx="50" cy="50" r="45" class="clock-face"/><g class="clock-hand-group" style="transform:rotate(30deg);transform-origin:50px 50px"><line x1="50" y1="50" x2="50" y2="20" class="clock-hand"/></g><circle cx="50" cy="50" r="3" class="clock-center"/><circle cx="50" cy="12" r="3" class="clock-dot"/><circle cx="69" cy="17.1" r="3" class="clock-dot"/><circle cx="82.9" cy="31" r="3" class="clock-dot"/><circle cx="88" cy="50" r="3" class="clock-dot"/><circle cx="82.9" cy="69" r="3" class="clock-dot"/><circle cx="69" cy="82.9" r="3" class="clock-dot"/><circle cx="50" cy="88" r="3" class="clock-dot"/><circle cx="31" cy="82.9" r="3" class="clock-dot"/><circle cx="17.1" cy="69" r="3" class="clock-dot"/><circle cx="12" cy="50" r="3" class="clock-dot"/><circle cx="17.1" cy="31" r="3" class="clock-dot"/><circle cx="31" cy="17.1" r="3" class="clock-dot"/></svg></div>
 ${body}
   <footer class="site-footer">
-    <span class="footer-brand">ox</span>
+    <span class="footer-brand">ox<sup style="font-size:.4em">™</sup></span>
     <span class="footer-by">by AdjectiveNoun</span>
     <span class="footer-sep">&middot;</span>
     <span class="footer-closing">The ox does not explain itself. It walks. The ground remembers.</span>
