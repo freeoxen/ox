@@ -11,9 +11,10 @@ export class OxAgent {
   ): void;
   set_system_prompt(new_prompt: string): void;
   unregister_tool(name: string): void;
+  set_api_key(api_key: string): void;
 }
 export function create_agent(
   system_prompt: string,
-  server_url: string,
+  api_key: string,
 ): OxAgent;
 export default function init(module_or_path?: string): Promise<unknown>;

@@ -12,7 +12,7 @@ use structfs_serde_store::{json_to_value, value_to_json};
 use wasm_bindgen::prelude::*;
 
 // ---------------------------------------------------------------------------
-// ProxyTransport — calls the dev server via browser fetch (synchronous pull)
+// PreloadedTransport — wraps a pre-fetched BufferedStream
 // ---------------------------------------------------------------------------
 
 /// A buffered stream of pre-parsed events.
@@ -38,10 +38,6 @@ impl EventStream for BufferedStream {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// PreloadedTransport — wraps a pre-fetched BufferedStream
-// ---------------------------------------------------------------------------
 
 struct PreloadedTransport {
     stream: RefCell<Option<BufferedStream>>,
@@ -181,7 +177,7 @@ impl JsTool {
 
 #[wasm_bindgen]
 pub struct OxAgent {
-    server_url: String,
+    api_key: String,
     context: Rc<RefCell<Namespace>>,
     event_callback: Option<js_sys::Function>,
     rust_tools: Rc<RefCell<ToolRegistry>>,
@@ -191,7 +187,7 @@ pub struct OxAgent {
 #[wasm_bindgen]
 impl OxAgent {
     #[wasm_bindgen(constructor)]
-    pub fn new(system_prompt: &str, server_url: &str) -> Self {
+    pub fn new(system_prompt: &str, api_key: &str) -> Self {
         let model = "claude-sonnet-4-20250514".to_string();
         let max_tokens = 4096;
 
@@ -208,12 +204,17 @@ impl OxAgent {
         context.mount("model", Box::new(ModelProvider::new(model, max_tokens)));
 
         Self {
-            server_url: server_url.to_string(),
+            api_key: api_key.to_string(),
             context: Rc::new(RefCell::new(context)),
             event_callback: None,
             rust_tools: Rc::new(RefCell::new(tool_registry)),
             js_tools: Rc::new(RefCell::new(HashMap::new())),
         }
+    }
+
+    /// Update the API key used for Anthropic API requests.
+    pub fn set_api_key(&mut self, api_key: &str) {
+        self.api_key = api_key.to_string();
     }
 
     /// Register a JS callback to receive agent events.
@@ -330,14 +331,14 @@ impl OxAgent {
     /// Returns a Promise that resolves with the final assistant text.
     pub fn prompt(&self, input: &str) -> js_sys::Promise {
         let input = input.to_string();
-        let server_url = self.server_url.clone();
+        let api_key = self.api_key.clone();
         let callback = self.event_callback.clone();
         let context = self.context.clone();
         let rust_tools = self.rust_tools.clone();
         let js_tools = self.js_tools.clone();
         wasm_bindgen_futures::future_to_promise(async move {
             let result = run_agentic_loop(
-                &server_url,
+                &api_key,
                 &input,
                 &context,
                 &rust_tools,
@@ -387,13 +388,24 @@ fn emit_js(callback: Option<&js_sys::Function>, event_type: &str, data: &str) {
     }
 }
 
-async fn fetch_completion(server_url: &str, request_body: &str) -> Result<String, String> {
+async fn fetch_completion(api_key: &str, request_body: &str) -> Result<String, String> {
     let window = web_sys::window().ok_or("no window")?;
 
     let headers = web_sys::Headers::new().map_err(|e| format!("{e:?}"))?;
     headers
         .set("Content-Type", "application/json")
         .map_err(|e| format!("{e:?}"))?;
+    headers
+        .set("x-api-key", api_key)
+        .map_err(|e| format!("{e:?}"))?;
+    headers
+        .set("anthropic-version", "2023-06-01")
+        .map_err(|e| format!("{e:?}"))?;
+    headers
+        .set("anthropic-dangerous-direct-browser-access", "true")
+        .map_err(|e| format!("{e:?}"))?;
+
+    let url = "https://api.anthropic.com/v1/messages";
 
     let opts = web_sys::RequestInit::new();
     opts.set_method("POST");
@@ -401,20 +413,18 @@ async fn fetch_completion(server_url: &str, request_body: &str) -> Result<String
     opts.set_body(&JsValue::from_str(request_body));
     opts.set_headers(&headers);
 
-    let url = format!("{server_url}/complete");
     let request =
-        web_sys::Request::new_with_str_and_init(&url, &opts).map_err(|e| format!("{e:?}"))?;
+        web_sys::Request::new_with_str_and_init(url, &opts).map_err(|e| format!("{e:?}"))?;
 
     let resp_value = wasm_bindgen_futures::JsFuture::from(window.fetch_with_request(&request))
         .await
         .map_err(|e| {
-            // Network errors (server down, DNS failure, CORS) surface as TypeError
             let msg = js_sys::Reflect::get(&e, &"message".into())
                 .ok()
                 .and_then(|v| v.as_string())
                 .unwrap_or_default();
             if msg.contains("Failed to fetch") {
-                format!("Could not reach server at {server_url} — is the dev server running?")
+                "Could not reach api.anthropic.com — check your network connection".to_string()
             } else {
                 format!("fetch error: {msg}")
             }
@@ -429,10 +439,13 @@ async fn fetch_completion(server_url: &str, request_body: &str) -> Result<String
         let text = wasm_bindgen_futures::JsFuture::from(resp.text().map_err(|e| format!("{e:?}"))?)
             .await
             .map_err(|e| format!("{e:?}"))?;
-        return Err(format!(
-            "HTTP {status}: {}",
-            text.as_string().unwrap_or_default()
-        ));
+        let body = text.as_string().unwrap_or_default();
+        return match status {
+            401 => {
+                Err("Invalid API key — check your Anthropic API key and try again".to_string())
+            }
+            _ => Err(format!("HTTP {status}: {body}")),
+        };
     }
 
     let text = wasm_bindgen_futures::JsFuture::from(resp.text().map_err(|e| format!("{e:?}"))?)
@@ -473,7 +486,7 @@ fn execute_tool(
 
 /// Run the full agentic loop: prompt -> stream -> tool call -> result -> loop.
 async fn run_agentic_loop(
-    server_url: &str,
+    api_key: &str,
     user_input: &str,
     context_ref: &Rc<RefCell<Namespace>>,
     rust_tools: &Rc<RefCell<ToolRegistry>>,
@@ -511,7 +524,7 @@ async fn run_agentic_loop(
         emit_js(callback, "turn_start", "");
         emit_js(callback, "request_sent", &request_body);
 
-        let response_body = fetch_completion(server_url, &request_body).await?;
+        let response_body = fetch_completion(api_key, &request_body).await?;
         let events = parse_sse_events(&response_body);
 
         // Use Kernel::stream_once to accumulate the SSE events into content
@@ -613,8 +626,8 @@ async fn run_agentic_loop(
     }
 }
 
-/// Create an agent. Convenience function exported to JS.
+/// Create an agent with direct Anthropic API access. Exported to JS.
 #[wasm_bindgen]
-pub fn create_agent(system_prompt: &str, server_url: &str) -> OxAgent {
-    OxAgent::new(system_prompt, server_url)
+pub fn create_agent(system_prompt: &str, api_key: &str) -> OxAgent {
+    OxAgent::new(system_prompt, api_key)
 }

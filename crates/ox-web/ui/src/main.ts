@@ -7,6 +7,11 @@ import { addRequestLogEntry, refreshRequestLog } from './request-log';
 import { applyProfile, refreshToolPanel } from './tool-panel';
 import { ToolStore } from './tool-store';
 import { initThemePicker } from './theme';
+import {
+  getStoredApiKey,
+  storeApiKey,
+  showApiKeyPrompt,
+} from './connection';
 import type { AgentEvent } from './types';
 
 function sleep(ms: number): Promise<void> {
@@ -29,8 +34,22 @@ async function main(): Promise<void> {
     'After getting the tool result, report it to the user.',
   ].join(' ');
 
-  const serverUrl = window.location.origin;
-  const agent = create_agent(systemPrompt, serverUrl);
+  // Get API key from session storage or prompt user
+  let apiKey = getStoredApiKey();
+  if (!apiKey) {
+    apiKey = await showApiKeyPrompt();
+  }
+  if (apiKey) {
+    storeApiKey(apiKey);
+  }
+
+  const agent = create_agent(systemPrompt, apiKey ?? '');
+
+  if (!apiKey) {
+    appendLine('No API key provided. Enter your key to use the playground.', 'system');
+    input.disabled = true;
+    sendBtn.disabled = true;
+  }
 
   // Initial debugger state
   refreshDebugger(agent);
@@ -93,12 +112,14 @@ async function main(): Promise<void> {
   refreshToolPanel(agent);
   refreshRequestLog();
 
-  output.textContent = '';
-  appendLine('Ready. Try: "reverse the word hello"', 'system');
+  if (apiKey) {
+    output.textContent = '';
+    appendLine('Ready. Try: "reverse the word hello"', 'system');
 
-  input.disabled = false;
-  sendBtn.disabled = false;
-  input.focus();
+    input.disabled = false;
+    sendBtn.disabled = false;
+    input.focus();
+  }
 
   async function send(): Promise<void> {
     const text = input.value.trim();

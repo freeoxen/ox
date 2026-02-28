@@ -9,7 +9,7 @@
   font-style: normal;
   font-weight: 400 800;
   font-display: block;
-  src: url(/dist/fonts/manrope-latin.woff2) format('woff2');
+  src: url(./fonts/manrope-latin.woff2) format('woff2');
   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
@@ -17,7 +17,7 @@
   font-style: normal;
   font-weight: 300 600;
   font-display: block;
-  src: url(/dist/fonts/outfit-latin.woff2) format('woff2');
+  src: url(./fonts/outfit-latin.woff2) format('woff2');
   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
@@ -25,7 +25,7 @@
   font-style: normal;
   font-weight: 400;
   font-display: block;
-  src: url(/dist/fonts/ibm-plex-mono-400-latin.woff2) format('woff2');
+  src: url(./fonts/ibm-plex-mono-400-latin.woff2) format('woff2');
   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
@@ -33,7 +33,7 @@
   font-style: normal;
   font-weight: 500;
   font-display: block;
-  src: url(/dist/fonts/ibm-plex-mono-500-latin.woff2) format('woff2');
+  src: url(./fonts/ibm-plex-mono-500-latin.woff2) format('woff2');
   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
@@ -41,7 +41,7 @@
   font-style: normal;
   font-weight: 600;
   font-display: block;
-  src: url(/dist/fonts/ibm-plex-mono-600-latin.woff2) format('woff2');
+  src: url(./fonts/ibm-plex-mono-600-latin.woff2) format('woff2');
   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
@@ -1001,6 +1001,61 @@ button:disabled {
 }
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+/* --- API key overlay --- */
+.api-key-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.api-key-dialog {
+  background: var(--t-surface);
+  color: var(--t-on-surface);
+  border: 1px solid var(--t-border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.2);
+  padding: var(--space-md);
+  max-width: 420px;
+  width: 90%;
+}
+.api-key-dialog h3 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: var(--step-1);
+  color: var(--t-heading);
+  margin-bottom: var(--space-xs);
+}
+.api-key-dialog p {
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+  color: var(--t-muted);
+  margin-bottom: var(--space-sm);
+  line-height: 1.5;
+}
+.api-key-input {
+  width: 100%;
+  padding: 0.7em 1em;
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  background: var(--t-field);
+  color: var(--t-on-inset);
+  border: 1px solid var(--t-border);
+  border-radius: var(--radius);
+  outline: none;
+  margin-bottom: var(--space-sm);
+  transition: border-color 0.3s;
+}
+.api-key-input:focus {
+  border-color: var(--t-accent);
+}
+.api-key-actions {
+  display: flex;
+  gap: 6px;
 }
 
 /* --- utility --- */

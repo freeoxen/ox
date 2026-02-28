@@ -7,13 +7,14 @@ const MIME: Record<string, string> = {
   ".css": "text/css; charset=utf-8",
   ".js": "application/javascript; charset=utf-8",
   ".woff2": "font/woff2",
+  ".wasm": "application/wasm",
 };
 
 const server = Bun.serve({
   port: 0,
   async fetch(req) {
     let pathname = new URL(req.url).pathname;
-    if (pathname === "/") pathname = "/index.html";
+    if (pathname.endsWith("/")) pathname += "index.html";
 
     const file = Bun.file(path.join(DIST, pathname));
     if (!(await file.exists())) {
