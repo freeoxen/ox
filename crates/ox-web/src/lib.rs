@@ -189,6 +189,12 @@ impl JsTool {
 // Wasm-bindgen exports
 // ---------------------------------------------------------------------------
 
+/// The main ox agent handle exposed to JavaScript via `wasm-bindgen`.
+///
+/// Create one with [`create_agent`] or `new OxAgent(systemPrompt, apiKey)` from JS.
+/// Register tools with [`register_tool`](OxAgent::register_tool), subscribe to
+/// events with [`on_event`](OxAgent::on_event), and drive the agentic loop with
+/// [`prompt`](OxAgent::prompt).
 #[wasm_bindgen]
 pub struct OxAgent {
     api_key: String,

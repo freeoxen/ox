@@ -18,8 +18,13 @@
 //! let reply = agent.prompt("Hello")?;
 //! ```
 
-pub use ox_context::{ModelProvider, Namespace, SystemProvider, ToolsProvider};
+// --- Re-exports from ox-context ---
+pub use ox_context::{ModelInfo, ModelProvider, Namespace, SystemProvider, ToolsProvider};
+
+// --- Re-exports from ox-history ---
 pub use ox_history::HistoryProvider;
+
+// --- Re-exports from ox-kernel (core types, traits, state machine) ---
 pub use ox_kernel::{
     AgentEvent, CompletionRequest, ContentBlock, EventStream, Kernel, Message, Path, Reader,
     Record, Store, StoreError, StreamEvent, Tool, ToolCall, ToolRegistry, ToolResult, ToolSchema,
@@ -41,6 +46,11 @@ pub struct Agent<T: Transport> {
 }
 
 impl<T: Transport> Agent<T> {
+    /// Create a new agent with the given configuration.
+    ///
+    /// Sets up the internal [`Namespace`] with providers for the system
+    /// prompt, history, tools, and model. The `tools` registry is used
+    /// for both schema generation (sent to the model) and execution.
     pub fn new(
         system_prompt: String,
         model: String,

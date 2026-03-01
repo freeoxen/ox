@@ -34,12 +34,18 @@ pub struct Namespace {
 }
 
 impl Namespace {
+    /// Create an empty namespace with no mounted stores.
     pub fn new() -> Self {
         Self {
             mounts: BTreeMap::new(),
         }
     }
 
+    /// Mount a store at the given path prefix.
+    ///
+    /// Subsequent reads/writes to paths starting with `prefix` will be
+    /// routed to this store. Replaces any previously mounted store at
+    /// the same prefix.
     pub fn mount(&mut self, prefix: &str, store: Box<dyn Store>) {
         self.mounts.insert(prefix.to_string(), store);
     }
@@ -224,6 +230,7 @@ pub struct SystemProvider {
 }
 
 impl SystemProvider {
+    /// Create a new provider with the given system prompt.
     pub fn new(prompt: String) -> Self {
         Self { prompt }
     }
@@ -257,6 +264,7 @@ pub struct ToolsProvider {
 }
 
 impl ToolsProvider {
+    /// Create a new provider with the given tool schemas.
     pub fn new(schemas: Vec<ox_kernel::ToolSchema>) -> Self {
         Self { schemas }
     }
@@ -293,7 +301,9 @@ impl Writer for ToolsProvider {
 /// A model entry in the catalog.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ModelInfo {
+    /// Model identifier (e.g. `"claude-sonnet-4-20250514"`).
     pub id: String,
+    /// Human-readable name (e.g. `"Claude Sonnet 4"`).
     pub display_name: String,
 }
 
@@ -305,6 +315,7 @@ pub struct ModelProvider {
 }
 
 impl ModelProvider {
+    /// Create a new provider with the given model ID and token limit.
     pub fn new(model: String, max_tokens: u32) -> Self {
         Self {
             model,

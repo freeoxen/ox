@@ -30,12 +30,14 @@ pub struct HistoryProvider {
 }
 
 impl HistoryProvider {
+    /// Create an empty history.
     pub fn new() -> Self {
         Self {
             messages: Vec::new(),
         }
     }
 
+    /// Direct access to the stored messages.
     pub fn messages(&self) -> &[Message] {
         &self.messages
     }

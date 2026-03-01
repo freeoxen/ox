@@ -33,8 +33,11 @@ pub use structfs_core_store::{
 /// A tool invocation requested by the model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
+    /// Unique identifier for this tool use, used to correlate results.
     pub id: String,
+    /// Name of the tool to invoke (must match a registered [`Tool::name`]).
     pub name: String,
+    /// JSON arguments to pass to the tool.
     pub input: serde_json::Value,
 }
 
@@ -42,8 +45,13 @@ pub struct ToolCall {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ContentBlock {
+    /// A text segment of the assistant's response.
     #[serde(rename = "text")]
-    Text { text: String },
+    Text {
+        /// The text content.
+        text: String,
+    },
+    /// A tool invocation the assistant wants to execute.
     #[serde(rename = "tool_use")]
     ToolUse(ToolCall),
 }
@@ -51,7 +59,9 @@ pub enum ContentBlock {
 /// The result of executing a tool, sent back to the model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResult {
+    /// The [`ToolCall::id`] this result corresponds to.
     pub tool_use_id: String,
+    /// The tool's output (or error message).
     pub content: String,
 }
 
@@ -59,12 +69,24 @@ pub struct ToolResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "role")]
 pub enum Message {
+    /// A user message with plain text content.
     #[serde(rename = "user")]
-    User { content: String },
+    User {
+        /// The user's text.
+        content: String,
+    },
+    /// An assistant response containing text and/or tool invocations.
     #[serde(rename = "assistant")]
-    Assistant { content: Vec<ContentBlock> },
+    Assistant {
+        /// Content blocks (text and/or tool use).
+        content: Vec<ContentBlock>,
+    },
+    /// Tool execution results returned to the model.
     #[serde(rename = "tool_result")]
-    ToolResult { results: Vec<ToolResult> },
+    ToolResult {
+        /// One result per tool call.
+        results: Vec<ToolResult>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -74,19 +96,31 @@ pub enum Message {
 /// JSON Schema description of a tool, sent to the model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolSchema {
+    /// The tool's unique name (e.g. `"get_weather"`).
     pub name: String,
+    /// Human-readable description of what the tool does.
     pub description: String,
+    /// JSON Schema object describing the tool's parameters.
     pub input_schema: serde_json::Value,
 }
 
 /// A fully-assembled completion request ready to send to a transport.
+///
+/// Typically synthesized by reading `path!("prompt")` from a [`Namespace`](crate::Store),
+/// not constructed directly.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletionRequest {
+    /// Model identifier (e.g. `"claude-sonnet-4-20250514"`).
     pub model: String,
+    /// Maximum tokens to generate.
     pub max_tokens: u32,
+    /// System prompt.
     pub system: String,
+    /// Conversation history in wire format.
     pub messages: Vec<serde_json::Value>,
+    /// Available tools.
     pub tools: Vec<ToolSchema>,
+    /// Whether to use streaming responses.
     #[serde(default)]
     pub stream: bool,
 }
@@ -98,10 +132,20 @@ pub struct CompletionRequest {
 /// A single event from a streaming completion response.
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
+    /// A chunk of text from the assistant.
     TextDelta(String),
-    ToolUseStart { id: String, name: String },
+    /// A new tool invocation has started.
+    ToolUseStart {
+        /// Unique ID for this tool use.
+        id: String,
+        /// Name of the tool.
+        name: String,
+    },
+    /// A chunk of JSON input for the current tool invocation.
     ToolUseInputDelta(String),
+    /// The model has finished its response.
     MessageStop,
+    /// An error occurred during streaming.
     Error(String),
 }
 
@@ -110,13 +154,30 @@ pub enum StreamEvent {
 // ---------------------------------------------------------------------------
 
 /// High-level agent lifecycle events for observability subscribers.
+///
+/// Subscribe to these via `Agent::subscribe` (in `ox-core`) or the `emit`
+/// callback on [`Kernel::run_turn`].
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
+    /// A new completion round is starting.
     TurnStart,
+    /// A chunk of assistant text was received.
     TextDelta(String),
-    ToolCallStart { name: String },
-    ToolCallResult { name: String, result: String },
+    /// A tool is about to be executed.
+    ToolCallStart {
+        /// Name of the tool.
+        name: String,
+    },
+    /// A tool has finished executing.
+    ToolCallResult {
+        /// Name of the tool.
+        name: String,
+        /// The tool's output.
+        result: String,
+    },
+    /// The turn completed (no more tool calls).
     TurnEnd,
+    /// An error occurred.
     Error(String),
 }
 
@@ -125,33 +186,65 @@ pub enum AgentEvent {
 // ---------------------------------------------------------------------------
 
 /// A tool the agent can invoke. Implement this trait to expose capabilities.
+///
+/// # Example
+///
+/// ```ignore
+/// struct Echo;
+///
+/// impl Tool for Echo {
+///     fn name(&self) -> &str { "echo" }
+///     fn description(&self) -> &str { "Echoes the input back" }
+///     fn parameters_schema(&self) -> serde_json::Value {
+///         serde_json::json!({
+///             "type": "object",
+///             "properties": { "text": { "type": "string" } },
+///             "required": ["text"]
+///         })
+///     }
+///     fn execute(&self, input: serde_json::Value) -> Result<String, String> {
+///         Ok(input["text"].as_str().unwrap_or("").to_string())
+///     }
+/// }
+/// ```
 pub trait Tool: Send + Sync {
+    /// A unique name for this tool (e.g. `"get_weather"`).
     fn name(&self) -> &str;
+    /// A human-readable description of what the tool does.
     fn description(&self) -> &str;
+    /// A JSON Schema object describing the tool's input parameters.
     fn parameters_schema(&self) -> serde_json::Value;
+    /// Execute the tool with the given JSON input, returning a string result.
     fn execute(&self, input: serde_json::Value) -> Result<String, String>;
 }
 
 /// Registry of named tools available to the agent.
+///
+/// Tools are registered by name and looked up during the agentic loop
+/// when the model emits a [`ToolCall`].
 pub struct ToolRegistry {
     tools: HashMap<String, Box<dyn Tool>>,
 }
 
 impl ToolRegistry {
+    /// Create an empty registry.
     pub fn new() -> Self {
         Self {
             tools: HashMap::new(),
         }
     }
 
+    /// Register a tool. Replaces any existing tool with the same name.
     pub fn register(&mut self, tool: Box<dyn Tool>) {
         self.tools.insert(tool.name().to_string(), tool);
     }
 
+    /// Look up a tool by name.
     pub fn get(&self, name: &str) -> Option<&dyn Tool> {
         self.tools.get(name).map(|t| t.as_ref())
     }
 
+    /// Collect [`ToolSchema`]s for all registered tools.
     pub fn schemas(&self) -> Vec<ToolSchema> {
         self.tools
             .values()
@@ -179,13 +272,16 @@ impl Default for ToolRegistry {
 /// This is async-agnostic: the caller drives the stream by calling
 /// `next_event()` repeatedly until it returns `None`.
 pub trait Transport {
+    /// The stream type returned by [`send`](Transport::send).
     type Stream: EventStream;
 
+    /// Send a completion request and return a stream of events.
     fn send(&self, request: CompletionRequest) -> Result<Self::Stream, String>;
 }
 
 /// Iterator-style interface over streaming completion events.
 pub trait EventStream {
+    /// Return the next event, or `None` when the stream is exhausted.
     fn next_event(&mut self) -> Option<StreamEvent>;
 }
 
@@ -196,8 +292,11 @@ pub trait EventStream {
 /// The kernel's current phase in the agentic loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KernelState {
+    /// Ready to start a new turn.
     Idle,
+    /// Receiving a streaming response from the transport.
     Streaming,
+    /// Executing tool calls.
     Executing,
 }
 
@@ -211,6 +310,7 @@ pub struct Kernel {
 }
 
 impl Kernel {
+    /// Create a new kernel for the given model.
     pub fn new(model: String) -> Self {
         Self {
             state: KernelState::Idle,
@@ -218,10 +318,12 @@ impl Kernel {
         }
     }
 
+    /// The kernel's current state.
     pub fn state(&self) -> KernelState {
         self.state
     }
 
+    /// The model identifier this kernel was created with.
     pub fn model(&self) -> &str {
         &self.model
     }
