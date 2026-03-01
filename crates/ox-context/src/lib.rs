@@ -1,3 +1,18 @@
+//! Namespace store router and concrete providers for the ox agent framework.
+//!
+//! This crate provides [`Namespace`], a virtual filesystem that routes reads
+//! and writes to mounted [`Store`] implementations by path prefix — similar to
+//! how a Unix VFS mounts devices at path prefixes.
+//!
+//! Three concrete providers are included:
+//!
+//! - [`SystemProvider`] — holds the system prompt string
+//! - [`ToolsProvider`] — read-only snapshot of tool schemas
+//! - [`ModelProvider`] — model ID and max_tokens settings
+//!
+//! Reading `path!("prompt")` from the namespace synthesizes a complete
+//! [`CompletionRequest`] by collecting state from all mounted providers.
+
 use ox_kernel::CompletionRequest;
 use std::collections::BTreeMap;
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Store, Value, Writer, path};
@@ -275,15 +290,27 @@ impl Writer for ToolsProvider {
     }
 }
 
-/// Provides model ID and max_tokens.
+/// A model entry in the catalog.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ModelInfo {
+    pub id: String,
+    pub display_name: String,
+}
+
+/// Provides model ID, max_tokens, and an optional catalog of available models.
 pub struct ModelProvider {
     model: String,
     max_tokens: u32,
+    catalog: Vec<ModelInfo>,
 }
 
 impl ModelProvider {
     pub fn new(model: String, max_tokens: u32) -> Self {
-        Self { model, max_tokens }
+        Self {
+            model,
+            max_tokens,
+            catalog: Vec::new(),
+        }
     }
 }
 
@@ -297,6 +324,11 @@ impl Reader for ModelProvider {
         match key {
             "" | "id" => Ok(Some(Record::parsed(Value::String(self.model.clone())))),
             "max_tokens" => Ok(Some(Record::parsed(Value::Integer(self.max_tokens as i64)))),
+            "catalog" => {
+                let value = to_value(&self.catalog)
+                    .map_err(|e| StoreError::store("model", "read", e.to_string()))?;
+                Ok(Some(Record::parsed(value)))
+            }
             _ => Ok(None),
         }
     }
@@ -330,6 +362,19 @@ impl Writer for ModelProvider {
                     "model",
                     "write",
                     "expected integer for max_tokens",
+                )),
+            },
+            "catalog" => match data {
+                Record::Parsed(v) => {
+                    let catalog: Vec<ModelInfo> = structfs_serde_store::from_value(v)
+                        .map_err(|e| StoreError::store("model", "write", e.to_string()))?;
+                    self.catalog = catalog;
+                    Ok(to.clone())
+                }
+                _ => Err(StoreError::store(
+                    "model",
+                    "write",
+                    "expected parsed record for catalog",
                 )),
             },
             _ => Err(StoreError::store(

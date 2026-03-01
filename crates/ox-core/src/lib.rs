@@ -1,3 +1,23 @@
+//! Agent composition for the ox framework.
+//!
+//! `ox-core` wires together [`Kernel`], [`Namespace`], and the various
+//! providers into a single [`Agent`] struct with a simple `prompt()` method.
+//!
+//! This is the main entry point for native (non-Wasm) consumers. It
+//! re-exports all public types from `ox-kernel`, `ox-context`, and
+//! `ox-history` so downstream crates only need to depend on `ox-core`.
+//!
+//! ```ignore
+//! let mut agent = Agent::new(
+//!     "You are helpful.".into(),
+//!     "claude-sonnet-4-20250514".into(),
+//!     4096,
+//!     my_transport,
+//!     ToolRegistry::new(),
+//! );
+//! let reply = agent.prompt("Hello")?;
+//! ```
+
 pub use ox_context::{ModelProvider, Namespace, SystemProvider, ToolsProvider};
 pub use ox_history::HistoryProvider;
 pub use ox_kernel::{

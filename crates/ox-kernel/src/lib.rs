@@ -1,3 +1,20 @@
+//! Core types, state machine, and agentic loop for the ox agent framework.
+//!
+//! `ox-kernel` provides the foundational building blocks for building LLM agents:
+//!
+//! - **Message types** — [`Message`], [`ContentBlock`], [`ToolCall`], [`ToolResult`]
+//! - **Completion protocol** — [`CompletionRequest`], [`StreamEvent`], [`EventStream`]
+//! - **Tool abstraction** — [`Tool`] trait and [`ToolRegistry`]
+//! - **Transport abstraction** — [`Transport`] trait for pluggable LLM backends
+//! - **State machine** — [`Kernel`] drives the agentic loop, reading prompts from
+//!   and writing results to a [`Store`]
+//! - **StructFS re-exports** — [`Reader`], [`Writer`], [`Store`], [`Path`], [`Value`],
+//!   [`Record`], [`path!`] for building stores that compose into a namespace
+//!
+//! The kernel is deliberately synchronous and transport-agnostic. The caller
+//! provides a [`Transport`] implementation and drives the loop — this keeps the
+//! kernel portable across native, Wasm, and WASI targets.
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -13,6 +30,7 @@ pub use structfs_core_store::{
 // Message types
 // ---------------------------------------------------------------------------
 
+/// A tool invocation requested by the model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: String,
@@ -20,6 +38,7 @@ pub struct ToolCall {
     pub input: serde_json::Value,
 }
 
+/// A single block of content in an assistant message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ContentBlock {
@@ -29,12 +48,14 @@ pub enum ContentBlock {
     ToolUse(ToolCall),
 }
 
+/// The result of executing a tool, sent back to the model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResult {
     pub tool_use_id: String,
     pub content: String,
 }
 
+/// A conversation message — user text, assistant response, or tool results.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "role")]
 pub enum Message {
@@ -50,6 +71,7 @@ pub enum Message {
 // Completion request / response (Anthropic wire-ish format)
 // ---------------------------------------------------------------------------
 
+/// JSON Schema description of a tool, sent to the model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolSchema {
     pub name: String,
@@ -57,6 +79,7 @@ pub struct ToolSchema {
     pub input_schema: serde_json::Value,
 }
 
+/// A fully-assembled completion request ready to send to a transport.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletionRequest {
     pub model: String,
@@ -72,6 +95,7 @@ pub struct CompletionRequest {
 // Stream events (from the transport)
 // ---------------------------------------------------------------------------
 
+/// A single event from a streaming completion response.
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
     TextDelta(String),
@@ -85,6 +109,7 @@ pub enum StreamEvent {
 // Agent events (for observability subscribers)
 // ---------------------------------------------------------------------------
 
+/// High-level agent lifecycle events for observability subscribers.
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
     TurnStart,
@@ -99,6 +124,7 @@ pub enum AgentEvent {
 // Tool trait and registry
 // ---------------------------------------------------------------------------
 
+/// A tool the agent can invoke. Implement this trait to expose capabilities.
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
@@ -106,6 +132,7 @@ pub trait Tool: Send + Sync {
     fn execute(&self, input: serde_json::Value) -> Result<String, String>;
 }
 
+/// Registry of named tools available to the agent.
 pub struct ToolRegistry {
     tools: HashMap<String, Box<dyn Tool>>,
 }
@@ -157,6 +184,7 @@ pub trait Transport {
     fn send(&self, request: CompletionRequest) -> Result<Self::Stream, String>;
 }
 
+/// Iterator-style interface over streaming completion events.
 pub trait EventStream {
     fn next_event(&mut self) -> Option<StreamEvent>;
 }
@@ -165,6 +193,7 @@ pub trait EventStream {
 // Kernel state machine
 // ---------------------------------------------------------------------------
 
+/// The kernel's current phase in the agentic loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KernelState {
     Idle,
@@ -172,6 +201,10 @@ pub enum KernelState {
     Executing,
 }
 
+/// The agentic loop state machine.
+///
+/// Reads prompts from a [`Store`], streams completions via a [`Transport`],
+/// executes tool calls through a [`ToolRegistry`], and writes results back.
 pub struct Kernel {
     state: KernelState,
     model: String,
@@ -413,6 +446,7 @@ impl Kernel {
 // Serialization helpers (produce Anthropic Messages API format)
 // ---------------------------------------------------------------------------
 
+/// Serialize assistant content blocks into Anthropic Messages API wire format.
 pub fn serialize_assistant_message(blocks: &[ContentBlock]) -> serde_json::Value {
     let content: Vec<serde_json::Value> = blocks
         .iter()
@@ -436,6 +470,7 @@ pub fn serialize_assistant_message(blocks: &[ContentBlock]) -> serde_json::Value
     })
 }
 
+/// Serialize tool results into Anthropic Messages API wire format.
 pub fn serialize_tool_results(results: &[ToolResult]) -> serde_json::Value {
     let content: Vec<serde_json::Value> = results
         .iter()

@@ -2,6 +2,15 @@
 name = "ox-web"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/freeoxen/ox"
+homepage = "https://freeoxen.github.io/ox/"
+authors = ["Adjective Noun, LLC"]
+description = "Browser Wasm shell for the ox agent framework with JS tool registration"
+readme = "README.md"
+keywords = ["agent", "ai", "wasm", "webassembly", "browser"]
+categories = ["wasm", "api-bindings"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]

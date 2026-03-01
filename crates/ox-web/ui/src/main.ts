@@ -41,6 +41,66 @@ async function main(): Promise<void> {
 
   const agent = create_agent(systemPrompt, apiKey ?? "");
 
+  // Model selector
+  const MODEL_STORAGE_KEY = "ox:model";
+  const DEFAULT_MODEL = "claude-sonnet-4-20250514";
+
+  const modelSelect = document.createElement("select");
+  modelSelect.className = "model-select";
+
+  // Start with the default model while catalog loads
+  const defaultOpt = document.createElement("option");
+  defaultOpt.value = DEFAULT_MODEL;
+  defaultOpt.textContent = DEFAULT_MODEL;
+  modelSelect.appendChild(defaultOpt);
+
+  const stored = sessionStorage.getItem(MODEL_STORAGE_KEY);
+  if (stored && stored !== DEFAULT_MODEL) {
+    const storedOpt = document.createElement("option");
+    storedOpt.value = stored;
+    storedOpt.textContent = stored;
+    modelSelect.appendChild(storedOpt);
+    modelSelect.value = stored;
+    agent.set_model(stored);
+  }
+
+  modelSelect.addEventListener("change", () => {
+    sessionStorage.setItem(MODEL_STORAGE_KEY, modelSelect.value);
+    agent.set_model(modelSelect.value);
+  });
+
+  document.querySelector(".header-row")!.appendChild(modelSelect);
+
+  // Fetch model catalog from Anthropic API (non-blocking)
+  if (apiKey) {
+    agent
+      .refresh_models()
+      .then((catalogJson: string) => {
+        const catalog: { id: string; display_name: string }[] =
+          JSON.parse(catalogJson);
+        if (catalog.length === 0) return;
+
+        const current = modelSelect.value;
+        modelSelect.innerHTML = "";
+        for (const m of catalog) {
+          const opt = document.createElement("option");
+          opt.value = m.id;
+          opt.textContent = m.display_name;
+          modelSelect.appendChild(opt);
+        }
+        // Restore selection if still in catalog, otherwise keep default
+        if (catalog.some((m) => m.id === current)) {
+          modelSelect.value = current;
+        } else {
+          modelSelect.value = DEFAULT_MODEL;
+          agent.set_model(DEFAULT_MODEL);
+        }
+      })
+      .catch(() => {
+        // Catalog fetch failed — keep the default option, not critical
+      });
+  }
+
   if (!apiKey) {
     appendLine(
       "No API key provided. Enter your key to use the playground.",

@@ -1,3 +1,13 @@
+//! Conversation history as a StructFS store for the ox agent framework.
+//!
+//! [`HistoryProvider`] stores a `Vec<Message>` and exposes it via the
+//! StructFS [`Reader`]/[`Writer`] interface. The kernel appends messages
+//! by writing to `path!("history/append")` and reads them back as
+//! wire-format JSON via `path!("history/messages")`.
+//!
+//! Also provides [`parse_wire_message`] for converting Anthropic Messages API
+//! JSON into typed [`Message`] values.
+
 use ox_kernel::{ContentBlock, Message, ToolResult};
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer};
 use structfs_serde_store::{json_to_value, value_to_json};
@@ -86,7 +96,10 @@ impl Default for HistoryProvider {
     }
 }
 
-/// Parse a wire-format JSON message into a typed `Message`.
+/// Parse an Anthropic Messages API wire-format JSON object into a typed [`Message`].
+///
+/// Handles user messages, assistant messages (with text and tool_use blocks),
+/// and tool result messages.
 pub fn parse_wire_message(wire: &serde_json::Value) -> Result<Message, String> {
     let role = wire
         .get("role")

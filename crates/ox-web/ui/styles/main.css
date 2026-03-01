@@ -502,6 +502,21 @@ h1 span {
   animation: pulse var(--duration-pulse) var(--ease-pulse) infinite;
 }
 
+/* --- model selector --- */
+.model-select {
+  margin-left: auto;
+  padding: 0.4em 0.6em;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  background: var(--t-inset);
+  color: var(--t-on-inset);
+  border: 1px solid var(--t-border);
+  border-radius: var(--radius);
+  outline: none;
+  transition: border-color 0.3s;
+}
+.model-select:focus { border-color: var(--t-accent); }
+
 /* --- chat output --- */
 #output {
   background: var(--t-surface);

@@ -1,4 +1,18 @@
-use ox_context::{ModelProvider, Namespace, SystemProvider, ToolsProvider};
+//! Browser Wasm shell for the ox agent framework.
+//!
+//! `ox-web` compiles to a `cdylib` Wasm module via `wasm-pack` and exposes
+//! [`OxAgent`] to JavaScript. Tools can be registered from JS at runtime,
+//! and the agentic loop runs entirely in the browser (fetching completions
+//! from the Anthropic API or a local proxy).
+//!
+//! ```js
+//! import init, { create_agent } from "./ox_web.js";
+//! await init();
+//! const agent = create_agent("You are helpful.", apiKey);
+//! const reply = await agent.prompt("Hello");
+//! ```
+
+use ox_context::{ModelInfo, ModelProvider, Namespace, SystemProvider, ToolsProvider};
 use ox_core::{
     AgentEvent, CompletionRequest, ContentBlock, EventStream, StreamEvent, ToolSchema, Transport,
     serialize_assistant_message, serialize_tool_results,
@@ -299,11 +313,18 @@ impl OxAgent {
             .flatten()
             .map(record_to_json);
 
+        let model_catalog = ctx
+            .read(&path!("model/catalog"))
+            .ok()
+            .flatten()
+            .map(record_to_json);
+
         let snapshot = serde_json::json!({
             "system": system,
             "model": {
                 "id": model_id,
                 "max_tokens": model_max_tokens,
+                "catalog": model_catalog,
             },
             "tools": tools,
             "history": {
@@ -325,6 +346,55 @@ impl OxAgent {
             emit_js(Some(cb), "context_changed", "");
         }
         Ok(())
+    }
+
+    /// Change the model used for completions.
+    pub fn set_model(&self, model_id: &str) -> Result<(), JsValue> {
+        let record = Record::parsed(Value::String(model_id.to_string()));
+        self.context
+            .borrow_mut()
+            .write(&path!("model/id"), record)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        if let Some(ref cb) = self.event_callback {
+            emit_js(Some(cb), "context_changed", "");
+        }
+        Ok(())
+    }
+
+    /// Read the model catalog from the namespace.
+    /// Returns a JSON array of `{id, display_name}` objects.
+    pub fn list_models(&self) -> String {
+        let mut ctx = self.context.borrow_mut();
+        let catalog = ctx
+            .read(&path!("model/catalog"))
+            .ok()
+            .flatten()
+            .map(record_to_json)
+            .unwrap_or(serde_json::Value::Array(vec![]));
+        catalog.to_string()
+    }
+
+    /// Fetch available models from the Anthropic API and write to the catalog.
+    /// Returns a Promise that resolves with the JSON catalog array.
+    pub fn refresh_models(&self) -> js_sys::Promise {
+        let api_key = self.api_key.clone();
+        let context = self.context.clone();
+        let callback = self.event_callback.clone();
+        wasm_bindgen_futures::future_to_promise(async move {
+            let models = fetch_model_catalog(&api_key).await?;
+            let value = structfs_serde_store::to_value(&models)
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            context
+                .borrow_mut()
+                .write(&path!("model/catalog"), Record::parsed(value))
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            if let Some(ref cb) = callback {
+                emit_js(Some(cb), "context_changed", "");
+            }
+            let json =
+                serde_json::to_string(&models).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            Ok(JsValue::from_str(&json))
+        })
     }
 
     /// Send a user prompt and run the agentic loop to completion.
@@ -452,6 +522,111 @@ async fn fetch_completion(api_key: &str, request_body: &str) -> Result<String, S
 
     text.as_string()
         .ok_or_else(|| "response body not a string".into())
+}
+
+/// Fetch the model catalog from the Anthropic API.
+async fn fetch_model_catalog(api_key: &str) -> Result<Vec<ModelInfo>, JsValue> {
+    let window = web_sys::window().ok_or(JsValue::from_str("no window"))?;
+
+    let headers = web_sys::Headers::new().map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
+    headers
+        .set("x-api-key", api_key)
+        .map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
+    headers
+        .set("anthropic-version", "2023-06-01")
+        .map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
+    headers
+        .set("anthropic-dangerous-direct-browser-access", "true")
+        .map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
+
+    let mut all_models: Vec<ModelInfo> = Vec::new();
+    let mut after_id: Option<String> = None;
+
+    loop {
+        let url = match &after_id {
+            Some(cursor) => {
+                format!("https://api.anthropic.com/v1/models?limit=1000&after_id={cursor}")
+            }
+            None => "https://api.anthropic.com/v1/models?limit=1000".to_string(),
+        };
+
+        let opts = web_sys::RequestInit::new();
+        opts.set_method("GET");
+        opts.set_mode(web_sys::RequestMode::Cors);
+        opts.set_headers(&headers);
+
+        let request = web_sys::Request::new_with_str_and_init(&url, &opts)
+            .map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
+
+        let resp_value = wasm_bindgen_futures::JsFuture::from(window.fetch_with_request(&request))
+            .await
+            .map_err(|e| {
+                let msg = js_sys::Reflect::get(&e, &"message".into())
+                    .ok()
+                    .and_then(|v| v.as_string())
+                    .unwrap_or_default();
+                JsValue::from_str(&format!("fetch error: {msg}"))
+            })?;
+
+        let resp: web_sys::Response = resp_value
+            .dyn_into()
+            .map_err(|_| JsValue::from_str("response is not a Response"))?;
+
+        if !resp.ok() {
+            let status = resp.status();
+            let text = wasm_bindgen_futures::JsFuture::from(
+                resp.text()
+                    .map_err(|e| JsValue::from_str(&format!("{e:?}")))?,
+            )
+            .await
+            .map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
+            let body = text.as_string().unwrap_or_default();
+            return Err(JsValue::from_str(&format!("HTTP {status}: {body}")));
+        }
+
+        let text = wasm_bindgen_futures::JsFuture::from(
+            resp.text()
+                .map_err(|e| JsValue::from_str(&format!("{e:?}")))?,
+        )
+        .await
+        .map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
+        let body_str = text
+            .as_string()
+            .ok_or_else(|| JsValue::from_str("response body not a string"))?;
+
+        let page: serde_json::Value =
+            serde_json::from_str(&body_str).map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        if let Some(data) = page.get("data").and_then(|d| d.as_array()) {
+            for entry in data {
+                let id = entry
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let display_name = entry
+                    .get("display_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&id)
+                    .to_string();
+                all_models.push(ModelInfo { id, display_name });
+            }
+        }
+
+        let has_more = page
+            .get("has_more")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if !has_more {
+            break;
+        }
+        after_id = page
+            .get("last_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+    }
+
+    Ok(all_models)
 }
 
 /// Execute a tool call against the Rust registry first, then JS tools.

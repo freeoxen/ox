@@ -9,6 +9,9 @@ export class OxAgent {
     parameters_schema_json: string,
     callback: Function,
   ): void;
+  list_models(): string;
+  refresh_models(): Promise<string>;
+  set_model(model_id: string): void;
   set_system_prompt(new_prompt: string): void;
   unregister_tool(name: string): void;
   set_api_key(api_key: string): void;

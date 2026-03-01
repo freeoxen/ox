@@ -1,7 +1,16 @@
 [package]
 name = "ox-context"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Namespace store router and providers for the ox agent framework"
+readme = "README.md"
+keywords = ["agent", "ai", "namespace", "structfs", "routing"]
+categories = ["data-structures"]
 
 [dependencies]
 ox-kernel = { path = "../ox-kernel" }
