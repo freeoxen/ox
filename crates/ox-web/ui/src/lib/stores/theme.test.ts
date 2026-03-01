@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeEach } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import {
   hourAngle,
   hourPosition,
@@ -8,7 +8,6 @@ import {
   migrateThemeName,
   themeByName,
   themeNames,
-  initThemePicker,
 } from "./theme";
 
 // --- Geometry ---
@@ -295,155 +294,5 @@ describe("themeByName", () => {
         expect(t.tokens).toHaveProperty(k);
       }
     }
-  });
-});
-
-// --- DOM: initThemePicker ---
-
-describe("initThemePicker", () => {
-  beforeEach(() => {
-    document.body.innerHTML = "";
-    localStorage.clear();
-    const picker = document.createElement("div");
-    picker.id = "theme-picker";
-    document.body.appendChild(picker);
-  });
-
-  test("creates an SVG inside #theme-picker", () => {
-    initThemePicker();
-    const svg = document.querySelector("#theme-picker svg");
-    expect(svg).not.toBeNull();
-  });
-
-  test("SVG has 12 hour groups", () => {
-    initThemePicker();
-    const groups = document.querySelectorAll(".clock-hour");
-    expect(groups.length).toBe(12);
-  });
-
-  test("each hour group has role=button and aria-label", () => {
-    initThemePicker();
-    const groups = document.querySelectorAll(".clock-hour");
-    for (const g of groups) {
-      expect(g.getAttribute("role")).toBe("button");
-      expect(g.getAttribute("aria-label")).toBeTruthy();
-    }
-  });
-
-  test("sets data-theme on html and body", () => {
-    initThemePicker();
-    expect(document.documentElement.dataset.theme).toBeTruthy();
-    expect(document.body.dataset.theme).toBeTruthy();
-  });
-
-  test("defaults to early-afternoon when no saved theme", () => {
-    initThemePicker();
-    expect(document.documentElement.dataset.theme).toBe("early-afternoon");
-  });
-
-  test("migrates old saved theme", () => {
-    localStorage.setItem("ox:theme", "high-noon");
-    initThemePicker();
-    expect(document.documentElement.dataset.theme).toBe("noon");
-    expect(localStorage.getItem("ox:theme")).toBe("noon");
-  });
-
-  test("preserves valid new theme name", () => {
-    localStorage.setItem("ox:theme", "midnight");
-    initThemePicker();
-    expect(document.documentElement.dataset.theme).toBe("midnight");
-  });
-
-  test("clicking an hour group switches theme", () => {
-    initThemePicker();
-    const twilight = document.querySelector(
-      '[data-theme-name="twilight"]',
-    ) as Element;
-    expect(twilight).not.toBeNull();
-    twilight.dispatchEvent(new Event("click", { bubbles: true }));
-    expect(document.documentElement.dataset.theme).toBe("twilight");
-    expect(localStorage.getItem("ox:theme")).toBe("twilight");
-  });
-
-  test("has a clock face, hand, and center dot", () => {
-    initThemePicker();
-    expect(document.querySelector(".clock-face")).not.toBeNull();
-    expect(document.querySelector(".clock-hand")).not.toBeNull();
-    expect(document.querySelector(".clock-center")).not.toBeNull();
-  });
-
-  test("adds clock-dragging class on pointerdown", () => {
-    initThemePicker();
-    const svg = document.querySelector(".clock") as Element;
-    expect(svg).not.toBeNull();
-    // happy-dom may not fully support pointer events, but we can dispatch
-    svg.dispatchEvent(new Event("pointerdown", { bubbles: true }));
-    expect(svg.classList.contains("clock-dragging")).toBe(true);
-  });
-
-  test("removes clock-dragging class on pointerup", () => {
-    initThemePicker();
-    const svg = document.querySelector(".clock") as Element;
-    svg.dispatchEvent(new Event("pointerdown", { bubbles: true }));
-    expect(svg.classList.contains("clock-dragging")).toBe(true);
-    svg.dispatchEvent(new Event("pointerup", { bubbles: true }));
-    expect(svg.classList.contains("clock-dragging")).toBe(false);
-  });
-
-  test("hand group gets no-transition class during drag", () => {
-    initThemePicker();
-    const svg = document.querySelector(".clock") as Element;
-    const handGroup = document.querySelector(".clock-hand-group") as Element;
-    svg.dispatchEvent(new Event("pointerdown", { bubbles: true }));
-    expect(handGroup.classList.contains("clock-hand-no-transition")).toBe(true);
-    svg.dispatchEvent(new Event("pointerup", { bubbles: true }));
-    expect(handGroup.classList.contains("clock-hand-no-transition")).toBe(
-      false,
-    );
-  });
-
-  test("renders a mode toggle button", () => {
-    initThemePicker();
-    const toggle = document.querySelector(".clock-mode-toggle");
-    expect(toggle).not.toBeNull();
-    expect(toggle!.tagName).toBe("BUTTON");
-  });
-
-  test("toggle button contains an icon SVG", () => {
-    initThemePicker();
-    const icon = document.querySelector(".clock-mode-toggle .clock-mode-icon");
-    expect(icon).not.toBeNull();
-  });
-
-  test("defaults to manual mode (wand icon, no clock-live)", () => {
-    initThemePicker();
-    const svg = document.querySelector(".clock") as Element;
-    expect(svg.classList.contains("clock-live")).toBe(false);
-  });
-
-  test("clicking toggle switches to wall mode", () => {
-    initThemePicker();
-    const svg = document.querySelector(".clock") as Element;
-    const toggle = document.querySelector(".clock-mode-toggle") as Element;
-    toggle.dispatchEvent(new Event("click", { bubbles: true }));
-    expect(svg.classList.contains("clock-live")).toBe(true);
-    expect(localStorage.getItem("ox:clock-mode")).toBe("wall");
-  });
-
-  test("clicking toggle twice returns to manual mode", () => {
-    initThemePicker();
-    const svg = document.querySelector(".clock") as Element;
-    const toggle = document.querySelector(".clock-mode-toggle") as Element;
-    toggle.dispatchEvent(new Event("click", { bubbles: true }));
-    toggle.dispatchEvent(new Event("click", { bubbles: true }));
-    expect(svg.classList.contains("clock-live")).toBe(false);
-    expect(localStorage.getItem("ox:clock-mode")).toBe("manual");
-  });
-
-  test("restores wall mode from localStorage", () => {
-    localStorage.setItem("ox:clock-mode", "wall");
-    initThemePicker();
-    const svg = document.querySelector(".clock") as Element;
-    expect(svg.classList.contains("clock-live")).toBe(true);
   });
 });

@@ -3,4 +3,5 @@ Cargo.lock
 /local
 *.swp
 node_modules
+.svelte-kit
 site/dist

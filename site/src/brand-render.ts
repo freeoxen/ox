@@ -4,7 +4,10 @@
 // visual specimens that demonstrate the design system.
 // ============================================================
 
-import { themeNames, themeByName } from "../../crates/ox-web/ui/src/theme";
+import {
+  themeNames,
+  themeByName,
+} from "../../crates/ox-web/ui/src/lib/theme-data";
 
 // --- Palette constants ---
 

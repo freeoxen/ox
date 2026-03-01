@@ -1,22 +1,10 @@
 {
+  "extends": "./.svelte-kit/tsconfig.json",
   "compilerOptions": {
-    "target": "ES2022",
-    "module": "ESNext",
-    "moduleResolution": "bundler",
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noImplicitReturns": true,
-    "outDir": "../../../target/js-pkg",
-    "rootDir": "src",
-    "declaration": false,
-    "sourceMap": true,
-    "skipLibCheck": true,
-    "types": ["@types/bun"],
-    "paths": {
-      "/pkg/ox_web.js": ["./src/wasm.d.ts"]
-    }
-  },
-  "include": ["src/**/*.ts"],
-  "exclude": ["src/**/*.test.ts", "src/test-setup.ts"]
+    "skipLibCheck": true
+  }
 }

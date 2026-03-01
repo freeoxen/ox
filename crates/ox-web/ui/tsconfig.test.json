@@ -1,5 +1,14 @@
 {
-  "extends": "./tsconfig.json",
-  "include": ["src/**/*.ts"],
-  "exclude": []
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "skipLibCheck": true,
+    "types": ["@types/bun"]
+  },
+  "include": ["src/**/*.ts"]
 }

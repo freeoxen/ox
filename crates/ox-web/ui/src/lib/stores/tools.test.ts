@@ -1,6 +1,6 @@
 import { describe, expect, test, beforeEach } from "bun:test";
-import { ToolStore, BUILTIN_TOOLS, FACTORY_PROFILE } from "./tool-store";
-import type { ToolDef } from "./types";
+import { ToolStore, BUILTIN_TOOLS, FACTORY_PROFILE } from "./tools";
+import type { ToolDef } from "../types";
 
 // localStorage is available in bun's test environment
 

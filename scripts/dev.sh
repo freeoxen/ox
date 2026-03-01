@@ -4,6 +4,25 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+# ---------------------------------------------------------------------------
+# Mutual exclusion with site-dev.sh (shared build outputs)
+# ---------------------------------------------------------------------------
+LOCKFILE="$ROOT/target/.dev-lock"
+mkdir -p "$ROOT/target"
+if [ -f "$LOCKFILE" ]; then
+    other=$(cat "$LOCKFILE")
+    lock_pid=$(echo "$other" | grep -o '[0-9]*')
+    if [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null; then
+        echo "error: $other is already running." >&2
+        echo "       These scripts share build outputs and cannot run concurrently." >&2
+        exit 1
+    fi
+    echo "warning: removing stale lock from $other" >&2
+fi
+echo "dev.sh (pid $$)" > "$LOCKFILE"
+remove_lock() { rm -f "$LOCKFILE"; }
+trap remove_lock EXIT
+
 WATCH=true
 PORT=""
 while [[ $# -gt 0 ]]; do
@@ -73,20 +92,18 @@ if "$WATCH"; then
         local pids
         pids=$(jobs -p 2>/dev/null) || true
         if [[ -n "$pids" ]]; then
-            # SIGTERM the direct children (cargo-watch instances).
-            # cargo-watch/watchexec forwards signals to its spawned commands.
             kill $pids 2>/dev/null || true
-            # Give them a moment, then force-kill stragglers.
             sleep 0.3
             kill -9 $pids 2>/dev/null || true
         fi
         wait 2>/dev/null || true
+        remove_lock
     }
     trap cleanup EXIT
 
     echo ""
     echo "==> watching for changes (Ctrl-C to stop)"
-    echo "    [ui]     crates/ox-web/ui/{src,styles,fonts} → bun build"
+    echo "    [ui]     crates/ox-web/ui/src                → bun build"
     echo "    [wasm]   crates/ox-web/src/                  → wasm-pack"
     echo "    [server] Rust crates                         → cargo run"
     echo ""
@@ -94,8 +111,6 @@ if "$WATCH"; then
     # UI watcher — quiet mode, tagged output
     cargo watch -q \
         -w crates/ox-web/ui/src \
-        -w crates/ox-web/ui/styles \
-        -w crates/ox-web/ui/fonts \
         -s 'echo "[ui] rebuilding..." && cd crates/ox-web/ui && bun run build 2>&1 && echo "[ui] rebuilt ok" || echo "[ui] BUILD FAILED"' &
 
     # Wasm watcher — quiet mode, tagged output

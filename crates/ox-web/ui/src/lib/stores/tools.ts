@@ -1,4 +1,6 @@
-import type { ToolDef } from "./types";
+import type { ToolDef } from "$lib/types";
+import type { OxAgent } from "$lib/wasm";
+import { compileTool } from "$lib/tool-compiler";
 
 export const BUILTIN_TOOLS: ToolDef[] = [
   {
@@ -135,3 +137,28 @@ export const ToolStore = {
     return [FACTORY_PROFILE, ...userNames];
   },
 };
+
+// --- Active JS tools set (shared across tool panel + agent) ---
+
+export let activeJsTools = new Set<string>();
+
+export function applyProfile(agent: OxAgent, profileName: string): void {
+  for (const name of activeJsTools) {
+    agent.unregister_tool(name);
+  }
+  activeJsTools.clear();
+  const toolNames = ToolStore.getProfileTools(profileName);
+  const lib = ToolStore.loadLibrary();
+  for (const name of toolNames) {
+    const def = lib[name];
+    if (!def) continue;
+    try {
+      const { schemaJson, callback } = compileTool(def);
+      agent.register_tool(name, def.description, schemaJson, callback);
+      activeJsTools.add(name);
+    } catch (_) {
+      /* skip tools that fail to compile */
+    }
+  }
+  ToolStore.setActiveProfile(profileName);
+}

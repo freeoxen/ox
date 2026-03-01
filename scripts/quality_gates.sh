@@ -66,11 +66,18 @@ else
     gate "fmt --check"            cargo fmt --all -- --check
 fi
 
-# 2. Format (prettier)
+# 2. Format (prettier — UI)
 if "$FIX"; then
-    gate "prettier"               "$BUN" x prettier --write 'crates/ox-web/ui/src/**/*.{ts,js}' 'site/**/*.{ts,js,css,html}'
+    gate "prettier (ui)"          bash -c "cd crates/ox-web/ui && \"$BUN\" x prettier --write 'src/**/*.{ts,js,svelte}'"
 else
-    gate "prettier --check"       "$BUN" x prettier --check 'crates/ox-web/ui/src/**/*.{ts,js}' 'site/**/*.{ts,js,css,html}'
+    gate "prettier --check (ui)"  bash -c "cd crates/ox-web/ui && \"$BUN\" x prettier --check 'src/**/*.{ts,js,svelte}'"
+fi
+
+# 2b. Format (prettier — site)
+if "$FIX"; then
+    gate "prettier (site)"        "$BUN" x prettier --write 'site/**/*.{ts,js,css,html}'
+else
+    gate "prettier --check (site)" "$BUN" x prettier --check 'site/**/*.{ts,js,css,html}'
 fi
 
 # 3. Lint (native)
@@ -94,14 +101,15 @@ gate "wasm-pack build"            wasm-pack build crates/ox-web --target web --o
 # 9. Install UI dependencies
 gate "bun install (ui)"           "$BUN" install --cwd crates/ox-web/ui
 
-# 10. TypeScript type check
-gate "tsc check (ui)"             bash -c "cd crates/ox-web/ui && \"$BUN\" x tsc --noEmit"
+# 10. SvelteKit sync + check
+gate "svelte-kit sync (ui)"       bash -c "cd crates/ox-web/ui && \"$BUN\" run node_modules/@sveltejs/kit/svelte-kit.js sync"
+gate "svelte-check (ui)"          bash -c "cd crates/ox-web/ui && \"$BUN\" run check"
 
-# 11. Bundle UI
-gate "bun build (ui)"             "$BUN" build crates/ox-web/ui/src/main.ts --outdir target/js-pkg --format esm --sourcemap=external --external '/pkg/*'
+# 11. TypeScript tests (ui)
+gate "bun test (ui)"              bash -c "cd crates/ox-web/ui && \"$BUN\" test"
 
-# 12. Copy CSS
-gate "copy css (ui)"              cp crates/ox-web/ui/styles/main.css target/js-pkg/main.css
+# 12. SvelteKit build
+gate "vite build (ui)"            bash -c "cd crates/ox-web/ui && \"$BUN\" run build"
 
 # Summary
 echo ""

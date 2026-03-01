@@ -135,6 +135,7 @@ async fn main() {
         .route("/dist/{*path}", get(serve_js_pkg))
         .route("/complete", post(proxy_complete))
         .route("/health", get(health))
+        .fallback(get(serve_static))
         .layer(cors)
         .with_state(state);
 
@@ -142,7 +143,9 @@ async fn main() {
         .await
         .unwrap();
     let addr = listener.local_addr().unwrap();
-    println!("ox-dev-server listening on http://{addr}");
+    println!();
+    println!("  ox-dev-server → http://{addr}");
+    println!();
     axum::serve(listener, app).await.unwrap();
 }
 
@@ -151,6 +154,14 @@ async fn health() -> &'static str {
 }
 
 async fn serve_index(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    // Try SvelteKit build output first
+    if let Some(ref dir) = state.js_pkg_dir {
+        let path = format!("{dir}/index.html");
+        if let Ok(contents) = tokio::fs::read_to_string(&path).await {
+            return Html(contents).into_response();
+        }
+    }
+    // Fallback to static dir
     if let Some(ref dir) = state.static_dir {
         let path = format!("{dir}/index.html");
         if let Ok(contents) = tokio::fs::read_to_string(&path).await {
@@ -252,6 +263,44 @@ async fn proxy_complete(
         .body(body)
         .unwrap()
         .into_response()
+}
+
+/// Catch-all handler: serves files from js_pkg_dir (SvelteKit build output).
+async fn serve_static(
+    State(state): State<Arc<AppState>>,
+    uri: axum::http::Uri,
+) -> impl IntoResponse {
+    let path = uri.path().trim_start_matches('/');
+    if let Some(ref dir) = state.js_pkg_dir {
+        let file_path = format!("{dir}/{path}");
+        if let Ok(contents) = tokio::fs::read(&file_path).await {
+            let content_type = guess_content_type(path);
+            return (
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, content_type)],
+                contents,
+            )
+                .into_response();
+        }
+    }
+    (StatusCode::NOT_FOUND, "not found").into_response()
+}
+
+fn guess_content_type(path: &str) -> &'static str {
+    match path.rsplit('.').next() {
+        Some("html") => "text/html",
+        Some("js" | "mjs") => "application/javascript",
+        Some("css") => "text/css",
+        Some("json") => "application/json",
+        Some("wasm") => "application/wasm",
+        Some("woff2") => "font/woff2",
+        Some("woff") => "font/woff",
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("ico") => "image/x-icon",
+        Some("map") => "application/json",
+        _ => "application/octet-stream",
+    }
 }
 
 fn find_dir(candidates: &[&str]) -> Option<String> {

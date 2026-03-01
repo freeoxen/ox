@@ -1,4 +1,7 @@
-import { initThemePicker, themeByName } from "../../crates/ox-web/ui/src/theme";
+import {
+  initThemePicker,
+  themeByName,
+} from "../../crates/ox-web/ui/src/lib/theme-data";
 
 // --- Theme chips ---
 

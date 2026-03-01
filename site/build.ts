@@ -4,6 +4,8 @@ import {
   copyFileSync,
   readFileSync,
   writeFileSync,
+  readdirSync,
+  statSync,
 } from "fs";
 import path from "path";
 import { renderBrandBook } from "./src/brand-render";
@@ -12,6 +14,21 @@ const ROOT = import.meta.dir;
 const DIST = path.join(ROOT, "dist");
 const UI = path.join(ROOT, "..", "crates", "ox-web", "ui");
 const WASM_PKG = path.join(ROOT, "..", "target", "wasm-pkg");
+const JS_PKG = path.join(ROOT, "..", "target", "js-pkg");
+
+// Recursive directory copy
+function copyDirSync(src: string, dest: string) {
+  mkdirSync(dest, { recursive: true });
+  for (const entry of readdirSync(src)) {
+    const srcPath = path.join(src, entry);
+    const destPath = path.join(dest, entry);
+    if (statSync(srcPath).isDirectory()) {
+      copyDirSync(srcPath, destPath);
+    } else {
+      copyFileSync(srcPath, destPath);
+    }
+  }
+}
 
 // 1. Clean dist/
 rmSync(DIST, { recursive: true, force: true });
@@ -35,9 +52,9 @@ if (!result.success) {
 }
 console.log("Bundled main.js");
 
-// 3. Copy main.css → dist/theme.css with font path rewrite
-const mainCss = readFileSync(path.join(UI, "styles", "main.css"), "utf-8");
-const themeCss = mainCss.replaceAll("./fonts/", "/fonts/");
+// 3. Copy app.css → dist/theme.css with font path rewrite
+const appCss = readFileSync(path.join(UI, "src", "app.css"), "utf-8");
+const themeCss = appCss.replaceAll("/fonts/", "/fonts/");
 writeFileSync(path.join(DIST, "theme.css"), themeCss);
 console.log("Wrote theme.css");
 
@@ -63,61 +80,49 @@ const fonts = [
   "ibm-plex-mono-600-latin.woff2",
 ];
 for (const font of fonts) {
-  copyFileSync(path.join(UI, "fonts", font), path.join(DIST, "fonts", font));
+  copyFileSync(
+    path.join(UI, "static", "fonts", font),
+    path.join(DIST, "fonts", font),
+  );
 }
 console.log(`Copied ${fonts.length} font files`);
 
-// 7. Build playground (flat structure: playground/{index.html,main.js,main.css,fonts/,pkg/})
+// 7. Build playground — copy SvelteKit build output + wasm pkg
 console.log("\nBuilding playground...");
 const PG = path.join(DIST, "playground");
+
+// 7a. Copy SvelteKit build output (index.html, _app/, fonts/)
+copyDirSync(JS_PKG, PG);
+
+// 7b. Rewrite absolute paths to relative so playground works under /playground/
+const pgHtmlPath = path.join(PG, "index.html");
+let pgHtml = readFileSync(pgHtmlPath, "utf-8");
+// Static asset references in HTML
+pgHtml = pgHtml.replaceAll('"/_app/', '"./_app/');
+pgHtml = pgHtml.replaceAll('"/fonts/', '"./fonts/');
+pgHtml = pgHtml.replaceAll('"/pkg/', '"./pkg/');
+// Dynamic import() calls in inline script
+pgHtml = pgHtml.replaceAll('("/_app/', '("./_app/');
+// Set SvelteKit base path for runtime resolution (version.json, etc.)
+pgHtml = pgHtml.replace('base: ""', 'base: "/playground"');
+writeFileSync(pgHtmlPath, pgHtml);
+
+// 7c. Copy wasm-pack output into playground/pkg/
 mkdirSync(path.join(PG, "pkg"), { recursive: true });
-mkdirSync(path.join(PG, "fonts"), { recursive: true });
-
-// 7a. Copy playground index.html with home link
-const pgHtml = readFileSync(
-  path.join(ROOT, "..", "crates", "ox-web", "static", "index.html"),
-  "utf-8",
-).replace(
-  /(<h1>)(ox)/,
-  '$1<a href="/" style="color:inherit;text-decoration:none">$2</a>',
-);
-writeFileSync(path.join(PG, "index.html"), pgHtml);
-
-// 7b. Copy wasm-pack output
 for (const file of ["ox_web_bg.wasm", "ox_web.js", "ox_web.d.ts"]) {
   copyFileSync(path.join(WASM_PKG, file), path.join(PG, "pkg", file));
 }
 console.log("Copied wasm-pack output");
 
-// 7c. Bundle playground UI
-const pgResult = await Bun.build({
-  entrypoints: [path.join(UI, "src", "main.ts")],
-  outdir: PG,
-  naming: "[name].[ext]",
-  target: "browser",
-  format: "esm",
-  minify: true,
-  external: ["/pkg/*"],
-});
-
-if (!pgResult.success) {
-  console.error("Playground JS build failed:");
-  for (const log of pgResult.logs) console.error(log);
-  process.exit(1);
-}
-
-// Rewrite absolute /pkg/ paths to relative ./pkg/ so playground works under /playground/
-const pgMainJs = path.join(PG, "main.js");
-const pgJs = readFileSync(pgMainJs, "utf-8");
-writeFileSync(pgMainJs, pgJs.replaceAll("/pkg/", "./pkg/"));
-console.log("Bundled playground main.js");
-
-// 7d. Copy playground CSS (font paths are already relative ./fonts/)
-copyFileSync(path.join(UI, "styles", "main.css"), path.join(PG, "main.css"));
-
-// 7e. Copy fonts into playground
+// 7d. Copy fonts into playground (if not already present from SvelteKit build)
+mkdirSync(path.join(PG, "fonts"), { recursive: true });
 for (const font of fonts) {
-  copyFileSync(path.join(UI, "fonts", font), path.join(PG, "fonts", font));
+  const dest = path.join(PG, "fonts", font);
+  try {
+    statSync(dest);
+  } catch {
+    copyFileSync(path.join(UI, "static", "fonts", font), dest);
+  }
 }
 console.log("Playground build complete");
 
