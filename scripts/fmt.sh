@@ -26,8 +26,10 @@ BUN="$(command -v bun 2>/dev/null || echo "${HOME}/.bun/bin/bun")"
 
 if "$CHECK"; then
     cargo fmt --all -- --check
-    "$BUN" x prettier --check 'crates/ox-web/ui/src/**/*.{ts,js}' 'site/**/*.{ts,js,css,html}'
+    (cd crates/ox-web/ui && NO_COLOR=1 "$BUN" x prettier --check 'src/**/*.{ts,js,svelte}')
+    NO_COLOR=1 "$BUN" x prettier --check 'site/**/*.{ts,js,css,html}'
 else
     cargo fmt --all
-    "$BUN" x prettier --write 'crates/ox-web/ui/src/**/*.{ts,js}' 'site/**/*.{ts,js,css,html}'
+    (cd crates/ox-web/ui && "$BUN" x prettier --write --log-level warn 'src/**/*.{ts,js,svelte}')
+    "$BUN" x prettier --write --log-level warn 'site/**/*.{ts,js,css,html}'
 fi

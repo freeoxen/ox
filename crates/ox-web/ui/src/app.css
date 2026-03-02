@@ -1073,6 +1073,154 @@ button:disabled {
   gap: 6px;
 }
 
+/* --- debug drawer toggle (hidden on desktop) --- */
+.debug-toggle-checkbox { position: absolute; opacity: 0; pointer-events: none; }
+.debug-toggle-btn { display: none; }
+.debug-overlay { display: none; }
+
+/* ============================================================
+   MOBILE RESPONSIVE
+   ============================================================ */
+@media (max-width: 768px) {
+  body {
+    padding: var(--space-xs);
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .container {
+    flex-direction: column;
+    max-width: 100%;
+    flex: 1;
+    min-height: 0;
+  }
+
+  .chat-column {
+    max-width: 100%;
+    padding-right: 0;
+    flex: 1;
+    min-height: 0;
+  }
+
+  .header-row {
+    gap: var(--space-xs);
+    padding-right: 60px; /* clear theme picker */
+  }
+
+  #output {
+    max-height: none;
+    flex: 1;
+    min-height: 0;
+  }
+
+  #input-row {
+    position: sticky;
+    bottom: 0;
+    background: var(--t-bg);
+    padding: var(--space-xs) 0;
+    padding-bottom: calc(var(--space-xs) + env(safe-area-inset-bottom, 0px));
+    z-index: 10;
+  }
+
+  #input {
+    font-size: 1rem; /* prevent iOS auto-zoom */
+    min-height: 44px;
+  }
+
+  button {
+    min-height: 44px;
+  }
+
+  /* --- debug column → bottom drawer --- */
+  .debug-column {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    max-height: 70vh;
+    width: 100%;
+    background: var(--t-bg);
+    border-left: none;
+    border-top: 1px solid var(--t-border-strong);
+    border-radius: 12px 12px 0 0;
+    padding: var(--space-sm);
+    padding-bottom: calc(var(--space-sm) + env(safe-area-inset-bottom, 0px));
+    padding-left: var(--space-sm);
+    transform: translateY(100%);
+    transition: transform 0.35s var(--ease-enter);
+    z-index: 50;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.15);
+  }
+
+  /* drawer handle pill */
+  .debug-column::before {
+    content: '';
+    display: block;
+    width: 36px;
+    height: 4px;
+    background: var(--t-border);
+    border-radius: 2px;
+    margin: 0 auto var(--space-xs);
+  }
+
+  /* open state */
+  .debug-toggle-checkbox:checked ~ .container .debug-column {
+    transform: translateY(0);
+  }
+
+  /* toggle — ridgeline in the header row */
+  .debug-toggle-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    flex-shrink: 0;
+    background: transparent;
+    border: none;
+    border-radius: var(--radius);
+    color: var(--t-muted);
+    cursor: pointer;
+    transition: color var(--duration-hover);
+  }
+  .debug-toggle-btn:active {
+    transform: scale(0.92);
+  }
+
+  /* highlight when drawer is open */
+  .debug-toggle-checkbox:checked ~ .container .debug-toggle-btn {
+    color: var(--t-accent);
+  }
+
+  /* backdrop overlay */
+  .debug-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.3);
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+    z-index: 45;
+    cursor: pointer;
+  }
+  .debug-toggle-checkbox:checked ~ .container .debug-overlay {
+    display: block;
+  }
+}
+
+/* --- tablet refinement --- */
+@media (min-width: 769px) and (max-width: 1024px) {
+  .debug-column {
+    width: 320px;
+  }
+  .chat-column {
+    max-width: none;
+  }
+}
+
 /* --- utility --- */
 .text-muted {
   color: var(--t-muted);

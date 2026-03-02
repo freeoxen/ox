@@ -191,6 +191,8 @@
   <ApiKeyModal onsubmit={handleApiKeySubmit} oncancel={handleApiKeyCancel} />
 {/if}
 
+<input type="checkbox" id="debug-toggle" class="debug-toggle-checkbox" />
+
 <div class="container">
   <div class="chat-column">
     <div class="header-row">
@@ -209,11 +211,24 @@
       {#if agent}
         <ModelSelector {agent} />
       {/if}
+      <label
+        for="debug-toggle"
+        class="debug-toggle-btn"
+        aria-label="Toggle debug panels"
+      >
+        <svg width="18" height="18" viewBox="0 0 18 14" aria-hidden="true">
+          <path
+            fill="currentColor"
+            d="M0 14 C1 9 3.5 5 6 5 C7.5 5 8 7.5 9 7.5 C10 7.5 10.5 2 13 2 C15.5 2 17 9 18 14Z"
+          />
+        </svg>
+      </label>
     </div>
     <Chat />
     <StatusBar />
     <InputRow disabled={inputDisabled} onsend={handleSend} />
   </div>
+  <label for="debug-toggle" class="debug-overlay"></label>
   <div class="debug-column">
     <div>
       <div class="debug-header">
