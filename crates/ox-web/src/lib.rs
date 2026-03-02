@@ -197,7 +197,7 @@ impl JsTool {
 /// [`prompt`](OxAgent::prompt).
 #[wasm_bindgen]
 pub struct OxAgent {
-    api_key: String,
+    api_keys: HashMap<String, String>,
     context: Rc<RefCell<Namespace>>,
     event_callback: Option<js_sys::Function>,
     rust_tools: Rc<RefCell<ToolRegistry>>,
@@ -223,8 +223,13 @@ impl OxAgent {
         context.mount("tools", Box::new(ToolsProvider::new(schemas)));
         context.mount("model", Box::new(ModelProvider::new(model, max_tokens)));
 
+        let mut api_keys = HashMap::new();
+        if !api_key.is_empty() {
+            api_keys.insert("anthropic".to_string(), api_key.to_string());
+        }
+
         Self {
-            api_key: api_key.to_string(),
+            api_keys,
             context: Rc::new(RefCell::new(context)),
             event_callback: None,
             rust_tools: Rc::new(RefCell::new(tool_registry)),
@@ -232,9 +237,45 @@ impl OxAgent {
         }
     }
 
-    /// Update the API key used for Anthropic API requests.
-    pub fn set_api_key(&mut self, api_key: &str) {
-        self.api_key = api_key.to_string();
+    /// Set an API key for the given provider (e.g. "anthropic", "openai").
+    pub fn set_api_key(&mut self, provider: &str, key: &str) {
+        if key.is_empty() {
+            self.api_keys.remove(provider);
+        } else {
+            self.api_keys.insert(provider.to_string(), key.to_string());
+        }
+    }
+
+    /// Remove the API key for the given provider.
+    pub fn remove_api_key(&mut self, provider: &str) {
+        self.api_keys.remove(provider);
+    }
+
+    /// Check whether an API key is set for the given provider.
+    pub fn has_api_key(&self, provider: &str) -> bool {
+        self.api_keys.contains_key(provider)
+    }
+
+    /// Set the active provider (writes to model/provider in namespace).
+    pub fn set_provider(&self, provider: &str) -> Result<(), JsValue> {
+        let record = Record::parsed(Value::String(provider.to_string()));
+        self.context
+            .borrow_mut()
+            .write(&path!("model/provider"), record)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        if let Some(ref cb) = self.event_callback {
+            emit_js(Some(cb), "context_changed", "");
+        }
+        Ok(())
+    }
+
+    /// Get the current active provider.
+    pub fn get_provider(&self) -> String {
+        let mut ctx = self.context.borrow_mut();
+        match ctx.read(&path!("model/provider")) {
+            Ok(Some(Record::Parsed(Value::String(s)))) => s,
+            _ => "anthropic".to_string(),
+        }
     }
 
     /// Register a JS callback to receive agent events.
@@ -325,11 +366,18 @@ impl OxAgent {
             .flatten()
             .map(record_to_json);
 
+        let model_provider = ctx
+            .read(&path!("model/provider"))
+            .ok()
+            .flatten()
+            .map(record_to_json);
+
         let snapshot = serde_json::json!({
             "system": system,
             "model": {
                 "id": model_id,
                 "max_tokens": model_max_tokens,
+                "provider": model_provider,
                 "catalog": model_catalog,
             },
             "tools": tools,
@@ -380,14 +428,18 @@ impl OxAgent {
         catalog.to_string()
     }
 
-    /// Fetch available models from the Anthropic API and write to the catalog.
+    /// Fetch available models from the current provider and write to the catalog.
     /// Returns a Promise that resolves with the JSON catalog array.
     pub fn refresh_models(&self) -> js_sys::Promise {
-        let api_key = self.api_key.clone();
+        let provider = self.get_provider();
+        let api_key = self.api_keys.get(&provider).cloned().unwrap_or_default();
         let context = self.context.clone();
         let callback = self.event_callback.clone();
         wasm_bindgen_futures::future_to_promise(async move {
-            let models = fetch_model_catalog(&api_key).await?;
+            let models = match provider.as_str() {
+                "openai" => fetch_openai_model_catalog(&api_key).await?,
+                _ => fetch_anthropic_model_catalog(&api_key).await?,
+            };
             let value = structfs_serde_store::to_value(&models)
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
             context
@@ -407,14 +459,14 @@ impl OxAgent {
     /// Returns a Promise that resolves with the final assistant text.
     pub fn prompt(&self, input: &str) -> js_sys::Promise {
         let input = input.to_string();
-        let api_key = self.api_key.clone();
+        let api_keys = self.api_keys.clone();
         let callback = self.event_callback.clone();
         let context = self.context.clone();
         let rust_tools = self.rust_tools.clone();
         let js_tools = self.js_tools.clone();
         wasm_bindgen_futures::future_to_promise(async move {
             let result = run_agentic_loop(
-                &api_key,
+                &api_keys,
                 &input,
                 &context,
                 &rust_tools,
@@ -464,7 +516,7 @@ fn emit_js(callback: Option<&js_sys::Function>, event_type: &str, data: &str) {
     }
 }
 
-async fn fetch_completion(api_key: &str, request_body: &str) -> Result<String, String> {
+async fn fetch_anthropic_completion(api_key: &str, request_body: &str) -> Result<String, String> {
     let window = web_sys::window().ok_or("no window")?;
 
     let headers = web_sys::Headers::new().map_err(|e| format!("{e:?}"))?;
@@ -531,7 +583,7 @@ async fn fetch_completion(api_key: &str, request_body: &str) -> Result<String, S
 }
 
 /// Fetch the model catalog from the Anthropic API.
-async fn fetch_model_catalog(api_key: &str) -> Result<Vec<ModelInfo>, JsValue> {
+async fn fetch_anthropic_model_catalog(api_key: &str) -> Result<Vec<ModelInfo>, JsValue> {
     let window = web_sys::window().ok_or(JsValue::from_str("no window"))?;
 
     let headers = web_sys::Headers::new().map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
@@ -635,6 +687,422 @@ async fn fetch_model_catalog(api_key: &str) -> Result<Vec<ModelInfo>, JsValue> {
     Ok(all_models)
 }
 
+// ---------------------------------------------------------------------------
+// OpenAI support — translation, SSE parsing, fetch, catalog
+// ---------------------------------------------------------------------------
+
+/// Translate an Anthropic-format CompletionRequest into an OpenAI request body.
+fn translate_to_openai(request: &CompletionRequest) -> serde_json::Value {
+    let mut messages = Vec::<serde_json::Value>::new();
+
+    // System prompt → system message
+    if !request.system.is_empty() {
+        messages.push(serde_json::json!({
+            "role": "system",
+            "content": request.system,
+        }));
+    }
+
+    // Translate history messages
+    for msg in &request.messages {
+        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
+        match role {
+            "user" => {
+                // Check if content contains tool_result blocks
+                if let Some(content_arr) = msg.get("content").and_then(|c| c.as_array()) {
+                    for block in content_arr {
+                        let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                        if block_type == "tool_result" {
+                            let tool_call_id = block
+                                .get("tool_use_id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let content = block
+                                .get("content")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            messages.push(serde_json::json!({
+                                "role": "tool",
+                                "tool_call_id": tool_call_id,
+                                "content": content,
+                            }));
+                        } else if block_type == "text" {
+                            let text = block
+                                .get("text")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            messages.push(serde_json::json!({
+                                "role": "user",
+                                "content": text,
+                            }));
+                        }
+                    }
+                } else {
+                    // Plain string content
+                    messages.push(serde_json::json!({
+                        "role": "user",
+                        "content": msg.get("content"),
+                    }));
+                }
+            }
+            "assistant" => {
+                let mut oai_msg = serde_json::json!({"role": "assistant"});
+                let mut text_parts = Vec::<String>::new();
+                let mut tool_calls = Vec::<serde_json::Value>::new();
+
+                if let Some(content_arr) = msg.get("content").and_then(|c| c.as_array()) {
+                    for block in content_arr {
+                        let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                        match block_type {
+                            "text" => {
+                                if let Some(t) = block.get("text").and_then(|v| v.as_str()) {
+                                    text_parts.push(t.to_string());
+                                }
+                            }
+                            "tool_use" => {
+                                let id = block
+                                    .get("id")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let name = block
+                                    .get("name")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let input =
+                                    block.get("input").cloned().unwrap_or(serde_json::json!({}));
+                                let args_str = serde_json::to_string(&input).unwrap_or_default();
+                                tool_calls.push(serde_json::json!({
+                                    "id": id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": name,
+                                        "arguments": args_str,
+                                    }
+                                }));
+                            }
+                            _ => {}
+                        }
+                    }
+                } else if let Some(s) = msg.get("content").and_then(|c| c.as_str()) {
+                    text_parts.push(s.to_string());
+                }
+
+                if !text_parts.is_empty() {
+                    oai_msg["content"] = serde_json::Value::String(text_parts.join(""));
+                }
+                if !tool_calls.is_empty() {
+                    oai_msg["tool_calls"] = serde_json::Value::Array(tool_calls);
+                }
+                messages.push(oai_msg);
+            }
+            _ => {
+                messages.push(msg.clone());
+            }
+        }
+    }
+
+    // Translate tools
+    let tools: Vec<serde_json::Value> = request
+        .tools
+        .iter()
+        .map(|t| {
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.input_schema,
+                }
+            })
+        })
+        .collect();
+
+    let mut body = serde_json::json!({
+        "model": request.model,
+        "max_tokens": request.max_tokens,
+        "messages": messages,
+        "stream": true,
+    });
+
+    if !tools.is_empty() {
+        body["tools"] = serde_json::Value::Array(tools);
+    }
+
+    body
+}
+
+/// Parse OpenAI SSE events into StreamEvents.
+fn parse_openai_sse_events(body: &str) -> (Vec<StreamEvent>, u32, u32) {
+    let mut events = Vec::new();
+    let mut input_tokens: u32 = 0;
+    let mut output_tokens: u32 = 0;
+    // Track active tool calls by index
+    let mut tool_call_started: std::collections::HashSet<u64> = std::collections::HashSet::new();
+
+    for line in body.lines() {
+        let line = line.trim();
+        let Some(data) = line.strip_prefix("data: ") else {
+            continue;
+        };
+        if data == "[DONE]" {
+            events.push(StreamEvent::MessageStop);
+            continue;
+        }
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(data) else {
+            continue;
+        };
+
+        // Extract usage if present
+        if let Some(usage) = json.get("usage") {
+            if let Some(pt) = usage.get("prompt_tokens").and_then(|v| v.as_u64()) {
+                input_tokens = pt as u32;
+            }
+            if let Some(ct) = usage.get("completion_tokens").and_then(|v| v.as_u64()) {
+                output_tokens = ct as u32;
+            }
+        }
+
+        // Process choices
+        if let Some(choices) = json.get("choices").and_then(|c| c.as_array()) {
+            for choice in choices {
+                let Some(delta) = choice.get("delta") else {
+                    continue;
+                };
+
+                // Text content
+                if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
+                    if !content.is_empty() {
+                        events.push(StreamEvent::TextDelta(content.to_string()));
+                    }
+                }
+
+                // Tool calls
+                if let Some(tool_calls) = delta.get("tool_calls").and_then(|t| t.as_array()) {
+                    for tc in tool_calls {
+                        let index = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0);
+                        let function = tc.get("function");
+
+                        if tool_call_started.insert(index) {
+                            // First chunk for this tool call — emit start
+                            let id = tc
+                                .get("id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let name = function
+                                .and_then(|f| f.get("name"))
+                                .and_then(|n| n.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            events.push(StreamEvent::ToolUseStart { id, name });
+                        }
+
+                        // Arguments delta
+                        if let Some(args) = function
+                            .and_then(|f| f.get("arguments"))
+                            .and_then(|a| a.as_str())
+                        {
+                            if !args.is_empty() {
+                                events.push(StreamEvent::ToolUseInputDelta(args.to_string()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    (events, input_tokens, output_tokens)
+}
+
+/// Fetch a completion from the OpenAI API.
+async fn fetch_openai_completion(
+    api_key: &str,
+    request: &CompletionRequest,
+) -> Result<String, String> {
+    let window = web_sys::window().ok_or("no window")?;
+
+    let body = translate_to_openai(request);
+    let request_body = serde_json::to_string(&body).map_err(|e| e.to_string())?;
+
+    let headers = web_sys::Headers::new().map_err(|e| format!("{e:?}"))?;
+    headers
+        .set("Content-Type", "application/json")
+        .map_err(|e| format!("{e:?}"))?;
+    headers
+        .set("Authorization", &format!("Bearer {api_key}"))
+        .map_err(|e| format!("{e:?}"))?;
+
+    let url = "https://api.openai.com/v1/chat/completions";
+
+    let opts = web_sys::RequestInit::new();
+    opts.set_method("POST");
+    opts.set_mode(web_sys::RequestMode::Cors);
+    opts.set_body(&JsValue::from_str(&request_body));
+    opts.set_headers(&headers);
+
+    let request =
+        web_sys::Request::new_with_str_and_init(url, &opts).map_err(|e| format!("{e:?}"))?;
+
+    let resp_value = wasm_bindgen_futures::JsFuture::from(window.fetch_with_request(&request))
+        .await
+        .map_err(|e| {
+            let msg = js_sys::Reflect::get(&e, &"message".into())
+                .ok()
+                .and_then(|v| v.as_string())
+                .unwrap_or_default();
+            if msg.contains("Failed to fetch") {
+                "Could not reach api.openai.com — check your network connection".to_string()
+            } else {
+                format!("fetch error: {msg}")
+            }
+        })?;
+
+    let resp: web_sys::Response = resp_value
+        .dyn_into()
+        .map_err(|_| "response is not a Response".to_string())?;
+
+    if !resp.ok() {
+        let status = resp.status();
+        let text = wasm_bindgen_futures::JsFuture::from(resp.text().map_err(|e| format!("{e:?}"))?)
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        let body = text.as_string().unwrap_or_default();
+        return match status {
+            401 => Err("Invalid API key — check your OpenAI API key and try again".to_string()),
+            _ => Err(format!("HTTP {status}: {body}")),
+        };
+    }
+
+    let text = wasm_bindgen_futures::JsFuture::from(resp.text().map_err(|e| format!("{e:?}"))?)
+        .await
+        .map_err(|e| format!("{e:?}"))?;
+
+    text.as_string()
+        .ok_or_else(|| "response body not a string".into())
+}
+
+/// Fetch the model catalog from the OpenAI API.
+async fn fetch_openai_model_catalog(api_key: &str) -> Result<Vec<ModelInfo>, JsValue> {
+    let window = web_sys::window().ok_or(JsValue::from_str("no window"))?;
+
+    let headers = web_sys::Headers::new().map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
+    headers
+        .set("Authorization", &format!("Bearer {api_key}"))
+        .map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
+
+    let url = "https://api.openai.com/v1/models";
+
+    let opts = web_sys::RequestInit::new();
+    opts.set_method("GET");
+    opts.set_mode(web_sys::RequestMode::Cors);
+    opts.set_headers(&headers);
+
+    let request = web_sys::Request::new_with_str_and_init(url, &opts)
+        .map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
+
+    let resp_value = wasm_bindgen_futures::JsFuture::from(window.fetch_with_request(&request))
+        .await
+        .map_err(|e| {
+            let msg = js_sys::Reflect::get(&e, &"message".into())
+                .ok()
+                .and_then(|v| v.as_string())
+                .unwrap_or_default();
+            JsValue::from_str(&format!("fetch error: {msg}"))
+        })?;
+
+    let resp: web_sys::Response = resp_value
+        .dyn_into()
+        .map_err(|_| JsValue::from_str("response is not a Response"))?;
+
+    if !resp.ok() {
+        let status = resp.status();
+        let text = wasm_bindgen_futures::JsFuture::from(
+            resp.text()
+                .map_err(|e| JsValue::from_str(&format!("{e:?}")))?,
+        )
+        .await
+        .map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
+        let body = text.as_string().unwrap_or_default();
+        return Err(JsValue::from_str(&format!("HTTP {status}: {body}")));
+    }
+
+    let text = wasm_bindgen_futures::JsFuture::from(
+        resp.text()
+            .map_err(|e| JsValue::from_str(&format!("{e:?}")))?,
+    )
+    .await
+    .map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
+    let body_str = text
+        .as_string()
+        .ok_or_else(|| JsValue::from_str("response body not a string"))?;
+
+    let page: serde_json::Value =
+        serde_json::from_str(&body_str).map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+    let mut models = Vec::new();
+    if let Some(data) = page.get("data").and_then(|d| d.as_array()) {
+        for entry in data {
+            let id = entry
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            // Filter to chat models
+            if id.contains("gpt") || id.contains("o1") || id.contains("o3") || id.contains("o4") {
+                models.push(ModelInfo {
+                    display_name: id.clone(),
+                    id,
+                });
+            }
+        }
+    }
+
+    models.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(models)
+}
+
+/// Extract Anthropic usage from SSE body.
+fn extract_anthropic_usage(body: &str) -> (u32, u32) {
+    let mut input_tokens: u32 = 0;
+    let mut output_tokens: u32 = 0;
+
+    for line in body.lines() {
+        let line = line.trim();
+        let Some(data) = line.strip_prefix("data: ") else {
+            continue;
+        };
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(data) else {
+            continue;
+        };
+        let event_type = json.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        match event_type {
+            "message_start" => {
+                if let Some(usage) = json.get("message").and_then(|m| m.get("usage")) {
+                    if let Some(it) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
+                        input_tokens = it as u32;
+                    }
+                }
+            }
+            "message_delta" => {
+                if let Some(usage) = json.get("usage") {
+                    if let Some(ot) = usage.get("output_tokens").and_then(|v| v.as_u64()) {
+                        output_tokens = ot as u32;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    (input_tokens, output_tokens)
+}
+
 /// Execute a tool call against the Rust registry first, then JS tools.
 fn execute_tool(
     rust_tools: &Rc<RefCell<ToolRegistry>>,
@@ -665,7 +1133,7 @@ fn execute_tool(
 
 /// Run the full agentic loop: prompt -> stream -> tool call -> result -> loop.
 async fn run_agentic_loop(
-    api_key: &str,
+    api_keys: &HashMap<String, String>,
     user_input: &str,
     context_ref: &Rc<RefCell<Namespace>>,
     rust_tools: &Rc<RefCell<ToolRegistry>>,
@@ -683,6 +1151,24 @@ async fn run_agentic_loop(
         .write(&path!("history/append"), record)
         .map_err(|e| e.to_string())?;
     emit_js(callback, "context_changed", "");
+
+    // Read provider from namespace
+    let provider = {
+        let record = context_ref
+            .borrow_mut()
+            .read(&path!("model/provider"))
+            .map_err(|e| e.to_string())?;
+        match record {
+            Some(Record::Parsed(Value::String(s))) => s,
+            _ => "anthropic".to_string(),
+        }
+    };
+
+    let api_key = api_keys.get(&provider).cloned().unwrap_or_default();
+
+    if api_key.is_empty() {
+        return Err(format!("No API key set for provider '{provider}'"));
+    }
 
     loop {
         // Read the prompt from the namespace
@@ -703,8 +1189,33 @@ async fn run_agentic_loop(
         emit_js(callback, "turn_start", "");
         emit_js(callback, "request_sent", &request_body);
 
-        let response_body = fetch_completion(api_key, &request_body).await?;
-        let events = parse_sse_events(&response_body);
+        // Dispatch by provider
+        let (events, usage_input, usage_output) = match provider.as_str() {
+            "openai" => {
+                let response_body = fetch_openai_completion(&api_key, &request).await?;
+                let (evts, inp, out) = parse_openai_sse_events(&response_body);
+                (evts, inp, out)
+            }
+            _ => {
+                let response_body = fetch_anthropic_completion(&api_key, &request_body).await?;
+                let (inp, out) = extract_anthropic_usage(&response_body);
+                let evts = parse_sse_events(&response_body);
+                (evts, inp, out)
+            }
+        };
+
+        // Emit usage event
+        if usage_input > 0 || usage_output > 0 {
+            emit_js(
+                callback,
+                "usage",
+                &serde_json::json!({
+                    "input_tokens": usage_input,
+                    "output_tokens": usage_output,
+                })
+                .to_string(),
+            );
+        }
 
         // Use Kernel::stream_once to accumulate the SSE events into content
         // blocks. We drive the tool-call loop here (not inside the kernel)

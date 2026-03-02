@@ -307,10 +307,11 @@ pub struct ModelInfo {
     pub display_name: String,
 }
 
-/// Provides model ID, max_tokens, and an optional catalog of available models.
+/// Provides model ID, max_tokens, provider, and an optional catalog of available models.
 pub struct ModelProvider {
     model: String,
     max_tokens: u32,
+    provider: String,
     catalog: Vec<ModelInfo>,
 }
 
@@ -320,6 +321,7 @@ impl ModelProvider {
         Self {
             model,
             max_tokens,
+            provider: "anthropic".to_string(),
             catalog: Vec::new(),
         }
     }
@@ -335,6 +337,7 @@ impl Reader for ModelProvider {
         match key {
             "" | "id" => Ok(Some(Record::parsed(Value::String(self.model.clone())))),
             "max_tokens" => Ok(Some(Record::parsed(Value::Integer(self.max_tokens as i64)))),
+            "provider" => Ok(Some(Record::parsed(Value::String(self.provider.clone())))),
             "catalog" => {
                 let value = to_value(&self.catalog)
                     .map_err(|e| StoreError::store("model", "read", e.to_string()))?;
@@ -373,6 +376,17 @@ impl Writer for ModelProvider {
                     "model",
                     "write",
                     "expected integer for max_tokens",
+                )),
+            },
+            "provider" => match data {
+                Record::Parsed(Value::String(s)) => {
+                    self.provider = s;
+                    Ok(to.clone())
+                }
+                _ => Err(StoreError::store(
+                    "model",
+                    "write",
+                    "expected string for provider",
                 )),
             },
             "catalog" => match data {

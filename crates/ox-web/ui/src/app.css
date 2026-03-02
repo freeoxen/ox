@@ -504,7 +504,6 @@ h1 span {
 
 /* --- model selector --- */
 .model-select {
-  margin-left: auto;
   padding: 0.4em 0.6em;
   font-family: var(--font-mono);
   font-size: 0.75rem;
@@ -1073,6 +1072,158 @@ button:disabled {
   gap: 6px;
 }
 
+/* --- settings modal --- */
+.settings-dialog {
+  background: var(--t-surface);
+  color: var(--t-on-surface);
+  border: 1px solid var(--t-border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.2);
+  padding: var(--space-md);
+  max-width: 480px;
+  width: 90%;
+}
+.settings-dialog h3 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: var(--step-1);
+  color: var(--t-heading);
+  margin-bottom: var(--space-sm);
+}
+.settings-dialog h4 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: var(--t-heading);
+  margin-bottom: var(--space-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.settings-section {
+  margin-bottom: var(--space-sm);
+}
+.settings-hint {
+  font-family: var(--font-body);
+  font-size: 0.8rem;
+  color: var(--t-muted);
+  margin-bottom: var(--space-xs);
+  line-height: 1.4;
+}
+.settings-provider-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-bottom: var(--space-xs);
+}
+.settings-provider-label {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--t-on-surface);
+  width: 80px;
+  flex-shrink: 0;
+}
+.settings-key-masked {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--t-muted);
+  flex: 1;
+}
+.settings-key-input {
+  flex: 1;
+  font-size: 0.8rem;
+  padding: 0.5em 0.7em;
+  margin-bottom: 0;
+}
+.settings-save-btn {
+  font-size: 0.75rem;
+  padding: 0.4em 0.8em;
+}
+.settings-remove-btn {
+  font-size: 0.65rem;
+  padding: 0.2em 0.6em;
+  color: var(--t-danger);
+  border-color: var(--t-danger);
+}
+.settings-remove-btn:hover {
+  color: var(--t-on-accent);
+  background: var(--t-danger);
+}
+.settings-usage-grid {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 2px var(--space-sm);
+  margin-bottom: var(--space-xs);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+.settings-usage-label {
+  color: var(--t-muted);
+}
+.settings-usage-value {
+  color: var(--t-on-surface);
+  font-weight: 500;
+}
+.settings-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+/* --- theme inside settings modal (mobile only) --- */
+.settings-theme-section {
+  display: none; /* hidden on desktop — floating clock is visible */
+}
+.settings-theme-clock {
+  display: flex;
+  justify-content: center;
+}
+.settings-theme-clock #theme-picker {
+  position: static;
+  display: block;
+}
+
+/* --- settings button (header) --- */
+.settings-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--t-border);
+  border-radius: var(--radius);
+  color: var(--t-muted);
+  cursor: pointer;
+  transition: color var(--duration-hover), border-color var(--duration-hover);
+  flex-shrink: 0;
+}
+.settings-btn:hover {
+  color: var(--t-accent);
+  border-color: var(--t-accent);
+  transform: none;
+}
+
+/* --- provider + model selector row --- */
+.model-selector-row {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+.provider-select {
+  padding: 0.4em 0.6em;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  background: var(--t-inset);
+  color: var(--t-on-inset);
+  border: 1px solid var(--t-border);
+  border-radius: var(--radius);
+  outline: none;
+  transition: border-color 0.3s;
+}
+.provider-select:focus { border-color: var(--t-accent); }
+
 /* --- debug drawer toggle (hidden on desktop) --- */
 .debug-toggle-checkbox { position: absolute; opacity: 0; pointer-events: none; }
 .debug-toggle-btn { display: none; }
@@ -1105,7 +1256,16 @@ button:disabled {
 
   .header-row {
     gap: var(--space-xs);
-    padding-right: 60px; /* clear theme picker */
+  }
+
+  /* hide floating theme clock on mobile — it lives in SettingsModal instead */
+  #theme-picker {
+    display: none;
+  }
+
+  /* show the settings-embedded theme picker on mobile */
+  .settings-theme-section {
+    display: block;
   }
 
   #output {

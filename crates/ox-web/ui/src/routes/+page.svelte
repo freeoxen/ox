@@ -12,13 +12,15 @@
   import { setStatus } from "$lib/stores/status";
   import { addRequestLogEntry } from "$lib/stores/request-log";
   import { applyProfile, ToolStore } from "$lib/stores/tools";
+  import { loadKeys, hasAnyKeys } from "$lib/stores/api-keys";
+  import { addUsage } from "$lib/stores/usage";
   import type { OxAgent } from "$lib/wasm";
   import type { AgentEvent, DebugContext } from "$lib/types";
 
   import Chat from "$lib/components/Chat.svelte";
   import StatusBar from "$lib/components/StatusBar.svelte";
   import InputRow from "$lib/components/InputRow.svelte";
-  import ApiKeyModal from "$lib/components/ApiKeyModal.svelte";
+  import SettingsModal from "$lib/components/SettingsModal.svelte";
   import ModelSelector from "$lib/components/ModelSelector.svelte";
   import DebugPanel from "$lib/components/DebugPanel.svelte";
   import ToolPanel from "$lib/components/ToolPanel.svelte";
@@ -26,11 +28,11 @@
 
   let agent: OxAgent | null = $state(null);
   let inputDisabled = $state(true);
-  let showApiKeyModal = $state(false);
-  let apiKey: string | null = $state(null);
+  let showSettings = $state(false);
+  let pendingProvider: string | null = $state(null);
   let debugContext: DebugContext | null = $state(null);
 
-  const API_KEY_STORAGE = "ox:api-key";
+  const PROVIDER_STORAGE_KEY = "ox:provider";
 
   function sleep(ms: number): Promise<void> {
     return new Promise((r) => setTimeout(r, ms));
@@ -55,29 +57,35 @@
       "After getting the tool result, report it to the user.",
     ].join(" ");
 
-    // Get API key from session storage or prompt user
-    let storedKey = sessionStorage.getItem(API_KEY_STORAGE);
-    if (!storedKey) {
-      showApiKeyModal = true;
-      // Wait for modal to resolve
+    // Show settings if no keys configured
+    if (!hasAnyKeys()) {
+      showSettings = true;
+      // Wait for settings to close
       await new Promise<void>((resolve) => {
         const unsub = setInterval(() => {
-          if (!showApiKeyModal) {
+          if (!showSettings) {
             clearInterval(unsub);
             resolve();
           }
         }, 50);
       });
-      storedKey = apiKey;
-    }
-    if (storedKey) {
-      sessionStorage.setItem(API_KEY_STORAGE, storedKey);
-      apiKey = storedKey;
     }
 
-    const ag = wasm.create_agent(systemPrompt, apiKey ?? "");
+    // Create agent with anthropic key (backward compat)
+    const finalKeys = loadKeys();
+    const ag = wasm.create_agent(systemPrompt, finalKeys.anthropic ?? "");
     agent = ag;
     agentStore.set(ag);
+
+    // Push all stored keys to the agent
+    for (const [provider, key] of Object.entries(finalKeys)) {
+      if (key) ag.set_api_key(provider, key);
+    }
+
+    // Restore persisted provider
+    const storedProvider =
+      localStorage.getItem(PROVIDER_STORAGE_KEY) || "anthropic";
+    ag.set_provider(storedProvider);
 
     // Read initial debug context
     try {
@@ -126,6 +134,15 @@
           flushStream();
           appendLine("Error: " + event.data, "error");
           break;
+        case "usage": {
+          try {
+            const u = JSON.parse(event.data);
+            addUsage(u.input_tokens || 0, u.output_tokens || 0);
+          } catch (_) {
+            /* empty */
+          }
+          break;
+        }
         case "context_changed":
           try {
             const raw = ag.debug_context();
@@ -148,27 +165,21 @@
       /* empty */
     }
 
-    if (apiKey) {
+    if (hasAnyKeys()) {
       clearMessages();
       appendLine('Ready. Try: "reverse the word hello"', "system");
       inputDisabled = false;
     } else {
       appendLine(
-        "No API key provided. Enter your key to use the playground.",
+        "No API key provided. Open settings to add your key.",
         "system",
       );
     }
   });
 
-  function handleApiKeySubmit(key: string) {
-    apiKey = key;
-    sessionStorage.setItem(API_KEY_STORAGE, key);
-    showApiKeyModal = false;
-    if (agent) agent.set_api_key(key);
-  }
-
-  function handleApiKeyCancel() {
-    showApiKeyModal = false;
+  function handleRequestKey(provider: string) {
+    pendingProvider = provider;
+    showSettings = true;
   }
 
   async function handleSend(text: string) {
@@ -187,8 +198,29 @@
   }
 </script>
 
-{#if showApiKeyModal}
-  <ApiKeyModal onsubmit={handleApiKeySubmit} oncancel={handleApiKeyCancel} />
+{#if showSettings && agent}
+  <SettingsModal
+    {agent}
+    highlight={pendingProvider ?? undefined}
+    onclose={() => {
+      showSettings = false;
+      // If opened for a specific provider and key is now set, notify ModelSelector
+      // by dispatching a custom event it can listen for
+      if (pendingProvider) {
+        const keys = loadKeys();
+        if (keys[pendingProvider] && agent) {
+          // Push the new key to the agent
+          agent.set_api_key(pendingProvider, keys[pendingProvider]!);
+        }
+        pendingProvider = null;
+      }
+      if (hasAnyKeys() && inputDisabled) {
+        clearMessages();
+        appendLine('Ready. Try: "reverse the word hello"', "system");
+        inputDisabled = false;
+      }
+    }}
+  />
 {/if}
 
 <input type="checkbox" id="debug-toggle" class="debug-toggle-checkbox" />
@@ -209,8 +241,20 @@
         <span>playground</span>
       </h1>
       {#if agent}
-        <ModelSelector {agent} />
+        <ModelSelector {agent} onrequestkey={handleRequestKey} />
       {/if}
+      <button
+        class="settings-btn"
+        aria-label="Settings"
+        onclick={() => (showSettings = true)}
+      >
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+          <path
+            fill="currentColor"
+            d="M2 4h9v1H2V4zm11 0h1v1h-1V4zM2 7.5h3v1H2v-1zm5 0h7v1H7v-1zM2 11h7v1H2v-1zm9 0h3v1h-3v-1z"
+          />
+        </svg>
+      </button>
       <label
         for="debug-toggle"
         class="debug-toggle-btn"

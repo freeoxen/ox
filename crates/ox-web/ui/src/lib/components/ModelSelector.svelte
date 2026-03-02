@@ -1,33 +1,104 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import type { OxAgent } from "$lib/wasm";
+  import { loadKeys } from "$lib/stores/api-keys";
 
   let {
     agent,
+    onrequestkey,
   }: {
     agent: OxAgent;
+    onrequestkey?: (provider: string) => void;
   } = $props();
 
   const MODEL_STORAGE_KEY = "ox:model";
-  const DEFAULT_MODEL = "claude-sonnet-4-20250514";
+  const PROVIDER_STORAGE_KEY = "ox:provider";
 
+  const DEFAULT_MODELS: Record<string, string> = {
+    anthropic: "claude-sonnet-4-20250514",
+    openai: "gpt-4o",
+  };
+
+  const PROVIDERS = [
+    { id: "anthropic", label: "Anthropic" },
+    { id: "openai", label: "OpenAI" },
+  ] as const;
+
+  const initialProvider =
+    localStorage.getItem(PROVIDER_STORAGE_KEY) || "anthropic";
+  const initialDefaultModel =
+    DEFAULT_MODELS[initialProvider] ?? DEFAULT_MODELS.anthropic;
+
+  let selectedProvider = $state(initialProvider);
   let models = $state<{ id: string; display_name: string }[]>([
-    { id: DEFAULT_MODEL, display_name: DEFAULT_MODEL },
+    { id: initialDefaultModel, display_name: initialDefaultModel },
   ]);
   let selectedModel = $state(
-    sessionStorage.getItem(MODEL_STORAGE_KEY) || DEFAULT_MODEL,
+    localStorage.getItem(MODEL_STORAGE_KEY) || initialDefaultModel,
   );
 
-  function handleChange(e: Event) {
+  /** Apply provider switch: update namespace, reset model, refresh catalog. */
+  function applyProvider(provider: string) {
+    selectedProvider = provider;
+    localStorage.setItem(PROVIDER_STORAGE_KEY, provider);
+    agent.set_provider(provider);
+
+    // Reset to default model for this provider
+    const defaultModel = DEFAULT_MODELS[provider] ?? DEFAULT_MODELS.anthropic;
+    selectedModel = defaultModel;
+    localStorage.setItem(MODEL_STORAGE_KEY, selectedModel);
+    agent.set_model(selectedModel);
+    models = [{ id: defaultModel, display_name: defaultModel }];
+
+    // Refresh catalog for new provider
+    agent
+      .refresh_models()
+      .then((catalogJson: string) => {
+        const catalog: { id: string; display_name: string }[] =
+          JSON.parse(catalogJson);
+        if (catalog.length === 0) return;
+        models = catalog;
+        if (!catalog.some((m) => m.id === selectedModel)) {
+          selectedModel = defaultModel;
+          agent.set_model(defaultModel);
+        }
+      })
+      .catch(() => {
+        // Catalog fetch failed — keep defaults
+      });
+  }
+
+  function handleProviderChange(e: Event) {
+    const select = e.target as HTMLSelectElement;
+    const newProvider = select.value;
+
+    // Check if the user has a key for this provider
+    const keys = loadKeys();
+    if (!keys[newProvider]) {
+      // Revert the DOM select and open settings for key entry
+      select.value = selectedProvider;
+      onrequestkey?.(newProvider);
+      return;
+    }
+
+    applyProvider(newProvider);
+  }
+
+  function handleModelChange(e: Event) {
     const select = e.target as HTMLSelectElement;
     selectedModel = select.value;
-    sessionStorage.setItem(MODEL_STORAGE_KEY, selectedModel);
+    localStorage.setItem(MODEL_STORAGE_KEY, selectedModel);
     agent.set_model(selectedModel);
   }
 
   onMount(() => {
+    // Apply stored provider
+    agent.set_provider(selectedProvider);
+
     // Apply stored model
-    if (selectedModel !== DEFAULT_MODEL) {
+    const defaultModel =
+      DEFAULT_MODELS[selectedProvider] ?? DEFAULT_MODELS.anthropic;
+    if (selectedModel !== defaultModel) {
       if (!models.some((m) => m.id === selectedModel)) {
         models = [
           ...models,
@@ -49,18 +120,33 @@
         models = catalog;
 
         if (!catalog.some((m) => m.id === current)) {
-          selectedModel = DEFAULT_MODEL;
-          agent.set_model(DEFAULT_MODEL);
+          selectedModel = defaultModel;
+          agent.set_model(defaultModel);
         }
       })
       .catch(() => {
-        // Catalog fetch failed -- keep defaults
+        // Catalog fetch failed — keep defaults
       });
   });
 </script>
 
-<select class="model-select" value={selectedModel} onchange={handleChange}>
-  {#each models as model (model.id)}
-    <option value={model.id}>{model.display_name}</option>
-  {/each}
-</select>
+<div class="model-selector-row">
+  <select
+    class="provider-select"
+    value={selectedProvider}
+    onchange={handleProviderChange}
+  >
+    {#each PROVIDERS as provider (provider.id)}
+      <option value={provider.id}>{provider.label}</option>
+    {/each}
+  </select>
+  <select
+    class="model-select"
+    value={selectedModel}
+    onchange={handleModelChange}
+  >
+    {#each models as model (model.id)}
+      <option value={model.id}>{model.display_name}</option>
+    {/each}
+  </select>
+</div>
