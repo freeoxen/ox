@@ -17,6 +17,7 @@ const globals = [
   "Element",
   "Node",
   "localStorage",
+  "sessionStorage",
   "SVGElement",
   "SVGSVGElement",
   "SVGCircleElement",

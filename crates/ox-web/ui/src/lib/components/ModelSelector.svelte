@@ -6,9 +6,15 @@
   let {
     agent,
     onrequestkey,
+    activateProvider,
+    onactivated,
   }: {
     agent: OxAgent;
     onrequestkey?: (provider: string) => void;
+    /** Set this to a provider name to trigger a switch (e.g. after a key is added). */
+    activateProvider?: string;
+    /** Called after activateProvider is consumed, so parent can clear it. */
+    onactivated?: () => void;
   } = $props();
 
   const MODEL_STORAGE_KEY = "ox:model";
@@ -91,6 +97,39 @@
     agent.set_model(selectedModel);
   }
 
+  /** Refresh model catalog for the current provider (non-blocking). */
+  function refreshCatalog() {
+    const defaultModel =
+      DEFAULT_MODELS[selectedProvider] ?? DEFAULT_MODELS.anthropic;
+    agent
+      .refresh_models()
+      .then((catalogJson: string) => {
+        const catalog: { id: string; display_name: string }[] =
+          JSON.parse(catalogJson);
+        if (catalog.length === 0) return;
+        models = catalog;
+        if (!catalog.some((m) => m.id === selectedModel)) {
+          selectedModel = defaultModel;
+          agent.set_model(defaultModel);
+        }
+      })
+      .catch(() => {
+        // Catalog fetch failed — keep defaults
+      });
+  }
+
+  // React to parent requesting a provider activation (e.g. after key added in settings)
+  $effect(() => {
+    if (!activateProvider) return;
+    if (activateProvider !== selectedProvider) {
+      applyProvider(activateProvider);
+    } else {
+      // Same provider, but key may have just been added — refresh catalog
+      refreshCatalog();
+    }
+    onactivated?.();
+  });
+
   onMount(() => {
     // Apply stored provider
     agent.set_provider(selectedProvider);
@@ -109,24 +148,7 @@
     }
 
     // Fetch model catalog (non-blocking)
-    agent
-      .refresh_models()
-      .then((catalogJson: string) => {
-        const catalog: { id: string; display_name: string }[] =
-          JSON.parse(catalogJson);
-        if (catalog.length === 0) return;
-
-        const current = selectedModel;
-        models = catalog;
-
-        if (!catalog.some((m) => m.id === current)) {
-          selectedModel = defaultModel;
-          agent.set_model(defaultModel);
-        }
-      })
-      .catch(() => {
-        // Catalog fetch failed — keep defaults
-      });
+    refreshCatalog();
   });
 </script>
 

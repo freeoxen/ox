@@ -30,6 +30,7 @@
   let inputDisabled = $state(true);
   let showSettings = $state(false);
   let pendingProvider: string | null = $state(null);
+  let activateProvider: string | undefined = $state(undefined);
   let debugContext: DebugContext | null = $state(null);
 
   const PROVIDER_STORAGE_KEY = "ox:provider";
@@ -57,28 +58,14 @@
       "After getting the tool result, report it to the user.",
     ].join(" ");
 
-    // Show settings if no keys configured
-    if (!hasAnyKeys()) {
-      showSettings = true;
-      // Wait for settings to close
-      await new Promise<void>((resolve) => {
-        const unsub = setInterval(() => {
-          if (!showSettings) {
-            clearInterval(unsub);
-            resolve();
-          }
-        }, 50);
-      });
-    }
-
-    // Create agent with anthropic key (backward compat)
-    const finalKeys = loadKeys();
-    const ag = wasm.create_agent(systemPrompt, finalKeys.anthropic ?? "");
+    // Create agent immediately (with whatever keys exist, possibly none)
+    const initialKeys = loadKeys();
+    const ag = wasm.create_agent(systemPrompt, initialKeys.anthropic ?? "");
     agent = ag;
     agentStore.set(ag);
 
     // Push all stored keys to the agent
-    for (const [provider, key] of Object.entries(finalKeys)) {
+    for (const [provider, key] of Object.entries(initialKeys)) {
       if (key) ag.set_api_key(provider, key);
     }
 
@@ -87,15 +74,7 @@
       localStorage.getItem(PROVIDER_STORAGE_KEY) || "anthropic";
     ag.set_provider(storedProvider);
 
-    // Read initial debug context
-    try {
-      const raw = ag.debug_context();
-      if (raw) debugContext = JSON.parse(raw);
-    } catch (_) {
-      /* empty */
-    }
-
-    // Stream events
+    // Stream events — wire immediately so nothing is missed
     ag.on_event(function (event: AgentEvent) {
       switch (event.type) {
         case "turn_start":
@@ -157,7 +136,7 @@
     // Restore persisted tools
     applyProfile(ag, ToolStore.getActiveProfile());
 
-    // Read debug context after tool registration
+    // Read debug context after full init
     try {
       const raw = ag.debug_context();
       if (raw) debugContext = JSON.parse(raw);
@@ -165,6 +144,7 @@
       /* empty */
     }
 
+    // Gate input on keys, show settings if needed — don't block init
     if (hasAnyKeys()) {
       clearMessages();
       appendLine('Ready. Try: "reverse the word hello"', "system");
@@ -174,6 +154,7 @@
         "No API key provided. Open settings to add your key.",
         "system",
       );
+      showSettings = true;
     }
   });
 
@@ -204,15 +185,24 @@
     highlight={pendingProvider ?? undefined}
     onclose={() => {
       showSettings = false;
-      // If opened for a specific provider and key is now set, notify ModelSelector
-      // by dispatching a custom event it can listen for
+      // Push any new keys to the agent and trigger ModelSelector refresh
+      const keys = loadKeys();
+      if (agent) {
+        for (const [provider, key] of Object.entries(keys)) {
+          if (key) agent.set_api_key(provider, key);
+        }
+      }
       if (pendingProvider) {
-        const keys = loadKeys();
-        if (keys[pendingProvider] && agent) {
-          // Push the new key to the agent
-          agent.set_api_key(pendingProvider, keys[pendingProvider]!);
+        // User was asked for a key to switch providers — activate if key now set
+        if (keys[pendingProvider]) {
+          activateProvider = pendingProvider;
         }
         pendingProvider = null;
+      } else if (hasAnyKeys()) {
+        // General settings close — refresh catalog for current provider
+        const current =
+          localStorage.getItem(PROVIDER_STORAGE_KEY) || "anthropic";
+        activateProvider = current;
       }
       if (hasAnyKeys() && inputDisabled) {
         clearMessages();
@@ -241,7 +231,12 @@
         <span>playground</span>
       </h1>
       {#if agent}
-        <ModelSelector {agent} onrequestkey={handleRequestKey} />
+        <ModelSelector
+          {agent}
+          onrequestkey={handleRequestKey}
+          {activateProvider}
+          onactivated={() => (activateProvider = undefined)}
+        />
       {/if}
       <button
         class="settings-btn"
