@@ -210,14 +210,59 @@ In wasm (single-threaded, can't block), the shell drives the loop externally
 with async, reading from gate between awaits. The pattern is identical, the
 scheduling differs.
 
-## Accounts as Tools
+## Bootstrap and Delegation
 
-The kernel makes active routing decisions — which account to send a request to,
-when to fan out to multiple models, when to use a cheaper model for a sub-task.
-This is the same kind of decision the kernel makes about tool calls.
+The kernel's agentic loop and model-driven delegation both use the same gate
+infrastructure — write to `gate/accounts/*/complete`, read pages from the
+handle, accumulate. They differ in call site and what they do with the result,
+not in mechanism.
 
-Accounts are surfaced to the kernel as tools. Each account registered in gate
-produces a tool the model can call:
+### Bootstrap account
+
+The kernel drives its primary completion directly. The **bootstrap account** is
+the account the kernel writes to when synthesizing and sending the prompt at the
+start of each turn.
+
+The bootstrap account is configured in the namespace (readable at a well-known
+path), not selected by the model:
+
+```
+bootstrap_account = read("gate/bootstrap")  → "work"
+
+loop {
+    prompt = read("prompt")
+    handle = write("gate/accounts/work/complete", prompt)
+    content_blocks = read_pages_and_accumulate(handle)
+
+    write assistant message → history/append
+    extract tool calls from content_blocks
+
+    if no tool calls → return
+
+    for tool_call in tool_calls {
+        let tool = tools.get(tool_call.name);
+        let result = tool.execute(tool_call.input, context);
+    }
+
+    write tool results → history/append
+}
+```
+
+The bootstrap is **not** a `Tool::execute` call. The kernel needs
+`Vec<ContentBlock>` from the completion (to extract tool calls, text blocks,
+and tool_use blocks), but `Tool::execute` returns `Result<String, String>`.
+Routing bootstrap through the tool trait would lose structured content or
+require the kernel to special-case one tool's return type — both worse than
+keeping the call site distinct.
+
+The bootstrap is "unspecial" in mechanism (same gate path, same codecs, same
+handle protocol) but necessarily special in role (it's the one whose tool
+calls get processed by the kernel's loop).
+
+### Delegation via completion tools
+
+The model can route sub-tasks to other accounts by calling completion tools.
+Each account registered in gate produces a delegation tool:
 
 ```json
 {
@@ -233,6 +278,44 @@ produces a tool the model can call:
   }
 }
 ```
+
+A delegation tool's `execute`:
+
+1. Constructs a minimal CompletionRequest (the prompt as the sole user message,
+   no tools — the sub-model doesn't get to call tools)
+2. Writes the request to `services/gate/accounts/{name}/complete` via context
+3. Reads pages from the returned handle until completion
+4. Returns the accumulated **text** as the tool result
+
+Tool calls from the sub-model are not surfaced to the parent kernel — the
+delegation tool extracts text only. This is intentional: delegation is a
+leaf operation, not recursive agent spawning.
+
+**Platform constraint:** Delegation tools require blocking reads. In native
+(and WASI), reads block until data is available — delegation works. In wasm
+(pre-Isotope), `Tool::execute` is synchronous but the HTTP fetch is async, so
+delegation tools cannot drive the fetch internally. Delegation tools are
+registered in the tool list (so the model sees them) but return an error in
+wasm: `"Delegation requires native runtime or Isotope"`. This is honest about
+the platform constraint and resolves cleanly when Isotope provides blocking
+reads across block boundaries.
+
+### Shared completion function
+
+Both paths use the same function:
+
+```rust
+fn complete_via_gate(
+    context: &mut dyn Store,
+    account_path: &Path,
+    request: &CompletionRequest,
+    emit: &mut dyn FnMut(AgentEvent),
+) -> Result<Vec<ContentBlock>, String>
+```
+
+The kernel calls it for bootstrap and extracts tool calls. Delegation tools
+call it and extract text. Same function, different call sites, different
+post-processing.
 
 ### Tool execution is StructFS
 
@@ -255,12 +338,6 @@ pub trait Tool: Send + Sync {
 }
 ```
 
-A completion tool's `execute`:
-
-1. Writes the request to `services/gate/accounts/{name}/complete` via context
-2. Reads pages from the returned handle until completion
-3. Returns the accumulated response as the tool result
-
 Regular tools that don't need StructFS access ignore the `context` parameter.
 The kernel passes its namespace to every tool — the wiring determines what each
 tool can see.
@@ -268,41 +345,6 @@ tool can see.
 This aligns with the Isotope model: a Block's tools are StructFS clients in the
 Block's namespace. The tool's capabilities are determined by what's wired in,
 not by what's captured at construction time.
-
-### Bootstrap account
-
-The kernel's own agentic loop uses a designated **bootstrap account** — the one
-that runs the primary completion. This is the account the kernel writes to when
-synthesizing and sending the prompt at the start of each turn.
-
-The bootstrap account is configured in the namespace (readable at a well-known
-path), not selected by the model. The model selects *other* accounts via tool
-calls for delegation, sub-tasks, consensus, etc.
-
-```
-kernel bootstrap: read("gate/bootstrap")  → "work"
-
-loop {
-    prompt = read("prompt")
-
-    // Primary completion via bootstrap account
-    handle = write("gate/accounts/work/complete", prompt)
-    response = read_pages(handle)
-
-    // Response may include tool calls — some are regular tools,
-    // some are completion tools targeting other accounts.
-    // No distinction in the kernel's eyes.
-    for tool_call in response.tool_calls {
-        let tool = tools.get(tool_call.name);
-        let result = tool.execute(tool_call.input, context);
-    }
-}
-```
-
-From the kernel's perspective there is no distinction between regular tools and
-completion tools. Both implement `Tool`. Both receive the namespace. Both are in
-the `ToolRegistry`. The routing decision lives in the model's intelligence,
-expressed through tool selection.
 
 ### Tool generation
 
@@ -346,7 +388,10 @@ trait Codec: Send + Sync {
 
 `decode_chunk` takes `&mut self` because SSE parsing is inherently stateful —
 partial lines span chunk boundaries. Each gate handle has its own codec
-instance.
+instance. When `decode_chunk` produces `Some(UsageInfo)` (typically from the
+final SSE event), gate stores it internally on the handle and serves it at
+`gate/handles/{id}/usage`. Gate also aggregates usage into the account's
+running total at `gate/accounts/{name}/usage`.
 
 Two codecs ship initially:
 
@@ -456,43 +501,78 @@ from gate, or gate's account config replaces ModelProvider entirely.
 
 ### Wasm async boundary
 
-In wasm, the shell drives the page-reading loop externally with async yields
-between reads. The kernel exposes the page-reading step granularly:
+In wasm (single-threaded, can't block), the HTTP fetch must happen between
+gate's write and gate's read. The kernel can't call `run_turn` as a single
+synchronous function because there's no async yield point inside it. The
+kernel exposes three phase methods that the shell drives with async yields
+between them:
 
 ```rust
-/// Initiate a completion. Returns the handle path.
-pub fn begin_completion(
+/// Phase 1: Read prompt, write to gate, return the handle path.
+/// Shell must drive the HTTP fetch before calling consume_completion.
+pub fn initiate_completion(
     &mut self,
     context: &mut dyn Store,
 ) -> Result<Path, String>
 
-/// Read one page from a handle. Returns events and whether more pages exist.
-pub fn read_page(
+/// Phase 2: Read all pages from a gate handle, accumulate into ContentBlocks.
+/// Assumes the HTTP store already has response data (shell delivered it).
+pub fn consume_completion(
     &mut self,
     context: &mut dyn Store,
     handle: &Path,
     emit: &mut dyn FnMut(AgentEvent),
-) -> Result<(Vec<StreamEvent>, Option<Path>), String>
+) -> Result<Vec<ContentBlock>, String>
+
+/// Phase 3: Write assistant message, execute tool calls, write results.
+/// Returns true if tool calls were executed (caller should loop).
+pub fn complete_turn(
+    &mut self,
+    context: &mut dyn Store,
+    content: Vec<ContentBlock>,
+    tools: &ToolRegistry,
+    emit: &mut dyn FnMut(AgentEvent),
+) -> Result<bool, String>
 ```
 
 The shell's async loop:
 
 ```rust
-let handle = kernel.begin_completion(&mut ctx)?;
-let mut cursor = handle;
 loop {
-    let (events, next) = kernel.read_page(&mut ctx, &cursor, &mut emit)?;
-    // process events...
-    match next {
-        Some(next_path) => cursor = next_path,
-        None => break,
+    let handle = kernel.initiate_completion(&mut ctx)?;
+
+    // Shell drives HTTP fetch (async yield point)
+    let pending = http_store.take_pending()?;
+    let response = fetch(pending).await?;
+    http_store.deliver_response(response);
+
+    let content = kernel.consume_completion(&mut ctx, &handle, &mut emit)?;
+
+    if !kernel.complete_turn(&mut ctx, content, &tools, &mut emit)? {
+        break;
     }
-    // yield to event loop here
 }
 ```
 
-This replaces `stream_once` with a StructFS-native equivalent that maps
-directly to the handle pagination protocol.
+`run_turn` for native composes from the same three phases — reads can block,
+so no async interleaving is needed:
+
+```rust
+pub fn run_turn(&mut self, context, tools, emit) {
+    loop {
+        let handle = self.initiate_completion(context)?;
+        let content = self.consume_completion(context, &handle, emit)?;
+        if !self.complete_turn(context, content, tools, emit)? {
+            return Ok(content);
+        }
+    }
+}
+```
+
+For token-by-token streaming in wasm, the shell delivers HTTP response chunks
+incrementally and calls `consume_completion` between deliveries. Each call
+returns whatever events have accumulated since the last read — the handle's
+cursor tracks position via standard StructFS pagination (`after/{cursor}`).
 
 ## Single Mount, Many Topologies
 
@@ -580,11 +660,12 @@ Kernel drops `Transport` trait, talks StructFS.
 
 **Changes:**
 - Modified: `crates/ox-kernel/src/lib.rs` (remove Transport/EventStream traits,
-  add begin_completion/read_page, Tool::execute gains `context` param,
+  add initiate_completion/consume_completion/complete_turn phases,
+  Tool::execute gains `context` param, run_turn composes from phases,
   bootstrap account in agentic loop)
 - New: `crates/ox-web/src/http_store.rs` (platform HTTP store)
 - Modified: `crates/ox-web/src/lib.rs` (mount HTTP store, rewire agentic loop
-  to use begin_completion/read_page)
+  to use initiate_completion/consume_completion/complete_turn phases)
 - Modified: `crates/ox-gate/src/lib.rs` (handle lifecycle, page reads, HTTP
   store wiring)
 
