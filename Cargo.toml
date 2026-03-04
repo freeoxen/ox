@@ -5,6 +5,7 @@ members = [
     "crates/ox-context",
     "crates/ox-dev-server",
     "crates/ox-emscripten",
+    "crates/ox-gate",
     "crates/ox-history",
     "crates/ox-kernel",
     "crates/ox-wasi",

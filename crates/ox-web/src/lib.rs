@@ -17,6 +17,7 @@ use ox_core::{
     AgentEvent, CompletionRequest, ContentBlock, EventStream, StreamEvent, ToolSchema, Transport,
     serialize_assistant_message, serialize_tool_results,
 };
+use ox_gate::codec::{anthropic as anthropic_codec, openai as openai_codec};
 use ox_history::HistoryProvider;
 use ox_kernel::{Reader, Record, ToolRegistry, ToolResult, Value, Writer, path};
 use std::cell::RefCell;
@@ -69,83 +70,8 @@ impl Transport for PreloadedTransport {
 }
 
 // ---------------------------------------------------------------------------
-// SSE parsing
+// SSE parsing — delegated to ox-gate codecs
 // ---------------------------------------------------------------------------
-
-fn parse_sse_events(body: &str) -> Vec<StreamEvent> {
-    let mut events = Vec::new();
-
-    for line in body.lines() {
-        let line = line.trim();
-        let Some(data) = line.strip_prefix("data: ") else {
-            continue;
-        };
-        if data == "[DONE]" {
-            events.push(StreamEvent::MessageStop);
-            continue;
-        }
-        let Ok(json) = serde_json::from_str::<serde_json::Value>(data) else {
-            continue;
-        };
-        let event_type = json.get("type").and_then(|t| t.as_str()).unwrap_or("");
-        match event_type {
-            "content_block_start" => {
-                if let Some(cb) = json.get("content_block") {
-                    let cb_type = cb.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                    if cb_type == "tool_use" {
-                        let id = cb
-                            .get("id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let name = cb
-                            .get("name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        events.push(StreamEvent::ToolUseStart { id, name });
-                    }
-                }
-            }
-            "content_block_delta" => {
-                if let Some(delta) = json.get("delta") {
-                    let delta_type = delta.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                    match delta_type {
-                        "text_delta" => {
-                            if let Some(text) = delta.get("text").and_then(|t| t.as_str()) {
-                                events.push(StreamEvent::TextDelta(text.to_string()));
-                            }
-                        }
-                        "input_json_delta" => {
-                            if let Some(partial) =
-                                delta.get("partial_json").and_then(|t| t.as_str())
-                            {
-                                events.push(StreamEvent::ToolUseInputDelta(partial.to_string()));
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            "message_stop" => {
-                events.push(StreamEvent::MessageStop);
-            }
-            "error" => {
-                let msg = json
-                    .get("error")
-                    .and_then(|e| e.get("message"))
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("unknown error");
-                events.push(StreamEvent::Error(msg.to_string()));
-            }
-            _ => {
-                // ping, message_start, content_block_stop, message_delta — ignore
-            }
-        }
-    }
-
-    events
-}
 
 // ---------------------------------------------------------------------------
 // JS tool wrapper — allows tools defined in browser JS
@@ -688,237 +614,8 @@ async fn fetch_anthropic_model_catalog(api_key: &str) -> Result<Vec<ModelInfo>, 
 }
 
 // ---------------------------------------------------------------------------
-// OpenAI support — translation, SSE parsing, fetch, catalog
+// OpenAI support — fetch and catalog (codecs delegated to ox-gate)
 // ---------------------------------------------------------------------------
-
-/// Translate an Anthropic-format CompletionRequest into an OpenAI request body.
-fn translate_to_openai(request: &CompletionRequest) -> serde_json::Value {
-    let mut messages = Vec::<serde_json::Value>::new();
-
-    // System prompt → system message
-    if !request.system.is_empty() {
-        messages.push(serde_json::json!({
-            "role": "system",
-            "content": request.system,
-        }));
-    }
-
-    // Translate history messages
-    for msg in &request.messages {
-        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
-        match role {
-            "user" => {
-                // Check if content contains tool_result blocks
-                if let Some(content_arr) = msg.get("content").and_then(|c| c.as_array()) {
-                    for block in content_arr {
-                        let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                        if block_type == "tool_result" {
-                            let tool_call_id = block
-                                .get("tool_use_id")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            let content = block
-                                .get("content")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            messages.push(serde_json::json!({
-                                "role": "tool",
-                                "tool_call_id": tool_call_id,
-                                "content": content,
-                            }));
-                        } else if block_type == "text" {
-                            let text = block
-                                .get("text")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            messages.push(serde_json::json!({
-                                "role": "user",
-                                "content": text,
-                            }));
-                        }
-                    }
-                } else {
-                    // Plain string content
-                    messages.push(serde_json::json!({
-                        "role": "user",
-                        "content": msg.get("content"),
-                    }));
-                }
-            }
-            "assistant" => {
-                let mut oai_msg = serde_json::json!({"role": "assistant"});
-                let mut text_parts = Vec::<String>::new();
-                let mut tool_calls = Vec::<serde_json::Value>::new();
-
-                if let Some(content_arr) = msg.get("content").and_then(|c| c.as_array()) {
-                    for block in content_arr {
-                        let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                        match block_type {
-                            "text" => {
-                                if let Some(t) = block.get("text").and_then(|v| v.as_str()) {
-                                    text_parts.push(t.to_string());
-                                }
-                            }
-                            "tool_use" => {
-                                let id = block
-                                    .get("id")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                let name = block
-                                    .get("name")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                let input =
-                                    block.get("input").cloned().unwrap_or(serde_json::json!({}));
-                                let args_str = serde_json::to_string(&input).unwrap_or_default();
-                                tool_calls.push(serde_json::json!({
-                                    "id": id,
-                                    "type": "function",
-                                    "function": {
-                                        "name": name,
-                                        "arguments": args_str,
-                                    }
-                                }));
-                            }
-                            _ => {}
-                        }
-                    }
-                } else if let Some(s) = msg.get("content").and_then(|c| c.as_str()) {
-                    text_parts.push(s.to_string());
-                }
-
-                if !text_parts.is_empty() {
-                    oai_msg["content"] = serde_json::Value::String(text_parts.join(""));
-                }
-                if !tool_calls.is_empty() {
-                    oai_msg["tool_calls"] = serde_json::Value::Array(tool_calls);
-                }
-                messages.push(oai_msg);
-            }
-            _ => {
-                messages.push(msg.clone());
-            }
-        }
-    }
-
-    // Translate tools
-    let tools: Vec<serde_json::Value> = request
-        .tools
-        .iter()
-        .map(|t| {
-            serde_json::json!({
-                "type": "function",
-                "function": {
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": t.input_schema,
-                }
-            })
-        })
-        .collect();
-
-    let mut body = serde_json::json!({
-        "model": request.model,
-        "max_tokens": request.max_tokens,
-        "messages": messages,
-        "stream": true,
-    });
-
-    if !tools.is_empty() {
-        body["tools"] = serde_json::Value::Array(tools);
-    }
-
-    body
-}
-
-/// Parse OpenAI SSE events into StreamEvents.
-fn parse_openai_sse_events(body: &str) -> (Vec<StreamEvent>, u32, u32) {
-    let mut events = Vec::new();
-    let mut input_tokens: u32 = 0;
-    let mut output_tokens: u32 = 0;
-    // Track active tool calls by index
-    let mut tool_call_started: std::collections::HashSet<u64> = std::collections::HashSet::new();
-
-    for line in body.lines() {
-        let line = line.trim();
-        let Some(data) = line.strip_prefix("data: ") else {
-            continue;
-        };
-        if data == "[DONE]" {
-            events.push(StreamEvent::MessageStop);
-            continue;
-        }
-        let Ok(json) = serde_json::from_str::<serde_json::Value>(data) else {
-            continue;
-        };
-
-        // Extract usage if present
-        if let Some(usage) = json.get("usage") {
-            if let Some(pt) = usage.get("prompt_tokens").and_then(|v| v.as_u64()) {
-                input_tokens = pt as u32;
-            }
-            if let Some(ct) = usage.get("completion_tokens").and_then(|v| v.as_u64()) {
-                output_tokens = ct as u32;
-            }
-        }
-
-        // Process choices
-        if let Some(choices) = json.get("choices").and_then(|c| c.as_array()) {
-            for choice in choices {
-                let Some(delta) = choice.get("delta") else {
-                    continue;
-                };
-
-                // Text content
-                if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
-                    if !content.is_empty() {
-                        events.push(StreamEvent::TextDelta(content.to_string()));
-                    }
-                }
-
-                // Tool calls
-                if let Some(tool_calls) = delta.get("tool_calls").and_then(|t| t.as_array()) {
-                    for tc in tool_calls {
-                        let index = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0);
-                        let function = tc.get("function");
-
-                        if tool_call_started.insert(index) {
-                            // First chunk for this tool call — emit start
-                            let id = tc
-                                .get("id")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            let name = function
-                                .and_then(|f| f.get("name"))
-                                .and_then(|n| n.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            events.push(StreamEvent::ToolUseStart { id, name });
-                        }
-
-                        // Arguments delta
-                        if let Some(args) = function
-                            .and_then(|f| f.get("arguments"))
-                            .and_then(|a| a.as_str())
-                        {
-                            if !args.is_empty() {
-                                events.push(StreamEvent::ToolUseInputDelta(args.to_string()));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    (events, input_tokens, output_tokens)
-}
 
 /// Fetch a completion from the OpenAI API.
 async fn fetch_openai_completion(
@@ -927,7 +624,7 @@ async fn fetch_openai_completion(
 ) -> Result<String, String> {
     let window = web_sys::window().ok_or("no window")?;
 
-    let body = translate_to_openai(request);
+    let body = openai_codec::translate_request(request);
     let request_body = serde_json::to_string(&body).map_err(|e| e.to_string())?;
 
     let headers = web_sys::Headers::new().map_err(|e| format!("{e:?}"))?;
@@ -1067,42 +764,6 @@ async fn fetch_openai_model_catalog(api_key: &str) -> Result<Vec<ModelInfo>, JsV
     Ok(models)
 }
 
-/// Extract Anthropic usage from SSE body.
-fn extract_anthropic_usage(body: &str) -> (u32, u32) {
-    let mut input_tokens: u32 = 0;
-    let mut output_tokens: u32 = 0;
-
-    for line in body.lines() {
-        let line = line.trim();
-        let Some(data) = line.strip_prefix("data: ") else {
-            continue;
-        };
-        let Ok(json) = serde_json::from_str::<serde_json::Value>(data) else {
-            continue;
-        };
-        let event_type = json.get("type").and_then(|t| t.as_str()).unwrap_or("");
-        match event_type {
-            "message_start" => {
-                if let Some(usage) = json.get("message").and_then(|m| m.get("usage")) {
-                    if let Some(it) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
-                        input_tokens = it as u32;
-                    }
-                }
-            }
-            "message_delta" => {
-                if let Some(usage) = json.get("usage") {
-                    if let Some(ot) = usage.get("output_tokens").and_then(|v| v.as_u64()) {
-                        output_tokens = ot as u32;
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    (input_tokens, output_tokens)
-}
-
 /// Execute a tool call against the Rust registry first, then JS tools.
 fn execute_tool(
     rust_tools: &Rc<RefCell<ToolRegistry>>,
@@ -1190,28 +851,27 @@ async fn run_agentic_loop(
         emit_js(callback, "request_sent", &request_body);
 
         // Dispatch by provider
-        let (events, usage_input, usage_output) = match provider.as_str() {
+        let (events, usage) = match provider.as_str() {
             "openai" => {
                 let response_body = fetch_openai_completion(&api_key, &request).await?;
-                let (evts, inp, out) = parse_openai_sse_events(&response_body);
-                (evts, inp, out)
+                openai_codec::parse_sse_events(&response_body)
             }
             _ => {
                 let response_body = fetch_anthropic_completion(&api_key, &request_body).await?;
-                let (inp, out) = extract_anthropic_usage(&response_body);
-                let evts = parse_sse_events(&response_body);
-                (evts, inp, out)
+                let usage = anthropic_codec::extract_usage(&response_body);
+                let evts = anthropic_codec::parse_sse_events(&response_body);
+                (evts, usage)
             }
         };
 
         // Emit usage event
-        if usage_input > 0 || usage_output > 0 {
+        if usage.input_tokens > 0 || usage.output_tokens > 0 {
             emit_js(
                 callback,
                 "usage",
                 &serde_json::json!({
-                    "input_tokens": usage_input,
-                    "output_tokens": usage_output,
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
                 })
                 .to_string(),
             );
