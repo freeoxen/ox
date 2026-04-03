@@ -75,13 +75,14 @@ pub fn write_file(workspace: PathBuf) -> FnTool {
 pub fn edit_file(workspace: PathBuf) -> FnTool {
     FnTool::new(
         "edit_file",
-        "Replace a unique string in a file. Fails if old_string is not found or matches more than once.",
+        "Replace a string in a file. old_string must be unique in the file, or provide line_start to disambiguate.",
         serde_json::json!({
             "type": "object",
             "properties": {
                 "path": { "type": "string", "description": "File path relative to the workspace root" },
-                "old_string": { "type": "string", "description": "Exact string to find (must be unique in the file)" },
-                "new_string": { "type": "string", "description": "Replacement string" }
+                "old_string": { "type": "string", "description": "Exact string to find" },
+                "new_string": { "type": "string", "description": "Replacement string" },
+                "line_start": { "type": "integer", "description": "1-based line number to start searching from (narrows scope when old_string is not unique)" }
             },
             "required": ["path", "old_string", "new_string"]
         }),
@@ -89,17 +90,51 @@ pub fn edit_file(workspace: PathBuf) -> FnTool {
             let p = input.get("path").and_then(|v| v.as_str()).ok_or("missing 'path'")?;
             let old = input.get("old_string").and_then(|v| v.as_str()).ok_or("missing 'old_string'")?;
             let new = input.get("new_string").and_then(|v| v.as_str()).ok_or("missing 'new_string'")?;
+            let line_start = input.get("line_start").and_then(|v| v.as_u64());
             let resolved = resolve_path(&workspace, p)?;
             let content = std::fs::read_to_string(&resolved)
                 .map_err(|e| format!("failed to read '{}': {e}", resolved.display()))?;
-            let count = content.matches(old).count();
-            if count == 0 {
-                return Err(format!("old_string not found in {p}"));
-            }
-            if count > 1 {
-                return Err(format!("old_string found {count} times in {p} (must be unique)"));
-            }
-            let updated = content.replacen(old, new, 1);
+
+            let updated = if let Some(start_line) = line_start {
+                // Narrow search to content from line_start onward
+                let start_line = start_line.max(1) as usize - 1; // 0-based
+                let lines: Vec<&str> = content.lines().collect();
+                let prefix: String = lines.iter().take(start_line)
+                    .map(|l| format!("{l}\n"))
+                    .collect();
+                let suffix: String = lines.iter().skip(start_line)
+                    .map(|l| format!("{l}\n"))
+                    .collect();
+                // Trim trailing newline if original didn't end with one
+                let suffix = if content.ends_with('\n') { suffix } else {
+                    suffix.strip_suffix('\n').unwrap_or(&suffix).to_string()
+                };
+                let count = suffix.matches(old).count();
+                if count == 0 {
+                    return Err(format!("old_string not found in {p} from line {}", start_line + 1));
+                }
+                if count > 1 {
+                    return Err(format!("old_string found {count} times in {p} from line {} (must be unique)", start_line + 1));
+                }
+                format!("{prefix}{}", suffix.replacen(old, new, 1))
+            } else {
+                let count = content.matches(old).count();
+                if count == 0 {
+                    return Err(format!("old_string not found in {p}"));
+                }
+                if count > 1 {
+                    // Report line numbers of matches to help the LLM retry with line_start
+                    let match_lines: Vec<usize> = content.lines().enumerate()
+                        .filter(|(_, line)| line.contains(old))
+                        .map(|(i, _)| i + 1)
+                        .collect();
+                    return Err(format!(
+                        "old_string found {count} times in {p} at lines {match_lines:?} — use line_start to disambiguate"
+                    ));
+                }
+                content.replacen(old, new, 1)
+            };
+
             std::fs::write(&resolved, &updated)
                 .map_err(|e| format!("failed to write '{}': {e}", resolved.display()))?;
             Ok(format!("edited {p}"))
@@ -253,16 +288,35 @@ mod tests {
     }
 
     #[test]
-    fn test_edit_file_not_unique() {
+    fn test_edit_file_not_unique_reports_lines() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("f.txt"), "aaa").unwrap();
+        std::fs::write(dir.path().join("f.txt"), "x = 1\ny = 2\nx = 3\n").unwrap();
         let tool = edit_file(dir.path().to_path_buf());
         let err = tool.execute(serde_json::json!({
             "path": "f.txt",
-            "old_string": "a",
-            "new_string": "b"
+            "old_string": "x",
+            "new_string": "z"
         })).unwrap_err();
-        assert!(err.contains("3 times"));
+        assert!(err.contains("line_start"));
+        assert!(err.contains("[1, 3]"));
+    }
+
+    #[test]
+    fn test_edit_file_with_line_start() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("f.txt"), "x = 1\ny = 2\nx = 3\n").unwrap();
+        let tool = edit_file(dir.path().to_path_buf());
+        // Disambiguate: edit only the x on line 3
+        tool.execute(serde_json::json!({
+            "path": "f.txt",
+            "old_string": "x",
+            "new_string": "z",
+            "line_start": 3
+        })).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("f.txt")).unwrap(),
+            "x = 1\ny = 2\nz = 3\n"
+        );
     }
 
     #[test]

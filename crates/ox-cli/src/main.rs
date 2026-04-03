@@ -1,4 +1,5 @@
 mod app;
+mod session;
 mod theme;
 mod tools;
 mod transport;
@@ -29,6 +30,14 @@ struct Cli {
     /// Max tokens per completion
     #[arg(long, default_value = "4096")]
     max_tokens: u32,
+
+    /// Named session to resume or create (stored in ~/.ox/sessions/)
+    #[arg(long)]
+    session: Option<String>,
+
+    /// Resume the most recent session
+    #[arg(long)]
+    resume: bool,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -53,7 +62,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let workspace =
         std::fs::canonicalize(&cli.workspace).unwrap_or_else(|_| PathBuf::from(&cli.workspace));
 
-    let mut app = app::App::new(cli.provider, model, cli.max_tokens, api_key, workspace);
+    // Resolve session path
+    let session_path = if let Some(name) = cli.session {
+        Some(session::session_path(&name)?)
+    } else if cli.resume {
+        match session::last_session()? {
+            Some(path) => Some(path),
+            None => {
+                eprintln!("no previous session found");
+                None
+            }
+        }
+    } else {
+        // Auto-session: use workspace directory name as session name
+        let session_name = workspace
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("default");
+        Some(session::session_path(session_name)?)
+    };
+
+    let mut app = app::App::new(
+        cli.provider,
+        model,
+        cli.max_tokens,
+        api_key,
+        workspace,
+        session_path,
+    );
 
     let theme = theme::Theme::default();
 
