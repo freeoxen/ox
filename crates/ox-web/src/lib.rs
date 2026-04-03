@@ -18,12 +18,13 @@ use ox_core::{
     serialize_assistant_message, serialize_tool_results,
 };
 use ox_gate::codec::{anthropic as anthropic_codec, openai as openai_codec};
+use ox_gate::{AccountConfig, GateStore, ProviderConfig};
 use ox_history::HistoryProvider;
-use ox_kernel::{Reader, Record, ToolRegistry, ToolResult, Value, Writer, path};
+use ox_kernel::{Path, Reader, Record, ToolRegistry, ToolResult, Value, Writer, path};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use structfs_serde_store::{json_to_value, value_to_json};
+use structfs_serde_store::{json_to_value, to_value, value_to_json};
 use wasm_bindgen::prelude::*;
 
 // ---------------------------------------------------------------------------
@@ -123,7 +124,6 @@ impl JsTool {
 /// [`prompt`](OxAgent::prompt).
 #[wasm_bindgen]
 pub struct OxAgent {
-    api_keys: HashMap<String, String>,
     context: Rc<RefCell<Namespace>>,
     event_callback: Option<js_sys::Function>,
     rust_tools: Rc<RefCell<ToolRegistry>>,
@@ -140,6 +140,15 @@ impl OxAgent {
         let tool_registry = ToolRegistry::new();
         let schemas = tool_registry.schemas();
 
+        let mut gate = GateStore::new();
+        if !api_key.is_empty() {
+            gate.write(
+                &path!("accounts/anthropic/key"),
+                Record::parsed(Value::String(api_key.to_string())),
+            )
+            .ok();
+        }
+
         let mut context = Namespace::new();
         context.mount(
             "system",
@@ -148,14 +157,9 @@ impl OxAgent {
         context.mount("history", Box::new(HistoryProvider::new()));
         context.mount("tools", Box::new(ToolsProvider::new(schemas)));
         context.mount("model", Box::new(ModelProvider::new(model, max_tokens)));
-
-        let mut api_keys = HashMap::new();
-        if !api_key.is_empty() {
-            api_keys.insert("anthropic".to_string(), api_key.to_string());
-        }
+        context.mount("gate", Box::new(gate));
 
         Self {
-            api_keys,
             context: Rc::new(RefCell::new(context)),
             event_callback: None,
             rust_tools: Rc::new(RefCell::new(tool_registry)),
@@ -164,30 +168,86 @@ impl OxAgent {
     }
 
     /// Set an API key for the given provider (e.g. "anthropic", "openai").
-    pub fn set_api_key(&mut self, provider: &str, key: &str) {
-        if key.is_empty() {
-            self.api_keys.remove(provider);
+    pub fn set_api_key(&self, provider: &str, key: &str) -> Result<(), JsValue> {
+        let mut ctx = self.context.borrow_mut();
+
+        // If no account for this provider exists, create one
+        let key_path = Path::from_components(vec![
+            "gate".to_string(),
+            "accounts".to_string(),
+            provider.to_string(),
+            "key".to_string(),
+        ]);
+        let has_account = ctx.read(&key_path).ok().flatten().is_some();
+        if !has_account {
+            let default_model = match provider {
+                "openai" => "gpt-4o",
+                _ => "claude-sonnet-4-20250514",
+            };
+            let config = AccountConfig {
+                provider: provider.to_string(),
+                key: key.to_string(),
+                model: default_model.to_string(),
+            };
+            let value = to_value(&config).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let account_path = Path::from_components(vec![
+                "gate".to_string(),
+                "accounts".to_string(),
+                provider.to_string(),
+            ]);
+            ctx.write(&account_path, Record::parsed(value))
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
         } else {
-            self.api_keys.insert(provider.to_string(), key.to_string());
+            let key_path = Path::from_components(vec![
+                "gate".to_string(),
+                "accounts".to_string(),
+                provider.to_string(),
+                "key".to_string(),
+            ]);
+            ctx.write(&key_path, Record::parsed(Value::String(key.to_string())))
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
         }
+        Ok(())
     }
 
     /// Remove the API key for the given provider.
-    pub fn remove_api_key(&mut self, provider: &str) {
-        self.api_keys.remove(provider);
+    pub fn remove_api_key(&self, provider: &str) -> Result<(), JsValue> {
+        let key_path = Path::from_components(vec![
+            "gate".to_string(),
+            "accounts".to_string(),
+            provider.to_string(),
+            "key".to_string(),
+        ]);
+        self.context
+            .borrow_mut()
+            .write(&key_path, Record::parsed(Value::String(String::new())))
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        Ok(())
     }
 
     /// Check whether an API key is set for the given provider.
     pub fn has_api_key(&self, provider: &str) -> bool {
-        self.api_keys.contains_key(provider)
+        let key_path = Path::from_components(vec![
+            "gate".to_string(),
+            "accounts".to_string(),
+            provider.to_string(),
+            "key".to_string(),
+        ]);
+        let mut ctx = self.context.borrow_mut();
+        match ctx.read(&key_path) {
+            Ok(Some(Record::Parsed(Value::String(s)))) => !s.is_empty(),
+            _ => false,
+        }
     }
 
-    /// Set the active provider (writes to model/provider in namespace).
+    /// Set the active provider (writes bootstrap account name).
     pub fn set_provider(&self, provider: &str) -> Result<(), JsValue> {
-        let record = Record::parsed(Value::String(provider.to_string()));
         self.context
             .borrow_mut()
-            .write(&path!("model/provider"), record)
+            .write(
+                &path!("gate/bootstrap"),
+                Record::parsed(Value::String(provider.to_string())),
+            )
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         if let Some(ref cb) = self.event_callback {
             emit_js(Some(cb), "context_changed", "");
@@ -198,7 +258,18 @@ impl OxAgent {
     /// Get the current active provider.
     pub fn get_provider(&self) -> String {
         let mut ctx = self.context.borrow_mut();
-        match ctx.read(&path!("model/provider")) {
+        // Read bootstrap account name, then read that account's provider
+        let bootstrap = match ctx.read(&path!("gate/bootstrap")) {
+            Ok(Some(Record::Parsed(Value::String(s)))) => s,
+            _ => return "anthropic".to_string(),
+        };
+        let provider_path = Path::from_components(vec![
+            "gate".to_string(),
+            "accounts".to_string(),
+            bootstrap,
+            "provider".to_string(),
+        ]);
+        match ctx.read(&provider_path) {
             Ok(Some(Record::Parsed(Value::String(s)))) => s,
             _ => "anthropic".to_string(),
         }
@@ -286,14 +357,8 @@ impl OxAgent {
             .flatten()
             .map(record_to_json);
 
-        let model_catalog = ctx
-            .read(&path!("model/catalog"))
-            .ok()
-            .flatten()
-            .map(record_to_json);
-
-        let model_provider = ctx
-            .read(&path!("model/provider"))
+        let gate_bootstrap = ctx
+            .read(&path!("gate/bootstrap"))
             .ok()
             .flatten()
             .map(record_to_json);
@@ -303,13 +368,14 @@ impl OxAgent {
             "model": {
                 "id": model_id,
                 "max_tokens": model_max_tokens,
-                "provider": model_provider,
-                "catalog": model_catalog,
             },
             "tools": tools,
             "history": {
                 "count": history_count,
                 "messages": history_messages,
+            },
+            "gate": {
+                "bootstrap": gate_bootstrap,
             },
         });
         snapshot.to_string()
@@ -345,8 +411,18 @@ impl OxAgent {
     /// Returns a JSON array of `{id, display_name}` objects.
     pub fn list_models(&self) -> String {
         let mut ctx = self.context.borrow_mut();
+        let provider = match ctx.read(&path!("gate/bootstrap")) {
+            Ok(Some(Record::Parsed(Value::String(s)))) => s,
+            _ => "anthropic".to_string(),
+        };
+        let models_path = Path::from_components(vec![
+            "gate".to_string(),
+            "providers".to_string(),
+            provider,
+            "models".to_string(),
+        ]);
         let catalog = ctx
-            .read(&path!("model/catalog"))
+            .read(&models_path)
             .ok()
             .flatten()
             .map(record_to_json)
@@ -358,19 +434,23 @@ impl OxAgent {
     /// Returns a Promise that resolves with the JSON catalog array.
     pub fn refresh_models(&self) -> js_sys::Promise {
         let provider = self.get_provider();
-        let api_key = self.api_keys.get(&provider).cloned().unwrap_or_default();
+        let api_key = read_api_key(&self.context, &provider);
+        let config = read_provider_config(&self.context, &provider);
         let context = self.context.clone();
         let callback = self.event_callback.clone();
         wasm_bindgen_futures::future_to_promise(async move {
-            let models = match provider.as_str() {
-                "openai" => fetch_openai_model_catalog(&api_key).await?,
-                _ => fetch_anthropic_model_catalog(&api_key).await?,
-            };
+            let models = fetch_model_catalog(&config, &api_key).await?;
             let value = structfs_serde_store::to_value(&models)
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let models_path = Path::from_components(vec![
+                "gate".to_string(),
+                "providers".to_string(),
+                provider,
+                "models".to_string(),
+            ]);
             context
                 .borrow_mut()
-                .write(&path!("model/catalog"), Record::parsed(value))
+                .write(&models_path, Record::parsed(value))
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
             if let Some(ref cb) = callback {
                 emit_js(Some(cb), "context_changed", "");
@@ -385,21 +465,13 @@ impl OxAgent {
     /// Returns a Promise that resolves with the final assistant text.
     pub fn prompt(&self, input: &str) -> js_sys::Promise {
         let input = input.to_string();
-        let api_keys = self.api_keys.clone();
         let callback = self.event_callback.clone();
         let context = self.context.clone();
         let rust_tools = self.rust_tools.clone();
         let js_tools = self.js_tools.clone();
         wasm_bindgen_futures::future_to_promise(async move {
-            let result = run_agentic_loop(
-                &api_keys,
-                &input,
-                &context,
-                &rust_tools,
-                &js_tools,
-                callback.as_ref(),
-            )
-            .await;
+            let result =
+                run_agentic_loop(&input, &context, &rust_tools, &js_tools, callback.as_ref()).await;
 
             match result {
                 Ok(text) => Ok(JsValue::from_str(&text)),
@@ -425,6 +497,37 @@ impl OxAgent {
     }
 }
 
+/// Read the API key for the given account from the gate store.
+fn read_api_key(context: &Rc<RefCell<Namespace>>, account: &str) -> String {
+    let key_path = Path::from_components(vec![
+        "gate".to_string(),
+        "accounts".to_string(),
+        account.to_string(),
+        "key".to_string(),
+    ]);
+    let mut ctx = context.borrow_mut();
+    match ctx.read(&key_path) {
+        Ok(Some(Record::Parsed(Value::String(s)))) => s,
+        _ => String::new(),
+    }
+}
+
+/// Read the ProviderConfig for the given provider name from the gate store.
+fn read_provider_config(context: &Rc<RefCell<Namespace>>, provider: &str) -> ProviderConfig {
+    let provider_path = Path::from_components(vec![
+        "gate".to_string(),
+        "providers".to_string(),
+        provider.to_string(),
+    ]);
+    let mut ctx = context.borrow_mut();
+    match ctx.read(&provider_path) {
+        Ok(Some(Record::Parsed(v))) => {
+            structfs_serde_store::from_value(v).unwrap_or_else(|_| ProviderConfig::anthropic())
+        }
+        _ => ProviderConfig::anthropic(),
+    }
+}
+
 /// Convert a Record to serde_json::Value for debug output.
 fn record_to_json(record: Record) -> serde_json::Value {
     match record {
@@ -442,33 +545,56 @@ fn emit_js(callback: Option<&js_sys::Function>, event_type: &str, data: &str) {
     }
 }
 
-async fn fetch_anthropic_completion(api_key: &str, request_body: &str) -> Result<String, String> {
-    let window = web_sys::window().ok_or("no window")?;
+/// Fetch a completion from an LLM provider, dispatching by dialect.
+async fn fetch_completion(
+    config: &ProviderConfig,
+    api_key: &str,
+    request: &CompletionRequest,
+) -> Result<String, String> {
+    let request_body = match config.dialect.as_str() {
+        "openai" => {
+            let body = openai_codec::translate_request(request);
+            serde_json::to_string(&body).map_err(|e| e.to_string())?
+        }
+        _ => serde_json::to_string(request).map_err(|e| e.to_string())?,
+    };
 
+    let window = web_sys::window().ok_or("no window")?;
     let headers = web_sys::Headers::new().map_err(|e| format!("{e:?}"))?;
     headers
         .set("Content-Type", "application/json")
         .map_err(|e| format!("{e:?}"))?;
-    headers
-        .set("x-api-key", api_key)
-        .map_err(|e| format!("{e:?}"))?;
-    headers
-        .set("anthropic-version", "2023-06-01")
-        .map_err(|e| format!("{e:?}"))?;
-    headers
-        .set("anthropic-dangerous-direct-browser-access", "true")
-        .map_err(|e| format!("{e:?}"))?;
 
-    let url = "https://api.anthropic.com/v1/messages";
+    match config.dialect.as_str() {
+        "openai" => {
+            headers
+                .set("Authorization", &format!("Bearer {api_key}"))
+                .map_err(|e| format!("{e:?}"))?;
+        }
+        _ => {
+            headers
+                .set("x-api-key", api_key)
+                .map_err(|e| format!("{e:?}"))?;
+            if !config.version.is_empty() {
+                headers
+                    .set("anthropic-version", &config.version)
+                    .map_err(|e| format!("{e:?}"))?;
+            }
+            headers
+                .set("anthropic-dangerous-direct-browser-access", "true")
+                .map_err(|e| format!("{e:?}"))?;
+        }
+    }
 
     let opts = web_sys::RequestInit::new();
     opts.set_method("POST");
     opts.set_mode(web_sys::RequestMode::Cors);
-    opts.set_body(&JsValue::from_str(request_body));
+    opts.set_body(&JsValue::from_str(&request_body));
     opts.set_headers(&headers);
 
+    let endpoint = &config.endpoint;
     let request =
-        web_sys::Request::new_with_str_and_init(url, &opts).map_err(|e| format!("{e:?}"))?;
+        web_sys::Request::new_with_str_and_init(endpoint, &opts).map_err(|e| format!("{e:?}"))?;
 
     let resp_value = wasm_bindgen_futures::JsFuture::from(window.fetch_with_request(&request))
         .await
@@ -478,7 +604,7 @@ async fn fetch_anthropic_completion(api_key: &str, request_body: &str) -> Result
                 .and_then(|v| v.as_string())
                 .unwrap_or_default();
             if msg.contains("Failed to fetch") {
-                "Could not reach api.anthropic.com — check your network connection".to_string()
+                format!("Could not reach {endpoint} — check your network connection")
             } else {
                 format!("fetch error: {msg}")
             }
@@ -495,7 +621,7 @@ async fn fetch_anthropic_completion(api_key: &str, request_body: &str) -> Result
             .map_err(|e| format!("{e:?}"))?;
         let body = text.as_string().unwrap_or_default();
         return match status {
-            401 => Err("Invalid API key — check your Anthropic API key and try again".to_string()),
+            401 => Err("Invalid API key — check your API key and try again".to_string()),
             _ => Err(format!("HTTP {status}: {body}")),
         };
     }
@@ -508,30 +634,55 @@ async fn fetch_anthropic_completion(api_key: &str, request_body: &str) -> Result
         .ok_or_else(|| "response body not a string".into())
 }
 
-/// Fetch the model catalog from the Anthropic API.
-async fn fetch_anthropic_model_catalog(api_key: &str) -> Result<Vec<ModelInfo>, JsValue> {
+/// Fetch the model catalog from a provider, dispatching by dialect.
+async fn fetch_model_catalog(
+    config: &ProviderConfig,
+    api_key: &str,
+) -> Result<Vec<ModelInfo>, JsValue> {
     let window = web_sys::window().ok_or(JsValue::from_str("no window"))?;
 
     let headers = web_sys::Headers::new().map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
-    headers
-        .set("x-api-key", api_key)
-        .map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
-    headers
-        .set("anthropic-version", "2023-06-01")
-        .map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
-    headers
-        .set("anthropic-dangerous-direct-browser-access", "true")
-        .map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
+    match config.dialect.as_str() {
+        "openai" => {
+            headers
+                .set("Authorization", &format!("Bearer {api_key}"))
+                .map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
+        }
+        _ => {
+            headers
+                .set("x-api-key", api_key)
+                .map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
+            if !config.version.is_empty() {
+                headers
+                    .set("anthropic-version", &config.version)
+                    .map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
+            }
+            headers
+                .set("anthropic-dangerous-direct-browser-access", "true")
+                .map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
+        }
+    }
+
+    // Derive the models list endpoint from the completion endpoint.
+    // "https://api.anthropic.com/v1/messages" → "https://api.anthropic.com/v1/models"
+    // "https://api.openai.com/v1/chat/completions" → "https://api.openai.com/v1/models"
+    let base = config
+        .endpoint
+        .rfind("/v1/")
+        .map(|i| &config.endpoint[..i + 4])
+        .unwrap_or(&config.endpoint);
+    let models_base = format!("{base}models");
 
     let mut all_models: Vec<ModelInfo> = Vec::new();
     let mut after_id: Option<String> = None;
 
     loop {
-        let url = match &after_id {
-            Some(cursor) => {
-                format!("https://api.anthropic.com/v1/models?limit=1000&after_id={cursor}")
+        let url = match (&after_id, config.dialect.as_str()) {
+            (Some(cursor), "anthropic") => {
+                format!("{models_base}?limit=1000&after_id={cursor}")
             }
-            None => "https://api.anthropic.com/v1/models?limit=1000".to_string(),
+            (None, "anthropic") => format!("{models_base}?limit=1000"),
+            _ => models_base.clone(),
         };
 
         let opts = web_sys::RequestInit::new();
@@ -593,10 +744,22 @@ async fn fetch_anthropic_model_catalog(api_key: &str) -> Result<Vec<ModelInfo>, 
                     .and_then(|v| v.as_str())
                     .unwrap_or(&id)
                     .to_string();
+
+                // OpenAI returns everything — filter to chat models
+                if config.dialect == "openai"
+                    && !(id.contains("gpt")
+                        || id.contains("o1")
+                        || id.contains("o3")
+                        || id.contains("o4"))
+                {
+                    continue;
+                }
+
                 all_models.push(ModelInfo { id, display_name });
             }
         }
 
+        // Only Anthropic paginates with has_more/last_id
         let has_more = page
             .get("has_more")
             .and_then(|v| v.as_bool())
@@ -610,158 +773,8 @@ async fn fetch_anthropic_model_catalog(api_key: &str) -> Result<Vec<ModelInfo>, 
             .map(|s| s.to_string());
     }
 
+    all_models.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(all_models)
-}
-
-// ---------------------------------------------------------------------------
-// OpenAI support — fetch and catalog (codecs delegated to ox-gate)
-// ---------------------------------------------------------------------------
-
-/// Fetch a completion from the OpenAI API.
-async fn fetch_openai_completion(
-    api_key: &str,
-    request: &CompletionRequest,
-) -> Result<String, String> {
-    let window = web_sys::window().ok_or("no window")?;
-
-    let body = openai_codec::translate_request(request);
-    let request_body = serde_json::to_string(&body).map_err(|e| e.to_string())?;
-
-    let headers = web_sys::Headers::new().map_err(|e| format!("{e:?}"))?;
-    headers
-        .set("Content-Type", "application/json")
-        .map_err(|e| format!("{e:?}"))?;
-    headers
-        .set("Authorization", &format!("Bearer {api_key}"))
-        .map_err(|e| format!("{e:?}"))?;
-
-    let url = "https://api.openai.com/v1/chat/completions";
-
-    let opts = web_sys::RequestInit::new();
-    opts.set_method("POST");
-    opts.set_mode(web_sys::RequestMode::Cors);
-    opts.set_body(&JsValue::from_str(&request_body));
-    opts.set_headers(&headers);
-
-    let request =
-        web_sys::Request::new_with_str_and_init(url, &opts).map_err(|e| format!("{e:?}"))?;
-
-    let resp_value = wasm_bindgen_futures::JsFuture::from(window.fetch_with_request(&request))
-        .await
-        .map_err(|e| {
-            let msg = js_sys::Reflect::get(&e, &"message".into())
-                .ok()
-                .and_then(|v| v.as_string())
-                .unwrap_or_default();
-            if msg.contains("Failed to fetch") {
-                "Could not reach api.openai.com — check your network connection".to_string()
-            } else {
-                format!("fetch error: {msg}")
-            }
-        })?;
-
-    let resp: web_sys::Response = resp_value
-        .dyn_into()
-        .map_err(|_| "response is not a Response".to_string())?;
-
-    if !resp.ok() {
-        let status = resp.status();
-        let text = wasm_bindgen_futures::JsFuture::from(resp.text().map_err(|e| format!("{e:?}"))?)
-            .await
-            .map_err(|e| format!("{e:?}"))?;
-        let body = text.as_string().unwrap_or_default();
-        return match status {
-            401 => Err("Invalid API key — check your OpenAI API key and try again".to_string()),
-            _ => Err(format!("HTTP {status}: {body}")),
-        };
-    }
-
-    let text = wasm_bindgen_futures::JsFuture::from(resp.text().map_err(|e| format!("{e:?}"))?)
-        .await
-        .map_err(|e| format!("{e:?}"))?;
-
-    text.as_string()
-        .ok_or_else(|| "response body not a string".into())
-}
-
-/// Fetch the model catalog from the OpenAI API.
-async fn fetch_openai_model_catalog(api_key: &str) -> Result<Vec<ModelInfo>, JsValue> {
-    let window = web_sys::window().ok_or(JsValue::from_str("no window"))?;
-
-    let headers = web_sys::Headers::new().map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
-    headers
-        .set("Authorization", &format!("Bearer {api_key}"))
-        .map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
-
-    let url = "https://api.openai.com/v1/models";
-
-    let opts = web_sys::RequestInit::new();
-    opts.set_method("GET");
-    opts.set_mode(web_sys::RequestMode::Cors);
-    opts.set_headers(&headers);
-
-    let request = web_sys::Request::new_with_str_and_init(url, &opts)
-        .map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
-
-    let resp_value = wasm_bindgen_futures::JsFuture::from(window.fetch_with_request(&request))
-        .await
-        .map_err(|e| {
-            let msg = js_sys::Reflect::get(&e, &"message".into())
-                .ok()
-                .and_then(|v| v.as_string())
-                .unwrap_or_default();
-            JsValue::from_str(&format!("fetch error: {msg}"))
-        })?;
-
-    let resp: web_sys::Response = resp_value
-        .dyn_into()
-        .map_err(|_| JsValue::from_str("response is not a Response"))?;
-
-    if !resp.ok() {
-        let status = resp.status();
-        let text = wasm_bindgen_futures::JsFuture::from(
-            resp.text()
-                .map_err(|e| JsValue::from_str(&format!("{e:?}")))?,
-        )
-        .await
-        .map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
-        let body = text.as_string().unwrap_or_default();
-        return Err(JsValue::from_str(&format!("HTTP {status}: {body}")));
-    }
-
-    let text = wasm_bindgen_futures::JsFuture::from(
-        resp.text()
-            .map_err(|e| JsValue::from_str(&format!("{e:?}")))?,
-    )
-    .await
-    .map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
-    let body_str = text
-        .as_string()
-        .ok_or_else(|| JsValue::from_str("response body not a string"))?;
-
-    let page: serde_json::Value =
-        serde_json::from_str(&body_str).map_err(|e| JsValue::from_str(&e.to_string()))?;
-
-    let mut models = Vec::new();
-    if let Some(data) = page.get("data").and_then(|d| d.as_array()) {
-        for entry in data {
-            let id = entry
-                .get("id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            // Filter to chat models
-            if id.contains("gpt") || id.contains("o1") || id.contains("o3") || id.contains("o4") {
-                models.push(ModelInfo {
-                    display_name: id.clone(),
-                    id,
-                });
-            }
-        }
-    }
-
-    models.sort_by(|a, b| a.id.cmp(&b.id));
-    Ok(models)
 }
 
 /// Execute a tool call against the Rust registry first, then JS tools.
@@ -794,7 +807,6 @@ fn execute_tool(
 
 /// Run the full agentic loop: prompt -> stream -> tool call -> result -> loop.
 async fn run_agentic_loop(
-    api_keys: &HashMap<String, String>,
     user_input: &str,
     context_ref: &Rc<RefCell<Namespace>>,
     rust_tools: &Rc<RefCell<ToolRegistry>>,
@@ -813,19 +825,30 @@ async fn run_agentic_loop(
         .map_err(|e| e.to_string())?;
     emit_js(callback, "context_changed", "");
 
-    // Read provider from namespace
-    let provider = {
-        let record = context_ref
-            .borrow_mut()
-            .read(&path!("model/provider"))
-            .map_err(|e| e.to_string())?;
-        match record {
-            Some(Record::Parsed(Value::String(s))) => s,
+    // Read bootstrap account → provider config from gate
+    let bootstrap = {
+        let mut ctx = context_ref.borrow_mut();
+        match ctx.read(&path!("gate/bootstrap")) {
+            Ok(Some(Record::Parsed(Value::String(s)))) => s,
             _ => "anthropic".to_string(),
         }
     };
+    let provider = {
+        let provider_path = Path::from_components(vec![
+            "gate".to_string(),
+            "accounts".to_string(),
+            bootstrap.clone(),
+            "provider".to_string(),
+        ]);
+        let mut ctx = context_ref.borrow_mut();
+        match ctx.read(&provider_path) {
+            Ok(Some(Record::Parsed(Value::String(s)))) => s,
+            _ => "anthropic".to_string(),
+        }
+    };
+    let provider_config = read_provider_config(context_ref, &provider);
 
-    let api_key = api_keys.get(&provider).cloned().unwrap_or_default();
+    let api_key = read_api_key(context_ref, &bootstrap);
 
     if api_key.is_empty() {
         return Err(format!("No API key set for provider '{provider}'"));
@@ -845,19 +868,15 @@ async fn run_agentic_loop(
         let request: CompletionRequest =
             serde_json::from_value(prompt_json).map_err(|e| e.to_string())?;
 
-        let request_body = serde_json::to_string(&request).map_err(|e| e.to_string())?;
-
         emit_js(callback, "turn_start", "");
-        emit_js(callback, "request_sent", &request_body);
+        let request_json = serde_json::to_string(&request).map_err(|e| e.to_string())?;
+        emit_js(callback, "request_sent", &request_json);
 
-        // Dispatch by provider
-        let (events, usage) = match provider.as_str() {
-            "openai" => {
-                let response_body = fetch_openai_completion(&api_key, &request).await?;
-                openai_codec::parse_sse_events(&response_body)
-            }
+        // Fetch and parse via provider config
+        let response_body = fetch_completion(&provider_config, &api_key, &request).await?;
+        let (events, usage) = match provider_config.dialect.as_str() {
+            "openai" => openai_codec::parse_sse_events(&response_body),
             _ => {
-                let response_body = fetch_anthropic_completion(&api_key, &request_body).await?;
                 let usage = anthropic_codec::extract_usage(&response_body);
                 let evts = anthropic_codec::parse_sse_events(&response_body);
                 (evts, usage)

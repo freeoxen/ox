@@ -14,6 +14,7 @@
 //! [`CompletionRequest`] by collecting state from all mounted providers.
 
 use ox_kernel::CompletionRequest;
+pub use ox_kernel::ModelInfo;
 use std::collections::BTreeMap;
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Store, Value, Writer, path};
 use structfs_serde_store::{to_value, value_to_json};
@@ -298,32 +299,16 @@ impl Writer for ToolsProvider {
     }
 }
 
-/// A model entry in the catalog.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct ModelInfo {
-    /// Model identifier (e.g. `"claude-sonnet-4-20250514"`).
-    pub id: String,
-    /// Human-readable name (e.g. `"Claude Sonnet 4"`).
-    pub display_name: String,
-}
-
-/// Provides model ID, max_tokens, provider, and an optional catalog of available models.
+/// Provides model ID and max_tokens settings.
 pub struct ModelProvider {
     model: String,
     max_tokens: u32,
-    provider: String,
-    catalog: Vec<ModelInfo>,
 }
 
 impl ModelProvider {
     /// Create a new provider with the given model ID and token limit.
     pub fn new(model: String, max_tokens: u32) -> Self {
-        Self {
-            model,
-            max_tokens,
-            provider: "anthropic".to_string(),
-            catalog: Vec::new(),
-        }
+        Self { model, max_tokens }
     }
 }
 
@@ -337,12 +322,6 @@ impl Reader for ModelProvider {
         match key {
             "" | "id" => Ok(Some(Record::parsed(Value::String(self.model.clone())))),
             "max_tokens" => Ok(Some(Record::parsed(Value::Integer(self.max_tokens as i64)))),
-            "provider" => Ok(Some(Record::parsed(Value::String(self.provider.clone())))),
-            "catalog" => {
-                let value = to_value(&self.catalog)
-                    .map_err(|e| StoreError::store("model", "read", e.to_string()))?;
-                Ok(Some(Record::parsed(value)))
-            }
             _ => Ok(None),
         }
     }
@@ -376,30 +355,6 @@ impl Writer for ModelProvider {
                     "model",
                     "write",
                     "expected integer for max_tokens",
-                )),
-            },
-            "provider" => match data {
-                Record::Parsed(Value::String(s)) => {
-                    self.provider = s;
-                    Ok(to.clone())
-                }
-                _ => Err(StoreError::store(
-                    "model",
-                    "write",
-                    "expected string for provider",
-                )),
-            },
-            "catalog" => match data {
-                Record::Parsed(v) => {
-                    let catalog: Vec<ModelInfo> = structfs_serde_store::from_value(v)
-                        .map_err(|e| StoreError::store("model", "write", e.to_string()))?;
-                    self.catalog = catalog;
-                    Ok(to.clone())
-                }
-                _ => Err(StoreError::store(
-                    "model",
-                    "write",
-                    "expected parsed record for catalog",
                 )),
             },
             _ => Err(StoreError::store(

@@ -182,6 +182,19 @@ pub enum AgentEvent {
 }
 
 // ---------------------------------------------------------------------------
+// Model catalog
+// ---------------------------------------------------------------------------
+
+/// A model entry in a provider's catalog.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelInfo {
+    /// Model identifier (e.g. `"claude-sonnet-4-20250514"`).
+    pub id: String,
+    /// Human-readable name (e.g. `"Claude Sonnet 4"`).
+    pub display_name: String,
+}
+
+// ---------------------------------------------------------------------------
 // Tool trait and registry
 // ---------------------------------------------------------------------------
 
