@@ -5,14 +5,15 @@
 //! - **Message types** — [`Message`], [`ContentBlock`], [`ToolCall`], [`ToolResult`]
 //! - **Completion protocol** — [`CompletionRequest`], [`StreamEvent`], [`EventStream`]
 //! - **Tool abstraction** — [`Tool`] trait and [`ToolRegistry`]
-//! - **Transport abstraction** — [`Transport`] trait for pluggable LLM backends
-//! - **State machine** — [`Kernel`] drives the agentic loop, reading prompts from
-//!   and writing results to a [`Store`]
+//! - **State machine** — [`Kernel`] drives the agentic loop via three composable
+//!   phases: [`initiate_completion`](Kernel::initiate_completion),
+//!   [`consume_events`](Kernel::consume_events), and
+//!   [`complete_turn`](Kernel::complete_turn)
 //! - **StructFS re-exports** — [`Reader`], [`Writer`], [`Store`], [`Path`], [`Value`],
 //!   [`Record`], [`path!`] for building stores that compose into a namespace
 //!
 //! The kernel is deliberately synchronous and transport-agnostic. The caller
-//! provides a [`Transport`] implementation and drives the loop — this keeps the
+//! provides events (however obtained) and drives the loop — this keeps the
 //! kernel portable across native, Wasm, and WASI targets.
 
 use serde::{Deserialize, Serialize};
@@ -277,28 +278,6 @@ impl Default for ToolRegistry {
 }
 
 // ---------------------------------------------------------------------------
-// Transport trait
-// ---------------------------------------------------------------------------
-
-/// A transport sends a completion request and returns stream events.
-///
-/// This is async-agnostic: the caller drives the stream by calling
-/// `next_event()` repeatedly until it returns `None`.
-pub trait Transport {
-    /// The stream type returned by [`send`](Transport::send).
-    type Stream: EventStream;
-
-    /// Send a completion request and return a stream of events.
-    fn send(&self, request: CompletionRequest) -> Result<Self::Stream, String>;
-}
-
-/// Iterator-style interface over streaming completion events.
-pub trait EventStream {
-    /// Return the next event, or `None` when the stream is exhausted.
-    fn next_event(&mut self) -> Option<StreamEvent>;
-}
-
-// ---------------------------------------------------------------------------
 // Kernel state machine
 // ---------------------------------------------------------------------------
 
@@ -315,8 +294,12 @@ pub enum KernelState {
 
 /// The agentic loop state machine.
 ///
-/// Reads prompts from a [`Store`], streams completions via a [`Transport`],
-/// executes tool calls through a [`ToolRegistry`], and writes results back.
+/// Exposes three composable phases — [`initiate_completion`](Kernel::initiate_completion),
+/// [`consume_events`](Kernel::consume_events), and [`complete_turn`](Kernel::complete_turn) —
+/// so the caller controls the transport (sync fetch, async fetch, mock, etc.).
+///
+/// [`run_turn`](Kernel::run_turn) composes all three in a loop for callers that
+/// can provide a synchronous send function.
 pub struct Kernel {
     state: KernelState,
     model: String,
@@ -341,15 +324,39 @@ impl Kernel {
         &self.model
     }
 
-    /// Stream a single completion round: send the request, accumulate the
-    /// response into content blocks. Does NOT execute tools or loop.
+    // -----------------------------------------------------------------------
+    // Three-phase API
+    // -----------------------------------------------------------------------
+
+    /// Phase 1: Read the prompt from the context namespace and return a
+    /// ready-to-send [`CompletionRequest`].
     ///
-    /// Use this when the caller drives the tool-call loop externally (e.g.
-    /// the wasm layer which does async fetch between rounds).
-    pub fn stream_once<T: Transport>(
+    /// The caller is responsible for sending this request to an LLM (sync or
+    /// async) and parsing the response into [`StreamEvent`]s.
+    pub fn initiate_completion(
         &mut self,
-        request: CompletionRequest,
-        transport: &T,
+        context: &mut dyn Store,
+    ) -> Result<CompletionRequest, String> {
+        assert_eq!(self.state, KernelState::Idle, "kernel must be idle");
+
+        let record = context
+            .read(&path!("prompt"))
+            .map_err(|e| e.to_string())?
+            .ok_or("failed to read prompt from context")?;
+        let prompt_json = match record {
+            Record::Parsed(v) => structfs_serde_store::value_to_json(v),
+            _ => return Err("expected parsed prompt record".into()),
+        };
+        serde_json::from_value(prompt_json).map_err(|e| e.to_string())
+    }
+
+    /// Phase 2: Accumulate pre-parsed [`StreamEvent`]s into content blocks.
+    ///
+    /// Call this after obtaining events from an LLM response (however
+    /// transported). Emits [`AgentEvent`]s for observability.
+    pub fn consume_events(
+        &mut self,
+        events: Vec<StreamEvent>,
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<Vec<ContentBlock>, String> {
         assert_eq!(self.state, KernelState::Idle, "kernel must be idle");
@@ -357,85 +364,71 @@ impl Kernel {
         self.state = KernelState::Streaming;
         emit(AgentEvent::TurnStart);
 
-        let mut stream = transport.send(request).inspect_err(|_| {
+        let content = self.accumulate_response(events, emit).inspect_err(|_| {
             self.state = KernelState::Idle;
         })?;
-
-        let content = self.accumulate_response(&mut stream, emit)?;
         self.state = KernelState::Idle;
         Ok(content)
     }
 
-    /// Run one full agentic turn: read the prompt from the context namespace,
-    /// stream a response from the transport, execute any tool calls, write
-    /// results back to the namespace, and loop until the model produces
-    /// end_turn (no more tool calls).
+    /// Phase 3: Write the assistant message to history and extract tool calls.
     ///
-    /// The namespace is the single source of truth. The kernel writes
-    /// assistant messages and tool results to `history/append` and re-reads
-    /// the prompt each iteration.
-    ///
-    /// Returns the final assistant content blocks.
-    pub fn run_turn<T: Transport>(
+    /// Returns the tool calls the model requested. If empty, the turn is done.
+    /// The caller is responsible for executing tools and writing results to
+    /// `history/append` before looping back to [`initiate_completion`](Self::initiate_completion).
+    pub fn complete_turn(
         &mut self,
         context: &mut dyn Store,
-        transport: &T,
+        content: &[ContentBlock],
+    ) -> Result<Vec<ToolCall>, String> {
+        // Write assistant message to history
+        let assistant_json = serialize_assistant_message(content);
+        let record = Record::parsed(structfs_serde_store::json_to_value(assistant_json));
+        context
+            .write(&path!("history/append"), record)
+            .map_err(|e| e.to_string())?;
+
+        // Extract tool calls
+        let tool_calls: Vec<ToolCall> = content
+            .iter()
+            .filter_map(|block| {
+                if let ContentBlock::ToolUse(tc) = block {
+                    Some(tc.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        Ok(tool_calls)
+    }
+
+    // -----------------------------------------------------------------------
+    // Composed loop (for callers with a synchronous send function)
+    // -----------------------------------------------------------------------
+
+    /// Run the full agentic loop: read prompt, send, accumulate, execute
+    /// tools, write results, repeat until no tool calls remain.
+    ///
+    /// `send` is a synchronous function that takes a [`CompletionRequest`] and
+    /// returns parsed [`StreamEvent`]s. For async callers (e.g. wasm), use the
+    /// three-phase methods directly instead.
+    pub fn run_turn(
+        &mut self,
+        context: &mut dyn Store,
+        send: &dyn Fn(&CompletionRequest) -> Result<Vec<StreamEvent>, String>,
         tools: &ToolRegistry,
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<Vec<ContentBlock>, String> {
-        assert_eq!(
-            self.state,
-            KernelState::Idle,
-            "kernel must be idle to start a turn"
-        );
-
         loop {
-            // Read the prompt from the namespace (re-reads each iteration)
-            let record = context
-                .read(&path!("prompt"))
-                .map_err(|e| e.to_string())?
-                .ok_or("failed to read prompt from context")?;
-            let prompt_json = match record {
-                Record::Parsed(v) => structfs_serde_store::value_to_json(v),
-                _ => return Err("expected parsed prompt record".into()),
-            };
-            let request: CompletionRequest =
-                serde_json::from_value(prompt_json).map_err(|e| e.to_string())?;
-
-            // Stream phase
-            self.state = KernelState::Streaming;
-            emit(AgentEvent::TurnStart);
-
-            let mut stream = transport.send(request).inspect_err(|_| {
-                self.state = KernelState::Idle;
-            })?;
-
-            let assistant_msg = self.accumulate_response(&mut stream, emit)?;
-
-            // Extract tool calls from the assistant message
-            let tool_calls: Vec<ToolCall> = assistant_msg
-                .iter()
-                .filter_map(|block| {
-                    if let ContentBlock::ToolUse(tc) = block {
-                        Some(tc.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            // Write assistant message to the namespace
-            let assistant_json = serialize_assistant_message(&assistant_msg);
-            let record = Record::parsed(structfs_serde_store::json_to_value(assistant_json));
-            context
-                .write(&path!("history/append"), record)
-                .map_err(|e| e.to_string())?;
+            let request = self.initiate_completion(context)?;
+            let events = send(&request)?;
+            let content = self.consume_events(events, emit)?;
+            let tool_calls = self.complete_turn(context, &content)?;
 
             if tool_calls.is_empty() {
-                // No tool calls — turn is done
-                self.state = KernelState::Idle;
                 emit(AgentEvent::TurnEnd);
-                return Ok(assistant_msg);
+                return Ok(content);
             }
 
             // Execute tools
@@ -463,14 +456,13 @@ impl Kernel {
                 });
             }
 
-            // Write tool results to the namespace
+            // Write tool results to history
             let results_json = serialize_tool_results(&results);
             let record = Record::parsed(structfs_serde_store::json_to_value(results_json));
             context
                 .write(&path!("history/append"), record)
                 .map_err(|e| e.to_string())?;
 
-            // Loop: go back to streaming with the updated conversation
             self.state = KernelState::Idle;
         }
     }
@@ -478,14 +470,14 @@ impl Kernel {
     /// Accumulate stream events into content blocks.
     fn accumulate_response(
         &self,
-        stream: &mut dyn EventStream,
+        events: Vec<StreamEvent>,
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<Vec<ContentBlock>, String> {
         let mut blocks: Vec<ContentBlock> = Vec::new();
         let mut current_text = String::new();
         let mut current_tool: Option<(String, String, String)> = None; // (id, name, input_json)
 
-        while let Some(event) = stream.next_event() {
+        for event in events {
             match event {
                 StreamEvent::TextDelta(text) => {
                     // Flush any pending tool

@@ -13,10 +13,7 @@
 //! ```
 
 use ox_context::{ModelInfo, ModelProvider, Namespace, SystemProvider, ToolsProvider};
-use ox_core::{
-    AgentEvent, CompletionRequest, ContentBlock, EventStream, StreamEvent, ToolSchema, Transport,
-    serialize_assistant_message, serialize_tool_results,
-};
+use ox_core::{AgentEvent, CompletionRequest, ContentBlock, ToolSchema, serialize_tool_results};
 use ox_gate::codec::{anthropic as anthropic_codec, openai as openai_codec};
 use ox_gate::{AccountConfig, GateStore, ProviderConfig};
 use ox_history::HistoryProvider;
@@ -26,53 +23,6 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use structfs_serde_store::{json_to_value, to_value, value_to_json};
 use wasm_bindgen::prelude::*;
-
-// ---------------------------------------------------------------------------
-// PreloadedTransport — wraps a pre-fetched BufferedStream
-// ---------------------------------------------------------------------------
-
-/// A buffered stream of pre-parsed events.
-pub struct BufferedStream {
-    events: Vec<StreamEvent>,
-    pos: usize,
-}
-
-impl BufferedStream {
-    pub fn new(events: Vec<StreamEvent>) -> Self {
-        Self { events, pos: 0 }
-    }
-}
-
-impl EventStream for BufferedStream {
-    fn next_event(&mut self) -> Option<StreamEvent> {
-        if self.pos < self.events.len() {
-            let event = self.events[self.pos].clone();
-            self.pos += 1;
-            Some(event)
-        } else {
-            None
-        }
-    }
-}
-
-struct PreloadedTransport {
-    stream: RefCell<Option<BufferedStream>>,
-}
-
-impl Transport for PreloadedTransport {
-    type Stream = BufferedStream;
-
-    fn send(&self, _request: CompletionRequest) -> Result<Self::Stream, String> {
-        self.stream
-            .borrow_mut()
-            .take()
-            .ok_or_else(|| "stream already consumed".into())
-    }
-}
-
-// ---------------------------------------------------------------------------
-// SSE parsing — delegated to ox-gate codecs
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // JS tool wrapper — allows tools defined in browser JS
@@ -854,25 +804,39 @@ async fn run_agentic_loop(
         return Err(format!("No API key set for provider '{provider}'"));
     }
 
-    loop {
-        // Read the prompt from the namespace
-        let prompt_record = context_ref
+    let model_id = {
+        let record = context_ref
             .borrow_mut()
-            .read(&path!("prompt"))
-            .map_err(|e| e.to_string())?
-            .ok_or("failed to read prompt from context")?;
-        let prompt_json = match prompt_record {
-            Record::Parsed(v) => value_to_json(v),
-            _ => return Err("expected parsed prompt record".into()),
-        };
-        let request: CompletionRequest =
-            serde_json::from_value(prompt_json).map_err(|e| e.to_string())?;
+            .read(&path!("model/id"))
+            .map_err(|e| e.to_string())?;
+        match record {
+            Some(Record::Parsed(Value::String(s))) => s,
+            _ => String::new(),
+        }
+    };
+    let mut kernel = ox_kernel::Kernel::new(model_id);
 
-        emit_js(callback, "turn_start", "");
+    let mut emit = |event: AgentEvent| match &event {
+        AgentEvent::TextDelta(text) => emit_js(callback, "text_delta", text),
+        AgentEvent::ToolCallStart { name } => emit_js(callback, "tool_call_start", name),
+        AgentEvent::ToolCallResult { name, result } => {
+            emit_js(callback, "tool_call_result", &format!("{name}: {result}"))
+        }
+        AgentEvent::TurnEnd => emit_js(callback, "turn_end", ""),
+        AgentEvent::Error(e) => emit_js(callback, "error", e),
+        _ => {}
+    };
+
+    loop {
+        // Phase 1: read prompt from namespace
+        let request = kernel
+            .initiate_completion(&mut *context_ref.borrow_mut())
+            .map_err(|e| e.to_string())?;
+
         let request_json = serde_json::to_string(&request).map_err(|e| e.to_string())?;
         emit_js(callback, "request_sent", &request_json);
 
-        // Fetch and parse via provider config
+        // Async fetch (the yield point that motivates three-phase design)
         let response_body = fetch_completion(&provider_config, &api_key, &request).await?;
         let (events, usage) = match provider_config.dialect.as_str() {
             "openai" => openai_codec::parse_sse_events(&response_body),
@@ -896,58 +860,11 @@ async fn run_agentic_loop(
             );
         }
 
-        // Use Kernel::stream_once to accumulate the SSE events into content
-        // blocks. We drive the tool-call loop here (not inside the kernel)
-        // because each round requires an async fetch.
-        let stream = BufferedStream::new(events);
-        let preloaded = PreloadedTransport {
-            stream: RefCell::new(Some(stream)),
-        };
+        // Phase 2: accumulate events into content blocks
+        let content = kernel.consume_events(events, &mut emit)?;
 
-        let model_id = {
-            let record = context_ref
-                .borrow_mut()
-                .read(&path!("model/id"))
-                .map_err(|e| e.to_string())?;
-            match record {
-                Some(Record::Parsed(Value::String(s))) => s,
-                _ => String::new(),
-            }
-        };
-        let mut kernel = ox_kernel::Kernel::new(model_id);
-
-        let mut emit = |event: AgentEvent| match &event {
-            AgentEvent::TextDelta(text) => emit_js(callback, "text_delta", text),
-            AgentEvent::ToolCallStart { name } => emit_js(callback, "tool_call_start", name),
-            AgentEvent::ToolCallResult { name, result } => {
-                emit_js(callback, "tool_call_result", &format!("{name}: {result}"))
-            }
-            AgentEvent::TurnEnd => emit_js(callback, "turn_end", ""),
-            AgentEvent::Error(e) => emit_js(callback, "error", e),
-            _ => {}
-        };
-
-        let content = kernel.stream_once(request, &preloaded, &mut emit)?;
-
-        // Extract tool calls
-        let tool_calls: Vec<ox_kernel::ToolCall> = content
-            .iter()
-            .filter_map(|b| {
-                if let ContentBlock::ToolUse(tc) = b {
-                    Some(tc.clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        // Write assistant message to the namespace
-        let assistant_json = serialize_assistant_message(&content);
-        let record = Record::parsed(json_to_value(assistant_json));
-        context_ref
-            .borrow_mut()
-            .write(&path!("history/append"), record)
-            .map_err(|e| e.to_string())?;
+        // Phase 3: write assistant message, extract tool calls
+        let tool_calls = kernel.complete_turn(&mut *context_ref.borrow_mut(), &content)?;
         emit_js(callback, "context_changed", "");
 
         if tool_calls.is_empty() {
@@ -967,7 +884,7 @@ async fn run_agentic_loop(
             return Ok(text);
         }
 
-        // Execute tools and write results to the namespace
+        // Execute tools (Rust registry + JS tools)
         let mut results = Vec::new();
         for tc in &tool_calls {
             emit_js(callback, "tool_call_start", &tc.name);
@@ -983,6 +900,7 @@ async fn run_agentic_loop(
             });
         }
 
+        // Write tool results to history
         let results_json = serialize_tool_results(&results);
         let record = Record::parsed(json_to_value(results_json));
         context_ref
@@ -990,8 +908,6 @@ async fn run_agentic_loop(
             .write(&path!("history/append"), record)
             .map_err(|e| e.to_string())?;
         emit_js(callback, "context_changed", "");
-
-        // Loop back for next completion
     }
 }
 

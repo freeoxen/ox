@@ -12,7 +12,7 @@
 //!     "You are helpful.".into(),
 //!     "claude-sonnet-4-20250514".into(),
 //!     4096,
-//!     my_transport,
+//!     |req| my_send(req),
 //!     ToolRegistry::new(),
 //! );
 //! let reply = agent.prompt("Hello")?;
@@ -26,36 +26,42 @@ pub use ox_history::HistoryProvider;
 
 // --- Re-exports from ox-kernel (core types, traits, state machine) ---
 pub use ox_kernel::{
-    AgentEvent, CompletionRequest, ContentBlock, EventStream, Kernel, Message, Path, Reader,
-    Record, Store, StoreError, StreamEvent, Tool, ToolCall, ToolRegistry, ToolResult, ToolSchema,
-    Transport, Value, Writer, path, serialize_assistant_message, serialize_tool_results,
+    AgentEvent, CompletionRequest, ContentBlock, Kernel, Message, Path, Reader, Record, Store,
+    StoreError, StreamEvent, Tool, ToolCall, ToolRegistry, ToolResult, ToolSchema, Value, Writer,
+    path, serialize_assistant_message, serialize_tool_results,
 };
 
 use structfs_serde_store::json_to_value;
+
+/// A synchronous send function: takes a completion request, returns parsed events.
+type SendFn = dyn Fn(&CompletionRequest) -> Result<Vec<StreamEvent>, String>;
 
 /// The Agent composes a Kernel, Namespace (with stores), and ToolRegistry.
 ///
 /// It owns the full state of one agent session and exposes a simple
 /// `prompt()` method that drives the agentic loop.
-pub struct Agent<T: Transport> {
+pub struct Agent {
     kernel: Kernel,
     context: Namespace,
     tools: ToolRegistry,
-    transport: T,
+    send: Box<SendFn>,
     subscribers: Vec<Box<dyn FnMut(AgentEvent)>>,
 }
 
-impl<T: Transport> Agent<T> {
+impl Agent {
     /// Create a new agent with the given configuration.
     ///
     /// Sets up the internal [`Namespace`] with providers for the system
     /// prompt, history, tools, and model. The `tools` registry is used
     /// for both schema generation (sent to the model) and execution.
+    ///
+    /// `send` is a synchronous function that sends a [`CompletionRequest`]
+    /// and returns parsed [`StreamEvent`]s.
     pub fn new(
         system_prompt: String,
         model: String,
         max_tokens: u32,
-        transport: T,
+        send: impl Fn(&CompletionRequest) -> Result<Vec<StreamEvent>, String> + 'static,
         tools: ToolRegistry,
     ) -> Self {
         let mut context = Namespace::new();
@@ -71,7 +77,7 @@ impl<T: Transport> Agent<T> {
             kernel: Kernel::new(model),
             context,
             tools,
-            transport,
+            send: Box::new(send),
             subscribers: Vec::new(),
         }
     }
@@ -107,7 +113,7 @@ impl<T: Transport> Agent<T> {
         // Run the agentic loop — kernel reads/writes the namespace
         let content =
             self.kernel
-                .run_turn(&mut self.context, &self.transport, &self.tools, &mut emit)?;
+                .run_turn(&mut self.context, &self.send, &self.tools, &mut emit)?;
 
         // Extract final text from the assistant response
         let text = content
