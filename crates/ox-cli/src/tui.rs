@@ -36,10 +36,20 @@ pub fn run(app: &mut App, terminal: &mut ratatui::DefaultTerminal) -> std::io::R
                         }
                     }
                     (_, KeyCode::Up) => {
-                        app.scroll = app.scroll.saturating_add(1);
+                        app.history_up();
                     }
                     (_, KeyCode::Down) => {
-                        app.scroll = app.scroll.saturating_sub(1);
+                        app.history_down();
+                    }
+                    (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
+                        app.input.clear();
+                        app.cursor = 0;
+                    }
+                    (KeyModifiers::CONTROL, KeyCode::Char('a')) => {
+                        app.cursor = 0;
+                    }
+                    (KeyModifiers::CONTROL, KeyCode::Char('e')) => {
+                        app.cursor = app.input.len();
                     }
                     (_, KeyCode::Char(c)) => {
                         app.input.insert(app.cursor, c);
@@ -100,6 +110,7 @@ fn draw(frame: &mut Frame, app: &App) {
                     ),
                     Span::raw(text),
                 ]));
+                lines.push(Line::from(""));
             }
             ChatMessage::AssistantChunk(text) => {
                 for line in text.lines() {
@@ -108,38 +119,77 @@ fn draw(frame: &mut Frame, app: &App) {
             }
             ChatMessage::ToolCall { name } => {
                 lines.push(Line::from(vec![
-                    Span::styled(format!("  [{name}] "), Style::default().fg(Color::Yellow)),
+                    Span::styled(
+                        format!("  [{name}] "),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
                     Span::styled("running...", Style::default().fg(Color::DarkGray)),
                 ]));
             }
             ChatMessage::ToolResult { name, output } => {
-                let preview: String = output.lines().take(3).collect::<Vec<_>>().join(" | ");
-                let truncated = if preview.len() > 120 {
-                    format!("{}...", &preview[..120])
-                } else {
-                    preview
-                };
+                let line_count = output.lines().count();
+                let preview_lines: Vec<&str> = output.lines().take(5).collect();
+
                 lines.push(Line::from(vec![
-                    Span::styled(format!("  [{name}] "), Style::default().fg(Color::Yellow)),
-                    Span::styled(truncated, Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        format!("  [{name}] "),
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::styled(
+                        if line_count > 5 {
+                            format!("({line_count} lines)")
+                        } else {
+                            format!("({line_count} line{})", if line_count == 1 { "" } else { "s" })
+                        },
+                        Style::default().fg(Color::DarkGray),
+                    ),
                 ]));
+                for pl in &preview_lines {
+                    lines.push(Line::from(Span::styled(
+                        format!("  | {pl}"),
+                        Style::default().fg(Color::DarkGray),
+                    )));
+                }
+                if line_count > 5 {
+                    lines.push(Line::from(Span::styled(
+                        format!("  | ... ({} more)", line_count - 5),
+                        Style::default().fg(Color::DarkGray),
+                    )));
+                }
             }
             ChatMessage::Error(e) => {
                 lines.push(Line::from(Span::styled(
                     format!("  error: {e}"),
-                    Style::default().fg(Color::Red),
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
                 )));
             }
+        }
+    }
+
+    // Thinking indicator
+    if app.thinking {
+        if let Some(ChatMessage::AssistantChunk(_)) = app.messages.last() {
+            // cursor is after the streaming text — already visible
+        } else {
+            lines.push(Line::from(Span::styled(
+                "  ...",
+                Style::default().fg(Color::DarkGray),
+            )));
         }
     }
 
     let text = Text::from(lines);
     let msg_height = chunks[1].height as usize;
     let total_lines = text.lines.len();
-    let scroll = if total_lines > msg_height && app.scroll == 0 {
-        (total_lines - msg_height) as u16
+    let scroll = if app.scroll == 0 {
+        // Auto-scroll: show bottom
+        total_lines.saturating_sub(msg_height) as u16
     } else {
-        app.scroll
+        // Manual scroll offset from bottom
+        let max_scroll = total_lines.saturating_sub(msg_height) as u16;
+        max_scroll.saturating_sub(app.scroll)
     };
     let messages = Paragraph::new(text)
         .wrap(Wrap { trim: false })
@@ -147,23 +197,29 @@ fn draw(frame: &mut Frame, app: &App) {
     frame.render_widget(messages, chunks[1]);
 
     // Input box
-    let input_block = Block::default()
-        .borders(Borders::TOP)
-        .title(if app.thinking { " thinking... " } else { "" });
+    let input_title = if app.thinking {
+        " streaming... "
+    } else {
+        ""
+    };
+    let input_block = Block::default().borders(Borders::TOP).title(input_title);
     let input = Paragraph::new(format!("> {}", app.input)).block(input_block);
     frame.render_widget(input, chunks[2]);
 
     // Cursor
     frame.set_cursor_position((
-        chunks[2].x + app.cursor as u16 + 2, // "> " prefix
-        chunks[2].y + 1,                       // border
+        chunks[2].x + app.cursor as u16 + 2,
+        chunks[2].y + 1,
     ));
 
     // Status bar
     let status_text = if app.thinking {
-        "streaming..."
+        "streaming...".to_string()
     } else {
-        "idle — Enter to send, Esc to quit"
+        format!(
+            "idle | Enter send | Esc quit | Up/Down history ({} entries)",
+            app.input_history.len()
+        )
     };
     let status = Paragraph::new(Span::styled(
         format!(" {status_text}"),
