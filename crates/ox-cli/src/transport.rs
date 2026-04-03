@@ -1,20 +1,21 @@
-use ox_gate::codec::{anthropic as anthropic_codec, openai as openai_codec};
+use ox_gate::codec::{anthropic as anthropic_codec, openai as openai_codec, UsageInfo};
+use ox_gate::ProviderConfig;
 use ox_kernel::{CompletionRequest, StreamEvent};
 use std::collections::HashSet;
 use std::io::BufRead;
 
-/// Build the request URL, headers, and body for a given provider.
+/// Build the request URL, headers, and body from a ProviderConfig.
 pub fn build_request(
-    provider: &str,
+    config: &ProviderConfig,
     api_key: &str,
     request: &CompletionRequest,
 ) -> Result<(String, Vec<(String, String)>, String), String> {
-    match provider {
+    match config.dialect.as_str() {
         "openai" => {
             let body = openai_codec::translate_request(request);
             let body_str = serde_json::to_string(&body).map_err(|e| e.to_string())?;
             Ok((
-                "https://api.openai.com/v1/chat/completions".to_string(),
+                config.endpoint.clone(),
                 vec![
                     ("Content-Type".into(), "application/json".into()),
                     ("Authorization".into(), format!("Bearer {api_key}")),
@@ -24,22 +25,21 @@ pub fn build_request(
         }
         _ => {
             let body_str = serde_json::to_string(request).map_err(|e| e.to_string())?;
-            Ok((
-                "https://api.anthropic.com/v1/messages".to_string(),
-                vec![
-                    ("Content-Type".into(), "application/json".into()),
-                    ("x-api-key".into(), api_key.to_string()),
-                    ("anthropic-version".into(), "2023-06-01".into()),
-                ],
-                body_str,
-            ))
+            let mut headers = vec![
+                ("Content-Type".into(), "application/json".into()),
+                ("x-api-key".into(), api_key.to_string()),
+            ];
+            if !config.version.is_empty() {
+                headers.push(("anthropic-version".into(), config.version.clone()));
+            }
+            Ok((config.endpoint.clone(), headers, body_str))
         }
     }
 }
 
-/// Parse an SSE response body using the appropriate provider codec.
-pub fn parse_response(provider: &str, body: &str) -> Vec<StreamEvent> {
-    match provider {
+/// Parse an SSE response body using the appropriate dialect codec.
+pub fn parse_response(dialect: &str, body: &str) -> Vec<StreamEvent> {
+    match dialect {
         "openai" => {
             let (events, _usage) = openai_codec::parse_sse_events(body);
             events
@@ -48,15 +48,14 @@ pub fn parse_response(provider: &str, body: &str) -> Vec<StreamEvent> {
     }
 }
 
-/// Create a send function that dispatches HTTP requests via reqwest::blocking.
-/// Used by CompletionTool for sub-completions (non-streaming).
+/// Create a non-streaming send function. Used by CompletionTool for sub-completions.
 pub fn make_send_fn(
-    provider: String,
+    config: ProviderConfig,
     api_key: String,
 ) -> impl Fn(&CompletionRequest) -> Result<Vec<StreamEvent>, String> + Send + Sync {
     let client = reqwest::blocking::Client::new();
     move |request: &CompletionRequest| {
-        let (url, headers, body) = build_request(&provider, &api_key, request)?;
+        let (url, headers, body) = build_request(&config, &api_key, request)?;
         let mut req = client.post(&url).body(body);
         for (key, value) in &headers {
             req = req.header(key, value);
@@ -70,25 +69,27 @@ pub fn make_send_fn(
         let text = resp
             .text()
             .map_err(|e| format!("failed to read response: {e}"))?;
-        Ok(parse_response(&provider, &text))
+        Ok(parse_response(&config.dialect, &text))
     }
 }
 
 // ---------------------------------------------------------------------------
-// Incremental SSE parser — line-by-line for streaming
+// Incremental SSE parser — line-by-line for streaming, with usage tracking
 // ---------------------------------------------------------------------------
 
 /// Stateful SSE line parser. Feed one line at a time, get events back.
 pub struct SseParser {
-    provider: String,
+    dialect: String,
     openai_tool_started: HashSet<u64>,
+    pub usage: UsageInfo,
 }
 
 impl SseParser {
-    pub fn new(provider: &str) -> Self {
+    pub fn new(dialect: &str) -> Self {
         Self {
-            provider: provider.to_string(),
+            dialect: dialect.to_string(),
             openai_tool_started: HashSet::new(),
+            usage: UsageInfo::default(),
         }
     }
 
@@ -104,15 +105,31 @@ impl SseParser {
         let Ok(json) = serde_json::from_str::<serde_json::Value>(data) else {
             return vec![];
         };
-        match self.provider.as_str() {
+        match self.dialect.as_str() {
             "openai" => self.parse_openai(&json),
-            _ => Self::parse_anthropic(&json),
+            _ => self.parse_anthropic(&json),
         }
     }
 
-    fn parse_anthropic(json: &serde_json::Value) -> Vec<StreamEvent> {
+    fn parse_anthropic(&mut self, json: &serde_json::Value) -> Vec<StreamEvent> {
         let event_type = json.get("type").and_then(|t| t.as_str()).unwrap_or("");
         match event_type {
+            "message_start" => {
+                if let Some(usage) = json.get("message").and_then(|m| m.get("usage")) {
+                    if let Some(it) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
+                        self.usage.input_tokens = it as u32;
+                    }
+                }
+                vec![]
+            }
+            "message_delta" => {
+                if let Some(usage) = json.get("usage") {
+                    if let Some(ot) = usage.get("output_tokens").and_then(|v| v.as_u64()) {
+                        self.usage.output_tokens = ot as u32;
+                    }
+                }
+                vec![]
+            }
             "content_block_start" => {
                 if let Some(cb) = json.get("content_block") {
                     if cb.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
@@ -163,6 +180,16 @@ impl SseParser {
     }
 
     fn parse_openai(&mut self, json: &serde_json::Value) -> Vec<StreamEvent> {
+        // Track usage if present
+        if let Some(usage_obj) = json.get("usage") {
+            if let Some(pt) = usage_obj.get("prompt_tokens").and_then(|v| v.as_u64()) {
+                self.usage.input_tokens = pt as u32;
+            }
+            if let Some(ct) = usage_obj.get("completion_tokens").and_then(|v| v.as_u64()) {
+                self.usage.output_tokens = ct as u32;
+            }
+        }
+
         let mut events = Vec::new();
         let Some(choices) = json.get("choices").and_then(|c| c.as_array()) else {
             return events;
@@ -205,40 +232,63 @@ impl SseParser {
     }
 }
 
-/// Stream an HTTP completion request, emitting events in real-time via callback.
-/// Returns all events for kernel processing.
+/// Stream an HTTP completion request with retry on transient errors.
+/// Emits events in real-time via callback. Returns all events + usage for kernel processing.
 pub fn streaming_fetch(
     client: &reqwest::blocking::Client,
-    provider: &str,
+    config: &ProviderConfig,
     api_key: &str,
     request: &CompletionRequest,
     on_event: &dyn Fn(&StreamEvent),
-) -> Result<Vec<StreamEvent>, String> {
-    let (url, headers, body) = build_request(provider, api_key, request)?;
-    let mut req = client.post(&url).body(body);
-    for (key, value) in &headers {
-        req = req.header(key, value);
-    }
-    let resp = req.send().map_err(|e| format!("HTTP request failed: {e}"))?;
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let text = resp.text().unwrap_or_default();
-        return Err(format!("HTTP {status}: {text}"));
-    }
+) -> Result<(Vec<StreamEvent>, UsageInfo), String> {
+    let (url, headers, body) = build_request(config, api_key, request)?;
 
-    let reader = std::io::BufReader::new(resp);
-    let mut parser = SseParser::new(provider);
-    let mut all_events = Vec::new();
-
-    for line in reader.lines() {
-        let line = line.map_err(|e| format!("read error: {e}"))?;
-        for event in parser.feed(&line) {
-            on_event(&event);
-            all_events.push(event);
+    let mut last_err = String::new();
+    for attempt in 0..3u32 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_secs(2u64.pow(attempt)));
         }
+
+        let mut req = client.post(&url).body(body.clone());
+        for (key, value) in &headers {
+            req = req.header(key, value);
+        }
+
+        let resp = match req.send() {
+            Ok(r) => r,
+            Err(e) => {
+                last_err = format!("network error: {e}");
+                continue;
+            }
+        };
+
+        let status = resp.status();
+        if status.as_u16() == 429 || status.is_server_error() {
+            last_err = format!("HTTP {status}");
+            continue;
+        }
+        if !status.is_success() {
+            let text = resp.text().unwrap_or_default();
+            return Err(format!("HTTP {status}: {text}"));
+        }
+
+        // Success — stream line-by-line
+        let reader = std::io::BufReader::new(resp);
+        let mut parser = SseParser::new(&config.dialect);
+        let mut all_events = Vec::new();
+
+        for line in reader.lines() {
+            let line = line.map_err(|e| format!("read error: {e}"))?;
+            for event in parser.feed(&line) {
+                on_event(&event);
+                all_events.push(event);
+            }
+        }
+
+        return Ok((all_events, parser.usage));
     }
 
-    Ok(all_events)
+    Err(format!("{last_err} (after 3 attempts)"))
 }
 
 #[cfg(test)]
@@ -257,9 +307,9 @@ mod tests {
     }
 
     #[test]
-    fn build_anthropic_request_url_and_headers() {
-        let (url, headers, _body) =
-            build_request("anthropic", "sk-test", &sample_request()).unwrap();
+    fn build_anthropic_request_from_config() {
+        let config = ProviderConfig::anthropic();
+        let (url, headers, _body) = build_request(&config, "sk-test", &sample_request()).unwrap();
         assert_eq!(url, "https://api.anthropic.com/v1/messages");
         assert!(headers
             .iter()
@@ -270,13 +320,24 @@ mod tests {
     }
 
     #[test]
-    fn build_openai_request_url_and_headers() {
-        let (url, headers, _body) =
-            build_request("openai", "sk-oai", &sample_request()).unwrap();
+    fn build_openai_request_from_config() {
+        let config = ProviderConfig::openai();
+        let (url, headers, _body) = build_request(&config, "sk-oai", &sample_request()).unwrap();
         assert_eq!(url, "https://api.openai.com/v1/chat/completions");
         assert!(headers
             .iter()
             .any(|(k, v)| k == "Authorization" && v == "Bearer sk-oai"));
+    }
+
+    #[test]
+    fn build_custom_endpoint() {
+        let config = ProviderConfig {
+            dialect: "openai".into(),
+            endpoint: "http://localhost:8080/v1/chat/completions".into(),
+            version: String::new(),
+        };
+        let (url, _, _) = build_request(&config, "key", &sample_request()).unwrap();
+        assert_eq!(url, "http://localhost:8080/v1/chat/completions");
     }
 
     #[test]
@@ -332,6 +393,15 @@ mod tests {
     }
 
     #[test]
+    fn sse_parser_anthropic_usage_tracking() {
+        let mut parser = SseParser::new("anthropic");
+        parser.feed("data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":150}}}");
+        assert_eq!(parser.usage.input_tokens, 150);
+        parser.feed("data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":42}}");
+        assert_eq!(parser.usage.output_tokens, 42);
+    }
+
+    #[test]
     fn sse_parser_openai_text_delta() {
         let mut parser = SseParser::new("openai");
         let events = parser.feed("data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}");
@@ -342,38 +412,20 @@ mod tests {
     #[test]
     fn sse_parser_openai_tool_call_tracking() {
         let mut parser = SseParser::new("openai");
-        // First chunk — starts tool
         let e1 = parser.feed("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"tc1\",\"function\":{\"name\":\"shell\",\"arguments\":\"\"}}]}}]}");
         assert_eq!(e1.len(), 1);
         assert!(matches!(&e1[0], StreamEvent::ToolUseStart { name, .. } if name == "shell"));
 
-        // Second chunk — same index, no duplicate start
         let e2 = parser.feed("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"cmd\\\"\"}}]}}]}");
         assert_eq!(e2.len(), 1);
         assert!(matches!(&e2[0], StreamEvent::ToolUseInputDelta(_)));
     }
 
     #[test]
-    fn streaming_fetch_callback_receives_events() {
-        // This test verifies the callback wiring, not actual HTTP
-        let mut parser = SseParser::new("anthropic");
-        let mut received = Vec::new();
-
-        let lines = [
-            "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"A\"}}",
-            "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"B\"}}",
-            "data: {\"type\":\"message_stop\"}",
-        ];
-
-        for line in &lines {
-            for event in parser.feed(line) {
-                received.push(event);
-            }
-        }
-
-        assert_eq!(received.len(), 3);
-        assert!(matches!(&received[0], StreamEvent::TextDelta(t) if t == "A"));
-        assert!(matches!(&received[1], StreamEvent::TextDelta(t) if t == "B"));
-        assert!(matches!(&received[2], StreamEvent::MessageStop));
+    fn sse_parser_openai_usage_tracking() {
+        let mut parser = SseParser::new("openai");
+        parser.feed("data: {\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":50}}");
+        assert_eq!(parser.usage.input_tokens, 100);
+        assert_eq!(parser.usage.output_tokens, 50);
     }
 }

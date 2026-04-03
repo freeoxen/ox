@@ -199,13 +199,15 @@ fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
     ));
 
     // Status bar
-    let status_text = if app.thinking {
-        "streaming...".to_string()
+    let tokens = if app.tokens_in > 0 || app.tokens_out > 0 {
+        format!(" | {}in/{}out", app.tokens_in, app.tokens_out)
     } else {
-        format!(
-            "idle | Enter send | Esc quit | Up/Down history ({} entries)",
-            app.input_history.len()
-        )
+        String::new()
+    };
+    let status_text = if app.thinking {
+        format!("streaming...{tokens}")
+    } else {
+        format!("idle{tokens} | Enter send | Esc quit | Up/Down history")
     };
     let status = Paragraph::new(Span::styled(format!(" {status_text}"), theme.status));
     frame.render_widget(status, chunks[3]);
