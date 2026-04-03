@@ -1,4 +1,5 @@
 mod app;
+mod theme;
 mod tools;
 mod transport;
 mod tui;
@@ -54,8 +55,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut app = app::App::new(cli.provider, model, cli.max_tokens, api_key, workspace);
 
+    let theme = theme::Theme::default();
+
     let mut terminal = ratatui::init();
-    let result = tui::run(&mut app, &mut terminal);
+    let result = tui::run(&mut app, &theme, &mut terminal);
     ratatui::restore();
 
     result?;

@@ -1,16 +1,20 @@
 use crate::app::{App, ChatMessage};
+use crate::theme::Theme;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 use std::time::Duration;
 
 /// Run the TUI event loop. Blocks until the user quits.
-pub fn run(app: &mut App, terminal: &mut ratatui::DefaultTerminal) -> std::io::Result<()> {
+pub fn run(
+    app: &mut App,
+    theme: &Theme,
+    terminal: &mut ratatui::DefaultTerminal,
+) -> std::io::Result<()> {
     loop {
-        terminal.draw(|frame| draw(frame, app))?;
+        terminal.draw(|frame| draw(frame, app, theme))?;
 
         if event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
@@ -71,7 +75,7 @@ pub fn run(app: &mut App, terminal: &mut ratatui::DefaultTerminal) -> std::io::R
     }
 }
 
-fn draw(frame: &mut Frame, app: &App) {
+fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -84,14 +88,8 @@ fn draw(frame: &mut Frame, app: &App) {
 
     // Title bar
     let title = Line::from(vec![
-        Span::styled(
-            " ox ",
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(format!(" {} ({})", app.model, app.provider)),
+        Span::styled(" ox ", theme.title_badge),
+        Span::styled(format!(" {} ({})", app.model, app.provider), theme.title_info),
     ]);
     frame.render_widget(Paragraph::new(title), chunks[0]);
 
@@ -102,30 +100,20 @@ fn draw(frame: &mut Frame, app: &App) {
             ChatMessage::User(text) => {
                 lines.push(Line::from(""));
                 lines.push(Line::from(vec![
-                    Span::styled(
-                        "> ",
-                        Style::default()
-                            .fg(Color::Green)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(text),
+                    Span::styled("> ", theme.user_prompt),
+                    Span::styled(text, theme.user_text),
                 ]));
                 lines.push(Line::from(""));
             }
             ChatMessage::AssistantChunk(text) => {
                 for line in text.lines() {
-                    lines.push(Line::from(Span::raw(line)));
+                    lines.push(Line::from(Span::styled(line, theme.assistant_text)));
                 }
             }
             ChatMessage::ToolCall { name } => {
                 lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("  [{name}] "),
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled("running...", Style::default().fg(Color::DarkGray)),
+                    Span::styled(format!("  [{name}] "), theme.tool_name),
+                    Span::styled("running...", theme.tool_running),
                 ]));
             }
             ChatMessage::ToolResult { name, output } => {
@@ -133,36 +121,36 @@ fn draw(frame: &mut Frame, app: &App) {
                 let preview_lines: Vec<&str> = output.lines().take(5).collect();
 
                 lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("  [{name}] "),
-                        Style::default().fg(Color::Yellow),
-                    ),
+                    Span::styled(format!("  [{name}] "), theme.tool_name),
                     Span::styled(
                         if line_count > 5 {
                             format!("({line_count} lines)")
                         } else {
-                            format!("({line_count} line{})", if line_count == 1 { "" } else { "s" })
+                            format!(
+                                "({line_count} line{})",
+                                if line_count == 1 { "" } else { "s" }
+                            )
                         },
-                        Style::default().fg(Color::DarkGray),
+                        theme.tool_meta,
                     ),
                 ]));
                 for pl in &preview_lines {
                     lines.push(Line::from(Span::styled(
                         format!("  | {pl}"),
-                        Style::default().fg(Color::DarkGray),
+                        theme.tool_output,
                     )));
                 }
                 if line_count > 5 {
                     lines.push(Line::from(Span::styled(
                         format!("  | ... ({} more)", line_count - 5),
-                        Style::default().fg(Color::DarkGray),
+                        theme.tool_overflow,
                     )));
                 }
             }
             ChatMessage::Error(e) => {
                 lines.push(Line::from(Span::styled(
                     format!("  error: {e}"),
-                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                    theme.error,
                 )));
             }
         }
@@ -171,12 +159,9 @@ fn draw(frame: &mut Frame, app: &App) {
     // Thinking indicator
     if app.thinking {
         if let Some(ChatMessage::AssistantChunk(_)) = app.messages.last() {
-            // cursor is after the streaming text — already visible
+            // streaming text visible — no extra indicator needed
         } else {
-            lines.push(Line::from(Span::styled(
-                "  ...",
-                Style::default().fg(Color::DarkGray),
-            )));
+            lines.push(Line::from(Span::styled("  ...", theme.thinking)));
         }
     }
 
@@ -184,10 +169,8 @@ fn draw(frame: &mut Frame, app: &App) {
     let msg_height = chunks[1].height as usize;
     let total_lines = text.lines.len();
     let scroll = if app.scroll == 0 {
-        // Auto-scroll: show bottom
         total_lines.saturating_sub(msg_height) as u16
     } else {
-        // Manual scroll offset from bottom
         let max_scroll = total_lines.saturating_sub(msg_height) as u16;
         max_scroll.saturating_sub(app.scroll)
     };
@@ -202,7 +185,10 @@ fn draw(frame: &mut Frame, app: &App) {
     } else {
         ""
     };
-    let input_block = Block::default().borders(Borders::TOP).title(input_title);
+    let input_block = Block::default()
+        .borders(Borders::TOP)
+        .border_style(theme.input_border)
+        .title(input_title);
     let input = Paragraph::new(format!("> {}", app.input)).block(input_block);
     frame.render_widget(input, chunks[2]);
 
@@ -221,9 +207,6 @@ fn draw(frame: &mut Frame, app: &App) {
             app.input_history.len()
         )
     };
-    let status = Paragraph::new(Span::styled(
-        format!(" {status_text}"),
-        Style::default().fg(Color::DarkGray),
-    ));
+    let status = Paragraph::new(Span::styled(format!(" {status_text}"), theme.status));
     frame.render_widget(status, chunks[3]);
 }
