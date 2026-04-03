@@ -4,7 +4,7 @@
 //!
 //! - **Message types** — [`Message`], [`ContentBlock`], [`ToolCall`], [`ToolResult`]
 //! - **Completion protocol** — [`CompletionRequest`], [`StreamEvent`], [`EventStream`]
-//! - **Tool abstraction** — [`Tool`] trait and [`ToolRegistry`]
+//! - **Tool abstraction** — [`Tool`] trait, [`FnTool`], and [`ToolRegistry`]
 //! - **State machine** — [`Kernel`] drives the agentic loop via three composable
 //!   phases: [`initiate_completion`](Kernel::initiate_completion),
 //!   [`consume_events`](Kernel::consume_events), and
@@ -201,25 +201,19 @@ pub struct ModelInfo {
 
 /// A tool the agent can invoke. Implement this trait to expose capabilities.
 ///
-/// # Example
+/// Most tools can be created directly with [`FnTool::new`]:
 ///
 /// ```ignore
-/// struct Echo;
-///
-/// impl Tool for Echo {
-///     fn name(&self) -> &str { "echo" }
-///     fn description(&self) -> &str { "Echoes the input back" }
-///     fn parameters_schema(&self) -> serde_json::Value {
-///         serde_json::json!({
-///             "type": "object",
-///             "properties": { "text": { "type": "string" } },
-///             "required": ["text"]
-///         })
-///     }
-///     fn execute(&self, input: serde_json::Value) -> Result<String, String> {
-///         Ok(input["text"].as_str().unwrap_or("").to_string())
-///     }
-/// }
+/// let echo = FnTool::new(
+///     "echo",
+///     "Echoes the input back",
+///     serde_json::json!({
+///         "type": "object",
+///         "properties": { "text": { "type": "string" } },
+///         "required": ["text"]
+///     }),
+///     |input| Ok(input["text"].as_str().unwrap_or("").to_string()),
+/// );
 /// ```
 pub trait Tool: Send + Sync {
     /// A unique name for this tool (e.g. `"get_weather"`).
@@ -230,6 +224,52 @@ pub trait Tool: Send + Sync {
     fn parameters_schema(&self) -> serde_json::Value;
     /// Execute the tool with the given JSON input, returning a string result.
     fn execute(&self, input: serde_json::Value) -> Result<String, String>;
+}
+
+/// A closure-backed [`Tool`] implementation.
+///
+/// This is the canonical way to create tools. All tools — standard distribution,
+/// completion delegates, Wasm components — are instances of `FnTool`.
+pub struct FnTool {
+    name: String,
+    description: String,
+    schema: serde_json::Value,
+    run: Box<dyn Fn(serde_json::Value) -> Result<String, String> + Send + Sync>,
+}
+
+impl FnTool {
+    /// Create a new tool from a closure.
+    pub fn new(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        schema: serde_json::Value,
+        run: impl Fn(serde_json::Value) -> Result<String, String> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            schema,
+            run: Box::new(run),
+        }
+    }
+}
+
+impl Tool for FnTool {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn description(&self) -> &str {
+        &self.description
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        self.schema.clone()
+    }
+
+    fn execute(&self, input: serde_json::Value) -> Result<String, String> {
+        (self.run)(input)
+    }
 }
 
 /// Registry of named tools available to the agent.
@@ -594,4 +634,48 @@ pub fn serialize_tool_results(results: &[ToolResult]) -> serde_json::Value {
         "role": "user",
         "content": content,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fn_tool_executes_closure() {
+        let tool = FnTool::new(
+            "echo",
+            "Echoes the input",
+            serde_json::json!({
+                "type": "object",
+                "properties": { "text": { "type": "string" } },
+                "required": ["text"]
+            }),
+            |input| {
+                Ok(input["text"].as_str().unwrap_or("").to_string())
+            },
+        );
+
+        assert_eq!(tool.name(), "echo");
+        assert_eq!(tool.description(), "Echoes the input");
+        assert_eq!(tool.execute(serde_json::json!({"text": "hello"})).unwrap(), "hello");
+    }
+
+    #[test]
+    fn fn_tool_in_registry() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(FnTool::new(
+            "noop",
+            "Does nothing",
+            serde_json::json!({"type": "object"}),
+            |_| Ok("ok".into()),
+        )));
+
+        assert!(registry.get("noop").is_some());
+        assert_eq!(registry.schemas().len(), 1);
+        assert_eq!(registry.schemas()[0].name, "noop");
+    }
 }

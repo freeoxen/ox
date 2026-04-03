@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use ox_kernel::{CompletionRequest, StreamEvent, Tool, ToolSchema};
+use ox_kernel::{CompletionRequest, FnTool, StreamEvent, ToolSchema};
 
 use crate::account::AccountConfig;
 use crate::provider::ProviderConfig;
@@ -10,101 +10,68 @@ use crate::provider::ProviderConfig;
 /// A synchronous send function shared across completion tools.
 pub type SendFn = dyn Fn(&CompletionRequest) -> Result<Vec<StreamEvent>, String> + Send + Sync;
 
-/// A tool that delegates a sub-completion to a specific account/provider.
+/// The tool name for an account (e.g. `"complete_openai"`).
+pub fn tool_name_for(account_name: &str) -> String {
+    format!("complete_{account_name}")
+}
+
+/// Generate a [`ToolSchema`] for an account without needing a send function.
+pub fn completion_tool_schema(account_name: &str, provider: &ProviderConfig) -> ToolSchema {
+    let schema = completion_params_schema();
+    ToolSchema {
+        name: tool_name_for(account_name),
+        description: format!(
+            "Send a completion to the {} account ({} dialect)",
+            account_name, provider.dialect,
+        ),
+        input_schema: schema,
+    }
+}
+
+/// Create a completion tool for the given account.
 ///
-/// Created by [`GateStore::create_completion_tools`](crate::GateStore::create_completion_tools).
-pub struct CompletionTool {
-    tool_name: String,
-    description: String,
-    model: String,
+/// Returns a [`FnTool`] that delegates sub-completions through `send`.
+pub fn completion_tool(
+    account_name: String,
+    account: &AccountConfig,
+    provider: &ProviderConfig,
     send: Arc<SendFn>,
+) -> FnTool {
+    let model = account.model.clone();
+    let description = format!(
+        "Send a completion to the {} account ({} dialect)",
+        account_name, provider.dialect,
+    );
+    FnTool::new(
+        tool_name_for(&account_name),
+        description,
+        completion_params_schema(),
+        move |input| {
+            let prompt = input
+                .get("prompt")
+                .and_then(|v| v.as_str())
+                .ok_or("missing required 'prompt' field")?;
+            let system = input.get("system").and_then(|v| v.as_str()).unwrap_or("");
+            complete_via_gate(&*send, &model, prompt, system)
+        },
+    )
 }
 
-impl CompletionTool {
-    /// Create a completion tool for the given account.
-    pub fn new(
-        account_name: String,
-        account: &AccountConfig,
-        provider: &ProviderConfig,
-        send: Arc<SendFn>,
-    ) -> Self {
-        Self {
-            tool_name: Self::tool_name_for(&account_name),
-            description: format!(
-                "Send a completion to the {} account ({} dialect)",
-                account_name, provider.dialect,
-            ),
-            model: account.model.clone(),
-            send,
-        }
-    }
-
-    /// The tool name for an account (e.g. `"complete_openai"`).
-    pub fn tool_name_for(account_name: &str) -> String {
-        format!("complete_{account_name}")
-    }
-
-    /// Generate a [`ToolSchema`] for an account without needing a send function.
-    pub fn schema_for(account_name: &str, provider: &ProviderConfig) -> ToolSchema {
-        ToolSchema {
-            name: Self::tool_name_for(account_name),
-            description: format!(
-                "Send a completion to the {} account ({} dialect)",
-                account_name, provider.dialect,
-            ),
-            input_schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "prompt": {
-                        "type": "string",
-                        "description": "The user prompt to send"
-                    },
-                    "system": {
-                        "type": "string",
-                        "description": "Optional system prompt"
-                    }
-                },
-                "required": ["prompt"]
-            }),
-        }
-    }
-}
-
-impl Tool for CompletionTool {
-    fn name(&self) -> &str {
-        &self.tool_name
-    }
-
-    fn description(&self) -> &str {
-        &self.description
-    }
-
-    fn parameters_schema(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "prompt": {
-                    "type": "string",
-                    "description": "The user prompt to send"
-                },
-                "system": {
-                    "type": "string",
-                    "description": "Optional system prompt"
-                }
+fn completion_params_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "prompt": {
+                "type": "string",
+                "description": "The user prompt to send"
             },
-            "required": ["prompt"]
-        })
-    }
-
-    fn execute(&self, input: serde_json::Value) -> Result<String, String> {
-        let prompt = input
-            .get("prompt")
-            .and_then(|v| v.as_str())
-            .ok_or("missing required 'prompt' field")?;
-        let system = input.get("system").and_then(|v| v.as_str()).unwrap_or("");
-
-        complete_via_gate(&*self.send, &self.model, prompt, system)
-    }
+            "system": {
+                "type": "string",
+                "description": "Optional system prompt"
+            }
+        },
+        "required": ["prompt"]
+    })
 }
 
 /// Execute a sub-completion through a send function.
@@ -144,6 +111,7 @@ pub fn complete_via_gate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ox_kernel::Tool;
 
     fn mock_send(request: &CompletionRequest) -> Result<Vec<StreamEvent>, String> {
         let content = request.messages[0]["content"]
@@ -185,7 +153,7 @@ mod tests {
         let provider = ProviderConfig::anthropic();
         let send: Arc<SendFn> = Arc::new(mock_send);
 
-        let tool = CompletionTool::new("test".to_string(), &account, &provider, send);
+        let tool = completion_tool("test".to_string(), &account, &provider, send);
         let result = tool
             .execute(serde_json::json!({"prompt": "Hello"}))
             .unwrap();
@@ -202,7 +170,7 @@ mod tests {
         let provider = ProviderConfig::anthropic();
         let send: Arc<SendFn> = Arc::new(mock_send);
 
-        let tool = CompletionTool::new("test".to_string(), &account, &provider, send);
+        let tool = completion_tool("test".to_string(), &account, &provider, send);
         let result = tool.execute(serde_json::json!({}));
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("prompt"));
@@ -210,7 +178,7 @@ mod tests {
 
     #[test]
     fn schema_for_generates_correct_name() {
-        let schema = CompletionTool::schema_for("openai", &ProviderConfig::openai());
+        let schema = completion_tool_schema("openai", &ProviderConfig::openai());
         assert_eq!(schema.name, "complete_openai");
         assert!(schema.description.contains("openai"));
         assert!(
@@ -223,10 +191,7 @@ mod tests {
 
     #[test]
     fn tool_name_format() {
-        assert_eq!(
-            CompletionTool::tool_name_for("anthropic"),
-            "complete_anthropic"
-        );
-        assert_eq!(CompletionTool::tool_name_for("openai"), "complete_openai");
+        assert_eq!(tool_name_for("anthropic"), "complete_anthropic");
+        assert_eq!(tool_name_for("openai"), "complete_openai");
     }
 }

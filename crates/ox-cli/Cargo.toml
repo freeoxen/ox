@@ -1,0 +1,30 @@
+[package]
+name = "ox-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Ratatui-based agentic coding CLI for the ox agent framework"
+publish = false
+
+[[bin]]
+name = "ox"
+path = "src/main.rs"
+
+[dependencies]
+ox-kernel = { path = "../ox-kernel" }
+ox-context = { path = "../ox-context" }
+ox-gate = { path = "../ox-gate" }
+ox-history = { path = "../ox-history" }
+clap = { version = "4", features = ["derive"] }
+crossterm = "0.28"
+ratatui = "0.29"
+reqwest = { version = "0.12", features = ["blocking"] }
+serde_json = "1"
+structfs-serde-store = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

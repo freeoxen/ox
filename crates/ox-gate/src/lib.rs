@@ -13,7 +13,7 @@ pub mod tools;
 pub use account::AccountConfig;
 pub use codec::UsageInfo;
 pub use provider::ProviderConfig;
-pub use tools::CompletionTool;
+pub use tools::completion_tool;
 
 use ox_kernel::{ModelInfo, Tool, ToolSchema};
 use std::collections::HashMap;
@@ -80,12 +80,12 @@ impl GateStore {
             .filter(|(_, account)| !account.key.is_empty())
             .filter_map(|(name, account)| {
                 let provider = self.providers.get(&account.provider)?;
-                Some(CompletionTool::schema_for(name, provider))
+                Some(tools::completion_tool_schema(name, provider))
             })
             .collect()
     }
 
-    /// Create [`CompletionTool`] instances for all accounts with API keys set.
+    /// Create completion tool instances for all accounts with API keys set.
     ///
     /// `send` is a synchronous function that sends a [`ox_kernel::CompletionRequest`]
     /// and returns parsed [`ox_kernel::StreamEvent`]s.
@@ -95,7 +95,7 @@ impl GateStore {
             .filter(|(_, account)| !account.key.is_empty())
             .filter_map(|(name, account)| {
                 let provider = self.providers.get(&account.provider)?;
-                Some(Box::new(CompletionTool::new(
+                Some(Box::new(tools::completion_tool(
                     name.clone(),
                     account,
                     provider,

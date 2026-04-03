@@ -22,16 +22,16 @@
 pub use ox_context::{ModelInfo, ModelProvider, Namespace, SystemProvider, ToolsProvider};
 
 // --- Re-exports from ox-gate ---
-pub use ox_gate::{AccountConfig, CompletionTool, GateStore, ProviderConfig};
+pub use ox_gate::{AccountConfig, GateStore, ProviderConfig, completion_tool};
 
 // --- Re-exports from ox-history ---
 pub use ox_history::HistoryProvider;
 
 // --- Re-exports from ox-kernel (core types, traits, state machine) ---
 pub use ox_kernel::{
-    AgentEvent, CompletionRequest, ContentBlock, Kernel, Message, Path, Reader, Record, Store,
-    StoreError, StreamEvent, Tool, ToolCall, ToolRegistry, ToolResult, ToolSchema, Value, Writer,
-    path, serialize_assistant_message, serialize_tool_results,
+    AgentEvent, CompletionRequest, ContentBlock, FnTool, Kernel, Message, Path, Reader, Record,
+    Store, StoreError, StreamEvent, Tool, ToolCall, ToolRegistry, ToolResult, ToolSchema, Value,
+    Writer, path, serialize_assistant_message, serialize_tool_results,
 };
 
 use std::sync::Arc;
