@@ -434,13 +434,10 @@ impl OxAgent {
 impl OxAgent {
     /// Rebuild the ToolsProvider in the namespace from both Rust and JS tools.
     fn rebuild_tools_provider(&self) {
-        let schemas = {
-            let mut schemas = self.rust_tools.borrow().schemas();
-            for jt in self.js_tools.borrow().values() {
-                schemas.push(jt.schema());
-            }
-            schemas
-        };
+        let mut schemas = self.rust_tools.borrow().schemas();
+        for jt in self.js_tools.borrow().values() {
+            schemas.push(jt.schema());
+        }
         self.context
             .borrow_mut()
             .mount("tools", Box::new(ToolsProvider::new(schemas)));

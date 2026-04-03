@@ -4,8 +4,8 @@
 //! providers into a single [`Agent`] struct with a simple `prompt()` method.
 //!
 //! This is the main entry point for native (non-Wasm) consumers. It
-//! re-exports all public types from `ox-kernel`, `ox-context`, and
-//! `ox-history` so downstream crates only need to depend on `ox-core`.
+//! re-exports all public types from `ox-kernel`, `ox-context`, `ox-gate`,
+//! and `ox-history` so downstream crates only need to depend on `ox-core`.
 //!
 //! ```ignore
 //! let mut agent = Agent::new(
@@ -21,6 +21,9 @@
 // --- Re-exports from ox-context ---
 pub use ox_context::{ModelInfo, ModelProvider, Namespace, SystemProvider, ToolsProvider};
 
+// --- Re-exports from ox-gate ---
+pub use ox_gate::{AccountConfig, CompletionTool, GateStore, ProviderConfig};
+
 // --- Re-exports from ox-history ---
 pub use ox_history::HistoryProvider;
 
@@ -31,20 +34,22 @@ pub use ox_kernel::{
     path, serialize_assistant_message, serialize_tool_results,
 };
 
+use std::sync::Arc;
 use structfs_serde_store::json_to_value;
 
 /// A synchronous send function: takes a completion request, returns parsed events.
-type SendFn = dyn Fn(&CompletionRequest) -> Result<Vec<StreamEvent>, String>;
+pub type SendFn = dyn Fn(&CompletionRequest) -> Result<Vec<StreamEvent>, String> + Send + Sync;
 
 /// The Agent composes a Kernel, Namespace (with stores), and ToolRegistry.
 ///
 /// It owns the full state of one agent session and exposes a simple
-/// `prompt()` method that drives the agentic loop.
+/// `prompt()` method that drives the agentic loop. Completion tools from
+/// the [`GateStore`] are automatically registered when accounts have keys set.
 pub struct Agent {
     kernel: Kernel,
     context: Namespace,
     tools: ToolRegistry,
-    send: Box<SendFn>,
+    send: Arc<SendFn>,
     subscribers: Vec<Box<dyn FnMut(AgentEvent)>>,
 }
 
@@ -52,8 +57,12 @@ impl Agent {
     /// Create a new agent with the given configuration.
     ///
     /// Sets up the internal [`Namespace`] with providers for the system
-    /// prompt, history, tools, and model. The `tools` registry is used
-    /// for both schema generation (sent to the model) and execution.
+    /// prompt, history, tools, model, and gate. The `tools` registry is
+    /// used for both schema generation (sent to the model) and execution.
+    ///
+    /// Completion tools (e.g. `complete_openai`) are automatically created
+    /// for any gate account with an API key set and registered alongside
+    /// the caller-provided tools.
     ///
     /// `send` is a synchronous function that sends a [`CompletionRequest`]
     /// and returns parsed [`StreamEvent`]s.
@@ -61,9 +70,17 @@ impl Agent {
         system_prompt: String,
         model: String,
         max_tokens: u32,
-        send: impl Fn(&CompletionRequest) -> Result<Vec<StreamEvent>, String> + 'static,
-        tools: ToolRegistry,
+        send: impl Fn(&CompletionRequest) -> Result<Vec<StreamEvent>, String> + Send + Sync + 'static,
+        mut tools: ToolRegistry,
     ) -> Self {
+        let send: Arc<SendFn> = Arc::new(send);
+        let gate = GateStore::new();
+
+        // Register completion tools for keyed accounts
+        for tool in gate.create_completion_tools(send.clone()) {
+            tools.register(tool);
+        }
+
         let mut context = Namespace::new();
         context.mount("system", Box::new(SystemProvider::new(system_prompt)));
         context.mount("history", Box::new(HistoryProvider::new()));
@@ -72,12 +89,13 @@ impl Agent {
             "model",
             Box::new(ModelProvider::new(model.clone(), max_tokens)),
         );
+        context.mount("gate", Box::new(gate));
 
         Self {
             kernel: Kernel::new(model),
             context,
             tools,
-            send: Box::new(send),
+            send,
             subscribers: Vec::new(),
         }
     }
@@ -113,7 +131,7 @@ impl Agent {
         // Run the agentic loop — kernel reads/writes the namespace
         let content =
             self.kernel
-                .run_turn(&mut self.context, &self.send, &self.tools, &mut emit)?;
+                .run_turn(&mut self.context, &*self.send, &self.tools, &mut emit)?;
 
         // Extract final text from the assistant response
         let text = content

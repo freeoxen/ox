@@ -8,13 +8,16 @@
 pub mod account;
 pub mod codec;
 pub mod provider;
+pub mod tools;
 
 pub use account::AccountConfig;
 pub use codec::UsageInfo;
 pub use provider::ProviderConfig;
+pub use tools::CompletionTool;
 
-use ox_kernel::ModelInfo;
+use ox_kernel::{ModelInfo, Tool, ToolSchema};
 use std::collections::HashMap;
+use std::sync::Arc;
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer};
 use structfs_serde_store::{from_value, to_value};
 
@@ -68,6 +71,38 @@ impl GateStore {
             bootstrap: "anthropic".to_string(),
             catalogs: HashMap::new(),
         }
+    }
+
+    /// Generate [`ToolSchema`]s for all accounts with API keys set.
+    pub fn completion_tool_schemas(&self) -> Vec<ToolSchema> {
+        self.accounts
+            .iter()
+            .filter(|(_, account)| !account.key.is_empty())
+            .filter_map(|(name, account)| {
+                let provider = self.providers.get(&account.provider)?;
+                Some(CompletionTool::schema_for(name, provider))
+            })
+            .collect()
+    }
+
+    /// Create [`CompletionTool`] instances for all accounts with API keys set.
+    ///
+    /// `send` is a synchronous function that sends a [`ox_kernel::CompletionRequest`]
+    /// and returns parsed [`ox_kernel::StreamEvent`]s.
+    pub fn create_completion_tools(&self, send: Arc<tools::SendFn>) -> Vec<Box<dyn Tool>> {
+        self.accounts
+            .iter()
+            .filter(|(_, account)| !account.key.is_empty())
+            .filter_map(|(name, account)| {
+                let provider = self.providers.get(&account.provider)?;
+                Some(Box::new(CompletionTool::new(
+                    name.clone(),
+                    account,
+                    provider,
+                    send.clone(),
+                )) as Box<dyn Tool>)
+            })
+            .collect()
     }
 }
 
@@ -143,8 +178,8 @@ impl Reader for GateStore {
 
             "tools" => {
                 if from.components.len() >= 2 && from.components[1].as_str() == "schemas" {
-                    // Placeholder for Phase 4 — returns empty array
-                    let value = to_value(&Vec::<serde_json::Value>::new())
+                    let schemas = self.completion_tool_schemas();
+                    let value = to_value(&schemas)
                         .map_err(|e| StoreError::store("gate", "read", e.to_string()))?;
                     Ok(Some(Record::parsed(value)))
                 } else {
@@ -487,7 +522,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tools_schemas_placeholder() {
+    fn test_tools_schemas_empty_without_keys() {
         let mut gate = GateStore::new();
         let record = gate.read(&path!("tools/schemas")).unwrap().unwrap();
         let json = match record {
@@ -495,5 +530,39 @@ mod tests {
             _ => panic!("expected parsed"),
         };
         assert_eq!(json, serde_json::json!([]));
+    }
+
+    #[test]
+    fn test_tools_schemas_with_keys() {
+        let mut gate = GateStore::new();
+        gate.write(
+            &path!("accounts/anthropic/key"),
+            Record::parsed(Value::String("sk-test".to_string())),
+        )
+        .unwrap();
+
+        let record = gate.read(&path!("tools/schemas")).unwrap().unwrap();
+        let json = match record {
+            Record::Parsed(v) => value_to_json(v),
+            _ => panic!("expected parsed"),
+        };
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["name"], "complete_anthropic");
+    }
+
+    #[test]
+    fn test_create_completion_tools() {
+        let mut gate = GateStore::new();
+        gate.write(
+            &path!("accounts/openai/key"),
+            Record::parsed(Value::String("sk-openai".to_string())),
+        )
+        .unwrap();
+
+        let send: Arc<tools::SendFn> = Arc::new(|_| Ok(vec![]));
+        let tools = gate.create_completion_tools(send);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name(), "complete_openai");
     }
 }
