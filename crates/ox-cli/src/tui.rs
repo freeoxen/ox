@@ -18,8 +18,9 @@ pub fn run(
 
         if event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
-                if app.pending_approval.is_some() {
-                    // Modal: approval dialog key handling
+                if app.pending_customize.is_some() {
+                    handle_customize_key(app, key.code);
+                } else if app.pending_approval.is_some() {
                     handle_approval_key(app, key.code);
                 } else {
                     // Normal key handling
@@ -110,9 +111,25 @@ fn handle_approval_key(app: &mut App, key: KeyCode) {
             }
         }
         KeyCode::Enter => {
-            let response = ApprovalState::OPTIONS[approval.selected].1;
+            let response = ApprovalState::OPTIONS[approval.selected].1.clone();
             let approval = app.pending_approval.take().unwrap();
             approval.respond.send(response).ok();
+        }
+        KeyCode::Char('c') | KeyCode::Char('C') => {
+            // Enter customize mode — transition from approval to rule editor
+            let approval = app.pending_approval.take().unwrap();
+            let (arg_key, pattern) = infer_rule_fields(&approval.tool, &approval.input_preview);
+            app.pending_customize = Some(crate::app::CustomizeState {
+                tool: approval.tool,
+                arg_key,
+                pattern: pattern.clone(),
+                cursor: pattern.len(),
+                effect_idx: 0,  // allow
+                scope_idx: 0,   // session
+                focus: 0,       // pattern field
+                respond: approval.respond,
+                input: serde_json::json!({}), // not used for custom rules
+            });
         }
         KeyCode::Char('y') | KeyCode::Char('Y') => {
             let approval = app.pending_approval.take().unwrap();
@@ -255,8 +272,8 @@ fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
     let input = Paragraph::new(format!("> {}", app.input)).block(input_block);
     frame.render_widget(input, chunks[2]);
 
-    // Cursor (only when not in approval mode)
-    if app.pending_approval.is_none() {
+    // Cursor (only when not in modal mode)
+    if app.pending_approval.is_none() && app.pending_customize.is_none() {
         frame.set_cursor_position((
             chunks[2].x + app.cursor as u16 + 2,
             chunks[2].y + 1,
@@ -277,8 +294,10 @@ fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
             String::new()
         }
     };
-    let status_text = if app.pending_approval.is_some() {
-        format!("PERMISSION REQUIRED{tokens}{policy}")
+    let status_text = if app.pending_customize.is_some() {
+        format!("CUSTOMIZE RULE — Tab to switch fields, Enter to save, Esc to cancel{tokens}{policy}")
+    } else if app.pending_approval.is_some() {
+        format!("PERMISSION REQUIRED — (c) customize{tokens}{policy}")
     } else if app.thinking {
         format!("streaming...{tokens}{policy}")
     } else {
@@ -287,8 +306,10 @@ fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
     let status = Paragraph::new(Span::styled(format!(" {status_text}"), theme.status));
     frame.render_widget(status, chunks[3]);
 
-    // Approval dialog overlay
-    if let Some(ref approval) = app.pending_approval {
+    // Modal overlays
+    if let Some(ref customize) = app.pending_customize {
+        draw_customize_dialog(frame, customize, theme);
+    } else if let Some(ref approval) = app.pending_approval {
         draw_approval_dialog(frame, approval, theme);
     }
 }
@@ -329,6 +350,145 @@ fn draw_approval_dialog(frame: &mut Frame, approval: &ApprovalState, theme: &The
         let marker = if i == approval.selected { "> " } else { "  " };
         lines.push(Line::from(Span::styled(format!("{marker}{label}"), style)));
     }
+
+    let content = Paragraph::new(Text::from(lines));
+    frame.render_widget(content, inner);
+}
+
+const EFFECTS: [&str; 2] = ["allow", "deny"];
+const SCOPES: [&str; 2] = ["session", "always"];
+
+/// Infer the argument key and default pattern from a tool name and preview.
+fn infer_rule_fields(tool: &str, preview: &str) -> (String, String) {
+    match tool {
+        "shell" => ("command".into(), format!("{}*", preview.split_whitespace().next().unwrap_or(preview))),
+        "read_file" | "write_file" | "edit_file" => ("path".into(), preview.to_string()),
+        _ => (String::new(), "*".into()),
+    }
+}
+
+fn handle_customize_key(app: &mut App, key: KeyCode) {
+    let cust = app.pending_customize.as_mut().unwrap();
+    match key {
+        KeyCode::Esc => {
+            // Cancel — deny this time
+            let cust = app.pending_customize.take().unwrap();
+            cust.respond.send(ApprovalResponse::DenyOnce).ok();
+        }
+        KeyCode::Tab => {
+            cust.focus = (cust.focus + 1) % 3;
+        }
+        KeyCode::BackTab => {
+            cust.focus = if cust.focus == 0 { 2 } else { cust.focus - 1 };
+        }
+        KeyCode::Enter => {
+            let cust = app.pending_customize.take().unwrap();
+            let response = ApprovalResponse::CustomRule {
+                tool: cust.tool,
+                arg_key: if cust.arg_key.is_empty() { None } else { Some(cust.arg_key) },
+                arg_pattern: if cust.pattern.is_empty() { None } else { Some(cust.pattern) },
+                effect: EFFECTS[cust.effect_idx].to_string(),
+                scope: SCOPES[cust.scope_idx].to_string(),
+            };
+            cust.respond.send(response).ok();
+        }
+        _ => {
+            match cust.focus {
+                0 => {
+                    // Editing the pattern field
+                    match key {
+                        KeyCode::Char(c) => {
+                            cust.pattern.insert(cust.cursor, c);
+                            cust.cursor += 1;
+                        }
+                        KeyCode::Backspace if cust.cursor > 0 => {
+                            cust.cursor -= 1;
+                            cust.pattern.remove(cust.cursor);
+                        }
+                        KeyCode::Left => cust.cursor = cust.cursor.saturating_sub(1),
+                        KeyCode::Right if cust.cursor < cust.pattern.len() => cust.cursor += 1,
+                        _ => {}
+                    }
+                }
+                1 => {
+                    // Effect toggle
+                    if matches!(key, KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down) {
+                        cust.effect_idx = 1 - cust.effect_idx;
+                    }
+                }
+                2 => {
+                    // Scope toggle
+                    if matches!(key, KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down) {
+                        cust.scope_idx = 1 - cust.scope_idx;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn draw_customize_dialog(frame: &mut Frame, cust: &crate::app::CustomizeState, theme: &Theme) {
+    let area = frame.area();
+    let dialog_width = 54.min(area.width.saturating_sub(4));
+    let dialog_height = 10;
+    let x = (area.width.saturating_sub(dialog_width)) / 2;
+    let y = (area.height.saturating_sub(dialog_height)) / 2;
+    let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
+
+    frame.render_widget(Clear, dialog_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme.approval_border)
+        .title(Span::styled(" Customize Rule ", theme.approval_title));
+
+    let inner = block.inner(dialog_area);
+    frame.render_widget(block, dialog_area);
+
+    let focus_style = theme.approval_selected;
+    let normal_style = theme.approval_option;
+
+    let pattern_style = if cust.focus == 0 { focus_style } else { normal_style };
+    let effect_style = if cust.focus == 1 { focus_style } else { normal_style };
+    let scope_style = if cust.focus == 2 { focus_style } else { normal_style };
+
+    let effect_display = format!(
+        "< {} >",
+        EFFECTS[cust.effect_idx]
+    );
+    let scope_display = format!(
+        "< {} >",
+        SCOPES[cust.scope_idx]
+    );
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(format!("  Tool:    "), normal_style),
+            Span::styled(&cust.tool, theme.approval_tool),
+        ]),
+        Line::from(vec![
+            Span::styled(format!("  Match:   "), normal_style),
+            Span::styled(&cust.arg_key, theme.approval_preview),
+        ]),
+        Line::from(vec![
+            Span::styled("  Pattern: ", if cust.focus == 0 { focus_style } else { normal_style }),
+            Span::styled(format!("[{}]", cust.pattern), pattern_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Effect:  ", if cust.focus == 1 { focus_style } else { normal_style }),
+            Span::styled(effect_display, effect_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Scope:   ", if cust.focus == 2 { focus_style } else { normal_style }),
+            Span::styled(scope_display, scope_style),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Tab: next field | Enter: save | Esc: cancel",
+            normal_style,
+        )),
+    ];
 
     let content = Paragraph::new(Text::from(lines));
     frame.render_widget(content, inner);

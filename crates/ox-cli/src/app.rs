@@ -37,7 +37,7 @@ pub enum AppControl {
 }
 
 /// User's response to a permission prompt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApprovalResponse {
     AllowOnce,
     AllowSession,
@@ -45,6 +45,14 @@ pub enum ApprovalResponse {
     DenyOnce,
     DenySession,
     DenyAlways,
+    /// A custom rule created from the sandbox editor.
+    CustomRule {
+        tool: String,
+        arg_key: Option<String>,
+        arg_pattern: Option<String>,
+        effect: String,     // "allow" or "deny"
+        scope: String,      // "session" or "always"
+    },
 }
 
 /// A message visible in the conversation.
@@ -67,13 +75,35 @@ pub struct ApprovalState {
 
 impl ApprovalState {
     pub const OPTIONS: [(&str, ApprovalResponse); 6] = [
-        ("Allow once", ApprovalResponse::AllowOnce),
-        ("Allow for session", ApprovalResponse::AllowSession),
-        ("Allow always (add rule)", ApprovalResponse::AllowAlways),
-        ("Deny once", ApprovalResponse::DenyOnce),
-        ("Deny for session", ApprovalResponse::DenySession),
-        ("Deny always (add rule)", ApprovalResponse::DenyAlways),
+        ("Allow once          (y)", ApprovalResponse::AllowOnce),
+        ("Allow for session   (s)", ApprovalResponse::AllowSession),
+        ("Allow always        (a)", ApprovalResponse::AllowAlways),
+        ("Deny once           (n)", ApprovalResponse::DenyOnce),
+        ("Deny for session      ", ApprovalResponse::DenySession),
+        ("Deny always         (d)", ApprovalResponse::DenyAlways),
     ];
+}
+
+/// State for the sandbox/rule customization editor.
+pub struct CustomizeState {
+    /// The tool name being customized.
+    pub tool: String,
+    /// The argument key to match on (e.g. "command", "path").
+    pub arg_key: String,
+    /// The pattern being edited.
+    pub pattern: String,
+    /// Cursor position within the pattern.
+    pub cursor: usize,
+    /// Current effect selection: 0=allow, 1=deny.
+    pub effect_idx: usize,
+    /// Current scope selection: 0=session, 1=always.
+    pub scope_idx: usize,
+    /// Which field is focused: 0=pattern, 1=effect, 2=scope.
+    pub focus: usize,
+    /// Channel to respond on when done.
+    pub respond: mpsc::Sender<ApprovalResponse>,
+    /// The original input JSON (needed for persist_allow/deny).
+    pub input: serde_json::Value,
 }
 
 /// TUI-side application state.
@@ -99,6 +129,7 @@ pub struct App {
     // Policy
     pub policy_stats: PolicyStats,
     pub pending_approval: Option<ApprovalState>,
+    pub pending_customize: Option<CustomizeState>,
 }
 
 impl App {
@@ -159,6 +190,7 @@ impl App {
             tokens_out: 0,
             policy_stats: PolicyStats::default(),
             pending_approval: None,
+            pending_customize: None,
         }
     }
 
@@ -603,6 +635,39 @@ fn run_streaming_loop(
                                 content: "denied by user".into(),
                             });
                             false
+                        }
+                        Ok(ApprovalResponse::CustomRule {
+                            tool,
+                            arg_key,
+                            arg_pattern,
+                            effect,
+                            scope,
+                        }) => {
+                            let rule = crate::policy::Rule {
+                                tool: Some(tool),
+                                arg_key,
+                                arg_pattern,
+                                effect: effect.clone(),
+                            };
+                            match scope.as_str() {
+                                "always" => {
+                                    policy.add_persistent_rule(rule);
+                                }
+                                _ => {
+                                    policy.add_session_rule(rule);
+                                }
+                            }
+                            if effect == "allow" {
+                                stats.allowed += 1;
+                                true
+                            } else {
+                                stats.denied += 1;
+                                results.push(ToolResult {
+                                    tool_use_id: tc.id.clone(),
+                                    content: "denied by custom rule".into(),
+                                });
+                                false
+                            }
                         }
                         Err(_) => {
                             results.push(ToolResult {

@@ -208,6 +208,17 @@ impl PolicyGuard {
         }
     }
 
+    /// Add an arbitrary rule to the session layer.
+    pub fn add_session_rule(&mut self, rule: Rule) {
+        self.session_rules.insert(0, rule);
+    }
+
+    /// Add an arbitrary rule to the persistent layer and save.
+    pub fn add_persistent_rule(&mut self, rule: Rule) {
+        self.manifest.rules.insert(0, rule);
+        self.save();
+    }
+
     /// Add a session-scoped allow rule (in-memory, lost on exit).
     pub fn session_allow(&mut self, tool_name: &str, input: &serde_json::Value) {
         let rule = make_rule_from_call(tool_name, input, "allow");
