@@ -99,7 +99,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let theme = theme::Theme::default();
 
     let mut terminal = ratatui::init();
+    crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture).ok();
     let result = tui::run(&mut app, &theme, &mut terminal);
+    crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture).ok();
     ratatui::restore();
 
     result?;

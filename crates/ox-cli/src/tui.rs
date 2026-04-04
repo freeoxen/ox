@@ -1,6 +1,6 @@
 use crate::app::{App, ApprovalResponse, ApprovalState, AppControl, ChatMessage};
 use crate::theme::Theme;
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
@@ -17,57 +17,20 @@ pub fn run(
         terminal.draw(|frame| draw(frame, app, theme))?;
 
         if event::poll(Duration::from_millis(50))? {
-            if let Event::Key(key) = event::read()? {
-                if app.pending_customize.is_some() {
-                    handle_customize_key(app, key.code);
-                } else if app.pending_approval.is_some() {
-                    handle_approval_key(app, key.code);
-                } else {
-                    // Normal key handling
-                    match (key.modifiers, key.code) {
-                        (KeyModifiers::CONTROL, KeyCode::Char('c')) | (_, KeyCode::Esc) => {
-                            app.should_quit = true;
-                        }
-                        (_, KeyCode::Enter) => {
-                            app.submit();
-                        }
-                        (_, KeyCode::Backspace) => {
-                            if app.cursor > 0 {
-                                app.cursor -= 1;
-                                app.input.remove(app.cursor);
-                            }
-                        }
-                        (_, KeyCode::Left) => {
-                            app.cursor = app.cursor.saturating_sub(1);
-                        }
-                        (_, KeyCode::Right) => {
-                            if app.cursor < app.input.len() {
-                                app.cursor += 1;
-                            }
-                        }
-                        (_, KeyCode::Up) => {
-                            app.history_up();
-                        }
-                        (_, KeyCode::Down) => {
-                            app.history_down();
-                        }
-                        (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
-                            app.input.clear();
-                            app.cursor = 0;
-                        }
-                        (KeyModifiers::CONTROL, KeyCode::Char('a')) => {
-                            app.cursor = 0;
-                        }
-                        (KeyModifiers::CONTROL, KeyCode::Char('e')) => {
-                            app.cursor = app.input.len();
-                        }
-                        (_, KeyCode::Char(c)) => {
-                            app.input.insert(app.cursor, c);
-                            app.cursor += 1;
-                        }
-                        _ => {}
+            match event::read()? {
+                Event::Key(key) => {
+                    if app.pending_customize.is_some() {
+                        handle_customize_key(app, key.code);
+                    } else if app.pending_approval.is_some() {
+                        handle_approval_key(app, key.code);
+                    } else {
+                        handle_normal_key(app, key.modifiers, key.code);
                     }
                 }
+                Event::Mouse(mouse) => {
+                    handle_mouse(app, mouse.kind, mouse.row);
+                }
+                _ => {}
             }
         }
 
@@ -76,8 +39,8 @@ pub fn run(
             app.handle_event(event);
         }
 
-        // Check for permission requests (non-blocking)
-        if app.pending_approval.is_none() {
+        // Check for permission requests
+        if app.pending_approval.is_none() && app.pending_customize.is_none() {
             if let Ok(AppControl::PermissionRequest {
                 tool,
                 input_preview,
@@ -99,15 +62,59 @@ pub fn run(
     }
 }
 
+fn handle_normal_key(app: &mut App, modifiers: KeyModifiers, code: KeyCode) {
+    match (modifiers, code) {
+        (KeyModifiers::CONTROL, KeyCode::Char('c')) | (_, KeyCode::Esc) => {
+            app.should_quit = true;
+        }
+        (_, KeyCode::Enter) => app.submit(),
+        (_, KeyCode::Backspace) => {
+            if app.cursor > 0 {
+                app.cursor -= 1;
+                app.input.remove(app.cursor);
+            }
+        }
+        (_, KeyCode::Left) => app.cursor = app.cursor.saturating_sub(1),
+        (_, KeyCode::Right) => {
+            if app.cursor < app.input.len() {
+                app.cursor += 1;
+            }
+        }
+        (_, KeyCode::Up) => app.history_up(),
+        (_, KeyCode::Down) => app.history_down(),
+        (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
+            app.input.clear();
+            app.cursor = 0;
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('a')) => app.cursor = 0,
+        (KeyModifiers::CONTROL, KeyCode::Char('e')) => app.cursor = app.input.len(),
+        (_, KeyCode::Char(c)) => {
+            app.input.insert(app.cursor, c);
+            app.cursor += 1;
+        }
+        _ => {}
+    }
+}
+
 fn handle_approval_key(app: &mut App, key: KeyCode) {
     let approval = app.pending_approval.as_mut().unwrap();
     match key {
-        KeyCode::Up => {
+        // vim navigation
+        KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
             approval.selected = approval.selected.saturating_sub(1);
         }
-        KeyCode::Down => {
+        KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
             if approval.selected < ApprovalState::OPTIONS.len() - 1 {
                 approval.selected += 1;
+            }
+        }
+        // number keys for direct selection
+        KeyCode::Char(c @ '1'..='6') => {
+            let idx = (c as u8 - b'1') as usize;
+            if idx < ApprovalState::OPTIONS.len() {
+                let response = ApprovalState::OPTIONS[idx].1.clone();
+                let approval = app.pending_approval.take().unwrap();
+                approval.respond.send(response).ok();
             }
         }
         KeyCode::Enter => {
@@ -115,8 +122,8 @@ fn handle_approval_key(app: &mut App, key: KeyCode) {
             let approval = app.pending_approval.take().unwrap();
             approval.respond.send(response).ok();
         }
+        // customize
         KeyCode::Char('c') | KeyCode::Char('C') => {
-            // Enter customize mode — transition from approval to rule editor
             let approval = app.pending_approval.take().unwrap();
             let (arg_key, pattern) = infer_rule_fields(&approval.tool, &approval.input_preview);
             app.pending_customize = Some(crate::app::CustomizeState {
@@ -124,13 +131,14 @@ fn handle_approval_key(app: &mut App, key: KeyCode) {
                 arg_key,
                 pattern: pattern.clone(),
                 cursor: pattern.len(),
-                effect_idx: 0,  // allow
-                scope_idx: 0,   // session
-                focus: 0,       // pattern field
+                effect_idx: 0,
+                scope_idx: 0,
+                focus: 0,
                 respond: approval.respond,
-                input: serde_json::json!({}), // not used for custom rules
+                input: serde_json::json!({}),
             });
         }
+        // quick keys
         KeyCode::Char('y') | KeyCode::Char('Y') => {
             let approval = app.pending_approval.take().unwrap();
             approval.respond.send(ApprovalResponse::AllowOnce).ok();
@@ -150,6 +158,45 @@ fn handle_approval_key(app: &mut App, key: KeyCode) {
         KeyCode::Char('d') | KeyCode::Char('D') => {
             let approval = app.pending_approval.take().unwrap();
             approval.respond.send(ApprovalResponse::DenyAlways).ok();
+        }
+        KeyCode::Esc => {
+            let approval = app.pending_approval.take().unwrap();
+            approval.respond.send(ApprovalResponse::DenyOnce).ok();
+        }
+        _ => {}
+    }
+}
+
+fn handle_mouse(app: &mut App, kind: MouseEventKind, row: u16) {
+    match kind {
+        MouseEventKind::ScrollUp => {
+            if app.pending_approval.is_none() && app.pending_customize.is_none() {
+                app.scroll = app.scroll.saturating_add(3);
+            }
+        }
+        MouseEventKind::ScrollDown => {
+            if app.pending_approval.is_none() && app.pending_customize.is_none() {
+                app.scroll = app.scroll.saturating_sub(3);
+            }
+        }
+        MouseEventKind::Down(_) => {
+            // Click on approval dialog options
+            if let Some(ref mut approval) = app.pending_approval {
+                // Approximate: dialog options start at center-ish of screen
+                // Each option is one row. The dialog is centered.
+                let term_h = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24);
+                let dialog_h = 13u16;
+                let dialog_top = term_h.saturating_sub(dialog_h) / 2;
+                let first_option_row = dialog_top + 3; // border + header + blank line
+                if row >= first_option_row && row < first_option_row + ApprovalState::OPTIONS.len() as u16 {
+                    let idx = (row - first_option_row) as usize;
+                    approval.selected = idx;
+                    // Double-click-ish: select on single click
+                    let response = ApprovalState::OPTIONS[idx].1.clone();
+                    let approval = app.pending_approval.take().unwrap();
+                    approval.respond.send(response).ok();
+                }
+            }
         }
         _ => {}
     }
@@ -260,11 +307,7 @@ fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
     frame.render_widget(messages, chunks[1]);
 
     // Input box
-    let input_title = if app.thinking {
-        " streaming... "
-    } else {
-        ""
-    };
+    let input_title = if app.thinking { " streaming... " } else { "" };
     let input_block = Block::default()
         .borders(Borders::TOP)
         .border_style(theme.input_border)
@@ -272,7 +315,7 @@ fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
     let input = Paragraph::new(format!("> {}", app.input)).block(input_block);
     frame.render_widget(input, chunks[2]);
 
-    // Cursor (only when not in modal mode)
+    // Cursor
     if app.pending_approval.is_none() && app.pending_customize.is_none() {
         frame.set_cursor_position((
             chunks[2].x + app.cursor as u16 + 2,
@@ -295,9 +338,9 @@ fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
         }
     };
     let status_text = if app.pending_customize.is_some() {
-        format!("CUSTOMIZE RULE — Tab to switch fields, Enter to save, Esc to cancel{tokens}{policy}")
+        format!("CUSTOMIZE RULE — Tab fields, Enter save, Esc cancel{tokens}{policy}")
     } else if app.pending_approval.is_some() {
-        format!("PERMISSION REQUIRED — (c) customize{tokens}{policy}")
+        format!("PERMISSION — y/s/a/n/d or 1-6 or (c)ustomize{tokens}{policy}")
     } else if app.thinking {
         format!("streaming...{tokens}{policy}")
     } else {
@@ -317,12 +360,11 @@ fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
 fn draw_approval_dialog(frame: &mut Frame, approval: &ApprovalState, theme: &Theme) {
     let area = frame.area();
     let dialog_width = 50.min(area.width.saturating_sub(4));
-    let dialog_height = 11; // 2 header + 6 options + 1 border top + 1 border bottom + 1 spacing
+    let dialog_height = 13;
     let x = (area.width.saturating_sub(dialog_width)) / 2;
     let y = (area.height.saturating_sub(dialog_height)) / 2;
     let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
 
-    // Clear the area behind the dialog
     frame.render_widget(Clear, dialog_area);
 
     let block = Block::default()
@@ -341,15 +383,34 @@ fn draw_approval_dialog(frame: &mut Frame, approval: &ApprovalState, theme: &The
         Line::from(""),
     ];
 
-    for (i, (label, _)) in ApprovalState::OPTIONS.iter().enumerate() {
+    for (i, (label, resp)) in ApprovalState::OPTIONS.iter().enumerate() {
+        let is_allow = matches!(
+            resp,
+            ApprovalResponse::AllowOnce | ApprovalResponse::AllowSession | ApprovalResponse::AllowAlways
+        );
+        let base_style = if is_allow {
+            theme.approval_allow
+        } else {
+            theme.approval_deny
+        };
         let style = if i == approval.selected {
             theme.approval_selected
         } else {
-            theme.approval_option
+            base_style
         };
         let marker = if i == approval.selected { "> " } else { "  " };
-        lines.push(Line::from(Span::styled(format!("{marker}{label}"), style)));
+        let num = i + 1;
+        lines.push(Line::from(Span::styled(
+            format!("{marker}{num}. {label}"),
+            style,
+        )));
     }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  (c)ustomize rule | Esc deny once",
+        theme.approval_option,
+    )));
 
     let content = Paragraph::new(Text::from(lines));
     frame.render_widget(content, inner);
@@ -358,10 +419,15 @@ fn draw_approval_dialog(frame: &mut Frame, approval: &ApprovalState, theme: &The
 const EFFECTS: [&str; 2] = ["allow", "deny"];
 const SCOPES: [&str; 2] = ["session", "always"];
 
-/// Infer the argument key and default pattern from a tool name and preview.
 fn infer_rule_fields(tool: &str, preview: &str) -> (String, String) {
     match tool {
-        "shell" => ("command".into(), format!("{}*", preview.split_whitespace().next().unwrap_or(preview))),
+        "shell" => (
+            "command".into(),
+            format!(
+                "{}*",
+                preview.split_whitespace().next().unwrap_or(preview)
+            ),
+        ),
         "read_file" | "write_file" | "edit_file" => ("path".into(), preview.to_string()),
         _ => (String::new(), "*".into()),
     }
@@ -371,60 +437,76 @@ fn handle_customize_key(app: &mut App, key: KeyCode) {
     let cust = app.pending_customize.as_mut().unwrap();
     match key {
         KeyCode::Esc => {
-            // Cancel — deny this time
             let cust = app.pending_customize.take().unwrap();
             cust.respond.send(ApprovalResponse::DenyOnce).ok();
         }
-        KeyCode::Tab => {
-            cust.focus = (cust.focus + 1) % 3;
-        }
-        KeyCode::BackTab => {
-            cust.focus = if cust.focus == 0 { 2 } else { cust.focus - 1 };
-        }
+        KeyCode::Tab => cust.focus = (cust.focus + 1) % 3,
+        KeyCode::BackTab => cust.focus = if cust.focus == 0 { 2 } else { cust.focus - 1 },
         KeyCode::Enter => {
             let cust = app.pending_customize.take().unwrap();
             let response = ApprovalResponse::CustomRule {
                 tool: cust.tool,
-                arg_key: if cust.arg_key.is_empty() { None } else { Some(cust.arg_key) },
-                arg_pattern: if cust.pattern.is_empty() { None } else { Some(cust.pattern) },
+                arg_key: if cust.arg_key.is_empty() {
+                    None
+                } else {
+                    Some(cust.arg_key)
+                },
+                arg_pattern: if cust.pattern.is_empty() {
+                    None
+                } else {
+                    Some(cust.pattern)
+                },
                 effect: EFFECTS[cust.effect_idx].to_string(),
                 scope: SCOPES[cust.scope_idx].to_string(),
             };
             cust.respond.send(response).ok();
         }
-        _ => {
-            match cust.focus {
-                0 => {
-                    // Editing the pattern field
-                    match key {
-                        KeyCode::Char(c) => {
-                            cust.pattern.insert(cust.cursor, c);
-                            cust.cursor += 1;
-                        }
-                        KeyCode::Backspace if cust.cursor > 0 => {
-                            cust.cursor -= 1;
-                            cust.pattern.remove(cust.cursor);
-                        }
-                        KeyCode::Left => cust.cursor = cust.cursor.saturating_sub(1),
-                        KeyCode::Right if cust.cursor < cust.pattern.len() => cust.cursor += 1,
-                        _ => {}
-                    }
+        _ => match cust.focus {
+            0 => match key {
+                KeyCode::Char(c) => {
+                    cust.pattern.insert(cust.cursor, c);
+                    cust.cursor += 1;
                 }
-                1 => {
-                    // Effect toggle
-                    if matches!(key, KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down) {
-                        cust.effect_idx = 1 - cust.effect_idx;
-                    }
+                KeyCode::Backspace if cust.cursor > 0 => {
+                    cust.cursor -= 1;
+                    cust.pattern.remove(cust.cursor);
                 }
-                2 => {
-                    // Scope toggle
-                    if matches!(key, KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down) {
-                        cust.scope_idx = 1 - cust.scope_idx;
-                    }
-                }
+                KeyCode::Left => cust.cursor = cust.cursor.saturating_sub(1),
+                KeyCode::Right if cust.cursor < cust.pattern.len() => cust.cursor += 1,
                 _ => {}
+            },
+            1 => {
+                if matches!(
+                    key,
+                    KeyCode::Left
+                        | KeyCode::Right
+                        | KeyCode::Up
+                        | KeyCode::Down
+                        | KeyCode::Char('j')
+                        | KeyCode::Char('k')
+                        | KeyCode::Char('h')
+                        | KeyCode::Char('l')
+                ) {
+                    cust.effect_idx = 1 - cust.effect_idx;
+                }
             }
-        }
+            2 => {
+                if matches!(
+                    key,
+                    KeyCode::Left
+                        | KeyCode::Right
+                        | KeyCode::Up
+                        | KeyCode::Down
+                        | KeyCode::Char('j')
+                        | KeyCode::Char('k')
+                        | KeyCode::Char('h')
+                        | KeyCode::Char('l')
+                ) {
+                    cust.scope_idx = 1 - cust.scope_idx;
+                }
+            }
+            _ => {}
+        },
     }
 }
 
@@ -446,47 +528,58 @@ fn draw_customize_dialog(frame: &mut Frame, cust: &crate::app::CustomizeState, t
     let inner = block.inner(dialog_area);
     frame.render_widget(block, dialog_area);
 
-    let focus_style = theme.approval_selected;
-    let normal_style = theme.approval_option;
+    let focus = theme.approval_selected;
+    let normal = theme.approval_option;
 
-    let pattern_style = if cust.focus == 0 { focus_style } else { normal_style };
-    let effect_style = if cust.focus == 1 { focus_style } else { normal_style };
-    let scope_style = if cust.focus == 2 { focus_style } else { normal_style };
-
-    let effect_display = format!(
-        "< {} >",
-        EFFECTS[cust.effect_idx]
-    );
-    let scope_display = format!(
-        "< {} >",
-        SCOPES[cust.scope_idx]
-    );
+    let effect_color = if EFFECTS[cust.effect_idx] == "allow" {
+        theme.approval_allow
+    } else {
+        theme.approval_deny
+    };
 
     let lines = vec![
         Line::from(vec![
-            Span::styled(format!("  Tool:    "), normal_style),
+            Span::styled("  Tool:    ", normal),
             Span::styled(&cust.tool, theme.approval_tool),
         ]),
         Line::from(vec![
-            Span::styled(format!("  Match:   "), normal_style),
+            Span::styled("  Match:   ", normal),
             Span::styled(&cust.arg_key, theme.approval_preview),
         ]),
         Line::from(vec![
-            Span::styled("  Pattern: ", if cust.focus == 0 { focus_style } else { normal_style }),
-            Span::styled(format!("[{}]", cust.pattern), pattern_style),
+            Span::styled(
+                "  Pattern: ",
+                if cust.focus == 0 { focus } else { normal },
+            ),
+            Span::styled(
+                format!("[{}]", cust.pattern),
+                if cust.focus == 0 { focus } else { normal },
+            ),
         ]),
         Line::from(vec![
-            Span::styled("  Effect:  ", if cust.focus == 1 { focus_style } else { normal_style }),
-            Span::styled(effect_display, effect_style),
+            Span::styled(
+                "  Effect:  ",
+                if cust.focus == 1 { focus } else { normal },
+            ),
+            Span::styled(
+                format!("< {} >", EFFECTS[cust.effect_idx]),
+                if cust.focus == 1 { focus } else { effect_color },
+            ),
         ]),
         Line::from(vec![
-            Span::styled("  Scope:   ", if cust.focus == 2 { focus_style } else { normal_style }),
-            Span::styled(scope_display, scope_style),
+            Span::styled(
+                "  Scope:   ",
+                if cust.focus == 2 { focus } else { normal },
+            ),
+            Span::styled(
+                format!("< {} >", SCOPES[cust.scope_idx]),
+                if cust.focus == 2 { focus } else { normal },
+            ),
         ]),
         Line::from(""),
         Line::from(Span::styled(
-            "  Tab: next field | Enter: save | Esc: cancel",
-            normal_style,
+            "  Tab: next | Enter: save | Esc: cancel",
+            normal,
         )),
     ];
 

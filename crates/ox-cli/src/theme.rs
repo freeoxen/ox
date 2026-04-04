@@ -57,6 +57,10 @@ pub struct Theme {
     pub approval_selected: Style,
     /// Approval dialog unselected option.
     pub approval_option: Style,
+    /// Approval dialog allow-flavored option (unselected).
+    pub approval_allow: Style,
+    /// Approval dialog deny-flavored option (unselected).
+    pub approval_deny: Style,
 }
 
 impl Theme {
@@ -101,6 +105,8 @@ impl Theme {
             approval_selected: Style::default()
                 .add_modifier(Modifier::BOLD | Modifier::REVERSED),
             approval_option: dim,
+            approval_allow: Style::default().fg(Color::Green),
+            approval_deny: Style::default().fg(Color::Red),
         }
     }
 }
