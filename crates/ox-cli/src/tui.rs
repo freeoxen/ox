@@ -448,7 +448,9 @@ fn infer_args(tool: &str, preview: &str) -> Vec<String> {
 fn build_node_from_customize(cust: &crate::app::CustomizeState) -> clash::policy::match_tree::Node {
     use clash::policy::match_tree::*;
 
-    let sandbox_ref = if EFFECTS[cust.effect_idx] == "allow" && (cust.network_idx != 1 || !cust.fs_rules.is_empty()) {
+    let sandbox_ref = if EFFECTS[cust.effect_idx] == "allow"
+        && (cust.network_idx != 1 || !cust.fs_rules.is_empty())
+    {
         Some(SandboxRef(format!("ox-{}", cust.tool)))
     } else {
         None
@@ -532,11 +534,21 @@ fn build_sandbox_from_customize(
         .iter()
         .map(|r| {
             let mut caps = Cap::empty();
-            if r.read { caps |= Cap::READ; }
-            if r.write { caps |= Cap::WRITE; }
-            if r.create { caps |= Cap::CREATE; }
-            if r.delete { caps |= Cap::DELETE; }
-            if r.execute { caps |= Cap::EXECUTE; }
+            if r.read {
+                caps |= Cap::READ;
+            }
+            if r.write {
+                caps |= Cap::WRITE;
+            }
+            if r.create {
+                caps |= Cap::CREATE;
+            }
+            if r.delete {
+                caps |= Cap::DELETE;
+            }
+            if r.execute {
+                caps |= Cap::EXECUTE;
+            }
             SandboxRule {
                 effect: RuleEffect::Allow,
                 caps,
@@ -594,7 +606,7 @@ fn handle_customize_key(app: &mut App, key: KeyCode) {
             let node = build_node_from_customize(&cust);
             let sandbox = build_sandbox_from_customize(&cust);
             let response = ApprovalResponse::CustomNode {
-                node,
+                node: Box::new(node),
                 sandbox,
                 scope: SCOPES[cust.scope_idx].to_string(),
             };
@@ -654,10 +666,19 @@ fn handle_customize_key(app: &mut App, key: KeyCode) {
                     _ => {}
                 }
             } else if cust.focus == cust.network_field() {
-                if matches!(key, KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l') | KeyCode::Char(' ')) {
+                if matches!(
+                    key,
+                    KeyCode::Left
+                        | KeyCode::Right
+                        | KeyCode::Char('h')
+                        | KeyCode::Char('l')
+                        | KeyCode::Char(' ')
+                ) {
                     cust.network_idx = (cust.network_idx + 1) % NETWORKS.len();
                 }
-            } else if cust.focus >= cust.fs_start() && cust.focus < cust.fs_start() + cust.fs_rules.len() {
+            } else if cust.focus >= cust.fs_start()
+                && cust.focus < cust.fs_start() + cust.fs_rules.len()
+            {
                 let idx = cust.focus - cust.fs_start();
                 match cust.fs_sub_focus {
                     0 => match key {
@@ -670,7 +691,9 @@ fn handle_customize_key(app: &mut App, key: KeyCode) {
                             cust.fs_path_cursor -= 1;
                             cust.fs_rules[idx].path.remove(cust.fs_path_cursor);
                         }
-                        KeyCode::Left => cust.fs_path_cursor = cust.fs_path_cursor.saturating_sub(1),
+                        KeyCode::Left => {
+                            cust.fs_path_cursor = cust.fs_path_cursor.saturating_sub(1)
+                        }
                         KeyCode::Right if cust.fs_path_cursor < cust.fs_rules[idx].path.len() => {
                             cust.fs_path_cursor += 1;
                         }
@@ -686,7 +709,7 @@ fn handle_customize_key(app: &mut App, key: KeyCode) {
                             _ => {}
                         },
                         KeyCode::Left | KeyCode::Char('h') => {
-                            cust.fs_sub_focus = if cust.fs_sub_focus <= 1 { 0 } else { cust.fs_sub_focus - 1 };
+                            cust.fs_sub_focus = cust.fs_sub_focus.saturating_sub(1);
                         }
                         KeyCode::Right | KeyCode::Char('l') => {
                             cust.fs_sub_focus = (cust.fs_sub_focus + 1).min(5);
@@ -699,16 +722,18 @@ fn handle_customize_key(app: &mut App, key: KeyCode) {
                     },
                     _ => {}
                 }
-            } else if cust.focus == cust.add_fs_field() {
-                if matches!(key, KeyCode::Char(' ')) {
-                    cust.fs_rules.push(crate::app::FsRuleState {
-                        path: String::new(),
-                        read: true, write: false, create: false, delete: false, execute: false,
-                    });
-                    cust.focus = cust.fs_start() + cust.fs_rules.len() - 1;
-                    cust.fs_sub_focus = 0;
-                    cust.fs_path_cursor = 0;
-                }
+            } else if cust.focus == cust.add_fs_field() && matches!(key, KeyCode::Char(' ')) {
+                cust.fs_rules.push(crate::app::FsRuleState {
+                    path: String::new(),
+                    read: true,
+                    write: false,
+                    create: false,
+                    delete: false,
+                    execute: false,
+                });
+                cust.focus = cust.fs_start() + cust.fs_rules.len() - 1;
+                cust.fs_sub_focus = 0;
+                cust.fs_path_cursor = 0;
             }
         }
     }
@@ -717,8 +742,8 @@ fn handle_customize_key(app: &mut App, key: KeyCode) {
 fn draw_customize_dialog(frame: &mut Frame, cust: &crate::app::CustomizeState, theme: &Theme) {
     let area = frame.area();
     let dialog_width = 58.min(area.width.saturating_sub(4));
-    let dialog_height =
-        (10 + cust.args.len() as u16 + cust.fs_rules.len() as u16).min(area.height.saturating_sub(4));
+    let dialog_height = (10 + cust.args.len() as u16 + cust.fs_rules.len() as u16)
+        .min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(dialog_width)) / 2;
     let y = (area.height.saturating_sub(dialog_height)) / 2;
     let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
@@ -734,8 +759,16 @@ fn draw_customize_dialog(frame: &mut Frame, cust: &crate::app::CustomizeState, t
 
     let sel = theme.approval_selected;
     let dim = theme.approval_option;
-    let effect_color = if EFFECTS[cust.effect_idx] == "allow" { theme.approval_allow } else { theme.approval_deny };
-    let net_color = if cust.network_idx == 1 { theme.approval_allow } else { theme.approval_deny };
+    let effect_color = if EFFECTS[cust.effect_idx] == "allow" {
+        theme.approval_allow
+    } else {
+        theme.approval_deny
+    };
+    let net_color = if cust.network_idx == 1 {
+        theme.approval_allow
+    } else {
+        theme.approval_deny
+    };
 
     let mut lines = vec![Line::from(vec![
         Span::styled("  Tool:  ", dim),
@@ -768,11 +801,17 @@ fn draw_customize_dialog(frame: &mut Frame, cust: &crate::app::CustomizeState, t
     let sf = cust.scope_field();
     lines.push(Line::from(vec![
         Span::styled("  Effect:  ", if cust.focus == ef { sel } else { dim }),
-        Span::styled(format!("< {} >", EFFECTS[cust.effect_idx]), if cust.focus == ef { sel } else { effect_color }),
+        Span::styled(
+            format!("< {} >", EFFECTS[cust.effect_idx]),
+            if cust.focus == ef { sel } else { effect_color },
+        ),
     ]));
     lines.push(Line::from(vec![
         Span::styled("  Scope:   ", if cust.focus == sf { sel } else { dim }),
-        Span::styled(format!("< {} >", SCOPES[cust.scope_idx]), if cust.focus == sf { sel } else { dim }),
+        Span::styled(
+            format!("< {} >", SCOPES[cust.scope_idx]),
+            if cust.focus == sf { sel } else { dim },
+        ),
     ]));
 
     // Sandbox section
@@ -780,25 +819,48 @@ fn draw_customize_dialog(frame: &mut Frame, cust: &crate::app::CustomizeState, t
     lines.push(Line::from(Span::styled("  ── Sandbox ──", dim)));
     lines.push(Line::from(vec![
         Span::styled("  Network: ", if cust.focus == nf { sel } else { dim }),
-        Span::styled(format!("< {} >", NETWORKS[cust.network_idx]), if cust.focus == nf { sel } else { net_color }),
+        Span::styled(
+            format!("< {} >", NETWORKS[cust.network_idx]),
+            if cust.focus == nf { sel } else { net_color },
+        ),
     ]));
 
     let fs_start = cust.fs_start();
     for (i, rule) in cust.fs_rules.iter().enumerate() {
         let is_focused = cust.focus == fs_start + i;
-        let path_style = if is_focused && cust.fs_sub_focus == 0 { sel } else { dim };
+        let path_style = if is_focused && cust.fs_sub_focus == 0 {
+            sel
+        } else {
+            dim
+        };
         let mut spans = vec![
             Span::styled("    ", dim),
             Span::styled(format!("{:<14}", rule.path), path_style),
             Span::styled(" ", dim),
         ];
         for (label, enabled, sub_idx) in [
-            ("r", rule.read, 1), ("w", rule.write, 2), ("c", rule.create, 3),
-            ("d", rule.delete, 4), ("x", rule.execute, 5),
+            ("r", rule.read, 1),
+            ("w", rule.write, 2),
+            ("c", rule.create, 3),
+            ("d", rule.delete, 4),
+            ("x", rule.execute, 5),
         ] {
             let pf = is_focused && cust.fs_sub_focus == sub_idx;
-            let st = if pf { sel } else if enabled { theme.approval_allow } else { theme.approval_deny };
-            spans.push(Span::styled(if enabled { label.to_uppercase() } else { "-".into() }, st));
+            let st = if pf {
+                sel
+            } else if enabled {
+                theme.approval_allow
+            } else {
+                theme.approval_deny
+            };
+            spans.push(Span::styled(
+                if enabled {
+                    label.to_uppercase()
+                } else {
+                    "-".into()
+                },
+                st,
+            ));
         }
         if is_focused && cust.fs_sub_focus > 0 {
             spans.push(Span::styled(" (x)rm", dim));
@@ -806,7 +868,10 @@ fn draw_customize_dialog(frame: &mut Frame, cust: &crate::app::CustomizeState, t
         lines.push(Line::from(spans));
     }
     let add_fs_focused = cust.focus == cust.add_fs_field();
-    lines.push(Line::from(Span::styled("    + add path (Space)", if add_fs_focused { sel } else { dim })));
+    lines.push(Line::from(Span::styled(
+        "    + add path (Space)",
+        if add_fs_focused { sel } else { dim },
+    )));
 
     lines.push(Line::from(Span::styled(
         "  Up/Down | Space toggle | Enter save | Esc cancel",

@@ -4,12 +4,15 @@ use ox_kernel::{CompletionRequest, StreamEvent};
 use std::collections::HashSet;
 use std::io::BufRead;
 
+/// URL, headers, body.
+pub type RequestParts = (String, Vec<(String, String)>, String);
+
 /// Build the request URL, headers, and body from a ProviderConfig.
 pub fn build_request(
     config: &ProviderConfig,
     api_key: &str,
     request: &CompletionRequest,
-) -> Result<(String, Vec<(String, String)>, String), String> {
+) -> Result<RequestParts, String> {
     match config.dialect.as_str() {
         "openai" => {
             let body = openai_codec::translate_request(request);

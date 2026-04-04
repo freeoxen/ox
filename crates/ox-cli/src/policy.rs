@@ -3,11 +3,11 @@
 //! Evaluates tool invocations against a clash policy manifest (match-tree IR).
 //! Policies are authored in Starlark or JSON, stored in `.clash/policy.json`.
 
+use clash::policy::Effect;
 use clash::policy::manifest_edit;
 use clash::policy::match_tree::{
     CompiledPolicy, Decision, Node, Observable, Pattern, PolicyManifest, QueryContext, Value,
 };
-use clash::policy::Effect;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 

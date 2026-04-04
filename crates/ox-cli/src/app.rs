@@ -50,7 +50,7 @@ pub enum ApprovalResponse {
     DenyAlways,
     /// A custom rule — carries a clash Node + optional sandbox for the agent thread.
     CustomNode {
-        node: clash::policy::match_tree::Node,
+        node: Box<clash::policy::match_tree::Node>,
         sandbox: Option<(String, clash::policy::sandbox_types::SandboxPolicy)>,
         scope: String, // "once", "session", or "always"
     },
@@ -325,6 +325,7 @@ impl App {
 // Agent thread — StructFS-native transport, three-phase kernel API
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn agent_thread(
     model: String,
     provider: String,
@@ -678,13 +679,13 @@ fn run_streaming_loop(
                                     if let Some((name, sb)) = sandbox {
                                         policy.add_sandbox(&name, sb, scope == "always");
                                     }
-                                    policy.add_persistent_node(node);
+                                    policy.add_persistent_node(*node);
                                 }
                                 "session" => {
                                     if let Some((name, sb)) = sandbox {
                                         policy.add_sandbox(&name, sb, false);
                                     }
-                                    policy.add_session_node(node);
+                                    policy.add_session_node(*node);
                                 }
                                 _ => {} // "once"
                             }

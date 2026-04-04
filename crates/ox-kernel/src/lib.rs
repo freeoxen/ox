@@ -654,14 +654,15 @@ mod tests {
                 "properties": { "text": { "type": "string" } },
                 "required": ["text"]
             }),
-            |input| {
-                Ok(input["text"].as_str().unwrap_or("").to_string())
-            },
+            |input| Ok(input["text"].as_str().unwrap_or("").to_string()),
         );
 
         assert_eq!(tool.name(), "echo");
         assert_eq!(tool.description(), "Echoes the input");
-        assert_eq!(tool.execute(serde_json::json!({"text": "hello"})).unwrap(), "hello");
+        assert_eq!(
+            tool.execute(serde_json::json!({"text": "hello"})).unwrap(),
+            "hello"
+        );
     }
 
     #[test]
