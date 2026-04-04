@@ -118,13 +118,21 @@ fn handle_approval_key(app: &mut App, key: KeyCode) {
             let approval = app.pending_approval.take().unwrap();
             approval.respond.send(ApprovalResponse::AllowOnce).ok();
         }
-        KeyCode::Char('n') | KeyCode::Char('N') => {
+        KeyCode::Char('s') | KeyCode::Char('S') => {
             let approval = app.pending_approval.take().unwrap();
-            approval.respond.send(ApprovalResponse::DenyOnce).ok();
+            approval.respond.send(ApprovalResponse::AllowSession).ok();
         }
         KeyCode::Char('a') | KeyCode::Char('A') => {
             let approval = app.pending_approval.take().unwrap();
             approval.respond.send(ApprovalResponse::AllowAlways).ok();
+        }
+        KeyCode::Char('n') | KeyCode::Char('N') => {
+            let approval = app.pending_approval.take().unwrap();
+            approval.respond.send(ApprovalResponse::DenyOnce).ok();
+        }
+        KeyCode::Char('d') | KeyCode::Char('D') => {
+            let approval = app.pending_approval.take().unwrap();
+            approval.respond.send(ApprovalResponse::DenyAlways).ok();
         }
         _ => {}
     }
@@ -288,7 +296,7 @@ fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
 fn draw_approval_dialog(frame: &mut Frame, approval: &ApprovalState, theme: &Theme) {
     let area = frame.area();
     let dialog_width = 50.min(area.width.saturating_sub(4));
-    let dialog_height = 9;
+    let dialog_height = 11; // 2 header + 6 options + 1 border top + 1 border bottom + 1 spacing
     let x = (area.width.saturating_sub(dialog_width)) / 2;
     let y = (area.height.saturating_sub(dialog_height)) / 2;
     let dialog_area = Rect::new(x, y, dialog_width, dialog_height);

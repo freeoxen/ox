@@ -129,7 +129,13 @@ pub struct PolicyStats {
 }
 
 /// Policy enforcement guard. Loads rules, evaluates tool calls, persists edits.
+///
+/// Three rule layers, checked in order (first match wins):
+/// 1. Session rules — in-memory, lost on exit
+/// 2. Persistent rules — from `.ox/policy.json`
+/// 3. Default effect — from manifest
 pub struct PolicyGuard {
+    session_rules: Vec<Rule>,
     manifest: PolicyManifest,
     policy_path: PathBuf,
 }
@@ -147,6 +153,7 @@ impl PolicyGuard {
             PolicyManifest::default()
         };
         Self {
+            session_rules: Vec::new(),
             manifest,
             policy_path,
         }
@@ -155,14 +162,29 @@ impl PolicyGuard {
     /// Create a guard that allows everything (--no-policy mode).
     pub fn permissive() -> Self {
         Self {
+            session_rules: Vec::new(),
             manifest: PolicyManifest::permissive(),
             policy_path: PathBuf::new(),
         }
     }
 
     /// Evaluate a tool call against the policy.
+    /// Checks session rules first, then persistent rules, then default.
     pub fn check(&self, tool_name: &str, input: &serde_json::Value) -> PolicyDecision {
-        // First matching rule wins
+        // Session rules (highest priority)
+        for rule in &self.session_rules {
+            if rule.matches(tool_name, input) {
+                return match rule.effect() {
+                    Effect::Allow => PolicyDecision::Allow,
+                    Effect::Deny => PolicyDecision::Deny("denied by session rule".into()),
+                    Effect::Ask => PolicyDecision::Ask {
+                        tool: tool_name.into(),
+                        input_preview: format_input_preview(tool_name, input),
+                    },
+                };
+            }
+        }
+        // Persistent rules
         for rule in &self.manifest.rules {
             if rule.matches(tool_name, input) {
                 return match rule.effect() {
@@ -186,10 +208,22 @@ impl PolicyGuard {
         }
     }
 
+    /// Add a session-scoped allow rule (in-memory, lost on exit).
+    pub fn session_allow(&mut self, tool_name: &str, input: &serde_json::Value) {
+        let rule = make_rule_from_call(tool_name, input, "allow");
+        self.session_rules.insert(0, rule);
+    }
+
+    /// Add a session-scoped deny rule (in-memory, lost on exit).
+    pub fn session_deny(&mut self, tool_name: &str, input: &serde_json::Value) {
+        let rule = make_rule_from_call(tool_name, input, "deny");
+        self.session_rules.insert(0, rule);
+    }
+
     /// Add a persistent allow rule for this tool+input pattern.
     pub fn persist_allow(&mut self, tool_name: &str, input: &serde_json::Value) {
         let rule = make_rule_from_call(tool_name, input, "allow");
-        self.manifest.rules.insert(0, rule); // prepend — first match wins
+        self.manifest.rules.insert(0, rule);
         self.save();
     }
 
@@ -280,6 +314,7 @@ mod tests {
     #[test]
     fn default_policy_allows_read() {
         let guard = PolicyGuard {
+            session_rules: vec![],
             manifest: PolicyManifest::default(),
             policy_path: PathBuf::new(),
         };
@@ -292,6 +327,7 @@ mod tests {
     #[test]
     fn default_policy_asks_for_shell() {
         let guard = PolicyGuard {
+            session_rules: vec![],
             manifest: PolicyManifest::default(),
             policy_path: PathBuf::new(),
         };
@@ -313,6 +349,7 @@ mod tests {
     #[test]
     fn deny_rule_blocks() {
         let guard = PolicyGuard {
+            session_rules: vec![],
             manifest: PolicyManifest {
                 default: "allow".into(),
                 rules: vec![Rule {
@@ -338,6 +375,7 @@ mod tests {
     #[test]
     fn first_matching_rule_wins() {
         let guard = PolicyGuard {
+            session_rules: vec![],
             manifest: PolicyManifest {
                 default: "deny".into(),
                 rules: vec![
@@ -372,6 +410,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let policy_path = dir.path().join(".ox").join("policy.json");
         let mut guard = PolicyGuard {
+            session_rules: vec![],
             manifest: PolicyManifest::default(),
             policy_path: policy_path.clone(),
         };

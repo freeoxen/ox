@@ -40,8 +40,10 @@ pub enum AppControl {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApprovalResponse {
     AllowOnce,
+    AllowSession,
     AllowAlways,
     DenyOnce,
+    DenySession,
     DenyAlways,
 }
 
@@ -64,10 +66,12 @@ pub struct ApprovalState {
 }
 
 impl ApprovalState {
-    pub const OPTIONS: [(&str, ApprovalResponse); 4] = [
+    pub const OPTIONS: [(&str, ApprovalResponse); 6] = [
         ("Allow once", ApprovalResponse::AllowOnce),
+        ("Allow for session", ApprovalResponse::AllowSession),
         ("Allow always (add rule)", ApprovalResponse::AllowAlways),
         ("Deny once", ApprovalResponse::DenyOnce),
+        ("Deny for session", ApprovalResponse::DenySession),
         ("Deny always (add rule)", ApprovalResponse::DenyAlways),
     ];
 }
@@ -564,12 +568,26 @@ fn run_streaming_loop(
                             stats.allowed += 1;
                             true
                         }
+                        Ok(ApprovalResponse::AllowSession) => {
+                            policy.session_allow(&tc.name, &tc.input);
+                            stats.allowed += 1;
+                            true
+                        }
                         Ok(ApprovalResponse::AllowAlways) => {
                             policy.persist_allow(&tc.name, &tc.input);
                             stats.allowed += 1;
                             true
                         }
                         Ok(ApprovalResponse::DenyOnce) => {
+                            stats.denied += 1;
+                            results.push(ToolResult {
+                                tool_use_id: tc.id.clone(),
+                                content: "denied by user".into(),
+                            });
+                            false
+                        }
+                        Ok(ApprovalResponse::DenySession) => {
+                            policy.session_deny(&tc.name, &tc.input);
                             stats.denied += 1;
                             results.push(ToolResult {
                                 tool_use_id: tc.id.clone(),
