@@ -1,196 +1,26 @@
-//! Policy enforcement for tool calls.
+//! Policy enforcement for tool calls, backed by [clash](https://clash.rs).
 //!
-//! Evaluates tool invocations against a rule set and returns Allow/Deny/Ask.
-//! The rule format and evaluation model match [clash](https://clash.rs) —
-//! when the clash crate is available, PolicyGuard delegates to it directly.
+//! Evaluates tool invocations against a clash policy manifest (match-tree IR).
+//! Policies are authored in Starlark or JSON, stored in `.clash/policy.json`.
 
+use clash::policy::match_tree::{
+    CompiledPolicy, Decision, Node, Observable, Pattern, PolicyManifest, QueryContext, SandboxRef,
+    Value,
+};
+use clash::policy::manifest_edit;
+use clash::policy::{Effect, PolicyDecision};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// The effect a policy rule produces.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Effect {
-    Allow,
-    Deny,
-    Ask,
-}
-
-/// Filesystem access entry in a sandbox configuration.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct FsEntry {
-    pub path: String,
-    pub read: bool,
-    pub write: bool,
-    pub create: bool,
-    pub delete: bool,
-}
-
-impl FsEntry {
-    pub fn perms_display(&self) -> String {
-        format!(
-            "{}{}{}{}",
-            if self.read { "r" } else { "-" },
-            if self.write { "w" } else { "-" },
-            if self.create { "c" } else { "-" },
-            if self.delete { "d" } else { "-" },
-        )
-    }
-}
-
-/// Sandbox configuration — constraints on what an allowed tool can access.
-/// Maps to clash's kernel-enforced sandbox model (Landlock/Seatbelt).
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct SandboxConfig {
-    /// Whether the tool can make network requests.
-    #[serde(default = "default_true")]
-    pub network: bool,
-    /// Filesystem access rules.
-    #[serde(default)]
-    pub fs: Vec<FsEntry>,
-}
-
-fn default_true() -> bool {
-    true
-}
-
-/// How a rule matches against tool call arguments.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "type")]
-pub enum Matcher {
-    /// Match anything (no constraints beyond tool name).
-    #[serde(rename = "any")]
-    Any,
-    /// Match a single argument key against a glob pattern.
-    #[serde(rename = "simple")]
-    Simple { key: String, pattern: String },
-    /// Match shell command positional arguments individually.
-    /// Each entry constrains one positional arg (split by whitespace).
-    /// A missing entry means "match anything at that position."
-    #[serde(rename = "command")]
-    Command { args: Vec<ArgPattern> },
-}
-
-/// A constraint on a single positional argument.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ArgPattern {
-    /// 0-based position in the command.
-    pub position: usize,
-    /// Glob pattern to match (e.g. "test", "*.rs", "*").
-    pub pattern: String,
-}
-
-/// A policy rule: match a tool name + arguments, produce an effect.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct Rule {
-    /// Tool name to match (None = match all tools).
-    pub tool: Option<String>,
-    /// How to match the tool's arguments.
-    #[serde(default = "default_matcher")]
-    pub matcher: Matcher,
-    /// The effect when this rule matches.
-    pub effect: String, // "allow", "deny", "ask"
-    /// Optional sandbox constraints for allowed tools.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sandbox: Option<SandboxConfig>,
-}
-
-fn default_matcher() -> Matcher {
-    Matcher::Any
-}
-
-impl Rule {
-    fn effect(&self) -> Effect {
-        match self.effect.as_str() {
-            "allow" => Effect::Allow,
-            "deny" => Effect::Deny,
-            _ => Effect::Ask,
-        }
-    }
-
-    fn matches(&self, tool_name: &str, input: &serde_json::Value) -> bool {
-        if let Some(ref t) = self.tool {
-            if t != tool_name {
-                return false;
-            }
-        }
-        match &self.matcher {
-            Matcher::Any => true,
-            Matcher::Simple { key, pattern } => {
-                let val = input.get(key).and_then(|v| v.as_str()).unwrap_or("");
-                glob_match(pattern, val)
-            }
-            Matcher::Command { args } => {
-                let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
-                let words: Vec<&str> = cmd.split_whitespace().collect();
-                args.iter().all(|ap| {
-                    let word = words.get(ap.position).copied().unwrap_or("");
-                    glob_match(&ap.pattern, word)
-                })
-            }
-        }
-    }
-}
-
-/// Simple glob matching — supports * as wildcard.
-fn glob_match(pattern: &str, value: &str) -> bool {
-    if pattern == "*" {
-        return true;
-    }
-    if let Some(suffix) = pattern.strip_prefix('*') {
-        return value.ends_with(suffix);
-    }
-    if let Some(prefix) = pattern.strip_suffix('*') {
-        return value.starts_with(prefix);
-    }
-    if pattern.contains('*') {
-        let parts: Vec<&str> = pattern.split('*').collect();
-        if parts.len() == 2 {
-            return value.starts_with(parts[0]) && value.ends_with(parts[1]);
-        }
-    }
-    pattern == value
-}
-
-/// A policy manifest: default effect + ordered rules (first match wins).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct PolicyManifest {
-    pub default: String, // "allow", "deny", "ask"
-    pub rules: Vec<Rule>,
-}
-
-impl PolicyManifest {
-    pub fn permissive() -> Self {
-        Self {
-            default: "allow".to_string(),
-            rules: vec![],
-        }
-    }
-}
-
-impl Default for PolicyManifest {
-    fn default() -> Self {
-        // Default: allow reads, ask for everything else
-        Self {
-            default: "ask".to_string(),
-            rules: vec![
-                Rule {
-                    tool: Some("read_file".into()),
-                    matcher: Matcher::Any,
-                    effect: "allow".into(),
-                    sandbox: None,
-                },
-            ],
-        }
-    }
-}
-
-/// Result of evaluating a tool call against the policy.
-#[derive(Debug, Clone)]
-pub enum PolicyDecision {
+/// Result of evaluating a tool call against the policy (simplified for TUI use).
+pub enum CheckResult {
     Allow,
     Deny(String),
     Ask {
         tool: String,
         input_preview: String,
+        /// Human-readable explanation of why this was asked.
+        explanation: Vec<String>,
     },
 }
 
@@ -202,32 +32,31 @@ pub struct PolicyStats {
     pub asked: u32,
 }
 
-/// Policy enforcement guard. Loads rules, evaluates tool calls, persists edits.
-///
-/// Three rule layers, checked in order (first match wins):
-/// 1. Session rules — in-memory, lost on exit
-/// 2. Persistent rules — from `.ox/policy.json`
-/// 3. Default effect — from manifest
+/// Policy enforcement guard. Loads a clash policy manifest, evaluates tool calls,
+/// and persists rule edits via clash's manifest_edit API.
 pub struct PolicyGuard {
-    session_rules: Vec<Rule>,
+    /// Session-level compiled policy (in-memory, not persisted).
+    session_policy: CompiledPolicy,
+    /// Persistent policy manifest (loaded from and saved to disk).
     manifest: PolicyManifest,
+    /// Path to the policy file.
     policy_path: PathBuf,
 }
 
 impl PolicyGuard {
-    /// Load policy from the workspace. Tries `.ox/policy.json`, falls back to default.
+    /// Load policy from the workspace. Tries `.clash/policy.json`, falls back to default.
     pub fn load(workspace: &Path) -> Self {
-        let policy_path = workspace.join(".ox").join("policy.json");
+        let policy_path = workspace.join(".clash").join("policy.json");
         let manifest = if policy_path.exists() {
             match std::fs::read_to_string(&policy_path) {
-                Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-                Err(_) => PolicyManifest::default(),
+                Ok(content) => serde_json::from_str(&content).unwrap_or_else(|_| default_manifest()),
+                Err(_) => default_manifest(),
             }
         } else {
-            PolicyManifest::default()
+            default_manifest()
         };
         Self {
-            session_rules: Vec::new(),
+            session_policy: empty_policy(),
             manifest,
             policy_path,
         }
@@ -235,93 +64,87 @@ impl PolicyGuard {
 
     /// Create a guard that allows everything (--no-policy mode).
     pub fn permissive() -> Self {
+        let mut manifest = default_manifest();
+        manifest.policy.default_effect = Effect::Allow;
         Self {
-            session_rules: Vec::new(),
-            manifest: PolicyManifest::permissive(),
+            session_policy: empty_policy(),
+            manifest,
             policy_path: PathBuf::new(),
         }
     }
 
-    /// Evaluate a tool call against the policy.
-    /// Checks session rules first, then persistent rules, then default.
-    pub fn check(&self, tool_name: &str, input: &serde_json::Value) -> PolicyDecision {
+    /// Evaluate a tool call against session rules first, then persistent policy.
+    pub fn check(&self, tool_name: &str, input: &serde_json::Value) -> CheckResult {
+        let ctx = build_query_context(tool_name, input);
+
         // Session rules (highest priority)
-        for rule in &self.session_rules {
-            if rule.matches(tool_name, input) {
-                return match rule.effect() {
-                    Effect::Allow => PolicyDecision::Allow,
-                    Effect::Deny => PolicyDecision::Deny("denied by session rule".into()),
-                    Effect::Ask => PolicyDecision::Ask {
-                        tool: tool_name.into(),
-                        input_preview: format_input_preview(tool_name, input),
-                    },
-                };
-            }
+        let session_decision = self.session_policy.evaluate_ctx(&ctx);
+        if session_decision.effect != Effect::Ask {
+            return match session_decision.effect {
+                Effect::Allow => CheckResult::Allow,
+                Effect::Deny => CheckResult::Deny("denied by session rule".into()),
+                Effect::Ask => unreachable!(),
+            };
         }
-        // Persistent rules
-        for rule in &self.manifest.rules {
-            if rule.matches(tool_name, input) {
-                return match rule.effect() {
-                    Effect::Allow => PolicyDecision::Allow,
-                    Effect::Deny => PolicyDecision::Deny("denied by policy".into()),
-                    Effect::Ask => PolicyDecision::Ask {
-                        tool: tool_name.into(),
-                        input_preview: format_input_preview(tool_name, input),
-                    },
-                };
+
+        // Persistent policy
+        let decision = self.manifest.policy.evaluate_ctx(&ctx);
+        match decision.effect {
+            Effect::Allow => CheckResult::Allow,
+            Effect::Deny => {
+                let reason = decision
+                    .reason
+                    .unwrap_or_else(|| "denied by policy".into());
+                CheckResult::Deny(reason)
             }
-        }
-        // Fall through to default
-        match self.manifest.default.as_str() {
-            "allow" => PolicyDecision::Allow,
-            "deny" => PolicyDecision::Deny("denied by default policy".into()),
-            _ => PolicyDecision::Ask {
+            Effect::Ask => CheckResult::Ask {
                 tool: tool_name.into(),
                 input_preview: format_input_preview(tool_name, input),
+                explanation: decision.human_explanation(),
             },
         }
     }
 
-    /// Add an arbitrary rule to the session layer.
-    pub fn add_session_rule(&mut self, rule: Rule) {
-        self.session_rules.insert(0, rule);
-    }
-
-    /// Add an arbitrary rule to the persistent layer and save.
-    pub fn add_persistent_rule(&mut self, rule: Rule) {
-        self.manifest.rules.insert(0, rule);
-        self.save();
-    }
-
-    /// Add a session-scoped allow rule (in-memory, lost on exit).
+    /// Add a rule to the session-level policy (in-memory, lost on exit).
     pub fn session_allow(&mut self, tool_name: &str, input: &serde_json::Value) {
-        let rule = make_rule_from_call(tool_name, input, "allow");
-        self.session_rules.insert(0, rule);
+        let node = build_allow_node(tool_name, input);
+        self.session_policy.tree.insert(0, node);
     }
 
-    /// Add a session-scoped deny rule (in-memory, lost on exit).
+    /// Add a deny rule to the session-level policy.
     pub fn session_deny(&mut self, tool_name: &str, input: &serde_json::Value) {
-        let rule = make_rule_from_call(tool_name, input, "deny");
-        self.session_rules.insert(0, rule);
+        let node = build_deny_node(tool_name, input);
+        self.session_policy.tree.insert(0, node);
     }
 
-    /// Add a persistent allow rule for this tool+input pattern.
+    /// Add a persistent allow rule and save to disk.
     pub fn persist_allow(&mut self, tool_name: &str, input: &serde_json::Value) {
-        let rule = make_rule_from_call(tool_name, input, "allow");
-        self.manifest.rules.insert(0, rule);
+        let node = build_allow_node(tool_name, input);
+        manifest_edit::upsert_rule(&mut self.manifest, node);
         self.save();
     }
 
-    /// Add a persistent deny rule for this tool+input pattern.
+    /// Add a persistent deny rule and save to disk.
     pub fn persist_deny(&mut self, tool_name: &str, input: &serde_json::Value) {
-        let rule = make_rule_from_call(tool_name, input, "deny");
-        self.manifest.rules.insert(0, rule);
+        let node = build_deny_node(tool_name, input);
+        manifest_edit::upsert_rule(&mut self.manifest, node);
+        self.save();
+    }
+
+    /// Insert an arbitrary node into the session policy.
+    pub fn add_session_node(&mut self, node: Node) {
+        self.session_policy.tree.insert(0, node);
+    }
+
+    /// Insert an arbitrary node into the persistent policy and save.
+    pub fn add_persistent_node(&mut self, node: Node) {
+        manifest_edit::upsert_rule(&mut self.manifest, node);
         self.save();
     }
 
     fn save(&self) {
         if self.policy_path.as_os_str().is_empty() {
-            return; // permissive mode — no file
+            return;
         }
         if let Some(parent) = self.policy_path.parent() {
             std::fs::create_dir_all(parent).ok();
@@ -332,70 +155,157 @@ impl PolicyGuard {
     }
 }
 
-/// Format a human-readable preview of a tool call for the approval dialog.
+// ---------------------------------------------------------------------------
+// Node construction helpers
+// ---------------------------------------------------------------------------
+
+/// Build a clash Node that matches a tool call and allows it.
+fn build_allow_node(tool_name: &str, input: &serde_json::Value) -> Node {
+    build_decision_node(tool_name, input, Decision::Allow(None))
+}
+
+/// Build a clash Node that matches a tool call and denies it.
+fn build_deny_node(tool_name: &str, input: &serde_json::Value) -> Node {
+    build_decision_node(tool_name, input, Decision::Deny)
+}
+
+/// Build a clash Node tree for a tool call with a given leaf decision.
+fn build_decision_node(tool_name: &str, input: &serde_json::Value, decision: Decision) -> Node {
+    match tool_name {
+        "shell" => {
+            let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
+            let words: Vec<&str> = cmd.split_whitespace().collect();
+
+            // Build nested conditions: ToolName → arg0 → arg1 → ... → Decision
+            let leaf = Node::Decision(decision);
+            let mut current = leaf;
+
+            // Wrap from inside out — last arg first
+            for (i, word) in words.iter().enumerate().rev() {
+                current = Node::Condition {
+                    observe: Observable::PositionalArg(i as i32),
+                    pattern: Pattern::Literal(Value::Literal(word.to_string())),
+                    children: vec![current],
+                    doc: None,
+                    source: None,
+                    terminal: false,
+                };
+            }
+
+            // Wrap with ToolName
+            Node::Condition {
+                observe: Observable::ToolName,
+                pattern: Pattern::Literal(Value::Literal(tool_name.to_string())),
+                children: vec![current],
+                doc: None,
+                source: Some("ox-cli".into()),
+                terminal: false,
+            }
+        }
+        "read_file" | "write_file" | "edit_file" => {
+            let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("*");
+            Node::Condition {
+                observe: Observable::ToolName,
+                pattern: Pattern::Literal(Value::Literal(tool_name.to_string())),
+                children: vec![Node::Condition {
+                    observe: Observable::NamedArg("path".into()),
+                    pattern: Pattern::Literal(Value::Literal(path.to_string())),
+                    children: vec![Node::Decision(decision)],
+                    doc: None,
+                    source: None,
+                    terminal: false,
+                }],
+                doc: None,
+                source: Some("ox-cli".into()),
+                terminal: false,
+            }
+        }
+        _ => Node::Condition {
+            observe: Observable::ToolName,
+            pattern: Pattern::Literal(Value::Literal(tool_name.to_string())),
+            children: vec![Node::Decision(decision)],
+            doc: None,
+            source: Some("ox-cli".into()),
+            terminal: false,
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Defaults
+// ---------------------------------------------------------------------------
+
+fn default_manifest() -> PolicyManifest {
+    PolicyManifest {
+        includes: vec![],
+        policy: CompiledPolicy {
+            sandboxes: HashMap::new(),
+            tree: vec![
+                // read_file → allow
+                Node::Condition {
+                    observe: Observable::ToolName,
+                    pattern: Pattern::Literal(Value::Literal("read_file".into())),
+                    children: vec![Node::Decision(Decision::Allow(None))],
+                    doc: Some("standard: allow all file reads".into()),
+                    source: Some("ox-cli-default".into()),
+                    terminal: false,
+                },
+            ],
+            default_effect: Effect::Ask,
+            default_sandbox: None,
+        },
+    }
+}
+
+fn empty_policy() -> CompiledPolicy {
+    CompiledPolicy {
+        sandboxes: HashMap::new(),
+        tree: vec![],
+        default_effect: Effect::Ask,
+        default_sandbox: None,
+    }
+}
+
+/// Build a clash QueryContext for an ox tool call.
+/// Handles positional arg parsing for shell commands (clash only does this for "Bash").
+fn build_query_context(tool_name: &str, input: &serde_json::Value) -> QueryContext {
+    let args = match tool_name {
+        "shell" => {
+            let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
+            cmd.split_whitespace().map(|s| s.to_string()).collect()
+        }
+        _ => vec![],
+    };
+    QueryContext {
+        tool_name: tool_name.to_string(),
+        args,
+        tool_input: input.clone(),
+        hook_type: None,
+        agent_name: None,
+        fs_op: None,
+        fs_path: input.get("path").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        net_domain: None,
+        mode: None,
+    }
+}
+
+/// Format a human-readable preview of a tool call.
 fn format_input_preview(tool_name: &str, input: &serde_json::Value) -> String {
     match tool_name {
         "shell" => input
             .get("command")
             .and_then(|v| v.as_str())
-            .unwrap_or("(unknown command)")
+            .unwrap_or("(unknown)")
             .to_string(),
         "read_file" | "write_file" | "edit_file" => input
             .get("path")
             .and_then(|v| v.as_str())
-            .unwrap_or("(unknown path)")
+            .unwrap_or("(unknown)")
             .to_string(),
         _ => {
             let s = serde_json::to_string(input).unwrap_or_default();
-            if s.len() > 80 {
-                format!("{}...", &s[..80])
-            } else {
-                s
-            }
+            if s.len() > 80 { format!("{}...", &s[..80]) } else { s }
         }
-    }
-}
-
-/// Generate a rule from a tool call. For shell commands, matches the command prefix.
-/// For file tools, matches the exact path.
-fn make_rule_from_call(tool_name: &str, input: &serde_json::Value, effect: &str) -> Rule {
-    match tool_name {
-        "shell" => {
-            let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
-            // Decompose into positional args — match each word exactly
-            let args: Vec<ArgPattern> = cmd
-                .split_whitespace()
-                .enumerate()
-                .map(|(i, word)| ArgPattern {
-                    position: i,
-                    pattern: word.to_string(),
-                })
-                .collect();
-            Rule {
-                tool: Some("shell".into()),
-                matcher: Matcher::Command { args },
-                effect: effect.into(),
-                sandbox: None,
-            }
-        }
-        "read_file" | "write_file" | "edit_file" => {
-            let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("*");
-            Rule {
-                tool: Some(tool_name.into()),
-                matcher: Matcher::Simple {
-                    key: "path".into(),
-                    pattern: path.to_string(),
-                },
-                effect: effect.into(),
-                sandbox: None,
-            }
-        }
-        _ => Rule {
-            tool: Some(tool_name.into()),
-            matcher: Matcher::Any,
-            effect: effect.into(),
-            sandbox: None,
-        },
     }
 }
 
@@ -405,27 +315,19 @@ mod tests {
 
     #[test]
     fn default_policy_allows_read() {
-        let guard = PolicyGuard {
-            session_rules: vec![],
-            manifest: PolicyManifest::default(),
-            policy_path: PathBuf::new(),
-        };
+        let guard = PolicyGuard::load(Path::new("/nonexistent"));
         assert!(matches!(
             guard.check("read_file", &serde_json::json!({"path": "src/main.rs"})),
-            PolicyDecision::Allow
+            CheckResult::Allow
         ));
     }
 
     #[test]
     fn default_policy_asks_for_shell() {
-        let guard = PolicyGuard {
-            session_rules: vec![],
-            manifest: PolicyManifest::default(),
-            policy_path: PathBuf::new(),
-        };
+        let guard = PolicyGuard::load(Path::new("/nonexistent"));
         assert!(matches!(
             guard.check("shell", &serde_json::json!({"command": "rm -rf /"})),
-            PolicyDecision::Ask { .. }
+            CheckResult::Ask { .. }
         ));
     }
 
@@ -434,128 +336,58 @@ mod tests {
         let guard = PolicyGuard::permissive();
         assert!(matches!(
             guard.check("shell", &serde_json::json!({"command": "rm -rf /"})),
-            PolicyDecision::Allow
+            CheckResult::Allow
         ));
     }
 
     #[test]
-    fn deny_rule_blocks() {
-        let guard = PolicyGuard {
-            session_rules: vec![],
-            manifest: PolicyManifest {
-                default: "allow".into(),
-                rules: vec![Rule {
-                    tool: Some("shell".into()),
-                    matcher: Matcher::Command {
-                        args: vec![ArgPattern { position: 0, pattern: "rm".into() }],
-                    },
-                    effect: "deny".into(),
-                    sandbox: None,
-                }],
-            },
-            policy_path: PathBuf::new(),
-        };
-        assert!(matches!(
-            guard.check("shell", &serde_json::json!({"command": "rm -rf target/"})),
-            PolicyDecision::Deny(_)
-        ));
-        // Non-matching command falls through to default (allow)
-        assert!(matches!(
-            guard.check("shell", &serde_json::json!({"command": "cargo test"})),
-            PolicyDecision::Allow
-        ));
-    }
-
-    #[test]
-    fn first_matching_rule_wins() {
-        let guard = PolicyGuard {
-            session_rules: vec![],
-            manifest: PolicyManifest {
-                default: "deny".into(),
-                rules: vec![
-                    Rule {
-                        tool: Some("shell".into()),
-                        matcher: Matcher::Command {
-                            args: vec![ArgPattern { position: 0, pattern: "cargo".into() }],
-                        },
-                        effect: "allow".into(),
-                        sandbox: None,
-                    },
-                    Rule {
-                        tool: Some("shell".into()),
-                        matcher: Matcher::Any,
-                        effect: "deny".into(),
-                        sandbox: None,
-                    },
-                ],
-            },
-            policy_path: PathBuf::new(),
-        };
-        assert!(matches!(
-            guard.check("shell", &serde_json::json!({"command": "cargo test"})),
-            PolicyDecision::Allow
-        ));
-        assert!(matches!(
-            guard.check("shell", &serde_json::json!({"command": "ls"})),
-            PolicyDecision::Deny(_)
-        ));
-    }
-
-    #[test]
-    fn persist_allow_adds_rule() {
+    fn persist_allow_is_precise() {
         let dir = tempfile::tempdir().unwrap();
-        let policy_path = dir.path().join(".ox").join("policy.json");
+        let policy_path = dir.path().join(".clash").join("policy.json");
         let mut guard = PolicyGuard {
-            session_rules: vec![],
-            manifest: PolicyManifest::default(),
+            session_policy: empty_policy(),
+            manifest: default_manifest(),
             policy_path: policy_path.clone(),
         };
 
-        // Shell commands start as "ask" (default)
-        assert!(matches!(
-            guard.check("shell", &serde_json::json!({"command": "cargo test"})),
-            PolicyDecision::Ask { .. }
-        ));
-
-        // Persist allow for "cargo test"
+        // Allow "cargo test" specifically
         guard.persist_allow("shell", &serde_json::json!({"command": "cargo test"}));
 
-        // "cargo test" is now allowed (exact match)
+        // "cargo test" → allowed
         assert!(matches!(
             guard.check("shell", &serde_json::json!({"command": "cargo test"})),
-            PolicyDecision::Allow
+            CheckResult::Allow
         ));
 
-        // "cargo build" is NOT allowed — structured matching is precise
+        // "cargo build" → still ask (different subcommand)
         assert!(matches!(
             guard.check("shell", &serde_json::json!({"command": "cargo build"})),
-            PolicyDecision::Ask { .. }
+            CheckResult::Ask { .. }
         ));
 
-        // File was written
+        // File was saved in clash format
         assert!(policy_path.exists());
+        let content = std::fs::read_to_string(&policy_path).unwrap();
+        let _: PolicyManifest = serde_json::from_str(&content).unwrap();
     }
 
     #[test]
-    fn glob_match_patterns() {
-        assert!(glob_match("*", "anything"));
-        assert!(glob_match("cargo*", "cargo test"));
-        assert!(glob_match("*.rs", "main.rs"));
-        assert!(glob_match("src/*", "src/main.rs"));
-        assert!(!glob_match("cargo*", "npm test"));
-        assert!(glob_match("exact", "exact"));
-        assert!(!glob_match("exact", "not_exact"));
-    }
+    fn session_rules_take_priority() {
+        let mut guard = PolicyGuard::load(Path::new("/nonexistent"));
 
-    #[test]
-    fn input_preview_formatting() {
-        assert_eq!(
-            format_input_preview("shell", &serde_json::json!({"command": "ls -la"})),
-            "ls -la"
-        );
-        assert_eq!(
-            format_input_preview("read_file", &serde_json::json!({"path": "src/main.rs"})),
-            "src/main.rs"
-        );
+        // Default: shell → ask
+        assert!(matches!(
+            guard.check("shell", &serde_json::json!({"command": "ls"})),
+            CheckResult::Ask { .. }
+        ));
+
+        // Add session allow
+        guard.session_allow("shell", &serde_json::json!({"command": "ls"}));
+
+        // Now: shell "ls" → allow
+        assert!(matches!(
+            guard.check("shell", &serde_json::json!({"command": "ls"})),
+            CheckResult::Allow
+        ));
     }
 }

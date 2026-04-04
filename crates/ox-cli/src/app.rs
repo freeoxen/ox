@@ -37,7 +37,7 @@ pub enum AppControl {
 }
 
 /// User's response to a permission prompt.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum ApprovalResponse {
     AllowOnce,
     AllowSession,
@@ -45,13 +45,10 @@ pub enum ApprovalResponse {
     DenyOnce,
     DenySession,
     DenyAlways,
-    /// A custom rule created from the sandbox editor.
-    CustomRule {
-        tool: String,
-        matcher: crate::policy::Matcher,
-        effect: String,     // "allow" or "deny"
-        scope: String,      // "once", "session", or "always"
-        sandbox: Option<crate::policy::SandboxConfig>,
+    /// A custom rule — carries a clash Node for the agent thread to insert.
+    CustomNode {
+        node: clash::policy::match_tree::Node,
+        scope: String, // "once", "session", or "always"
     },
 }
 
@@ -84,65 +81,28 @@ impl ApprovalState {
     ];
 }
 
-/// State for the sandbox/rule customization editor.
-///
-/// Focus fields:
-///   0 = pattern (text input)
-///   1 = effect (toggle)
-///   2 = scope (toggle)
-///   3 = network (toggle)
-///   4..4+N = filesystem entry N (sub-focus: 0=path, 1=r, 2=w, 3=c, 4=d)
-///   4+N = "add path" action
+/// State for the rule customization editor.
+/// Each arg is an editable pattern string. The dialog builds a clash Node on submit.
 pub struct CustomizeState {
     pub tool: String,
-    /// For shell: positional arg patterns. For file tools: single path pattern.
-    pub arg_patterns: Vec<crate::policy::ArgPattern>,
-    /// Which arg pattern is being edited (index into arg_patterns).
-    pub arg_edit_idx: usize,
-    /// Cursor within the pattern string being edited.
+    /// Positional argument patterns (for shell: each word; for file tools: single path).
+    pub args: Vec<String>,
+    /// Cursor within the currently-focused arg.
     pub arg_cursor: usize,
+    /// 0 = allow, 1 = deny.
     pub effect_idx: usize,
+    /// 0 = once, 1 = session, 2 = always.
     pub scope_idx: usize,
-    /// Focus: 0..N-1 = arg patterns, N = effect, N+1 = scope, N+2 = network, N+3.. = fs entries
+    /// Which field is focused: 0..N-1 = args, N = add-arg, N+1 = effect, N+2 = scope.
     pub focus: usize,
     pub respond: mpsc::Sender<ApprovalResponse>,
-    // Sandbox
-    pub network: bool,
-    pub fs_entries: Vec<crate::policy::FsEntry>,
-    pub fs_sub_focus: usize,
-    pub fs_path_cursor: usize,
 }
 
 impl CustomizeState {
-    /// Number of arg pattern fields.
-    pub fn num_args(&self) -> usize {
-        self.arg_patterns.len() + 1 // +1 for "add arg"
-    }
-
-    /// Field index where effect starts.
-    pub fn effect_field(&self) -> usize {
-        self.num_args()
-    }
-
-    /// Field index where scope starts.
-    pub fn scope_field(&self) -> usize {
-        self.effect_field() + 1
-    }
-
-    /// Field index where network starts.
-    pub fn network_field(&self) -> usize {
-        self.scope_field() + 1
-    }
-
-    /// Field index where fs entries start.
-    pub fn fs_field_start(&self) -> usize {
-        self.network_field() + 1
-    }
-
-    /// Total number of focusable fields.
-    pub fn total_fields(&self) -> usize {
-        self.fs_field_start() + self.fs_entries.len() + 1 // +1 for "add path"
-    }
+    pub fn add_arg_field(&self) -> usize { self.args.len() }
+    pub fn effect_field(&self) -> usize { self.args.len() + 1 }
+    pub fn scope_field(&self) -> usize { self.args.len() + 2 }
+    pub fn total_fields(&self) -> usize { self.args.len() + 3 }
 }
 
 /// TUI-side application state.
@@ -609,11 +569,11 @@ fn run_streaming_loop(
             // Policy check before execution
             let decision = policy.check(&tc.name, &tc.input);
             let proceed = match decision {
-                crate::policy::PolicyDecision::Allow => {
+                crate::policy::CheckResult::Allow => {
                     stats.allowed += 1;
                     true
                 }
-                crate::policy::PolicyDecision::Deny(reason) => {
+                crate::policy::CheckResult::Deny(reason) => {
                     stats.denied += 1;
                     results.push(ToolResult {
                         tool_use_id: tc.id.clone(),
@@ -622,7 +582,7 @@ fn run_streaming_loop(
                     event_tx.send(AppEvent::PolicyStats(stats.clone())).ok();
                     false
                 }
-                crate::policy::PolicyDecision::Ask { tool, input_preview } => {
+                crate::policy::CheckResult::Ask { tool, input_preview, .. } => {
                     stats.asked += 1;
                     event_tx.send(AppEvent::PolicyStats(stats.clone())).ok();
                     // Send request to TUI and block on response
@@ -675,25 +635,14 @@ fn run_streaming_loop(
                             });
                             false
                         }
-                        Ok(ApprovalResponse::CustomRule {
-                            tool,
-                            matcher,
-                            effect,
-                            scope,
-                            sandbox,
-                        }) => {
-                            let rule = crate::policy::Rule {
-                                tool: Some(tool),
-                                matcher,
-                                effect: effect.clone(),
-                                sandbox,
-                            };
+                        Ok(ApprovalResponse::CustomNode { node, scope }) => {
+                            let is_allow = node_is_allow(&node);
                             match scope.as_str() {
-                                "always" => policy.add_persistent_rule(rule),
-                                "session" => policy.add_session_rule(rule),
-                                _ => {} // "once" — no rule created
+                                "always" => policy.add_persistent_node(node),
+                                "session" => policy.add_session_node(node),
+                                _ => {} // "once"
                             }
-                            if effect == "allow" {
+                            if is_allow {
                                 stats.allowed += 1;
                                 true
                             } else {
@@ -752,5 +701,17 @@ fn run_streaming_loop(
                 Record::parsed(json_to_value(results_json)),
             )
             .map_err(|e| e.to_string())?;
+    }
+}
+
+/// Check if a clash Node tree's leaf is an allow decision.
+fn node_is_allow(node: &clash::policy::match_tree::Node) -> bool {
+    match node {
+        clash::policy::match_tree::Node::Decision(d) => {
+            d.effect() == clash::policy::Effect::Allow
+        }
+        clash::policy::match_tree::Node::Condition { children, .. } => {
+            children.first().is_some_and(node_is_allow)
+        }
     }
 }

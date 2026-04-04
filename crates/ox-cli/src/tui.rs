@@ -125,28 +125,15 @@ fn handle_approval_key(app: &mut App, key: KeyCode) {
         // customize
         KeyCode::Char('c') | KeyCode::Char('C') => {
             let approval = app.pending_approval.take().unwrap();
-            let arg_patterns = infer_arg_patterns(&approval.tool, &approval.input_preview);
+            let args = infer_args(&approval.tool, &approval.input_preview);
             app.pending_customize = Some(crate::app::CustomizeState {
                 tool: approval.tool,
-                arg_patterns,
-                arg_edit_idx: 0,
+                args,
                 arg_cursor: 0,
                 effect_idx: 0,
                 scope_idx: 0,
                 focus: 0,
                 respond: approval.respond,
-                network: true,
-                fs_entries: vec![
-                    crate::policy::FsEntry {
-                        path: ".".into(),
-                        read: true,
-                        write: true,
-                        create: true,
-                        delete: true,
-                    },
-                ],
-                fs_sub_focus: 0,
-                fs_path_cursor: 0,
             });
         }
         // quick keys
@@ -430,22 +417,78 @@ fn draw_approval_dialog(frame: &mut Frame, approval: &ApprovalState, theme: &The
 const EFFECTS: [&str; 2] = ["allow", "deny"];
 const SCOPES: [&str; 3] = ["once", "session", "always"];
 
-/// Decompose a tool call into editable arg patterns.
-fn infer_arg_patterns(tool: &str, preview: &str) -> Vec<crate::policy::ArgPattern> {
+/// Decompose a tool call into editable arg strings.
+fn infer_args(tool: &str, preview: &str) -> Vec<String> {
     match tool {
-        "shell" => preview
-            .split_whitespace()
-            .enumerate()
-            .map(|(i, word)| crate::policy::ArgPattern {
-                position: i,
-                pattern: word.to_string(),
-            })
-            .collect(),
-        "read_file" | "write_file" | "edit_file" => vec![crate::policy::ArgPattern {
-            position: 0,
-            pattern: preview.to_string(),
-        }],
+        "shell" => preview.split_whitespace().map(|s| s.to_string()).collect(),
+        "read_file" | "write_file" | "edit_file" => vec![preview.to_string()],
         _ => vec![],
+    }
+}
+
+/// Build a clash Node from the customize state.
+fn build_node_from_customize(cust: &crate::app::CustomizeState) -> clash::policy::match_tree::Node {
+    use clash::policy::match_tree::*;
+
+    let decision = if EFFECTS[cust.effect_idx] == "allow" {
+        Decision::Allow(None)
+    } else {
+        Decision::Deny
+    };
+    let leaf = Node::Decision(decision);
+
+    if cust.tool == "shell" {
+        // Build ToolName → arg0 → arg1 → ... → Decision
+        let mut current = leaf;
+        for (i, arg) in cust.args.iter().enumerate().rev() {
+            let pattern = if arg == "*" {
+                Pattern::Wildcard
+            } else {
+                Pattern::Literal(Value::Literal(arg.clone()))
+            };
+            current = Node::Condition {
+                observe: Observable::PositionalArg(i as i32),
+                pattern,
+                children: vec![current],
+                doc: None,
+                source: None,
+                terminal: false,
+            };
+        }
+        Node::Condition {
+            observe: Observable::ToolName,
+            pattern: Pattern::Literal(Value::Literal(cust.tool.clone())),
+            children: vec![current],
+            doc: None,
+            source: Some("ox-cli".into()),
+            terminal: false,
+        }
+    } else if let Some(path) = cust.args.first() {
+        // File tool: ToolName → NamedArg("path") → Decision
+        Node::Condition {
+            observe: Observable::ToolName,
+            pattern: Pattern::Literal(Value::Literal(cust.tool.clone())),
+            children: vec![Node::Condition {
+                observe: Observable::NamedArg("path".into()),
+                pattern: Pattern::Literal(Value::Literal(path.clone())),
+                children: vec![leaf],
+                doc: None,
+                source: None,
+                terminal: false,
+            }],
+            doc: None,
+            source: Some("ox-cli".into()),
+            terminal: false,
+        }
+    } else {
+        Node::Condition {
+            observe: Observable::ToolName,
+            pattern: Pattern::Literal(Value::Literal(cust.tool.clone())),
+            children: vec![leaf],
+            doc: None,
+            source: Some("ox-cli".into()),
+            terminal: false,
+        }
     }
 }
 
@@ -459,56 +502,30 @@ fn handle_customize_key(app: &mut App, key: KeyCode) {
         }
         KeyCode::Tab | KeyCode::Down => {
             cust.focus = if cust.focus >= total - 1 { 0 } else { cust.focus + 1 };
-            cust.fs_sub_focus = 0;
-            cust.fs_path_cursor = 0;
+            cust.arg_cursor = 0;
         }
         KeyCode::BackTab | KeyCode::Up => {
             cust.focus = if cust.focus == 0 { total - 1 } else { cust.focus - 1 };
-            cust.fs_sub_focus = 0;
-            cust.fs_path_cursor = 0;
+            cust.arg_cursor = 0;
         }
         KeyCode::Enter => {
             let cust = app.pending_customize.take().unwrap();
-            let matcher = if cust.tool == "shell" {
-                crate::policy::Matcher::Command {
-                    args: cust.arg_patterns.clone(),
-                }
-            } else if let Some(ap) = cust.arg_patterns.first() {
-                crate::policy::Matcher::Simple {
-                    key: "path".into(),
-                    pattern: ap.pattern.clone(),
-                }
-            } else {
-                crate::policy::Matcher::Any
-            };
-            let response = ApprovalResponse::CustomRule {
-                tool: cust.tool,
-                matcher,
-                effect: EFFECTS[cust.effect_idx].to_string(),
+            let node = build_node_from_customize(&cust);
+            let response = ApprovalResponse::CustomNode {
+                node,
                 scope: SCOPES[cust.scope_idx].to_string(),
-                sandbox: if cust.fs_entries.is_empty() && cust.network {
-                    None
-                } else {
-                    Some(crate::policy::SandboxConfig {
-                        network: cust.network,
-                        fs: cust.fs_entries.clone(),
-                    })
-                },
             };
             cust.respond.send(response).ok();
         }
         _ => {
-            let num_args = cust.arg_patterns.len();
-            let add_arg_field = num_args; // field index for "+ add arg"
+            let num_args = cust.args.len();
+            let add_f = cust.add_arg_field();
             let effect_f = cust.effect_field();
             let scope_f = cust.scope_field();
-            let network_f = cust.network_field();
-            let fs_start = cust.fs_field_start();
 
             if cust.focus < num_args {
                 // Editing an arg pattern
-                let idx = cust.focus;
-                let pat = &mut cust.arg_patterns[idx].pattern;
+                let pat = &mut cust.args[cust.focus];
                 match key {
                     KeyCode::Char(c) => {
                         pat.insert(cust.arg_cursor, c);
@@ -522,15 +539,10 @@ fn handle_customize_key(app: &mut App, key: KeyCode) {
                     KeyCode::Right if cust.arg_cursor < pat.len() => cust.arg_cursor += 1,
                     _ => {}
                 }
-            } else if cust.focus == add_arg_field {
-                // "+ add arg" action
+            } else if cust.focus == add_f && cust.tool == "shell" {
                 if matches!(key, KeyCode::Char(' ')) {
-                    let pos = cust.arg_patterns.len();
-                    cust.arg_patterns.push(crate::policy::ArgPattern {
-                        position: pos,
-                        pattern: "*".into(),
-                    });
-                    cust.focus = pos; // focus on the new arg
+                    cust.args.push("*".into());
+                    cust.focus = cust.args.len() - 1;
                     cust.arg_cursor = 1;
                 }
             } else if cust.focus == effect_f {
@@ -547,62 +559,6 @@ fn handle_customize_key(app: &mut App, key: KeyCode) {
                     }
                     _ => {}
                 }
-            } else if cust.focus == network_f {
-                if matches!(key, KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l') | KeyCode::Char(' ')) {
-                    cust.network = !cust.network;
-                }
-            } else if cust.focus >= fs_start && cust.focus < fs_start + cust.fs_entries.len() {
-                let idx = cust.focus - fs_start;
-                match cust.fs_sub_focus {
-                    0 => match key {
-                        KeyCode::Char(' ') => cust.fs_sub_focus = 1,
-                        KeyCode::Char(c) => {
-                            cust.fs_entries[idx].path.insert(cust.fs_path_cursor, c);
-                            cust.fs_path_cursor += 1;
-                        }
-                        KeyCode::Backspace if cust.fs_path_cursor > 0 => {
-                            cust.fs_path_cursor -= 1;
-                            cust.fs_entries[idx].path.remove(cust.fs_path_cursor);
-                        }
-                        KeyCode::Left => cust.fs_path_cursor = cust.fs_path_cursor.saturating_sub(1),
-                        KeyCode::Right if cust.fs_path_cursor < cust.fs_entries[idx].path.len() => {
-                            cust.fs_path_cursor += 1;
-                        }
-                        _ => {}
-                    },
-                    1..=4 => match key {
-                        KeyCode::Char(' ') => match cust.fs_sub_focus {
-                            1 => cust.fs_entries[idx].read = !cust.fs_entries[idx].read,
-                            2 => cust.fs_entries[idx].write = !cust.fs_entries[idx].write,
-                            3 => cust.fs_entries[idx].create = !cust.fs_entries[idx].create,
-                            4 => cust.fs_entries[idx].delete = !cust.fs_entries[idx].delete,
-                            _ => {}
-                        },
-                        KeyCode::Left | KeyCode::Char('h') => {
-                            cust.fs_sub_focus = if cust.fs_sub_focus <= 1 { 0 } else { cust.fs_sub_focus - 1 };
-                        }
-                        KeyCode::Right | KeyCode::Char('l') => {
-                            cust.fs_sub_focus = (cust.fs_sub_focus + 1).min(4);
-                        }
-                        KeyCode::Char('x') => {
-                            cust.fs_entries.remove(idx);
-                            cust.fs_sub_focus = 0;
-                        }
-                        _ => {}
-                    },
-                    _ => {}
-                }
-            } else if cust.focus == fs_start + cust.fs_entries.len() {
-                // "+ add path"
-                if matches!(key, KeyCode::Char(' ')) {
-                    cust.fs_entries.push(crate::policy::FsEntry {
-                        path: String::new(),
-                        read: true, write: false, create: false, delete: false,
-                    });
-                    cust.focus = fs_start + cust.fs_entries.len() - 1;
-                    cust.fs_sub_focus = 0;
-                    cust.fs_path_cursor = 0;
-                }
             }
         }
     }
@@ -611,8 +567,7 @@ fn handle_customize_key(app: &mut App, key: KeyCode) {
 fn draw_customize_dialog(frame: &mut Frame, cust: &crate::app::CustomizeState, theme: &Theme) {
     let area = frame.area();
     let dialog_width = 58.min(area.width.saturating_sub(4));
-    let dialog_height = (8 + cust.arg_patterns.len() as u16 + 3 + cust.fs_entries.len() as u16)
-        .min(area.height.saturating_sub(4));
+    let dialog_height = (7 + cust.args.len() as u16).min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(dialog_width)) / 2;
     let y = (area.height.saturating_sub(dialog_height)) / 2;
     let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
@@ -629,7 +584,6 @@ fn draw_customize_dialog(frame: &mut Frame, cust: &crate::app::CustomizeState, t
     let sel = theme.approval_selected;
     let dim = theme.approval_option;
     let effect_color = if EFFECTS[cust.effect_idx] == "allow" { theme.approval_allow } else { theme.approval_deny };
-    let net_color = if cust.network { theme.approval_allow } else { theme.approval_deny };
 
     let mut lines = vec![
         Line::from(vec![
@@ -638,36 +592,28 @@ fn draw_customize_dialog(frame: &mut Frame, cust: &crate::app::CustomizeState, t
         ]),
     ];
 
-    // Arg patterns — each is an editable field
-    let arg_label = match cust.tool.as_str() {
-        "shell" => "arg",
-        _ => "path",
-    };
-    for (i, ap) in cust.arg_patterns.iter().enumerate() {
+    // Arg fields
+    let arg_label = if cust.tool == "shell" { "arg" } else { "path" };
+    for (i, arg) in cust.args.iter().enumerate() {
         let focused = cust.focus == i;
         let label = if cust.tool == "shell" {
-            format!("  {arg_label} {}: ", ap.position)
+            format!("  {arg_label} {i}: ")
         } else {
             format!("  {arg_label}:   ")
         };
         lines.push(Line::from(vec![
             Span::styled(label, if focused { sel } else { dim }),
-            Span::styled(format!("[{}]", ap.pattern), if focused { sel } else { dim }),
+            Span::styled(format!("[{arg}]"), if focused { sel } else { dim }),
         ]));
     }
-    // "+ add arg" (only for shell)
     if cust.tool == "shell" {
-        let add_focused = cust.focus == cust.arg_patterns.len();
+        let add_focused = cust.focus == cust.add_arg_field();
         lines.push(Line::from(Span::styled(
             "  + add argument (Space)",
             if add_focused { sel } else { dim },
         )));
-    } else {
-        // Placeholder for non-shell tools (field index still exists but hidden)
-        lines.push(Line::from(""));
     }
 
-    // Effect, Scope
     let ef = cust.effect_field();
     let sf = cust.scope_field();
     lines.push(Line::from(vec![
@@ -678,37 +624,6 @@ fn draw_customize_dialog(frame: &mut Frame, cust: &crate::app::CustomizeState, t
         Span::styled("  Scope:   ", if cust.focus == sf { sel } else { dim }),
         Span::styled(format!("< {} >", SCOPES[cust.scope_idx]), if cust.focus == sf { sel } else { dim }),
     ]));
-
-    // Sandbox section
-    let nf = cust.network_field();
-    lines.push(Line::from(Span::styled("  ── Sandbox ──", dim)));
-    lines.push(Line::from(vec![
-        Span::styled("  Network: ", if cust.focus == nf { sel } else { dim }),
-        Span::styled(format!("< {} >", if cust.network { "allow" } else { "deny" }), if cust.focus == nf { sel } else { net_color }),
-    ]));
-    lines.push(Line::from(Span::styled("  Filesystem:", dim)));
-
-    let fs_start = cust.fs_field_start();
-    for (i, entry) in cust.fs_entries.iter().enumerate() {
-        let is_focused = cust.focus == fs_start + i;
-        let path_style = if is_focused && cust.fs_sub_focus == 0 { sel } else { dim };
-        let mut spans = vec![
-            Span::styled("    ", dim),
-            Span::styled(format!("{:<14}", entry.path), path_style),
-            Span::styled(" ", dim),
-        ];
-        for (label, enabled, sub_idx) in [("r", entry.read, 1), ("w", entry.write, 2), ("c", entry.create, 3), ("d", entry.delete, 4)] {
-            let pf = is_focused && cust.fs_sub_focus == sub_idx;
-            let st = if pf { sel } else if enabled { theme.approval_allow } else { theme.approval_deny };
-            spans.push(Span::styled(if enabled { label.to_uppercase() } else { "-".into() }, st));
-        }
-        if is_focused && cust.fs_sub_focus > 0 {
-            spans.push(Span::styled(" (x)rm", dim));
-        }
-        lines.push(Line::from(spans));
-    }
-    let add_fs_focused = cust.focus == fs_start + cust.fs_entries.len();
-    lines.push(Line::from(Span::styled("    + add path (Space)", if add_fs_focused { sel } else { dim })));
 
     lines.push(Line::from(Span::styled(
         "  Up/Down fields | Space toggle | Enter save | Esc cancel",
