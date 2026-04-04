@@ -338,7 +338,7 @@ fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
         }
     };
     let status_text = if app.pending_customize.is_some() {
-        format!("CUSTOMIZE RULE — Tab fields, Enter save, Esc cancel{tokens}{policy}")
+        format!("CUSTOMIZE — Up/Down fields, Left/Right toggle, Enter save, Esc cancel{tokens}{policy}")
     } else if app.pending_approval.is_some() {
         format!("PERMISSION — y/s/a/n/d or 1-6 or (c)ustomize{tokens}{policy}")
     } else if app.thinking {
@@ -440,8 +440,19 @@ fn handle_customize_key(app: &mut App, key: KeyCode) {
             let cust = app.pending_customize.take().unwrap();
             cust.respond.send(ApprovalResponse::DenyOnce).ok();
         }
-        KeyCode::Tab => cust.focus = (cust.focus + 1) % 3,
+        // Move between fields: Tab, Shift-Tab, Up/Down, j/k
+        KeyCode::Tab | KeyCode::Down => {
+            if cust.focus == 0 && key == KeyCode::Down {
+                // In pattern field, Down moves to next field (not text editing)
+                cust.focus = 1;
+            } else {
+                cust.focus = (cust.focus + 1) % 3;
+            }
+        }
         KeyCode::BackTab => cust.focus = if cust.focus == 0 { 2 } else { cust.focus - 1 },
+        KeyCode::Up => {
+            cust.focus = if cust.focus == 0 { 2 } else { cust.focus - 1 };
+        }
         KeyCode::Enter => {
             let cust = app.pending_customize.take().unwrap();
             let response = ApprovalResponse::CustomRule {
@@ -461,47 +472,33 @@ fn handle_customize_key(app: &mut App, key: KeyCode) {
             };
             cust.respond.send(response).ok();
         }
+        // Field-specific keys
         _ => match cust.focus {
-            0 => match key {
-                KeyCode::Char(c) => {
-                    cust.pattern.insert(cust.cursor, c);
-                    cust.cursor += 1;
+            0 => {
+                // Pattern field: text editing
+                match key {
+                    KeyCode::Char(c) => {
+                        cust.pattern.insert(cust.cursor, c);
+                        cust.cursor += 1;
+                    }
+                    KeyCode::Backspace if cust.cursor > 0 => {
+                        cust.cursor -= 1;
+                        cust.pattern.remove(cust.cursor);
+                    }
+                    KeyCode::Left => cust.cursor = cust.cursor.saturating_sub(1),
+                    KeyCode::Right if cust.cursor < cust.pattern.len() => cust.cursor += 1,
+                    _ => {}
                 }
-                KeyCode::Backspace if cust.cursor > 0 => {
-                    cust.cursor -= 1;
-                    cust.pattern.remove(cust.cursor);
-                }
-                KeyCode::Left => cust.cursor = cust.cursor.saturating_sub(1),
-                KeyCode::Right if cust.cursor < cust.pattern.len() => cust.cursor += 1,
-                _ => {}
-            },
+            }
             1 => {
-                if matches!(
-                    key,
-                    KeyCode::Left
-                        | KeyCode::Right
-                        | KeyCode::Up
-                        | KeyCode::Down
-                        | KeyCode::Char('j')
-                        | KeyCode::Char('k')
-                        | KeyCode::Char('h')
-                        | KeyCode::Char('l')
-                ) {
+                // Effect field: Left/Right or h/l to toggle
+                if matches!(key, KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l')) {
                     cust.effect_idx = 1 - cust.effect_idx;
                 }
             }
             2 => {
-                if matches!(
-                    key,
-                    KeyCode::Left
-                        | KeyCode::Right
-                        | KeyCode::Up
-                        | KeyCode::Down
-                        | KeyCode::Char('j')
-                        | KeyCode::Char('k')
-                        | KeyCode::Char('h')
-                        | KeyCode::Char('l')
-                ) {
+                // Scope field: Left/Right or h/l to toggle
+                if matches!(key, KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l')) {
                     cust.scope_idx = 1 - cust.scope_idx;
                 }
             }
