@@ -2,8 +2,8 @@ use ox_context::{ModelProvider, Namespace, SystemProvider, ToolsProvider};
 use ox_gate::{GateStore, ProviderConfig};
 use ox_history::HistoryProvider;
 use ox_kernel::{
-    AgentEvent, ContentBlock, Kernel, Reader, Record, StreamEvent, ToolRegistry,
-    ToolResult, Value, Writer, path, serialize_tool_results,
+    AgentEvent, ContentBlock, Kernel, Reader, Record, StreamEvent, ToolRegistry, ToolResult, Value,
+    Writer, path, serialize_tool_results,
 };
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
@@ -22,7 +22,10 @@ use crate::policy::PolicyStats;
 #[derive(Debug, Clone)]
 pub enum AppEvent {
     Agent(AgentEvent),
-    Usage { input_tokens: u32, output_tokens: u32 },
+    Usage {
+        input_tokens: u32,
+        output_tokens: u32,
+    },
     PolicyStats(PolicyStats),
     Done(Result<String, String>),
 }
@@ -45,9 +48,10 @@ pub enum ApprovalResponse {
     DenyOnce,
     DenySession,
     DenyAlways,
-    /// A custom rule — carries a clash Node for the agent thread to insert.
+    /// A custom rule — carries a clash Node + optional sandbox for the agent thread.
     CustomNode {
         node: clash::policy::match_tree::Node,
+        sandbox: Option<(String, clash::policy::sandbox_types::SandboxPolicy)>,
         scope: String, // "once", "session", or "always"
     },
 }
@@ -82,27 +86,59 @@ impl ApprovalState {
 }
 
 /// State for the rule customization editor.
-/// Each arg is an editable pattern string. The dialog builds a clash Node on submit.
+/// Builds a clash Node + optional SandboxPolicy on submit.
 pub struct CustomizeState {
     pub tool: String,
     /// Positional argument patterns (for shell: each word; for file tools: single path).
     pub args: Vec<String>,
-    /// Cursor within the currently-focused arg.
     pub arg_cursor: usize,
     /// 0 = allow, 1 = deny.
     pub effect_idx: usize,
     /// 0 = once, 1 = session, 2 = always.
     pub scope_idx: usize,
-    /// Which field is focused: 0..N-1 = args, N = add-arg, N+1 = effect, N+2 = scope.
     pub focus: usize,
     pub respond: mpsc::Sender<ApprovalResponse>,
+    // Sandbox
+    /// 0 = deny, 1 = allow, 2 = localhost
+    pub network_idx: usize,
+    /// Filesystem sandbox rules: (path, Cap bitflags as rwcdx booleans)
+    pub fs_rules: Vec<FsRuleState>,
+    pub fs_sub_focus: usize,
+    pub fs_path_cursor: usize,
+}
+
+/// Editable state for one filesystem sandbox rule.
+pub struct FsRuleState {
+    pub path: String,
+    pub read: bool,
+    pub write: bool,
+    pub create: bool,
+    pub delete: bool,
+    pub execute: bool,
 }
 
 impl CustomizeState {
-    pub fn add_arg_field(&self) -> usize { self.args.len() }
-    pub fn effect_field(&self) -> usize { self.args.len() + 1 }
-    pub fn scope_field(&self) -> usize { self.args.len() + 2 }
-    pub fn total_fields(&self) -> usize { self.args.len() + 3 }
+    pub fn add_arg_field(&self) -> usize {
+        self.args.len()
+    }
+    pub fn effect_field(&self) -> usize {
+        self.args.len() + 1
+    }
+    pub fn scope_field(&self) -> usize {
+        self.args.len() + 2
+    }
+    pub fn network_field(&self) -> usize {
+        self.args.len() + 3
+    }
+    pub fn fs_start(&self) -> usize {
+        self.args.len() + 4
+    }
+    pub fn add_fs_field(&self) -> usize {
+        self.fs_start() + self.fs_rules.len()
+    }
+    pub fn total_fields(&self) -> usize {
+        self.add_fs_field() + 1
+    }
 }
 
 /// TUI-side application state.
@@ -352,10 +388,7 @@ fn agent_thread(
                 Ok(messages) => {
                     for msg in messages {
                         context
-                            .write(
-                                &path!("history/append"),
-                                Record::parsed(json_to_value(msg)),
-                            )
+                            .write(&path!("history/append"), Record::parsed(json_to_value(msg)))
                             .ok();
                     }
                 }
@@ -433,10 +466,8 @@ fn read_provider_config_from_gate(
         _ => account_name.to_string(),
     };
     // Read provider config
-    let config_path = ox_kernel::Path::from_components(vec![
-        "providers".to_string(),
-        provider_name,
-    ]);
+    let config_path =
+        ox_kernel::Path::from_components(vec!["providers".to_string(), provider_name]);
     match gate.read(&config_path) {
         Ok(Some(Record::Parsed(v))) => from_value(v).map_err(|e| e.to_string()),
         _ => Err("provider config not found".into()),
@@ -485,13 +516,12 @@ fn read_gate_config(context: &mut Namespace) -> Result<(ProviderConfig, String),
         _ => "anthropic".to_string(),
     };
 
-    let config_path = ox_kernel::Path::from_components(vec![
-        "gate".into(),
-        "providers".into(),
-        provider_name,
-    ]);
+    let config_path =
+        ox_kernel::Path::from_components(vec!["gate".into(), "providers".into(), provider_name]);
     let config: ProviderConfig = match context.read(&config_path) {
-        Ok(Some(Record::Parsed(v))) => from_value(v).map_err(|e| format!("bad provider config: {e}"))?,
+        Ok(Some(Record::Parsed(v))) => {
+            from_value(v).map_err(|e| format!("bad provider config: {e}"))?
+        }
         _ => return Err("provider config not found in namespace".into()),
     };
 
@@ -547,9 +577,7 @@ fn run_streaming_loop(
         let tool_calls = kernel.complete_turn(context, &content)?;
 
         if tool_calls.is_empty() {
-            event_tx
-                .send(AppEvent::Agent(AgentEvent::TurnEnd))
-                .ok();
+            event_tx.send(AppEvent::Agent(AgentEvent::TurnEnd)).ok();
             let text: String = content
                 .iter()
                 .filter_map(|b| {
@@ -582,7 +610,11 @@ fn run_streaming_loop(
                     event_tx.send(AppEvent::PolicyStats(stats.clone())).ok();
                     false
                 }
-                crate::policy::CheckResult::Ask { tool, input_preview, .. } => {
+                crate::policy::CheckResult::Ask {
+                    tool,
+                    input_preview,
+                    ..
+                } => {
                     stats.asked += 1;
                     event_tx.send(AppEvent::PolicyStats(stats.clone())).ok();
                     // Send request to TUI and block on response
@@ -635,11 +667,25 @@ fn run_streaming_loop(
                             });
                             false
                         }
-                        Ok(ApprovalResponse::CustomNode { node, scope }) => {
+                        Ok(ApprovalResponse::CustomNode {
+                            node,
+                            sandbox,
+                            scope,
+                        }) => {
                             let is_allow = node_is_allow(&node);
                             match scope.as_str() {
-                                "always" => policy.add_persistent_node(node),
-                                "session" => policy.add_session_node(node),
+                                "always" => {
+                                    if let Some((name, sb)) = sandbox {
+                                        policy.add_sandbox(&name, sb, scope == "always");
+                                    }
+                                    policy.add_persistent_node(node);
+                                }
+                                "session" => {
+                                    if let Some((name, sb)) = sandbox {
+                                        policy.add_sandbox(&name, sb, false);
+                                    }
+                                    policy.add_session_node(node);
+                                }
                                 _ => {} // "once"
                             }
                             if is_allow {
@@ -707,9 +753,7 @@ fn run_streaming_loop(
 /// Check if a clash Node tree's leaf is an allow decision.
 fn node_is_allow(node: &clash::policy::match_tree::Node) -> bool {
     match node {
-        clash::policy::match_tree::Node::Decision(d) => {
-            d.effect() == clash::policy::Effect::Allow
-        }
+        clash::policy::match_tree::Node::Decision(d) => d.effect() == clash::policy::Effect::Allow,
         clash::policy::match_tree::Node::Condition { children, .. } => {
             children.first().is_some_and(node_is_allow)
         }

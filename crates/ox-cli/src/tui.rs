@@ -1,10 +1,10 @@
-use crate::app::{App, ApprovalResponse, ApprovalState, AppControl, ChatMessage};
+use crate::app::{App, AppControl, ApprovalResponse, ApprovalState, ChatMessage};
 use crate::theme::Theme;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
-use ratatui::Frame;
 use std::time::Duration;
 
 /// Run the TUI event loop. Blocks until the user quits.
@@ -134,6 +134,17 @@ fn handle_approval_key(app: &mut App, key: KeyCode) {
                 scope_idx: 0,
                 focus: 0,
                 respond: approval.respond,
+                network_idx: 1, // default: allow
+                fs_rules: vec![crate::app::FsRuleState {
+                    path: "$PWD".into(),
+                    read: true,
+                    write: true,
+                    create: true,
+                    delete: true,
+                    execute: true,
+                }],
+                fs_sub_focus: 0,
+                fs_path_cursor: 0,
             });
         }
         // quick keys
@@ -186,7 +197,9 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, row: u16) {
                 let dialog_h = 13u16;
                 let dialog_top = term_h.saturating_sub(dialog_h) / 2;
                 let first_option_row = dialog_top + 3; // border + header + blank line
-                if row >= first_option_row && row < first_option_row + ApprovalState::OPTIONS.len() as u16 {
+                if row >= first_option_row
+                    && row < first_option_row + ApprovalState::OPTIONS.len() as u16
+                {
                     let idx = (row - first_option_row) as usize;
                     approval.selected = idx;
                     // Double-click-ish: select on single click
@@ -214,7 +227,10 @@ fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
     // Title bar
     let title = Line::from(vec![
         Span::styled(" ox ", theme.title_badge),
-        Span::styled(format!(" {} ({})", app.model, app.provider), theme.title_info),
+        Span::styled(
+            format!(" {} ({})", app.model, app.provider),
+            theme.title_info,
+        ),
     ]);
     frame.render_widget(Paragraph::new(title), chunks[0]);
 
@@ -315,10 +331,7 @@ fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
 
     // Cursor
     if app.pending_approval.is_none() && app.pending_customize.is_none() {
-        frame.set_cursor_position((
-            chunks[2].x + app.cursor as u16 + 2,
-            chunks[2].y + 1,
-        ));
+        frame.set_cursor_position((chunks[2].x + app.cursor as u16 + 2, chunks[2].y + 1));
     }
 
     // Status bar
@@ -336,7 +349,9 @@ fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
         }
     };
     let status_text = if app.pending_customize.is_some() {
-        format!("CUSTOMIZE — Up/Down fields, Left/Right toggle, Enter save, Esc cancel{tokens}{policy}")
+        format!(
+            "CUSTOMIZE — Up/Down fields, Left/Right toggle, Enter save, Esc cancel{tokens}{policy}"
+        )
     } else if app.pending_approval.is_some() {
         format!("PERMISSION — y/s/a/n/d or 1-6 or (c)ustomize{tokens}{policy}")
     } else if app.thinking {
@@ -384,7 +399,9 @@ fn draw_approval_dialog(frame: &mut Frame, approval: &ApprovalState, theme: &The
     for (i, (label, resp)) in ApprovalState::OPTIONS.iter().enumerate() {
         let is_allow = matches!(
             resp,
-            ApprovalResponse::AllowOnce | ApprovalResponse::AllowSession | ApprovalResponse::AllowAlways
+            ApprovalResponse::AllowOnce
+                | ApprovalResponse::AllowSession
+                | ApprovalResponse::AllowAlways
         );
         let base_style = if is_allow {
             theme.approval_allow
@@ -416,6 +433,7 @@ fn draw_approval_dialog(frame: &mut Frame, approval: &ApprovalState, theme: &The
 
 const EFFECTS: [&str; 2] = ["allow", "deny"];
 const SCOPES: [&str; 3] = ["once", "session", "always"];
+const NETWORKS: [&str; 3] = ["deny", "allow", "localhost"];
 
 /// Decompose a tool call into editable arg strings.
 fn infer_args(tool: &str, preview: &str) -> Vec<String> {
@@ -430,8 +448,13 @@ fn infer_args(tool: &str, preview: &str) -> Vec<String> {
 fn build_node_from_customize(cust: &crate::app::CustomizeState) -> clash::policy::match_tree::Node {
     use clash::policy::match_tree::*;
 
+    let sandbox_ref = if EFFECTS[cust.effect_idx] == "allow" && (cust.network_idx != 1 || !cust.fs_rules.is_empty()) {
+        Some(SandboxRef(format!("ox-{}", cust.tool)))
+    } else {
+        None
+    };
     let decision = if EFFECTS[cust.effect_idx] == "allow" {
-        Decision::Allow(None)
+        Decision::Allow(sandbox_ref)
     } else {
         Decision::Deny
     };
@@ -492,6 +515,56 @@ fn build_node_from_customize(cust: &crate::app::CustomizeState) -> clash::policy
     }
 }
 
+/// Build a sandbox from the customize state. Returns None if no restrictions.
+fn build_sandbox_from_customize(
+    cust: &crate::app::CustomizeState,
+) -> Option<(String, clash::policy::sandbox_types::SandboxPolicy)> {
+    use clash::policy::sandbox_types::*;
+
+    let network = match cust.network_idx {
+        0 => NetworkPolicy::Deny,
+        2 => NetworkPolicy::Localhost,
+        _ => NetworkPolicy::Allow,
+    };
+
+    let rules: Vec<SandboxRule> = cust
+        .fs_rules
+        .iter()
+        .map(|r| {
+            let mut caps = Cap::empty();
+            if r.read { caps |= Cap::READ; }
+            if r.write { caps |= Cap::WRITE; }
+            if r.create { caps |= Cap::CREATE; }
+            if r.delete { caps |= Cap::DELETE; }
+            if r.execute { caps |= Cap::EXECUTE; }
+            SandboxRule {
+                effect: RuleEffect::Allow,
+                caps,
+                path: r.path.clone(),
+                path_match: PathMatch::Subpath,
+                follow_worktrees: false,
+                doc: None,
+            }
+        })
+        .collect();
+
+    // Skip sandbox if it's fully permissive (all allow, no fs restrictions)
+    if matches!(network, NetworkPolicy::Allow) && rules.is_empty() {
+        return None;
+    }
+
+    let name = format!("ox-{}", cust.tool);
+    Some((
+        name,
+        SandboxPolicy {
+            default: Cap::READ | Cap::EXECUTE,
+            rules,
+            network,
+            doc: Some(format!("sandbox for {}", cust.tool)),
+        },
+    ))
+}
+
 fn handle_customize_key(app: &mut App, key: KeyCode) {
     let cust = app.pending_customize.as_mut().unwrap();
     let total = cust.total_fields();
@@ -501,18 +574,28 @@ fn handle_customize_key(app: &mut App, key: KeyCode) {
             cust.respond.send(ApprovalResponse::DenyOnce).ok();
         }
         KeyCode::Tab | KeyCode::Down => {
-            cust.focus = if cust.focus >= total - 1 { 0 } else { cust.focus + 1 };
+            cust.focus = if cust.focus >= total - 1 {
+                0
+            } else {
+                cust.focus + 1
+            };
             cust.arg_cursor = 0;
         }
         KeyCode::BackTab | KeyCode::Up => {
-            cust.focus = if cust.focus == 0 { total - 1 } else { cust.focus - 1 };
+            cust.focus = if cust.focus == 0 {
+                total - 1
+            } else {
+                cust.focus - 1
+            };
             cust.arg_cursor = 0;
         }
         KeyCode::Enter => {
             let cust = app.pending_customize.take().unwrap();
             let node = build_node_from_customize(&cust);
+            let sandbox = build_sandbox_from_customize(&cust);
             let response = ApprovalResponse::CustomNode {
                 node,
+                sandbox,
                 scope: SCOPES[cust.scope_idx].to_string(),
             };
             cust.respond.send(response).ok();
@@ -546,7 +629,14 @@ fn handle_customize_key(app: &mut App, key: KeyCode) {
                     cust.arg_cursor = 1;
                 }
             } else if cust.focus == effect_f {
-                if matches!(key, KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l') | KeyCode::Char(' ')) {
+                if matches!(
+                    key,
+                    KeyCode::Left
+                        | KeyCode::Right
+                        | KeyCode::Char('h')
+                        | KeyCode::Char('l')
+                        | KeyCode::Char(' ')
+                ) {
                     cust.effect_idx = 1 - cust.effect_idx;
                 }
             } else if cust.focus == scope_f {
@@ -555,9 +645,69 @@ fn handle_customize_key(app: &mut App, key: KeyCode) {
                         cust.scope_idx = (cust.scope_idx + 1) % SCOPES.len();
                     }
                     KeyCode::Left | KeyCode::Char('h') => {
-                        cust.scope_idx = if cust.scope_idx == 0 { SCOPES.len() - 1 } else { cust.scope_idx - 1 };
+                        cust.scope_idx = if cust.scope_idx == 0 {
+                            SCOPES.len() - 1
+                        } else {
+                            cust.scope_idx - 1
+                        };
                     }
                     _ => {}
+                }
+            } else if cust.focus == cust.network_field() {
+                if matches!(key, KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l') | KeyCode::Char(' ')) {
+                    cust.network_idx = (cust.network_idx + 1) % NETWORKS.len();
+                }
+            } else if cust.focus >= cust.fs_start() && cust.focus < cust.fs_start() + cust.fs_rules.len() {
+                let idx = cust.focus - cust.fs_start();
+                match cust.fs_sub_focus {
+                    0 => match key {
+                        KeyCode::Char(' ') => cust.fs_sub_focus = 1,
+                        KeyCode::Char(c) => {
+                            cust.fs_rules[idx].path.insert(cust.fs_path_cursor, c);
+                            cust.fs_path_cursor += 1;
+                        }
+                        KeyCode::Backspace if cust.fs_path_cursor > 0 => {
+                            cust.fs_path_cursor -= 1;
+                            cust.fs_rules[idx].path.remove(cust.fs_path_cursor);
+                        }
+                        KeyCode::Left => cust.fs_path_cursor = cust.fs_path_cursor.saturating_sub(1),
+                        KeyCode::Right if cust.fs_path_cursor < cust.fs_rules[idx].path.len() => {
+                            cust.fs_path_cursor += 1;
+                        }
+                        _ => {}
+                    },
+                    1..=5 => match key {
+                        KeyCode::Char(' ') => match cust.fs_sub_focus {
+                            1 => cust.fs_rules[idx].read = !cust.fs_rules[idx].read,
+                            2 => cust.fs_rules[idx].write = !cust.fs_rules[idx].write,
+                            3 => cust.fs_rules[idx].create = !cust.fs_rules[idx].create,
+                            4 => cust.fs_rules[idx].delete = !cust.fs_rules[idx].delete,
+                            5 => cust.fs_rules[idx].execute = !cust.fs_rules[idx].execute,
+                            _ => {}
+                        },
+                        KeyCode::Left | KeyCode::Char('h') => {
+                            cust.fs_sub_focus = if cust.fs_sub_focus <= 1 { 0 } else { cust.fs_sub_focus - 1 };
+                        }
+                        KeyCode::Right | KeyCode::Char('l') => {
+                            cust.fs_sub_focus = (cust.fs_sub_focus + 1).min(5);
+                        }
+                        KeyCode::Char('x') => {
+                            cust.fs_rules.remove(idx);
+                            cust.fs_sub_focus = 0;
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                }
+            } else if cust.focus == cust.add_fs_field() {
+                if matches!(key, KeyCode::Char(' ')) {
+                    cust.fs_rules.push(crate::app::FsRuleState {
+                        path: String::new(),
+                        read: true, write: false, create: false, delete: false, execute: false,
+                    });
+                    cust.focus = cust.fs_start() + cust.fs_rules.len() - 1;
+                    cust.fs_sub_focus = 0;
+                    cust.fs_path_cursor = 0;
                 }
             }
         }
@@ -567,7 +717,8 @@ fn handle_customize_key(app: &mut App, key: KeyCode) {
 fn draw_customize_dialog(frame: &mut Frame, cust: &crate::app::CustomizeState, theme: &Theme) {
     let area = frame.area();
     let dialog_width = 58.min(area.width.saturating_sub(4));
-    let dialog_height = (7 + cust.args.len() as u16).min(area.height.saturating_sub(4));
+    let dialog_height =
+        (10 + cust.args.len() as u16 + cust.fs_rules.len() as u16).min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(dialog_width)) / 2;
     let y = (area.height.saturating_sub(dialog_height)) / 2;
     let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
@@ -584,13 +735,12 @@ fn draw_customize_dialog(frame: &mut Frame, cust: &crate::app::CustomizeState, t
     let sel = theme.approval_selected;
     let dim = theme.approval_option;
     let effect_color = if EFFECTS[cust.effect_idx] == "allow" { theme.approval_allow } else { theme.approval_deny };
+    let net_color = if cust.network_idx == 1 { theme.approval_allow } else { theme.approval_deny };
 
-    let mut lines = vec![
-        Line::from(vec![
-            Span::styled("  Tool:  ", dim),
-            Span::styled(&cust.tool, theme.approval_tool),
-        ]),
-    ];
+    let mut lines = vec![Line::from(vec![
+        Span::styled("  Tool:  ", dim),
+        Span::styled(&cust.tool, theme.approval_tool),
+    ])];
 
     // Arg fields
     let arg_label = if cust.tool == "shell" { "arg" } else { "path" };
@@ -625,8 +775,41 @@ fn draw_customize_dialog(frame: &mut Frame, cust: &crate::app::CustomizeState, t
         Span::styled(format!("< {} >", SCOPES[cust.scope_idx]), if cust.focus == sf { sel } else { dim }),
     ]));
 
+    // Sandbox section
+    let nf = cust.network_field();
+    lines.push(Line::from(Span::styled("  ── Sandbox ──", dim)));
+    lines.push(Line::from(vec![
+        Span::styled("  Network: ", if cust.focus == nf { sel } else { dim }),
+        Span::styled(format!("< {} >", NETWORKS[cust.network_idx]), if cust.focus == nf { sel } else { net_color }),
+    ]));
+
+    let fs_start = cust.fs_start();
+    for (i, rule) in cust.fs_rules.iter().enumerate() {
+        let is_focused = cust.focus == fs_start + i;
+        let path_style = if is_focused && cust.fs_sub_focus == 0 { sel } else { dim };
+        let mut spans = vec![
+            Span::styled("    ", dim),
+            Span::styled(format!("{:<14}", rule.path), path_style),
+            Span::styled(" ", dim),
+        ];
+        for (label, enabled, sub_idx) in [
+            ("r", rule.read, 1), ("w", rule.write, 2), ("c", rule.create, 3),
+            ("d", rule.delete, 4), ("x", rule.execute, 5),
+        ] {
+            let pf = is_focused && cust.fs_sub_focus == sub_idx;
+            let st = if pf { sel } else if enabled { theme.approval_allow } else { theme.approval_deny };
+            spans.push(Span::styled(if enabled { label.to_uppercase() } else { "-".into() }, st));
+        }
+        if is_focused && cust.fs_sub_focus > 0 {
+            spans.push(Span::styled(" (x)rm", dim));
+        }
+        lines.push(Line::from(spans));
+    }
+    let add_fs_focused = cust.focus == cust.add_fs_field();
+    lines.push(Line::from(Span::styled("    + add path (Space)", if add_fs_focused { sel } else { dim })));
+
     lines.push(Line::from(Span::styled(
-        "  Up/Down fields | Space toggle | Enter save | Esc cancel",
+        "  Up/Down | Space toggle | Enter save | Esc cancel",
         dim,
     )));
 

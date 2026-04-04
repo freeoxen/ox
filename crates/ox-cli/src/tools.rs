@@ -38,7 +38,10 @@ pub fn read_file(workspace: PathBuf) -> FnTool {
             "required": ["path"]
         }),
         move |input| {
-            let p = input.get("path").and_then(|v| v.as_str()).ok_or("missing 'path'")?;
+            let p = input
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or("missing 'path'")?;
             let resolved = resolve_path(&workspace, p)?;
             std::fs::read_to_string(&resolved)
                 .map_err(|e| format!("failed to read '{}': {e}", resolved.display()))
@@ -59,8 +62,14 @@ pub fn write_file(workspace: PathBuf) -> FnTool {
             "required": ["path", "content"]
         }),
         move |input| {
-            let p = input.get("path").and_then(|v| v.as_str()).ok_or("missing 'path'")?;
-            let content = input.get("content").and_then(|v| v.as_str()).ok_or("missing 'content'")?;
+            let p = input
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or("missing 'path'")?;
+            let content = input
+                .get("content")
+                .and_then(|v| v.as_str())
+                .ok_or("missing 'content'")?;
             let resolved = resolve_path(&workspace, p)?;
             if let Some(parent) = resolved.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| format!("mkdir: {e}"))?;
@@ -87,9 +96,18 @@ pub fn edit_file(workspace: PathBuf) -> FnTool {
             "required": ["path", "old_string", "new_string"]
         }),
         move |input| {
-            let p = input.get("path").and_then(|v| v.as_str()).ok_or("missing 'path'")?;
-            let old = input.get("old_string").and_then(|v| v.as_str()).ok_or("missing 'old_string'")?;
-            let new = input.get("new_string").and_then(|v| v.as_str()).ok_or("missing 'new_string'")?;
+            let p = input
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or("missing 'path'")?;
+            let old = input
+                .get("old_string")
+                .and_then(|v| v.as_str())
+                .ok_or("missing 'old_string'")?;
+            let new = input
+                .get("new_string")
+                .and_then(|v| v.as_str())
+                .ok_or("missing 'new_string'")?;
             let line_start = input.get("line_start").and_then(|v| v.as_u64());
             let resolved = resolve_path(&workspace, p)?;
             let content = std::fs::read_to_string(&resolved)
@@ -99,22 +117,34 @@ pub fn edit_file(workspace: PathBuf) -> FnTool {
                 // Narrow search to content from line_start onward
                 let start_line = start_line.max(1) as usize - 1; // 0-based
                 let lines: Vec<&str> = content.lines().collect();
-                let prefix: String = lines.iter().take(start_line)
+                let prefix: String = lines
+                    .iter()
+                    .take(start_line)
                     .map(|l| format!("{l}\n"))
                     .collect();
-                let suffix: String = lines.iter().skip(start_line)
+                let suffix: String = lines
+                    .iter()
+                    .skip(start_line)
                     .map(|l| format!("{l}\n"))
                     .collect();
                 // Trim trailing newline if original didn't end with one
-                let suffix = if content.ends_with('\n') { suffix } else {
+                let suffix = if content.ends_with('\n') {
+                    suffix
+                } else {
                     suffix.strip_suffix('\n').unwrap_or(&suffix).to_string()
                 };
                 let count = suffix.matches(old).count();
                 if count == 0 {
-                    return Err(format!("old_string not found in {p} from line {}", start_line + 1));
+                    return Err(format!(
+                        "old_string not found in {p} from line {}",
+                        start_line + 1
+                    ));
                 }
                 if count > 1 {
-                    return Err(format!("old_string found {count} times in {p} from line {} (must be unique)", start_line + 1));
+                    return Err(format!(
+                        "old_string found {count} times in {p} from line {} (must be unique)",
+                        start_line + 1
+                    ));
                 }
                 format!("{prefix}{}", suffix.replacen(old, new, 1))
             } else {
@@ -124,7 +154,9 @@ pub fn edit_file(workspace: PathBuf) -> FnTool {
                 }
                 if count > 1 {
                     // Report line numbers of matches to help the LLM retry with line_start
-                    let match_lines: Vec<usize> = content.lines().enumerate()
+                    let match_lines: Vec<usize> = content
+                        .lines()
+                        .enumerate()
                         .filter(|(_, line)| line.contains(old))
                         .map(|(i, _)| i + 1)
                         .collect();
@@ -154,7 +186,10 @@ pub fn shell(workspace: PathBuf) -> FnTool {
             "required": ["command"]
         }),
         move |input| {
-            let cmd = input.get("command").and_then(|v| v.as_str()).ok_or("missing 'command'")?;
+            let cmd = input
+                .get("command")
+                .and_then(|v| v.as_str())
+                .ok_or("missing 'command'")?;
             let output = std::process::Command::new("sh")
                 .arg("-c")
                 .arg(cmd)
@@ -225,7 +260,8 @@ mod tests {
         std::fs::write(dir.path().join("hello.txt"), "hello world").unwrap();
         let tool = read_file(dir.path().to_path_buf());
         assert_eq!(
-            tool.execute(serde_json::json!({"path": "hello.txt"})).unwrap(),
+            tool.execute(serde_json::json!({"path": "hello.txt"}))
+                .unwrap(),
             "hello world"
         );
     }
@@ -234,14 +270,19 @@ mod tests {
     fn test_read_file_missing() {
         let dir = tempfile::tempdir().unwrap();
         let tool = read_file(dir.path().to_path_buf());
-        assert!(tool.execute(serde_json::json!({"path": "nope.txt"})).is_err());
+        assert!(
+            tool.execute(serde_json::json!({"path": "nope.txt"}))
+                .is_err()
+        );
     }
 
     #[test]
     fn test_read_file_escapes() {
         let dir = tempfile::tempdir().unwrap();
         let tool = read_file(dir.path().to_path_buf());
-        let err = tool.execute(serde_json::json!({"path": "../../etc/passwd"})).unwrap_err();
+        let err = tool
+            .execute(serde_json::json!({"path": "../../etc/passwd"}))
+            .unwrap_err();
         assert!(err.contains("escapes"));
     }
 
@@ -249,16 +290,24 @@ mod tests {
     fn test_write_file() {
         let dir = tempfile::tempdir().unwrap();
         let tool = write_file(dir.path().to_path_buf());
-        tool.execute(serde_json::json!({"path": "out.txt", "content": "hi"})).unwrap();
-        assert_eq!(std::fs::read_to_string(dir.path().join("out.txt")).unwrap(), "hi");
+        tool.execute(serde_json::json!({"path": "out.txt", "content": "hi"}))
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("out.txt")).unwrap(),
+            "hi"
+        );
     }
 
     #[test]
     fn test_write_file_creates_parents() {
         let dir = tempfile::tempdir().unwrap();
         let tool = write_file(dir.path().to_path_buf());
-        tool.execute(serde_json::json!({"path": "a/b/c.txt", "content": "deep"})).unwrap();
-        assert_eq!(std::fs::read_to_string(dir.path().join("a/b/c.txt")).unwrap(), "deep");
+        tool.execute(serde_json::json!({"path": "a/b/c.txt", "content": "deep"}))
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a/b/c.txt")).unwrap(),
+            "deep"
+        );
     }
 
     #[test]
@@ -270,8 +319,12 @@ mod tests {
             "path": "f.txt",
             "old_string": "hello",
             "new_string": "goodbye"
-        })).unwrap();
-        assert_eq!(std::fs::read_to_string(dir.path().join("f.txt")).unwrap(), "goodbye world");
+        }))
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("f.txt")).unwrap(),
+            "goodbye world"
+        );
     }
 
     #[test]
@@ -279,11 +332,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("f.txt"), "hello").unwrap();
         let tool = edit_file(dir.path().to_path_buf());
-        let err = tool.execute(serde_json::json!({
-            "path": "f.txt",
-            "old_string": "nope",
-            "new_string": "x"
-        })).unwrap_err();
+        let err = tool
+            .execute(serde_json::json!({
+                "path": "f.txt",
+                "old_string": "nope",
+                "new_string": "x"
+            }))
+            .unwrap_err();
         assert!(err.contains("not found"));
     }
 
@@ -292,11 +347,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("f.txt"), "x = 1\ny = 2\nx = 3\n").unwrap();
         let tool = edit_file(dir.path().to_path_buf());
-        let err = tool.execute(serde_json::json!({
-            "path": "f.txt",
-            "old_string": "x",
-            "new_string": "z"
-        })).unwrap_err();
+        let err = tool
+            .execute(serde_json::json!({
+                "path": "f.txt",
+                "old_string": "x",
+                "new_string": "z"
+            }))
+            .unwrap_err();
         assert!(err.contains("line_start"));
         assert!(err.contains("[1, 3]"));
     }
@@ -312,7 +369,8 @@ mod tests {
             "old_string": "x",
             "new_string": "z",
             "line_start": 3
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(
             std::fs::read_to_string(dir.path().join("f.txt")).unwrap(),
             "x = 1\ny = 2\nz = 3\n"
@@ -323,7 +381,9 @@ mod tests {
     fn test_shell() {
         let dir = tempfile::tempdir().unwrap();
         let tool = shell(dir.path().to_path_buf());
-        let result = tool.execute(serde_json::json!({"command": "echo hello"})).unwrap();
+        let result = tool
+            .execute(serde_json::json!({"command": "echo hello"}))
+            .unwrap();
         assert_eq!(result.trim(), "hello");
     }
 
@@ -331,7 +391,9 @@ mod tests {
     fn test_shell_exit_code() {
         let dir = tempfile::tempdir().unwrap();
         let tool = shell(dir.path().to_path_buf());
-        let result = tool.execute(serde_json::json!({"command": "false"})).unwrap();
+        let result = tool
+            .execute(serde_json::json!({"command": "false"}))
+            .unwrap();
         assert!(result.contains("[exit code:"));
     }
 }

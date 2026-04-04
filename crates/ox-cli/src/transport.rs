@@ -1,5 +1,5 @@
-use ox_gate::codec::{anthropic as anthropic_codec, openai as openai_codec, UsageInfo};
 use ox_gate::ProviderConfig;
+use ox_gate::codec::{UsageInfo, anthropic as anthropic_codec, openai as openai_codec};
 use ox_kernel::{CompletionRequest, StreamEvent};
 use std::collections::HashSet;
 use std::io::BufRead;
@@ -60,7 +60,9 @@ pub fn make_send_fn(
         for (key, value) in &headers {
             req = req.header(key, value);
         }
-        let resp = req.send().map_err(|e| format!("HTTP request failed: {e}"))?;
+        let resp = req
+            .send()
+            .map_err(|e| format!("HTTP request failed: {e}"))?;
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().unwrap_or_default();
@@ -208,8 +210,11 @@ impl SseParser {
                     let index = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0);
                     let function = tc.get("function");
                     if self.openai_tool_started.insert(index) {
-                        let id =
-                            tc.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let id = tc
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
                         let name = function
                             .and_then(|f| f.get("name"))
                             .and_then(|n| n.as_str())
@@ -311,12 +316,16 @@ mod tests {
         let config = ProviderConfig::anthropic();
         let (url, headers, _body) = build_request(&config, "sk-test", &sample_request()).unwrap();
         assert_eq!(url, "https://api.anthropic.com/v1/messages");
-        assert!(headers
-            .iter()
-            .any(|(k, v)| k == "x-api-key" && v == "sk-test"));
-        assert!(headers
-            .iter()
-            .any(|(k, v)| k == "anthropic-version" && v == "2023-06-01"));
+        assert!(
+            headers
+                .iter()
+                .any(|(k, v)| k == "x-api-key" && v == "sk-test")
+        );
+        assert!(
+            headers
+                .iter()
+                .any(|(k, v)| k == "anthropic-version" && v == "2023-06-01")
+        );
     }
 
     #[test]
@@ -324,9 +333,11 @@ mod tests {
         let config = ProviderConfig::openai();
         let (url, headers, _body) = build_request(&config, "sk-oai", &sample_request()).unwrap();
         assert_eq!(url, "https://api.openai.com/v1/chat/completions");
-        assert!(headers
-            .iter()
-            .any(|(k, v)| k == "Authorization" && v == "Bearer sk-oai"));
+        assert!(
+            headers
+                .iter()
+                .any(|(k, v)| k == "Authorization" && v == "Bearer sk-oai")
+        );
     }
 
     #[test]
@@ -373,7 +384,9 @@ mod tests {
         let mut parser = SseParser::new("anthropic");
         let events = parser.feed("data: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"read_file\"}}");
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], StreamEvent::ToolUseStart { id, name } if id == "t1" && name == "read_file"));
+        assert!(
+            matches!(&events[0], StreamEvent::ToolUseStart { id, name } if id == "t1" && name == "read_file")
+        );
     }
 
     #[test]
@@ -395,7 +408,9 @@ mod tests {
     #[test]
     fn sse_parser_anthropic_usage_tracking() {
         let mut parser = SseParser::new("anthropic");
-        parser.feed("data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":150}}}");
+        parser.feed(
+            "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":150}}}",
+        );
         assert_eq!(parser.usage.input_tokens, 150);
         parser.feed("data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":42}}");
         assert_eq!(parser.usage.output_tokens, 42);

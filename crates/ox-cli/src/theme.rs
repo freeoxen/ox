@@ -75,8 +75,7 @@ impl Theme {
         let bold = Style::default().add_modifier(Modifier::BOLD);
 
         Self {
-            title_badge: Style::default()
-                .add_modifier(Modifier::BOLD | Modifier::REVERSED),
+            title_badge: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
             title_info: dim,
 
             user_prompt: bold.fg(Color::Green),
@@ -102,8 +101,7 @@ impl Theme {
             approval_title: bold.fg(Color::Yellow),
             approval_tool: bold,
             approval_preview: dim,
-            approval_selected: Style::default()
-                .add_modifier(Modifier::BOLD | Modifier::REVERSED),
+            approval_selected: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
             approval_option: dim,
             approval_allow: Style::default().fg(Color::Green),
             approval_deny: Style::default().fg(Color::Red),

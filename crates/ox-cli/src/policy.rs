@@ -3,16 +3,16 @@
 //! Evaluates tool invocations against a clash policy manifest (match-tree IR).
 //! Policies are authored in Starlark or JSON, stored in `.clash/policy.json`.
 
-use clash::policy::match_tree::{
-    CompiledPolicy, Decision, Node, Observable, Pattern, PolicyManifest, QueryContext, SandboxRef,
-    Value,
-};
 use clash::policy::manifest_edit;
-use clash::policy::{Effect, PolicyDecision};
+use clash::policy::match_tree::{
+    CompiledPolicy, Decision, Node, Observable, Pattern, PolicyManifest, QueryContext, Value,
+};
+use clash::policy::Effect;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Result of evaluating a tool call against the policy (simplified for TUI use).
+#[allow(dead_code)]
 pub enum CheckResult {
     Allow,
     Deny(String),
@@ -49,7 +49,9 @@ impl PolicyGuard {
         let policy_path = workspace.join(".clash").join("policy.json");
         let manifest = if policy_path.exists() {
             match std::fs::read_to_string(&policy_path) {
-                Ok(content) => serde_json::from_str(&content).unwrap_or_else(|_| default_manifest()),
+                Ok(content) => {
+                    serde_json::from_str(&content).unwrap_or_else(|_| default_manifest())
+                }
                 Err(_) => default_manifest(),
             }
         } else {
@@ -92,9 +94,7 @@ impl PolicyGuard {
         match decision.effect {
             Effect::Allow => CheckResult::Allow,
             Effect::Deny => {
-                let reason = decision
-                    .reason
-                    .unwrap_or_else(|| "denied by policy".into());
+                let reason = decision.reason.unwrap_or_else(|| "denied by policy".into());
                 CheckResult::Deny(reason)
             }
             Effect::Ask => CheckResult::Ask {
@@ -129,6 +129,25 @@ impl PolicyGuard {
         let node = build_deny_node(tool_name, input);
         manifest_edit::upsert_rule(&mut self.manifest, node);
         self.save();
+    }
+
+    /// Add a named sandbox definition.
+    pub fn add_sandbox(
+        &mut self,
+        name: &str,
+        sandbox: clash::policy::sandbox_types::SandboxPolicy,
+        persist: bool,
+    ) {
+        if persist {
+            self.manifest
+                .policy
+                .sandboxes
+                .insert(name.to_string(), sandbox.clone());
+            self.save();
+        }
+        self.session_policy
+            .sandboxes
+            .insert(name.to_string(), sandbox);
     }
 
     /// Insert an arbitrary node into the session policy.
@@ -283,7 +302,10 @@ fn build_query_context(tool_name: &str, input: &serde_json::Value) -> QueryConte
         hook_type: None,
         agent_name: None,
         fs_op: None,
-        fs_path: input.get("path").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        fs_path: input
+            .get("path")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
         net_domain: None,
         mode: None,
     }
@@ -304,7 +326,11 @@ fn format_input_preview(tool_name: &str, input: &serde_json::Value) -> String {
             .to_string(),
         _ => {
             let s = serde_json::to_string(input).unwrap_or_default();
-            if s.len() > 80 { format!("{}...", &s[..80]) } else { s }
+            if s.len() > 80 {
+                format!("{}...", &s[..80])
+            } else {
+                s
+            }
         }
     }
 }
