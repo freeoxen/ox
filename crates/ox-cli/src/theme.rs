@@ -44,6 +44,19 @@ pub struct Theme {
 
     /// Status bar text.
     pub status: Style,
+
+    /// Approval dialog border.
+    pub approval_border: Style,
+    /// Approval dialog title ("Permission Required").
+    pub approval_title: Style,
+    /// Approval dialog tool name.
+    pub approval_tool: Style,
+    /// Approval dialog input preview.
+    pub approval_preview: Style,
+    /// Approval dialog selected option.
+    pub approval_selected: Style,
+    /// Approval dialog unselected option.
+    pub approval_option: Style,
 }
 
 impl Theme {
@@ -80,6 +93,14 @@ impl Theme {
             input_border: dim,
 
             status: dim,
+
+            approval_border: bold.fg(Color::Yellow),
+            approval_title: bold.fg(Color::Yellow),
+            approval_tool: bold,
+            approval_preview: dim,
+            approval_selected: Style::default()
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED),
+            approval_option: dim,
         }
     }
 }

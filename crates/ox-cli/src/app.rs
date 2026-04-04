@@ -16,12 +16,33 @@ You have tools for reading files, writing files, editing files, \
 and running shell commands. \
 Always read a file before modifying it. Be concise.";
 
+use crate::policy::PolicyStats;
+
 /// Events flowing from the agent thread to the TUI.
 #[derive(Debug, Clone)]
 pub enum AppEvent {
     Agent(AgentEvent),
     Usage { input_tokens: u32, output_tokens: u32 },
+    PolicyStats(PolicyStats),
     Done(Result<String, String>),
+}
+
+/// Non-Clone event — carries the oneshot response channel.
+pub enum AppControl {
+    PermissionRequest {
+        tool: String,
+        input_preview: String,
+        respond: mpsc::Sender<ApprovalResponse>,
+    },
+}
+
+/// User's response to a permission prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalResponse {
+    AllowOnce,
+    AllowAlways,
+    DenyOnce,
+    DenyAlways,
 }
 
 /// A message visible in the conversation.
@@ -32,6 +53,23 @@ pub enum ChatMessage {
     ToolCall { name: String },
     ToolResult { name: String, output: String },
     Error(String),
+}
+
+/// State for the permission approval dialog.
+pub struct ApprovalState {
+    pub tool: String,
+    pub input_preview: String,
+    pub selected: usize,
+    pub respond: mpsc::Sender<ApprovalResponse>,
+}
+
+impl ApprovalState {
+    pub const OPTIONS: [(&str, ApprovalResponse); 4] = [
+        ("Allow once", ApprovalResponse::AllowOnce),
+        ("Allow always (add rule)", ApprovalResponse::AllowAlways),
+        ("Deny once", ApprovalResponse::DenyOnce),
+        ("Deny always (add rule)", ApprovalResponse::DenyAlways),
+    ];
 }
 
 /// TUI-side application state.
@@ -46,6 +84,7 @@ pub struct App {
     pub provider: String,
     prompt_tx: mpsc::Sender<String>,
     pub event_rx: mpsc::Receiver<AppEvent>,
+    pub control_rx: mpsc::Receiver<AppControl>,
     // Input history
     pub input_history: Vec<String>,
     history_cursor: usize,
@@ -53,6 +92,9 @@ pub struct App {
     // Token usage (cumulative)
     pub tokens_in: u32,
     pub tokens_out: u32,
+    // Policy
+    pub policy_stats: PolicyStats,
+    pub pending_approval: Option<ApprovalState>,
 }
 
 impl App {
@@ -64,11 +106,18 @@ impl App {
         api_key: String,
         workspace: PathBuf,
         session_path: Option<PathBuf>,
+        no_policy: bool,
     ) -> Self {
         let (prompt_tx, prompt_rx) = mpsc::channel::<String>();
         let (event_tx, event_rx) = mpsc::channel::<AppEvent>();
+        let (control_tx, control_rx) = mpsc::channel::<AppControl>();
 
-        let tools = crate::tools::standard_tools(workspace);
+        let tools = crate::tools::standard_tools(workspace.clone());
+        let policy = if no_policy {
+            crate::policy::PolicyGuard::permissive()
+        } else {
+            crate::policy::PolicyGuard::load(&workspace)
+        };
 
         let agent_model = model.clone();
         let agent_provider = provider.clone();
@@ -79,9 +128,11 @@ impl App {
                 max_tokens,
                 api_key,
                 tools,
+                policy,
                 session_path,
                 prompt_rx,
                 event_tx,
+                control_tx,
             );
         });
 
@@ -96,11 +147,14 @@ impl App {
             provider,
             prompt_tx,
             event_rx,
+            control_rx,
             input_history: Vec::new(),
             history_cursor: 0,
             input_draft: String::new(),
             tokens_in: 0,
             tokens_out: 0,
+            policy_stats: PolicyStats::default(),
+            pending_approval: None,
         }
     }
 
@@ -182,6 +236,9 @@ impl App {
                 self.tokens_in += input_tokens;
                 self.tokens_out += output_tokens;
             }
+            AppEvent::PolicyStats(stats) => {
+                self.policy_stats = stats;
+            }
             AppEvent::Done(Ok(_)) => {
                 self.thinking = false;
             }
@@ -203,9 +260,11 @@ fn agent_thread(
     max_tokens: u32,
     api_key: String,
     extra_tools: Vec<Box<dyn ox_kernel::Tool>>,
+    mut policy: crate::policy::PolicyGuard,
     session_path: Option<PathBuf>,
     prompt_rx: mpsc::Receiver<String>,
     event_tx: mpsc::Sender<AppEvent>,
+    control_tx: mpsc::Sender<AppControl>,
 ) {
     let client = reqwest::blocking::Client::new();
     let mut kernel = Kernel::new(model.clone());
@@ -291,8 +350,10 @@ fn agent_thread(
             &mut kernel,
             &mut context,
             &tools,
+            &mut policy,
             &client,
             &event_tx,
+            &control_tx,
         );
         event_tx.send(AppEvent::Done(result)).ok();
     }
@@ -407,9 +468,13 @@ fn run_streaming_loop(
     kernel: &mut Kernel,
     context: &mut Namespace,
     tools: &ToolRegistry,
+    policy: &mut crate::policy::PolicyGuard,
     client: &reqwest::blocking::Client,
     event_tx: &mpsc::Sender<AppEvent>,
+    control_tx: &mpsc::Sender<AppControl>,
 ) -> Result<String, String> {
+    let mut stats = PolicyStats::default();
+
     loop {
         // Read provider config from the namespace each iteration
         let (config, api_key) = read_gate_config(context)?;
@@ -463,9 +528,79 @@ fn run_streaming_loop(
             return Ok(text);
         }
 
-        // Execute tools
+        // Execute tools with policy enforcement
         let mut results = Vec::new();
         for tc in &tool_calls {
+            // Policy check before execution
+            let decision = policy.check(&tc.name, &tc.input);
+            let proceed = match decision {
+                crate::policy::PolicyDecision::Allow => {
+                    stats.allowed += 1;
+                    true
+                }
+                crate::policy::PolicyDecision::Deny(reason) => {
+                    stats.denied += 1;
+                    results.push(ToolResult {
+                        tool_use_id: tc.id.clone(),
+                        content: format!("denied: {reason}"),
+                    });
+                    event_tx.send(AppEvent::PolicyStats(stats.clone())).ok();
+                    false
+                }
+                crate::policy::PolicyDecision::Ask { tool, input_preview } => {
+                    stats.asked += 1;
+                    event_tx.send(AppEvent::PolicyStats(stats.clone())).ok();
+                    // Send request to TUI and block on response
+                    let (resp_tx, resp_rx) = mpsc::channel();
+                    control_tx
+                        .send(AppControl::PermissionRequest {
+                            tool,
+                            input_preview,
+                            respond: resp_tx,
+                        })
+                        .ok();
+                    match resp_rx.recv() {
+                        Ok(ApprovalResponse::AllowOnce) => {
+                            stats.allowed += 1;
+                            true
+                        }
+                        Ok(ApprovalResponse::AllowAlways) => {
+                            policy.persist_allow(&tc.name, &tc.input);
+                            stats.allowed += 1;
+                            true
+                        }
+                        Ok(ApprovalResponse::DenyOnce) => {
+                            stats.denied += 1;
+                            results.push(ToolResult {
+                                tool_use_id: tc.id.clone(),
+                                content: "denied by user".into(),
+                            });
+                            false
+                        }
+                        Ok(ApprovalResponse::DenyAlways) => {
+                            policy.persist_deny(&tc.name, &tc.input);
+                            stats.denied += 1;
+                            results.push(ToolResult {
+                                tool_use_id: tc.id.clone(),
+                                content: "denied by user".into(),
+                            });
+                            false
+                        }
+                        Err(_) => {
+                            results.push(ToolResult {
+                                tool_use_id: tc.id.clone(),
+                                content: "denied: TUI disconnected".into(),
+                            });
+                            false
+                        }
+                    }
+                }
+            };
+
+            if !proceed {
+                continue;
+            }
+
             event_tx
                 .send(AppEvent::Agent(AgentEvent::ToolCallStart {
                     name: tc.name.clone(),
@@ -483,6 +618,7 @@ fn run_streaming_loop(
                     result: result_str.clone(),
                 }))
                 .ok();
+            event_tx.send(AppEvent::PolicyStats(stats.clone())).ok();
             results.push(ToolResult {
                 tool_use_id: tc.id.clone(),
                 content: result_str,

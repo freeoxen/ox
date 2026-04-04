@@ -1,9 +1,9 @@
-use crate::app::{App, ChatMessage};
+use crate::app::{App, ApprovalResponse, ApprovalState, AppControl, ChatMessage};
 use crate::theme::Theme;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 use std::time::Duration;
 
@@ -18,48 +18,54 @@ pub fn run(
 
         if event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
-                match (key.modifiers, key.code) {
-                    (KeyModifiers::CONTROL, KeyCode::Char('c')) | (_, KeyCode::Esc) => {
-                        app.should_quit = true;
-                    }
-                    (_, KeyCode::Enter) => {
-                        app.submit();
-                    }
-                    (_, KeyCode::Backspace) => {
-                        if app.cursor > 0 {
-                            app.cursor -= 1;
-                            app.input.remove(app.cursor);
+                if app.pending_approval.is_some() {
+                    // Modal: approval dialog key handling
+                    handle_approval_key(app, key.code);
+                } else {
+                    // Normal key handling
+                    match (key.modifiers, key.code) {
+                        (KeyModifiers::CONTROL, KeyCode::Char('c')) | (_, KeyCode::Esc) => {
+                            app.should_quit = true;
                         }
-                    }
-                    (_, KeyCode::Left) => {
-                        app.cursor = app.cursor.saturating_sub(1);
-                    }
-                    (_, KeyCode::Right) => {
-                        if app.cursor < app.input.len() {
+                        (_, KeyCode::Enter) => {
+                            app.submit();
+                        }
+                        (_, KeyCode::Backspace) => {
+                            if app.cursor > 0 {
+                                app.cursor -= 1;
+                                app.input.remove(app.cursor);
+                            }
+                        }
+                        (_, KeyCode::Left) => {
+                            app.cursor = app.cursor.saturating_sub(1);
+                        }
+                        (_, KeyCode::Right) => {
+                            if app.cursor < app.input.len() {
+                                app.cursor += 1;
+                            }
+                        }
+                        (_, KeyCode::Up) => {
+                            app.history_up();
+                        }
+                        (_, KeyCode::Down) => {
+                            app.history_down();
+                        }
+                        (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
+                            app.input.clear();
+                            app.cursor = 0;
+                        }
+                        (KeyModifiers::CONTROL, KeyCode::Char('a')) => {
+                            app.cursor = 0;
+                        }
+                        (KeyModifiers::CONTROL, KeyCode::Char('e')) => {
+                            app.cursor = app.input.len();
+                        }
+                        (_, KeyCode::Char(c)) => {
+                            app.input.insert(app.cursor, c);
                             app.cursor += 1;
                         }
+                        _ => {}
                     }
-                    (_, KeyCode::Up) => {
-                        app.history_up();
-                    }
-                    (_, KeyCode::Down) => {
-                        app.history_down();
-                    }
-                    (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
-                        app.input.clear();
-                        app.cursor = 0;
-                    }
-                    (KeyModifiers::CONTROL, KeyCode::Char('a')) => {
-                        app.cursor = 0;
-                    }
-                    (KeyModifiers::CONTROL, KeyCode::Char('e')) => {
-                        app.cursor = app.input.len();
-                    }
-                    (_, KeyCode::Char(c)) => {
-                        app.input.insert(app.cursor, c);
-                        app.cursor += 1;
-                    }
-                    _ => {}
                 }
             }
         }
@@ -69,9 +75,58 @@ pub fn run(
             app.handle_event(event);
         }
 
+        // Check for permission requests (non-blocking)
+        if app.pending_approval.is_none() {
+            if let Ok(AppControl::PermissionRequest {
+                tool,
+                input_preview,
+                respond,
+            }) = app.control_rx.try_recv()
+            {
+                app.pending_approval = Some(ApprovalState {
+                    tool,
+                    input_preview,
+                    selected: 0,
+                    respond,
+                });
+            }
+        }
+
         if app.should_quit {
             return Ok(());
         }
+    }
+}
+
+fn handle_approval_key(app: &mut App, key: KeyCode) {
+    let approval = app.pending_approval.as_mut().unwrap();
+    match key {
+        KeyCode::Up => {
+            approval.selected = approval.selected.saturating_sub(1);
+        }
+        KeyCode::Down => {
+            if approval.selected < ApprovalState::OPTIONS.len() - 1 {
+                approval.selected += 1;
+            }
+        }
+        KeyCode::Enter => {
+            let response = ApprovalState::OPTIONS[approval.selected].1;
+            let approval = app.pending_approval.take().unwrap();
+            approval.respond.send(response).ok();
+        }
+        KeyCode::Char('y') | KeyCode::Char('Y') => {
+            let approval = app.pending_approval.take().unwrap();
+            approval.respond.send(ApprovalResponse::AllowOnce).ok();
+        }
+        KeyCode::Char('n') | KeyCode::Char('N') => {
+            let approval = app.pending_approval.take().unwrap();
+            approval.respond.send(ApprovalResponse::DenyOnce).ok();
+        }
+        KeyCode::Char('a') | KeyCode::Char('A') => {
+            let approval = app.pending_approval.take().unwrap();
+            approval.respond.send(ApprovalResponse::AllowAlways).ok();
+        }
+        _ => {}
     }
 }
 
@@ -159,7 +214,7 @@ fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
     // Thinking indicator
     if app.thinking {
         if let Some(ChatMessage::AssistantChunk(_)) = app.messages.last() {
-            // streaming text visible — no extra indicator needed
+            // streaming text visible
         } else {
             lines.push(Line::from(Span::styled("  ...", theme.thinking)));
         }
@@ -192,11 +247,13 @@ fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
     let input = Paragraph::new(format!("> {}", app.input)).block(input_block);
     frame.render_widget(input, chunks[2]);
 
-    // Cursor
-    frame.set_cursor_position((
-        chunks[2].x + app.cursor as u16 + 2,
-        chunks[2].y + 1,
-    ));
+    // Cursor (only when not in approval mode)
+    if app.pending_approval.is_none() {
+        frame.set_cursor_position((
+            chunks[2].x + app.cursor as u16 + 2,
+            chunks[2].y + 1,
+        ));
+    }
 
     // Status bar
     let tokens = if app.tokens_in > 0 || app.tokens_out > 0 {
@@ -204,11 +261,67 @@ fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
     } else {
         String::new()
     };
-    let status_text = if app.thinking {
-        format!("streaming...{tokens}")
+    let policy = {
+        let s = &app.policy_stats;
+        if s.allowed > 0 || s.denied > 0 || s.asked > 0 {
+            format!(" | ok:{} no:{} ask:{}", s.allowed, s.denied, s.asked)
+        } else {
+            String::new()
+        }
+    };
+    let status_text = if app.pending_approval.is_some() {
+        format!("PERMISSION REQUIRED{tokens}{policy}")
+    } else if app.thinking {
+        format!("streaming...{tokens}{policy}")
     } else {
-        format!("idle{tokens} | Enter send | Esc quit | Up/Down history")
+        format!("idle{tokens}{policy} | Enter send | Esc quit")
     };
     let status = Paragraph::new(Span::styled(format!(" {status_text}"), theme.status));
     frame.render_widget(status, chunks[3]);
+
+    // Approval dialog overlay
+    if let Some(ref approval) = app.pending_approval {
+        draw_approval_dialog(frame, approval, theme);
+    }
+}
+
+fn draw_approval_dialog(frame: &mut Frame, approval: &ApprovalState, theme: &Theme) {
+    let area = frame.area();
+    let dialog_width = 50.min(area.width.saturating_sub(4));
+    let dialog_height = 9;
+    let x = (area.width.saturating_sub(dialog_width)) / 2;
+    let y = (area.height.saturating_sub(dialog_height)) / 2;
+    let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
+
+    // Clear the area behind the dialog
+    frame.render_widget(Clear, dialog_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme.approval_border)
+        .title(Span::styled(" Permission Required ", theme.approval_title));
+
+    let inner = block.inner(dialog_area);
+    frame.render_widget(block, dialog_area);
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(format!("[{}] ", approval.tool), theme.approval_tool),
+            Span::styled(&approval.input_preview, theme.approval_preview),
+        ]),
+        Line::from(""),
+    ];
+
+    for (i, (label, _)) in ApprovalState::OPTIONS.iter().enumerate() {
+        let style = if i == approval.selected {
+            theme.approval_selected
+        } else {
+            theme.approval_option
+        };
+        let marker = if i == approval.selected { "> " } else { "  " };
+        lines.push(Line::from(Span::styled(format!("{marker}{label}"), style)));
+    }
+
+    let content = Paragraph::new(Text::from(lines));
+    frame.render_widget(content, inner);
 }

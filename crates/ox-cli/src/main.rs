@@ -1,4 +1,5 @@
 mod app;
+mod policy;
 mod session;
 mod theme;
 mod tools;
@@ -38,6 +39,10 @@ struct Cli {
     /// Resume the most recent session
     #[arg(long)]
     resume: bool,
+
+    /// Disable policy enforcement (allow all tool calls)
+    #[arg(long)]
+    no_policy: bool,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -74,7 +79,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     } else {
-        // Auto-session: use workspace directory name as session name
         let session_name = workspace
             .file_name()
             .and_then(|n| n.to_str())
@@ -89,6 +93,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         api_key,
         workspace,
         session_path,
+        cli.no_policy,
     );
 
     let theme = theme::Theme::default();
