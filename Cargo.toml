@@ -11,6 +11,7 @@ members = [
     "crates/ox-wasi",
     "crates/ox-web",
     "crates/ox-cli",
+    "crates/ox-inbox",
 ]
 
 [workspace.package]

@@ -5,3 +5,4 @@ Cargo.lock
 node_modules
 .svelte-kit
 site/dist
+.superpowers

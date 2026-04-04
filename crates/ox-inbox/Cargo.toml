@@ -1,0 +1,17 @@
+[package]
+name = "ox-inbox"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+description = "StructFS-backed inbox store for ox agent thread management"
+
+[dependencies]
+structfs-core-store = { workspace = true }
+structfs-serde-store = { workspace = true }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"
