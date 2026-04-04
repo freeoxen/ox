@@ -658,12 +658,9 @@ fn run_streaming_loop(
                                 sandbox,
                             };
                             match scope.as_str() {
-                                "always" => {
-                                    policy.add_persistent_rule(rule);
-                                }
-                                _ => {
-                                    policy.add_session_rule(rule);
-                                }
+                                "always" => policy.add_persistent_rule(rule),
+                                "session" => policy.add_session_rule(rule),
+                                _ => {} // "once" — no rule created
                             }
                             if effect == "allow" {
                                 stats.allowed += 1;

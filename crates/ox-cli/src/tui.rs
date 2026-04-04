@@ -428,7 +428,7 @@ fn draw_approval_dialog(frame: &mut Frame, approval: &ApprovalState, theme: &The
 }
 
 const EFFECTS: [&str; 2] = ["allow", "deny"];
-const SCOPES: [&str; 2] = ["session", "always"];
+const SCOPES: [&str; 3] = ["once", "session", "always"];
 
 fn infer_rule_fields(tool: &str, preview: &str) -> (String, String) {
     match tool {
@@ -517,9 +517,15 @@ fn handle_customize_key(app: &mut App, key: KeyCode) {
                 }
             }
             2 => {
-                // Scope: toggle
-                if matches!(key, KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l') | KeyCode::Char(' ')) {
-                    cust.scope_idx = 1 - cust.scope_idx;
+                // Scope: cycle once/session/always
+                match key {
+                    KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ') => {
+                        cust.scope_idx = (cust.scope_idx + 1) % SCOPES.len();
+                    }
+                    KeyCode::Left | KeyCode::Char('h') => {
+                        cust.scope_idx = if cust.scope_idx == 0 { SCOPES.len() - 1 } else { cust.scope_idx - 1 };
+                    }
+                    _ => {}
                 }
             }
             3 => {
