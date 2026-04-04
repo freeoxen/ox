@@ -580,8 +580,8 @@ fn handle_customize_key(app: &mut App, key: KeyCode) {
                     }
                     _ => {}
                 }
-                // Delete entry
-                if matches!(key, KeyCode::Delete) {
+                // Remove entry with x (only when on permission toggles, not path editing)
+                if matches!(key, KeyCode::Char('x')) && cust.fs_sub_focus > 0 {
                     cust.fs_entries.remove(idx);
                     cust.fs_sub_focus = 0;
                     // Adjust focus if we removed the last entry
@@ -694,9 +694,10 @@ fn draw_customize_dialog(frame: &mut Frame, cust: &crate::app::CustomizeState, t
             spans.push(Span::styled(display, style));
         }
 
-        if is_focused {
-            spans.push(Span::styled("  Del to remove", dim));
-        }
+        spans.push(Span::styled(
+            if is_focused { "  (x)rm" } else { "" },
+            dim,
+        ));
 
         lines.push(Line::from(spans));
     }
