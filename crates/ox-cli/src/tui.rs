@@ -647,12 +647,18 @@ fn draw_customize_dialog(frame: &mut Frame, cust: &crate::app::CustomizeState, t
         Span::styled(label.to_string(), if cust.focus == field { sel } else { dim })
     };
 
+    let pattern_label = match cust.tool.as_str() {
+        "shell" => "  Command: ",
+        "read_file" | "write_file" | "edit_file" => "  Path:    ",
+        _ => "  Match:   ",
+    };
+
     let mut lines = vec![
         Line::from(vec![
             Span::styled("  Tool:    ", dim),
             Span::styled(&cust.tool, theme.approval_tool),
         ]),
-        Line::from(vec![f(0, "  Pattern: "), Span::styled(format!("[{}]", cust.pattern), if cust.focus == 0 { sel } else { dim })]),
+        Line::from(vec![f(0, pattern_label), Span::styled(format!("[{}]", cust.pattern), if cust.focus == 0 { sel } else { dim })]),
         Line::from(vec![f(1, "  Effect:  "), Span::styled(format!("< {} >", EFFECTS[cust.effect_idx]), if cust.focus == 1 { sel } else { effect_color })]),
         Line::from(vec![f(2, "  Scope:   "), Span::styled(format!("< {} >", SCOPES[cust.scope_idx]), if cust.focus == 2 { sel } else { dim })]),
         Line::from(Span::styled("  ── Sandbox ──", dim)),
