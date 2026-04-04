@@ -48,10 +48,9 @@ pub enum ApprovalResponse {
     /// A custom rule created from the sandbox editor.
     CustomRule {
         tool: String,
-        arg_key: Option<String>,
-        arg_pattern: Option<String>,
+        matcher: crate::policy::Matcher,
         effect: String,     // "allow" or "deny"
-        scope: String,      // "session" or "always"
+        scope: String,      // "once", "session", or "always"
         sandbox: Option<crate::policy::SandboxConfig>,
     },
 }
@@ -96,20 +95,54 @@ impl ApprovalState {
 ///   4+N = "add path" action
 pub struct CustomizeState {
     pub tool: String,
-    pub arg_key: String,
-    pub pattern: String,
-    pub cursor: usize,
+    /// For shell: positional arg patterns. For file tools: single path pattern.
+    pub arg_patterns: Vec<crate::policy::ArgPattern>,
+    /// Which arg pattern is being edited (index into arg_patterns).
+    pub arg_edit_idx: usize,
+    /// Cursor within the pattern string being edited.
+    pub arg_cursor: usize,
     pub effect_idx: usize,
     pub scope_idx: usize,
+    /// Focus: 0..N-1 = arg patterns, N = effect, N+1 = scope, N+2 = network, N+3.. = fs entries
     pub focus: usize,
     pub respond: mpsc::Sender<ApprovalResponse>,
     // Sandbox
     pub network: bool,
     pub fs_entries: Vec<crate::policy::FsEntry>,
-    /// Sub-focus within an fs entry: 0=path, 1=r, 2=w, 3=c, 4=d
     pub fs_sub_focus: usize,
-    /// Cursor within the fs entry path field
     pub fs_path_cursor: usize,
+}
+
+impl CustomizeState {
+    /// Number of arg pattern fields.
+    pub fn num_args(&self) -> usize {
+        self.arg_patterns.len() + 1 // +1 for "add arg"
+    }
+
+    /// Field index where effect starts.
+    pub fn effect_field(&self) -> usize {
+        self.num_args()
+    }
+
+    /// Field index where scope starts.
+    pub fn scope_field(&self) -> usize {
+        self.effect_field() + 1
+    }
+
+    /// Field index where network starts.
+    pub fn network_field(&self) -> usize {
+        self.scope_field() + 1
+    }
+
+    /// Field index where fs entries start.
+    pub fn fs_field_start(&self) -> usize {
+        self.network_field() + 1
+    }
+
+    /// Total number of focusable fields.
+    pub fn total_fields(&self) -> usize {
+        self.fs_field_start() + self.fs_entries.len() + 1 // +1 for "add path"
+    }
 }
 
 /// TUI-side application state.
@@ -644,16 +677,14 @@ fn run_streaming_loop(
                         }
                         Ok(ApprovalResponse::CustomRule {
                             tool,
-                            arg_key,
-                            arg_pattern,
+                            matcher,
                             effect,
                             scope,
                             sandbox,
                         }) => {
                             let rule = crate::policy::Rule {
                                 tool: Some(tool),
-                                arg_key,
-                                arg_pattern,
+                                matcher,
                                 effect: effect.clone(),
                                 sandbox,
                             };

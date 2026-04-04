@@ -52,20 +52,49 @@ fn default_true() -> bool {
     true
 }
 
-/// A policy rule: match a tool name (and optionally input patterns), produce an effect.
+/// How a rule matches against tool call arguments.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type")]
+pub enum Matcher {
+    /// Match anything (no constraints beyond tool name).
+    #[serde(rename = "any")]
+    Any,
+    /// Match a single argument key against a glob pattern.
+    #[serde(rename = "simple")]
+    Simple { key: String, pattern: String },
+    /// Match shell command positional arguments individually.
+    /// Each entry constrains one positional arg (split by whitespace).
+    /// A missing entry means "match anything at that position."
+    #[serde(rename = "command")]
+    Command { args: Vec<ArgPattern> },
+}
+
+/// A constraint on a single positional argument.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ArgPattern {
+    /// 0-based position in the command.
+    pub position: usize,
+    /// Glob pattern to match (e.g. "test", "*.rs", "*").
+    pub pattern: String,
+}
+
+/// A policy rule: match a tool name + arguments, produce an effect.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Rule {
     /// Tool name to match (None = match all tools).
     pub tool: Option<String>,
-    /// Optional argument key to match on (e.g. "command", "path").
-    pub arg_key: Option<String>,
-    /// Optional argument pattern (glob-style) to match the value.
-    pub arg_pattern: Option<String>,
+    /// How to match the tool's arguments.
+    #[serde(default = "default_matcher")]
+    pub matcher: Matcher,
     /// The effect when this rule matches.
     pub effect: String, // "allow", "deny", "ask"
     /// Optional sandbox constraints for allowed tools.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<SandboxConfig>,
+}
+
+fn default_matcher() -> Matcher {
+    Matcher::Any
 }
 
 impl Rule {
@@ -78,22 +107,26 @@ impl Rule {
     }
 
     fn matches(&self, tool_name: &str, input: &serde_json::Value) -> bool {
-        // Tool name check
         if let Some(ref t) = self.tool {
             if t != tool_name {
                 return false;
             }
         }
-        // Argument check
-        if let Some(ref key) = self.arg_key {
-            let val = input.get(key).and_then(|v| v.as_str()).unwrap_or("");
-            if let Some(ref pattern) = self.arg_pattern {
-                if !glob_match(pattern, val) {
-                    return false;
-                }
+        match &self.matcher {
+            Matcher::Any => true,
+            Matcher::Simple { key, pattern } => {
+                let val = input.get(key).and_then(|v| v.as_str()).unwrap_or("");
+                glob_match(pattern, val)
+            }
+            Matcher::Command { args } => {
+                let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
+                let words: Vec<&str> = cmd.split_whitespace().collect();
+                args.iter().all(|ap| {
+                    let word = words.get(ap.position).copied().unwrap_or("");
+                    glob_match(&ap.pattern, word)
+                })
             }
         }
-        true
     }
 }
 
@@ -141,8 +174,7 @@ impl Default for PolicyManifest {
             rules: vec![
                 Rule {
                     tool: Some("read_file".into()),
-                    arg_key: None,
-                    arg_pattern: None,
+                    matcher: Matcher::Any,
                     effect: "allow".into(),
                     sandbox: None,
                 },
@@ -329,15 +361,19 @@ fn format_input_preview(tool_name: &str, input: &serde_json::Value) -> String {
 fn make_rule_from_call(tool_name: &str, input: &serde_json::Value, effect: &str) -> Rule {
     match tool_name {
         "shell" => {
-            let cmd = input
-                .get("command")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let binary = cmd.split_whitespace().next().unwrap_or(cmd);
+            let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
+            // Decompose into positional args — match each word exactly
+            let args: Vec<ArgPattern> = cmd
+                .split_whitespace()
+                .enumerate()
+                .map(|(i, word)| ArgPattern {
+                    position: i,
+                    pattern: word.to_string(),
+                })
+                .collect();
             Rule {
                 tool: Some("shell".into()),
-                arg_key: Some("command".into()),
-                arg_pattern: Some(format!("{binary}*")),
+                matcher: Matcher::Command { args },
                 effect: effect.into(),
                 sandbox: None,
             }
@@ -346,16 +382,17 @@ fn make_rule_from_call(tool_name: &str, input: &serde_json::Value, effect: &str)
             let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("*");
             Rule {
                 tool: Some(tool_name.into()),
-                arg_key: Some("path".into()),
-                arg_pattern: Some(path.to_string()),
+                matcher: Matcher::Simple {
+                    key: "path".into(),
+                    pattern: path.to_string(),
+                },
                 effect: effect.into(),
                 sandbox: None,
             }
         }
         _ => Rule {
             tool: Some(tool_name.into()),
-            arg_key: None,
-            arg_pattern: None,
+            matcher: Matcher::Any,
             effect: effect.into(),
             sandbox: None,
         },
@@ -409,8 +446,9 @@ mod tests {
                 default: "allow".into(),
                 rules: vec![Rule {
                     tool: Some("shell".into()),
-                    arg_key: Some("command".into()),
-                    arg_pattern: Some("rm*".into()),
+                    matcher: Matcher::Command {
+                        args: vec![ArgPattern { position: 0, pattern: "rm".into() }],
+                    },
                     effect: "deny".into(),
                     sandbox: None,
                 }],
@@ -437,15 +475,15 @@ mod tests {
                 rules: vec![
                     Rule {
                         tool: Some("shell".into()),
-                        arg_key: Some("command".into()),
-                        arg_pattern: Some("cargo*".into()),
+                        matcher: Matcher::Command {
+                            args: vec![ArgPattern { position: 0, pattern: "cargo".into() }],
+                        },
                         effect: "allow".into(),
                         sandbox: None,
                     },
                     Rule {
                         tool: Some("shell".into()),
-                        arg_key: None,
-                        arg_pattern: None,
+                        matcher: Matcher::Any,
                         effect: "deny".into(),
                         sandbox: None,
                     },
@@ -479,13 +517,19 @@ mod tests {
             PolicyDecision::Ask { .. }
         ));
 
-        // Persist allow
+        // Persist allow for "cargo test"
         guard.persist_allow("shell", &serde_json::json!({"command": "cargo test"}));
 
-        // Now it's allowed
+        // "cargo test" is now allowed (exact match)
+        assert!(matches!(
+            guard.check("shell", &serde_json::json!({"command": "cargo test"})),
+            PolicyDecision::Allow
+        ));
+
+        // "cargo build" is NOT allowed — structured matching is precise
         assert!(matches!(
             guard.check("shell", &serde_json::json!({"command": "cargo build"})),
-            PolicyDecision::Allow
+            PolicyDecision::Ask { .. }
         ));
 
         // File was written
