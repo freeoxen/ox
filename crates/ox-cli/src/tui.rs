@@ -135,7 +135,18 @@ fn handle_approval_key(app: &mut App, key: KeyCode) {
                 scope_idx: 0,
                 focus: 0,
                 respond: approval.respond,
-                input: serde_json::json!({}),
+                network: true,
+                fs_entries: vec![
+                    crate::policy::FsEntry {
+                        path: ".".into(),
+                        read: true,
+                        write: true,
+                        create: true,
+                        delete: true,
+                    },
+                ],
+                fs_sub_focus: 0,
+                fs_path_cursor: 0,
             });
         }
         // quick keys
@@ -440,18 +451,19 @@ fn handle_customize_key(app: &mut App, key: KeyCode) {
             let cust = app.pending_customize.take().unwrap();
             cust.respond.send(ApprovalResponse::DenyOnce).ok();
         }
-        // Move between fields: Tab, Shift-Tab, Up/Down, j/k
+        // Move between fields: Tab, Shift-Tab, Up/Down
+        // Fields: 0=pattern, 1=effect, 2=scope, 3=network, 4..4+N=fs entries, 4+N=add path
         KeyCode::Tab | KeyCode::Down => {
-            if cust.focus == 0 && key == KeyCode::Down {
-                // In pattern field, Down moves to next field (not text editing)
-                cust.focus = 1;
-            } else {
-                cust.focus = (cust.focus + 1) % 3;
-            }
+            let max_focus = 4 + cust.fs_entries.len(); // 4+N = "add path"
+            cust.focus = if cust.focus >= max_focus { 0 } else { cust.focus + 1 };
+            cust.fs_sub_focus = 0;
+            cust.fs_path_cursor = 0;
         }
-        KeyCode::BackTab => cust.focus = if cust.focus == 0 { 2 } else { cust.focus - 1 },
-        KeyCode::Up => {
-            cust.focus = if cust.focus == 0 { 2 } else { cust.focus - 1 };
+        KeyCode::BackTab | KeyCode::Up => {
+            let max_focus = 4 + cust.fs_entries.len();
+            cust.focus = if cust.focus == 0 { max_focus } else { cust.focus - 1 };
+            cust.fs_sub_focus = 0;
+            cust.fs_path_cursor = 0;
         }
         KeyCode::Enter => {
             let cust = app.pending_customize.take().unwrap();
@@ -469,13 +481,21 @@ fn handle_customize_key(app: &mut App, key: KeyCode) {
                 },
                 effect: EFFECTS[cust.effect_idx].to_string(),
                 scope: SCOPES[cust.scope_idx].to_string(),
+                sandbox: if cust.fs_entries.is_empty() && cust.network {
+                    None // no restrictions = no sandbox
+                } else {
+                    Some(crate::policy::SandboxConfig {
+                        network: cust.network,
+                        fs: cust.fs_entries.clone(),
+                    })
+                },
             };
             cust.respond.send(response).ok();
         }
         // Field-specific keys
         _ => match cust.focus {
             0 => {
-                // Pattern field: text editing
+                // Pattern: text editing
                 match key {
                     KeyCode::Char(c) => {
                         cust.pattern.insert(cust.cursor, c);
@@ -491,15 +511,93 @@ fn handle_customize_key(app: &mut App, key: KeyCode) {
                 }
             }
             1 => {
-                // Effect field: Left/Right or h/l to toggle
-                if matches!(key, KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l')) {
+                // Effect: toggle
+                if matches!(key, KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l') | KeyCode::Char(' ')) {
                     cust.effect_idx = 1 - cust.effect_idx;
                 }
             }
             2 => {
-                // Scope field: Left/Right or h/l to toggle
-                if matches!(key, KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l')) {
+                // Scope: toggle
+                if matches!(key, KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l') | KeyCode::Char(' ')) {
                     cust.scope_idx = 1 - cust.scope_idx;
+                }
+            }
+            3 => {
+                // Network: toggle
+                if matches!(key, KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l') | KeyCode::Char(' ')) {
+                    cust.network = !cust.network;
+                }
+            }
+            f if f >= 4 && f < 4 + cust.fs_entries.len() => {
+                // Filesystem entry
+                let idx = f - 4;
+                match cust.fs_sub_focus {
+                    0 => {
+                        // Path sub-field: text editing, Space moves to perms
+                        match key {
+                            KeyCode::Char(' ') => cust.fs_sub_focus = 1,
+                            KeyCode::Char(c) => {
+                                cust.fs_entries[idx].path.insert(cust.fs_path_cursor, c);
+                                cust.fs_path_cursor += 1;
+                            }
+                            KeyCode::Backspace if cust.fs_path_cursor > 0 => {
+                                cust.fs_path_cursor -= 1;
+                                cust.fs_entries[idx].path.remove(cust.fs_path_cursor);
+                            }
+                            KeyCode::Left => cust.fs_path_cursor = cust.fs_path_cursor.saturating_sub(1),
+                            KeyCode::Right if cust.fs_path_cursor < cust.fs_entries[idx].path.len() => {
+                                cust.fs_path_cursor += 1;
+                            }
+                            _ => {}
+                        }
+                    }
+                    1..=4 => {
+                        // Permission toggles: Space toggles, Left/Right moves between r/w/c/d
+                        match key {
+                            KeyCode::Char(' ') => {
+                                match cust.fs_sub_focus {
+                                    1 => cust.fs_entries[idx].read = !cust.fs_entries[idx].read,
+                                    2 => cust.fs_entries[idx].write = !cust.fs_entries[idx].write,
+                                    3 => cust.fs_entries[idx].create = !cust.fs_entries[idx].create,
+                                    4 => cust.fs_entries[idx].delete = !cust.fs_entries[idx].delete,
+                                    _ => {}
+                                }
+                            }
+                            KeyCode::Left | KeyCode::Char('h') => {
+                                cust.fs_sub_focus = if cust.fs_sub_focus <= 1 { 0 } else { cust.fs_sub_focus - 1 };
+                            }
+                            KeyCode::Right | KeyCode::Char('l') => {
+                                cust.fs_sub_focus = (cust.fs_sub_focus + 1).min(4);
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => {}
+                }
+                // Delete entry
+                if matches!(key, KeyCode::Delete) {
+                    cust.fs_entries.remove(idx);
+                    cust.fs_sub_focus = 0;
+                    // Adjust focus if we removed the last entry
+                    let max_focus = 4 + cust.fs_entries.len();
+                    if cust.focus > max_focus {
+                        cust.focus = max_focus;
+                    }
+                }
+            }
+            f if f == 4 + cust.fs_entries.len() => {
+                // "Add path" action
+                if matches!(key, KeyCode::Enter | KeyCode::Char(' ')) {
+                    cust.fs_entries.push(crate::policy::FsEntry {
+                        path: String::new(),
+                        read: true,
+                        write: false,
+                        create: false,
+                        delete: false,
+                    });
+                    cust.focus = 4 + cust.fs_entries.len() - 1;
+                    cust.fs_sub_focus = 0;
+                    cust.fs_path_cursor = 0;
                 }
             }
             _ => {}
@@ -509,8 +607,9 @@ fn handle_customize_key(app: &mut App, key: KeyCode) {
 
 fn draw_customize_dialog(frame: &mut Frame, cust: &crate::app::CustomizeState, theme: &Theme) {
     let area = frame.area();
-    let dialog_width = 54.min(area.width.saturating_sub(4));
-    let dialog_height = 10;
+    let dialog_width = 56.min(area.width.saturating_sub(4));
+    // Height: 5 fixed fields + 1 separator + 1 network + fs entries + 1 add + 1 help + 2 border
+    let dialog_height = (12 + cust.fs_entries.len() as u16).min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(dialog_width)) / 2;
     let y = (area.height.saturating_sub(dialog_height)) / 2;
     let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
@@ -525,60 +624,88 @@ fn draw_customize_dialog(frame: &mut Frame, cust: &crate::app::CustomizeState, t
     let inner = block.inner(dialog_area);
     frame.render_widget(block, dialog_area);
 
-    let focus = theme.approval_selected;
-    let normal = theme.approval_option;
-
+    let sel = theme.approval_selected;
+    let dim = theme.approval_option;
     let effect_color = if EFFECTS[cust.effect_idx] == "allow" {
         theme.approval_allow
     } else {
         theme.approval_deny
     };
+    let net_color = if cust.network {
+        theme.approval_allow
+    } else {
+        theme.approval_deny
+    };
 
-    let lines = vec![
+    let f = |field: usize, label: &str| -> Span {
+        Span::styled(label.to_string(), if cust.focus == field { sel } else { dim })
+    };
+
+    let mut lines = vec![
         Line::from(vec![
-            Span::styled("  Tool:    ", normal),
+            Span::styled("  Tool:    ", dim),
             Span::styled(&cust.tool, theme.approval_tool),
         ]),
-        Line::from(vec![
-            Span::styled("  Match:   ", normal),
-            Span::styled(&cust.arg_key, theme.approval_preview),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  Pattern: ",
-                if cust.focus == 0 { focus } else { normal },
-            ),
-            Span::styled(
-                format!("[{}]", cust.pattern),
-                if cust.focus == 0 { focus } else { normal },
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  Effect:  ",
-                if cust.focus == 1 { focus } else { normal },
-            ),
-            Span::styled(
-                format!("< {} >", EFFECTS[cust.effect_idx]),
-                if cust.focus == 1 { focus } else { effect_color },
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  Scope:   ",
-                if cust.focus == 2 { focus } else { normal },
-            ),
-            Span::styled(
-                format!("< {} >", SCOPES[cust.scope_idx]),
-                if cust.focus == 2 { focus } else { normal },
-            ),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            "  Tab: next | Enter: save | Esc: cancel",
-            normal,
-        )),
+        Line::from(vec![f(0, "  Pattern: "), Span::styled(format!("[{}]", cust.pattern), if cust.focus == 0 { sel } else { dim })]),
+        Line::from(vec![f(1, "  Effect:  "), Span::styled(format!("< {} >", EFFECTS[cust.effect_idx]), if cust.focus == 1 { sel } else { effect_color })]),
+        Line::from(vec![f(2, "  Scope:   "), Span::styled(format!("< {} >", SCOPES[cust.scope_idx]), if cust.focus == 2 { sel } else { dim })]),
+        Line::from(Span::styled("  ── Sandbox ──", dim)),
+        Line::from(vec![f(3, "  Network: "), Span::styled(format!("< {} >", if cust.network { "allow" } else { "deny" }), if cust.focus == 3 { sel } else { net_color })]),
+        Line::from(Span::styled("  Filesystem:", dim)),
     ];
+
+    for (i, entry) in cust.fs_entries.iter().enumerate() {
+        let field_idx = 4 + i;
+        let is_focused = cust.focus == field_idx;
+
+        let path_style = if is_focused && cust.fs_sub_focus == 0 { sel } else { dim };
+        let mut spans = vec![
+            Span::styled("    ", dim),
+            Span::styled(format!("{:<16}", entry.path), path_style),
+            Span::styled(" ", dim),
+        ];
+
+        let perms = [
+            ("r", entry.read, 1),
+            ("w", entry.write, 2),
+            ("c", entry.create, 3),
+            ("d", entry.delete, 4),
+        ];
+        for (label, enabled, sub_idx) in &perms {
+            let perm_focused = is_focused && cust.fs_sub_focus == *sub_idx;
+            let style = if perm_focused {
+                sel
+            } else if *enabled {
+                theme.approval_allow
+            } else {
+                theme.approval_deny
+            };
+            let display = if *enabled {
+                label.to_uppercase()
+            } else {
+                "-".to_string()
+            };
+            spans.push(Span::styled(display, style));
+        }
+
+        if is_focused {
+            spans.push(Span::styled("  Del to remove", dim));
+        }
+
+        lines.push(Line::from(spans));
+    }
+
+    // "Add path" action
+    let add_focused = cust.focus == 4 + cust.fs_entries.len();
+    lines.push(Line::from(Span::styled(
+        "    + add path",
+        if add_focused { sel } else { dim },
+    )));
+
+    lines.push(Line::from(Span::styled(
+        "  Up/Down fields | Space toggle | Enter save | Esc cancel",
+        dim,
+    )));
 
     let content = Paragraph::new(Text::from(lines));
     frame.render_widget(content, inner);

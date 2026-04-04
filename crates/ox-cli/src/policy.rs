@@ -14,6 +14,44 @@ pub enum Effect {
     Ask,
 }
 
+/// Filesystem access entry in a sandbox configuration.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FsEntry {
+    pub path: String,
+    pub read: bool,
+    pub write: bool,
+    pub create: bool,
+    pub delete: bool,
+}
+
+impl FsEntry {
+    pub fn perms_display(&self) -> String {
+        format!(
+            "{}{}{}{}",
+            if self.read { "r" } else { "-" },
+            if self.write { "w" } else { "-" },
+            if self.create { "c" } else { "-" },
+            if self.delete { "d" } else { "-" },
+        )
+    }
+}
+
+/// Sandbox configuration — constraints on what an allowed tool can access.
+/// Maps to clash's kernel-enforced sandbox model (Landlock/Seatbelt).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SandboxConfig {
+    /// Whether the tool can make network requests.
+    #[serde(default = "default_true")]
+    pub network: bool,
+    /// Filesystem access rules.
+    #[serde(default)]
+    pub fs: Vec<FsEntry>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 /// A policy rule: match a tool name (and optionally input patterns), produce an effect.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Rule {
@@ -25,6 +63,9 @@ pub struct Rule {
     pub arg_pattern: Option<String>,
     /// The effect when this rule matches.
     pub effect: String, // "allow", "deny", "ask"
+    /// Optional sandbox constraints for allowed tools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<SandboxConfig>,
 }
 
 impl Rule {
@@ -103,6 +144,7 @@ impl Default for PolicyManifest {
                     arg_key: None,
                     arg_pattern: None,
                     effect: "allow".into(),
+                    sandbox: None,
                 },
             ],
         }
@@ -291,13 +333,13 @@ fn make_rule_from_call(tool_name: &str, input: &serde_json::Value, effect: &str)
                 .get("command")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            // Match the first word (binary name) with wildcard
             let binary = cmd.split_whitespace().next().unwrap_or(cmd);
             Rule {
                 tool: Some("shell".into()),
                 arg_key: Some("command".into()),
                 arg_pattern: Some(format!("{binary}*")),
                 effect: effect.into(),
+                sandbox: None,
             }
         }
         "read_file" | "write_file" | "edit_file" => {
@@ -307,6 +349,7 @@ fn make_rule_from_call(tool_name: &str, input: &serde_json::Value, effect: &str)
                 arg_key: Some("path".into()),
                 arg_pattern: Some(path.to_string()),
                 effect: effect.into(),
+                sandbox: None,
             }
         }
         _ => Rule {
@@ -314,6 +357,7 @@ fn make_rule_from_call(tool_name: &str, input: &serde_json::Value, effect: &str)
             arg_key: None,
             arg_pattern: None,
             effect: effect.into(),
+            sandbox: None,
         },
     }
 }
@@ -368,6 +412,7 @@ mod tests {
                     arg_key: Some("command".into()),
                     arg_pattern: Some("rm*".into()),
                     effect: "deny".into(),
+                    sandbox: None,
                 }],
             },
             policy_path: PathBuf::new(),
@@ -395,12 +440,14 @@ mod tests {
                         arg_key: Some("command".into()),
                         arg_pattern: Some("cargo*".into()),
                         effect: "allow".into(),
+                        sandbox: None,
                     },
                     Rule {
                         tool: Some("shell".into()),
                         arg_key: None,
                         arg_pattern: None,
                         effect: "deny".into(),
+                        sandbox: None,
                     },
                 ],
             },

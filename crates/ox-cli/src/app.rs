@@ -52,6 +52,7 @@ pub enum ApprovalResponse {
         arg_pattern: Option<String>,
         effect: String,     // "allow" or "deny"
         scope: String,      // "session" or "always"
+        sandbox: Option<crate::policy::SandboxConfig>,
     },
 }
 
@@ -85,25 +86,30 @@ impl ApprovalState {
 }
 
 /// State for the sandbox/rule customization editor.
+///
+/// Focus fields:
+///   0 = pattern (text input)
+///   1 = effect (toggle)
+///   2 = scope (toggle)
+///   3 = network (toggle)
+///   4..4+N = filesystem entry N (sub-focus: 0=path, 1=r, 2=w, 3=c, 4=d)
+///   4+N = "add path" action
 pub struct CustomizeState {
-    /// The tool name being customized.
     pub tool: String,
-    /// The argument key to match on (e.g. "command", "path").
     pub arg_key: String,
-    /// The pattern being edited.
     pub pattern: String,
-    /// Cursor position within the pattern.
     pub cursor: usize,
-    /// Current effect selection: 0=allow, 1=deny.
     pub effect_idx: usize,
-    /// Current scope selection: 0=session, 1=always.
     pub scope_idx: usize,
-    /// Which field is focused: 0=pattern, 1=effect, 2=scope.
     pub focus: usize,
-    /// Channel to respond on when done.
     pub respond: mpsc::Sender<ApprovalResponse>,
-    /// The original input JSON (needed for persist_allow/deny).
-    pub input: serde_json::Value,
+    // Sandbox
+    pub network: bool,
+    pub fs_entries: Vec<crate::policy::FsEntry>,
+    /// Sub-focus within an fs entry: 0=path, 1=r, 2=w, 3=c, 4=d
+    pub fs_sub_focus: usize,
+    /// Cursor within the fs entry path field
+    pub fs_path_cursor: usize,
 }
 
 /// TUI-side application state.
@@ -642,12 +648,14 @@ fn run_streaming_loop(
                             arg_pattern,
                             effect,
                             scope,
+                            sandbox,
                         }) => {
                             let rule = crate::policy::Rule {
                                 tool: Some(tool),
                                 arg_key,
                                 arg_pattern,
                                 effect: effect.clone(),
+                                sandbox,
                             };
                             match scope.as_str() {
                                 "always" => {
