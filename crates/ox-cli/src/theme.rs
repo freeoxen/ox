@@ -61,6 +61,21 @@ pub struct Theme {
     pub approval_allow: Style,
     /// Approval dialog deny-flavored option (unselected).
     pub approval_deny: Style,
+
+    /// Selected row background (inbox list).
+    pub selected_bg: Style,
+    /// INSERT mode badge.
+    pub insert_badge: Style,
+    /// Inbox state dot — running.
+    pub state_running: Style,
+    /// Inbox state dot — blocked.
+    pub state_blocked: Style,
+    /// Inbox state dot — errored.
+    pub state_errored: Style,
+    /// Inbox state dot — waiting.
+    pub state_waiting: Style,
+    /// Inbox state dot — completed.
+    pub state_completed: Style,
 }
 
 impl Theme {
@@ -105,6 +120,17 @@ impl Theme {
             approval_option: dim,
             approval_allow: Style::default().fg(Color::Green),
             approval_deny: Style::default().fg(Color::Red),
+
+            selected_bg: Style::default().add_modifier(Modifier::REVERSED),
+            insert_badge: Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+            state_running: bold.fg(Color::Blue),
+            state_blocked: bold.fg(Color::Yellow),
+            state_errored: bold.fg(Color::Red),
+            state_waiting: bold.fg(Color::Cyan),
+            state_completed: dim.fg(Color::Green),
         }
     }
 }

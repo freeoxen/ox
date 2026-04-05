@@ -2,7 +2,8 @@ use ox_context::{ModelProvider, Namespace, SystemProvider, ToolsProvider};
 use ox_gate::{GateStore, ProviderConfig};
 use ox_history::HistoryProvider;
 use ox_kernel::{
-    AgentEvent, CompletionRequest, Record, StreamEvent, ToolCall, ToolRegistry, Value, Writer, path,
+    AgentEvent, CompletionRequest, Reader, Record, StreamEvent, ToolCall, ToolRegistry, Value,
+    Writer, path,
 };
 use ox_runtime::{AgentModule, AgentRuntime, HostEffects, HostStore};
 use std::collections::HashMap;
@@ -42,6 +43,7 @@ pub struct AgentPool {
     workspace: PathBuf,
     no_policy: bool,
     inbox: ox_inbox::InboxStore,
+    inbox_root: PathBuf,
 }
 
 impl AgentPool {
@@ -55,6 +57,7 @@ impl AgentPool {
         workspace: PathBuf,
         no_policy: bool,
         inbox: ox_inbox::InboxStore,
+        inbox_root: PathBuf,
         event_tx: mpsc::Sender<AppEvent>,
         control_tx: mpsc::Sender<AppControl>,
     ) -> Result<Self, String> {
@@ -72,6 +75,7 @@ impl AgentPool {
             workspace,
             no_policy,
             inbox,
+            inbox_root,
         })
     }
 
@@ -99,8 +103,13 @@ impl AgentPool {
         Ok(thread_id)
     }
 
-    /// Send a prompt to a running thread.
-    pub fn send_prompt(&self, thread_id: &str, prompt: String) -> Result<(), String> {
+    /// Send a prompt to a thread. Spawns a worker if one doesn't exist
+    /// (e.g., for threads from a previous session).
+    pub fn send_prompt(&mut self, thread_id: &str, prompt: String) -> Result<(), String> {
+        // Auto-spawn worker for threads from previous sessions
+        if !self.threads.contains_key(thread_id) {
+            self.spawn_worker(thread_id.to_string());
+        }
         let handle = self
             .threads
             .get(thread_id)
@@ -109,6 +118,11 @@ impl AgentPool {
             .prompt_tx
             .send(prompt)
             .map_err(|_| "thread channel closed".to_string())
+    }
+
+    /// Borrow the inbox store (mutable — StructFS Reader requires &mut self).
+    pub fn inbox(&mut self) -> &mut ox_inbox::InboxStore {
+        &mut self.inbox
     }
 
     fn spawn_worker(&mut self, thread_id: String) {
@@ -125,11 +139,12 @@ impl AgentPool {
         let api_key = self.api_key.clone();
         let workspace = self.workspace.clone();
         let no_policy = self.no_policy;
+        let inbox_root = self.inbox_root.clone();
 
         thread::spawn(move || {
             agent_worker(
                 thread_id, module, model, provider, max_tokens, api_key, workspace, no_policy,
-                prompt_rx, event_tx, control_tx,
+                inbox_root, prompt_rx, event_tx, control_tx,
             );
         });
     }
@@ -149,6 +164,7 @@ fn agent_worker(
     api_key: String,
     workspace: PathBuf,
     no_policy: bool,
+    inbox_root: PathBuf,
     prompt_rx: mpsc::Receiver<String>,
     event_tx: mpsc::Sender<AppEvent>,
     control_tx: mpsc::Sender<AppControl>,
@@ -202,6 +218,29 @@ fn agent_worker(
     namespace.mount("model", Box::new(ModelProvider::new(model, max_tokens)));
     namespace.mount("gate", Box::new(gate));
 
+    // Restore conversation history from JSONL if this thread has prior messages
+    let jsonl_path = inbox_root
+        .join("threads")
+        .join(&thread_id)
+        .join(format!("{thread_id}.jsonl"));
+    if jsonl_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&jsonl_path) {
+            for line in content.lines() {
+                if line.is_empty() {
+                    continue;
+                }
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
+                    namespace
+                        .write(
+                            &path!("history/append"),
+                            Record::parsed(json_to_value(json)),
+                        )
+                        .ok();
+                }
+            }
+        }
+    }
+
     // Ownership ping-pong state
     let mut tools = tools;
     let mut policy = policy;
@@ -244,6 +283,9 @@ fn agent_worker(
         let stats = returned_store.effects.stats.clone();
         policy = returned_store.effects.policy;
 
+        // Persist conversation history to JSONL for restart recovery
+        save_history(&mut namespace, &inbox_root, &thread_id);
+
         event_tx
             .send(AppEvent::PolicyStats {
                 thread_id: thread_id.clone(),
@@ -262,6 +304,39 @@ fn agent_worker(
             })
             .ok();
     }
+}
+
+/// Save the conversation history from the namespace to a JSONL file.
+fn save_history(namespace: &mut Namespace, inbox_root: &std::path::Path, thread_id: &str) {
+    use structfs_serde_store::value_to_json;
+
+    let messages = match namespace.read(&path!("history/messages")) {
+        Ok(Some(record)) => match record.as_value() {
+            Some(v) => value_to_json(v.clone()),
+            None => return,
+        },
+        _ => return,
+    };
+    let arr = match messages.as_array() {
+        Some(a) => a,
+        None => return,
+    };
+    if arr.is_empty() {
+        return;
+    }
+
+    // Write all messages to the JSONL file (overwrite, not append)
+    let thread_dir = inbox_root.join("threads").join(thread_id);
+    std::fs::create_dir_all(&thread_dir).ok();
+    let jsonl_path = thread_dir.join(format!("{thread_id}.jsonl"));
+    let mut content = String::new();
+    for msg in arr {
+        if let Ok(line) = serde_json::to_string(msg) {
+            content.push_str(&line);
+            content.push('\n');
+        }
+    }
+    std::fs::write(&jsonl_path, content).ok();
 }
 
 // ---------------------------------------------------------------------------

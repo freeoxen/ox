@@ -3,10 +3,90 @@ use ox_kernel::{AgentEvent, Reader, Record, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc;
+use structfs_core_store::Writer as StructWriter;
 use structfs_serde_store::from_value;
 
 use crate::agents::AgentPool;
 use crate::policy::PolicyStats;
+
+// ---------------------------------------------------------------------------
+// Modal input mode
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum InsertContext {
+    /// Composing a new thread from the inbox.
+    Compose,
+    /// Replying to the active thread.
+    Reply,
+    /// Filtering the inbox.
+    Search,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum InputMode {
+    #[default]
+    Normal,
+    Insert(InsertContext),
+}
+
+// ---------------------------------------------------------------------------
+// Search / filter state
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Default)]
+pub struct SearchState {
+    /// Saved filter chips (committed search terms).
+    pub chips: Vec<String>,
+    /// Current text being typed in the search bar.
+    pub live_query: String,
+}
+
+impl SearchState {
+    /// Commit the live query as a chip (if non-empty).
+    pub fn save_chip(&mut self) {
+        let trimmed = self.live_query.trim().to_string();
+        if !trimmed.is_empty() {
+            self.chips.push(trimmed);
+        }
+        self.live_query.clear();
+    }
+
+    /// Remove a chip by index.
+    pub fn dismiss_chip(&mut self, idx: usize) {
+        if idx < self.chips.len() {
+            self.chips.remove(idx);
+        }
+    }
+
+    /// Whether search has any active filters.
+    pub fn is_active(&self) -> bool {
+        !self.chips.is_empty() || !self.live_query.is_empty()
+    }
+
+    /// Check whether a thread (title, labels, state) matches all chips + live query.
+    pub fn matches(&self, title: &str, labels: &[String], state: &str) -> bool {
+        let hay = format!(
+            "{} {} {}",
+            title.to_lowercase(),
+            labels
+                .iter()
+                .map(|l| l.to_lowercase())
+                .collect::<Vec<_>>()
+                .join(" "),
+            state.to_lowercase()
+        );
+        for chip in &self.chips {
+            if !hay.contains(&chip.to_lowercase()) {
+                return false;
+            }
+        }
+        if !self.live_query.is_empty() && !hay.contains(&self.live_query.to_lowercase()) {
+            return false;
+        }
+        true
+    }
+}
 
 /// Events flowing from agent workers to the TUI, tagged with thread_id.
 #[derive(Debug, Clone)]
@@ -159,8 +239,14 @@ pub struct ThreadView {
 pub struct App {
     pub pool: AgentPool,
     pub active_thread: Option<String>, // None = inbox view
-    pub tabs: Vec<String>,             // open thread tabs
     pub thread_views: HashMap<String, ThreadView>,
+    // Modal mode
+    pub mode: InputMode,
+    pub search: SearchState,
+    pub selected_row: usize,
+    pub inbox_scroll: usize,
+    /// Cached visible threads — refreshed once per frame via refresh_visible_threads().
+    pub cached_threads: Vec<(String, String, String, Vec<String>, i64)>,
     // Shared UI state
     pub input: String,
     pub cursor: usize,
@@ -203,6 +289,7 @@ impl App {
             workspace,
             no_policy,
             inbox,
+            inbox_root,
             event_tx,
             control_tx,
         )?;
@@ -210,8 +297,12 @@ impl App {
         Ok(Self {
             pool,
             active_thread: None,
-            tabs: Vec::new(),
             thread_views: HashMap::new(),
+            mode: InputMode::default(),
+            search: SearchState::default(),
+            selected_row: 0,
+            inbox_scroll: 0,
+            cached_threads: Vec::new(),
             input: String::new(),
             cursor: 0,
             scroll: 0,
@@ -228,12 +319,67 @@ impl App {
         })
     }
 
-    /// Submit the current input as a user prompt.
+    // -- Mode transitions -----------------------------------------------------
+
+    /// Enter insert mode for composing a new thread (from inbox).
+    pub fn enter_compose(&mut self) {
+        self.mode = InputMode::Insert(InsertContext::Compose);
+        self.input.clear();
+        self.cursor = 0;
+    }
+
+    /// Enter insert mode for replying to the active thread.
+    pub fn enter_reply(&mut self) {
+        if self.active_thread.is_some() {
+            self.mode = InputMode::Insert(InsertContext::Reply);
+            self.input.clear();
+            self.cursor = 0;
+        }
+    }
+
+    /// Enter insert mode for search/filtering (inbox only).
+    pub fn enter_search(&mut self) {
+        self.mode = InputMode::Insert(InsertContext::Search);
+    }
+
+    /// Exit insert mode back to Normal.
+    pub fn exit_insert(&mut self) {
+        self.mode = InputMode::Normal;
+    }
+
+    /// Send the current input, context-dependent on mode.
     ///
-    /// If an active thread is selected, sends to that thread.
-    /// If on the inbox view (active_thread is None), creates a new thread
-    /// and opens it as a tab.
-    pub fn submit(&mut self) {
+    /// - Compose: create a new thread, stay in inbox, back to Normal.
+    /// - Reply: send to the active thread, back to Normal.
+    /// - Search: save chip, stay in Search insert.
+    /// - Normal with text: infer (reply if in thread, compose if inbox).
+    pub fn send_input(&mut self) {
+        match self.mode.clone() {
+            InputMode::Insert(InsertContext::Search) => {
+                self.search.save_chip();
+            }
+            InputMode::Insert(InsertContext::Compose) => {
+                self.do_compose();
+                self.mode = InputMode::Normal;
+            }
+            InputMode::Insert(InsertContext::Reply) => {
+                self.do_reply();
+                self.mode = InputMode::Normal;
+            }
+            InputMode::Normal => {
+                if !self.input.is_empty() {
+                    if self.active_thread.is_some() {
+                        self.do_reply();
+                    } else {
+                        self.do_compose();
+                    }
+                }
+            }
+        }
+    }
+
+    /// Create a new thread from the current input.
+    fn do_compose(&mut self) {
         if self.input.is_empty() || self.active_thinking() {
             return;
         }
@@ -243,35 +389,171 @@ impl App {
         self.history_cursor = self.input_history.len();
         self.input_draft.clear();
 
-        match &self.active_thread {
-            Some(tid) => {
-                let view = self.thread_views.entry(tid.clone()).or_default();
+        let title: String = input.chars().take(40).collect();
+        match self.pool.create_thread(&title) {
+            Ok(tid) => {
+                let mut view = ThreadView::default();
                 view.messages.push(ChatMessage::User(input.clone()));
                 view.thinking = true;
+                self.thread_views.insert(tid.clone(), view);
+                self.open_thread(tid.clone());
                 self.scroll = 0;
-                self.pool.send_prompt(tid, input).ok();
+                self.update_thread_state(&tid, "running");
+                self.pool.send_prompt(&tid, input).ok();
             }
-            None => {
-                // Create a new thread: use first 40 chars of input as title
-                let title: String = input.chars().take(40).collect();
-                match self.pool.create_thread(&title) {
-                    Ok(tid) => {
-                        let mut view = ThreadView::default();
-                        view.messages.push(ChatMessage::User(input.clone()));
-                        view.thinking = true;
-                        self.thread_views.insert(tid.clone(), view);
-                        self.open_thread(tid.clone());
-                        self.scroll = 0;
-                        self.pool.send_prompt(&tid, input).ok();
-                    }
-                    Err(e) => {
-                        // Show error in a transient way — push to a dummy view?
-                        // For now, just ignore; the user will see nothing happen.
-                        eprintln!("failed to create thread: {e}");
-                    }
+            Err(e) => {
+                eprintln!("failed to create thread: {e}");
+            }
+        }
+    }
+
+    /// Send a reply to the active thread.
+    fn do_reply(&mut self) {
+        if self.input.is_empty() || self.active_thinking() {
+            return;
+        }
+        if let Some(tid) = self.active_thread.clone() {
+            let input = std::mem::take(&mut self.input);
+            self.cursor = 0;
+            self.input_history.push(input.clone());
+            self.history_cursor = self.input_history.len();
+            self.input_draft.clear();
+
+            let view = self.thread_views.entry(tid.clone()).or_default();
+            view.messages.push(ChatMessage::User(input.clone()));
+            view.thinking = true;
+            self.scroll = 0;
+            self.update_thread_state(&tid, "running");
+            self.pool.send_prompt(&tid, input).ok();
+        }
+    }
+
+    /// Refresh the cached visible threads from ox-inbox. Call once per frame.
+    pub fn refresh_visible_threads(&mut self) {
+        self.cached_threads = self.get_visible_threads();
+        // Clamp selected_row
+        if !self.cached_threads.is_empty() {
+            self.selected_row = self.selected_row.min(self.cached_threads.len() - 1);
+        } else {
+            self.selected_row = 0;
+        }
+    }
+
+    /// Ensure selected_row is visible by adjusting inbox_scroll.
+    pub fn ensure_selected_visible(&mut self, viewport_height: usize) {
+        let row_height = 2; // 2 lines per inbox row
+        let visible_rows = viewport_height / row_height;
+        if visible_rows == 0 {
+            return;
+        }
+        if self.selected_row < self.inbox_scroll {
+            self.inbox_scroll = self.selected_row;
+        } else if self.selected_row >= self.inbox_scroll + visible_rows {
+            self.inbox_scroll = self.selected_row - visible_rows + 1;
+        }
+    }
+
+    /// Open the thread at the currently selected inbox row.
+    pub fn open_selected_thread(&mut self) {
+        if let Some((id, ..)) = self.cached_threads.get(self.selected_row) {
+            let id = id.clone();
+            self.thread_views.entry(id.clone()).or_default();
+            self.open_thread(id);
+        }
+    }
+
+    /// Mark the selected inbox thread as done.
+    pub fn archive_selected_thread(&mut self) {
+        if let Some((id, ..)) = self.cached_threads.get(self.selected_row) {
+            let id = id.clone();
+            let update_path =
+                ox_kernel::Path::from_components(vec!["threads".to_string(), id.clone()]);
+            let mut map = std::collections::BTreeMap::new();
+            map.insert(
+                "inbox_state".to_string(),
+                structfs_core_store::Value::String("done".to_string()),
+            );
+            self.pool
+                .inbox()
+                .write(
+                    &update_path,
+                    structfs_core_store::Record::parsed(structfs_core_store::Value::Map(map)),
+                )
+                .ok();
+            // Refresh and clamp
+            self.refresh_visible_threads();
+        }
+    }
+
+    /// Get visible threads filtered by search, sorted by state priority.
+    ///
+    /// Returns `(id, title, state, labels, token_count)` tuples.
+    pub fn get_visible_threads(&mut self) -> Vec<(String, String, String, Vec<String>, i64)> {
+        let threads_path = structfs_core_store::path!("threads");
+        let raw = match self.pool.inbox().read(&threads_path) {
+            Ok(Some(record)) => record,
+            _ => return Vec::new(),
+        };
+        let value = match raw.as_value() {
+            Some(v) => v.clone(),
+            None => return Vec::new(),
+        };
+        let arr = match value {
+            structfs_core_store::Value::Array(a) => a,
+            _ => return Vec::new(),
+        };
+
+        let mut result: Vec<(String, String, String, Vec<String>, i64)> = Vec::new();
+        for item in &arr {
+            if let structfs_core_store::Value::Map(map) = item {
+                let id = match map.get("id") {
+                    Some(structfs_core_store::Value::String(s)) => s.clone(),
+                    _ => continue,
+                };
+                let title = match map.get("title") {
+                    Some(structfs_core_store::Value::String(s)) => s.clone(),
+                    _ => String::new(),
+                };
+                let state = match map.get("thread_state") {
+                    Some(structfs_core_store::Value::String(s)) => s.clone(),
+                    _ => "running".to_string(),
+                };
+                let labels = match map.get("labels") {
+                    Some(structfs_core_store::Value::Array(arr)) => arr
+                        .iter()
+                        .filter_map(|v| {
+                            if let structfs_core_store::Value::String(s) = v {
+                                Some(s.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                let token_count = match map.get("token_count") {
+                    Some(structfs_core_store::Value::Integer(n)) => *n,
+                    _ => 0,
+                };
+                if self.search.matches(&title, &labels, &state) {
+                    result.push((id, title, state, labels, token_count));
                 }
             }
         }
+
+        // Sort by state priority: blocked > errored > waiting > running > completed
+        fn state_priority(s: &str) -> u8 {
+            match s {
+                "blocked_on_approval" => 0,
+                "errored" => 1,
+                "waiting_for_input" => 2,
+                "running" => 3,
+                "completed" => 4,
+                _ => 5,
+            }
+        }
+        result.sort_by_key(|(_, _, state, _, _)| state_priority(state));
+        result
     }
 
     /// Navigate input history up (older).
@@ -348,6 +630,25 @@ impl App {
                 let view = self.thread_views.entry(thread_id.clone()).or_default();
                 view.tokens_in += input_tokens;
                 view.tokens_out += output_tokens;
+
+                // Persist cumulative token count to inbox SQLite
+                let total = (view.tokens_in + view.tokens_out) as i64;
+                let update_path = ox_kernel::Path::from_components(vec![
+                    "threads".to_string(),
+                    thread_id.clone(),
+                ]);
+                let mut map = std::collections::BTreeMap::new();
+                map.insert(
+                    "token_count".to_string(),
+                    structfs_core_store::Value::Integer(total),
+                );
+                self.pool
+                    .inbox()
+                    .write(
+                        &update_path,
+                        structfs_core_store::Record::parsed(structfs_core_store::Value::Map(map)),
+                    )
+                    .ok();
             }
             AppEvent::PolicyStats {
                 ref thread_id,
@@ -365,8 +666,33 @@ impl App {
                     view.messages.push(ChatMessage::Error(e.clone()));
                 }
                 view.thinking = false;
+
+                let new_state = if result.is_ok() {
+                    "waiting_for_input"
+                } else {
+                    "errored"
+                };
+                self.update_thread_state(thread_id, new_state);
             }
         }
+    }
+
+    /// Update a thread's state in ox-inbox.
+    pub fn update_thread_state(&mut self, thread_id: &str, state: &str) {
+        let update_path =
+            ox_kernel::Path::from_components(vec!["threads".to_string(), thread_id.to_string()]);
+        let mut map = std::collections::BTreeMap::new();
+        map.insert(
+            "thread_state".to_string(),
+            structfs_core_store::Value::String(state.to_string()),
+        );
+        self.pool
+            .inbox()
+            .write(
+                &update_path,
+                structfs_core_store::Record::parsed(structfs_core_store::Value::Map(map)),
+            )
+            .ok();
     }
 
     // -- Tab management -------------------------------------------------------
@@ -376,64 +702,133 @@ impl App {
         self.active_thread = None;
     }
 
-    /// Open a thread as the active tab. Adds to tabs if not already present.
+    /// Open a thread view. Loads conversation history and stats from inbox if needed.
     pub fn open_thread(&mut self, thread_id: String) {
-        if !self.tabs.contains(&thread_id) {
-            self.tabs.push(thread_id.clone());
+        let view = self.thread_views.entry(thread_id.clone()).or_default();
+        if view.messages.is_empty() {
+            self.load_thread_messages(&thread_id);
+            self.load_thread_stats(&thread_id);
         }
         self.active_thread = Some(thread_id);
     }
 
-    /// Close the currently active tab and switch to the next or inbox.
-    pub fn close_current_tab(&mut self) {
-        if let Some(ref tid) = self.active_thread {
-            if let Some(idx) = self.tabs.iter().position(|t| t == tid) {
-                self.tabs.remove(idx);
-                if self.tabs.is_empty() {
-                    self.active_thread = None;
-                } else {
-                    let new_idx = idx.min(self.tabs.len() - 1);
-                    self.active_thread = Some(self.tabs[new_idx].clone());
-                }
-            } else {
-                self.active_thread = None;
-            }
+    /// Load token count from inbox SQLite into ThreadView.
+    fn load_thread_stats(&mut self, thread_id: &str) {
+        let thread_path =
+            ox_kernel::Path::from_components(vec!["threads".to_string(), thread_id.to_string()]);
+        let record = match self.pool.inbox().read(&thread_path) {
+            Ok(Some(r)) => r,
+            _ => return,
+        };
+        let Some(structfs_core_store::Value::Map(map)) = record.as_value() else {
+            return;
+        };
+        let token_count = match map.get("token_count") {
+            Some(structfs_core_store::Value::Integer(n)) => *n,
+            _ => 0,
+        };
+        if token_count > 0 {
+            let view = self.thread_views.entry(thread_id.to_string()).or_default();
+            // Split evenly as approximation — we don't store in/out separately in SQLite
+            view.tokens_in = (token_count / 2) as u32;
+            view.tokens_out = (token_count - token_count / 2) as u32;
         }
     }
 
-    /// Switch to the next tab (wraps around). If on inbox, goes to first tab.
-    pub fn next_tab(&mut self) {
-        if self.tabs.is_empty() {
+    /// Load conversation messages from ox-inbox JSONL into the ThreadView.
+    fn load_thread_messages(&mut self, thread_id: &str) {
+        let msg_path = ox_kernel::Path::from_components(vec![
+            "threads".to_string(),
+            thread_id.to_string(),
+            "messages".to_string(),
+        ]);
+        let record = match self.pool.inbox().read(&msg_path) {
+            Ok(Some(r)) => r,
+            _ => return,
+        };
+        let Some(structfs_core_store::Value::Array(messages)) = record.as_value() else {
             return;
-        }
-        match &self.active_thread {
-            None => {
-                self.active_thread = Some(self.tabs[0].clone());
-            }
-            Some(tid) => {
-                if let Some(idx) = self.tabs.iter().position(|t| t == tid) {
-                    let next = (idx + 1) % self.tabs.len();
-                    self.active_thread = Some(self.tabs[next].clone());
-                }
-            }
-        }
-    }
+        };
 
-    /// Switch to the previous tab (wraps around). If on first tab, goes to inbox.
-    pub fn prev_tab(&mut self) {
-        if self.tabs.is_empty() {
-            return;
-        }
-        match &self.active_thread {
-            None => {
-                self.active_thread = Some(self.tabs[self.tabs.len() - 1].clone());
-            }
-            Some(tid) => {
-                if let Some(idx) = self.tabs.iter().position(|t| t == tid) {
-                    if idx == 0 {
-                        self.active_thread = None;
-                    } else {
-                        self.active_thread = Some(self.tabs[idx - 1].clone());
+        let view = self.thread_views.entry(thread_id.to_string()).or_default();
+        for msg_val in messages {
+            let structfs_core_store::Value::Map(map) = msg_val else {
+                continue;
+            };
+            let role = match map.get("role") {
+                Some(structfs_core_store::Value::String(s)) => s.as_str(),
+                _ => continue,
+            };
+            match role {
+                "user" => {
+                    let content = match map.get("content") {
+                        Some(structfs_core_store::Value::String(s)) => s.clone(),
+                        _ => continue,
+                    };
+                    view.messages.push(ChatMessage::User(content));
+                }
+                "assistant" => {
+                    // Assistant content is an array of blocks
+                    let blocks = match map.get("content") {
+                        Some(structfs_core_store::Value::Array(arr)) => arr,
+                        // Could also be a plain string
+                        Some(structfs_core_store::Value::String(s)) => {
+                            view.messages.push(ChatMessage::AssistantChunk(s.clone()));
+                            continue;
+                        }
+                        _ => continue,
+                    };
+                    let mut text = String::new();
+                    for block in blocks {
+                        let structfs_core_store::Value::Map(bmap) = block else {
+                            continue;
+                        };
+                        match bmap.get("type") {
+                            Some(structfs_core_store::Value::String(t)) if t == "text" => {
+                                if let Some(structfs_core_store::Value::String(s)) =
+                                    bmap.get("text")
+                                {
+                                    text.push_str(s);
+                                }
+                            }
+                            Some(structfs_core_store::Value::String(t)) if t == "tool_use" => {
+                                // Flush accumulated text
+                                if !text.is_empty() {
+                                    view.messages.push(ChatMessage::AssistantChunk(
+                                        std::mem::take(&mut text),
+                                    ));
+                                }
+                                let name = match bmap.get("name") {
+                                    Some(structfs_core_store::Value::String(s)) => s.clone(),
+                                    _ => "unknown".to_string(),
+                                };
+                                view.messages.push(ChatMessage::ToolCall { name });
+                            }
+                            _ => {}
+                        }
+                    }
+                    if !text.is_empty() {
+                        view.messages.push(ChatMessage::AssistantChunk(text));
+                    }
+                }
+                _ => {
+                    // Tool results — role="user" with content array of tool_result blocks
+                    // Already handled by the "user" case for plain strings.
+                    // For tool_result arrays, show as tool results.
+                    if let Some(structfs_core_store::Value::Array(results)) = map.get("content") {
+                        for result in results {
+                            let structfs_core_store::Value::Map(rmap) = result else {
+                                continue;
+                            };
+                            if let Some(structfs_core_store::Value::String(content)) =
+                                rmap.get("content")
+                            {
+                                view.messages.push(ChatMessage::ToolResult {
+                                    name: "tool".to_string(),
+                                    output: content.clone(),
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -449,6 +844,7 @@ impl App {
     }
 
     /// Get the active thread's view (if any).
+    #[allow(dead_code)]
     pub fn active_view(&self) -> Option<&ThreadView> {
         self.active_thread
             .as_ref()

@@ -1,9 +1,12 @@
 mod agents;
 mod app;
+mod inbox_view;
 mod policy;
 #[allow(dead_code)]
 mod session;
+mod tab_bar;
 mod theme;
+mod thread_view;
 mod tools;
 mod transport;
 mod tui;

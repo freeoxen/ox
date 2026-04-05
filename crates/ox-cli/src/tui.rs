@@ -1,10 +1,10 @@
-use crate::app::{App, AppControl, ApprovalResponse, ApprovalState, ChatMessage};
+use crate::app::{App, AppControl, ApprovalResponse, ApprovalState, InputMode, InsertContext};
 use crate::theme::Theme;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use std::time::Duration;
 
 /// Run the TUI event loop. Blocks until the user quits.
@@ -22,9 +22,16 @@ pub fn run(
                     if app.pending_customize.is_some() {
                         handle_customize_key(app, key.code);
                     } else if app.pending_approval.is_some() {
-                        handle_approval_key(app, key.code);
+                        handle_approval_key(app, key.code, key.modifiers);
                     } else {
-                        handle_normal_key(app, key.modifiers, key.code);
+                        match &app.mode {
+                            InputMode::Normal => {
+                                handle_normal_key(app, key.modifiers, key.code);
+                            }
+                            InputMode::Insert(ctx) => {
+                                handle_insert_key(app, ctx.clone(), key.modifiers, key.code);
+                            }
+                        }
                     }
                 }
                 Event::Mouse(mouse) => {
@@ -48,6 +55,8 @@ pub fn run(
                 respond,
             }) = app.control_rx.try_recv()
             {
+                // Update inbox state to blocked
+                app.update_thread_state(&thread_id, "blocked_on_approval");
                 // Auto-switch to the requesting thread's tab
                 app.open_thread(thread_id.clone());
                 app.pending_approval = Some(ApprovalState {
@@ -66,59 +75,198 @@ pub fn run(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Normal mode key handler
+// ---------------------------------------------------------------------------
+
 fn handle_normal_key(app: &mut App, modifiers: KeyModifiers, code: KeyCode) {
+    let in_thread = app.active_thread.is_some();
+    let in_inbox = !in_thread;
+
     match (modifiers, code) {
+        // Quit / back
         (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
-            if app.active_thread.is_some() {
-                // In a thread → go to inbox
+            if in_thread {
                 app.go_to_inbox();
             } else {
-                // In inbox → quit
                 app.should_quit = true;
             }
         }
-        (_, KeyCode::Esc) => {
-            if app.active_thread.is_some() {
-                // In a thread → go to inbox
+        (_, KeyCode::Esc) | (_, KeyCode::Char('q')) => {
+            if in_thread {
                 app.go_to_inbox();
+            } else if code == KeyCode::Char('q') {
+                app.should_quit = true;
             }
-            // In inbox → do nothing (Ctrl+C to quit)
         }
-        // Tab management
+
+        // Enter insert mode
+        (_, KeyCode::Char('i')) => {
+            if in_thread {
+                app.enter_reply();
+            } else {
+                app.enter_compose();
+            }
+        }
+        (_, KeyCode::Char('/')) if in_inbox => {
+            app.enter_search();
+        }
+
+        // Navigation
+        (_, KeyCode::Char('j') | KeyCode::Down) if in_inbox => {
+            let count = app.cached_threads.len();
+            if count > 0 && app.selected_row < count - 1 {
+                app.selected_row += 1;
+            }
+        }
+        (_, KeyCode::Char('k') | KeyCode::Up) if in_inbox => {
+            app.selected_row = app.selected_row.saturating_sub(1);
+        }
+        (_, KeyCode::Char('j') | KeyCode::Down) if in_thread => {
+            app.scroll = app.scroll.saturating_sub(1);
+        }
+        (_, KeyCode::Char('k') | KeyCode::Up) if in_thread => {
+            app.scroll = app.scroll.saturating_add(1);
+        }
+
+        // Enter — open thread or send if draft exists
+        (_, KeyCode::Enter) => {
+            if !app.input.is_empty() {
+                app.send_input();
+            } else if in_inbox {
+                app.open_selected_thread();
+            }
+        }
+
+        // Archive (inbox only)
+        (_, KeyCode::Char('d')) if in_inbox => {
+            app.archive_selected_thread();
+        }
+
+        // Dismiss search chips by number (inbox only)
+        (_, KeyCode::Char(c @ '1'..='9')) if in_inbox && app.search.is_active() => {
+            let idx = (c as u8 - b'1') as usize;
+            app.search.dismiss_chip(idx);
+        }
+
+        // Back to inbox
         (KeyModifiers::CONTROL, KeyCode::Char('t')) => app.go_to_inbox(),
-        (KeyModifiers::CONTROL, KeyCode::Char('w')) => app.close_current_tab(),
-        (KeyModifiers::CONTROL, KeyCode::Right) => app.next_tab(),
-        (KeyModifiers::CONTROL, KeyCode::Left) => app.prev_tab(),
-        (_, KeyCode::Enter) => app.submit(),
+
+        // Quick approve shortcuts (thread only, when pending)
+        (_, KeyCode::Char('y')) if in_thread && app.pending_approval.is_some() => {
+            let approval = app.pending_approval.take().unwrap();
+            approval.respond.send(ApprovalResponse::AllowOnce).ok();
+        }
+        (_, KeyCode::Char('n')) if in_thread && app.pending_approval.is_some() => {
+            let approval = app.pending_approval.take().unwrap();
+            approval.respond.send(ApprovalResponse::DenyOnce).ok();
+        }
+        (_, KeyCode::Char('s')) if in_thread && app.pending_approval.is_some() => {
+            let approval = app.pending_approval.take().unwrap();
+            approval.respond.send(ApprovalResponse::AllowSession).ok();
+        }
+        (_, KeyCode::Char('a')) if in_thread && app.pending_approval.is_some() => {
+            let approval = app.pending_approval.take().unwrap();
+            approval.respond.send(ApprovalResponse::AllowAlways).ok();
+        }
+
+        _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Insert mode key handler
+// ---------------------------------------------------------------------------
+
+fn handle_insert_key(app: &mut App, ctx: InsertContext, modifiers: KeyModifiers, code: KeyCode) {
+    match (modifiers, code) {
+        // Send — Ctrl+S always works. Ctrl+Enter may arrive as different
+        // key codes depending on the terminal emulator.
+        (KeyModifiers::CONTROL, KeyCode::Char('s'))
+        | (KeyModifiers::CONTROL, KeyCode::Enter)
+        | (KeyModifiers::CONTROL, KeyCode::Char('\n'))
+        | (KeyModifiers::CONTROL, KeyCode::Char('\r')) => {
+            app.send_input();
+        }
+        // Exit insert
+        (_, KeyCode::Esc) => {
+            app.exit_insert();
+        }
+        // Enter — newline for compose/reply, save chip for search
+        (_, KeyCode::Enter) => match ctx {
+            InsertContext::Search => {
+                app.search.save_chip();
+            }
+            InsertContext::Compose | InsertContext::Reply => {
+                app.input.insert(app.cursor, '\n');
+                app.cursor += 1;
+            }
+        },
+        // Clear line
+        (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
+            if ctx == InsertContext::Search {
+                app.search.live_query.clear();
+            } else {
+                app.input.clear();
+                app.cursor = 0;
+            }
+        }
+        // Text editing
         (_, KeyCode::Backspace) => {
-            if app.cursor > 0 {
+            if ctx == InsertContext::Search {
+                app.search.live_query.pop();
+            } else if app.cursor > 0 {
                 app.cursor -= 1;
                 app.input.remove(app.cursor);
             }
         }
-        (_, KeyCode::Left) => app.cursor = app.cursor.saturating_sub(1),
+        (_, KeyCode::Left) => {
+            if ctx != InsertContext::Search {
+                app.cursor = app.cursor.saturating_sub(1);
+            }
+        }
         (_, KeyCode::Right) => {
-            if app.cursor < app.input.len() {
+            if ctx != InsertContext::Search && app.cursor < app.input.len() {
                 app.cursor += 1;
             }
         }
-        (_, KeyCode::Up) => app.history_up(),
-        (_, KeyCode::Down) => app.history_down(),
-        (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
-            app.input.clear();
-            app.cursor = 0;
+        (_, KeyCode::Up) => {
+            if ctx != InsertContext::Search {
+                app.history_up();
+            }
         }
-        (KeyModifiers::CONTROL, KeyCode::Char('a')) => app.cursor = 0,
-        (KeyModifiers::CONTROL, KeyCode::Char('e')) => app.cursor = app.input.len(),
+        (_, KeyCode::Down) => {
+            if ctx != InsertContext::Search {
+                app.history_down();
+            }
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('a')) => {
+            if ctx != InsertContext::Search {
+                app.cursor = 0;
+            }
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('e')) => {
+            if ctx != InsertContext::Search {
+                app.cursor = app.input.len();
+            }
+        }
         (_, KeyCode::Char(c)) => {
-            app.input.insert(app.cursor, c);
-            app.cursor += 1;
+            if ctx == InsertContext::Search {
+                app.search.live_query.push(c);
+            } else {
+                app.input.insert(app.cursor, c);
+                app.cursor += 1;
+            }
         }
         _ => {}
     }
 }
 
-fn handle_approval_key(app: &mut App, key: KeyCode) {
+// ---------------------------------------------------------------------------
+// Approval key handler (unchanged logic, adapted signature)
+// ---------------------------------------------------------------------------
+
+fn handle_approval_key(app: &mut App, key: KeyCode, _modifiers: KeyModifiers) {
     let approval = app.pending_approval.as_mut().unwrap();
     match key {
         // vim navigation
@@ -198,33 +346,45 @@ fn handle_approval_key(app: &mut App, key: KeyCode) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Mouse handler
+// ---------------------------------------------------------------------------
+
 fn handle_mouse(app: &mut App, kind: MouseEventKind, row: u16) {
     match kind {
         MouseEventKind::ScrollUp => {
             if app.pending_approval.is_none() && app.pending_customize.is_none() {
-                app.scroll = app.scroll.saturating_add(3);
+                if app.active_thread.is_some() {
+                    app.scroll = app.scroll.saturating_add(3);
+                } else {
+                    app.selected_row = app.selected_row.saturating_sub(1);
+                }
             }
         }
         MouseEventKind::ScrollDown => {
             if app.pending_approval.is_none() && app.pending_customize.is_none() {
-                app.scroll = app.scroll.saturating_sub(3);
+                if app.active_thread.is_some() {
+                    app.scroll = app.scroll.saturating_sub(3);
+                } else {
+                    let count = app.cached_threads.len();
+                    if count > 0 && app.selected_row < count - 1 {
+                        app.selected_row += 1;
+                    }
+                }
             }
         }
         MouseEventKind::Down(_) => {
             // Click on approval dialog options
             if let Some(ref mut approval) = app.pending_approval {
-                // Approximate: dialog options start at center-ish of screen
-                // Each option is one row. The dialog is centered.
                 let term_h = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24);
                 let dialog_h = 13u16;
                 let dialog_top = term_h.saturating_sub(dialog_h) / 2;
-                let first_option_row = dialog_top + 3; // border + header + blank line
+                let first_option_row = dialog_top + 3;
                 if row >= first_option_row
                     && row < first_option_row + ApprovalState::OPTIONS.len() as u16
                 {
                     let idx = (row - first_option_row) as usize;
                     approval.selected = idx;
-                    // Double-click-ish: select on single click
                     let response = ApprovalState::OPTIONS[idx].1.clone();
                     let approval = app.pending_approval.take().unwrap();
                     approval.respond.send(response).ok();
@@ -235,193 +395,100 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, row: u16) {
     }
 }
 
-fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
+// ---------------------------------------------------------------------------
+// Draw — composed view
+// ---------------------------------------------------------------------------
+
+fn draw(frame: &mut Frame, app: &mut App, theme: &Theme) {
+    let in_insert = matches!(app.mode, InputMode::Insert(_));
+    let show_filter = app.active_thread.is_none() && app.search.is_active();
+
+    // Build layout constraints
+    let mut constraints = vec![Constraint::Length(1)]; // tab bar
+    if show_filter {
+        constraints.push(Constraint::Length(1)); // filter bar
+    }
+    constraints.push(Constraint::Min(1)); // content
+    if in_insert {
+        constraints.push(Constraint::Length(3)); // input box
+    }
+    constraints.push(Constraint::Length(1)); // status bar
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1), // title / tab bar
-            Constraint::Min(1),    // messages
-            Constraint::Length(3), // input
-            Constraint::Length(1), // status
-        ])
+        .constraints(constraints)
         .split(frame.area());
 
-    // Title / tab bar
-    let mut title_spans = vec![
-        Span::styled(" ox ", theme.title_badge),
-        Span::styled(
-            format!(" {} ({}) ", app.model, app.provider),
-            theme.title_info,
-        ),
-    ];
-    // Show tab indicators
-    let inbox_style = if app.active_thread.is_none() {
-        theme.title_badge
+    let mut idx = 0;
+
+    // Tab bar
+    crate::tab_bar::draw_tabs(frame, app, theme, chunks[idx]);
+    idx += 1;
+
+    // Filter bar (if active)
+    if show_filter {
+        crate::inbox_view::draw_filter_bar(frame, app, theme, chunks[idx]);
+        idx += 1;
+    }
+
+    // Content area
+    let content_area = chunks[idx];
+    idx += 1;
+
+    // We need to clone the active view data before calling draw_inbox (which borrows app mutably).
+    if let Some(tid) = app.active_thread.clone() {
+        let view = app.thread_views.entry(tid).or_default().clone();
+        crate::thread_view::draw_thread(frame, &view, app.scroll, theme, content_area);
     } else {
-        theme.title_info
-    };
-    title_spans.push(Span::styled("[inbox]", inbox_style));
-    for (i, tid) in app.tabs.iter().enumerate() {
-        let short = &tid[..tid.len().min(8)];
-        let is_active = app.active_thread.as_ref() == Some(tid);
-        let tab_style = if is_active {
-            theme.title_badge
-        } else {
-            theme.title_info
+        // Refresh cached threads once per frame, adjust scroll
+        app.refresh_visible_threads();
+        app.ensure_selected_visible(content_area.height as usize);
+        crate::inbox_view::draw_inbox(frame, app, theme, content_area);
+    }
+
+    // Input box (only in insert mode)
+    if in_insert {
+        let input_area = chunks[idx];
+        idx += 1;
+
+        let ctx_label = match &app.mode {
+            InputMode::Insert(InsertContext::Compose) => " compose ",
+            InputMode::Insert(InsertContext::Reply) => " reply ",
+            InputMode::Insert(InsertContext::Search) => " search ",
+            _ => "",
         };
-        title_spans.push(Span::styled(format!(" [{}: {}]", i + 1, short), tab_style));
-    }
-    frame.render_widget(Paragraph::new(Line::from(title_spans)), chunks[0]);
-
-    // Get the active view (if any)
-    let view = app.active_view();
-    let messages = view.map(|v| v.messages.as_slice()).unwrap_or(&[]);
-    let thinking = view.is_some_and(|v| v.thinking);
-
-    // Messages
-    let mut lines: Vec<Line> = Vec::new();
-
-    if app.active_thread.is_none() {
-        lines.push(Line::from(Span::styled(
-            "  Inbox — type a message to start a new thread",
-            theme.assistant_text,
-        )));
-        lines.push(Line::from(Span::styled(
-            "  Ctrl+Right/Left to switch tabs",
-            theme.assistant_text,
-        )));
-    }
-
-    for msg in messages {
-        match msg {
-            ChatMessage::User(text) => {
-                lines.push(Line::from(""));
-                lines.push(Line::from(vec![
-                    Span::styled("> ", theme.user_prompt),
-                    Span::styled(text, theme.user_text),
-                ]));
-                lines.push(Line::from(""));
-            }
-            ChatMessage::AssistantChunk(text) => {
-                for line in text.lines() {
-                    lines.push(Line::from(Span::styled(line, theme.assistant_text)));
-                }
-            }
-            ChatMessage::ToolCall { name } => {
-                lines.push(Line::from(vec![
-                    Span::styled(format!("  [{name}] "), theme.tool_name),
-                    Span::styled("running...", theme.tool_running),
-                ]));
-            }
-            ChatMessage::ToolResult { name, output } => {
-                let line_count = output.lines().count();
-                let preview_lines: Vec<&str> = output.lines().take(5).collect();
-
-                lines.push(Line::from(vec![
-                    Span::styled(format!("  [{name}] "), theme.tool_name),
-                    Span::styled(
-                        if line_count > 5 {
-                            format!("({line_count} lines)")
-                        } else {
-                            format!(
-                                "({line_count} line{})",
-                                if line_count == 1 { "" } else { "s" }
-                            )
-                        },
-                        theme.tool_meta,
-                    ),
-                ]));
-                for pl in &preview_lines {
-                    lines.push(Line::from(Span::styled(
-                        format!("  | {pl}"),
-                        theme.tool_output,
-                    )));
-                }
-                if line_count > 5 {
-                    lines.push(Line::from(Span::styled(
-                        format!("  | ... ({} more)", line_count - 5),
-                        theme.tool_overflow,
-                    )));
-                }
-            }
-            ChatMessage::Error(e) => {
-                lines.push(Line::from(Span::styled(
-                    format!("  error: {e}"),
-                    theme.error,
-                )));
-            }
-        }
-    }
-
-    // Thinking indicator
-    if thinking {
-        if let Some(ChatMessage::AssistantChunk(_)) = messages.last() {
-            // streaming text visible
+        let thinking = app.active_thinking();
+        let title = if thinking {
+            " streaming... "
         } else {
-            lines.push(Line::from(Span::styled("  ...", theme.thinking)));
+            ctx_label
+        };
+        let input_block = Block::default()
+            .borders(Borders::TOP)
+            .border_style(theme.input_border)
+            .title(title);
+        let input = Paragraph::new(format!("> {}", app.input)).block(input_block);
+        frame.render_widget(input, input_area);
+
+        // Cursor
+        if app.pending_approval.is_none() && app.pending_customize.is_none() {
+            match &app.mode {
+                InputMode::Insert(InsertContext::Search) => {
+                    // Search cursor would be in the filter bar, but we keep it simple
+                }
+                _ => {
+                    frame.set_cursor_position((
+                        input_area.x + app.cursor as u16 + 2,
+                        input_area.y + 1,
+                    ));
+                }
+            }
         }
     }
 
-    let text = Text::from(lines);
-    let msg_height = chunks[1].height as usize;
-    let total_lines = text.lines.len();
-    let scroll = if app.scroll == 0 {
-        total_lines.saturating_sub(msg_height) as u16
-    } else {
-        let max_scroll = total_lines.saturating_sub(msg_height) as u16;
-        max_scroll.saturating_sub(app.scroll)
-    };
-    let messages_widget = Paragraph::new(text)
-        .wrap(Wrap { trim: false })
-        .scroll((scroll, 0));
-    frame.render_widget(messages_widget, chunks[1]);
-
-    // Input box
-    let input_title = if thinking { " streaming... " } else { "" };
-    let input_block = Block::default()
-        .borders(Borders::TOP)
-        .border_style(theme.input_border)
-        .title(input_title);
-    let input = Paragraph::new(format!("> {}", app.input)).block(input_block);
-    frame.render_widget(input, chunks[2]);
-
-    // Cursor
-    if app.pending_approval.is_none() && app.pending_customize.is_none() {
-        frame.set_cursor_position((chunks[2].x + app.cursor as u16 + 2, chunks[2].y + 1));
-    }
-
-    // Status bar — show active thread's stats
-    let (tokens_in, tokens_out, policy_stats) = match view {
-        Some(v) => (v.tokens_in, v.tokens_out, &v.policy_stats),
-        None => (0, 0, &DEFAULT_POLICY_STATS),
-    };
-    let tokens = if tokens_in > 0 || tokens_out > 0 {
-        format!(" | {}in/{}out", tokens_in, tokens_out)
-    } else {
-        String::new()
-    };
-    let policy = {
-        let s = policy_stats;
-        if s.allowed > 0 || s.denied > 0 || s.asked > 0 {
-            format!(" | ok:{} no:{} ask:{}", s.allowed, s.denied, s.asked)
-        } else {
-            String::new()
-        }
-    };
-    let tab_hint = " | ^T inbox ^W close ^Right/Left tabs";
-    let status_text = if app.pending_customize.is_some() {
-        format!(
-            "CUSTOMIZE — Up/Down fields, Left/Right toggle, Enter save, Esc cancel{tokens}{policy}"
-        )
-    } else if app.pending_approval.is_some() {
-        format!("PERMISSION — y/s/a/n/d or 1-6 or (c)ustomize{tokens}{policy}")
-    } else if thinking {
-        format!("streaming...{tokens}{policy}{tab_hint}")
-    } else {
-        format!("idle{tokens}{policy} | Enter send | Esc quit{tab_hint}")
-    };
-    let status = Paragraph::new(Span::styled(format!(" {status_text}"), theme.status));
-    frame.render_widget(status, chunks[3]);
+    // Status bar
+    let status_area = chunks[idx];
+    draw_status_bar(frame, app, theme, status_area);
 
     // Modal overlays
     if let Some(ref customize) = app.pending_customize {
@@ -431,11 +498,53 @@ fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
     }
 }
 
-static DEFAULT_POLICY_STATS: crate::policy::PolicyStats = crate::policy::PolicyStats {
-    allowed: 0,
-    denied: 0,
-    asked: 0,
-};
+// ---------------------------------------------------------------------------
+// Status bar
+// ---------------------------------------------------------------------------
+
+fn draw_status_bar(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
+    let mode_badge = match &app.mode {
+        InputMode::Normal => Span::styled(" NORMAL ", theme.title_badge),
+        InputMode::Insert(_) => Span::styled(" INSERT ", theme.insert_badge),
+    };
+
+    let context_info = if let Some(ref tid) = app.active_thread {
+        let view = app.thread_views.get(tid);
+        let (ti, to) = view.map(|v| (v.tokens_in, v.tokens_out)).unwrap_or((0, 0));
+        let ps = view.map(|v| &v.policy_stats);
+        let mut s = format!(" {}in/{}out", ti, to);
+        if let Some(ps) = ps {
+            if ps.allowed > 0 || ps.denied > 0 || ps.asked > 0 {
+                s.push_str(&format!(
+                    " | ok:{} no:{} ask:{}",
+                    ps.allowed, ps.denied, ps.asked
+                ));
+            }
+        }
+        s
+    } else {
+        let count = app.cached_threads.len();
+        format!(" {} thread{}", count, if count == 1 { "" } else { "s" })
+    };
+
+    let hints = match (&app.mode, app.active_thread.is_some()) {
+        (InputMode::Normal, false) => " | i compose | / search | Enter open | d archive | q quit",
+        (InputMode::Normal, true) => " | i reply | j/k scroll | q/Esc inbox",
+        (InputMode::Insert(InsertContext::Search), _) => " | Enter chip | Esc cancel",
+        (InputMode::Insert(_), _) => " | ^Enter send | Esc cancel",
+    };
+
+    let status_line = Line::from(vec![
+        mode_badge,
+        Span::styled(context_info, theme.status),
+        Span::styled(hints, theme.status),
+    ]);
+    frame.render_widget(Paragraph::new(status_line), area);
+}
+
+// ---------------------------------------------------------------------------
+// Approval dialog (unchanged from original)
+// ---------------------------------------------------------------------------
 
 fn draw_approval_dialog(frame: &mut Frame, approval: &ApprovalState, theme: &Theme) {
     let area = frame.area();
@@ -498,6 +607,10 @@ fn draw_approval_dialog(frame: &mut Frame, approval: &ApprovalState, theme: &The
     frame.render_widget(content, inner);
 }
 
+// ---------------------------------------------------------------------------
+// Customize dialog (unchanged from original)
+// ---------------------------------------------------------------------------
+
 const EFFECTS: [&str; 2] = ["allow", "deny"];
 const SCOPES: [&str; 3] = ["once", "session", "always"];
 const NETWORKS: [&str; 3] = ["deny", "allow", "localhost"];
@@ -530,7 +643,7 @@ fn build_node_from_customize(cust: &crate::app::CustomizeState) -> clash::policy
     let leaf = Node::Decision(decision);
 
     if cust.tool == "shell" {
-        // Build ToolName → arg0 → arg1 → ... → Decision
+        // Build ToolName -> arg0 -> arg1 -> ... -> Decision
         let mut current = leaf;
         for (i, arg) in cust.args.iter().enumerate().rev() {
             let pattern = if arg == "*" {
@@ -556,7 +669,7 @@ fn build_node_from_customize(cust: &crate::app::CustomizeState) -> clash::policy
             terminal: false,
         }
     } else if let Some(path) = cust.args.first() {
-        // File tool: ToolName → NamedArg("path") → Decision
+        // File tool: ToolName -> NamedArg("path") -> Decision
         Node::Condition {
             observe: Observable::ToolName,
             pattern: Pattern::Literal(Value::Literal(cust.tool.clone())),
@@ -883,7 +996,7 @@ fn draw_customize_dialog(frame: &mut Frame, cust: &crate::app::CustomizeState, t
 
     // Sandbox section
     let nf = cust.network_field();
-    lines.push(Line::from(Span::styled("  ── Sandbox ──", dim)));
+    lines.push(Line::from(Span::styled("  -- Sandbox --", dim)));
     lines.push(Line::from(vec![
         Span::styled("  Network: ", if cust.focus == nf { sel } else { dim }),
         Span::styled(
