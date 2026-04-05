@@ -42,12 +42,16 @@ pub fn run(
         // Check for permission requests
         if app.pending_approval.is_none() && app.pending_customize.is_none() {
             if let Ok(AppControl::PermissionRequest {
+                thread_id,
                 tool,
                 input_preview,
                 respond,
             }) = app.control_rx.try_recv()
             {
+                // Auto-switch to the requesting thread's tab
+                app.open_thread(thread_id.clone());
                 app.pending_approval = Some(ApprovalState {
+                    thread_id,
                     tool,
                     input_preview,
                     selected: 0,
@@ -64,9 +68,27 @@ pub fn run(
 
 fn handle_normal_key(app: &mut App, modifiers: KeyModifiers, code: KeyCode) {
     match (modifiers, code) {
-        (KeyModifiers::CONTROL, KeyCode::Char('c')) | (_, KeyCode::Esc) => {
-            app.should_quit = true;
+        (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
+            if app.active_thread.is_some() {
+                // In a thread → go to inbox
+                app.go_to_inbox();
+            } else {
+                // In inbox → quit
+                app.should_quit = true;
+            }
         }
+        (_, KeyCode::Esc) => {
+            if app.active_thread.is_some() {
+                // In a thread → go to inbox
+                app.go_to_inbox();
+            }
+            // In inbox → do nothing (Ctrl+C to quit)
+        }
+        // Tab management
+        (KeyModifiers::CONTROL, KeyCode::Char('t')) => app.go_to_inbox(),
+        (KeyModifiers::CONTROL, KeyCode::Char('w')) => app.close_current_tab(),
+        (KeyModifiers::CONTROL, KeyCode::Right) => app.next_tab(),
+        (KeyModifiers::CONTROL, KeyCode::Left) => app.prev_tab(),
         (_, KeyCode::Enter) => app.submit(),
         (_, KeyCode::Backspace) => {
             if app.cursor > 0 {
@@ -217,26 +239,60 @@ fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // title
+            Constraint::Length(1), // title / tab bar
             Constraint::Min(1),    // messages
             Constraint::Length(3), // input
             Constraint::Length(1), // status
         ])
         .split(frame.area());
 
-    // Title bar
-    let title = Line::from(vec![
+    // Title / tab bar
+    let mut title_spans = vec![
         Span::styled(" ox ", theme.title_badge),
         Span::styled(
-            format!(" {} ({})", app.model, app.provider),
+            format!(" {} ({}) ", app.model, app.provider),
             theme.title_info,
         ),
-    ]);
-    frame.render_widget(Paragraph::new(title), chunks[0]);
+    ];
+    // Show tab indicators
+    let inbox_style = if app.active_thread.is_none() {
+        theme.title_badge
+    } else {
+        theme.title_info
+    };
+    title_spans.push(Span::styled("[inbox]", inbox_style));
+    for (i, tid) in app.tabs.iter().enumerate() {
+        let short = &tid[..tid.len().min(8)];
+        let is_active = app.active_thread.as_ref() == Some(tid);
+        let tab_style = if is_active {
+            theme.title_badge
+        } else {
+            theme.title_info
+        };
+        title_spans.push(Span::styled(format!(" [{}: {}]", i + 1, short), tab_style));
+    }
+    frame.render_widget(Paragraph::new(Line::from(title_spans)), chunks[0]);
+
+    // Get the active view (if any)
+    let view = app.active_view();
+    let messages = view.map(|v| v.messages.as_slice()).unwrap_or(&[]);
+    let thinking = view.is_some_and(|v| v.thinking);
 
     // Messages
     let mut lines: Vec<Line> = Vec::new();
-    for msg in &app.messages {
+
+    if app.active_thread.is_none() {
+        lines.push(Line::from(Span::styled(
+            "  Inbox — type a message to start a new thread",
+            theme.assistant_text,
+        )));
+        lines.push(Line::from(Span::styled(
+            "  Ctrl+Right/Left to switch tabs",
+            theme.assistant_text,
+        )));
+    }
+
+    for msg in messages {
         match msg {
             ChatMessage::User(text) => {
                 lines.push(Line::from(""));
@@ -298,8 +354,8 @@ fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
     }
 
     // Thinking indicator
-    if app.thinking {
-        if let Some(ChatMessage::AssistantChunk(_)) = app.messages.last() {
+    if thinking {
+        if let Some(ChatMessage::AssistantChunk(_)) = messages.last() {
             // streaming text visible
         } else {
             lines.push(Line::from(Span::styled("  ...", theme.thinking)));
@@ -315,13 +371,13 @@ fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
         let max_scroll = total_lines.saturating_sub(msg_height) as u16;
         max_scroll.saturating_sub(app.scroll)
     };
-    let messages = Paragraph::new(text)
+    let messages_widget = Paragraph::new(text)
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0));
-    frame.render_widget(messages, chunks[1]);
+    frame.render_widget(messages_widget, chunks[1]);
 
     // Input box
-    let input_title = if app.thinking { " streaming... " } else { "" };
+    let input_title = if thinking { " streaming... " } else { "" };
     let input_block = Block::default()
         .borders(Borders::TOP)
         .border_style(theme.input_border)
@@ -334,30 +390,35 @@ fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
         frame.set_cursor_position((chunks[2].x + app.cursor as u16 + 2, chunks[2].y + 1));
     }
 
-    // Status bar
-    let tokens = if app.tokens_in > 0 || app.tokens_out > 0 {
-        format!(" | {}in/{}out", app.tokens_in, app.tokens_out)
+    // Status bar — show active thread's stats
+    let (tokens_in, tokens_out, policy_stats) = match view {
+        Some(v) => (v.tokens_in, v.tokens_out, &v.policy_stats),
+        None => (0, 0, &DEFAULT_POLICY_STATS),
+    };
+    let tokens = if tokens_in > 0 || tokens_out > 0 {
+        format!(" | {}in/{}out", tokens_in, tokens_out)
     } else {
         String::new()
     };
     let policy = {
-        let s = &app.policy_stats;
+        let s = policy_stats;
         if s.allowed > 0 || s.denied > 0 || s.asked > 0 {
             format!(" | ok:{} no:{} ask:{}", s.allowed, s.denied, s.asked)
         } else {
             String::new()
         }
     };
+    let tab_hint = " | ^T inbox ^W close ^Right/Left tabs";
     let status_text = if app.pending_customize.is_some() {
         format!(
             "CUSTOMIZE — Up/Down fields, Left/Right toggle, Enter save, Esc cancel{tokens}{policy}"
         )
     } else if app.pending_approval.is_some() {
         format!("PERMISSION — y/s/a/n/d or 1-6 or (c)ustomize{tokens}{policy}")
-    } else if app.thinking {
-        format!("streaming...{tokens}{policy}")
+    } else if thinking {
+        format!("streaming...{tokens}{policy}{tab_hint}")
     } else {
-        format!("idle{tokens}{policy} | Enter send | Esc quit")
+        format!("idle{tokens}{policy} | Enter send | Esc quit{tab_hint}")
     };
     let status = Paragraph::new(Span::styled(format!(" {status_text}"), theme.status));
     frame.render_widget(status, chunks[3]);
@@ -369,6 +430,12 @@ fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
         draw_approval_dialog(frame, approval, theme);
     }
 }
+
+static DEFAULT_POLICY_STATS: crate::policy::PolicyStats = crate::policy::PolicyStats {
+    allowed: 0,
+    denied: 0,
+    asked: 0,
+};
 
 fn draw_approval_dialog(frame: &mut Frame, approval: &ApprovalState, theme: &Theme) {
     let area = frame.area();

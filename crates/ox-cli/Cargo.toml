@@ -20,6 +20,7 @@ ox-context = { path = "../ox-context" }
 ox-gate = { path = "../ox-gate" }
 ox-history = { path = "../ox-history" }
 ox-runtime = { path = "../ox-runtime" }
+ox-inbox = { path = "../ox-inbox" }
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.28"
 ratatui = "0.29"
@@ -27,6 +28,7 @@ reqwest = { version = "0.12", features = ["blocking"] }
 clash = "0.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+structfs-core-store = { workspace = true }
 structfs-serde-store = { workspace = true }
 
 [dev-dependencies]

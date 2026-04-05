@@ -1,5 +1,7 @@
+mod agents;
 mod app;
 mod policy;
+#[allow(dead_code)]
 mod session;
 mod theme;
 mod tools;
@@ -32,14 +34,6 @@ struct Cli {
     #[arg(long, default_value = "4096")]
     max_tokens: u32,
 
-    /// Named session to resume or create (stored in ~/.ox/sessions/)
-    #[arg(long)]
-    session: Option<String>,
-
-    /// Resume the most recent session
-    #[arg(long)]
-    resume: bool,
-
     /// Disable policy enforcement (allow all tool calls)
     #[arg(long)]
     no_policy: bool,
@@ -67,23 +61,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let workspace =
         std::fs::canonicalize(&cli.workspace).unwrap_or_else(|_| PathBuf::from(&cli.workspace));
 
-    // Resolve session path
-    let session_path = if let Some(name) = cli.session {
-        Some(session::session_path(&name)?)
-    } else if cli.resume {
-        match session::last_session()? {
-            Some(path) => Some(path),
-            None => {
-                eprintln!("no previous session found");
-                None
-            }
-        }
-    } else {
-        let session_name = workspace
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("default");
-        Some(session::session_path(session_name)?)
+    // Inbox root: ~/.ox
+    let inbox_root = {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        PathBuf::from(home).join(".ox")
     };
 
     let mut app = app::App::new(
@@ -92,9 +73,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cli.max_tokens,
         api_key,
         workspace,
-        session_path,
+        inbox_root,
         cli.no_policy,
-    );
+    )
+    .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
     let theme = theme::Theme::default();
 

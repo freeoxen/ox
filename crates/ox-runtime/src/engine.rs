@@ -75,6 +75,7 @@ impl AgentRuntime {
 /// A pre-compiled Wasm module conforming to the ox agent ABI.
 ///
 /// Call [`run`](AgentModule::run) to instantiate and execute the agent loop.
+#[derive(Clone)]
 pub struct AgentModule {
     engine: Engine,
     module: Module,
