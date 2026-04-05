@@ -73,7 +73,9 @@ fn create_thread(
     let now = now_epoch();
 
     let conn = db.lock().map_err(|e| err("create_thread", e))?;
-    let tx = conn.unchecked_transaction().map_err(|e| err("create_thread", e))?;
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| err("create_thread", e))?;
 
     tx.execute(
         "INSERT INTO threads (id, title, parent_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -161,7 +163,9 @@ fn set_labels(db: &Mutex<Connection>, id: &str, data: &Record) -> Result<Path, S
     };
 
     let conn = db.lock().map_err(|e| err("set_labels", e))?;
-    let tx = conn.unchecked_transaction().map_err(|e| err("set_labels", e))?;
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| err("set_labels", e))?;
 
     tx.execute(
         "DELETE FROM labels WHERE thread_id = ?1",

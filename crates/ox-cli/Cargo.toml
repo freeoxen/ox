@@ -19,6 +19,7 @@ ox-kernel = { path = "../ox-kernel" }
 ox-context = { path = "../ox-context" }
 ox-gate = { path = "../ox-gate" }
 ox-history = { path = "../ox-history" }
+ox-runtime = { path = "../ox-runtime" }
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.28"
 ratatui = "0.29"

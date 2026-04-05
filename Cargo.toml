@@ -8,10 +8,11 @@ members = [
     "crates/ox-gate",
     "crates/ox-history",
     "crates/ox-kernel",
-    "crates/ox-wasi",
+    "crates/ox-wasm",
     "crates/ox-web",
     "crates/ox-cli",
     "crates/ox-inbox",
+    "crates/ox-runtime",
 ]
 
 [workspace.package]

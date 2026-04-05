@@ -2,9 +2,10 @@ use ox_context::{ModelProvider, Namespace, SystemProvider, ToolsProvider};
 use ox_gate::{GateStore, ProviderConfig};
 use ox_history::HistoryProvider;
 use ox_kernel::{
-    AgentEvent, ContentBlock, Kernel, Reader, Record, StreamEvent, ToolRegistry, ToolResult, Value,
-    Writer, path, serialize_tool_results,
+    AgentEvent, CompletionRequest, Reader, Record, StreamEvent, ToolCall, ToolRegistry, Value,
+    Writer, path,
 };
+use ox_runtime::{AgentRuntime, HostEffects, HostStore};
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::thread;
@@ -322,8 +323,11 @@ impl App {
 }
 
 // ---------------------------------------------------------------------------
-// Agent thread — StructFS-native transport, three-phase kernel API
+// Agent thread — delegates to ox-runtime Wasm execution
 // ---------------------------------------------------------------------------
+
+/// Embedded agent Wasm module (built by `scripts/build-agent.sh`).
+const AGENT_WASM: &[u8] = include_bytes!("../../../target/agent.wasm");
 
 #[allow(clippy::too_many_arguments)]
 fn agent_thread(
@@ -332,14 +336,31 @@ fn agent_thread(
     max_tokens: u32,
     api_key: String,
     extra_tools: Vec<Box<dyn ox_kernel::Tool>>,
-    mut policy: crate::policy::PolicyGuard,
+    policy: crate::policy::PolicyGuard,
     session_path: Option<PathBuf>,
     prompt_rx: mpsc::Receiver<String>,
     event_tx: mpsc::Sender<AppEvent>,
     control_tx: mpsc::Sender<AppControl>,
 ) {
-    let client = reqwest::blocking::Client::new();
-    let mut kernel = Kernel::new(model.clone());
+    // Load the Wasm agent runtime + module
+    let runtime = match AgentRuntime::new() {
+        Ok(r) => r,
+        Err(e) => {
+            event_tx
+                .send(AppEvent::Done(Err(format!("runtime init failed: {e}"))))
+                .ok();
+            return;
+        }
+    };
+    let module = match runtime.load_module_from_bytes(AGENT_WASM) {
+        Ok(m) => m,
+        Err(e) => {
+            event_tx
+                .send(AppEvent::Done(Err(format!("agent load failed: {e}"))))
+                .ok();
+            return;
+        }
+    };
 
     // Build tool registry
     let mut tools = ToolRegistry::new();
@@ -359,28 +380,29 @@ fn agent_thread(
     )
     .ok();
 
-    // Read provider config from gate (before mounting) for the non-streaming send fn
+    // Read provider config from gate (before mounting) for transport
     let provider_config = read_provider_config_from_gate(&mut gate, &provider)
         .unwrap_or_else(|_| ProviderConfig::anthropic());
-    let send_config = provider_config.clone();
-    let send_key = read_account_key(&mut gate, &provider).unwrap_or_default();
-    let send = Arc::new(crate::transport::make_send_fn(send_config, send_key));
+    let api_key_for_transport = read_account_key(&mut gate, &provider).unwrap_or_default();
 
     // Register completion tools for keyed accounts
+    let send_config = provider_config.clone();
+    let send_key = api_key_for_transport.clone();
+    let send = Arc::new(crate::transport::make_send_fn(send_config, send_key));
     for tool in gate.create_completion_tools(send) {
         tools.register(tool);
     }
 
     // Build namespace
-    let mut context = Namespace::new();
-    context.mount(
+    let mut namespace = Namespace::new();
+    namespace.mount(
         "system",
         Box::new(SystemProvider::new(SYSTEM_PROMPT.to_string())),
     );
-    context.mount("history", Box::new(HistoryProvider::new()));
-    context.mount("tools", Box::new(ToolsProvider::new(tools.schemas())));
-    context.mount("model", Box::new(ModelProvider::new(model, max_tokens)));
-    context.mount("gate", Box::new(gate));
+    namespace.mount("history", Box::new(HistoryProvider::new()));
+    namespace.mount("tools", Box::new(ToolsProvider::new(tools.schemas())));
+    namespace.mount("model", Box::new(ModelProvider::new(model, max_tokens)));
+    namespace.mount("gate", Box::new(gate));
 
     // Restore session history if a session file exists
     if let Some(ref path) = session_path {
@@ -388,7 +410,7 @@ fn agent_thread(
             match crate::session::load(path) {
                 Ok(messages) => {
                     for msg in messages {
-                        context
+                        namespace
                             .write(&path!("history/append"), Record::parsed(json_to_value(msg)))
                             .ok();
                     }
@@ -404,10 +426,15 @@ fn agent_thread(
         }
     }
 
+    // Main prompt loop — move tools/policy/client in and out of CliEffects each turn
+    let mut tools = tools;
+    let mut policy = policy;
+    let mut client = reqwest::blocking::Client::new();
+
     while let Ok(input) = prompt_rx.recv() {
         // Write user message to history
         let user_json = serde_json::json!({"role": "user", "content": input});
-        if let Err(e) = context.write(
+        if let Err(e) = namespace.write(
             &path!("history/append"),
             Record::parsed(json_to_value(user_json)),
         ) {
@@ -415,21 +442,40 @@ fn agent_thread(
             continue;
         }
 
-        let result = run_streaming_loop(
-            &mut kernel,
-            &mut context,
-            &tools,
-            &mut policy,
-            &client,
-            &event_tx,
-            &control_tx,
-        );
-        event_tx.send(AppEvent::Done(result)).ok();
+        // Build effects for this turn, transferring ownership
+        let effects = CliEffects {
+            client,
+            config: provider_config.clone(),
+            api_key: api_key_for_transport.clone(),
+            tools,
+            policy,
+            event_tx: event_tx.clone(),
+            control_tx: control_tx.clone(),
+            stats: PolicyStats::default(),
+        };
+
+        let host_store = HostStore::new(namespace, effects);
+        let (returned_store, result) = module.run(host_store);
+
+        // Reclaim namespace, tools, policy, and client for the next turn
+        namespace = returned_store.namespace;
+        client = returned_store.effects.client;
+        tools = returned_store.effects.tools;
+        let stats = returned_store.effects.stats.clone();
+        policy = returned_store.effects.policy;
+
+        event_tx.send(AppEvent::PolicyStats(stats)).ok();
+
+        let done_result = match result {
+            Ok(()) => Ok(String::new()),
+            Err(e) => Err(e),
+        };
+        event_tx.send(AppEvent::Done(done_result)).ok();
     }
 
     // Save session on shutdown (prompt_rx disconnected)
     if let Some(ref path) = session_path {
-        save_session(&mut context, path);
+        save_session(&mut namespace, path);
     }
 }
 
@@ -488,266 +534,163 @@ fn read_account_key(gate: &mut GateStore, account_name: &str) -> Result<String, 
     }
 }
 
-/// Read provider config from the namespace (gate mounted at "gate/").
-fn read_gate_config(context: &mut Namespace) -> Result<(ProviderConfig, String), String> {
-    let bootstrap = match context.read(&path!("gate/bootstrap")) {
-        Ok(Some(Record::Parsed(Value::String(s)))) => s,
-        _ => "anthropic".to_string(),
-    };
+// ---------------------------------------------------------------------------
+// CliEffects — HostEffects impl for ox-runtime Wasm execution
+// ---------------------------------------------------------------------------
 
-    let key_path = ox_kernel::Path::from_components(vec![
-        "gate".into(),
-        "accounts".into(),
-        bootstrap.clone(),
-        "key".into(),
-    ]);
-    let api_key = match context.read(&key_path) {
-        Ok(Some(Record::Parsed(Value::String(s)))) if !s.is_empty() => s,
-        _ => return Err(format!("no API key for account '{bootstrap}'")),
-    };
-
-    let provider_path = ox_kernel::Path::from_components(vec![
-        "gate".into(),
-        "accounts".into(),
-        bootstrap,
-        "provider".into(),
-    ]);
-    let provider_name = match context.read(&provider_path) {
-        Ok(Some(Record::Parsed(Value::String(s)))) => s,
-        _ => "anthropic".to_string(),
-    };
-
-    let config_path =
-        ox_kernel::Path::from_components(vec!["gate".into(), "providers".into(), provider_name]);
-    let config: ProviderConfig = match context.read(&config_path) {
-        Ok(Some(Record::Parsed(v))) => {
-            from_value(v).map_err(|e| format!("bad provider config: {e}"))?
-        }
-        _ => return Err("provider config not found in namespace".into()),
-    };
-
-    Ok((config, api_key))
+/// Host-side effects for the CLI agent, owning tools and policy so they
+/// can be transferred into/out of the HostStore each turn.
+struct CliEffects {
+    client: reqwest::blocking::Client,
+    config: ProviderConfig,
+    api_key: String,
+    tools: ToolRegistry,
+    policy: crate::policy::PolicyGuard,
+    event_tx: mpsc::Sender<AppEvent>,
+    control_tx: mpsc::Sender<AppControl>,
+    stats: PolicyStats,
 }
 
-/// Drive the agentic loop: read config from namespace, stream with retry, track tokens.
-fn run_streaming_loop(
-    kernel: &mut Kernel,
-    context: &mut Namespace,
-    tools: &ToolRegistry,
-    policy: &mut crate::policy::PolicyGuard,
-    client: &reqwest::blocking::Client,
-    event_tx: &mpsc::Sender<AppEvent>,
-    control_tx: &mpsc::Sender<AppControl>,
-) -> Result<String, String> {
-    let mut stats = PolicyStats::default();
-
-    loop {
-        // Read provider config from the namespace each iteration
-        let (config, api_key) = read_gate_config(context)?;
-
-        let request = kernel.initiate_completion(context)?;
-
-        // Stream HTTP with real-time TextDelta emission and retry
-        let tx = event_tx.clone();
-        let (events, usage) =
-            crate::transport::streaming_fetch(client, &config, &api_key, &request, &|event| {
+impl HostEffects for CliEffects {
+    fn complete(
+        &mut self,
+        request: &CompletionRequest,
+    ) -> Result<(Vec<StreamEvent>, u32, u32), String> {
+        let tx = self.event_tx.clone();
+        let (events, usage) = crate::transport::streaming_fetch(
+            &self.client,
+            &self.config,
+            &self.api_key,
+            request,
+            &|event| {
                 if let StreamEvent::TextDelta(text) = event {
                     tx.send(AppEvent::Agent(AgentEvent::TextDelta(text.clone())))
                         .ok();
                 }
-            })?;
-
-        // Report token usage
+            },
+        )?;
         if usage.input_tokens > 0 || usage.output_tokens > 0 {
-            event_tx
+            self.event_tx
                 .send(AppEvent::Usage {
                     input_tokens: usage.input_tokens,
                     output_tokens: usage.output_tokens,
                 })
                 .ok();
         }
+        Ok((events, usage.input_tokens, usage.output_tokens))
+    }
 
-        // Kernel processes events — suppress TextDelta (already streamed)
-        let tx2 = event_tx.clone();
-        let mut emit = |event: AgentEvent| {
-            if !matches!(event, AgentEvent::TextDelta(_) | AgentEvent::TurnStart) {
-                tx2.send(AppEvent::Agent(event)).ok();
+    fn execute_tool(&mut self, call: &ToolCall) -> Result<String, String> {
+        let decision = self.policy.check(&call.name, &call.input);
+        match decision {
+            crate::policy::CheckResult::Allow => {
+                self.stats.allowed += 1;
+                self.event_tx
+                    .send(AppEvent::PolicyStats(self.stats.clone()))
+                    .ok();
+                self.execute_tool_inner(call)
             }
-        };
-        let content = kernel.consume_events(events, &mut emit)?;
-        let tool_calls = kernel.complete_turn(context, &content)?;
-
-        if tool_calls.is_empty() {
-            event_tx.send(AppEvent::Agent(AgentEvent::TurnEnd)).ok();
-            let text: String = content
-                .iter()
-                .filter_map(|b| {
-                    if let ContentBlock::Text { text } = b {
-                        Some(text.as_str())
-                    } else {
-                        None
+            crate::policy::CheckResult::Deny(reason) => {
+                self.stats.denied += 1;
+                self.event_tx
+                    .send(AppEvent::PolicyStats(self.stats.clone()))
+                    .ok();
+                Err(format!("denied: {reason}"))
+            }
+            crate::policy::CheckResult::Ask {
+                tool,
+                input_preview,
+                ..
+            } => {
+                self.stats.asked += 1;
+                self.event_tx
+                    .send(AppEvent::PolicyStats(self.stats.clone()))
+                    .ok();
+                let (resp_tx, resp_rx) = mpsc::channel();
+                self.control_tx
+                    .send(AppControl::PermissionRequest {
+                        tool,
+                        input_preview,
+                        respond: resp_tx,
+                    })
+                    .ok();
+                match resp_rx.recv() {
+                    Ok(ApprovalResponse::AllowOnce) => {
+                        self.stats.allowed += 1;
+                        self.execute_tool_inner(call)
                     }
-                })
-                .collect();
-            return Ok(text);
-        }
-
-        // Execute tools with policy enforcement
-        let mut results = Vec::new();
-        for tc in &tool_calls {
-            // Policy check before execution
-            let decision = policy.check(&tc.name, &tc.input);
-            let proceed = match decision {
-                crate::policy::CheckResult::Allow => {
-                    stats.allowed += 1;
-                    true
-                }
-                crate::policy::CheckResult::Deny(reason) => {
-                    stats.denied += 1;
-                    results.push(ToolResult {
-                        tool_use_id: tc.id.clone(),
-                        content: format!("denied: {reason}"),
-                    });
-                    event_tx.send(AppEvent::PolicyStats(stats.clone())).ok();
-                    false
-                }
-                crate::policy::CheckResult::Ask {
-                    tool,
-                    input_preview,
-                    ..
-                } => {
-                    stats.asked += 1;
-                    event_tx.send(AppEvent::PolicyStats(stats.clone())).ok();
-                    // Send request to TUI and block on response
-                    let (resp_tx, resp_rx) = mpsc::channel();
-                    control_tx
-                        .send(AppControl::PermissionRequest {
-                            tool,
-                            input_preview,
-                            respond: resp_tx,
-                        })
-                        .ok();
-                    match resp_rx.recv() {
-                        Ok(ApprovalResponse::AllowOnce) => {
-                            stats.allowed += 1;
-                            true
-                        }
-                        Ok(ApprovalResponse::AllowSession) => {
-                            policy.session_allow(&tc.name, &tc.input);
-                            stats.allowed += 1;
-                            true
-                        }
-                        Ok(ApprovalResponse::AllowAlways) => {
-                            policy.persist_allow(&tc.name, &tc.input);
-                            stats.allowed += 1;
-                            true
-                        }
-                        Ok(ApprovalResponse::DenyOnce) => {
-                            stats.denied += 1;
-                            results.push(ToolResult {
-                                tool_use_id: tc.id.clone(),
-                                content: "denied by user".into(),
-                            });
-                            false
-                        }
-                        Ok(ApprovalResponse::DenySession) => {
-                            policy.session_deny(&tc.name, &tc.input);
-                            stats.denied += 1;
-                            results.push(ToolResult {
-                                tool_use_id: tc.id.clone(),
-                                content: "denied by user".into(),
-                            });
-                            false
-                        }
-                        Ok(ApprovalResponse::DenyAlways) => {
-                            policy.persist_deny(&tc.name, &tc.input);
-                            stats.denied += 1;
-                            results.push(ToolResult {
-                                tool_use_id: tc.id.clone(),
-                                content: "denied by user".into(),
-                            });
-                            false
-                        }
-                        Ok(ApprovalResponse::CustomNode {
-                            node,
-                            sandbox,
-                            scope,
-                        }) => {
-                            let is_allow = node_is_allow(&node);
-                            match scope.as_str() {
-                                "always" => {
-                                    if let Some((name, sb)) = sandbox {
-                                        policy.add_sandbox(&name, sb, scope == "always");
-                                    }
-                                    policy.add_persistent_node(*node);
+                    Ok(ApprovalResponse::AllowSession) => {
+                        self.policy.session_allow(&call.name, &call.input);
+                        self.stats.allowed += 1;
+                        self.execute_tool_inner(call)
+                    }
+                    Ok(ApprovalResponse::AllowAlways) => {
+                        self.policy.persist_allow(&call.name, &call.input);
+                        self.stats.allowed += 1;
+                        self.execute_tool_inner(call)
+                    }
+                    Ok(ApprovalResponse::DenyOnce) => {
+                        self.stats.denied += 1;
+                        Err("denied by user".into())
+                    }
+                    Ok(ApprovalResponse::DenySession) => {
+                        self.policy.session_deny(&call.name, &call.input);
+                        self.stats.denied += 1;
+                        Err("denied by user".into())
+                    }
+                    Ok(ApprovalResponse::DenyAlways) => {
+                        self.policy.persist_deny(&call.name, &call.input);
+                        self.stats.denied += 1;
+                        Err("denied by user".into())
+                    }
+                    Ok(ApprovalResponse::CustomNode {
+                        node,
+                        sandbox,
+                        scope,
+                    }) => {
+                        let is_allow = node_is_allow(&node);
+                        match scope.as_str() {
+                            "always" => {
+                                if let Some((name, sb)) = sandbox {
+                                    self.policy.add_sandbox(&name, sb, true);
                                 }
-                                "session" => {
-                                    if let Some((name, sb)) = sandbox {
-                                        policy.add_sandbox(&name, sb, false);
-                                    }
-                                    policy.add_session_node(*node);
+                                self.policy.add_persistent_node(*node);
+                            }
+                            "session" => {
+                                if let Some((name, sb)) = sandbox {
+                                    self.policy.add_sandbox(&name, sb, false);
                                 }
-                                _ => {} // "once"
+                                self.policy.add_session_node(*node);
                             }
-                            if is_allow {
-                                stats.allowed += 1;
-                                true
-                            } else {
-                                stats.denied += 1;
-                                results.push(ToolResult {
-                                    tool_use_id: tc.id.clone(),
-                                    content: "denied by custom rule".into(),
-                                });
-                                false
-                            }
+                            _ => {} // "once"
                         }
-                        Err(_) => {
-                            results.push(ToolResult {
-                                tool_use_id: tc.id.clone(),
-                                content: "denied: TUI disconnected".into(),
-                            });
-                            false
+                        if is_allow {
+                            self.stats.allowed += 1;
+                            self.execute_tool_inner(call)
+                        } else {
+                            self.stats.denied += 1;
+                            Err("denied by custom rule".into())
                         }
                     }
+                    Err(_) => Err("denied: TUI disconnected".into()),
                 }
-            };
-
-            if !proceed {
-                continue;
             }
-
-            event_tx
-                .send(AppEvent::Agent(AgentEvent::ToolCallStart {
-                    name: tc.name.clone(),
-                }))
-                .ok();
-            let result_str = match tools.get(&tc.name) {
-                Some(tool) => tool
-                    .execute(tc.input.clone())
-                    .unwrap_or_else(|e| format!("error: {e}")),
-                None => format!("error: unknown tool '{}'", tc.name),
-            };
-            event_tx
-                .send(AppEvent::Agent(AgentEvent::ToolCallResult {
-                    name: tc.name.clone(),
-                    result: result_str.clone(),
-                }))
-                .ok();
-            event_tx.send(AppEvent::PolicyStats(stats.clone())).ok();
-            results.push(ToolResult {
-                tool_use_id: tc.id.clone(),
-                content: result_str,
-            });
         }
+    }
 
-        // Write tool results to history
-        let results_json = serialize_tool_results(&results);
-        context
-            .write(
-                &path!("history/append"),
-                Record::parsed(json_to_value(results_json)),
-            )
-            .map_err(|e| e.to_string())?;
+    fn emit_event(&mut self, event: AgentEvent) {
+        self.event_tx.send(AppEvent::Agent(event)).ok();
+    }
+}
+
+impl CliEffects {
+    fn execute_tool_inner(&self, call: &ToolCall) -> Result<String, String> {
+        match self.tools.get(&call.name) {
+            Some(tool) => tool
+                .execute(call.input.clone())
+                .map_err(|e| format!("error: {e}")),
+            None => Err(format!("unknown tool '{}'", call.name)),
+        }
     }
 }
 

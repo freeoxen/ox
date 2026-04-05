@@ -76,10 +76,7 @@ fn query_threads(
     Ok(threads)
 }
 
-fn batch_load_labels(
-    conn: &Connection,
-    threads: &mut [ThreadMetadata],
-) -> Result<(), StoreError> {
+fn batch_load_labels(conn: &Connection, threads: &mut [ThreadMetadata]) -> Result<(), StoreError> {
     // Build a single query for all thread IDs
     let placeholders: Vec<String> = (1..=threads.len()).map(|i| format!("?{}", i)).collect();
     let sql = format!(
@@ -88,7 +85,10 @@ fn batch_load_labels(
     );
     let mut stmt = conn.prepare(&sql).map_err(|e| err("read", e))?;
     let ids: Vec<&str> = threads.iter().map(|t| t.id.as_str()).collect();
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> = ids.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = ids
+        .iter()
+        .map(|id| id as &dyn rusqlite::types::ToSql)
+        .collect();
     let rows = stmt
         .query_map(param_refs.as_slice(), |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
