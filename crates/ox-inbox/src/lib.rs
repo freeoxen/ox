@@ -1,7 +1,10 @@
-pub(crate) mod jsonl;
+pub mod ledger;
 pub mod model;
 mod reader;
+pub mod reconcile;
 mod schema;
+pub mod snapshot;
+pub mod thread_dir;
 mod writer;
 
 use rusqlite::Connection;
@@ -31,6 +34,9 @@ impl InboxStore {
         schema::initialize(&conn)
             .map_err(|e| StoreError::store("InboxStore", "open", e.to_string()))?;
 
+        // Best-effort startup reconciliation: sync SQLite index with thread directories
+        reconcile::reconcile(&conn, &threads_dir).ok();
+
         Ok(Self {
             db: Mutex::new(conn),
             threads_dir,
@@ -40,7 +46,7 @@ impl InboxStore {
 
 impl Reader for InboxStore {
     fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
-        reader::read_dispatch(&self.db, &self.threads_dir, from)
+        reader::read_dispatch(&self.db, from)
     }
 }
 
@@ -374,33 +380,6 @@ mod tests {
     }
 
     #[test]
-    fn read_messages_via_reader() {
-        let (mut store, _dir) = test_store();
-        let mut map = std::collections::BTreeMap::new();
-        map.insert("title".to_string(), Value::String("Chat".to_string()));
-        let path = store
-            .write(
-                &structfs_core_store::path!("threads"),
-                Record::parsed(Value::Map(map)),
-            )
-            .unwrap();
-        let id = path.iter().nth(1).unwrap().clone();
-        let msg_path = Path::parse(&format!("threads/{}/messages", id)).unwrap();
-        for content in ["Hello", "World"] {
-            let msg = structfs_serde_store::json_to_value(serde_json::json!({
-                "role": "user",
-                "content": content
-            }));
-            store.write(&msg_path, Record::parsed(msg)).unwrap();
-        }
-        let result = store.read(&msg_path).unwrap().unwrap();
-        let Value::Array(msgs) = result.as_value().unwrap() else {
-            panic!("expected array")
-        };
-        assert_eq!(msgs.len(), 2);
-    }
-
-    #[test]
     fn filter_by_label() {
         let (mut store, _dir) = test_store();
         for (title, labels) in [
@@ -640,26 +619,7 @@ mod tests {
             .unwrap();
         let id = path.iter().nth(1).unwrap().clone();
 
-        // 2. Append messages
-        let msg_path = Path::parse(&format!("threads/{}/messages", id)).unwrap();
-        store
-            .write(
-                &msg_path,
-                Record::parsed(structfs_serde_store::json_to_value(
-                    serde_json::json!({"role": "user", "content": "Refactor the auth middleware"}),
-                )),
-            )
-            .unwrap();
-        store
-            .write(
-                &msg_path,
-                Record::parsed(structfs_serde_store::json_to_value(
-                    serde_json::json!({"role": "assistant", "content": [{"type": "text", "text": "Reading code..."}]}),
-                )),
-            )
-            .unwrap();
-
-        // 3. Create task
+        // 2. Create task
         let tasks_path = Path::parse(&format!("threads/{}/tasks", id)).unwrap();
         let mut task = std::collections::BTreeMap::new();
         task.insert(
@@ -670,7 +630,7 @@ mod tests {
             .write(&tasks_path, Record::parsed(Value::Map(task)))
             .unwrap();
 
-        // 4. Update state to blocked
+        // 3. Update state to blocked
         let update_path = Path::parse(&format!("threads/{}", id)).unwrap();
         let mut update = std::collections::BTreeMap::new();
         update.insert(
@@ -685,7 +645,7 @@ mod tests {
             .write(&update_path, Record::parsed(Value::Map(update)))
             .unwrap();
 
-        // 5. Verify by_state filter
+        // 4. Verify by_state filter
         let blocked = store
             .read(&structfs_core_store::path!("by_state/blocked_on_approval"))
             .unwrap()
@@ -695,21 +655,14 @@ mod tests {
         };
         assert_eq!(arr.len(), 1);
 
-        // 6. Verify messages
-        let messages = store.read(&msg_path).unwrap().unwrap();
-        let Value::Array(msgs) = messages.as_value().unwrap() else {
-            panic!()
-        };
-        assert_eq!(msgs.len(), 2);
-
-        // 7. Mark done
+        // 5. Mark done
         let mut done_update = std::collections::BTreeMap::new();
         done_update.insert("inbox_state".to_string(), Value::String("done".to_string()));
         store
             .write(&update_path, Record::parsed(Value::Map(done_update)))
             .unwrap();
 
-        // 8. Verify inbox/done separation
+        // 6. Verify inbox/done separation
         let inbox = store
             .read(&structfs_core_store::path!("threads"))
             .unwrap()
@@ -729,13 +682,10 @@ mod tests {
     }
 
     #[test]
-    fn append_and_read_messages() {
-        let (mut store, dir) = test_store();
+    fn new_thread_has_default_last_seq_and_last_hash() {
+        let (mut store, _dir) = test_store();
         let mut map = std::collections::BTreeMap::new();
-        map.insert(
-            "title".to_string(),
-            Value::String("Chat thread".to_string()),
-        );
+        map.insert("title".to_string(), Value::String("Test".to_string()));
         let path = store
             .write(
                 &structfs_core_store::path!("threads"),
@@ -744,23 +694,15 @@ mod tests {
             .unwrap();
         let id = path.iter().nth(1).unwrap().clone();
 
-        let msg = structfs_serde_store::json_to_value(serde_json::json!({
-            "role": "user",
-            "content": "Hello agent"
-        }));
-        let msg_path = Path::parse(&format!("threads/{}/messages", id)).unwrap();
-        store.write(&msg_path, Record::parsed(msg)).unwrap();
-
-        let jsonl_path = dir
-            .path()
-            .join("threads")
-            .join(&id)
-            .join(format!("{}.jsonl", id));
-        let content = std::fs::read_to_string(&jsonl_path).unwrap();
-        let lines: Vec<&str> = content.lines().collect();
-        assert_eq!(lines.len(), 1);
-        let parsed: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
-        assert_eq!(parsed["role"], "user");
-        assert_eq!(parsed["content"], "Hello agent");
+        let db = store.db.lock().unwrap();
+        let (last_seq, last_hash): (i64, Option<String>) = db
+            .query_row(
+                "SELECT last_seq, last_hash FROM threads WHERE id = ?1",
+                [&id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(last_seq, -1);
+        assert!(last_hash.is_none());
     }
 }

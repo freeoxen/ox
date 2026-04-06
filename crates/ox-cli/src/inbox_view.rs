@@ -28,7 +28,7 @@ pub fn draw_inbox(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
 
     let mut lines: Vec<Line> = Vec::new();
     let end = (app.inbox_scroll + visible_rows).min(threads.len());
-    for (i, (_, title, state, labels, token_count)) in
+    for (i, (_, title, state, labels, token_count, last_seq)) in
         threads.iter().enumerate().take(end).skip(app.inbox_scroll)
     {
         let is_selected = i == app.selected_row;
@@ -107,14 +107,23 @@ pub fn draw_inbox(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
                     theme.tool_meta.patch(base_style),
                 ));
             }
-        } else if *token_count > 0 {
-            // Fallback to SQLite token count for threads without a live view
-            let tok_str = if *token_count >= 1000 {
-                format!("{:.1}k tok", *token_count as f64 / 1000.0)
-            } else {
-                format!("{token_count} tok")
-            };
-            meta_spans.push(Span::styled(tok_str, theme.tool_meta.patch(base_style)));
+        } else {
+            // Fallback to SQLite data for threads without a live view
+            if *token_count > 0 {
+                let tok_str = if *token_count >= 1000 {
+                    format!("{:.1}k tok", *token_count as f64 / 1000.0)
+                } else {
+                    format!("{token_count} tok")
+                };
+                meta_spans.push(Span::styled(tok_str, theme.tool_meta.patch(base_style)));
+            }
+            if *last_seq >= 0 {
+                let msg_count = *last_seq + 1;
+                meta_spans.push(Span::styled(
+                    format!(" {msg_count} msgs"),
+                    theme.tool_meta.patch(base_style),
+                ));
+            }
         }
         lines.push(Line::from(meta_spans));
     }

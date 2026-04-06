@@ -2,8 +2,7 @@ use ox_context::{ModelProvider, Namespace, SystemProvider, ToolsProvider};
 use ox_gate::{GateStore, ProviderConfig};
 use ox_history::HistoryProvider;
 use ox_kernel::{
-    AgentEvent, CompletionRequest, Reader, Record, StreamEvent, ToolCall, ToolRegistry, Value,
-    Writer, path,
+    AgentEvent, CompletionRequest, Record, StreamEvent, ToolCall, ToolRegistry, Value, Writer, path,
 };
 use ox_runtime::{AgentModule, AgentRuntime, HostEffects, HostStore};
 use std::collections::HashMap;
@@ -99,7 +98,7 @@ impl AgentPool {
             .ok_or_else(|| "inbox did not return thread_id".to_string())?
             .clone();
 
-        self.spawn_worker(thread_id.clone());
+        self.spawn_worker(thread_id.clone(), title.to_string());
         Ok(thread_id)
     }
 
@@ -108,7 +107,10 @@ impl AgentPool {
     pub fn send_prompt(&mut self, thread_id: &str, prompt: String) -> Result<(), String> {
         // Auto-spawn worker for threads from previous sessions
         if !self.threads.contains_key(thread_id) {
-            self.spawn_worker(thread_id.to_string());
+            let title = self
+                .read_thread_title(thread_id)
+                .unwrap_or_else(|| "Thread".to_string());
+            self.spawn_worker(thread_id.to_string(), title);
         }
         let handle = self
             .threads
@@ -125,7 +127,27 @@ impl AgentPool {
         &mut self.inbox
     }
 
-    fn spawn_worker(&mut self, thread_id: String) {
+    /// Path to the inbox root directory (for direct file reads).
+    pub fn inbox_root(&self) -> &std::path::Path {
+        &self.inbox_root
+    }
+
+    fn read_thread_title(&mut self, thread_id: &str) -> Option<String> {
+        use structfs_core_store::Reader as _;
+        let path =
+            ox_kernel::Path::from_components(vec!["threads".to_string(), thread_id.to_string()]);
+        let record = self.inbox.read(&path).ok()??;
+        let value = record.as_value()?;
+        match value {
+            Value::Map(map) => match map.get("title") {
+                Some(Value::String(s)) => Some(s.clone()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn spawn_worker(&mut self, thread_id: String, title: String) {
         let (prompt_tx, prompt_rx) = mpsc::channel::<String>();
         self.threads
             .insert(thread_id.clone(), ThreadHandle { prompt_tx });
@@ -143,8 +165,8 @@ impl AgentPool {
 
         thread::spawn(move || {
             agent_worker(
-                thread_id, module, model, provider, max_tokens, api_key, workspace, no_policy,
-                inbox_root, prompt_rx, event_tx, control_tx,
+                thread_id, title, module, model, provider, max_tokens, api_key, workspace,
+                no_policy, inbox_root, prompt_rx, event_tx, control_tx,
             );
         });
     }
@@ -157,6 +179,7 @@ impl AgentPool {
 #[allow(clippy::too_many_arguments)]
 fn agent_worker(
     thread_id: String,
+    title: String,
     module: AgentModule,
     model: String,
     provider: String,
@@ -218,24 +241,33 @@ fn agent_worker(
     namespace.mount("model", Box::new(ModelProvider::new(model, max_tokens)));
     namespace.mount("gate", Box::new(gate));
 
-    // Restore conversation history from JSONL if this thread has prior messages
-    let jsonl_path = inbox_root
-        .join("threads")
-        .join(&thread_id)
-        .join(format!("{thread_id}.jsonl"));
-    if jsonl_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&jsonl_path) {
-            for line in content.lines() {
-                if line.is_empty() {
-                    continue;
-                }
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
-                    namespace
-                        .write(
-                            &path!("history/append"),
-                            Record::parsed(json_to_value(json)),
-                        )
-                        .ok();
+    // Restore conversation state from thread directory
+    let thread_dir = inbox_root.join("threads").join(&thread_id);
+    if thread_dir.join("context.json").exists() {
+        // New format: restore from snapshot (context.json + ledger.jsonl)
+        ox_inbox::snapshot::restore(
+            &mut namespace,
+            &thread_dir,
+            &ox_inbox::snapshot::PARTICIPATING_MOUNTS,
+        )
+        .ok();
+    } else {
+        // Legacy format: restore from raw JSONL
+        let jsonl_path = thread_dir.join(format!("{thread_id}.jsonl"));
+        if jsonl_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&jsonl_path) {
+                for line in content.lines() {
+                    if line.is_empty() {
+                        continue;
+                    }
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
+                        namespace
+                            .write(
+                                &path!("history/append"),
+                                Record::parsed(json_to_value(json)),
+                            )
+                            .ok();
+                    }
                 }
             }
         }
@@ -283,8 +315,8 @@ fn agent_worker(
         let stats = returned_store.effects.stats.clone();
         policy = returned_store.effects.policy;
 
-        // Persist conversation history to JSONL for restart recovery
-        save_history(&mut namespace, &inbox_root, &thread_id);
+        // Persist conversation state for restart recovery
+        save_thread_state(&mut namespace, &inbox_root, &thread_id, &title, &event_tx);
 
         event_tx
             .send(AppEvent::PolicyStats {
@@ -306,37 +338,41 @@ fn agent_worker(
     }
 }
 
-/// Save the conversation history from the namespace to a JSONL file.
-fn save_history(namespace: &mut Namespace, inbox_root: &std::path::Path, thread_id: &str) {
-    use structfs_serde_store::value_to_json;
-
-    let messages = match namespace.read(&path!("history/messages")) {
-        Ok(Some(record)) => match record.as_value() {
-            Some(v) => value_to_json(v.clone()),
-            None => return,
-        },
-        _ => return,
-    };
-    let arr = match messages.as_array() {
-        Some(a) => a,
-        None => return,
-    };
-    if arr.is_empty() {
-        return;
-    }
-
-    // Write all messages to the JSONL file (overwrite, not append)
+/// Save the conversation state from the namespace to the thread directory.
+/// Sends a `SaveComplete` event so the main thread can write-through to SQLite.
+fn save_thread_state(
+    namespace: &mut Namespace,
+    inbox_root: &std::path::Path,
+    thread_id: &str,
+    title: &str,
+    event_tx: &mpsc::Sender<AppEvent>,
+) {
     let thread_dir = inbox_root.join("threads").join(thread_id);
-    std::fs::create_dir_all(&thread_dir).ok();
-    let jsonl_path = thread_dir.join(format!("{thread_id}.jsonl"));
-    let mut content = String::new();
-    for msg in arr {
-        if let Ok(line) = serde_json::to_string(msg) {
-            content.push_str(&line);
-            content.push('\n');
-        }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    let result = ox_inbox::snapshot::save(
+        namespace,
+        &thread_dir,
+        thread_id,
+        title,
+        &[],
+        now,
+        &ox_inbox::snapshot::PARTICIPATING_MOUNTS,
+    );
+
+    if let Ok(save_result) = result {
+        event_tx
+            .send(AppEvent::SaveComplete {
+                thread_id: thread_id.to_string(),
+                last_seq: save_result.last_seq,
+                last_hash: save_result.last_hash,
+                updated_at: now,
+            })
+            .ok();
     }
-    std::fs::write(&jsonl_path, content).ok();
 }
 
 // ---------------------------------------------------------------------------

@@ -108,6 +108,12 @@ pub enum AppEvent {
         thread_id: String,
         result: Result<String, String>,
     },
+    SaveComplete {
+        thread_id: String,
+        last_seq: i64,
+        last_hash: Option<String>,
+        updated_at: i64,
+    },
 }
 
 /// Non-Clone control event — carries the oneshot response channel.
@@ -246,7 +252,7 @@ pub struct App {
     pub selected_row: usize,
     pub inbox_scroll: usize,
     /// Cached visible threads — refreshed once per frame via refresh_visible_threads().
-    pub cached_threads: Vec<(String, String, String, Vec<String>, i64)>,
+    pub cached_threads: Vec<(String, String, String, Vec<String>, i64, i64)>,
     // Shared UI state
     pub input: String,
     pub cursor: usize,
@@ -488,7 +494,7 @@ impl App {
     /// Get visible threads filtered by search, sorted by state priority.
     ///
     /// Returns `(id, title, state, labels, token_count)` tuples.
-    pub fn get_visible_threads(&mut self) -> Vec<(String, String, String, Vec<String>, i64)> {
+    pub fn get_visible_threads(&mut self) -> Vec<(String, String, String, Vec<String>, i64, i64)> {
         let threads_path = structfs_core_store::path!("threads");
         let raw = match self.pool.inbox().read(&threads_path) {
             Ok(Some(record)) => record,
@@ -503,7 +509,7 @@ impl App {
             _ => return Vec::new(),
         };
 
-        let mut result: Vec<(String, String, String, Vec<String>, i64)> = Vec::new();
+        let mut result: Vec<(String, String, String, Vec<String>, i64, i64)> = Vec::new();
         for item in &arr {
             if let structfs_core_store::Value::Map(map) = item {
                 let id = match map.get("id") {
@@ -535,8 +541,12 @@ impl App {
                     Some(structfs_core_store::Value::Integer(n)) => *n,
                     _ => 0,
                 };
+                let last_seq = match map.get("last_seq") {
+                    Some(structfs_core_store::Value::Integer(n)) => *n,
+                    _ => -1,
+                };
                 if self.search.matches(&title, &labels, &state) {
-                    result.push((id, title, state, labels, token_count));
+                    result.push((id, title, state, labels, token_count, last_seq));
                 }
             }
         }
@@ -552,7 +562,7 @@ impl App {
                 _ => 5,
             }
         }
-        result.sort_by_key(|(_, _, state, _, _)| state_priority(state));
+        result.sort_by_key(|(_, _, state, _, _, _)| state_priority(state));
         result
     }
 
@@ -674,6 +684,41 @@ impl App {
                 };
                 self.update_thread_state(thread_id, new_state);
             }
+            AppEvent::SaveComplete {
+                ref thread_id,
+                last_seq,
+                ref last_hash,
+                updated_at,
+            } => {
+                let mut update = std::collections::BTreeMap::new();
+                update.insert(
+                    "last_seq".to_string(),
+                    structfs_core_store::Value::Integer(last_seq),
+                );
+                if let Some(hash) = last_hash {
+                    update.insert(
+                        "last_hash".to_string(),
+                        structfs_core_store::Value::String(hash.clone()),
+                    );
+                }
+                update.insert(
+                    "updated_at".to_string(),
+                    structfs_core_store::Value::Integer(updated_at),
+                );
+                let update_path = ox_kernel::Path::from_components(vec![
+                    "threads".to_string(),
+                    thread_id.clone(),
+                ]);
+                self.pool
+                    .inbox()
+                    .write(
+                        &update_path,
+                        structfs_core_store::Record::parsed(structfs_core_store::Value::Map(
+                            update,
+                        )),
+                    )
+                    .ok();
+            }
         }
     }
 
@@ -735,73 +780,99 @@ impl App {
         }
     }
 
-    /// Load conversation messages from ox-inbox JSONL into the ThreadView.
+    /// Load conversation messages from thread directory into the ThreadView.
+    ///
+    /// Single source of truth: reads ledger.jsonl first (new format),
+    /// falls back to `{thread_id}.jsonl` (legacy format).
     fn load_thread_messages(&mut self, thread_id: &str) {
-        let msg_path = ox_kernel::Path::from_components(vec![
-            "threads".to_string(),
-            thread_id.to_string(),
-            "messages".to_string(),
-        ]);
-        let record = match self.pool.inbox().read(&msg_path) {
-            Ok(Some(r)) => r,
-            _ => return,
-        };
-        let Some(structfs_core_store::Value::Array(messages)) = record.as_value() else {
-            return;
-        };
-
+        let thread_dir = self.pool.inbox_root().join("threads").join(thread_id);
         let view = self.thread_views.entry(thread_id.to_string()).or_default();
-        for msg_val in messages {
-            let structfs_core_store::Value::Map(map) = msg_val else {
-                continue;
-            };
-            let role = match map.get("role") {
-                Some(structfs_core_store::Value::String(s)) => s.as_str(),
-                _ => continue,
-            };
-            match role {
-                "user" => {
-                    let content = match map.get("content") {
-                        Some(structfs_core_store::Value::String(s)) => s.clone(),
-                        _ => continue,
-                    };
-                    view.messages.push(ChatMessage::User(content));
+
+        // Try new format: ledger.jsonl
+        let ledger_path = thread_dir.join("ledger.jsonl");
+        if ledger_path.exists() {
+            if let Ok(entries) = ox_inbox::ledger::read_ledger(&ledger_path) {
+                for entry in &entries {
+                    Self::parse_json_message_into_view(view, &entry.msg);
                 }
-                "assistant" => {
-                    // Assistant content is an array of blocks
-                    let blocks = match map.get("content") {
-                        Some(structfs_core_store::Value::Array(arr)) => arr,
-                        // Could also be a plain string
-                        Some(structfs_core_store::Value::String(s)) => {
-                            view.messages.push(ChatMessage::AssistantChunk(s.clone()));
-                            continue;
+                return;
+            }
+        }
+
+        // Legacy fallback: {thread_id}.jsonl
+        let jsonl_path = thread_dir.join(format!("{thread_id}.jsonl"));
+        if jsonl_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&jsonl_path) {
+                for line in content.lines() {
+                    if line.is_empty() {
+                        continue;
+                    }
+                    if let Ok(msg) = serde_json::from_str::<serde_json::Value>(line) {
+                        Self::parse_json_message_into_view(view, &msg);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Parse a single JSON message (serde_json::Value) into ChatMessages for display.
+    fn parse_json_message_into_view(view: &mut ThreadView, msg: &serde_json::Value) {
+        let role = match msg.get("role").and_then(|r| r.as_str()) {
+            Some(r) => r,
+            None => return,
+        };
+        match role {
+            "user" => {
+                // Plain string content
+                if let Some(s) = msg.get("content").and_then(|c| c.as_str()) {
+                    view.messages.push(ChatMessage::User(s.to_string()));
+                    return;
+                }
+                // Array content (tool_result blocks)
+                if let Some(arr) = msg.get("content").and_then(|c| c.as_array()) {
+                    for item in arr {
+                        if item.get("type").and_then(|t| t.as_str()) == Some("tool_result") {
+                            let content = item
+                                .get("content")
+                                .and_then(|c| c.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            view.messages.push(ChatMessage::ToolResult {
+                                name: "tool".to_string(),
+                                output: content,
+                            });
                         }
-                        _ => continue,
-                    };
+                    }
+                }
+            }
+            "assistant" => {
+                // Plain string content
+                if let Some(s) = msg.get("content").and_then(|c| c.as_str()) {
+                    view.messages
+                        .push(ChatMessage::AssistantChunk(s.to_string()));
+                    return;
+                }
+                // Array of content blocks
+                if let Some(blocks) = msg.get("content").and_then(|c| c.as_array()) {
                     let mut text = String::new();
                     for block in blocks {
-                        let structfs_core_store::Value::Map(bmap) = block else {
-                            continue;
-                        };
-                        match bmap.get("type") {
-                            Some(structfs_core_store::Value::String(t)) if t == "text" => {
-                                if let Some(structfs_core_store::Value::String(s)) =
-                                    bmap.get("text")
-                                {
+                        match block.get("type").and_then(|t| t.as_str()) {
+                            Some("text") => {
+                                if let Some(s) = block.get("text").and_then(|t| t.as_str()) {
                                     text.push_str(s);
                                 }
                             }
-                            Some(structfs_core_store::Value::String(t)) if t == "tool_use" => {
-                                // Flush accumulated text
+                            Some("tool_use") => {
                                 if !text.is_empty() {
                                     view.messages.push(ChatMessage::AssistantChunk(
                                         std::mem::take(&mut text),
                                     ));
                                 }
-                                let name = match bmap.get("name") {
-                                    Some(structfs_core_store::Value::String(s)) => s.clone(),
-                                    _ => "unknown".to_string(),
-                                };
+                                let name = block
+                                    .get("name")
+                                    .and_then(|n| n.as_str())
+                                    .unwrap_or("unknown")
+                                    .to_string();
                                 view.messages.push(ChatMessage::ToolCall { name });
                             }
                             _ => {}
@@ -811,27 +882,8 @@ impl App {
                         view.messages.push(ChatMessage::AssistantChunk(text));
                     }
                 }
-                _ => {
-                    // Tool results — role="user" with content array of tool_result blocks
-                    // Already handled by the "user" case for plain strings.
-                    // For tool_result arrays, show as tool results.
-                    if let Some(structfs_core_store::Value::Array(results)) = map.get("content") {
-                        for result in results {
-                            let structfs_core_store::Value::Map(rmap) = result else {
-                                continue;
-                            };
-                            if let Some(structfs_core_store::Value::String(content)) =
-                                rmap.get("content")
-                            {
-                                view.messages.push(ChatMessage::ToolResult {
-                                    name: "tool".to_string(),
-                                    output: content.clone(),
-                                });
-                            }
-                        }
-                    }
-                }
             }
+            _ => {}
         }
     }
 
