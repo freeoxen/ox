@@ -95,16 +95,20 @@ where its namespace is mounted in the parent.
 +-- threads/                    ThreadRegistry (dynamic mounts)
 |   +-- {id}/                   one sub-namespace per active thread
 |       +-- system/             SystemProvider
-|       +-- history/            HistoryProvider
+|       +-- history/            HistoryProvider (extended with turn state)
+|       |   +-- messages        read: committed + in-progress messages
+|       |   +-- append          write: add a completed message
+|       |   +-- count           read: message count
+|       |   +-- commit          write: finalize in-progress turn
+|       |   +-- snapshot/       snapshot paths (Plan A)
+|       |   +-- turn/           per-turn transient state (clears on commit)
+|       |       +-- streaming   write/read: accumulating text delta
+|       |       +-- thinking    write/read: bool, agent is mid-turn
+|       |       +-- tool        write/read: current tool call {name, status}
+|       |       +-- tokens      write/read: {in, out} for this turn
 |       +-- model/              ModelProvider
 |       +-- tools/              ToolsProvider
 |       +-- gate/               GateStore
-|       +-- snapshot/           snapshot paths (Plan A)
-|       +-- live/               LiveStore (event buffer)
-|       |   +-- streaming       current text delta
-|       |   +-- thinking        bool
-|       |   +-- tool            current tool call
-|       |   +-- tokens          {in, out}
 |       +-- approval/           ApprovalStore (per-thread)
 |           +-- request         write: agent posts approval request (blocks)
 |           +-- response        write: TUI posts decision (unblocks request)
@@ -212,28 +216,41 @@ Unchanged from current implementation. SQLite-backed thread metadata
 index. Reads return thread lists and metadata. Writes create, update,
 and archive threads.
 
+### HistoryProvider (extended)
+
+The existing HistoryProvider gains turn-scoped transient state for
+real-time streaming. The path hierarchy:
+
+- `history/messages` — read returns all messages: committed entries
+  plus the in-progress turn (if any) as a partial message. The TUI
+  reads one path to get the full conversation including live content.
+- `history/append` — write adds a completed message.
+- `history/commit` — write finalizes the in-progress turn: the
+  accumulated streaming text becomes a committed message, turn state
+  clears.
+- `history/turn/streaming` — write appends text delta to the
+  in-progress turn. Read returns accumulated text so far.
+- `history/turn/thinking` — write/read: whether the agent is mid-turn.
+- `history/turn/tool` — write/read: current tool call name and status.
+- `history/turn/tokens` — write/read: token counts for this turn.
+
+On `commit`, all `turn/` state clears and the accumulated content
+becomes a committed message. This replaces the separate LiveStore —
+the HistoryProvider is the single source of truth for both persisted
+and in-flight message content.
+
 ### ThreadRegistry
 
 Dynamic mount manager. When a thread becomes active, creates a
 sub-namespace at `threads/{id}/` containing the agent's stores
 (SystemProvider, HistoryProvider, ModelProvider, ToolsProvider, GateStore)
-plus a LiveStore and ApprovalStore. When the thread is deactivated,
-triggers a persistence save and unmounts.
+plus an ApprovalStore. When the thread is deactivated, triggers a
+persistence save and unmounts.
 
 For threads that are not active but need to be displayed (inbox list
 with message counts), the ThreadRegistry can mount a lightweight
 read-only projection backed by the thread directory files (ledger.jsonl
 + context.json) instead of the full agent namespace.
-
-### LiveStore
-
-Per-thread in-memory buffer for real-time agent output. The agent worker
-writes text deltas, tool call status, thinking state, and token counts
-through its scoped client handle. The TUI reads for display.
-
-Replaces the AppEvent channel and ThreadView struct for content delivery.
-The agent writes `live/streaming` with each text delta. The TUI reads
-`live/streaming` to get the current accumulated text.
 
 ### ApprovalStore
 
@@ -277,8 +294,9 @@ loop {
             read inbox/threads, ui/selected_row, ui/scroll, config/theme
             draw inbox
         "thread" =>
-            read threads/{id}/history/messages
-            read threads/{id}/live/streaming, live/thinking, live/tool
+            read threads/{id}/history/messages  (includes in-progress turn)
+            read threads/{id}/history/turn/thinking
+            read threads/{id}/history/turn/tool
             read threads/{id}/approval/pending
             read ui/input, ui/cursor
             draw thread
@@ -304,18 +322,19 @@ worker's local paths to its thread prefix in the global namespace:
 
 - Worker writes `history/append` -> broker sees `threads/{id}/history/append`
 - Worker reads `prompt` -> broker sees `threads/{id}/prompt`
-- Worker writes `live/streaming` -> broker sees `threads/{id}/live/streaming`
+- Worker writes `history/turn/streaming` -> broker sees `threads/{id}/history/turn/streaming`
 
 The agent loop:
 
 ```
 loop {
+    write history/turn/thinking = true
     read prompt (blocks until user sends input)
     call LLM (outside the broker, pure HTTP)
-    write history/append with response
-    write live/streaming with deltas (during streaming)
-    write live/thinking = false when done
-    trigger persistence/save/{id}
+    write history/turn/streaming with deltas (during streaming)
+    write history/turn/tokens with usage
+    write history/commit (finalizes turn, clears turn/ state)
+    write history/turn/thinking = false
 ```
 
 The Wasm guest sees synchronous Reader/Writer. The host bridge awaits
@@ -327,7 +346,7 @@ perspective, the API is identical to today.
 | Current | Replaced By |
 |---------|-------------|
 | `App` struct with 20+ fields | UiStore + reads from broker |
-| `AppEvent` enum + mpsc channel | Writes to LiveStore through broker |
+| `AppEvent` enum + mpsc channel | Writes to history/turn/ through broker |
 | `AppControl` + approval channel | ApprovalStore with blocking write |
 | `ThreadView` struct (TUI-side mirror) | Direct reads from thread stores |
 | `cached_threads` (per-frame refresh) | Read from InboxStore (internal caching) |
