@@ -5,3 +5,7 @@
 //! (preconditions + txn deduplication).
 
 pub mod command;
+pub mod ui_store;
+
+pub use command::{Command, TxnLog};
+pub use ui_store::UiStore;
