@@ -68,7 +68,10 @@ impl HistoryProvider {
         Value::Map(map)
     }
 
-    /// Outer snapshot hash. For empty history, returns all zeros.
+    /// Outer snapshot hash. For empty history, returns all zeros per the
+    /// snapshot protocol RFC — `snapshot_hash({"count":0,"last_hash":null})`
+    /// would produce a non-zero hash, but the convention is that an empty
+    /// history has a zero sentinel so coordinators can detect it cheaply.
     fn snapshot_outer_hash(&self, state: &Value) -> String {
         if self.messages.is_empty() {
             "0000000000000000".to_string()

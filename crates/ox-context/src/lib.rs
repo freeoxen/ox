@@ -634,9 +634,10 @@ mod tests {
     }
 
     // -- Integration: coordinator discovery via Namespace --
+    // These tests mount all five store types to exercise the full RFC
+    // discovery pattern through the Namespace router.
 
-    #[test]
-    fn namespace_snapshot_discovery() {
+    fn build_full_namespace() -> Namespace {
         let mut ns = Namespace::new();
         ns.mount(
             "system",
@@ -650,15 +651,32 @@ mod tests {
             )),
         );
         ns.mount("tools", Box::new(ToolsProvider::new(vec![])));
+        ns.mount("history", Box::new(ox_history::HistoryProvider::new()));
+        ns.mount("gate", Box::new(ox_gate::GateStore::new()));
+        ns
+    }
 
-        // system participates
+    #[test]
+    fn namespace_snapshot_discovery_all_stores() {
+        let mut ns = build_full_namespace();
+
+        // Participating stores return Some
         assert!(ns.read(&path!("system/snapshot")).unwrap().is_some());
-
-        // model participates
         assert!(ns.read(&path!("model/snapshot")).unwrap().is_some());
+        assert!(ns.read(&path!("history/snapshot")).unwrap().is_some());
+        assert!(ns.read(&path!("gate/snapshot")).unwrap().is_some());
 
-        // tools does NOT participate
+        // Non-participating store returns None
         assert!(ns.read(&path!("tools/snapshot")).unwrap().is_none());
+    }
+
+    #[test]
+    fn namespace_history_snapshot_write_returns_error() {
+        let mut ns = build_full_namespace();
+
+        // History snapshot is read-only — write must fail through the namespace
+        let result = ns.write(&path!("history/snapshot"), Record::parsed(Value::Null));
+        assert!(result.is_err());
     }
 
     #[test]
