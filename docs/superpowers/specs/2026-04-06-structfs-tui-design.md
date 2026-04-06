@@ -199,16 +199,30 @@ outcome.
 
 ### InputStore
 
-Key-to-command translator. Receives raw key events on paths like
-`input/normal/j`. Reads context from `ui/` paths (mode, screen) through
-its client handle. Writes the resulting command to the target store
-through the same client handle.
+Mounted at `input/`, handles the translation from raw key events to
+self-contained commands. The TUI writes `input/normal/j` and the
+InputStore produces a write to `ui/select_next` with the appropriate
+precondition and transaction ID.
 
-Stateless — all state lives in the UiStore and the config bindings.
-The InputStore is a pure function from (key, context) to command.
+The InputStore holds the binding table (loaded from ConfigStore at
+mount time or on config reload). Its reads return the current bindings
+— `read("input/normal")` lists all normal-mode key bindings, useful
+for help screens and discoverability. Its writes translate key events
+into command writes to target stores through its client handle.
 
-Remapping: change the bindings in ConfigStore, or mount a different
-InputStore implementation (vim mode, emacs mode, custom).
+This is a store, not a function in the event loop, because:
+- The broker must be agnostic to what runs over it. Something must be
+  mounted at `input/` to handle writes. The broker routes, not interprets.
+- The binding table is queryable state. Help screens, command palettes,
+  and plugins read it through the standard StructFS interface.
+- It's swappable. Vim bindings, emacs bindings, or a custom mapping
+  are different InputStore implementations mounted at the same prefix.
+- It's testable in isolation: mount it, write key events, observe
+  the command writes it produces through its client handle.
+- It keeps the TUI event loop platform-agnostic. The event loop writes
+  raw input; the InputStore handles semantics. The web playground
+  writes the same paths from DOM events without duplicating translation
+  logic.
 
 ### InboxStore
 
