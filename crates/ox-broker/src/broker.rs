@@ -53,9 +53,10 @@ impl BrokerInner {
         let mut best: Option<(&str, &ServerTx)> = None;
 
         for (prefix, tx) in &self.servers {
-            let matches = path_str == *prefix
-                || path_str.starts_with(&format!("{}/", prefix))
-                || prefix.is_empty();
+            let matches = prefix.is_empty()
+                || path_str == *prefix
+                || (path_str.starts_with(prefix.as_str())
+                    && path_str.as_bytes().get(prefix.len()) == Some(&b'/'));
 
             if matches {
                 match best {

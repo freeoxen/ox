@@ -71,9 +71,8 @@ where
         inner_guard.mount(prefix)
     };
 
-    let store = setup(client);
-
     tokio::spawn(async move {
+        let store = setup(client);
         server_loop(store, rx).await;
     })
 }

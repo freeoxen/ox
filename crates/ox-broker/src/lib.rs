@@ -221,4 +221,55 @@ mod integration_tests {
         let result = client.read(&path!("ui/mode")).await;
         assert!(result.is_err());
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn mount_with_client_enables_cross_store_communication() {
+        let broker = BrokerStore::default();
+
+        // Mount a data store
+        broker
+            .mount(
+                "data",
+                MemoryStore::with("greeting", Value::String("hello".to_string())),
+            )
+            .await;
+
+        // Mount a store that reads from "data" via its client handle.
+        // The sync Reader impl uses block_in_place to bridge to async,
+        // which is the same pattern the Wasm host bridge will use.
+        broker
+            .mount_with_client("proxy", |client| ProxyStore { client })
+            .await;
+
+        // Read through the proxy — it reads from data store via broker
+        let tui = broker.client();
+        let result = tui.read(&path!("proxy/greeting")).await.unwrap().unwrap();
+        assert_eq!(
+            result.as_value().unwrap(),
+            &Value::String("hello".to_string()),
+        );
+    }
+
+    /// A store that proxies reads to another store via a ClientHandle.
+    struct ProxyStore {
+        client: ClientHandle,
+    }
+
+    impl Reader for ProxyStore {
+        fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
+            let full_path = Path::parse(&format!("data/{}", from))
+                .map_err(|e| StoreError::store("proxy", "read", e.to_string()))?;
+            // block_in_place allows sync code to call async within a
+            // multi-thread runtime — same pattern as the Wasm host bridge.
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(self.client.read(&full_path))
+            })
+        }
+    }
+
+    impl Writer for ProxyStore {
+        fn write(&mut self, to: &Path, _data: Record) -> Result<Path, StoreError> {
+            Ok(to.clone())
+        }
+    }
 }
