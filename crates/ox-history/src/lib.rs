@@ -53,7 +53,10 @@ impl HistoryProvider {
 
     fn snapshot_state(&self) -> Value {
         let mut map = BTreeMap::new();
-        map.insert("count".to_string(), Value::Integer(self.messages.len() as i64));
+        map.insert(
+            "count".to_string(),
+            Value::Integer(self.messages.len() as i64),
+        );
 
         if self.messages.is_empty() {
             map.insert("last_hash".to_string(), Value::Null);
@@ -333,7 +336,10 @@ mod tests {
         let val = unwrap_value(hp.read(&path!("snapshot")).unwrap().unwrap());
         match &val {
             Value::Map(m) => {
-                assert_eq!(m.get("hash").unwrap(), &Value::String("0000000000000000".to_string()));
+                assert_eq!(
+                    m.get("hash").unwrap(),
+                    &Value::String("0000000000000000".to_string())
+                );
                 let state = m.get("state").unwrap();
                 match state {
                     Value::Map(sm) => {

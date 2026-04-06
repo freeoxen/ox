@@ -257,7 +257,9 @@ impl Reader for SystemProvider {
                         _ => Ok(None),
                     }
                 } else {
-                    Ok(Some(Record::parsed(ox_kernel::snapshot::snapshot_record(state))))
+                    Ok(Some(Record::parsed(ox_kernel::snapshot::snapshot_record(
+                        state,
+                    ))))
                 }
             }
             _ => Ok(Some(Record::parsed(Value::String(self.prompt.clone())))),
@@ -276,7 +278,13 @@ impl Writer for SystemProvider {
             "snapshot" => {
                 let value = match data {
                     Record::Parsed(v) => v,
-                    _ => return Err(StoreError::store("system", "write", "expected parsed record")),
+                    _ => {
+                        return Err(StoreError::store(
+                            "system",
+                            "write",
+                            "expected parsed record",
+                        ));
+                    }
                 };
                 let state = if to.components.len() >= 2 && to.components[1].as_str() == "state" {
                     value
@@ -289,7 +297,11 @@ impl Writer for SystemProvider {
                         self.prompt = s;
                         Ok(to.clone())
                     }
-                    _ => Err(StoreError::store("system", "write", "snapshot state must be a string")),
+                    _ => Err(StoreError::store(
+                        "system",
+                        "write",
+                        "snapshot state must be a string",
+                    )),
                 }
             }
             _ => match data {
@@ -361,7 +373,10 @@ impl ModelProvider {
 
     fn snapshot_state(&self) -> Value {
         let mut map = std::collections::BTreeMap::new();
-        map.insert("max_tokens".to_string(), Value::Integer(self.max_tokens as i64));
+        map.insert(
+            "max_tokens".to_string(),
+            Value::Integer(self.max_tokens as i64),
+        );
         map.insert("model".to_string(), Value::String(self.model.clone()));
         Value::Map(map)
     }
@@ -389,7 +404,9 @@ impl Reader for ModelProvider {
                         _ => Ok(None),
                     }
                 } else {
-                    Ok(Some(Record::parsed(ox_kernel::snapshot::snapshot_record(state))))
+                    Ok(Some(Record::parsed(ox_kernel::snapshot::snapshot_record(
+                        state,
+                    ))))
                 }
             }
             _ => Ok(None),
@@ -410,19 +427,33 @@ impl Writer for ModelProvider {
                     self.model = s;
                     Ok(to.clone())
                 }
-                _ => Err(StoreError::store("model", "write", "expected string for id")),
+                _ => Err(StoreError::store(
+                    "model",
+                    "write",
+                    "expected string for id",
+                )),
             },
             "max_tokens" => match data {
                 Record::Parsed(Value::Integer(n)) => {
                     self.max_tokens = n as u32;
                     Ok(to.clone())
                 }
-                _ => Err(StoreError::store("model", "write", "expected integer for max_tokens")),
+                _ => Err(StoreError::store(
+                    "model",
+                    "write",
+                    "expected integer for max_tokens",
+                )),
             },
             "snapshot" => {
                 let value = match data {
                     Record::Parsed(v) => v,
-                    _ => return Err(StoreError::store("model", "write", "expected parsed record")),
+                    _ => {
+                        return Err(StoreError::store(
+                            "model",
+                            "write",
+                            "expected parsed record",
+                        ));
+                    }
                 };
                 let state = if to.components.len() >= 2 && to.components[1].as_str() == "state" {
                     value
@@ -440,7 +471,11 @@ impl Writer for ModelProvider {
                         }
                         Ok(to.clone())
                     }
-                    _ => Err(StoreError::store("model", "write", "snapshot state must be a map with model and max_tokens")),
+                    _ => Err(StoreError::store(
+                        "model",
+                        "write",
+                        "snapshot state must be a map with model and max_tokens",
+                    )),
                 }
             }
             _ => Err(StoreError::store(
@@ -504,7 +539,8 @@ mod tests {
         let mut sp = SystemProvider::new("old prompt".to_string());
         let mut map = std::collections::BTreeMap::new();
         map.insert("state".to_string(), Value::String("new prompt".to_string()));
-        sp.write(&path!("snapshot"), Record::parsed(Value::Map(map))).unwrap();
+        sp.write(&path!("snapshot"), Record::parsed(Value::Map(map)))
+            .unwrap();
         let val = unwrap_value(sp.read(&path!("")).unwrap().unwrap());
         assert_eq!(val, Value::String("new prompt".to_string()));
     }
@@ -515,7 +551,8 @@ mod tests {
         sp.write(
             &path!("snapshot/state"),
             Record::parsed(Value::String("new".to_string())),
-        ).unwrap();
+        )
+        .unwrap();
         let val = unwrap_value(sp.read(&path!("")).unwrap().unwrap());
         assert_eq!(val, Value::String("new".to_string()));
     }
@@ -527,7 +564,11 @@ mod tests {
             Value::String(s) => s,
             _ => panic!("expected string"),
         };
-        sp.write(&path!("snapshot/state"), Record::parsed(Value::String("second".to_string()))).unwrap();
+        sp.write(
+            &path!("snapshot/state"),
+            Record::parsed(Value::String("second".to_string())),
+        )
+        .unwrap();
         let h2 = match unwrap_value(sp.read(&path!("snapshot/hash")).unwrap().unwrap()) {
             Value::String(s) => s,
             _ => panic!("expected string"),
@@ -570,7 +611,10 @@ mod tests {
         let val = unwrap_value(mp.read(&path!("snapshot/state")).unwrap().unwrap());
         match val {
             Value::Map(m) => {
-                assert_eq!(m.get("model").unwrap(), &Value::String("gpt-4o".to_string()));
+                assert_eq!(
+                    m.get("model").unwrap(),
+                    &Value::String("gpt-4o".to_string())
+                );
                 assert_eq!(m.get("max_tokens").unwrap(), &Value::Integer(8192));
             }
             _ => panic!("expected map"),
@@ -595,7 +639,8 @@ mod tests {
         state_map.insert("max_tokens".to_string(), Value::Integer(8192));
         let mut snap_map = std::collections::BTreeMap::new();
         snap_map.insert("state".to_string(), Value::Map(state_map));
-        mp.write(&path!("snapshot"), Record::parsed(Value::Map(snap_map))).unwrap();
+        mp.write(&path!("snapshot"), Record::parsed(Value::Map(snap_map)))
+            .unwrap();
 
         let val = unwrap_value(mp.read(&path!("id")).unwrap().unwrap());
         assert_eq!(val, Value::String("new-model".to_string()));
@@ -609,7 +654,11 @@ mod tests {
         let mut state_map = std::collections::BTreeMap::new();
         state_map.insert("model".to_string(), Value::String("new".to_string()));
         state_map.insert("max_tokens".to_string(), Value::Integer(2048));
-        mp.write(&path!("snapshot/state"), Record::parsed(Value::Map(state_map))).unwrap();
+        mp.write(
+            &path!("snapshot/state"),
+            Record::parsed(Value::Map(state_map)),
+        )
+        .unwrap();
 
         let val = unwrap_value(mp.read(&path!("id")).unwrap().unwrap());
         assert_eq!(val, Value::String("new".to_string()));

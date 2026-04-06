@@ -125,7 +125,10 @@ impl GateStore {
         for (name, config) in &self.accounts {
             let mut acct = BTreeMap::new();
             acct.insert("model".to_string(), Value::String(config.model.clone()));
-            acct.insert("provider".to_string(), Value::String(config.provider.clone()));
+            acct.insert(
+                "provider".to_string(),
+                Value::String(config.provider.clone()),
+            );
             accounts_map.insert(name.clone(), Value::Map(acct));
         }
         state.insert("accounts".to_string(), Value::Map(accounts_map));
@@ -137,7 +140,13 @@ impl GateStore {
     fn restore_from_snapshot(&mut self, state: Value) -> Result<(), StoreError> {
         let state_map = match state {
             Value::Map(m) => m,
-            _ => return Err(StoreError::store("gate", "write", "snapshot state must be a map")),
+            _ => {
+                return Err(StoreError::store(
+                    "gate",
+                    "write",
+                    "snapshot state must be a map",
+                ));
+            }
         };
 
         if let Some(Value::String(b)) = state_map.get("bootstrap") {
@@ -146,9 +155,8 @@ impl GateStore {
 
         if let Some(providers_val) = state_map.get("providers") {
             let providers_json = structfs_serde_store::value_to_json(providers_val.clone());
-            let providers: HashMap<String, ProviderConfig> =
-                serde_json::from_value(providers_json)
-                    .map_err(|e| StoreError::store("gate", "write", e.to_string()))?;
+            let providers: HashMap<String, ProviderConfig> = serde_json::from_value(providers_json)
+                .map_err(|e| StoreError::store("gate", "write", e.to_string()))?;
             self.providers = providers;
         }
 
@@ -158,13 +166,24 @@ impl GateStore {
                 Value::Map(accts) => {
                     for (name, acct_val) in accts {
                         let acct_json = structfs_serde_store::value_to_json(acct_val.clone());
-                        let provider = acct_json.get("provider").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let model = acct_json.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        new_accounts.insert(name.clone(), AccountConfig {
-                            provider,
-                            key: String::new(),
-                            model,
-                        });
+                        let provider = acct_json
+                            .get("provider")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let model = acct_json
+                            .get("model")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        new_accounts.insert(
+                            name.clone(),
+                            AccountConfig {
+                                provider,
+                                key: String::new(),
+                                model,
+                            },
+                        );
                     }
                 }
                 _ => return Err(StoreError::store("gate", "write", "accounts must be a map")),
@@ -269,7 +288,9 @@ impl Reader for GateStore {
                         _ => Ok(None),
                     }
                 } else {
-                    Ok(Some(Record::parsed(ox_kernel::snapshot::snapshot_record(state))))
+                    Ok(Some(Record::parsed(ox_kernel::snapshot::snapshot_record(
+                        state,
+                    ))))
                 }
             }
 
@@ -699,7 +720,10 @@ mod tests {
                         };
                         for (_name, acct) in accounts {
                             let acct_json = value_to_json(acct.clone());
-                            assert!(acct_json.get("key").is_none(), "API keys must be excluded from snapshot");
+                            assert!(
+                                acct_json.get("key").is_none(),
+                                "API keys must be excluded from snapshot"
+                            );
                         }
                     }
                     _ => panic!("expected map state"),
@@ -739,13 +763,17 @@ mod tests {
         gate.write(
             &path!("accounts/anthropic/key"),
             Record::parsed(Value::String("sk-secret".to_string())),
-        ).unwrap();
+        )
+        .unwrap();
 
         let val = unwrap_value(gate.read(&path!("snapshot/state")).unwrap().unwrap());
         let json = value_to_json(val);
         let accounts = &json["accounts"];
         for (_name, acct) in accounts.as_object().unwrap() {
-            assert!(acct.get("key").is_none(), "API keys must not appear in snapshot");
+            assert!(
+                acct.get("key").is_none(),
+                "API keys must not appear in snapshot"
+            );
         }
     }
 
@@ -755,7 +783,8 @@ mod tests {
         gate.write(
             &path!("accounts/anthropic/key"),
             Record::parsed(Value::String("sk-secret".to_string())),
-        ).unwrap();
+        )
+        .unwrap();
 
         let state_json = serde_json::json!({
             "bootstrap": "openai",
@@ -777,7 +806,8 @@ mod tests {
         let mut snap_map = std::collections::BTreeMap::new();
         snap_map.insert("state".to_string(), state);
 
-        gate.write(&path!("snapshot"), Record::parsed(Value::Map(snap_map))).unwrap();
+        gate.write(&path!("snapshot"), Record::parsed(Value::Map(snap_map)))
+            .unwrap();
 
         let val = unwrap_value(gate.read(&path!("bootstrap")).unwrap().unwrap());
         match val {
@@ -816,7 +846,8 @@ mod tests {
             }
         });
         let state = json_to_value(state_json);
-        gate.write(&path!("snapshot/state"), Record::parsed(state)).unwrap();
+        gate.write(&path!("snapshot/state"), Record::parsed(state))
+            .unwrap();
 
         let val = unwrap_value(gate.read(&path!("bootstrap")).unwrap().unwrap());
         match val {
