@@ -81,7 +81,7 @@ where
 mod tests {
     use super::*;
     use crate::test_support::MemoryStore;
-    use structfs_core_store::{path, Record, Value};
+    use structfs_core_store::{Record, Value, path};
 
     #[tokio::test]
     async fn server_handles_read_and_write() {
