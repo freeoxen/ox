@@ -5,7 +5,9 @@
 //! (preconditions + txn deduplication).
 
 pub mod command;
+pub mod input_store;
 pub mod ui_store;
 
 pub use command::{Command, TxnLog};
+pub use input_store::{Binding, InputStore};
 pub use ui_store::UiStore;
