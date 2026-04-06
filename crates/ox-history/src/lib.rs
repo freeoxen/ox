@@ -8,6 +8,9 @@
 //! Also provides [`parse_wire_message`] for converting Anthropic Messages API
 //! JSON into typed [`Message`] values.
 
+mod turn;
+pub use turn::TurnState;
+
 use ox_kernel::{ContentBlock, Message, ToolResult};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -29,6 +32,7 @@ use structfs_serde_store::{json_to_value, value_to_json};
 /// - `"clear"` → clear all
 pub struct HistoryProvider {
     messages: Vec<Message>,
+    pub turn: TurnState,
 }
 
 impl HistoryProvider {
@@ -36,6 +40,7 @@ impl HistoryProvider {
     pub fn new() -> Self {
         Self {
             messages: Vec::new(),
+            turn: TurnState::new(),
         }
     }
 
@@ -228,7 +233,14 @@ impl Reader for HistoryProvider {
         };
         match key {
             "" | "messages" => {
-                let wire = self.to_wire_messages();
+                let mut wire = self.to_wire_messages();
+                // Append in-progress turn as a partial assistant message
+                if self.turn.is_active() && !self.turn.streaming.is_empty() {
+                    wire.push(serde_json::json!({
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": self.turn.streaming}]
+                    }));
+                }
                 let json = serde_json::to_value(wire)
                     .map_err(|e| StoreError::store("history", "read", e.to_string()))?;
                 Ok(Some(Record::parsed(json_to_value(json))))
@@ -253,6 +265,15 @@ impl Reader for HistoryProvider {
                     map.insert("hash".to_string(), Value::String(hash));
                     map.insert("state".to_string(), state);
                     Ok(Some(Record::parsed(Value::Map(map))))
+                }
+            }
+            "turn" => {
+                // Delegate to turn state for sub-paths like "turn/streaming"
+                if from.components.len() >= 2 {
+                    let sub = from.components[1].as_str();
+                    Ok(self.turn.read(sub).map(Record::parsed))
+                } else {
+                    Ok(None)
                 }
             }
             _ => Ok(None),
@@ -287,6 +308,48 @@ impl Writer for HistoryProvider {
             }
             "clear" => {
                 self.messages.clear();
+                Ok(to.clone())
+            }
+            "turn" => {
+                // Delegate to turn state for sub-paths like "turn/streaming"
+                if to.components.len() >= 2 {
+                    let sub = to.components[1].as_str();
+                    let value = match &data {
+                        Record::Parsed(v) => v,
+                        _ => {
+                            return Err(StoreError::store(
+                                "history",
+                                "write",
+                                "expected parsed record for turn write",
+                            ));
+                        }
+                    };
+                    if self.turn.write(sub, value) {
+                        Ok(to.clone())
+                    } else {
+                        Err(StoreError::store(
+                            "history",
+                            "write",
+                            "invalid turn write",
+                        ))
+                    }
+                } else {
+                    Err(StoreError::store(
+                        "history",
+                        "write",
+                        "turn write requires sub-path (e.g. turn/streaming)",
+                    ))
+                }
+            }
+            "commit" => {
+                // Finalize in-progress turn: streaming text becomes a committed message
+                if !self.turn.streaming.is_empty() {
+                    let content = vec![ContentBlock::Text {
+                        text: self.turn.streaming.clone(),
+                    }];
+                    self.messages.push(Message::Assistant { content });
+                }
+                self.turn.clear();
                 Ok(to.clone())
             }
             "snapshot" => Err(StoreError::store(
@@ -441,5 +504,83 @@ mod tests {
         };
 
         assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn turn_streaming_visible_in_messages() {
+        let mut hp = HistoryProvider::new();
+        append_user_msg(&mut hp, "hello");
+
+        // Start streaming
+        hp.write(
+            &path!("turn/streaming"),
+            Record::parsed(Value::String("Hi there".to_string())),
+        )
+        .unwrap();
+        hp.write(
+            &path!("turn/thinking"),
+            Record::parsed(Value::Bool(true)),
+        )
+        .unwrap();
+
+        // Messages should include the in-progress turn
+        let messages = hp.read(&path!("messages")).unwrap().unwrap();
+        let val = unwrap_value(messages);
+        let arr = match &val {
+            Value::Array(a) => a,
+            _ => panic!("expected array"),
+        };
+        assert_eq!(arr.len(), 2); // user + partial assistant
+    }
+
+    #[test]
+    fn commit_finalizes_turn() {
+        let mut hp = HistoryProvider::new();
+        append_user_msg(&mut hp, "hello");
+
+        // Stream content
+        hp.write(
+            &path!("turn/streaming"),
+            Record::parsed(Value::String("Response text".to_string())),
+        )
+        .unwrap();
+
+        // Commit
+        hp.write(&path!("commit"), Record::parsed(Value::Null))
+            .unwrap();
+
+        // Turn should be clear
+        assert!(!hp.turn.is_active());
+
+        // Message should be committed
+        let count = hp.read(&path!("count")).unwrap().unwrap();
+        assert_eq!(unwrap_value(count), Value::Integer(2));
+    }
+
+    #[test]
+    fn turn_read_paths() {
+        let mut hp = HistoryProvider::new();
+        hp.write(
+            &path!("turn/thinking"),
+            Record::parsed(Value::Bool(true)),
+        )
+        .unwrap();
+
+        let val = hp.read(&path!("turn/thinking")).unwrap().unwrap();
+        assert_eq!(unwrap_value(val), Value::Bool(true));
+    }
+
+    #[test]
+    fn commit_empty_turn_is_noop() {
+        let mut hp = HistoryProvider::new();
+        append_user_msg(&mut hp, "hello");
+
+        // Commit with no streaming content
+        hp.write(&path!("commit"), Record::parsed(Value::Null))
+            .unwrap();
+
+        // Should still have just the user message
+        let count = hp.read(&path!("count")).unwrap().unwrap();
+        assert_eq!(unwrap_value(count), Value::Integer(1));
     }
 }
