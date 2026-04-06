@@ -2,6 +2,8 @@
 //! by path prefix.
 
 pub mod broker;
+pub mod client;
 pub mod types;
 
+pub use client::ClientHandle;
 pub use types::{Request, RequestKind, Response};
