@@ -616,4 +616,20 @@ mod tests {
         let val = unwrap_value(mp.read(&path!("max_tokens")).unwrap().unwrap());
         assert_eq!(val, Value::Integer(2048));
     }
+
+    // -- ToolsProvider snapshot tests --
+
+    #[test]
+    fn tools_snapshot_returns_none() {
+        let mut tp = ToolsProvider::new(vec![]);
+        let result = tp.read(&path!("snapshot")).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn tools_snapshot_hash_returns_none() {
+        let mut tp = ToolsProvider::new(vec![]);
+        let result = tp.read(&path!("snapshot/hash")).unwrap();
+        assert!(result.is_none());
+    }
 }
