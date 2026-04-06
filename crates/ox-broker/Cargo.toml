@@ -1,0 +1,17 @@
+[package]
+name = "ox-broker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Async BrokerStore for StructFS — routes reads/writes between stores by path prefix"
+readme = "README.md"
+keywords = ["agent", "ai", "structfs", "broker", "async"]
+categories = ["data-structures", "asynchronous"]
+
+[dependencies]
+structfs-core-store = { workspace = true }
+tokio = { workspace = true }

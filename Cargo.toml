@@ -13,6 +13,7 @@ members = [
     "crates/ox-cli",
     "crates/ox-inbox",
     "crates/ox-runtime",
+    "crates/ox-broker",
 ]
 
 [workspace.package]
@@ -28,3 +29,4 @@ authors = ["Adjective Noun, LLC"]
 structfs-core-store = { git = "https://github.com/StructFS/structfs" }
 structfs-serde-store = { git = "https://github.com/StructFS/structfs" }
 sha2 = "0.10"
+tokio = { version = "1", features = ["sync", "time", "rt"] }
