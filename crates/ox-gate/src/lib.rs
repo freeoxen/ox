@@ -16,7 +16,7 @@ pub use provider::ProviderConfig;
 pub use tools::completion_tool;
 
 use ox_kernel::{ModelInfo, Tool, ToolSchema};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer};
 use structfs_serde_store::{from_value, to_value};
@@ -104,6 +104,76 @@ impl GateStore {
             })
             .collect()
     }
+
+    /// Build the snapshot state: bootstrap + providers + accounts (keys excluded).
+    fn snapshot_state(&self) -> Value {
+        let mut state = BTreeMap::new();
+
+        state.insert(
+            "bootstrap".to_string(),
+            Value::String(self.bootstrap.clone()),
+        );
+
+        let mut providers_map = BTreeMap::new();
+        for (name, config) in &self.providers {
+            let v = to_value(config).expect("ProviderConfig always serializes");
+            providers_map.insert(name.clone(), v);
+        }
+        state.insert("providers".to_string(), Value::Map(providers_map));
+
+        let mut accounts_map = BTreeMap::new();
+        for (name, config) in &self.accounts {
+            let mut acct = BTreeMap::new();
+            acct.insert("model".to_string(), Value::String(config.model.clone()));
+            acct.insert("provider".to_string(), Value::String(config.provider.clone()));
+            accounts_map.insert(name.clone(), Value::Map(acct));
+        }
+        state.insert("accounts".to_string(), Value::Map(accounts_map));
+
+        Value::Map(state)
+    }
+
+    /// Restore the store from a snapshot state value.
+    fn restore_from_snapshot(&mut self, state: Value) -> Result<(), StoreError> {
+        let state_map = match state {
+            Value::Map(m) => m,
+            _ => return Err(StoreError::store("gate", "write", "snapshot state must be a map")),
+        };
+
+        if let Some(Value::String(b)) = state_map.get("bootstrap") {
+            self.bootstrap = b.clone();
+        }
+
+        if let Some(providers_val) = state_map.get("providers") {
+            let providers_json = structfs_serde_store::value_to_json(providers_val.clone());
+            let providers: HashMap<String, ProviderConfig> =
+                serde_json::from_value(providers_json)
+                    .map_err(|e| StoreError::store("gate", "write", e.to_string()))?;
+            self.providers = providers;
+        }
+
+        if let Some(accounts_val) = state_map.get("accounts") {
+            let mut new_accounts = HashMap::new();
+            match accounts_val {
+                Value::Map(accts) => {
+                    for (name, acct_val) in accts {
+                        let acct_json = structfs_serde_store::value_to_json(acct_val.clone());
+                        let provider = acct_json.get("provider").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let model = acct_json.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        new_accounts.insert(name.clone(), AccountConfig {
+                            provider,
+                            key: String::new(),
+                            model,
+                        });
+                    }
+                }
+                _ => return Err(StoreError::store("gate", "write", "accounts must be a map")),
+            }
+            self.accounts = new_accounts;
+        }
+
+        Ok(())
+    }
 }
 
 impl Default for GateStore {
@@ -184,6 +254,22 @@ impl Reader for GateStore {
                     Ok(Some(Record::parsed(value)))
                 } else {
                     Ok(None)
+                }
+            }
+
+            "snapshot" => {
+                let state = self.snapshot_state();
+                if from.components.len() >= 2 {
+                    match from.components[1].as_str() {
+                        "hash" => {
+                            let hash = ox_kernel::snapshot::snapshot_hash(&state);
+                            Ok(Some(Record::parsed(Value::String(hash))))
+                        }
+                        "state" => Ok(Some(Record::parsed(state))),
+                        _ => Ok(None),
+                    }
+                } else {
+                    Ok(Some(Record::parsed(ox_kernel::snapshot::snapshot_record(state))))
                 }
             }
 
@@ -361,6 +447,21 @@ impl Writer for GateStore {
                 }
             }
 
+            "snapshot" => {
+                let value = match data {
+                    Record::Parsed(v) => v,
+                    _ => return Err(StoreError::store("gate", "write", "expected parsed record")),
+                };
+                let state = if to.components.len() >= 2 && to.components[1].as_str() == "state" {
+                    value
+                } else {
+                    ox_kernel::snapshot::extract_snapshot_state(value)
+                        .map_err(|e| StoreError::store("gate", "write", e))?
+                };
+                self.restore_from_snapshot(state)?;
+                Ok(to.clone())
+            }
+
             _ => Err(StoreError::store(
                 "gate",
                 "write",
@@ -378,7 +479,7 @@ impl Writer for GateStore {
 mod tests {
     use super::*;
     use structfs_core_store::path;
-    use structfs_serde_store::value_to_json;
+    use structfs_serde_store::{json_to_value, value_to_json};
 
     #[test]
     fn test_default_providers() {
@@ -564,5 +665,163 @@ mod tests {
         let tools = gate.create_completion_tools(send);
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name(), "complete_openai");
+    }
+
+    // -- Snapshot tests --
+
+    fn unwrap_value(record: Record) -> Value {
+        match record {
+            Record::Parsed(v) => v,
+            _ => panic!("expected parsed record"),
+        }
+    }
+
+    #[test]
+    fn snapshot_read_returns_hash_and_state() {
+        let mut gate = GateStore::new();
+        let val = unwrap_value(gate.read(&path!("snapshot")).unwrap().unwrap());
+        match &val {
+            Value::Map(m) => {
+                let hash = match m.get("hash").unwrap() {
+                    Value::String(s) => s.clone(),
+                    _ => panic!("expected string hash"),
+                };
+                assert_eq!(hash.len(), 16);
+                let state = m.get("state").unwrap();
+                match state {
+                    Value::Map(sm) => {
+                        assert!(sm.contains_key("bootstrap"));
+                        assert!(sm.contains_key("providers"));
+                        assert!(sm.contains_key("accounts"));
+                        let accounts = match sm.get("accounts").unwrap() {
+                            Value::Map(a) => a,
+                            _ => panic!("expected map"),
+                        };
+                        for (_name, acct) in accounts {
+                            let acct_json = value_to_json(acct.clone());
+                            assert!(acct_json.get("key").is_none(), "API keys must be excluded from snapshot");
+                        }
+                    }
+                    _ => panic!("expected map state"),
+                }
+            }
+            _ => panic!("expected map"),
+        }
+    }
+
+    #[test]
+    fn snapshot_read_hash_only() {
+        let mut gate = GateStore::new();
+        let val = unwrap_value(gate.read(&path!("snapshot/hash")).unwrap().unwrap());
+        match val {
+            Value::String(h) => assert_eq!(h.len(), 16),
+            _ => panic!("expected string"),
+        }
+    }
+
+    #[test]
+    fn snapshot_read_state_only() {
+        let mut gate = GateStore::new();
+        let val = unwrap_value(gate.read(&path!("snapshot/state")).unwrap().unwrap());
+        match val {
+            Value::Map(m) => {
+                assert!(m.contains_key("bootstrap"));
+                assert!(m.contains_key("providers"));
+                assert!(m.contains_key("accounts"));
+            }
+            _ => panic!("expected map"),
+        }
+    }
+
+    #[test]
+    fn snapshot_excludes_api_keys() {
+        let mut gate = GateStore::new();
+        gate.write(
+            &path!("accounts/anthropic/key"),
+            Record::parsed(Value::String("sk-secret".to_string())),
+        ).unwrap();
+
+        let val = unwrap_value(gate.read(&path!("snapshot/state")).unwrap().unwrap());
+        let json = value_to_json(val);
+        let accounts = &json["accounts"];
+        for (_name, acct) in accounts.as_object().unwrap() {
+            assert!(acct.get("key").is_none(), "API keys must not appear in snapshot");
+        }
+    }
+
+    #[test]
+    fn snapshot_write_restores_state() {
+        let mut gate = GateStore::new();
+        gate.write(
+            &path!("accounts/anthropic/key"),
+            Record::parsed(Value::String("sk-secret".to_string())),
+        ).unwrap();
+
+        let state_json = serde_json::json!({
+            "bootstrap": "openai",
+            "providers": {
+                "openai": {
+                    "dialect": "openai",
+                    "endpoint": "https://api.openai.com/v1/chat/completions",
+                    "version": ""
+                }
+            },
+            "accounts": {
+                "openai": {
+                    "model": "gpt-4o",
+                    "provider": "openai"
+                }
+            }
+        });
+        let state = json_to_value(state_json);
+        let mut snap_map = std::collections::BTreeMap::new();
+        snap_map.insert("state".to_string(), state);
+
+        gate.write(&path!("snapshot"), Record::parsed(Value::Map(snap_map))).unwrap();
+
+        let val = unwrap_value(gate.read(&path!("bootstrap")).unwrap().unwrap());
+        match val {
+            Value::String(s) => assert_eq!(s, "openai"),
+            _ => panic!("expected string"),
+        }
+
+        assert!(gate.read(&path!("providers/anthropic")).unwrap().is_none());
+        assert!(gate.read(&path!("providers/openai")).unwrap().is_some());
+        assert!(gate.read(&path!("accounts/anthropic")).unwrap().is_none());
+
+        let val = unwrap_value(gate.read(&path!("accounts/openai/key")).unwrap().unwrap());
+        match val {
+            Value::String(s) => assert!(s.is_empty(), "keys should be empty after restore"),
+            _ => panic!("expected string"),
+        }
+    }
+
+    #[test]
+    fn snapshot_write_via_state_path() {
+        let mut gate = GateStore::new();
+        let state_json = serde_json::json!({
+            "bootstrap": "openai",
+            "providers": {
+                "openai": {
+                    "dialect": "openai",
+                    "endpoint": "https://api.openai.com/v1/chat/completions",
+                    "version": ""
+                }
+            },
+            "accounts": {
+                "openai": {
+                    "model": "gpt-4o",
+                    "provider": "openai"
+                }
+            }
+        });
+        let state = json_to_value(state_json);
+        gate.write(&path!("snapshot/state"), Record::parsed(state)).unwrap();
+
+        let val = unwrap_value(gate.read(&path!("bootstrap")).unwrap().unwrap());
+        match val {
+            Value::String(s) => assert_eq!(s, "openai"),
+            _ => panic!("expected string"),
+        }
     }
 }
