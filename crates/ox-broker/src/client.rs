@@ -1,8 +1,8 @@
 //! ClientHandle — async read/write against the broker.
 //!
-//! Each client holds a shared reference to the broker state and submits requests
-//! through it. The request blocks (async await) until the server
-//! fulfills it.
+//! Each client holds a shared reference to the broker state and submits
+//! requests through it. The request blocks (async await) until the
+//! server fulfills it.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,7 +20,7 @@ use crate::broker::BrokerInner;
 pub struct ClientHandle {
     inner: Arc<Mutex<BrokerInner>>,
     /// Optional path prefix prepended to all operations.
-    scope: Option<String>,
+    scope: Option<Path>,
     /// Timeout for operations.
     timeout: Duration,
 }
@@ -35,10 +35,16 @@ impl ClientHandle {
     }
 
     /// Create a scoped client that prepends `prefix` to all paths.
+    ///
+    /// The scoped client sees a sub-namespace: writing to "history/append"
+    /// actually writes to "{prefix}/history/append" in the broker.
+    /// Scopes compose: `client.scoped("threads").scoped("t_abc")` produces
+    /// a client with prefix "threads/t_abc".
     pub fn scoped(&self, prefix: &str) -> Self {
+        let prefix_path = Path::parse(prefix).expect("scope prefix must be a valid path");
         let new_scope = match &self.scope {
-            Some(existing) => format!("{}/{}", existing, prefix),
-            None => prefix.to_string(),
+            Some(existing) => existing.join(&prefix_path),
+            None => prefix_path,
         };
         Self {
             inner: self.inner.clone(),
@@ -48,26 +54,22 @@ impl ClientHandle {
     }
 
     /// Resolve the full path by prepending the scope prefix.
-    fn resolve_path(&self, path: &Path) -> Result<Path, StoreError> {
+    fn resolve_path(&self, path: &Path) -> Path {
         match &self.scope {
-            None => Ok(path.clone()),
-            Some(prefix) => {
-                let path_str = path.to_string();
-                let full = if path_str.is_empty() {
-                    prefix.clone()
+            None => path.clone(),
+            Some(scope) => {
+                if path.is_empty() {
+                    scope.clone()
                 } else {
-                    format!("{}/{}", prefix, path_str)
-                };
-                Path::parse(&full).map_err(|e| {
-                    StoreError::store("client", "resolve", e.to_string())
-                })
+                    scope.join(path)
+                }
             }
         }
     }
 
     /// Async read from the broker.
     pub async fn read(&self, path: &Path) -> Result<Option<Record>, StoreError> {
-        let full_path = self.resolve_path(path)?;
+        let full_path = self.resolve_path(path);
         let rx = {
             let mut inner = self.inner.lock().await;
             inner.submit_read(&full_path)?
@@ -89,7 +91,7 @@ impl ClientHandle {
         path: &Path,
         data: Record,
     ) -> Result<Path, StoreError> {
-        let full_path = self.resolve_path(path)?;
+        let full_path = self.resolve_path(path);
         let rx = {
             let mut inner = self.inner.lock().await;
             inner.submit_write(&full_path, data)?
@@ -117,7 +119,7 @@ mod tests {
         let client = ClientHandle::new(inner, Duration::from_secs(5));
         let scoped = client.scoped("threads/t_abc");
 
-        let resolved = scoped.resolve_path(&path!("history/messages")).unwrap();
+        let resolved = scoped.resolve_path(&path!("history/messages"));
         assert_eq!(resolved.to_string(), "threads/t_abc/history/messages");
     }
 
@@ -127,7 +129,7 @@ mod tests {
         let client = ClientHandle::new(inner, Duration::from_secs(5));
         let scoped = client.scoped("threads").scoped("t_abc");
 
-        let resolved = scoped.resolve_path(&path!("history")).unwrap();
+        let resolved = scoped.resolve_path(&path!("history"));
         assert_eq!(resolved.to_string(), "threads/t_abc/history");
     }
 

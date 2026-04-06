@@ -4,6 +4,8 @@
 //! compile-time verifiable. The server holding a Request has everything
 //! it needs to respond — no broker round-trip required.
 
+use std::fmt;
+
 use structfs_core_store::{Error as StoreError, Path, Record};
 use tokio::sync::oneshot;
 
@@ -26,6 +28,21 @@ pub enum Request {
         /// One-shot channel for the server to send its response.
         reply: oneshot::Sender<Result<Path, StoreError>>,
     },
+}
+
+impl fmt::Debug for Request {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Request::Read { path, .. } => {
+                f.debug_struct("Request::Read").field("path", path).finish()
+            }
+            Request::Write { path, data, .. } => f
+                .debug_struct("Request::Write")
+                .field("path", path)
+                .field("data", data)
+                .finish(),
+        }
+    }
 }
 
 #[cfg(test)]
