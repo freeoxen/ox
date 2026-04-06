@@ -184,6 +184,46 @@ The render loop never writes. The InputStore never reads from the stores
 it commands (it reads context from `ui/mode` to interpret, but the
 resulting command is self-contained).
 
+## Error Propagation
+
+Errors propagate through the same write resolution chain that created
+them. No special error bus, error log, or error paths. Just `Result`.
+
+Every write through the broker returns `Result<Path, StoreError>`. When
+a write triggers cascading writes to other stores, each store in the
+chain receives the `Result` from its downstream write and decides how
+to handle it: propagate, transform, or absorb.
+
+Example — user opens a thread but disk read fails:
+
+1. TUI writes `input/normal/Enter`
+2. InputStore writes `ui/open_selected` through its client handle
+3. UiStore writes `threads/t_abc/history/messages` to trigger mount
+4. ThreadRegistry reads thread directory from disk — fails
+5. ThreadRegistry returns `Err(StoreError)` for the mount
+6. UiStore's downstream write got `Err` — returns `Err` for
+   `ui/open_selected`
+7. InputStore's downstream write got `Err` — returns `Err` for
+   `input/normal/Enter`
+8. TUI's `client.write()` returns `Err` — displays in status bar
+
+```
+if let Err(e) = client.write(&key_path, event_data).await {
+    status_message = e.to_string();
+}
+```
+
+Each store in the chain has full control. The UiStore could absorb the
+error (set screen to thread with an error state instead of propagating)
+or propagate it (let the TUI handle it). The decision is local to the
+store.
+
+For agent-side errors (disk full on ledger append, network failure),
+the agent's write returns `Err` and the agent decides how to handle
+it — retry, abort the turn, or surface it to the user by writing
+to a path the TUI reads (e.g., a thread-scoped error path). That's
+a domain decision, not an infrastructure mechanism.
+
 ## Store Responsibilities
 
 ### UiStore
