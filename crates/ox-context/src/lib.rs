@@ -238,23 +238,71 @@ impl SystemProvider {
 }
 
 impl Reader for SystemProvider {
-    fn read(&mut self, _from: &Path) -> Result<Option<Record>, StoreError> {
-        Ok(Some(Record::parsed(Value::String(self.prompt.clone()))))
+    fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
+        let key = if from.is_empty() {
+            ""
+        } else {
+            from.components[0].as_str()
+        };
+        match key {
+            "snapshot" => {
+                let state = Value::String(self.prompt.clone());
+                if from.components.len() >= 2 {
+                    match from.components[1].as_str() {
+                        "hash" => {
+                            let hash = ox_kernel::snapshot::snapshot_hash(&state);
+                            Ok(Some(Record::parsed(Value::String(hash))))
+                        }
+                        "state" => Ok(Some(Record::parsed(state))),
+                        _ => Ok(None),
+                    }
+                } else {
+                    Ok(Some(Record::parsed(ox_kernel::snapshot::snapshot_record(state))))
+                }
+            }
+            _ => Ok(Some(Record::parsed(Value::String(self.prompt.clone())))),
+        }
     }
 }
 
 impl Writer for SystemProvider {
-    fn write(&mut self, _to: &Path, data: Record) -> Result<Path, StoreError> {
-        match data {
-            Record::Parsed(Value::String(s)) => {
-                self.prompt = s;
-                Ok(Path::from_components(vec![]))
+    fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
+        let key = if to.is_empty() {
+            ""
+        } else {
+            to.components[0].as_str()
+        };
+        match key {
+            "snapshot" => {
+                let value = match data {
+                    Record::Parsed(v) => v,
+                    _ => return Err(StoreError::store("system", "write", "expected parsed record")),
+                };
+                let state = if to.components.len() >= 2 && to.components[1].as_str() == "state" {
+                    value
+                } else {
+                    ox_kernel::snapshot::extract_snapshot_state(value)
+                        .map_err(|e| StoreError::store("system", "write", e))?
+                };
+                match state {
+                    Value::String(s) => {
+                        self.prompt = s;
+                        Ok(to.clone())
+                    }
+                    _ => Err(StoreError::store("system", "write", "snapshot state must be a string")),
+                }
             }
-            _ => Err(StoreError::store(
-                "system",
-                "write",
-                "expected string value",
-            )),
+            _ => match data {
+                Record::Parsed(Value::String(s)) => {
+                    self.prompt = s;
+                    Ok(Path::from_components(vec![]))
+                }
+                _ => Err(StoreError::store(
+                    "system",
+                    "write",
+                    "expected string value",
+                )),
+            },
         }
     }
 }
@@ -310,6 +358,13 @@ impl ModelProvider {
     pub fn new(model: String, max_tokens: u32) -> Self {
         Self { model, max_tokens }
     }
+
+    fn snapshot_state(&self) -> Value {
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("max_tokens".to_string(), Value::Integer(self.max_tokens as i64));
+        map.insert("model".to_string(), Value::String(self.model.clone()));
+        Value::Map(map)
+    }
 }
 
 impl Reader for ModelProvider {
@@ -322,6 +377,21 @@ impl Reader for ModelProvider {
         match key {
             "" | "id" => Ok(Some(Record::parsed(Value::String(self.model.clone())))),
             "max_tokens" => Ok(Some(Record::parsed(Value::Integer(self.max_tokens as i64)))),
+            "snapshot" => {
+                let state = self.snapshot_state();
+                if from.components.len() >= 2 {
+                    match from.components[1].as_str() {
+                        "hash" => {
+                            let hash = ox_kernel::snapshot::snapshot_hash(&state);
+                            Ok(Some(Record::parsed(Value::String(hash))))
+                        }
+                        "state" => Ok(Some(Record::parsed(state))),
+                        _ => Ok(None),
+                    }
+                } else {
+                    Ok(Some(Record::parsed(ox_kernel::snapshot::snapshot_record(state))))
+                }
+            }
             _ => Ok(None),
         }
     }
@@ -340,28 +410,314 @@ impl Writer for ModelProvider {
                     self.model = s;
                     Ok(to.clone())
                 }
-                _ => Err(StoreError::store(
-                    "model",
-                    "write",
-                    "expected string for id",
-                )),
+                _ => Err(StoreError::store("model", "write", "expected string for id")),
             },
             "max_tokens" => match data {
                 Record::Parsed(Value::Integer(n)) => {
                     self.max_tokens = n as u32;
                     Ok(to.clone())
                 }
-                _ => Err(StoreError::store(
-                    "model",
-                    "write",
-                    "expected integer for max_tokens",
-                )),
+                _ => Err(StoreError::store("model", "write", "expected integer for max_tokens")),
             },
+            "snapshot" => {
+                let value = match data {
+                    Record::Parsed(v) => v,
+                    _ => return Err(StoreError::store("model", "write", "expected parsed record")),
+                };
+                let state = if to.components.len() >= 2 && to.components[1].as_str() == "state" {
+                    value
+                } else {
+                    ox_kernel::snapshot::extract_snapshot_state(value)
+                        .map_err(|e| StoreError::store("model", "write", e))?
+                };
+                match state {
+                    Value::Map(m) => {
+                        if let Some(Value::String(model)) = m.get("model") {
+                            self.model = model.clone();
+                        }
+                        if let Some(Value::Integer(n)) = m.get("max_tokens") {
+                            self.max_tokens = *n as u32;
+                        }
+                        Ok(to.clone())
+                    }
+                    _ => Err(StoreError::store("model", "write", "snapshot state must be a map with model and max_tokens")),
+                }
+            }
             _ => Err(StoreError::store(
                 "model",
                 "write",
                 format!("unknown path: {to}"),
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use structfs_core_store::path;
+
+    fn unwrap_value(record: Record) -> Value {
+        match record {
+            Record::Parsed(v) => v,
+            _ => panic!("expected parsed record"),
+        }
+    }
+
+    #[test]
+    fn system_snapshot_read_returns_hash_and_state() {
+        let mut sp = SystemProvider::new("You are helpful.".to_string());
+        let val = unwrap_value(sp.read(&path!("snapshot")).unwrap().unwrap());
+        match &val {
+            Value::Map(m) => {
+                let hash = match m.get("hash").unwrap() {
+                    Value::String(s) => s.clone(),
+                    _ => panic!("expected string hash"),
+                };
+                assert_eq!(hash.len(), 16);
+                let state = m.get("state").unwrap();
+                assert_eq!(state, &Value::String("You are helpful.".to_string()));
+            }
+            _ => panic!("expected map"),
+        }
+    }
+
+    #[test]
+    fn system_snapshot_read_hash_only() {
+        let mut sp = SystemProvider::new("Hello".to_string());
+        let val = unwrap_value(sp.read(&path!("snapshot/hash")).unwrap().unwrap());
+        match val {
+            Value::String(h) => assert_eq!(h.len(), 16),
+            _ => panic!("expected string"),
+        }
+    }
+
+    #[test]
+    fn system_snapshot_read_state_only() {
+        let mut sp = SystemProvider::new("Hello".to_string());
+        let val = unwrap_value(sp.read(&path!("snapshot/state")).unwrap().unwrap());
+        assert_eq!(val, Value::String("Hello".to_string()));
+    }
+
+    #[test]
+    fn system_snapshot_write_restores_state() {
+        let mut sp = SystemProvider::new("old prompt".to_string());
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("state".to_string(), Value::String("new prompt".to_string()));
+        sp.write(&path!("snapshot"), Record::parsed(Value::Map(map))).unwrap();
+        let val = unwrap_value(sp.read(&path!("")).unwrap().unwrap());
+        assert_eq!(val, Value::String("new prompt".to_string()));
+    }
+
+    #[test]
+    fn system_snapshot_write_state_path() {
+        let mut sp = SystemProvider::new("old".to_string());
+        sp.write(
+            &path!("snapshot/state"),
+            Record::parsed(Value::String("new".to_string())),
+        ).unwrap();
+        let val = unwrap_value(sp.read(&path!("")).unwrap().unwrap());
+        assert_eq!(val, Value::String("new".to_string()));
+    }
+
+    #[test]
+    fn system_snapshot_hash_changes_after_write() {
+        let mut sp = SystemProvider::new("first".to_string());
+        let h1 = match unwrap_value(sp.read(&path!("snapshot/hash")).unwrap().unwrap()) {
+            Value::String(s) => s,
+            _ => panic!("expected string"),
+        };
+        sp.write(&path!("snapshot/state"), Record::parsed(Value::String("second".to_string()))).unwrap();
+        let h2 = match unwrap_value(sp.read(&path!("snapshot/hash")).unwrap().unwrap()) {
+            Value::String(s) => s,
+            _ => panic!("expected string"),
+        };
+        assert_ne!(h1, h2);
+    }
+
+    // -- ModelProvider snapshot tests --
+
+    #[test]
+    fn model_snapshot_read_returns_hash_and_state() {
+        let mut mp = ModelProvider::new("claude-sonnet-4-20250514".to_string(), 4096);
+        let val = unwrap_value(mp.read(&path!("snapshot")).unwrap().unwrap());
+        match &val {
+            Value::Map(m) => {
+                let hash = match m.get("hash").unwrap() {
+                    Value::String(s) => s.clone(),
+                    _ => panic!("expected string hash"),
+                };
+                assert_eq!(hash.len(), 16);
+                let state = m.get("state").unwrap();
+                match state {
+                    Value::Map(sm) => {
+                        assert_eq!(
+                            sm.get("model").unwrap(),
+                            &Value::String("claude-sonnet-4-20250514".to_string())
+                        );
+                        assert_eq!(sm.get("max_tokens").unwrap(), &Value::Integer(4096));
+                    }
+                    _ => panic!("expected map state"),
+                }
+            }
+            _ => panic!("expected map"),
+        }
+    }
+
+    #[test]
+    fn model_snapshot_read_state_only() {
+        let mut mp = ModelProvider::new("gpt-4o".to_string(), 8192);
+        let val = unwrap_value(mp.read(&path!("snapshot/state")).unwrap().unwrap());
+        match val {
+            Value::Map(m) => {
+                assert_eq!(m.get("model").unwrap(), &Value::String("gpt-4o".to_string()));
+                assert_eq!(m.get("max_tokens").unwrap(), &Value::Integer(8192));
+            }
+            _ => panic!("expected map"),
+        }
+    }
+
+    #[test]
+    fn model_snapshot_read_hash_only() {
+        let mut mp = ModelProvider::new("gpt-4o".to_string(), 8192);
+        let val = unwrap_value(mp.read(&path!("snapshot/hash")).unwrap().unwrap());
+        match val {
+            Value::String(h) => assert_eq!(h.len(), 16),
+            _ => panic!("expected string"),
+        }
+    }
+
+    #[test]
+    fn model_snapshot_write_restores_state() {
+        let mut mp = ModelProvider::new("old-model".to_string(), 1024);
+        let mut state_map = std::collections::BTreeMap::new();
+        state_map.insert("model".to_string(), Value::String("new-model".to_string()));
+        state_map.insert("max_tokens".to_string(), Value::Integer(8192));
+        let mut snap_map = std::collections::BTreeMap::new();
+        snap_map.insert("state".to_string(), Value::Map(state_map));
+        mp.write(&path!("snapshot"), Record::parsed(Value::Map(snap_map))).unwrap();
+
+        let val = unwrap_value(mp.read(&path!("id")).unwrap().unwrap());
+        assert_eq!(val, Value::String("new-model".to_string()));
+        let val = unwrap_value(mp.read(&path!("max_tokens")).unwrap().unwrap());
+        assert_eq!(val, Value::Integer(8192));
+    }
+
+    #[test]
+    fn model_snapshot_write_state_path() {
+        let mut mp = ModelProvider::new("old".to_string(), 1024);
+        let mut state_map = std::collections::BTreeMap::new();
+        state_map.insert("model".to_string(), Value::String("new".to_string()));
+        state_map.insert("max_tokens".to_string(), Value::Integer(2048));
+        mp.write(&path!("snapshot/state"), Record::parsed(Value::Map(state_map))).unwrap();
+
+        let val = unwrap_value(mp.read(&path!("id")).unwrap().unwrap());
+        assert_eq!(val, Value::String("new".to_string()));
+        let val = unwrap_value(mp.read(&path!("max_tokens")).unwrap().unwrap());
+        assert_eq!(val, Value::Integer(2048));
+    }
+
+    // -- ToolsProvider snapshot tests --
+
+    #[test]
+    fn tools_snapshot_returns_none() {
+        let mut tp = ToolsProvider::new(vec![]);
+        let result = tp.read(&path!("snapshot")).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn tools_snapshot_hash_returns_none() {
+        let mut tp = ToolsProvider::new(vec![]);
+        let result = tp.read(&path!("snapshot/hash")).unwrap();
+        assert!(result.is_none());
+    }
+
+    // -- Integration: coordinator discovery via Namespace --
+    // These tests mount all five store types to exercise the full RFC
+    // discovery pattern through the Namespace router.
+
+    fn build_full_namespace() -> Namespace {
+        let mut ns = Namespace::new();
+        ns.mount(
+            "system",
+            Box::new(SystemProvider::new("You are helpful.".to_string())),
+        );
+        ns.mount(
+            "model",
+            Box::new(ModelProvider::new(
+                "claude-sonnet-4-20250514".to_string(),
+                4096,
+            )),
+        );
+        ns.mount("tools", Box::new(ToolsProvider::new(vec![])));
+        ns.mount("history", Box::new(ox_history::HistoryProvider::new()));
+        ns.mount("gate", Box::new(ox_gate::GateStore::new()));
+        ns
+    }
+
+    #[test]
+    fn namespace_snapshot_discovery_all_stores() {
+        let mut ns = build_full_namespace();
+
+        // Participating stores return Some
+        assert!(ns.read(&path!("system/snapshot")).unwrap().is_some());
+        assert!(ns.read(&path!("model/snapshot")).unwrap().is_some());
+        assert!(ns.read(&path!("history/snapshot")).unwrap().is_some());
+        assert!(ns.read(&path!("gate/snapshot")).unwrap().is_some());
+
+        // Non-participating store returns None
+        assert!(ns.read(&path!("tools/snapshot")).unwrap().is_none());
+    }
+
+    #[test]
+    fn namespace_history_snapshot_write_returns_error() {
+        let mut ns = build_full_namespace();
+
+        // History snapshot is read-only — write must fail through the namespace
+        let result = ns.write(&path!("history/snapshot"), Record::parsed(Value::Null));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn namespace_snapshot_roundtrip() {
+        let mut ns = Namespace::new();
+        ns.mount(
+            "system",
+            Box::new(SystemProvider::new("original".to_string())),
+        );
+        ns.mount(
+            "model",
+            Box::new(ModelProvider::new("model-a".to_string(), 1024)),
+        );
+
+        // Read snapshots
+        let sys_snap = unwrap_value(ns.read(&path!("system/snapshot/state")).unwrap().unwrap());
+        let model_snap = unwrap_value(ns.read(&path!("model/snapshot/state")).unwrap().unwrap());
+
+        // Mutate
+        ns.write(
+            &path!("system"),
+            Record::parsed(Value::String("changed".to_string())),
+        )
+        .unwrap();
+        ns.write(
+            &path!("model/id"),
+            Record::parsed(Value::String("model-b".to_string())),
+        )
+        .unwrap();
+
+        // Restore from snapshots
+        ns.write(&path!("system/snapshot/state"), Record::parsed(sys_snap))
+            .unwrap();
+        ns.write(&path!("model/snapshot/state"), Record::parsed(model_snap))
+            .unwrap();
+
+        // Verify restoration
+        let val = unwrap_value(ns.read(&path!("system")).unwrap().unwrap());
+        assert_eq!(val, Value::String("original".to_string()));
+
+        let val = unwrap_value(ns.read(&path!("model/id")).unwrap().unwrap());
+        assert_eq!(val, Value::String("model-a".to_string()));
     }
 }

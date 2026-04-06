@@ -27,6 +27,8 @@ pub use structfs_core_store::{
     self as structfs, Error as StoreError, Path, Reader, Record, Store, Value, Writer, path,
 };
 
+pub mod snapshot;
+
 // ---------------------------------------------------------------------------
 // Message types
 // ---------------------------------------------------------------------------
