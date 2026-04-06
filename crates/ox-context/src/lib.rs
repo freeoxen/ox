@@ -358,6 +358,13 @@ impl ModelProvider {
     pub fn new(model: String, max_tokens: u32) -> Self {
         Self { model, max_tokens }
     }
+
+    fn snapshot_state(&self) -> Value {
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("max_tokens".to_string(), Value::Integer(self.max_tokens as i64));
+        map.insert("model".to_string(), Value::String(self.model.clone()));
+        Value::Map(map)
+    }
 }
 
 impl Reader for ModelProvider {
@@ -370,6 +377,21 @@ impl Reader for ModelProvider {
         match key {
             "" | "id" => Ok(Some(Record::parsed(Value::String(self.model.clone())))),
             "max_tokens" => Ok(Some(Record::parsed(Value::Integer(self.max_tokens as i64)))),
+            "snapshot" => {
+                let state = self.snapshot_state();
+                if from.components.len() >= 2 {
+                    match from.components[1].as_str() {
+                        "hash" => {
+                            let hash = ox_kernel::snapshot::snapshot_hash(&state);
+                            Ok(Some(Record::parsed(Value::String(hash))))
+                        }
+                        "state" => Ok(Some(Record::parsed(state))),
+                        _ => Ok(None),
+                    }
+                } else {
+                    Ok(Some(Record::parsed(ox_kernel::snapshot::snapshot_record(state))))
+                }
+            }
             _ => Ok(None),
         }
     }
@@ -388,23 +410,39 @@ impl Writer for ModelProvider {
                     self.model = s;
                     Ok(to.clone())
                 }
-                _ => Err(StoreError::store(
-                    "model",
-                    "write",
-                    "expected string for id",
-                )),
+                _ => Err(StoreError::store("model", "write", "expected string for id")),
             },
             "max_tokens" => match data {
                 Record::Parsed(Value::Integer(n)) => {
                     self.max_tokens = n as u32;
                     Ok(to.clone())
                 }
-                _ => Err(StoreError::store(
-                    "model",
-                    "write",
-                    "expected integer for max_tokens",
-                )),
+                _ => Err(StoreError::store("model", "write", "expected integer for max_tokens")),
             },
+            "snapshot" => {
+                let value = match data {
+                    Record::Parsed(v) => v,
+                    _ => return Err(StoreError::store("model", "write", "expected parsed record")),
+                };
+                let state = if to.components.len() >= 2 && to.components[1].as_str() == "state" {
+                    value
+                } else {
+                    ox_kernel::snapshot::extract_snapshot_state(value)
+                        .map_err(|e| StoreError::store("model", "write", e))?
+                };
+                match state {
+                    Value::Map(m) => {
+                        if let Some(Value::String(model)) = m.get("model") {
+                            self.model = model.clone();
+                        }
+                        if let Some(Value::Integer(n)) = m.get("max_tokens") {
+                            self.max_tokens = *n as u32;
+                        }
+                        Ok(to.clone())
+                    }
+                    _ => Err(StoreError::store("model", "write", "snapshot state must be a map with model and max_tokens")),
+                }
+            }
             _ => Err(StoreError::store(
                 "model",
                 "write",
@@ -495,5 +533,87 @@ mod tests {
             _ => panic!("expected string"),
         };
         assert_ne!(h1, h2);
+    }
+
+    // -- ModelProvider snapshot tests --
+
+    #[test]
+    fn model_snapshot_read_returns_hash_and_state() {
+        let mut mp = ModelProvider::new("claude-sonnet-4-20250514".to_string(), 4096);
+        let val = unwrap_value(mp.read(&path!("snapshot")).unwrap().unwrap());
+        match &val {
+            Value::Map(m) => {
+                let hash = match m.get("hash").unwrap() {
+                    Value::String(s) => s.clone(),
+                    _ => panic!("expected string hash"),
+                };
+                assert_eq!(hash.len(), 16);
+                let state = m.get("state").unwrap();
+                match state {
+                    Value::Map(sm) => {
+                        assert_eq!(
+                            sm.get("model").unwrap(),
+                            &Value::String("claude-sonnet-4-20250514".to_string())
+                        );
+                        assert_eq!(sm.get("max_tokens").unwrap(), &Value::Integer(4096));
+                    }
+                    _ => panic!("expected map state"),
+                }
+            }
+            _ => panic!("expected map"),
+        }
+    }
+
+    #[test]
+    fn model_snapshot_read_state_only() {
+        let mut mp = ModelProvider::new("gpt-4o".to_string(), 8192);
+        let val = unwrap_value(mp.read(&path!("snapshot/state")).unwrap().unwrap());
+        match val {
+            Value::Map(m) => {
+                assert_eq!(m.get("model").unwrap(), &Value::String("gpt-4o".to_string()));
+                assert_eq!(m.get("max_tokens").unwrap(), &Value::Integer(8192));
+            }
+            _ => panic!("expected map"),
+        }
+    }
+
+    #[test]
+    fn model_snapshot_read_hash_only() {
+        let mut mp = ModelProvider::new("gpt-4o".to_string(), 8192);
+        let val = unwrap_value(mp.read(&path!("snapshot/hash")).unwrap().unwrap());
+        match val {
+            Value::String(h) => assert_eq!(h.len(), 16),
+            _ => panic!("expected string"),
+        }
+    }
+
+    #[test]
+    fn model_snapshot_write_restores_state() {
+        let mut mp = ModelProvider::new("old-model".to_string(), 1024);
+        let mut state_map = std::collections::BTreeMap::new();
+        state_map.insert("model".to_string(), Value::String("new-model".to_string()));
+        state_map.insert("max_tokens".to_string(), Value::Integer(8192));
+        let mut snap_map = std::collections::BTreeMap::new();
+        snap_map.insert("state".to_string(), Value::Map(state_map));
+        mp.write(&path!("snapshot"), Record::parsed(Value::Map(snap_map))).unwrap();
+
+        let val = unwrap_value(mp.read(&path!("id")).unwrap().unwrap());
+        assert_eq!(val, Value::String("new-model".to_string()));
+        let val = unwrap_value(mp.read(&path!("max_tokens")).unwrap().unwrap());
+        assert_eq!(val, Value::Integer(8192));
+    }
+
+    #[test]
+    fn model_snapshot_write_state_path() {
+        let mut mp = ModelProvider::new("old".to_string(), 1024);
+        let mut state_map = std::collections::BTreeMap::new();
+        state_map.insert("model".to_string(), Value::String("new".to_string()));
+        state_map.insert("max_tokens".to_string(), Value::Integer(2048));
+        mp.write(&path!("snapshot/state"), Record::parsed(Value::Map(state_map))).unwrap();
+
+        let val = unwrap_value(mp.read(&path!("id")).unwrap().unwrap());
+        assert_eq!(val, Value::String("new".to_string()));
+        let val = unwrap_value(mp.read(&path!("max_tokens")).unwrap().unwrap());
+        assert_eq!(val, Value::Integer(2048));
     }
 }
