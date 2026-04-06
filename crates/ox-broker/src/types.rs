@@ -1,84 +1,82 @@
-//! Request/Response types for the broker protocol.
+//! Request types for the broker protocol.
 //!
-//! Adapted from appiware's broker_store.rs but using ox's StructFS types
-//! (Record, Value, Path, StoreError) instead of generic serde types.
+//! Each request carries its own reply channel, making the response path
+//! compile-time verifiable. The server holding a Request has everything
+//! it needs to respond — no broker round-trip required.
 
 use structfs_core_store::{Error as StoreError, Path, Record};
+use tokio::sync::oneshot;
 
 /// A request routed through the broker from client to server.
-#[derive(Debug)]
-pub struct Request {
-    /// Unique action ID for matching responses.
-    pub action_id: u64,
-    /// The operation to perform.
-    pub kind: RequestKind,
-    /// Path relative to the server's mount prefix.
-    pub path: Path,
-}
-
-/// The kind of operation requested.
-#[derive(Debug)]
-pub enum RequestKind {
-    Read,
-    Write(Record),
-}
-
-/// A response from a server back to the waiting client.
-#[derive(Debug)]
-pub enum Response {
-    Read(Result<Option<Record>, StoreError>),
-    Write(Result<Path, StoreError>),
+///
+/// The reply channel is embedded in each variant, so the server responds
+/// directly without going back through the broker's state machine.
+pub enum Request {
+    Read {
+        /// Path relative to the server's mount prefix.
+        path: Path,
+        /// One-shot channel for the server to send its response.
+        reply: oneshot::Sender<Result<Option<Record>, StoreError>>,
+    },
+    Write {
+        /// Path relative to the server's mount prefix.
+        path: Path,
+        /// The data to write.
+        data: Record,
+        /// One-shot channel for the server to send its response.
+        reply: oneshot::Sender<Result<Path, StoreError>>,
+    },
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use structfs_core_store::{Value, path};
+    use structfs_core_store::{path, Value};
 
     #[test]
-    fn request_read_construction() {
-        let req = Request {
-            action_id: 1,
-            kind: RequestKind::Read,
+    fn read_request_carries_reply() {
+        let (tx, _rx) = oneshot::channel();
+        let req = Request::Read {
             path: path!("history/messages"),
+            reply: tx,
         };
-        assert_eq!(req.action_id, 1);
-        assert!(matches!(req.kind, RequestKind::Read));
+        assert!(matches!(req, Request::Read { .. }));
     }
 
     #[test]
-    fn request_write_construction() {
-        let record = Record::parsed(Value::String("hello".to_string()));
-        let req = Request {
-            action_id: 2,
-            kind: RequestKind::Write(record),
+    fn write_request_carries_reply() {
+        let (tx, _rx) = oneshot::channel();
+        let req = Request::Write {
             path: path!("history/append"),
+            data: Record::parsed(Value::String("hello".to_string())),
+            reply: tx,
         };
-        assert_eq!(req.action_id, 2);
-        assert!(matches!(req.kind, RequestKind::Write(_)));
+        assert!(matches!(req, Request::Write { .. }));
     }
 
     #[test]
-    fn response_read_ok() {
-        let resp = Response::Read(Ok(Some(Record::parsed(Value::Integer(42)))));
-        assert!(matches!(resp, Response::Read(Ok(Some(_)))));
+    fn read_reply_delivers_result() {
+        let (tx, rx) = oneshot::channel::<Result<Option<Record>, StoreError>>();
+        let record = Record::parsed(Value::Integer(42));
+        tx.send(Ok(Some(record))).unwrap();
+        let result = rx.blocking_recv().unwrap();
+        assert!(matches!(result, Ok(Some(_))));
     }
 
     #[test]
-    fn response_read_none() {
-        let resp = Response::Read(Ok(None));
-        assert!(matches!(resp, Response::Read(Ok(None))));
+    fn write_reply_delivers_result() {
+        let (tx, rx) = oneshot::channel::<Result<Path, StoreError>>();
+        tx.send(Ok(path!("result/path"))).unwrap();
+        let result = rx.blocking_recv().unwrap();
+        assert!(matches!(result, Ok(_)));
     }
 
     #[test]
-    fn response_write_ok() {
-        let resp = Response::Write(Ok(path!("result/path")));
-        assert!(matches!(resp, Response::Write(Ok(_))));
-    }
-
-    #[test]
-    fn response_write_err() {
-        let resp = Response::Write(Err(StoreError::store("test", "write", "failed")));
-        assert!(matches!(resp, Response::Write(Err(_))));
+    fn write_reply_delivers_error() {
+        let (tx, rx) = oneshot::channel::<Result<Path, StoreError>>();
+        tx.send(Err(StoreError::store("test", "write", "failed")))
+            .unwrap();
+        let result = rx.blocking_recv().unwrap();
+        assert!(matches!(result, Err(_)));
     }
 }

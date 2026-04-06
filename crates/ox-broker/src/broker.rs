@@ -1,41 +1,25 @@
 //! Core routing state machine for the broker.
 //!
-//! `BrokerInner` maps path prefixes to server channels, queues requests,
-//! and matches responses back to waiting clients.
+//! `BrokerInner` maps path prefixes to server channels and routes
+//! requests to the appropriate server. Responses flow directly from
+//! server to client via the reply channel embedded in each request.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use structfs_core_store::{Error as StoreError, Path, Record};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::types::{Request, RequestKind, Response};
-
-/// Monotonic action identifier.
-pub(crate) type ActionId = u64;
+use crate::types::Request;
 
 /// Sender half of a server channel.
 pub(crate) type ServerTx = mpsc::Sender<Request>;
 
-/// A pending action waiting for a server response.
-pub(crate) enum Action {
-    Read {
-        path: Path,
-        tx: oneshot::Sender<Result<Option<Record>, StoreError>>,
-    },
-    Write {
-        path: Path,
-        data: Record,
-        tx: oneshot::Sender<Result<Path, StoreError>>,
-    },
-}
-
 /// The core routing state machine.
 ///
-/// Maps path prefixes to server channels, queues requests, and matches
-/// responses to waiting clients via oneshot channels.
+/// Maps path prefixes to server channels. Each request carries its own
+/// reply channel, so the broker only handles routing — not response
+/// matching.
 pub(crate) struct BrokerInner {
-    next_action_id: u64,
-    actions: HashMap<ActionId, Action>,
     servers: BTreeMap<String, ServerTx>,
     shut_down: bool,
 }
@@ -43,15 +27,13 @@ pub(crate) struct BrokerInner {
 impl BrokerInner {
     pub fn new() -> Self {
         BrokerInner {
-            next_action_id: 0,
-            actions: HashMap::new(),
             servers: BTreeMap::new(),
             shut_down: false,
         }
     }
 
-    /// Mount a server at the given prefix. Returns the receiver for requests
-    /// routed to that prefix.
+    /// Mount a server at the given prefix. Returns the receiver for
+    /// requests routed to that prefix.
     pub fn mount(&mut self, prefix: &str) -> mpsc::Receiver<Request> {
         let (tx, rx) = mpsc::channel(64);
         self.servers.insert(prefix.to_string(), tx);
@@ -65,8 +47,8 @@ impl BrokerInner {
 
     /// Find the server with the longest matching prefix for the given path.
     ///
-    /// Returns the server sender and the sub-path (path with prefix stripped).
-    pub fn route(&self, path: &Path) -> Option<(&ServerTx, Path)> {
+    /// Returns the server's sender and the sub-path (path with prefix stripped).
+    fn route(&self, path: &Path) -> Option<(&ServerTx, Path)> {
         let path_str = path.to_string();
         let mut best: Option<(&str, &ServerTx)> = None;
 
@@ -92,7 +74,6 @@ impl BrokerInner {
             } else {
                 let prefix_path = Path::parse(prefix).expect("mounted prefix must be valid");
                 path.strip_prefix(&prefix_path).unwrap_or_else(|| {
-                    // Exact match case: path equals prefix, remainder is empty
                     Path::from_components(vec![])
                 })
             };
@@ -102,7 +83,8 @@ impl BrokerInner {
 
     /// Submit a read request, routing it to the appropriate server.
     ///
-    /// Returns a oneshot receiver that will contain the result.
+    /// The reply channel is embedded in the request — the server responds
+    /// directly. Returns the receiver end for the caller to await.
     pub fn submit_read(
         &mut self,
         path: &Path,
@@ -118,27 +100,20 @@ impl BrokerInner {
             (tx.clone(), sp)
         };
 
-        let action_id = self.next_action_id;
-        self.next_action_id += 1;
-
-        let (tx, rx) = oneshot::channel();
-        let request = Request {
-            action_id,
-            kind: RequestKind::Read,
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let request = Request::Read {
             path: sub_path,
+            reply: reply_tx,
         };
 
         server_tx.try_send(request).map_err(|_| {
             StoreError::store("broker", "read", "server channel unavailable")
         })?;
 
-        self.actions.insert(action_id, Action::Read { path: path.clone(), tx });
-        Ok(rx)
+        Ok(reply_rx)
     }
 
     /// Submit a write request, routing it to the appropriate server.
-    ///
-    /// Returns a oneshot receiver that will contain the result.
     pub fn submit_write(
         &mut self,
         path: &Path,
@@ -155,67 +130,23 @@ impl BrokerInner {
             (tx.clone(), sp)
         };
 
-        let action_id = self.next_action_id;
-        self.next_action_id += 1;
-
-        let (tx, rx) = oneshot::channel();
-        let request = Request {
-            action_id,
-            kind: RequestKind::Write(data.clone()),
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let request = Request::Write {
             path: sub_path,
+            data,
+            reply: reply_tx,
         };
 
         server_tx.try_send(request).map_err(|_| {
             StoreError::store("broker", "write", "server channel unavailable")
         })?;
 
-        self.actions.insert(action_id, Action::Write { path: path.clone(), data, tx });
-        Ok(rx)
+        Ok(reply_rx)
     }
 
-    /// Resolve a pending action with the server's response.
-    pub fn resolve(&mut self, action_id: ActionId, response: Response) {
-        if let Some(action) = self.actions.remove(&action_id) {
-            match (action, response) {
-                (Action::Read { tx, .. }, Response::Read(result)) => {
-                    let _ = tx.send(result);
-                }
-                (Action::Write { tx, .. }, Response::Write(result)) => {
-                    let _ = tx.send(result);
-                }
-                // Mismatched action/response type: drop silently
-                _ => {}
-            }
-        }
-    }
-
-    /// Shut down the broker: reject new requests and drain all pending actions.
+    /// Shut down the broker, rejecting all future requests.
     pub fn shut_down(&mut self) {
         self.shut_down = true;
-
-        // Drain all pending actions with shutdown errors
-        let action_ids: Vec<ActionId> = self.actions.keys().copied().collect();
-        for action_id in action_ids {
-            if let Some(action) = self.actions.remove(&action_id) {
-                match action {
-                    Action::Read { tx, .. } => {
-                        let _ = tx.send(Err(StoreError::store(
-                            "broker",
-                            "read",
-                            "broker is shut down",
-                        )));
-                    }
-                    Action::Write { tx, .. } => {
-                        let _ = tx.send(Err(StoreError::store(
-                            "broker",
-                            "write",
-                            "broker is shut down",
-                        )));
-                    }
-                }
-            }
-        }
-
         self.servers.clear();
     }
 }
