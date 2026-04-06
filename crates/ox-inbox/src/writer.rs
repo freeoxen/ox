@@ -1,4 +1,3 @@
-use crate::jsonl;
 use crate::model::{InboxState, ThreadState};
 use rusqlite::Connection;
 use std::collections::BTreeMap;
@@ -30,9 +29,6 @@ pub fn write_dispatch(
         [root, id] if root.as_str() == "threads" => update_thread(db, id, &data),
         [root, id, sub] if root.as_str() == "threads" && sub.as_str() == "labels" => {
             set_labels(db, id, &data)
-        }
-        [root, id, sub] if root.as_str() == "threads" && sub.as_str() == "messages" => {
-            append_message(threads_dir, id, &data)
         }
         [root, id, sub] if root.as_str() == "threads" && sub.as_str() == "tasks" => {
             create_task(db, id, &data)
@@ -140,6 +136,23 @@ fn update_thread(db: &Mutex<Connection>, id: &str, data: &Record) -> Result<Path
         params.push(Box::new(*n));
         sets.push(format!("token_count = ?{}", params.len()));
     }
+    if let Some(Value::Integer(n)) = map.get("last_seq") {
+        params.push(Box::new(*n));
+        sets.push(format!("last_seq = ?{}", params.len()));
+    }
+    if let Some(v) = map.get("last_hash") {
+        match v {
+            Value::String(s) => {
+                params.push(Box::new(s.clone()));
+                sets.push(format!("last_hash = ?{}", params.len()));
+            }
+            Value::Null => {
+                params.push(Box::new(rusqlite::types::Null));
+                sets.push(format!("last_hash = ?{}", params.len()));
+            }
+            _ => {}
+        }
+    }
 
     params.push(Box::new(id.to_string()));
     let sql = format!(
@@ -185,19 +198,6 @@ fn set_labels(db: &Mutex<Connection>, id: &str, data: &Record) -> Result<Path, S
     tx.commit().map_err(|e| err("set_labels", e))?;
 
     Path::parse(&format!("threads/{}/labels", id)).map_err(|e| err("set_labels", e))
-}
-
-fn append_message(threads_dir: &FsPath, id: &str, data: &Record) -> Result<Path, StoreError> {
-    let value = data
-        .as_value()
-        .ok_or_else(|| err("append_message", "expected a parsed value"))?;
-    let json_value = structfs_serde_store::value_to_json(value.clone());
-    let line = serde_json::to_string(&json_value).map_err(|e| err("append_message", e))?;
-
-    let jsonl_path = threads_dir.join(id).join(format!("{}.jsonl", id));
-    jsonl::append(&jsonl_path, &line)?;
-
-    Path::parse(&format!("threads/{}/messages", id)).map_err(|e| err("append_message", e))
 }
 
 fn create_task(db: &Mutex<Connection>, thread_id: &str, data: &Record) -> Result<Path, StoreError> {

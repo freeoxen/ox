@@ -68,6 +68,8 @@ pub struct ThreadMetadata {
     pub updated_at: i64,
     pub token_count: i64,
     pub labels: Vec<String>,
+    pub last_seq: i64,
+    pub last_hash: Option<String>,
 }
 
 impl ThreadMetadata {
@@ -92,6 +94,10 @@ impl ThreadMetadata {
         map.insert("created_at".to_string(), Value::Integer(self.created_at));
         map.insert("updated_at".to_string(), Value::Integer(self.updated_at));
         map.insert("token_count".to_string(), Value::Integer(self.token_count));
+        map.insert("last_seq".to_string(), Value::Integer(self.last_seq));
+        if let Some(ref h) = self.last_hash {
+            map.insert("last_hash".to_string(), Value::String(h.clone()));
+        }
         map.insert(
             "labels".to_string(),
             Value::Array(
@@ -148,6 +154,8 @@ mod tests {
             updated_at: 1700000100,
             token_count: 500,
             labels: vec!["backend".to_string()],
+            last_seq: -1,
+            last_hash: None,
         };
         let value = meta.to_value();
         let Value::Map(ref map) = value else {
@@ -188,6 +196,8 @@ mod tests {
             updated_at: 1700000200,
             token_count: 1200,
             labels: vec![],
+            last_seq: -1,
+            last_hash: None,
         };
         let value = meta.to_value();
         let Value::Map(ref map) = value else {

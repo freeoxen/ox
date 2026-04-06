@@ -1,7 +1,5 @@
-use crate::jsonl;
 use crate::model::{InboxState, TaskInfo, ThreadMetadata, ThreadState};
 use rusqlite::Connection;
-use std::path::Path as FsPath;
 use std::sync::Mutex;
 use structfs_core_store::{Error as StoreError, Path, Record, Value};
 
@@ -9,11 +7,7 @@ fn err(op: &'static str, msg: impl std::fmt::Display) -> StoreError {
     StoreError::store("InboxStore", op, msg.to_string())
 }
 
-pub fn read_dispatch(
-    db: &Mutex<Connection>,
-    threads_dir: &FsPath,
-    from: &Path,
-) -> Result<Option<Record>, StoreError> {
+pub fn read_dispatch(db: &Mutex<Connection>, from: &Path) -> Result<Option<Record>, StoreError> {
     let segments: Vec<&String> = from.iter().collect();
     match segments.as_slice() {
         [root] if root.as_str() == "threads" => list_threads(db, "inbox"),
@@ -23,9 +17,6 @@ pub fn read_dispatch(
         [root, name] if root.as_str() == "labels" => threads_by_label(db, name),
         [root, state] if root.as_str() == "by_state" => threads_by_state(db, state),
         [root, query] if root.as_str() == "search" => search_threads(db, query),
-        [root, id, sub] if root.as_str() == "threads" && sub.as_str() == "messages" => {
-            read_messages(threads_dir, id)
-        }
         [root, id, sub] if root.as_str() == "threads" && sub.as_str() == "children" => {
             list_children(db, id)
         }
@@ -50,6 +41,8 @@ fn row_to_metadata(row: &rusqlite::Row<'_>) -> rusqlite::Result<ThreadMetadata> 
         updated_at: row.get(7)?,
         token_count: row.get(8)?,
         labels: Vec::new(),
+        last_seq: row.get(9)?,
+        last_hash: row.get(10)?,
     })
 }
 
@@ -60,7 +53,7 @@ fn query_threads(
 ) -> Result<Vec<ThreadMetadata>, StoreError> {
     let sql = format!(
         "SELECT id, title, parent_id, inbox_state, thread_state, block_reason, \
-         created_at, updated_at, token_count FROM threads WHERE {} ORDER BY updated_at DESC",
+         created_at, updated_at, token_count, last_seq, last_hash FROM threads WHERE {} ORDER BY updated_at DESC",
         where_clause
     );
     let mut stmt = conn.prepare(&sql).map_err(|e| err("read", e))?;
@@ -130,22 +123,6 @@ fn get_thread(db: &Mutex<Connection>, id: &str) -> Result<Option<Record>, StoreE
         0 => Ok(None),
         _ => Ok(Some(Record::parsed(threads.remove(0).to_value()))),
     }
-}
-
-fn read_messages(threads_dir: &FsPath, thread_id: &str) -> Result<Option<Record>, StoreError> {
-    let jsonl_path = threads_dir
-        .join(thread_id)
-        .join(format!("{}.jsonl", thread_id));
-    let lines = jsonl::read_all(&jsonl_path)?;
-    let values: Vec<Value> = lines
-        .into_iter()
-        .map(|line| {
-            let json: serde_json::Value =
-                serde_json::from_str(&line).map_err(|e| err("read", e))?;
-            Ok(structfs_serde_store::json_to_value(json))
-        })
-        .collect::<Result<_, StoreError>>()?;
-    Ok(Some(Record::parsed(Value::Array(values))))
 }
 
 fn list_children(db: &Mutex<Connection>, parent_id: &str) -> Result<Option<Record>, StoreError> {

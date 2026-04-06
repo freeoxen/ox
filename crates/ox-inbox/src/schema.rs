@@ -12,7 +12,9 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             block_reason  TEXT,
             created_at    INTEGER NOT NULL,
             updated_at    INTEGER NOT NULL,
-            token_count   INTEGER NOT NULL DEFAULT 0
+            token_count   INTEGER NOT NULL DEFAULT 0,
+            last_seq      INTEGER NOT NULL DEFAULT -1,
+            last_hash     TEXT
         );
 
         CREATE TABLE IF NOT EXISTS labels (
@@ -37,5 +39,16 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_labels_label ON labels(label);
         CREATE INDEX IF NOT EXISTS idx_tasks_thread_id ON tasks(thread_id);
         ",
-    )
+    )?;
+
+    // Migrate: add columns if missing (for databases created before this version)
+    let has_last_seq: bool = conn.prepare("SELECT last_seq FROM threads LIMIT 0").is_ok();
+    if !has_last_seq {
+        conn.execute_batch(
+            "ALTER TABLE threads ADD COLUMN last_seq INTEGER NOT NULL DEFAULT -1;
+             ALTER TABLE threads ADD COLUMN last_hash TEXT;",
+        )?;
+    }
+
+    Ok(())
 }
