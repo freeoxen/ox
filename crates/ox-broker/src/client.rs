@@ -1,6 +1,6 @@
 //! ClientHandle — async read/write against the broker.
 //!
-//! Each client holds an Arc<Mutex<BrokerInner>> and submits requests
+//! Each client holds a shared reference to the broker state and submits requests
 //! through it. The request blocks (async await) until the server
 //! fulfills it.
 

@@ -3,31 +3,38 @@
 //! `BrokerInner` maps path prefixes to server channels and routes
 //! requests to the appropriate server. Responses flow directly from
 //! server to client via the reply channel embedded in each request.
-
-use std::collections::BTreeMap;
+//!
+//! Routing uses StructFS `Path` component matching — no string
+//! conversion in the hot path. Servers are sorted by prefix length
+//! descending so the first `has_prefix` hit is the longest match.
 
 use structfs_core_store::{Error as StoreError, Path, Record};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::types::Request;
 
-/// Sender half of a server channel.
-pub(crate) type ServerTx = mpsc::Sender<Request>;
+/// A mounted server: its prefix and channel sender.
+struct MountEntry {
+    prefix: Path,
+    /// String form kept for unmount lookup (cold path).
+    prefix_str: String,
+    tx: mpsc::Sender<Request>,
+}
 
 /// The core routing state machine.
 ///
-/// Maps path prefixes to server channels. Each request carries its own
-/// reply channel, so the broker only handles routing — not response
-/// matching.
+/// Servers are kept sorted by prefix component count descending.
+/// Routing iterates until the first `has_prefix` match — which is
+/// the longest prefix by construction.
 pub(crate) struct BrokerInner {
-    servers: BTreeMap<String, ServerTx>,
+    servers: Vec<MountEntry>,
     shut_down: bool,
 }
 
 impl BrokerInner {
     pub fn new() -> Self {
         BrokerInner {
-            servers: BTreeMap::new(),
+            servers: Vec::new(),
             shut_down: false,
         }
     }
@@ -36,50 +43,44 @@ impl BrokerInner {
     /// requests routed to that prefix.
     pub fn mount(&mut self, prefix: &str) -> mpsc::Receiver<Request> {
         let (tx, rx) = mpsc::channel(64);
-        self.servers.insert(prefix.to_string(), tx);
+        let prefix_path = if prefix.is_empty() {
+            Path::from_components(vec![])
+        } else {
+            Path::parse(prefix).expect("mount prefix must be a valid path")
+        };
+        self.servers.push(MountEntry {
+            prefix: prefix_path,
+            prefix_str: prefix.to_string(),
+            tx,
+        });
+        self.servers
+            .sort_by(|a, b| b.prefix.len().cmp(&a.prefix.len()));
         rx
     }
 
     /// Remove a server from the given prefix.
     pub fn unmount(&mut self, prefix: &str) {
-        self.servers.remove(prefix);
+        self.servers.retain(|entry| entry.prefix_str != prefix);
     }
 
     /// Find the server with the longest matching prefix for the given path.
     ///
-    /// Returns the server's sender and the sub-path (path with prefix stripped).
-    fn route(&self, path: &Path) -> Option<(&ServerTx, Path)> {
-        let path_str = path.to_string();
-        let mut best: Option<(&str, &ServerTx)> = None;
-
-        for (prefix, tx) in &self.servers {
-            let matches = prefix.is_empty()
-                || path_str == *prefix
-                || (path_str.starts_with(prefix.as_str())
-                    && path_str.as_bytes().get(prefix.len()) == Some(&b'/'));
-
-            if matches {
-                match best {
-                    None => best = Some((prefix.as_str(), tx)),
-                    Some((current_prefix, _)) if prefix.len() > current_prefix.len() => {
-                        best = Some((prefix.as_str(), tx));
-                    }
-                    _ => {}
-                }
+    /// Returns a clone of the server sender and the sub-path with prefix
+    /// stripped. Because servers are sorted longest-first, the first match
+    /// is the longest prefix.
+    fn route(&self, path: &Path) -> Option<(mpsc::Sender<Request>, Path)> {
+        for entry in &self.servers {
+            if entry.prefix.is_empty() || path.has_prefix(&entry.prefix) {
+                let sub_path = if entry.prefix.is_empty() {
+                    path.clone()
+                } else {
+                    path.strip_prefix(&entry.prefix)
+                        .unwrap_or_else(|| Path::from_components(vec![]))
+                };
+                return Some((entry.tx.clone(), sub_path));
             }
         }
-
-        best.map(|(prefix, tx)| {
-            let sub_path = if prefix.is_empty() {
-                path.clone()
-            } else {
-                let prefix_path = Path::parse(prefix).expect("mounted prefix must be valid");
-                path.strip_prefix(&prefix_path).unwrap_or_else(|| {
-                    Path::from_components(vec![])
-                })
-            };
-            (tx, sub_path)
-        })
+        None
     }
 
     /// Submit a read request, routing it to the appropriate server.
@@ -94,12 +95,9 @@ impl BrokerInner {
             return Err(StoreError::store("broker", "read", "broker is shut down"));
         }
 
-        let (server_tx, sub_path) = {
-            let (tx, sp) = self
-                .route(path)
-                .ok_or_else(|| StoreError::NoRoute { path: path.clone() })?;
-            (tx.clone(), sp)
-        };
+        let (server_tx, sub_path) = self
+            .route(path)
+            .ok_or_else(|| StoreError::NoRoute { path: path.clone() })?;
 
         let (reply_tx, reply_rx) = oneshot::channel();
         let request = Request::Read {
@@ -108,7 +106,7 @@ impl BrokerInner {
         };
 
         server_tx.try_send(request).map_err(|_| {
-            StoreError::store("broker", "read", "server channel unavailable")
+            StoreError::store("broker", "read", "server channel full")
         })?;
 
         Ok(reply_rx)
@@ -124,12 +122,9 @@ impl BrokerInner {
             return Err(StoreError::store("broker", "write", "broker is shut down"));
         }
 
-        let (server_tx, sub_path) = {
-            let (tx, sp) = self
-                .route(path)
-                .ok_or_else(|| StoreError::NoRoute { path: path.clone() })?;
-            (tx.clone(), sp)
-        };
+        let (server_tx, sub_path) = self
+            .route(path)
+            .ok_or_else(|| StoreError::NoRoute { path: path.clone() })?;
 
         let (reply_tx, reply_rx) = oneshot::channel();
         let request = Request::Write {
@@ -139,7 +134,7 @@ impl BrokerInner {
         };
 
         server_tx.try_send(request).map_err(|_| {
-            StoreError::store("broker", "write", "server channel unavailable")
+            StoreError::store("broker", "write", "server channel full")
         })?;
 
         Ok(reply_rx)
@@ -161,7 +156,7 @@ mod tests {
     fn mount_and_route() {
         let mut inner = BrokerInner::new();
         let _rx = inner.mount("ui");
-        let (_server_tx, sub_path) = inner.route(&path!("ui/selected_row")).unwrap();
+        let (_, sub_path) = inner.route(&path!("ui/selected_row")).unwrap();
         assert_eq!(sub_path.to_string(), "selected_row");
     }
 
@@ -194,6 +189,22 @@ mod tests {
         let mut inner = BrokerInner::new();
         let _rx = inner.mount("ui");
         inner.shut_down();
+        let result = inner.submit_read(&path!("ui/mode"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn backpressure_when_channel_full() {
+        let mut inner = BrokerInner::new();
+        let _rx = inner.mount("ui"); // hold rx, never read from it
+
+        // Fill the channel (capacity 64)
+        for i in 0..64 {
+            let result = inner.submit_read(&path!("ui/mode"));
+            assert!(result.is_ok(), "request {} should succeed", i);
+        }
+
+        // 65th should fail — channel is full
         let result = inner.submit_read(&path!("ui/mode"));
         assert!(result.is_err());
     }
