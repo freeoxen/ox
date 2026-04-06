@@ -238,23 +238,71 @@ impl SystemProvider {
 }
 
 impl Reader for SystemProvider {
-    fn read(&mut self, _from: &Path) -> Result<Option<Record>, StoreError> {
-        Ok(Some(Record::parsed(Value::String(self.prompt.clone()))))
+    fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
+        let key = if from.is_empty() {
+            ""
+        } else {
+            from.components[0].as_str()
+        };
+        match key {
+            "snapshot" => {
+                let state = Value::String(self.prompt.clone());
+                if from.components.len() >= 2 {
+                    match from.components[1].as_str() {
+                        "hash" => {
+                            let hash = ox_kernel::snapshot::snapshot_hash(&state);
+                            Ok(Some(Record::parsed(Value::String(hash))))
+                        }
+                        "state" => Ok(Some(Record::parsed(state))),
+                        _ => Ok(None),
+                    }
+                } else {
+                    Ok(Some(Record::parsed(ox_kernel::snapshot::snapshot_record(state))))
+                }
+            }
+            _ => Ok(Some(Record::parsed(Value::String(self.prompt.clone())))),
+        }
     }
 }
 
 impl Writer for SystemProvider {
-    fn write(&mut self, _to: &Path, data: Record) -> Result<Path, StoreError> {
-        match data {
-            Record::Parsed(Value::String(s)) => {
-                self.prompt = s;
-                Ok(Path::from_components(vec![]))
+    fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
+        let key = if to.is_empty() {
+            ""
+        } else {
+            to.components[0].as_str()
+        };
+        match key {
+            "snapshot" => {
+                let value = match data {
+                    Record::Parsed(v) => v,
+                    _ => return Err(StoreError::store("system", "write", "expected parsed record")),
+                };
+                let state = if to.components.len() >= 2 && to.components[1].as_str() == "state" {
+                    value
+                } else {
+                    ox_kernel::snapshot::extract_snapshot_state(value)
+                        .map_err(|e| StoreError::store("system", "write", e))?
+                };
+                match state {
+                    Value::String(s) => {
+                        self.prompt = s;
+                        Ok(to.clone())
+                    }
+                    _ => Err(StoreError::store("system", "write", "snapshot state must be a string")),
+                }
             }
-            _ => Err(StoreError::store(
-                "system",
-                "write",
-                "expected string value",
-            )),
+            _ => match data {
+                Record::Parsed(Value::String(s)) => {
+                    self.prompt = s;
+                    Ok(Path::from_components(vec![]))
+                }
+                _ => Err(StoreError::store(
+                    "system",
+                    "write",
+                    "expected string value",
+                )),
+            },
         }
     }
 }
@@ -363,5 +411,89 @@ impl Writer for ModelProvider {
                 format!("unknown path: {to}"),
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use structfs_core_store::path;
+
+    fn unwrap_value(record: Record) -> Value {
+        match record {
+            Record::Parsed(v) => v,
+            _ => panic!("expected parsed record"),
+        }
+    }
+
+    #[test]
+    fn system_snapshot_read_returns_hash_and_state() {
+        let mut sp = SystemProvider::new("You are helpful.".to_string());
+        let val = unwrap_value(sp.read(&path!("snapshot")).unwrap().unwrap());
+        match &val {
+            Value::Map(m) => {
+                let hash = match m.get("hash").unwrap() {
+                    Value::String(s) => s.clone(),
+                    _ => panic!("expected string hash"),
+                };
+                assert_eq!(hash.len(), 16);
+                let state = m.get("state").unwrap();
+                assert_eq!(state, &Value::String("You are helpful.".to_string()));
+            }
+            _ => panic!("expected map"),
+        }
+    }
+
+    #[test]
+    fn system_snapshot_read_hash_only() {
+        let mut sp = SystemProvider::new("Hello".to_string());
+        let val = unwrap_value(sp.read(&path!("snapshot/hash")).unwrap().unwrap());
+        match val {
+            Value::String(h) => assert_eq!(h.len(), 16),
+            _ => panic!("expected string"),
+        }
+    }
+
+    #[test]
+    fn system_snapshot_read_state_only() {
+        let mut sp = SystemProvider::new("Hello".to_string());
+        let val = unwrap_value(sp.read(&path!("snapshot/state")).unwrap().unwrap());
+        assert_eq!(val, Value::String("Hello".to_string()));
+    }
+
+    #[test]
+    fn system_snapshot_write_restores_state() {
+        let mut sp = SystemProvider::new("old prompt".to_string());
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("state".to_string(), Value::String("new prompt".to_string()));
+        sp.write(&path!("snapshot"), Record::parsed(Value::Map(map))).unwrap();
+        let val = unwrap_value(sp.read(&path!("")).unwrap().unwrap());
+        assert_eq!(val, Value::String("new prompt".to_string()));
+    }
+
+    #[test]
+    fn system_snapshot_write_state_path() {
+        let mut sp = SystemProvider::new("old".to_string());
+        sp.write(
+            &path!("snapshot/state"),
+            Record::parsed(Value::String("new".to_string())),
+        ).unwrap();
+        let val = unwrap_value(sp.read(&path!("")).unwrap().unwrap());
+        assert_eq!(val, Value::String("new".to_string()));
+    }
+
+    #[test]
+    fn system_snapshot_hash_changes_after_write() {
+        let mut sp = SystemProvider::new("first".to_string());
+        let h1 = match unwrap_value(sp.read(&path!("snapshot/hash")).unwrap().unwrap()) {
+            Value::String(s) => s,
+            _ => panic!("expected string"),
+        };
+        sp.write(&path!("snapshot/state"), Record::parsed(Value::String("second".to_string()))).unwrap();
+        let h2 = match unwrap_value(sp.read(&path!("snapshot/hash")).unwrap().unwrap()) {
+            Value::String(s) => s,
+            _ => panic!("expected string"),
+        };
+        assert_ne!(h1, h2);
     }
 }
