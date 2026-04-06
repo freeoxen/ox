@@ -16,8 +16,6 @@ use crate::types::Request;
 /// A mounted server: its prefix and channel sender.
 struct MountEntry {
     prefix: Path,
-    /// String form kept for unmount lookup (cold path).
-    prefix_str: String,
     tx: mpsc::Sender<Request>,
 }
 
@@ -41,26 +39,17 @@ impl BrokerInner {
 
     /// Mount a server at the given prefix. Returns the receiver for
     /// requests routed to that prefix.
-    pub fn mount(&mut self, prefix: &str) -> mpsc::Receiver<Request> {
+    pub fn mount(&mut self, prefix: Path) -> mpsc::Receiver<Request> {
         let (tx, rx) = mpsc::channel(64);
-        let prefix_path = if prefix.is_empty() {
-            Path::from_components(vec![])
-        } else {
-            Path::parse(prefix).expect("mount prefix must be a valid path")
-        };
-        self.servers.push(MountEntry {
-            prefix: prefix_path,
-            prefix_str: prefix.to_string(),
-            tx,
-        });
+        self.servers.push(MountEntry { prefix, tx });
         self.servers
             .sort_by(|a, b| b.prefix.len().cmp(&a.prefix.len()));
         rx
     }
 
-    /// Remove a server from the given prefix.
-    pub fn unmount(&mut self, prefix: &str) {
-        self.servers.retain(|entry| entry.prefix_str != prefix);
+    /// Remove a server at the given prefix.
+    pub fn unmount(&mut self, prefix: &Path) {
+        self.servers.retain(|entry| entry.prefix != *prefix);
     }
 
     /// Find the server with the longest matching prefix for the given path.
@@ -68,6 +57,9 @@ impl BrokerInner {
     /// Returns a clone of the server sender and the sub-path with prefix
     /// stripped. Because servers are sorted longest-first, the first match
     /// is the longest prefix.
+    ///
+    /// Cloning the `mpsc::Sender` is an `Arc` refcount bump — the cost
+    /// of decoupling the route lookup from the mutable submit that follows.
     fn route(&self, path: &Path) -> Option<(mpsc::Sender<Request>, Path)> {
         for entry in &self.servers {
             if entry.prefix.is_empty() || path.has_prefix(&entry.prefix) {
@@ -105,9 +97,9 @@ impl BrokerInner {
             reply: reply_tx,
         };
 
-        server_tx.try_send(request).map_err(|_| {
-            StoreError::store("broker", "read", "server channel full")
-        })?;
+        server_tx
+            .try_send(request)
+            .map_err(|_| StoreError::store("broker", "read", "server channel full"))?;
 
         Ok(reply_rx)
     }
@@ -133,9 +125,9 @@ impl BrokerInner {
             reply: reply_tx,
         };
 
-        server_tx.try_send(request).map_err(|_| {
-            StoreError::store("broker", "write", "server channel full")
-        })?;
+        server_tx
+            .try_send(request)
+            .map_err(|_| StoreError::store("broker", "write", "server channel full"))?;
 
         Ok(reply_rx)
     }
@@ -155,7 +147,7 @@ mod tests {
     #[test]
     fn mount_and_route() {
         let mut inner = BrokerInner::new();
-        let _rx = inner.mount("ui");
+        let _rx = inner.mount(path!("ui"));
         let (_, sub_path) = inner.route(&path!("ui/selected_row")).unwrap();
         assert_eq!(sub_path.to_string(), "selected_row");
     }
@@ -163,9 +155,11 @@ mod tests {
     #[test]
     fn longest_prefix_wins() {
         let mut inner = BrokerInner::new();
-        let _rx1 = inner.mount("threads");
-        let _rx2 = inner.mount("threads/t_abc");
-        let (_, sub_path) = inner.route(&path!("threads/t_abc/history/messages")).unwrap();
+        let _rx1 = inner.mount(path!("threads"));
+        let _rx2 = inner.mount(path!("threads/t_abc"));
+        let (_, sub_path) = inner
+            .route(&path!("threads/t_abc/history/messages"))
+            .unwrap();
         assert_eq!(sub_path.to_string(), "history/messages");
     }
 
@@ -178,16 +172,16 @@ mod tests {
     #[test]
     fn unmount_removes_route() {
         let mut inner = BrokerInner::new();
-        let _rx = inner.mount("ui");
+        let _rx = inner.mount(path!("ui"));
         assert!(inner.route(&path!("ui/mode")).is_some());
-        inner.unmount("ui");
+        inner.unmount(&path!("ui"));
         assert!(inner.route(&path!("ui/mode")).is_none());
     }
 
     #[test]
     fn shut_down_rejects_new_requests() {
         let mut inner = BrokerInner::new();
-        let _rx = inner.mount("ui");
+        let _rx = inner.mount(path!("ui"));
         inner.shut_down();
         let result = inner.submit_read(&path!("ui/mode"));
         assert!(result.is_err());
@@ -196,7 +190,7 @@ mod tests {
     #[test]
     fn backpressure_when_channel_full() {
         let mut inner = BrokerInner::new();
-        let _rx = inner.mount("ui"); // hold rx, never read from it
+        let _rx = inner.mount(path!("ui")); // hold rx, never read from it
 
         // Fill the channel (capacity 64)
         for i in 0..64 {
@@ -207,5 +201,23 @@ mod tests {
         // 65th should fail — channel is full
         let result = inner.submit_read(&path!("ui/mode"));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn root_mount_catches_all() {
+        let mut inner = BrokerInner::new();
+        let _rx = inner.mount(Path::from_components(vec![]));
+        let (_, sub_path) = inner.route(&path!("anything/at/all")).unwrap();
+        assert_eq!(sub_path.to_string(), "anything/at/all");
+    }
+
+    #[test]
+    fn specific_prefix_wins_over_root() {
+        let mut inner = BrokerInner::new();
+        let _rx_root = inner.mount(Path::from_components(vec![]));
+        let _rx_ui = inner.mount(path!("ui"));
+        let (_, sub_path) = inner.route(&path!("ui/mode")).unwrap();
+        // "ui" mount should win over root, stripping the prefix
+        assert_eq!(sub_path.to_string(), "mode");
     }
 }

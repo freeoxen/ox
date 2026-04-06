@@ -6,6 +6,48 @@ mod client;
 mod server;
 mod types;
 
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::collections::BTreeMap;
+    use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer};
+
+    /// A trivial in-memory store for testing broker routing.
+    pub struct MemoryStore {
+        pub data: BTreeMap<String, Value>,
+    }
+
+    impl MemoryStore {
+        pub fn new() -> Self {
+            Self {
+                data: BTreeMap::new(),
+            }
+        }
+        pub fn with(key: &str, value: Value) -> Self {
+            let mut data = BTreeMap::new();
+            data.insert(key.to_string(), value);
+            Self { data }
+        }
+    }
+
+    impl Reader for MemoryStore {
+        fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
+            Ok(self
+                .data
+                .get(&from.to_string())
+                .map(|v| Record::parsed(v.clone())))
+        }
+    }
+
+    impl Writer for MemoryStore {
+        fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
+            if let Some(value) = data.as_value() {
+                self.data.insert(to.to_string(), value.clone());
+            }
+            Ok(to.clone())
+        }
+    }
+}
+
 pub use client::ClientHandle;
 pub use types::Request;
 
@@ -40,7 +82,7 @@ impl BrokerStore {
     /// server task. Returns the JoinHandle for the server.
     pub async fn mount<S: Reader + Writer + Send + 'static>(
         &self,
-        prefix: &str,
+        prefix: structfs_core_store::Path,
         store: S,
     ) -> tokio::task::JoinHandle<()> {
         server::spawn_server(self.inner.clone(), prefix, store).await
@@ -51,7 +93,7 @@ impl BrokerStore {
     /// returns the store to serve.
     pub async fn mount_with_client<S, F>(
         &self,
-        prefix: &str,
+        prefix: structfs_core_store::Path,
         setup: F,
     ) -> tokio::task::JoinHandle<()>
     where
@@ -63,7 +105,7 @@ impl BrokerStore {
     }
 
     /// Unmount a server at the given prefix.
-    pub async fn unmount(&self, prefix: &str) {
+    pub async fn unmount(&self, prefix: &structfs_core_store::Path) {
         let mut inner = self.inner.lock().await;
         inner.unmount(prefix);
     }
@@ -84,43 +126,8 @@ impl Default for BrokerStore {
 #[cfg(test)]
 mod integration_tests {
     use super::*;
-    use std::collections::BTreeMap;
+    use crate::test_support::MemoryStore;
     use structfs_core_store::{path, Error as StoreError, Path, Record, Value};
-
-    struct MemoryStore {
-        data: BTreeMap<String, Value>,
-    }
-
-    impl MemoryStore {
-        fn new() -> Self {
-            Self {
-                data: BTreeMap::new(),
-            }
-        }
-        fn with(key: &str, value: Value) -> Self {
-            let mut data = BTreeMap::new();
-            data.insert(key.to_string(), value);
-            Self { data }
-        }
-    }
-
-    impl Reader for MemoryStore {
-        fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
-            Ok(self
-                .data
-                .get(&from.to_string())
-                .map(|v| Record::parsed(v.clone())))
-        }
-    }
-
-    impl Writer for MemoryStore {
-        fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
-            if let Some(value) = data.as_value() {
-                self.data.insert(to.to_string(), value.clone());
-            }
-            Ok(to.clone())
-        }
-    }
 
     #[tokio::test]
     async fn full_broker_lifecycle() {
@@ -130,11 +137,11 @@ mod integration_tests {
         // Mount two stores
         let _ui = broker
             .mount(
-                "ui",
+                path!("ui"),
                 MemoryStore::with("mode", Value::String("normal".to_string())),
             )
             .await;
-        let _inbox = broker.mount("inbox", MemoryStore::new()).await;
+        let _inbox = broker.mount(path!("inbox"), MemoryStore::new()).await;
 
         // Read from ui store
         let mode = client.read(&path!("ui/mode")).await.unwrap().unwrap();
@@ -161,7 +168,7 @@ mod integration_tests {
         assert_eq!(count.as_value().unwrap(), &Value::Integer(5));
 
         // Unmount and verify no route
-        broker.unmount("inbox").await;
+        broker.unmount(&path!("inbox")).await;
         let result = client.read(&path!("inbox/thread_count")).await;
         assert!(result.is_err());
     }
@@ -173,7 +180,7 @@ mod integration_tests {
         // Mount a thread namespace
         broker
             .mount(
-                "threads/t_abc",
+                path!("threads/t_abc"),
                 MemoryStore::with("prompt", Value::String("You are helpful.".to_string())),
             )
             .await;
@@ -204,16 +211,13 @@ mod integration_tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(
-            msg.as_value().unwrap(),
-            &Value::String("hello".to_string()),
-        );
+        assert_eq!(msg.as_value().unwrap(), &Value::String("hello".to_string()),);
     }
 
     #[tokio::test]
     async fn shutdown_fails_pending_operations() {
         let broker = BrokerStore::default();
-        let _ui = broker.mount("ui", MemoryStore::new()).await;
+        let _ui = broker.mount(path!("ui"), MemoryStore::new()).await;
 
         broker.shut_down().await;
 
@@ -229,7 +233,7 @@ mod integration_tests {
         // Mount a data store
         broker
             .mount(
-                "data",
+                path!("data"),
                 MemoryStore::with("greeting", Value::String("hello".to_string())),
             )
             .await;
@@ -238,7 +242,7 @@ mod integration_tests {
         // The sync Reader impl uses block_in_place to bridge to async,
         // which is the same pattern the Wasm host bridge will use.
         broker
-            .mount_with_client("proxy", |client| ProxyStore { client })
+            .mount_with_client(path!("proxy"), |client| ProxyStore { client })
             .await;
 
         // Read through the proxy — it reads from data store via broker

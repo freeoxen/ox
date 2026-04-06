@@ -48,7 +48,7 @@ impl fmt::Debug for Request {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use structfs_core_store::{path, Value};
+    use structfs_core_store::{Value, path};
 
     #[test]
     fn read_request_carries_reply() {

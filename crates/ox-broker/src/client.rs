@@ -81,16 +81,16 @@ impl ClientHandle {
                 StoreError::store("client", "read", format!("timeout reading '{}'", full_path))
             })?
             .map_err(|_| {
-                StoreError::store("client", "read", format!("server dropped for '{}'", full_path))
+                StoreError::store(
+                    "client",
+                    "read",
+                    format!("server dropped for '{}'", full_path),
+                )
             })?
     }
 
     /// Async write to the broker.
-    pub async fn write(
-        &self,
-        path: &Path,
-        data: Record,
-    ) -> Result<Path, StoreError> {
+    pub async fn write(&self, path: &Path, data: Record) -> Result<Path, StoreError> {
         let full_path = self.resolve_path(path);
         let rx = {
             let mut inner = self.inner.lock().await;
@@ -100,10 +100,18 @@ impl ClientHandle {
         tokio::time::timeout(self.timeout, rx)
             .await
             .map_err(|_| {
-                StoreError::store("client", "write", format!("timeout writing '{}'", full_path))
+                StoreError::store(
+                    "client",
+                    "write",
+                    format!("timeout writing '{}'", full_path),
+                )
             })?
             .map_err(|_| {
-                StoreError::store("client", "write", format!("server dropped for '{}'", full_path))
+                StoreError::store(
+                    "client",
+                    "write",
+                    format!("server dropped for '{}'", full_path),
+                )
             })?
     }
 }

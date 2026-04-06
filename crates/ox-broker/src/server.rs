@@ -21,7 +21,7 @@ use crate::types::Request;
 /// directly on the reply channel embedded in each request.
 pub(crate) async fn spawn_server<S: Reader + Writer + Send + 'static>(
     inner: Arc<Mutex<BrokerInner>>,
-    prefix: &str,
+    prefix: structfs_core_store::Path,
     store: S,
 ) -> tokio::task::JoinHandle<()> {
     let rx = {
@@ -57,7 +57,7 @@ async fn server_loop<S: Reader + Writer>(
 /// The `setup` closure receives a `ClientHandle` and returns the store.
 pub(crate) async fn spawn_server_with_client<S, F>(
     inner: Arc<Mutex<BrokerInner>>,
-    prefix: &str,
+    prefix: structfs_core_store::Path,
     timeout: Duration,
     setup: F,
 ) -> tokio::task::JoinHandle<()>
@@ -80,39 +80,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
-    use structfs_core_store::{path, Error as StoreError, Path, Record, Value};
-
-    /// A trivial in-memory store for testing.
-    struct MemoryStore {
-        data: BTreeMap<String, Value>,
-    }
-
-    impl MemoryStore {
-        fn new() -> Self {
-            Self {
-                data: BTreeMap::new(),
-            }
-        }
-    }
-
-    impl Reader for MemoryStore {
-        fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
-            Ok(self
-                .data
-                .get(&from.to_string())
-                .map(|v| Record::parsed(v.clone())))
-        }
-    }
-
-    impl Writer for MemoryStore {
-        fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
-            if let Some(value) = data.as_value() {
-                self.data.insert(to.to_string(), value.clone());
-            }
-            Ok(to.clone())
-        }
-    }
+    use crate::test_support::MemoryStore;
+    use structfs_core_store::{path, Record, Value};
 
     #[tokio::test]
     async fn server_handles_read_and_write() {
@@ -124,7 +93,7 @@ mod tests {
             .data
             .insert("greeting".to_string(), Value::String("hello".to_string()));
 
-        let _handle = spawn_server(inner, "test", store).await;
+        let _handle = spawn_server(inner, path!("test"), store).await;
 
         // Read existing value
         let result = client.read(&path!("test/greeting")).await.unwrap();
@@ -161,26 +130,18 @@ mod tests {
         store_a
             .data
             .insert("value".to_string(), Value::String("A".to_string()));
-        let _ha = spawn_server(inner.clone(), "store_a", store_a).await;
+        let _ha = spawn_server(inner.clone(), path!("store_a"), store_a).await;
 
         let mut store_b = MemoryStore::new();
         store_b
             .data
             .insert("value".to_string(), Value::String("B".to_string()));
-        let _hb = spawn_server(inner, "store_b", store_b).await;
+        let _hb = spawn_server(inner, path!("store_b"), store_b).await;
 
-        let a = client
-            .read(&path!("store_a/value"))
-            .await
-            .unwrap()
-            .unwrap();
+        let a = client.read(&path!("store_a/value")).await.unwrap().unwrap();
         assert_eq!(a.as_value().unwrap(), &Value::String("A".to_string()));
 
-        let b = client
-            .read(&path!("store_b/value"))
-            .await
-            .unwrap()
-            .unwrap();
+        let b = client.read(&path!("store_b/value")).await.unwrap().unwrap();
         assert_eq!(b.as_value().unwrap(), &Value::String("B".to_string()));
     }
 
@@ -189,7 +150,7 @@ mod tests {
         let inner = Arc::new(Mutex::new(BrokerInner::new()));
         let client = crate::ClientHandle::new(inner.clone(), Duration::from_secs(5));
 
-        let _handle = spawn_server(inner, "threads/t_abc", MemoryStore::new()).await;
+        let _handle = spawn_server(inner, path!("threads/t_abc"), MemoryStore::new()).await;
 
         let scoped = client.scoped("threads/t_abc");
         scoped
