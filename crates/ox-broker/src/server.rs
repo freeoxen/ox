@@ -58,13 +58,14 @@ async fn server_loop<S: Reader + Writer>(
 pub(crate) async fn spawn_server_with_client<S, F>(
     inner: Arc<Mutex<BrokerInner>>,
     prefix: &str,
+    timeout: Duration,
     setup: F,
 ) -> tokio::task::JoinHandle<()>
 where
     S: Reader + Writer + Send + 'static,
     F: FnOnce(crate::ClientHandle) -> S + Send + 'static,
 {
-    let client = crate::ClientHandle::new(inner.clone(), Duration::from_secs(30));
+    let client = crate::ClientHandle::new(inner.clone(), timeout);
     let rx = {
         let mut inner_guard = inner.lock().await;
         inner_guard.mount(prefix)
