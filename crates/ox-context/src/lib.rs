@@ -632,4 +632,74 @@ mod tests {
         let result = tp.read(&path!("snapshot/hash")).unwrap();
         assert!(result.is_none());
     }
+
+    // -- Integration: coordinator discovery via Namespace --
+
+    #[test]
+    fn namespace_snapshot_discovery() {
+        let mut ns = Namespace::new();
+        ns.mount(
+            "system",
+            Box::new(SystemProvider::new("You are helpful.".to_string())),
+        );
+        ns.mount(
+            "model",
+            Box::new(ModelProvider::new(
+                "claude-sonnet-4-20250514".to_string(),
+                4096,
+            )),
+        );
+        ns.mount("tools", Box::new(ToolsProvider::new(vec![])));
+
+        // system participates
+        assert!(ns.read(&path!("system/snapshot")).unwrap().is_some());
+
+        // model participates
+        assert!(ns.read(&path!("model/snapshot")).unwrap().is_some());
+
+        // tools does NOT participate
+        assert!(ns.read(&path!("tools/snapshot")).unwrap().is_none());
+    }
+
+    #[test]
+    fn namespace_snapshot_roundtrip() {
+        let mut ns = Namespace::new();
+        ns.mount(
+            "system",
+            Box::new(SystemProvider::new("original".to_string())),
+        );
+        ns.mount(
+            "model",
+            Box::new(ModelProvider::new("model-a".to_string(), 1024)),
+        );
+
+        // Read snapshots
+        let sys_snap = unwrap_value(ns.read(&path!("system/snapshot/state")).unwrap().unwrap());
+        let model_snap = unwrap_value(ns.read(&path!("model/snapshot/state")).unwrap().unwrap());
+
+        // Mutate
+        ns.write(
+            &path!("system"),
+            Record::parsed(Value::String("changed".to_string())),
+        )
+        .unwrap();
+        ns.write(
+            &path!("model/id"),
+            Record::parsed(Value::String("model-b".to_string())),
+        )
+        .unwrap();
+
+        // Restore from snapshots
+        ns.write(&path!("system/snapshot/state"), Record::parsed(sys_snap))
+            .unwrap();
+        ns.write(&path!("model/snapshot/state"), Record::parsed(model_snap))
+            .unwrap();
+
+        // Verify restoration
+        let val = unwrap_value(ns.read(&path!("system")).unwrap().unwrap());
+        assert_eq!(val, Value::String("original".to_string()));
+
+        let val = unwrap_value(ns.read(&path!("model/id")).unwrap().unwrap());
+        assert_eq!(val, Value::String("model-a".to_string()));
+    }
 }
