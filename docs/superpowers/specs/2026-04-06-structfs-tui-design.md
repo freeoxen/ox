@@ -390,60 +390,193 @@ perspective, the API is identical to today.
 The BrokerStore is the only async component. Everything it wraps is
 synchronous. This means existing stores work without modification.
 
+## Persistence Model
+
+Persistence is a construction concern, not a runtime concern.
+
+When the ThreadRegistry mounts a thread, it constructs each store
+with a **backing** appropriate to the platform. On the CLI, the
+HistoryProvider is backed by `ledger.jsonl`. On the web, it might be
+backed by IndexedDB. The store implements Reader/Writer and delegates
+to the backing. The store doesn't know what the backing is.
+
+```
+trait StoreBacking {
+    fn load(&self) -> Result<Value, Error>;
+    fn save(&self, value: &Value) -> Result<(), Error>;
+    fn append(&self, value: &Value) -> Result<(), Error>;
+}
+```
+
+Stores can cache in memory for read performance, but the backing is
+authoritative. Writes go through to the backing. The turn state
+(`history/turn/*`) is purely in-memory until `commit` flushes it
+through the backing.
+
+There is no PersistenceStore. Each store handles its own durability
+through its backing. The ThreadStore owns the bundled representation
+(the thread directory as a unit) and coordinates construction and
+teardown of its child stores from/to the bundle.
+
+### ThreadStore and Bundles
+
+The ThreadStore is the single owner of a thread's portable state.
+It knows the bundle format and constructs child stores from it.
+
+- `read("threads/{id}/bundle")` — returns the complete portable
+  representation (context + ledger + view)
+- `write("threads/{id}/bundle", data)` — restores from a portable
+  representation
+
+The ThreadStore replaces both the snapshot coordinator and the
+PersistenceStore from the earlier design. Export, transfer, and
+fork all operate on the bundle.
+
+### SQLite as Derived Cache
+
+SQLite (via InboxStore) is a queryable cache derived from thread
+directories. It is never the authority. The ThreadStore writes
+through to SQLite when metadata changes (title, last_seq, last_hash,
+updated_at). The InboxStore reads from SQLite for list queries.
+
+On startup, reconciliation ensures SQLite matches the thread
+directories on disk. Thread directories win on any conflict.
+
+## Branching and Fork
+
+A branch creates a new thread that references a parent's ledger up to
+a specific sequence number. The child doesn't copy the parent's
+messages — it references them.
+
+### Branch Structure
+
+```
+Thread t_def (branched from t_abc at seq 2):
+  bundle:
+    parent: "t_abc"
+    parent_through: 2
+    context.json: snapshot of t_abc's context at branch point
+    ledger.jsonl: only the child's own entries
+    view.json: include parent[0:2] + own[0:N]
+```
+
+The child's HistoryProvider resolves history by reading the parent's
+ledger through the broker (`threads/t_abc/history/ledger`), taking
+entries through the cutoff, then appending its own. The chain
+resolves recursively — a branch of a branch reads through two parents.
+
+### Copy-on-Delete
+
+When a parent thread is deleted, any children referencing it get the
+relevant ledger entries materialized into their own bundle before
+deletion proceeds:
+
+1. Find all children with `parent: t_abc`
+2. For each child: read parent's ledger entries through `parent_through`,
+   prepend them to the child's own ledger
+3. Clear the child's parent reference (it's now self-contained)
+4. Delete the parent
+
+After materialization, the child's history resolves identically — the
+entries are in its own ledger instead of referenced through the parent.
+No broken links, no cascade constraints.
+
+This is also how export works: materializing parent references produces
+a self-contained bundle that can be transferred without the parent.
+
+## Store Lifecycle
+
+### Lazy Mount
+
+Threads are not mounted on app startup. The ThreadRegistry handles
+reads/writes to `threads/{id}/**` and mounts lazily on first access.
+The inbox list comes from InboxStore (SQLite cache) — no thread needs
+to be mounted for the list view.
+
+When the TUI opens a thread, the first read to
+`threads/{id}/history/messages` triggers the ThreadRegistry to:
+
+1. Read the thread directory from disk (the authority, not SQLite)
+2. Construct the ThreadStore from the bundle
+3. ThreadStore constructs child stores (HistoryProvider, SystemProvider,
+   etc.) with appropriate backings
+4. Mount the ThreadStore at `threads/{id}/` in the broker
+5. Serve the original read
+
+### Unmount
+
+Unmount happens on explicit lifecycle events: archive, delete, or
+eviction under memory pressure. The sequence:
+
+1. Signal the agent worker to stop (drop its prompt channel)
+2. Worker finishes current operation or aborts cleanly
+3. Worker's last write completes (or fails)
+4. ThreadStore flushes turn state — uncommitted turns are either
+   committed or discarded
+5. ThreadStore unmounts from the broker
+6. Broker rejects any further writes to the unmounted prefix
+
+### Pending Writes on Unmount
+
+Agent writes go through the broker to the ThreadStore's child stores.
+Once the ThreadStore unmounts, the broker has no server for that
+prefix. Any late writes get an error response. The worker handles this
+gracefully — the same as any write failure.
+
+The approval flow is the main concern: if an agent is blocked on
+`approval/request` when the thread unmounts, the broker resolves the
+blocked write with an error. The agent treats this as a denial.
+
 ## Cross-Platform
 
 The namespace tree and store implementations are platform-agnostic.
-The TUI event loop is the only platform-specific code:
+Platform-specific code is limited to:
 
-- **CLI (ratatui):** polls crossterm, writes to `input/`, reads state, draws terminal
-- **Web (Svelte):** listens to DOM events, writes to `input/`, reads state, updates Svelte stores
+- **TUI event loop:** polls terminal / listens to DOM events, writes
+  to `input/`, reads state, renders
+- **Store backings:** file I/O on CLI, IndexedDB on web, REST API
+  for remote
 
-The InputStore, UiStore, InboxStore, ThreadRegistry, LiveStore,
-ApprovalStore, PersistenceStore, ConfigStore — all shared.
-
-## Recursive Composition (Rio Model)
-
-A thread's sub-namespace contains the same types of stores as the
-root namespace: state, input handling, persistence. When fork arrives,
-a child thread is another mount under `threads/` with its own
-sub-namespace. The parent thread's history can reference the child by
-path. The TUI navigates into child threads the same way it navigates
-from the inbox into a thread.
-
-The ThreadRegistry is the mount manager at each level. The root has
-one. A parent thread with children has one too. The structure is
-recursive — namespaces containing namespaces, all the way down.
+The InputStore, UiStore, InboxStore, ThreadRegistry, ThreadStore,
+ApprovalStore, ConfigStore, and all agent stores — shared across
+platforms.
 
 ## Testing
 
 Every store is independently testable with synchronous Reader/Writer
-calls. No broker needed for unit tests.
+calls and in-memory backings. No broker needed for unit tests.
 
 Integration tests mount stores in a BrokerStore and verify cross-store
 interactions: write to `input/normal/j`, read `ui/selected_row`, assert
 it changed. Write to `threads/{id}/history/append`, read
-`threads/{id}/live/streaming`, assert the delta appeared.
+`threads/{id}/history/messages`, assert it appears.
 
 The command protocol (precondition + txn ID) makes tests deterministic:
 commands either apply or reject, never produce unexpected intermediate
 states.
+
+Branch tests: create parent thread, branch from it, verify child
+reads parent history through the broker. Delete parent, verify child's
+ledger was materialized and history still resolves.
 
 ## Scope
 
 ### In Scope (this spec)
 
 - BrokerStore adapted from appiware for ox's StructFS types
-- UiStore, InputStore, LiveStore, ApprovalStore, ThreadRegistry
-- PersistenceStore wrapping snapshot coordinator
+- UiStore, InputStore, ApprovalStore, ThreadStore, ThreadRegistry
+- HistoryProvider extended with turn state and branch resolution
+- StoreBacking trait for platform-agnostic persistence
 - ConfigStore for settings
 - TUI event loop rewrite on top of broker
 - Agent worker integration via scoped client handles
 
 ### Deferred
 
-- Web playground (ox-web) integration
-- Fork tool and recursive thread namespaces
+- Web playground (ox-web) integration (store backings for browser)
+- Fork tool implementation (branching is designed, not built)
 - Plugin/scripting system using command paths
 - Command palette / REPL mode
-- View projection engine (masks, replacements)
+- View projection engine (masks, replacements, summarization)
 - Network/remote broker transport
+- Memory eviction policy for mounted ThreadStores
