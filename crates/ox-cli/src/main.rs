@@ -1,6 +1,7 @@
 mod agents;
 mod app;
 mod bindings;
+mod broker_setup;
 mod inbox_view;
 mod policy;
 #[allow(dead_code)]
