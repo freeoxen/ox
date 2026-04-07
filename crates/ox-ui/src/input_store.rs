@@ -365,25 +365,26 @@ fn parse_fields(value: Option<&Value>) -> Vec<ActionField> {
 
 impl Reader for InputStore {
     fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
-        let path_str = from.to_string();
-
-        if path_str.is_empty() || path_str == "bindings" {
-            return Ok(Some(Record::parsed(Value::Array(
+        let c = &from.components;
+        match c.len() {
+            // "" → all bindings
+            0 => Ok(Some(Record::parsed(Value::Array(
                 self.bindings_matching(None, None),
-            ))));
+            )))),
+            // "bindings" → all bindings
+            1 if c[0] == "bindings" => Ok(Some(Record::parsed(Value::Array(
+                self.bindings_matching(None, None),
+            )))),
+            // "bindings/{mode}" → bindings for mode
+            2 if c[0] == "bindings" => Ok(Some(Record::parsed(Value::Array(
+                self.bindings_matching(Some(&c[1]), None),
+            )))),
+            // "bindings/{mode}/{screen}" → bindings for mode+screen
+            3 if c[0] == "bindings" => Ok(Some(Record::parsed(Value::Array(
+                self.bindings_matching(Some(&c[1]), Some(&c[2])),
+            )))),
+            _ => Ok(None),
         }
-
-        // bindings/{mode} or bindings/{mode}/{screen}
-        if let Some(rest) = path_str.strip_prefix("bindings/") {
-            let parts: Vec<&str> = rest.splitn(2, '/').collect();
-            let mode = parts[0];
-            let screen = parts.get(1).copied();
-            return Ok(Some(Record::parsed(Value::Array(
-                self.bindings_matching(Some(mode), screen),
-            ))));
-        }
-
-        Ok(None)
     }
 }
 
@@ -393,12 +394,16 @@ impl Reader for InputStore {
 
 impl Writer for InputStore {
     fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
-        let path_str = to.to_string();
+        let action = if to.is_empty() {
+            ""
+        } else {
+            to.components[0].as_str()
+        };
         let value = data.as_value().ok_or_else(|| {
             StoreError::store("input", "write", "write data must contain a value")
         })?;
 
-        match path_str.as_str() {
+        match action {
             "key" => {
                 // Key event dispatch: data is {mode, key, screen?, ...context}
                 let map = match value {

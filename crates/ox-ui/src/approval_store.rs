@@ -38,8 +38,12 @@ impl Default for ApprovalStore {
 
 impl Reader for ApprovalStore {
     fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
-        let path_str = from.to_string();
-        match path_str.as_str() {
+        let key = if from.is_empty() {
+            ""
+        } else {
+            from.components[0].as_str()
+        };
+        match key {
             "pending" => Ok(Some(Record::parsed(match &self.pending {
                 Some(req) => {
                     let mut map = BTreeMap::new();
@@ -66,12 +70,16 @@ impl Reader for ApprovalStore {
 
 impl Writer for ApprovalStore {
     fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
-        let path_str = to.to_string();
+        let action = if to.is_empty() {
+            ""
+        } else {
+            to.components[0].as_str()
+        };
         let value = data.as_value().ok_or_else(|| {
             StoreError::store("approval", "write", "write data must contain a value")
         })?;
 
-        match path_str.as_str() {
+        match action {
             "request" => {
                 let map = match value {
                     Value::Map(m) => m,
