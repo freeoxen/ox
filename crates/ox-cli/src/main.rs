@@ -10,6 +10,7 @@ mod session;
 mod state_sync;
 mod tab_bar;
 mod theme;
+pub(crate) mod thread_mount;
 mod thread_view;
 mod tools;
 mod transport;
