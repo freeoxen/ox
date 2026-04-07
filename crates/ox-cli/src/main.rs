@@ -3,9 +3,11 @@ mod app;
 mod bindings;
 mod broker_setup;
 mod inbox_view;
+mod key_encode;
 mod policy;
 #[allow(dead_code)]
 mod session;
+mod state_sync;
 mod tab_bar;
 mod theme;
 mod thread_view;
