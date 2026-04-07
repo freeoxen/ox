@@ -75,17 +75,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         PathBuf::from(home).join(".ox")
     };
 
-    let mut app = app::App::new(
-        cli.provider,
-        model,
-        cli.max_tokens,
-        api_key,
-        workspace,
-        inbox_root.clone(),
-        cli.no_policy,
-    )
-    .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
-
     let theme = theme::Theme::default();
 
     // Create tokio runtime for broker
@@ -99,6 +88,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let broker_bindings = bindings::default_bindings();
     let broker_handle = rt.block_on(broker_setup::setup(broker_inbox, broker_bindings));
     let client = broker_handle.client();
+
+    // Create App with broker — pass rt handle so AgentPool workers can use it
+    let mut app = app::App::new(
+        cli.provider,
+        model,
+        cli.max_tokens,
+        api_key,
+        workspace,
+        inbox_root.clone(),
+        cli.no_policy,
+        broker_handle.broker.clone(),
+        rt.handle().clone(),
+    )
+    .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
     let mut terminal = ratatui::init();
     crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture).ok();

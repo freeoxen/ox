@@ -1,6 +1,4 @@
-use ox_context::{ModelProvider, Namespace, SystemProvider, ToolsProvider};
 use ox_gate::{GateStore, ProviderConfig};
-use ox_history::HistoryProvider;
 use ox_kernel::{
     AgentEvent, CompletionRequest, Record, StreamEvent, ToolCall, ToolRegistry, Value, Writer, path,
 };
@@ -43,6 +41,8 @@ pub struct AgentPool {
     no_policy: bool,
     inbox: ox_inbox::InboxStore,
     inbox_root: PathBuf,
+    broker: ox_broker::BrokerStore,
+    rt_handle: tokio::runtime::Handle,
 }
 
 impl AgentPool {
@@ -59,6 +59,8 @@ impl AgentPool {
         inbox_root: PathBuf,
         event_tx: mpsc::Sender<AppEvent>,
         control_tx: mpsc::Sender<AppControl>,
+        broker: ox_broker::BrokerStore,
+        rt_handle: tokio::runtime::Handle,
     ) -> Result<Self, String> {
         let runtime = AgentRuntime::new()?;
         let module = runtime.load_module_from_bytes(AGENT_WASM)?;
@@ -75,6 +77,8 @@ impl AgentPool {
             no_policy,
             inbox,
             inbox_root,
+            broker,
+            rt_handle,
         })
     }
 
@@ -162,11 +166,13 @@ impl AgentPool {
         let workspace = self.workspace.clone();
         let no_policy = self.no_policy;
         let inbox_root = self.inbox_root.clone();
+        let broker = self.broker.clone();
+        let rt_handle = self.rt_handle.clone();
 
         thread::spawn(move || {
             agent_worker(
                 thread_id, title, module, model, provider, max_tokens, api_key, workspace,
-                no_policy, inbox_root, prompt_rx, event_tx, control_tx,
+                no_policy, inbox_root, prompt_rx, event_tx, control_tx, broker, rt_handle,
             );
         });
     }
@@ -191,6 +197,8 @@ fn agent_worker(
     prompt_rx: mpsc::Receiver<String>,
     event_tx: mpsc::Sender<AppEvent>,
     control_tx: mpsc::Sender<AppControl>,
+    broker: ox_broker::BrokerStore,
+    rt_handle: tokio::runtime::Handle,
 ) {
     // Build tool registry
     let extra_tools = crate::tools::standard_tools(workspace.clone());
@@ -205,54 +213,67 @@ fn agent_worker(
         crate::policy::PolicyGuard::load(&workspace)
     };
 
-    // Set up GateStore
-    let mut gate = GateStore::new();
-    gate.write(
-        &ox_kernel::Path::from_components(vec![
-            "accounts".to_string(),
-            provider.clone(),
-            "key".to_string(),
-        ]),
-        Record::parsed(Value::String(api_key)),
-    )
-    .ok();
+    // Mount thread stores in the broker
+    let config = crate::thread_mount::ThreadConfig {
+        system_prompt: SYSTEM_PROMPT.to_string(),
+        model: model.clone(),
+        max_tokens,
+        tool_schemas: tools.schemas(),
+        provider: provider.clone(),
+        api_key: api_key.clone(),
+    };
+    let _mount_handles = match rt_handle
+        .block_on(crate::thread_mount::mount_thread(&broker, &thread_id, config))
+    {
+        Ok(handles) => handles,
+        Err(e) => {
+            event_tx
+                .send(AppEvent::Done {
+                    thread_id: thread_id.clone(),
+                    result: Err::<String, _>(format!("mount failed: {e}")),
+                })
+                .ok();
+            return;
+        }
+    };
 
-    let provider_config = crate::app::read_provider_config_from_gate(&mut gate, &provider)
-        .unwrap_or_else(|_| ProviderConfig::anthropic());
-    let api_key_for_transport =
-        crate::app::read_account_key(&mut gate, &provider).unwrap_or_default();
+    // Create scoped client + SyncClientAdapter
+    let scoped_client = broker.client().scoped(&format!("threads/{thread_id}"));
+    let mut adapter = ox_broker::SyncClientAdapter::new(scoped_client, rt_handle.clone());
 
-    // Register completion tools
-    let send_config = provider_config.clone();
-    let send_key = api_key_for_transport.clone();
-    let send = Arc::new(crate::transport::make_send_fn(send_config, send_key));
-    for tool in gate.create_completion_tools(send) {
+    // Construct ProviderConfig directly (no GateStore read needed)
+    let provider_config = match provider.as_str() {
+        "openai" => ProviderConfig::openai(),
+        _ => ProviderConfig::anthropic(),
+    };
+    let api_key_for_transport = api_key.clone();
+
+    // Register completion tools using a temporary GateStore
+    let mut gate_for_tools = GateStore::new();
+    gate_for_tools
+        .write(
+            &ox_kernel::Path::from_components(vec![
+                "accounts".to_string(),
+                provider.clone(),
+                "key".to_string(),
+            ]),
+            Record::parsed(Value::String(api_key)),
+        )
+        .ok();
+    let send = Arc::new(crate::transport::make_send_fn(
+        provider_config.clone(),
+        api_key_for_transport.clone(),
+    ));
+    for tool in gate_for_tools.create_completion_tools(send) {
         tools.register(tool);
     }
 
-    // Build namespace
-    let mut namespace = Namespace::new();
-    namespace.mount(
-        "system",
-        Box::new(SystemProvider::new(SYSTEM_PROMPT.to_string())),
-    );
-    namespace.mount("history", Box::new(HistoryProvider::new()));
-    namespace.mount("tools", Box::new(ToolsProvider::new(tools.schemas())));
-    namespace.mount("model", Box::new(ModelProvider::new(model, max_tokens)));
-    namespace.mount("gate", Box::new(gate));
+    // Restore conversation state through the adapter
+    crate::thread_mount::restore_thread_state(&mut adapter, &inbox_root, &thread_id).ok();
 
-    // Restore conversation state from thread directory
+    // Legacy format: restore from raw JSONL if no snapshot exists
     let thread_dir = inbox_root.join("threads").join(&thread_id);
-    if thread_dir.join("context.json").exists() {
-        // New format: restore from snapshot (context.json + ledger.jsonl)
-        ox_inbox::snapshot::restore(
-            &mut namespace,
-            &thread_dir,
-            &ox_inbox::snapshot::PARTICIPATING_MOUNTS,
-        )
-        .ok();
-    } else {
-        // Legacy format: restore from raw JSONL
+    if !thread_dir.join("context.json").exists() {
         let jsonl_path = thread_dir.join(format!("{thread_id}.jsonl"));
         if jsonl_path.exists() {
             if let Ok(content) = std::fs::read_to_string(&jsonl_path) {
@@ -261,7 +282,7 @@ fn agent_worker(
                         continue;
                     }
                     if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
-                        namespace
+                        adapter
                             .write(
                                 &path!("history/append"),
                                 Record::parsed(json_to_value(json)),
@@ -281,7 +302,7 @@ fn agent_worker(
     while let Ok(input) = prompt_rx.recv() {
         // Write user message to history
         let user_json = serde_json::json!({"role": "user", "content": input});
-        if let Err(e) = namespace.write(
+        if let Err(e) = adapter.write(
             &path!("history/append"),
             Record::parsed(json_to_value(user_json)),
         ) {
@@ -306,17 +327,17 @@ fn agent_worker(
             stats: PolicyStats::default(),
         };
 
-        let host_store = HostStore::new(namespace, effects);
+        let host_store = HostStore::new(adapter, effects);
         let (returned_store, result) = module.run(host_store);
 
-        namespace = returned_store.backend;
+        adapter = returned_store.backend;
         client = returned_store.effects.client;
         tools = returned_store.effects.tools;
         let stats = returned_store.effects.stats.clone();
         policy = returned_store.effects.policy;
 
         // Persist conversation state for restart recovery
-        save_thread_state(&mut namespace, &inbox_root, &thread_id, &title, &event_tx);
+        save_thread_state(&mut adapter, &inbox_root, &thread_id, &title, &event_tx);
 
         event_tx
             .send(AppEvent::PolicyStats {
@@ -336,12 +357,15 @@ fn agent_worker(
             })
             .ok();
     }
+
+    // Unmount thread stores on worker exit
+    rt_handle.block_on(crate::thread_mount::unmount_thread(&broker, &thread_id));
 }
 
-/// Save the conversation state from the namespace to the thread directory.
+/// Save the conversation state from the store to the thread directory.
 /// Sends a `SaveComplete` event so the main thread can write-through to SQLite.
 fn save_thread_state(
-    namespace: &mut Namespace,
+    store: &mut dyn structfs_core_store::Store,
     inbox_root: &std::path::Path,
     thread_id: &str,
     title: &str,
@@ -354,7 +378,7 @@ fn save_thread_state(
         .unwrap_or(0);
 
     let result = ox_inbox::snapshot::save(
-        namespace,
+        store,
         &thread_dir,
         thread_id,
         title,

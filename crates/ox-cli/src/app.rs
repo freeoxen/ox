@@ -277,6 +277,7 @@ pub struct App {
 
 impl App {
     /// Create the App, initializing the AgentPool.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         provider: String,
         model: String,
@@ -285,6 +286,8 @@ impl App {
         workspace: PathBuf,
         inbox_root: PathBuf,
         no_policy: bool,
+        broker: ox_broker::BrokerStore,
+        rt_handle: tokio::runtime::Handle,
     ) -> Result<Self, String> {
         let (event_tx, event_rx) = mpsc::channel::<AppEvent>();
         let (control_tx, control_rx) = mpsc::channel::<AppControl>();
@@ -302,6 +305,8 @@ impl App {
             inbox_root,
             event_tx,
             control_tx,
+            broker,
+            rt_handle,
         )?;
 
         Ok(Self {
@@ -886,6 +891,7 @@ impl App {
 // ---------------------------------------------------------------------------
 
 /// Read ProviderConfig from a GateStore before it's mounted in the namespace.
+#[allow(dead_code)]
 pub(crate) fn read_provider_config_from_gate(
     gate: &mut GateStore,
     account_name: &str,
@@ -908,6 +914,7 @@ pub(crate) fn read_provider_config_from_gate(
 }
 
 /// Read API key from a GateStore before it's mounted.
+#[allow(dead_code)]
 pub(crate) fn read_account_key(gate: &mut GateStore, account_name: &str) -> Result<String, String> {
     let key_path = ox_kernel::Path::from_components(vec![
         "accounts".to_string(),
