@@ -30,6 +30,12 @@ impl ApprovalStore {
     }
 }
 
+impl Default for ApprovalStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Reader for ApprovalStore {
     fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
         let path_str = from.to_string();

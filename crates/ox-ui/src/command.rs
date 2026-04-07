@@ -69,6 +69,12 @@ pub struct TxnLog {
     seen: VecDeque<String>,
 }
 
+impl Default for TxnLog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TxnLog {
     pub fn new() -> Self {
         TxnLog {

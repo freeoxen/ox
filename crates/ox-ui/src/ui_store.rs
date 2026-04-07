@@ -176,8 +176,12 @@ impl Default for UiStore {
 
 impl Reader for UiStore {
     fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
-        let key = from.to_string();
-        let value = match key.as_str() {
+        let key = if from.is_empty() {
+            ""
+        } else {
+            from.components[0].as_str()
+        };
+        let value = match key {
             "" => self.all_fields_map(),
             "screen" => self.screen_value(),
             "active_thread" => self.active_thread_value(),
@@ -202,7 +206,11 @@ impl Reader for UiStore {
 
 impl Writer for UiStore {
     fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
-        let command_name = to.to_string();
+        let command = if to.is_empty() {
+            ""
+        } else {
+            to.components[0].as_str()
+        };
         let value = data
             .as_value()
             .ok_or_else(|| StoreError::store("ui", "write", "write data must contain a value"))?;
@@ -217,7 +225,7 @@ impl Writer for UiStore {
             }
         }
 
-        match command_name.as_str() {
+        match command {
             "select_next" => {
                 if self.selected_row + 1 < self.row_count {
                     self.selected_row += 1;
