@@ -13,18 +13,127 @@ TUI with broker writes. CliEffects writes streaming events to
 handle_event, drain_agent_events — all deleted.
 
 After this change, the broker is the sole communication path between agent
-workers and the TUI. No mpsc channels remain for agent data.
+workers and the TUI. No mpsc channels remain — not for agent data, not for
+approval flow. The `control_tx`/`control_rx` channels are also eliminated
+by routing approval through the broker with deferred replies.
+
+## Deferred Replies (Broker Enhancement)
+
+The broker's server loop currently wraps synchronous `Reader`/`Writer`
+stores: call `store.write()`, send the result immediately. For the
+approval flow, a store's write needs to return a future that resolves
+later — when a second write from a different client provides the answer.
+
+### Async Reader/Writer Traits
+
+```rust
+/// Async version of Reader. Returns a future that resolves when the
+/// read result is available.
+pub trait AsyncReader: Send + 'static {
+    fn read(
+        &mut self,
+        from: &Path,
+    ) -> impl Future<Output = Result<Option<Record>, StoreError>> + Send;
+}
+
+/// Async version of Writer. Returns a future that resolves when the
+/// write result is available. The future may resolve immediately (like
+/// a normal sync write) or defer until external input arrives (like
+/// approval/request waiting for approval/response).
+pub trait AsyncWriter: Send + 'static {
+    fn write(
+        &mut self,
+        to: &Path,
+        data: Record,
+    ) -> impl Future<Output = Result<Path, StoreError>> + Send;
+}
+```
+
+### Async Server Loop
+
+The async server loop spawns each request as a separate task so that
+a deferred write doesn't block the store from receiving other requests.
+The store uses `Arc<Mutex<Self>>` for interior mutability.
+
+```rust
+async fn async_server_loop<S: AsyncReader + AsyncWriter>(
+    store: Arc<Mutex<S>>,
+    mut rx: tokio::sync::mpsc::Receiver<Request>,
+) {
+    while let Some(request) = rx.recv().await {
+        let store = store.clone();
+        tokio::spawn(async move {
+            match request {
+                Request::Read { path, reply } => {
+                    let result = store.lock().await.read(&path).await;
+                    let _ = reply.send(result);
+                }
+                Request::Write { path, data, reply } => {
+                    let result = store.lock().await.write(&path, data).await;
+                    let _ = reply.send(result);
+                }
+            }
+        });
+    }
+}
+```
+
+### BrokerStore::mount_async
+
+```rust
+pub async fn mount_async<S: AsyncReader + AsyncWriter>(
+    &self,
+    prefix: Path,
+    store: S,
+) -> JoinHandle<()>
+```
+
+Mounts a store whose reads and writes are async. Used for stores that
+need deferred replies (ApprovalStore). Regular sync stores use `mount()`
+as before — the existing sync server loop is unchanged.
+
+### ApprovalStore with Deferred Write
+
+ApprovalStore implements `AsyncReader + AsyncWriter`. Its write to
+`request` returns a future that doesn't resolve until a separate write
+to `response` arrives. Internally it uses a `tokio::sync::oneshot`
+channel shared between the two write calls.
+
+```
+Agent writes approval/request:
+  → ApprovalStore.write("request") stores request data, creates oneshot
+  → Returns future that awaits oneshot receiver
+  → Agent's client.write() blocks (waiting on the future)
+
+TUI reads approval/pending:
+  → ApprovalStore.read("pending") returns the stored request data
+
+TUI writes approval/response:
+  → ApprovalStore.write("response") sends decision on oneshot sender
+  → Request future resolves with the decision
+  → Agent's blocked write returns
+
+Timeout:
+  → Client-side timeout fires (broker default 30s, configurable)
+  → Agent treats timeout as denial
+```
+
+The async server loop spawns the request write and response write as
+separate tasks, so the response can arrive while the request future
+is still pending. The mutex serializes access to the store state, but
+each task only holds the lock briefly (to read/write state and
+create/resolve the oneshot).
 
 ## Write Side: CliEffects
 
 CliEffects currently holds `event_tx: mpsc::Sender<AppEvent>` and
-`control_tx: mpsc::Sender<AppControl>`. Replace `event_tx` with a
-`ClientHandle` + `tokio::runtime::Handle` for broker writes.
+`control_tx: mpsc::Sender<AppControl>`. Both are replaced by broker
+writes through a `ClientHandle` + `tokio::runtime::Handle`.
 
-`control_tx` stays — the approval flow uses it to send permission
-requests with a response channel. This is a fundamentally different
-pattern (request-response with blocking) that doesn't map to broker
-writes.
+For streaming events: write to `history/turn/*` through the scoped client.
+For approval: write to `approval/request` through the scoped client —
+the async ApprovalStore defers the reply until the TUI writes
+`approval/response`, so the agent's write blocks until the user decides.
 
 ### Event Mapping
 
@@ -50,9 +159,11 @@ resolves to `threads/{id}/inbox/threads/{id}` which is wrong).
 
 Remove:
 - `event_tx: mpsc::Sender<AppEvent>` — replaced by broker writes
+- `control_tx: mpsc::Sender<AppControl>` — replaced by approval through broker
 
 Add:
 - `broker_client: ClientHandle` — unscoped, for inbox writes
+- `scoped_client: ClientHandle` — scoped to thread, for turn + approval writes
 - `rt_handle: tokio::runtime::Handle` — for block_on
 
 The scoped adapter is not inside CliEffects — it's the HostStore's backend.
@@ -165,8 +276,11 @@ When `screen == "inbox"`:
 
 ### App Fields
 - `event_rx: mpsc::Receiver<AppEvent>` — gone
+- `control_rx: mpsc::Receiver<AppControl>` — gone (approval through broker)
 - `thread_views: HashMap<String, ThreadView>` — gone
 - `streaming_turns: HashMap<String, StreamingTurn>` — gone
+- `pending_approval: Option<ApprovalState>` — gone (read from broker)
+- `pending_customize: Option<CustomizeState>` — gone (read from broker)
 
 ### App Methods
 - `handle_event()` — gone (130 lines)
@@ -174,25 +288,31 @@ When `screen == "inbox"`:
 - `update_streaming()` — gone
 
 ### AgentPool / agent_worker
-- `event_tx: mpsc::Sender<AppEvent>` parameter — removed from AgentPool,
-  spawn_worker, agent_worker
+- `event_tx: mpsc::Sender<AppEvent>` parameter — removed
+- `control_tx: mpsc::Sender<AppControl>` parameter — removed
+
+### Types
+- `AppControl` enum — gone
+- `ApprovalResponse` enum — replaced by broker Value writes
 
 ### ViewState Fields
 - `thread_views: &'a HashMap<String, ThreadView>` — removed
 - `committed_messages: Vec<ChatMessage>` — renamed to `messages`
+- `pending_approval: &'a Option<ApprovalState>` — replaced by broker read
+- `pending_customize: &'a Option<CustomizeState>` — replaced by broker read
 
 ### Event Loop
-- `app.drain_agent_events()` call — removed (was step 1 of loop)
+- `app.drain_agent_events()` call — removed
+- `drain_control_rx()` — removed (approval read from broker via ViewState)
 
 ## What Stays
 
-- `control_tx` / `control_rx` / `AppControl` — approval flow is
-  request-response with a blocking channel, structurally different
-  from event streaming
-- `ChatMessage` enum — still used as the rendering type, built from
-  broker data by parse_chat_messages
-- `InboxThread` struct — still used for inbox display
-- `parse_chat_messages()` — still converts broker Values to ChatMessage
+- `ChatMessage` enum — rendering type, built from broker data
+- `InboxThread` struct — inbox display
+- `parse_chat_messages()` — converts broker Values to ChatMessage
+- `ApprovalState` / `CustomizeState` — still the rendering types for
+  dialogs, but now built from broker data in fetch_view_state instead
+  of stored in App
 
 ## App After This Change
 
@@ -206,16 +326,14 @@ pub struct App {
     pub cursor: usize,
     pub model: String,
     pub provider: String,
-    pub control_rx: mpsc::Receiver<AppControl>,
     pub input_history: Vec<String>,
     history_cursor: usize,
     input_draft: String,
-    pub pending_approval: Option<ApprovalState>,
-    pub pending_customize: Option<CustomizeState>,
 }
 ```
 
-No caches. No parallel state. No dual-writes.
+11 fields. No mpsc channels. No caches. No dialog state. No parallel
+state. No dual-writes.
 
 ## ViewState After This Change
 
@@ -242,18 +360,31 @@ pub struct ViewState<'a> {
     pub tool_status: Option<(String, String)>,
     pub turn_tokens: (u32, u32),
 
+    // Approval (from broker)
+    pub approval_pending: Option<ApprovalRequest>,
+
     // From App (not yet in broker)
     pub search: &'a SearchState,
     pub input_history: &'a [String],
     pub model: &'a str,
     pub provider: &'a str,
-    pub pending_approval: &'a Option<ApprovalState>,
-    pub pending_customize: &'a Option<CustomizeState>,
     pub input_mode: &'a InputMode,
 }
 ```
 
 ## Testing
+
+### Async store support (broker)
+Test that `mount_async` works: mount an async store, verify reads and
+writes resolve correctly. Test deferred write: mount a store whose
+write returns a future that resolves after a second write. Verify
+the first client blocks and the second client's write unblocks it.
+
+### ApprovalStore async integration
+Mount ApprovalStore via `mount_async`. From one client, write
+`approval/request`. From another client (in a separate task), write
+`approval/response`. Verify the first write resolves with the
+response data. Test timeout behavior.
 
 ### HistoryProvider turn integration (already tested)
 The existing 16 tests in ox-history cover turn/streaming, turn/thinking,
@@ -268,11 +399,11 @@ is true.
 ### CliEffects broker writes
 Unit test: create CliEffects with a test ClientHandle, call
 emit_event/complete, verify broker received the expected writes.
-(May be difficult to test in isolation — the CliEffects is tightly
-coupled to HTTP transport. Integration testing via the full
-agent_worker flow is more practical.)
+Integration testing via the full agent_worker flow is more practical
+for transport-coupled code.
 
 ### End-to-end
 Existing ox-cli tests pass (they don't exercise the agent loop).
 Manual testing: run ox, compose a thread, verify streaming text
-appears, verify commit produces stable messages on reload.
+appears, tool approval dialog works through broker, commit produces
+stable messages on reload.
