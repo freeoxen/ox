@@ -1,18 +1,19 @@
-use crate::app::{App, ChatMessage};
+use crate::app::ChatMessage;
 use crate::theme::Theme;
+use crate::view_state::ViewState;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 /// Render the inbox thread list into `area`.
-/// Uses `app.cached_threads` (refreshed once per frame by draw()).
-pub fn draw_inbox(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
-    let threads = &app.cached_threads;
+/// Uses `vs.inbox_threads` (fetched from broker each frame).
+pub fn draw_inbox(frame: &mut Frame, vs: &ViewState, theme: &Theme, area: Rect) {
+    let threads = &vs.inbox_threads;
 
     if threads.is_empty() {
         let empty = Paragraph::new(Line::from(Span::styled(
-            if app.search.is_active() {
+            if vs.search.is_active() {
                 "  No threads match the current filter"
             } else {
                 "  No threads — press i to compose"
@@ -26,12 +27,13 @@ pub fn draw_inbox(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
     let row_height = 2usize; // 2 lines per thread row
     let visible_rows = (area.height as usize) / row_height;
 
+    // Use scroll as inbox scroll offset (unified scroll)
+    let inbox_scroll = vs.scroll as usize;
+
     let mut lines: Vec<Line> = Vec::new();
-    let end = (app.inbox_scroll + visible_rows).min(threads.len());
-    for (i, (_, title, state, labels, token_count, last_seq)) in
-        threads.iter().enumerate().take(end).skip(app.inbox_scroll)
-    {
-        let is_selected = i == app.selected_row;
+    let end = (inbox_scroll + visible_rows).min(threads.len());
+    for (i, thread) in threads.iter().enumerate().take(end).skip(inbox_scroll) {
+        let is_selected = i == vs.selected_row;
         let base_style = if is_selected {
             theme.selected_bg
         } else {
@@ -39,17 +41,17 @@ pub fn draw_inbox(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
         };
 
         // Line 1: state label + title
-        let (dot, state_label) = state_indicator(state, theme);
+        let (dot, state_label) = state_indicator(&thread.thread_state, theme);
         let max_title = (area.width as usize).saturating_sub(state_label.len() + 6);
-        let title_text = if title.len() > max_title {
+        let title_text = if thread.title.len() > max_title {
             format!(
                 "{}...",
-                &title[..max_title.saturating_sub(3).min(title.len())]
+                &thread.title[..max_title.saturating_sub(3).min(thread.title.len())]
             )
         } else {
-            title.clone()
+            thread.title.clone()
         };
-        let title_style = if state == "completed" {
+        let title_style = if thread.thread_state == "completed" {
             theme.tool_meta
         } else {
             theme.user_text
@@ -64,15 +66,14 @@ pub fn draw_inbox(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
 
         // Line 2: labels + activity + tokens (from in-memory ThreadView for live data)
         let mut meta_spans: Vec<Span> = vec![Span::styled("    ", base_style)];
-        for label in labels {
+        for label in &thread.labels {
             meta_spans.push(Span::styled(
                 format!("[{label}] "),
                 theme.tool_meta.patch(base_style),
             ));
         }
 
-        let thread_id = &threads[i].0;
-        if let Some(view) = app.thread_views.get(thread_id) {
+        if let Some(view) = vs.thread_views.get(&thread.id) {
             // Activity: show what the agent is currently doing
             if view.thinking {
                 // Find the last tool call or show "streaming..."
@@ -108,17 +109,17 @@ pub fn draw_inbox(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
                 ));
             }
         } else {
-            // Fallback to SQLite data for threads without a live view
-            if *token_count > 0 {
-                let tok_str = if *token_count >= 1000 {
-                    format!("{:.1}k tok", *token_count as f64 / 1000.0)
+            // Fallback to broker data for threads without a live view
+            if thread.token_count > 0 {
+                let tok_str = if thread.token_count >= 1000 {
+                    format!("{:.1}k tok", thread.token_count as f64 / 1000.0)
                 } else {
-                    format!("{token_count} tok")
+                    format!("{} tok", thread.token_count)
                 };
                 meta_spans.push(Span::styled(tok_str, theme.tool_meta.patch(base_style)));
             }
-            if *last_seq >= 0 {
-                let msg_count = *last_seq + 1;
+            if thread.last_seq >= 0 {
+                let msg_count = thread.last_seq + 1;
                 meta_spans.push(Span::styled(
                     format!(" {msg_count} msgs"),
                     theme.tool_meta.patch(base_style),
@@ -133,15 +134,15 @@ pub fn draw_inbox(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
 }
 
 /// Render the search/filter bar.
-pub fn draw_filter_bar(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
+pub fn draw_filter_bar(frame: &mut Frame, vs: &ViewState, theme: &Theme, area: Rect) {
     let mut spans = vec![Span::styled("/ ", theme.tool_name)];
-    for (i, chip) in app.search.chips.iter().enumerate() {
+    for (i, chip) in vs.search.chips.iter().enumerate() {
         spans.push(Span::styled(
             format!("[{}: {}] ", i + 1, chip),
             theme.tool_meta,
         ));
     }
-    spans.push(Span::styled(&app.search.live_query, theme.user_text));
+    spans.push(Span::styled(&vs.search.live_query, theme.user_text));
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 

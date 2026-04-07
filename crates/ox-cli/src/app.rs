@@ -65,6 +65,7 @@ impl SearchState {
     }
 
     /// Check whether a thread (title, labels, state) matches all chips + live query.
+    #[allow(dead_code)]
     pub fn matches(&self, title: &str, labels: &[String], state: &str) -> bool {
         let hay = format!(
             "{} {} {}",
@@ -252,6 +253,10 @@ pub struct StreamingTurn {
 }
 
 /// TUI-side application state — multi-thread aware.
+///
+/// Draw functions no longer read from App directly; they consume a `ViewState`
+/// snapshot built from the broker + App borrows each frame. App retains only
+/// the fields that are mutated by event handling or needed for agent control.
 pub struct App {
     pub pool: AgentPool,
     pub active_thread: Option<String>, // None = inbox view
@@ -260,19 +265,9 @@ pub struct App {
     // Modal mode
     pub mode: InputMode,
     pub search: SearchState,
-    pub selected_row: usize,
-    pub inbox_scroll: usize,
-    /// Cached visible threads — refreshed once per frame via refresh_visible_threads().
-    pub cached_threads: Vec<(String, String, String, Vec<String>, i64, i64)>,
     // Shared UI state
     pub input: String,
     pub cursor: usize,
-    pub scroll: u16,
-    /// Content height from last draw_thread, used to set scroll_max.
-    pub last_content_height: usize,
-    /// Viewport height from last draw, used for scroll_max calculation.
-    pub last_viewport_height: usize,
-    pub should_quit: bool,
     pub model: String,
     pub provider: String,
     pub event_rx: mpsc::Receiver<AppEvent>,
@@ -327,15 +322,8 @@ impl App {
             streaming_turns: HashMap::new(),
             mode: InputMode::default(),
             search: SearchState::default(),
-            selected_row: 0,
-            inbox_scroll: 0,
-            cached_threads: Vec::new(),
             input: String::new(),
             cursor: 0,
-            scroll: 0,
-            last_content_height: 0,
-            last_viewport_height: 0,
-            should_quit: false,
             model,
             provider,
             event_rx,
@@ -351,13 +339,10 @@ impl App {
     // Mode transitions (enter_compose, enter_reply, enter_search, exit_insert,
     // go_to_inbox) are now handled by UiStore commands through the broker.
 
-    /// Send the current input, context-dependent on mode.
-    ///
-    /// - Compose: create a new thread, stay in inbox, back to Normal.
-    /// - Reply: send to the active thread, back to Normal.
-    /// - Search: save chip, stay in Search insert.
-    /// - Normal with text: infer (reply if in thread, compose if inbox).
-    pub fn send_input(&mut self) {
+    /// Send input with explicit text (from ViewState), context-dependent on mode.
+    pub fn send_input_with_text(&mut self, text: String) {
+        // Temporarily set self.input so do_compose/do_reply can read it
+        self.input = text;
         match self.mode.clone() {
             InputMode::Insert(InsertContext::Search) => {
                 self.search.save_chip();
@@ -401,7 +386,7 @@ impl App {
                 view.thinking = true;
                 self.thread_views.insert(tid.clone(), view);
                 self.open_thread(tid.clone());
-                self.scroll = 0;
+                // scroll reset handled by broker
                 self.update_thread_state(&tid, "running");
                 self.pool.send_prompt(&tid, input).ok();
             }
@@ -426,142 +411,10 @@ impl App {
             let view = self.thread_views.entry(tid.clone()).or_default();
             view.messages.push(ChatMessage::User(input.clone()));
             view.thinking = true;
-            self.scroll = 0;
+            // scroll reset handled by broker
             self.update_thread_state(&tid, "running");
             self.pool.send_prompt(&tid, input).ok();
         }
-    }
-
-    /// Refresh the cached visible threads from ox-inbox. Call once per frame.
-    pub fn refresh_visible_threads(&mut self) {
-        self.cached_threads = self.get_visible_threads();
-        // Clamp selected_row
-        if !self.cached_threads.is_empty() {
-            self.selected_row = self.selected_row.min(self.cached_threads.len() - 1);
-        } else {
-            self.selected_row = 0;
-        }
-    }
-
-    /// Ensure selected_row is visible by adjusting inbox_scroll.
-    pub fn ensure_selected_visible(&mut self, viewport_height: usize) {
-        let row_height = 2; // 2 lines per inbox row
-        let visible_rows = viewport_height / row_height;
-        if visible_rows == 0 {
-            return;
-        }
-        if self.selected_row < self.inbox_scroll {
-            self.inbox_scroll = self.selected_row;
-        } else if self.selected_row >= self.inbox_scroll + visible_rows {
-            self.inbox_scroll = self.selected_row - visible_rows + 1;
-        }
-    }
-
-    /// Open the thread at the currently selected inbox row.
-    pub fn open_selected_thread(&mut self) {
-        if let Some((id, ..)) = self.cached_threads.get(self.selected_row) {
-            let id = id.clone();
-            self.thread_views.entry(id.clone()).or_default();
-            self.open_thread(id);
-        }
-    }
-
-    /// Mark the selected inbox thread as done.
-    pub fn archive_selected_thread(&mut self) {
-        if let Some((id, ..)) = self.cached_threads.get(self.selected_row) {
-            let id = id.clone();
-            let update_path =
-                ox_kernel::Path::from_components(vec!["threads".to_string(), id.clone()]);
-            let mut map = std::collections::BTreeMap::new();
-            map.insert(
-                "inbox_state".to_string(),
-                structfs_core_store::Value::String("done".to_string()),
-            );
-            self.pool
-                .inbox()
-                .write(
-                    &update_path,
-                    structfs_core_store::Record::parsed(structfs_core_store::Value::Map(map)),
-                )
-                .ok();
-            // Refresh and clamp
-            self.refresh_visible_threads();
-        }
-    }
-
-    /// Get visible threads filtered by search, sorted by state priority.
-    ///
-    /// Returns `(id, title, state, labels, token_count)` tuples.
-    pub fn get_visible_threads(&mut self) -> Vec<(String, String, String, Vec<String>, i64, i64)> {
-        let threads_path = structfs_core_store::path!("threads");
-        let raw = match self.pool.inbox().read(&threads_path) {
-            Ok(Some(record)) => record,
-            _ => return Vec::new(),
-        };
-        let value = match raw.as_value() {
-            Some(v) => v.clone(),
-            None => return Vec::new(),
-        };
-        let arr = match value {
-            structfs_core_store::Value::Array(a) => a,
-            _ => return Vec::new(),
-        };
-
-        let mut result: Vec<(String, String, String, Vec<String>, i64, i64)> = Vec::new();
-        for item in &arr {
-            if let structfs_core_store::Value::Map(map) = item {
-                let id = match map.get("id") {
-                    Some(structfs_core_store::Value::String(s)) => s.clone(),
-                    _ => continue,
-                };
-                let title = match map.get("title") {
-                    Some(structfs_core_store::Value::String(s)) => s.clone(),
-                    _ => String::new(),
-                };
-                let state = match map.get("thread_state") {
-                    Some(structfs_core_store::Value::String(s)) => s.clone(),
-                    _ => "running".to_string(),
-                };
-                let labels = match map.get("labels") {
-                    Some(structfs_core_store::Value::Array(arr)) => arr
-                        .iter()
-                        .filter_map(|v| {
-                            if let structfs_core_store::Value::String(s) = v {
-                                Some(s.clone())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect(),
-                    _ => Vec::new(),
-                };
-                let token_count = match map.get("token_count") {
-                    Some(structfs_core_store::Value::Integer(n)) => *n,
-                    _ => 0,
-                };
-                let last_seq = match map.get("last_seq") {
-                    Some(structfs_core_store::Value::Integer(n)) => *n,
-                    _ => -1,
-                };
-                if self.search.matches(&title, &labels, &state) {
-                    result.push((id, title, state, labels, token_count, last_seq));
-                }
-            }
-        }
-
-        // Sort by state priority: blocked > errored > waiting > running > completed
-        fn state_priority(s: &str) -> u8 {
-            match s {
-                "blocked_on_approval" => 0,
-                "errored" => 1,
-                "waiting_for_input" => 2,
-                "running" => 3,
-                "completed" => 4,
-                _ => 5,
-            }
-        }
-        result.sort_by_key(|(_, _, state, _, _, _)| state_priority(state));
-        result
     }
 
     /// Navigate input history up (older).
@@ -601,7 +454,7 @@ impl App {
             } => {
                 let view = self.thread_views.entry(thread_id.clone()).or_default();
                 if self.active_thread.as_ref() == Some(thread_id) {
-                    self.scroll = 0;
+                    // scroll reset handled by broker
                 }
                 match event {
                     AgentEvent::TextDelta(text) => {
@@ -932,7 +785,11 @@ impl App {
                     }
                 }
             }
-            AppEvent::Usage { thread_id, input_tokens, output_tokens } => {
+            AppEvent::Usage {
+                thread_id,
+                input_tokens,
+                output_tokens,
+            } => {
                 let st = self.streaming_turns.entry(thread_id.clone()).or_default();
                 st.tokens_in += input_tokens;
                 st.tokens_out += output_tokens;

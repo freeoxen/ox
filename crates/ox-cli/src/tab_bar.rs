@@ -1,15 +1,15 @@
-use crate::app::App;
 use crate::theme::Theme;
+use crate::view_state::ViewState;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 /// Render the title/header bar into `area`.
-pub fn draw_tabs(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
-    let spans = if let Some(ref tid) = app.active_thread {
+pub fn draw_tabs(frame: &mut Frame, vs: &ViewState, theme: &Theme, area: Rect) {
+    let spans = if let Some(ref tid) = vs.active_thread {
         // Thread view — show thread title
-        let title = app
+        let title = vs
             .thread_views
             .get(tid)
             .and_then(|v| v.messages.first())
@@ -27,11 +27,11 @@ pub fn draw_tabs(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
         ]
     } else {
         // Inbox view
-        let count = app.cached_threads.len();
+        let count = vs.inbox_threads.len();
         vec![
             Span::styled(" ox ", theme.title_badge),
             Span::styled(format!(" inbox ({count}) "), theme.title_info),
-            Span::styled(format!(" {} ({}) ", app.model, app.provider), theme.status),
+            Span::styled(format!(" {} ({}) ", vs.model, vs.provider), theme.status),
         ]
     };
 

@@ -7,7 +7,6 @@ mod key_encode;
 mod policy;
 #[allow(dead_code)]
 mod session;
-mod state_sync;
 mod tab_bar;
 mod theme;
 pub(crate) mod thread_mount;

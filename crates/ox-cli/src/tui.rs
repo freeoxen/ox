@@ -1,11 +1,15 @@
-use crate::app::{App, AppControl, ApprovalResponse, ApprovalState, InputMode, InsertContext};
+use crate::app::{
+    App, AppControl, ApprovalResponse, ApprovalState, InputMode, InsertContext, ThreadView,
+};
 use crate::theme::Theme;
+use crate::view_state::{ViewState, fetch_view_state};
 use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use std::time::Duration;
+use structfs_core_store::Writer as StructWriter;
 
 /// Async event loop that dispatches through the BrokerStore.
 ///
@@ -21,29 +25,138 @@ pub async fn run_async(
     terminal: &mut ratatui::DefaultTerminal,
 ) -> std::io::Result<()> {
     use crate::key_encode::encode_key;
-    use crate::state_sync::{sync_app_to_ui, sync_ui_to_app};
     use std::collections::BTreeMap;
     use structfs_core_store::{Record, Value, path};
 
     loop {
-        // 1. Sync broker state → App fields, check for pending actions
-        if let Some(action) = sync_ui_to_app(client, app).await {
+        // 1. Drain agent events (updates thread_views and streaming_turns)
+        app.drain_agent_events();
+
+        // 2. Permission requests
+        if app.pending_approval.is_none() && app.pending_customize.is_none() {
+            if let Ok(AppControl::PermissionRequest {
+                thread_id,
+                tool,
+                input_preview,
+                respond,
+            }) = app.control_rx.try_recv()
+            {
+                app.update_thread_state(&thread_id, "blocked_on_approval");
+                app.open_thread(thread_id.clone());
+                // Sync the open to broker so ViewState picks it up
+                let mut cmd = BTreeMap::new();
+                cmd.insert("thread_id".to_string(), Value::String(thread_id.clone()));
+                let _ = client
+                    .write(&path!("ui/open"), Record::parsed(Value::Map(cmd)))
+                    .await;
+                app.pending_approval = Some(ApprovalState {
+                    thread_id,
+                    tool,
+                    input_preview,
+                    selected: 0,
+                    respond,
+                });
+            }
+        }
+
+        // 3. Fetch ViewState, draw, extract owned data needed after drop.
+        //
+        // ViewState borrows from App so we scope it tightly: draw, then
+        // extract the owned fields we need for pending-action handling and
+        // event dispatch, then drop the borrow.
+        let pending_action: Option<String>;
+        let input_text: String;
+        let screen_owned: String;
+        let has_active_thread: bool;
+        let selected_thread_id: Option<String>;
+        let search_active: bool;
+        // For text editing fallback
+        let cursor_pos: usize;
+        let input_len: usize;
+
+        let mut content_height: Option<usize> = None;
+        let mut viewport_height: usize = 0;
+        {
+            let vs = fetch_view_state(client, app).await;
+
+            // Set row_count in UiStore (for inbox navigation bounds)
+            let row_count = vs.inbox_threads.len() as i64;
+            let mut rc = BTreeMap::new();
+            rc.insert("count".to_string(), Value::Integer(row_count));
+            let _ = client
+                .write(&path!("ui/set_row_count"), Record::parsed(Value::Map(rc)))
+                .await;
+
+            // Draw
+            terminal.draw(|frame| {
+                let (ch, vh) = draw(frame, &vs, theme);
+                content_height = ch;
+                viewport_height = vh;
+            })?;
+
+            // Update scroll_max and viewport_height in broker (after draw)
+            if vs.active_thread.is_some() && viewport_height > 0 {
+                let scroll_max = content_height.unwrap_or(0).saturating_sub(viewport_height) as i64;
+                let mut sm = BTreeMap::new();
+                sm.insert("max".to_string(), Value::Integer(scroll_max.max(0)));
+                let _ = client
+                    .write(&path!("ui/set_scroll_max"), Record::parsed(Value::Map(sm)))
+                    .await;
+
+                let mut vh = BTreeMap::new();
+                vh.insert("height".to_string(), Value::Integer(viewport_height as i64));
+                let _ = client
+                    .write(
+                        &path!("ui/set_viewport_height"),
+                        Record::parsed(Value::Map(vh)),
+                    )
+                    .await;
+            }
+
+            // Extract owned copies of data needed after vs is dropped
+            pending_action = vs.pending_action.clone();
+            input_text = vs.input.clone();
+            screen_owned = vs.screen.clone();
+            has_active_thread = vs.active_thread.is_some();
+            selected_thread_id = vs.inbox_threads.get(vs.selected_row).map(|t| t.id.clone());
+            search_active = vs.search.is_active();
+            cursor_pos = vs.cursor;
+            input_len = vs.input.len();
+        }
+        // vs is now dropped — safe to mutate app
+
+        // 4. Handle pending_action
+        if let Some(action) = &pending_action {
             match action.as_str() {
                 "send_input" => {
-                    app.send_input();
-                    // send_input changes mode → Normal, clears input. Sync back.
-                    sync_app_to_ui(client, app).await;
+                    app.send_input_with_text(input_text.clone());
+                    sync_mode_to_broker(client, app).await;
                 }
-                "quit" => app.should_quit = true,
+                "quit" => return Ok(()),
                 "open_selected" => {
-                    app.open_selected_thread();
-                    // open_selected_thread sets active_thread. Sync back.
-                    sync_app_to_ui(client, app).await;
+                    if let Some(id) = &selected_thread_id {
+                        app.thread_views.entry(id.clone()).or_default();
+                        app.open_thread(id.clone());
+                        let mut cmd = BTreeMap::new();
+                        cmd.insert("thread_id".to_string(), Value::String(id.clone()));
+                        let _ = client
+                            .write(&path!("ui/open"), Record::parsed(Value::Map(cmd)))
+                            .await;
+                    }
                 }
                 "archive_selected" => {
-                    app.archive_selected_thread();
-                    // archive may change selection. Sync back.
-                    sync_app_to_ui(client, app).await;
+                    if let Some(id) = &selected_thread_id {
+                        let update_path = ox_kernel::Path::from_components(vec![
+                            "threads".to_string(),
+                            id.clone(),
+                        ]);
+                        let mut map = BTreeMap::new();
+                        map.insert("inbox_state".to_string(), Value::String("done".to_string()));
+                        app.pool
+                            .inbox()
+                            .write(&update_path, Record::parsed(Value::Map(map)))
+                            .ok();
+                    }
                 }
                 _ => {}
             }
@@ -56,42 +169,7 @@ pub async fn run_async(
                 .await;
         }
 
-        // 2. Sync bounds to UiStore
-        let row_count = app.cached_threads.len() as i64;
-        let mut rc = BTreeMap::new();
-        rc.insert("count".to_string(), Value::Integer(row_count));
-        let _ = client
-            .write(&path!("ui/set_row_count"), Record::parsed(Value::Map(rc)))
-            .await;
-
-        // 3. Draw (draw_thread reports content_height via app.last_content_height)
-        terminal.draw(|frame| draw(frame, app, theme))?;
-
-        // 4. Set scroll_max from rendered content height (after draw)
-        if app.active_thread.is_some() && app.last_viewport_height > 0 {
-            let scroll_max = app
-                .last_content_height
-                .saturating_sub(app.last_viewport_height) as i64;
-            let mut sm = BTreeMap::new();
-            sm.insert("max".to_string(), Value::Integer(scroll_max.max(0)));
-            let _ = client
-                .write(&path!("ui/set_scroll_max"), Record::parsed(Value::Map(sm)))
-                .await;
-
-            let mut vh = BTreeMap::new();
-            vh.insert(
-                "height".to_string(),
-                Value::Integer(app.last_viewport_height as i64),
-            );
-            let _ = client
-                .write(
-                    &path!("ui/set_viewport_height"),
-                    Record::parsed(Value::Map(vh)),
-                )
-                .await;
-        }
-
-        // 4. Poll terminal event (blocking — bridge via block_in_place)
+        // 5. Poll terminal event
         let terminal_event = tokio::task::block_in_place(|| {
             if event::poll(Duration::from_millis(50)).unwrap_or(false) {
                 event::read().ok()
@@ -100,7 +178,7 @@ pub async fn run_async(
             }
         });
 
-        // 5. Handle event
+        // 6. Handle terminal events
         if let Some(evt) = terminal_event {
             match evt {
                 Event::Key(key) => {
@@ -120,14 +198,10 @@ pub async fn run_async(
                             InputMode::Normal => "normal",
                             InputMode::Insert(_) => "insert",
                         };
-                        let screen = if app.active_thread.is_some() {
-                            "thread"
-                        } else {
-                            "inbox"
-                        };
+                        let screen = screen_owned.as_str();
 
                         // Search chip dismissal (1-9 in normal mode, inbox, search active)
-                        if mode == "normal" && screen == "inbox" && app.search.is_active() {
+                        if mode == "normal" && screen == "inbox" && search_active {
                             if let KeyCode::Char(c @ '1'..='9') = key.code {
                                 let idx = (c as u8 - b'1') as usize;
                                 app.search.dismiss_chip(idx);
@@ -155,9 +229,10 @@ pub async fn run_async(
                                         KeyCode::Up => app.history_up(),
                                         KeyCode::Down => app.history_down(),
                                         _ => {
-                                            dispatch_text_edit(
+                                            dispatch_text_edit_owned(
                                                 client,
-                                                app,
+                                                cursor_pos,
+                                                input_len,
                                                 key.modifiers,
                                                 key.code,
                                             )
@@ -189,77 +264,116 @@ pub async fn run_async(
                             }
                         }
                     } else {
-                        dispatch_mouse(client, app, mouse.kind).await;
+                        dispatch_mouse_owned(
+                            client,
+                            has_active_thread,
+                            app.pending_approval.is_some(),
+                            app.pending_customize.is_some(),
+                            mouse.kind,
+                        )
+                        .await;
                     }
                 }
                 _ => {}
             }
         }
+    }
+}
 
-        // 6. Drain agent events (unchanged)
-        while let Ok(event) = app.event_rx.try_recv() {
-            app.handle_event(event);
-        }
+/// Sync App's mode back to broker after send_input changes it.
+async fn sync_mode_to_broker(client: &ox_broker::ClientHandle, app: &App) {
+    use std::collections::BTreeMap;
+    use structfs_core_store::{Record, Value, path};
 
-        // 7. Permission requests (unchanged)
-        if app.pending_approval.is_none() && app.pending_customize.is_none() {
-            if let Ok(AppControl::PermissionRequest {
-                thread_id,
-                tool,
-                input_preview,
-                respond,
-            }) = app.control_rx.try_recv()
-            {
-                app.update_thread_state(&thread_id, "blocked_on_approval");
-                app.open_thread(thread_id.clone());
-                app.pending_approval = Some(ApprovalState {
-                    thread_id,
-                    tool,
-                    input_preview,
-                    selected: 0,
-                    respond,
-                });
-            }
+    match &app.mode {
+        InputMode::Normal => {
+            let _ = client
+                .write(
+                    &path!("ui/exit_insert"),
+                    Record::parsed(Value::Map(BTreeMap::new())),
+                )
+                .await;
         }
+        InputMode::Insert(ctx) => {
+            let ctx_str = match ctx {
+                InsertContext::Compose => "compose",
+                InsertContext::Reply => "reply",
+                InsertContext::Search => "search",
+            };
+            let mut cmd = BTreeMap::new();
+            cmd.insert("context".to_string(), Value::String(ctx_str.to_string()));
+            let _ = client
+                .write(&path!("ui/enter_insert"), Record::parsed(Value::Map(cmd)))
+                .await;
+        }
+    }
 
-        // 8. Quit
-        if app.should_quit {
-            return Ok(());
-        }
+    // Sync input + cursor (send_input clears them)
+    let mut input_cmd = BTreeMap::new();
+    input_cmd.insert("text".to_string(), Value::String(app.input.clone()));
+    input_cmd.insert("cursor".to_string(), Value::Integer(app.cursor as i64));
+    let _ = client
+        .write(
+            &path!("ui/set_input"),
+            Record::parsed(Value::Map(input_cmd)),
+        )
+        .await;
+
+    // Sync active_thread if send_input opened a new thread
+    if let Some(tid) = &app.active_thread {
+        let mut cmd = BTreeMap::new();
+        cmd.insert("thread_id".to_string(), Value::String(tid.clone()));
+        let _ = client
+            .write(&path!("ui/open"), Record::parsed(Value::Map(cmd)))
+            .await;
     }
 }
 
 /// Dispatch text editing commands through UiStore via the broker.
 /// Called when no InputStore binding matches in insert mode.
-async fn dispatch_text_edit(
+/// Takes owned cursor/input data extracted from ViewState.
+async fn dispatch_text_edit_owned(
     client: &ox_broker::ClientHandle,
-    app: &App,
+    cursor: usize,
+    input_len: usize,
     modifiers: KeyModifiers,
     code: KeyCode,
 ) {
     use std::collections::BTreeMap;
     use structfs_core_store::{Record, Value, path};
 
-    let is_search = matches!(app.mode, InputMode::Insert(InsertContext::Search));
-
     match (modifiers, code) {
-        (_, KeyCode::Char(c)) if !is_search => {
+        (KeyModifiers::CONTROL, KeyCode::Char('a')) => {
+            let mut cmd = BTreeMap::new();
+            cmd.insert("cursor".to_string(), Value::Integer(0));
+            let _ = client
+                .write(&path!("ui/set_input"), Record::parsed(Value::Map(cmd)))
+                .await;
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('e')) => {
+            let mut cmd = BTreeMap::new();
+            cmd.insert("cursor".to_string(), Value::Integer(input_len as i64));
+            let _ = client
+                .write(&path!("ui/set_input"), Record::parsed(Value::Map(cmd)))
+                .await;
+        }
+        (_, KeyCode::Char(c)) => {
             let mut cmd = BTreeMap::new();
             cmd.insert("char".to_string(), Value::String(c.to_string()));
-            cmd.insert("at".to_string(), Value::Integer(app.cursor as i64));
+            cmd.insert("at".to_string(), Value::Integer(cursor as i64));
             let _ = client
                 .write(&path!("ui/insert_char"), Record::parsed(Value::Map(cmd)))
                 .await;
         }
-        (_, KeyCode::Enter) if !is_search => {
+        (_, KeyCode::Enter) => {
             let mut cmd = BTreeMap::new();
             cmd.insert("char".to_string(), Value::String("\n".to_string()));
-            cmd.insert("at".to_string(), Value::Integer(app.cursor as i64));
+            cmd.insert("at".to_string(), Value::Integer(cursor as i64));
             let _ = client
                 .write(&path!("ui/insert_char"), Record::parsed(Value::Map(cmd)))
                 .await;
         }
-        (_, KeyCode::Backspace) if !is_search => {
+        (_, KeyCode::Backspace) => {
             let _ = client
                 .write(
                     &path!("ui/delete_char"),
@@ -267,56 +381,45 @@ async fn dispatch_text_edit(
                 )
                 .await;
         }
-        (_, KeyCode::Left) if !is_search => {
-            let pos = app.cursor.saturating_sub(1);
+        (_, KeyCode::Left) => {
+            let pos = cursor.saturating_sub(1);
             let mut cmd = BTreeMap::new();
             cmd.insert("cursor".to_string(), Value::Integer(pos as i64));
             let _ = client
                 .write(&path!("ui/set_input"), Record::parsed(Value::Map(cmd)))
                 .await;
         }
-        (_, KeyCode::Right) if !is_search => {
-            let pos = (app.cursor + 1).min(app.input.len());
+        (_, KeyCode::Right) => {
+            let pos = (cursor + 1).min(input_len);
             let mut cmd = BTreeMap::new();
             cmd.insert("cursor".to_string(), Value::Integer(pos as i64));
             let _ = client
                 .write(&path!("ui/set_input"), Record::parsed(Value::Map(cmd)))
                 .await;
         }
-        (KeyModifiers::CONTROL, KeyCode::Char('a')) if !is_search => {
-            let mut cmd = BTreeMap::new();
-            cmd.insert("cursor".to_string(), Value::Integer(0));
-            let _ = client
-                .write(&path!("ui/set_input"), Record::parsed(Value::Map(cmd)))
-                .await;
-        }
-        (KeyModifiers::CONTROL, KeyCode::Char('e')) if !is_search => {
-            let pos = app.input.len() as i64;
-            let mut cmd = BTreeMap::new();
-            cmd.insert("cursor".to_string(), Value::Integer(pos));
-            let _ = client
-                .write(&path!("ui/set_input"), Record::parsed(Value::Map(cmd)))
-                .await;
-        }
-        // Search text editing and unhandled keys: no-op here.
-        // Search uses app.search.live_query directly — handled in the
-        // caller via handle_insert_key fallback for search context.
         _ => {}
     }
 }
 
 /// Dispatch mouse events through UiStore via the broker.
-async fn dispatch_mouse(client: &ox_broker::ClientHandle, app: &App, kind: MouseEventKind) {
+/// Takes owned state extracted from ViewState.
+async fn dispatch_mouse_owned(
+    client: &ox_broker::ClientHandle,
+    has_active_thread: bool,
+    has_pending_approval: bool,
+    has_pending_customize: bool,
+    kind: MouseEventKind,
+) {
     use std::collections::BTreeMap;
     use structfs_core_store::{Record, Value, path};
 
-    if app.pending_approval.is_some() || app.pending_customize.is_some() {
+    if has_pending_approval || has_pending_customize {
         return;
     }
 
     match kind {
         MouseEventKind::ScrollUp => {
-            if app.active_thread.is_some() {
+            if has_active_thread {
                 let _ = client
                     .write(
                         &path!("ui/scroll_up"),
@@ -333,7 +436,7 @@ async fn dispatch_mouse(client: &ox_broker::ClientHandle, app: &App, kind: Mouse
             }
         }
         MouseEventKind::ScrollDown => {
-            if app.active_thread.is_some() {
+            if has_active_thread {
                 let _ = client
                     .write(
                         &path!("ui/scroll_down"),
@@ -457,9 +560,12 @@ fn handle_approval_key(app: &mut App, key: KeyCode, _modifiers: KeyModifiers) {
 // Draw — composed view
 // ---------------------------------------------------------------------------
 
-fn draw(frame: &mut Frame, app: &mut App, theme: &Theme) {
-    let in_insert = matches!(app.mode, InputMode::Insert(_));
-    let show_filter = app.active_thread.is_none() && app.search.is_active();
+/// Main draw function. Takes a ViewState snapshot instead of &mut App.
+///
+/// Returns `(content_height, viewport_height)` for scroll_max calculation.
+fn draw(frame: &mut Frame, vs: &ViewState, theme: &Theme) -> (Option<usize>, usize) {
+    let in_insert = matches!(vs.input_mode, InputMode::Insert(_));
+    let show_filter = vs.active_thread.is_none() && vs.search.is_active();
 
     // Build layout constraints
     let mut constraints = vec![Constraint::Length(1)]; // tab bar
@@ -480,12 +586,12 @@ fn draw(frame: &mut Frame, app: &mut App, theme: &Theme) {
     let mut idx = 0;
 
     // Tab bar
-    crate::tab_bar::draw_tabs(frame, app, theme, chunks[idx]);
+    crate::tab_bar::draw_tabs(frame, vs, theme, chunks[idx]);
     idx += 1;
 
     // Filter bar (if active)
     if show_filter {
-        crate::inbox_view::draw_filter_bar(frame, app, theme, chunks[idx]);
+        crate::inbox_view::draw_filter_bar(frame, vs, theme, chunks[idx]);
         idx += 1;
     }
 
@@ -493,17 +599,37 @@ fn draw(frame: &mut Frame, app: &mut App, theme: &Theme) {
     let content_area = chunks[idx];
     idx += 1;
 
-    // We need to clone the active view data before calling draw_inbox (which borrows app mutably).
-    if let Some(tid) = app.active_thread.clone() {
-        let view = app.thread_views.entry(tid).or_default().clone();
-        app.last_content_height =
-            crate::thread_view::draw_thread(frame, &view, app.scroll, theme, content_area);
-        app.last_viewport_height = content_area.height as usize;
+    let mut content_height: Option<usize> = None;
+
+    if let Some(ref tid) = vs.active_thread {
+        // Build a ThreadView for rendering: prefer thread_views (has streaming data),
+        // fall back to committed_messages from broker.
+        let view = if let Some(tv) = vs.thread_views.get(tid.as_str()) {
+            if !tv.messages.is_empty() {
+                tv.clone()
+            } else {
+                ThreadView {
+                    messages: vs.committed_messages.clone(),
+                    thinking: false,
+                    ..Default::default()
+                }
+            }
+        } else {
+            ThreadView {
+                messages: vs.committed_messages.clone(),
+                thinking: false,
+                ..Default::default()
+            }
+        };
+        content_height = Some(crate::thread_view::draw_thread(
+            frame,
+            &view,
+            vs.scroll,
+            theme,
+            content_area,
+        ));
     } else {
-        // Refresh cached threads once per frame, adjust scroll
-        app.refresh_visible_threads();
-        app.ensure_selected_visible(content_area.height as usize);
-        crate::inbox_view::draw_inbox(frame, app, theme, content_area);
+        crate::inbox_view::draw_inbox(frame, vs, theme, content_area);
     }
 
     // Input box (only in insert mode)
@@ -511,13 +637,18 @@ fn draw(frame: &mut Frame, app: &mut App, theme: &Theme) {
         let input_area = chunks[idx];
         idx += 1;
 
-        let ctx_label = match &app.mode {
+        let ctx_label = match vs.input_mode {
             InputMode::Insert(InsertContext::Compose) => " compose ",
             InputMode::Insert(InsertContext::Reply) => " reply ",
             InputMode::Insert(InsertContext::Search) => " search ",
             _ => "",
         };
-        let thinking = app.active_thinking();
+        // Check if active thread is thinking
+        let thinking = vs
+            .active_thread
+            .as_ref()
+            .and_then(|tid| vs.thread_views.get(tid.as_str()))
+            .is_some_and(|tv| tv.thinking);
         let title = if thinking {
             " streaming... "
         } else {
@@ -527,18 +658,18 @@ fn draw(frame: &mut Frame, app: &mut App, theme: &Theme) {
             .borders(Borders::TOP)
             .border_style(theme.input_border)
             .title(title);
-        let input = Paragraph::new(format!("> {}", app.input)).block(input_block);
+        let input = Paragraph::new(format!("> {}", vs.input)).block(input_block);
         frame.render_widget(input, input_area);
 
         // Cursor
-        if app.pending_approval.is_none() && app.pending_customize.is_none() {
-            match &app.mode {
+        if vs.pending_approval.is_none() && vs.pending_customize.is_none() {
+            match vs.input_mode {
                 InputMode::Insert(InsertContext::Search) => {
                     // Search cursor would be in the filter bar, but we keep it simple
                 }
                 _ => {
                     frame.set_cursor_position((
-                        input_area.x + app.cursor as u16 + 2,
+                        input_area.x + vs.cursor as u16 + 2,
                         input_area.y + 1,
                     ));
                 }
@@ -548,28 +679,30 @@ fn draw(frame: &mut Frame, app: &mut App, theme: &Theme) {
 
     // Status bar
     let status_area = chunks[idx];
-    draw_status_bar(frame, app, theme, status_area);
+    draw_status_bar(frame, vs, theme, status_area);
 
     // Modal overlays
-    if let Some(ref customize) = app.pending_customize {
+    if let Some(customize) = vs.pending_customize {
         draw_customize_dialog(frame, customize, theme);
-    } else if let Some(ref approval) = app.pending_approval {
+    } else if let Some(approval) = vs.pending_approval {
         draw_approval_dialog(frame, approval, theme);
     }
+
+    (content_height, content_area.height as usize)
 }
 
 // ---------------------------------------------------------------------------
 // Status bar
 // ---------------------------------------------------------------------------
 
-fn draw_status_bar(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
-    let mode_badge = match &app.mode {
+fn draw_status_bar(frame: &mut Frame, vs: &ViewState, theme: &Theme, area: Rect) {
+    let mode_badge = match vs.input_mode {
         InputMode::Normal => Span::styled(" NORMAL ", theme.title_badge),
         InputMode::Insert(_) => Span::styled(" INSERT ", theme.insert_badge),
     };
 
-    let context_info = if let Some(ref tid) = app.active_thread {
-        let view = app.thread_views.get(tid);
+    let context_info = if let Some(ref tid) = vs.active_thread {
+        let view = vs.thread_views.get(tid.as_str());
         let (ti, to) = view.map(|v| (v.tokens_in, v.tokens_out)).unwrap_or((0, 0));
         let ps = view.map(|v| &v.policy_stats);
         let mut s = format!(" {}in/{}out", ti, to);
@@ -583,11 +716,11 @@ fn draw_status_bar(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
         }
         s
     } else {
-        let count = app.cached_threads.len();
+        let count = vs.inbox_threads.len();
         format!(" {} thread{}", count, if count == 1 { "" } else { "s" })
     };
 
-    let hints = match (&app.mode, app.active_thread.is_some()) {
+    let hints = match (vs.input_mode, vs.active_thread.is_some()) {
         (InputMode::Normal, false) => " | i compose | / search | Enter open | d archive | q quit",
         (InputMode::Normal, true) => " | i reply | j/k scroll | q/Esc inbox",
         (InputMode::Insert(InsertContext::Search), _) => " | Enter chip | Esc cancel",

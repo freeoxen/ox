@@ -509,7 +509,9 @@ mod tests {
         assert!(matches!(&parsed[1], ChatMessage::AssistantChunk(t) if t == "Sure, "));
         assert!(matches!(&parsed[2], ChatMessage::ToolCall { name } if name == "grep"));
         assert!(matches!(&parsed[3], ChatMessage::AssistantChunk(t) if t == "done."));
-        assert!(matches!(&parsed[4], ChatMessage::ToolResult { name, output } if name == "tool" && output == "match found"));
+        assert!(
+            matches!(&parsed[4], ChatMessage::ToolResult { name, output } if name == "tool" && output == "match found")
+        );
     }
 
     #[test]
