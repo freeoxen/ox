@@ -52,130 +52,133 @@ impl Namespace {
     }
 
     fn synthesize_prompt(&mut self) -> Result<Option<Record>, StoreError> {
-        let empty = path!("");
-
-        // Read system prompt
-        let system_str = {
-            let store = self.mounts.get_mut("system").ok_or_else(|| {
-                StoreError::store("namespace", "read", "no store mounted at 'system'")
-            })?;
-            let record = store.read(&empty)?.ok_or_else(|| {
-                StoreError::store("namespace", "read", "system store returned None")
-            })?;
-            match record {
-                Record::Parsed(Value::String(s)) => s,
-                _ => {
-                    return Err(StoreError::store(
-                        "namespace",
-                        "read",
-                        "expected string from system store",
-                    ));
-                }
-            }
-        };
-
-        // Read history messages
-        let messages_json = {
-            let store = self.mounts.get_mut("history").ok_or_else(|| {
-                StoreError::store("namespace", "read", "no store mounted at 'history'")
-            })?;
-            let record = store.read(&path!("messages"))?.ok_or_else(|| {
-                StoreError::store("namespace", "read", "history store returned None")
-            })?;
-            match record {
-                Record::Parsed(v) => value_to_json(v),
-                _ => {
-                    return Err(StoreError::store(
-                        "namespace",
-                        "read",
-                        "expected parsed record from history",
-                    ));
-                }
-            }
-        };
-
-        // Read tool schemas
-        let tools_json = {
-            let store = self.mounts.get_mut("tools").ok_or_else(|| {
-                StoreError::store("namespace", "read", "no store mounted at 'tools'")
-            })?;
-            let record = store.read(&path!("schemas"))?.ok_or_else(|| {
-                StoreError::store("namespace", "read", "tools store returned None")
-            })?;
-            match record {
-                Record::Parsed(v) => value_to_json(v),
-                _ => {
-                    return Err(StoreError::store(
-                        "namespace",
-                        "read",
-                        "expected parsed record from tools",
-                    ));
-                }
-            }
-        };
-
-        // Read model ID
-        let model_id = {
-            let store = self.mounts.get_mut("model").ok_or_else(|| {
-                StoreError::store("namespace", "read", "no store mounted at 'model'")
-            })?;
-            let record = store.read(&path!("id"))?.ok_or_else(|| {
-                StoreError::store("namespace", "read", "model store returned None for id")
-            })?;
-            match record {
-                Record::Parsed(Value::String(s)) => s,
-                _ => {
-                    return Err(StoreError::store(
-                        "namespace",
-                        "read",
-                        "expected string from model store for id",
-                    ));
-                }
-            }
-        };
-
-        // Read max_tokens
-        let max_tokens = {
-            let store = self.mounts.get_mut("model").ok_or_else(|| {
-                StoreError::store("namespace", "read", "no store mounted at 'model'")
-            })?;
-            let record = store.read(&path!("max_tokens"))?.ok_or_else(|| {
-                StoreError::store(
-                    "namespace",
-                    "read",
-                    "model store returned None for max_tokens",
-                )
-            })?;
-            match record {
-                Record::Parsed(Value::Integer(n)) => n as u32,
-                _ => {
-                    return Err(StoreError::store(
-                        "namespace",
-                        "read",
-                        "expected integer from model store for max_tokens",
-                    ));
-                }
-            }
-        };
-
-        let messages: Vec<serde_json::Value> = serde_json::from_value(messages_json)
-            .map_err(|e| StoreError::store("namespace", "read", e.to_string()))?;
-        let tools: Vec<ox_kernel::ToolSchema> = serde_json::from_value(tools_json)
-            .map_err(|e| StoreError::store("namespace", "read", e.to_string()))?;
-
-        let request = CompletionRequest {
-            model: model_id,
-            max_tokens,
-            system: system_str,
-            messages,
-            tools,
-            stream: true,
-        };
-
-        let value = to_value(&request)
-            .map_err(|e| StoreError::store("namespace", "read", e.to_string()))?;
-        Ok(Some(Record::parsed(value)))
+        synthesize_prompt(self)
     }
+}
+
+/// Synthesize a [`CompletionRequest`] by reading prompt components from `reader`.
+///
+/// Reads the following paths:
+/// - `system` → system prompt string
+/// - `history/messages` → conversation messages array
+/// - `tools/schemas` → tool schema array
+/// - `model/id` → model identifier string
+/// - `model/max_tokens` → token limit integer
+///
+/// When `reader` is a [`Namespace`], each path routes to the appropriate mounted
+/// store. This function exists as a standalone so it can be called with any
+/// [`Reader`] — for example a broker-backed adapter in the agent worker bridge.
+pub fn synthesize_prompt(reader: &mut dyn Reader) -> Result<Option<Record>, StoreError> {
+    // Read system prompt
+    let system_str = {
+        let record = reader.read(&path!("system"))?.ok_or_else(|| {
+            StoreError::store("synthesize_prompt", "read", "system store returned None")
+        })?;
+        match record {
+            Record::Parsed(Value::String(s)) => s,
+            _ => {
+                return Err(StoreError::store(
+                    "synthesize_prompt",
+                    "read",
+                    "expected string from system store",
+                ));
+            }
+        }
+    };
+
+    // Read history messages
+    let messages_json = {
+        let record = reader.read(&path!("history/messages"))?.ok_or_else(|| {
+            StoreError::store("synthesize_prompt", "read", "history store returned None")
+        })?;
+        match record {
+            Record::Parsed(v) => value_to_json(v),
+            _ => {
+                return Err(StoreError::store(
+                    "synthesize_prompt",
+                    "read",
+                    "expected parsed record from history",
+                ));
+            }
+        }
+    };
+
+    // Read tool schemas
+    let tools_json = {
+        let record = reader.read(&path!("tools/schemas"))?.ok_or_else(|| {
+            StoreError::store("synthesize_prompt", "read", "tools store returned None")
+        })?;
+        match record {
+            Record::Parsed(v) => value_to_json(v),
+            _ => {
+                return Err(StoreError::store(
+                    "synthesize_prompt",
+                    "read",
+                    "expected parsed record from tools",
+                ));
+            }
+        }
+    };
+
+    // Read model ID
+    let model_id = {
+        let record = reader.read(&path!("model/id"))?.ok_or_else(|| {
+            StoreError::store(
+                "synthesize_prompt",
+                "read",
+                "model store returned None for id",
+            )
+        })?;
+        match record {
+            Record::Parsed(Value::String(s)) => s,
+            _ => {
+                return Err(StoreError::store(
+                    "synthesize_prompt",
+                    "read",
+                    "expected string from model store for id",
+                ));
+            }
+        }
+    };
+
+    // Read max_tokens
+    let max_tokens = {
+        let record = reader.read(&path!("model/max_tokens"))?.ok_or_else(|| {
+            StoreError::store(
+                "synthesize_prompt",
+                "read",
+                "model store returned None for max_tokens",
+            )
+        })?;
+        match record {
+            Record::Parsed(Value::Integer(n)) => n as u32,
+            _ => {
+                return Err(StoreError::store(
+                    "synthesize_prompt",
+                    "read",
+                    "expected integer from model store for max_tokens",
+                ));
+            }
+        }
+    };
+
+    let messages: Vec<serde_json::Value> = serde_json::from_value(messages_json)
+        .map_err(|e| StoreError::store("synthesize_prompt", "read", e.to_string()))?;
+    let tools: Vec<ox_kernel::ToolSchema> = serde_json::from_value(tools_json)
+        .map_err(|e| StoreError::store("synthesize_prompt", "read", e.to_string()))?;
+
+    let request = CompletionRequest {
+        model: model_id,
+        max_tokens,
+        system: system_str,
+        messages,
+        tools,
+        stream: true,
+    };
+
+    let value = to_value(&request)
+        .map_err(|e| StoreError::store("synthesize_prompt", "read", e.to_string()))?;
+    Ok(Some(Record::parsed(value)))
 }
 
 impl Default for Namespace {
@@ -726,6 +729,26 @@ mod tests {
         // History snapshot is read-only — write must fail through the namespace
         let result = ns.write(&path!("history/snapshot"), Record::parsed(Value::Null));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn synthesize_prompt_standalone() {
+        let mut ns = build_full_namespace();
+        let user_msg = serde_json::json!({"role": "user", "content": "hello"});
+        ns.write(
+            &path!("history/append"),
+            Record::parsed(structfs_serde_store::json_to_value(user_msg)),
+        )
+        .unwrap();
+
+        let result = synthesize_prompt(&mut ns).unwrap().unwrap();
+        let value = result.as_value().unwrap().clone();
+        let json = structfs_serde_store::value_to_json(value);
+        let request: CompletionRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(request.model, "claude-sonnet-4-20250514");
+        assert_eq!(request.system, "You are helpful.");
+        assert_eq!(request.messages.len(), 1);
+        assert!(request.stream);
     }
 
     #[test]
