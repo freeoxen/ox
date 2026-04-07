@@ -23,7 +23,7 @@ pub async fn run_async(
     use crate::key_encode::encode_key;
     use crate::state_sync::sync_ui_to_app;
     use std::collections::BTreeMap;
-    use structfs_core_store::{path, Record, Value};
+    use structfs_core_store::{Record, Value, path};
 
     loop {
         // 1. Sync broker state → App fields, check for pending actions
@@ -91,41 +91,66 @@ pub async fn run_async(
                         };
 
                         let mut event_map = BTreeMap::new();
-                        event_map
-                            .insert("mode".to_string(), Value::String(mode.to_string()));
-                        event_map
-                            .insert("key".to_string(), Value::String(key_str.clone()));
-                        event_map
-                            .insert("screen".to_string(), Value::String(screen.to_string()));
+                        event_map.insert("mode".to_string(), Value::String(mode.to_string()));
+                        event_map.insert("key".to_string(), Value::String(key_str.clone()));
+                        event_map.insert("screen".to_string(), Value::String(screen.to_string()));
 
                         // Try InputStore dispatch
                         let result = client
-                            .write(
-                                &path!("input/key"),
-                                Record::parsed(Value::Map(event_map)),
-                            )
+                            .write(&path!("input/key"), Record::parsed(Value::Map(event_map)))
                             .await;
 
                         if result.is_err() {
                             // No binding — route through broker or search fallback
                             if let InputMode::Insert(ref ctx) = app.mode {
                                 if *ctx == InsertContext::Search {
-                                    handle_search_key(app, key.code);
+                                    handle_search_key(app, key.modifiers, key.code);
                                 } else {
-                                    dispatch_text_edit(
-                                        client,
-                                        app,
-                                        key.modifiers,
-                                        key.code,
-                                    )
-                                    .await;
+                                    match key.code {
+                                        KeyCode::Up => app.history_up(),
+                                        KeyCode::Down => app.history_down(),
+                                        _ => {
+                                            dispatch_text_edit(
+                                                client,
+                                                app,
+                                                key.modifiers,
+                                                key.code,
+                                            )
+                                            .await;
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
                 }
                 Event::Mouse(mouse) => {
-                    dispatch_mouse(client, app, mouse.kind).await;
+                    // Click on approval dialog — needs &mut app
+                    if let MouseEventKind::Down(_) = mouse.kind {
+                        if let Some(ref mut approval) = app.pending_approval {
+                            let term_h = crossterm::terminal::size()
+                                .map(|(_, h)| h)
+                                .unwrap_or(24);
+                            let dialog_h = 13u16;
+                            let dialog_top = term_h.saturating_sub(dialog_h) / 2;
+                            let first_option_row = dialog_top + 3;
+                            if mouse.row >= first_option_row
+                                && mouse.row
+                                    < first_option_row
+                                        + ApprovalState::OPTIONS.len() as u16
+                            {
+                                let idx = (mouse.row - first_option_row) as usize;
+                                approval.selected = idx;
+                                let response =
+                                    ApprovalState::OPTIONS[idx].1.clone();
+                                let approval =
+                                    app.pending_approval.take().unwrap();
+                                approval.respond.send(response).ok();
+                            }
+                        }
+                    } else {
+                        dispatch_mouse(client, app, mouse.kind).await;
+                    }
                 }
                 _ => {}
             }
@@ -173,7 +198,7 @@ async fn dispatch_text_edit(
     code: KeyCode,
 ) {
     use std::collections::BTreeMap;
-    use structfs_core_store::{path, Record, Value};
+    use structfs_core_store::{Record, Value, path};
 
     let is_search = matches!(app.mode, InputMode::Insert(InsertContext::Search));
 
@@ -241,13 +266,9 @@ async fn dispatch_text_edit(
 }
 
 /// Dispatch mouse events through UiStore via the broker.
-async fn dispatch_mouse(
-    client: &ox_broker::ClientHandle,
-    app: &App,
-    kind: MouseEventKind,
-) {
+async fn dispatch_mouse(client: &ox_broker::ClientHandle, app: &App, kind: MouseEventKind) {
     use std::collections::BTreeMap;
-    use structfs_core_store::{path, Record, Value};
+    use structfs_core_store::{Record, Value, path};
 
     if app.pending_approval.is_some() || app.pending_customize.is_some() {
         return;
@@ -297,11 +318,14 @@ async fn dispatch_mouse(
 // Search text editing (only path that still bypasses broker)
 // ---------------------------------------------------------------------------
 
-fn handle_search_key(app: &mut App, code: KeyCode) {
-    match code {
-        KeyCode::Enter => app.search.save_chip(),
-        KeyCode::Backspace => { app.search.live_query.pop(); }
-        KeyCode::Char(c) => app.search.live_query.push(c),
+fn handle_search_key(app: &mut App, modifiers: KeyModifiers, code: KeyCode) {
+    match (modifiers, code) {
+        (_, KeyCode::Enter) => app.search.save_chip(),
+        (KeyModifiers::CONTROL, KeyCode::Char('u')) => app.search.live_query.clear(),
+        (_, KeyCode::Backspace) => {
+            app.search.live_query.pop();
+        }
+        (_, KeyCode::Char(c)) => app.search.live_query.push(c),
         _ => {}
     }
 }

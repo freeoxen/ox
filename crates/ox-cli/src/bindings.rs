@@ -70,58 +70,176 @@ fn bind_screen(mode: &str, key: &str, screen: &str, action: Action, desc: &str) 
 
 fn normal_mode(out: &mut Vec<Binding>) {
     // Navigation — screen-specific
-    out.push(bind_screen("normal", "j", "inbox", cmd("ui/select_next"), "Move selection down"));
-    out.push(bind_screen("normal", "Down", "inbox", cmd("ui/select_next"), "Move selection down"));
-    out.push(bind_screen("normal", "k", "inbox", cmd("ui/select_prev"), "Move selection up"));
-    out.push(bind_screen("normal", "Up", "inbox", cmd("ui/select_prev"), "Move selection up"));
+    out.push(bind_screen(
+        "normal",
+        "j",
+        "inbox",
+        cmd("ui/select_next"),
+        "Move selection down",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "Down",
+        "inbox",
+        cmd("ui/select_next"),
+        "Move selection down",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "k",
+        "inbox",
+        cmd("ui/select_prev"),
+        "Move selection up",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "Up",
+        "inbox",
+        cmd("ui/select_prev"),
+        "Move selection up",
+    ));
 
-    out.push(bind_screen("normal", "j", "thread", cmd("ui/scroll_up"), "Scroll up"));
-    out.push(bind_screen("normal", "Down", "thread", cmd("ui/scroll_up"), "Scroll up"));
-    out.push(bind_screen("normal", "k", "thread", cmd("ui/scroll_down"), "Scroll down"));
-    out.push(bind_screen("normal", "Up", "thread", cmd("ui/scroll_down"), "Scroll down"));
+    out.push(bind_screen(
+        "normal",
+        "j",
+        "thread",
+        cmd("ui/scroll_up"),
+        "Scroll up",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "Down",
+        "thread",
+        cmd("ui/scroll_up"),
+        "Scroll up",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "k",
+        "thread",
+        cmd("ui/scroll_down"),
+        "Scroll down",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "Up",
+        "thread",
+        cmd("ui/scroll_down"),
+        "Scroll down",
+    ));
 
     // Screen transitions
-    out.push(bind_screen("normal", "Ctrl+c", "thread", cmd("ui/close"), "Back to inbox"));
-    out.push(bind_screen("normal", "Ctrl+c", "inbox", cmd("ui/quit"), "Quit"));
-    out.push(bind_screen("normal", "Esc", "thread", cmd("ui/close"), "Back to inbox"));
-    out.push(bind_screen("normal", "q", "thread", cmd("ui/close"), "Back to inbox"));
+    out.push(bind_screen(
+        "normal",
+        "Ctrl+c",
+        "thread",
+        cmd("ui/close"),
+        "Back to inbox",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "Ctrl+c",
+        "inbox",
+        cmd("ui/quit"),
+        "Quit",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "Esc",
+        "thread",
+        cmd("ui/close"),
+        "Back to inbox",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "q",
+        "thread",
+        cmd("ui/close"),
+        "Back to inbox",
+    ));
     out.push(bind_screen("normal", "q", "inbox", cmd("ui/quit"), "Quit"));
     out.push(bind("normal", "Ctrl+t", cmd("ui/close"), "Back to inbox"));
 
     // Enter insert mode — screen determines context
     out.push(bind_screen(
-        "normal", "i", "inbox",
+        "normal",
+        "i",
+        "inbox",
         cmd_with("ui/enter_insert", vec![static_field("context", "compose")]),
         "Compose new thread",
     ));
     out.push(bind_screen(
-        "normal", "i", "thread",
+        "normal",
+        "i",
+        "thread",
         cmd_with("ui/enter_insert", vec![static_field("context", "reply")]),
         "Reply in thread",
     ));
     out.push(bind_screen(
-        "normal", "/", "inbox",
+        "normal",
+        "/",
+        "inbox",
         cmd_with("ui/enter_insert", vec![static_field("context", "search")]),
         "Search",
     ));
 
     // Thread actions
-    out.push(bind_screen("normal", "Enter", "inbox", cmd("ui/open_selected"), "Open thread"));
-    out.push(bind_screen("normal", "d", "inbox", cmd("ui/archive_selected"), "Archive thread"));
+    out.push(bind_screen(
+        "normal",
+        "Enter",
+        "inbox",
+        cmd("ui/open_selected"),
+        "Open thread",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "d",
+        "inbox",
+        cmd("ui/archive_selected"),
+        "Archive thread",
+    ));
 
     // Approval quick keys (thread only)
-    out.push(bind_screen("normal", "y", "thread",
-        cmd_with("approval/response", vec![static_field("decision", "allow_once")]),
-        "Allow once"));
-    out.push(bind_screen("normal", "n", "thread",
-        cmd_with("approval/response", vec![static_field("decision", "deny_once")]),
-        "Deny once"));
-    out.push(bind_screen("normal", "s", "thread",
-        cmd_with("approval/response", vec![static_field("decision", "allow_session")]),
-        "Allow for session"));
-    out.push(bind_screen("normal", "a", "thread",
-        cmd_with("approval/response", vec![static_field("decision", "allow_always")]),
-        "Allow always"));
+    out.push(bind_screen(
+        "normal",
+        "y",
+        "thread",
+        cmd_with(
+            "approval/response",
+            vec![static_field("decision", "allow_once")],
+        ),
+        "Allow once",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "n",
+        "thread",
+        cmd_with(
+            "approval/response",
+            vec![static_field("decision", "deny_once")],
+        ),
+        "Deny once",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "s",
+        "thread",
+        cmd_with(
+            "approval/response",
+            vec![static_field("decision", "allow_session")],
+        ),
+        "Allow for session",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "a",
+        "thread",
+        cmd_with(
+            "approval/response",
+            vec![static_field("decision", "allow_always")],
+        ),
+        "Allow always",
+    ));
 }
 
 // ---------------------------------------------------------------------------
@@ -131,8 +249,15 @@ fn normal_mode(out: &mut Vec<Binding>) {
 fn insert_mode(out: &mut Vec<Binding>) {
     out.push(bind("insert", "Ctrl+s", cmd("ui/send_input"), "Send"));
     out.push(bind("insert", "Ctrl+Enter", cmd("ui/send_input"), "Send"));
-    out.push(bind("insert", "Esc", cmd("ui/exit_insert"), "Exit insert mode"));
-    out.push(bind("insert", "Ctrl+u", cmd("ui/clear_input"), "Clear line"));
+    out.push(bind(
+        "insert",
+        "Esc",
+        cmd("ui/exit_insert"),
+        "Exit insert mode",
+    ));
+    // Ctrl+u: screen-specific because search mode handles its own clear
+    out.push(bind_screen("insert", "Ctrl+u", "inbox", cmd("ui/clear_input"), "Clear line"));
+    out.push(bind_screen("insert", "Ctrl+u", "thread", cmd("ui/clear_input"), "Clear line"));
 }
 
 // ---------------------------------------------------------------------------
@@ -141,25 +266,70 @@ fn insert_mode(out: &mut Vec<Binding>) {
 
 fn approval_mode(out: &mut Vec<Binding>) {
     out.push(bind("approval", "j", cmd("ui/select_next"), "Next option"));
-    out.push(bind("approval", "Down", cmd("ui/select_next"), "Next option"));
-    out.push(bind("approval", "k", cmd("ui/select_prev"), "Previous option"));
-    out.push(bind("approval", "Up", cmd("ui/select_prev"), "Previous option"));
+    out.push(bind(
+        "approval",
+        "Down",
+        cmd("ui/select_next"),
+        "Next option",
+    ));
+    out.push(bind(
+        "approval",
+        "k",
+        cmd("ui/select_prev"),
+        "Previous option",
+    ));
+    out.push(bind(
+        "approval",
+        "Up",
+        cmd("ui/select_prev"),
+        "Previous option",
+    ));
 
-    out.push(bind("approval", "y",
-        cmd_with("approval/response", vec![static_field("decision", "allow_once")]),
-        "Allow once"));
-    out.push(bind("approval", "n",
-        cmd_with("approval/response", vec![static_field("decision", "deny_once")]),
-        "Deny once"));
-    out.push(bind("approval", "s",
-        cmd_with("approval/response", vec![static_field("decision", "allow_session")]),
-        "Allow for session"));
-    out.push(bind("approval", "a",
-        cmd_with("approval/response", vec![static_field("decision", "allow_always")]),
-        "Allow always"));
-    out.push(bind("approval", "d",
-        cmd_with("approval/response", vec![static_field("decision", "deny_always")]),
-        "Deny always"));
+    out.push(bind(
+        "approval",
+        "y",
+        cmd_with(
+            "approval/response",
+            vec![static_field("decision", "allow_once")],
+        ),
+        "Allow once",
+    ));
+    out.push(bind(
+        "approval",
+        "n",
+        cmd_with(
+            "approval/response",
+            vec![static_field("decision", "deny_once")],
+        ),
+        "Deny once",
+    ));
+    out.push(bind(
+        "approval",
+        "s",
+        cmd_with(
+            "approval/response",
+            vec![static_field("decision", "allow_session")],
+        ),
+        "Allow for session",
+    ));
+    out.push(bind(
+        "approval",
+        "a",
+        cmd_with(
+            "approval/response",
+            vec![static_field("decision", "allow_always")],
+        ),
+        "Allow always",
+    ));
+    out.push(bind(
+        "approval",
+        "d",
+        cmd_with(
+            "approval/response",
+            vec![static_field("decision", "deny_always")],
+        ),
+        "Deny always",
+    ));
 }
 
 #[cfg(test)]
