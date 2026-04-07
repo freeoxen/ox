@@ -15,6 +15,7 @@ mod thread_view;
 mod tools;
 mod transport;
 mod tui;
+pub(crate) mod view_state;
 
 use clap::Parser;
 use std::path::PathBuf;
