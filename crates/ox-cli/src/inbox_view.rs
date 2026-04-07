@@ -1,4 +1,3 @@
-use crate::app::ChatMessage;
 use crate::theme::Theme;
 use crate::view_state::ViewState;
 use ratatui::Frame;
@@ -64,7 +63,7 @@ pub fn draw_inbox(frame: &mut Frame, vs: &ViewState, theme: &Theme, area: Rect) 
             Span::styled(title_text, title_style.patch(base_style)),
         ]));
 
-        // Line 2: labels + activity + tokens (from in-memory ThreadView for live data)
+        // Line 2: labels + activity + tokens from broker data
         let mut meta_spans: Vec<Span> = vec![Span::styled("    ", base_style)];
         for label in &thread.labels {
             meta_spans.push(Span::styled(
@@ -73,58 +72,29 @@ pub fn draw_inbox(frame: &mut Frame, vs: &ViewState, theme: &Theme, area: Rect) 
             ));
         }
 
-        if let Some(view) = vs.thread_views.get(&thread.id) {
-            // Activity: show what the agent is currently doing
-            if view.thinking {
-                // Find the last tool call or show "streaming..."
-                let activity = view
-                    .messages
-                    .iter()
-                    .rev()
-                    .find_map(|m| match m {
-                        ChatMessage::ToolCall { name } => Some(format!("[{name}] ")),
-                        _ => None,
-                    })
-                    .unwrap_or_else(|| "streaming... ".to_string());
-                meta_spans.push(Span::styled(activity, theme.thinking.patch(base_style)));
-            }
+        // Show thread state
+        if thread.thread_state == "running" {
+            meta_spans.push(Span::styled(
+                "streaming... ",
+                theme.thinking.patch(base_style),
+            ));
+        }
 
-            // Token count from live view
-            let total_tokens = view.tokens_in + view.tokens_out;
-            if total_tokens > 0 {
-                let tok_str = if total_tokens >= 1000 {
-                    format!("{:.1}k tok ", total_tokens as f64 / 1000.0)
-                } else {
-                    format!("{total_tokens} tok ")
-                };
-                meta_spans.push(Span::styled(tok_str, theme.tool_meta.patch(base_style)));
-            }
-
-            // Message count
-            let msg_count = view.messages.len();
-            if msg_count > 0 {
-                meta_spans.push(Span::styled(
-                    format!("{msg_count} msgs"),
-                    theme.tool_meta.patch(base_style),
-                ));
-            }
-        } else {
-            // Fallback to broker data for threads without a live view
-            if thread.token_count > 0 {
-                let tok_str = if thread.token_count >= 1000 {
-                    format!("{:.1}k tok", thread.token_count as f64 / 1000.0)
-                } else {
-                    format!("{} tok", thread.token_count)
-                };
-                meta_spans.push(Span::styled(tok_str, theme.tool_meta.patch(base_style)));
-            }
-            if thread.last_seq >= 0 {
-                let msg_count = thread.last_seq + 1;
-                meta_spans.push(Span::styled(
-                    format!(" {msg_count} msgs"),
-                    theme.tool_meta.patch(base_style),
-                ));
-            }
+        // Token count from broker data
+        if thread.token_count > 0 {
+            let tok_str = if thread.token_count >= 1000 {
+                format!("{:.1}k tok", thread.token_count as f64 / 1000.0)
+            } else {
+                format!("{} tok", thread.token_count)
+            };
+            meta_spans.push(Span::styled(tok_str, theme.tool_meta.patch(base_style)));
+        }
+        if thread.last_seq >= 0 {
+            let msg_count = thread.last_seq + 1;
+            meta_spans.push(Span::styled(
+                format!(" {msg_count} msgs"),
+                theme.tool_meta.patch(base_style),
+            ));
         }
         lines.push(Line::from(meta_spans));
     }

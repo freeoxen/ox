@@ -132,6 +132,7 @@ impl PolicyGuard {
     }
 
     /// Add a named sandbox definition.
+    #[allow(dead_code)]
     pub fn add_sandbox(
         &mut self,
         name: &str,
@@ -151,11 +152,13 @@ impl PolicyGuard {
     }
 
     /// Insert an arbitrary node into the session policy.
+    #[allow(dead_code)]
     pub fn add_session_node(&mut self, node: Node) {
         self.session_policy.tree.insert(0, node);
     }
 
     /// Insert an arbitrary node into the persistent policy and save.
+    #[allow(dead_code)]
     pub fn add_persistent_node(&mut self, node: Node) {
         manifest_edit::upsert_rule(&mut self.manifest, node);
         self.save();

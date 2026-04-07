@@ -81,7 +81,9 @@ where
 ///
 /// Reads are resolved inline; writes are spawned as independent tasks so a
 /// deferred write does not block the store from handling subsequent requests.
-pub(crate) async fn spawn_async_server<S: crate::async_store::AsyncReader + crate::async_store::AsyncWriter>(
+pub(crate) async fn spawn_async_server<
+    S: crate::async_store::AsyncReader + crate::async_store::AsyncWriter,
+>(
     inner: Arc<Mutex<BrokerInner>>,
     prefix: structfs_core_store::Path,
     store: S,

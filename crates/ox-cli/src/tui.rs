@@ -1,6 +1,4 @@
-use crate::app::{
-    App, AppControl, ApprovalResponse, ApprovalState, InputMode, InsertContext, ThreadView,
-};
+use crate::app::{APPROVAL_OPTIONS, App, InputMode, InsertContext};
 use crate::theme::Theme;
 use crate::view_state::{ViewState, fetch_view_state};
 use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
@@ -29,37 +27,7 @@ pub async fn run_async(
     use structfs_core_store::{Record, Value, path};
 
     loop {
-        // 1. Drain agent events (updates thread_views and streaming_turns)
-        app.drain_agent_events();
-
-        // 2. Permission requests
-        if app.pending_approval.is_none() && app.pending_customize.is_none() {
-            if let Ok(AppControl::PermissionRequest {
-                thread_id,
-                tool,
-                input_preview,
-                respond,
-            }) = app.control_rx.try_recv()
-            {
-                app.update_thread_state(&thread_id, "blocked_on_approval");
-                app.open_thread(thread_id.clone());
-                // Sync the open to broker so ViewState picks it up
-                let mut cmd = BTreeMap::new();
-                cmd.insert("thread_id".to_string(), Value::String(thread_id.clone()));
-                let _ = client
-                    .write(&path!("ui/open"), Record::parsed(Value::Map(cmd)))
-                    .await;
-                app.pending_approval = Some(ApprovalState {
-                    thread_id,
-                    tool,
-                    input_preview,
-                    selected: 0,
-                    respond,
-                });
-            }
-        }
-
-        // 3. Fetch ViewState, draw, extract owned data needed after drop.
+        // 1. Fetch ViewState, draw, extract owned data needed after drop.
         //
         // ViewState borrows from App so we scope it tightly: draw, then
         // extract the owned fields we need for pending-action handling and
@@ -68,8 +36,10 @@ pub async fn run_async(
         let input_text: String;
         let screen_owned: String;
         let has_active_thread: bool;
+        let active_thread_id: Option<String>;
         let selected_thread_id: Option<String>;
         let search_active: bool;
+        let has_approval_pending: bool;
         // For text editing fallback
         let cursor_pos: usize;
         let input_len: usize;
@@ -121,14 +91,16 @@ pub async fn run_async(
             input_text = vs.input.clone();
             screen_owned = vs.screen.clone();
             has_active_thread = vs.active_thread.is_some();
+            active_thread_id = vs.active_thread.clone();
             selected_thread_id = vs.inbox_threads.get(vs.selected_row).map(|t| t.id.clone());
             search_active = vs.search.is_active();
             cursor_pos = vs.cursor;
             input_len = vs.input.len();
+            has_approval_pending = vs.approval_pending.is_some();
         }
         // vs is now dropped — safe to mutate app
 
-        // 4. Handle pending_action
+        // 2. Handle pending_action
         if let Some(action) = &pending_action {
             match action.as_str() {
                 "send_input" => {
@@ -138,7 +110,6 @@ pub async fn run_async(
                 "quit" => return Ok(()),
                 "open_selected" => {
                     if let Some(id) = &selected_thread_id {
-                        app.thread_views.entry(id.clone()).or_default();
                         app.open_thread(id.clone());
                         let mut cmd = BTreeMap::new();
                         cmd.insert("thread_id".to_string(), Value::String(id.clone()));
@@ -181,19 +152,24 @@ pub async fn run_async(
             }
         });
 
-        // 6. Handle terminal events
+        // 4. Handle terminal events
         if let Some(evt) = terminal_event {
             match evt {
                 Event::Key(key) => {
                     // Customize dialog — bypass broker entirely
                     if app.pending_customize.is_some() {
-                        handle_customize_key(app, key.code);
+                        handle_customize_key(app, client, &active_thread_id, key.code).await;
                     }
-                    // Approval dialog — direct handling
-                    else if app.pending_approval.is_some()
-                        && matches!(app.mode, InputMode::Normal)
-                    {
-                        handle_approval_key(app, key.code, key.modifiers);
+                    // Approval dialog — direct handling (reads from broker)
+                    else if has_approval_pending && matches!(app.mode, InputMode::Normal) {
+                        handle_approval_key(
+                            app,
+                            client,
+                            &active_thread_id,
+                            key.code,
+                            key.modifiers,
+                        )
+                        .await;
                     }
                     // Normal + Insert — dispatch through broker
                     else if let Some(key_str) = encode_key(key.modifiers, key.code) {
@@ -248,29 +224,31 @@ pub async fn run_async(
                     }
                 }
                 Event::Mouse(mouse) => {
-                    // Click on approval dialog — needs &mut app
+                    // Click on approval dialog
                     if let MouseEventKind::Down(_) = mouse.kind {
-                        if let Some(ref mut approval) = app.pending_approval {
+                        if has_approval_pending {
                             let term_h = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24);
                             let dialog_h = 13u16;
                             let dialog_top = term_h.saturating_sub(dialog_h) / 2;
                             let first_option_row = dialog_top + 3;
                             if mouse.row >= first_option_row
-                                && mouse.row
-                                    < first_option_row + ApprovalState::OPTIONS.len() as u16
+                                && mouse.row < first_option_row + APPROVAL_OPTIONS.len() as u16
                             {
                                 let idx = (mouse.row - first_option_row) as usize;
-                                approval.selected = idx;
-                                let response = ApprovalState::OPTIONS[idx].1.clone();
-                                let approval = app.pending_approval.take().unwrap();
-                                approval.respond.send(response).ok();
+                                app.approval_selected = idx;
+                                send_approval_response(
+                                    client,
+                                    &active_thread_id,
+                                    APPROVAL_OPTIONS[idx].1,
+                                )
+                                .await;
                             }
                         }
                     } else {
                         dispatch_mouse_owned(
                             client,
                             has_active_thread,
-                            app.pending_approval.is_some(),
+                            has_approval_pending,
                             app.pending_customize.is_some(),
                             mouse.kind,
                         )
@@ -280,6 +258,23 @@ pub async fn run_async(
                 _ => {}
             }
         }
+    }
+}
+
+/// Write an approval response through the broker for the given thread.
+async fn send_approval_response(
+    client: &ox_broker::ClientHandle,
+    active_thread_id: &Option<String>,
+    response: &str,
+) {
+    use structfs_core_store::{Record, Value};
+
+    if let Some(tid) = active_thread_id {
+        let path =
+            structfs_core_store::Path::parse(&format!("threads/{tid}/approval/response")).unwrap();
+        let _ = client
+            .write(&path, Record::parsed(Value::String(response.to_string())))
+            .await;
     }
 }
 
@@ -479,81 +474,111 @@ fn handle_search_key(app: &mut App, modifiers: KeyModifiers, code: KeyCode) {
 // Approval key handler (unchanged logic, adapted signature)
 // ---------------------------------------------------------------------------
 
-fn handle_approval_key(app: &mut App, key: KeyCode, _modifiers: KeyModifiers) {
-    let approval = app.pending_approval.as_mut().unwrap();
+async fn handle_approval_key(
+    app: &mut App,
+    client: &ox_broker::ClientHandle,
+    active_thread_id: &Option<String>,
+    key: KeyCode,
+    _modifiers: KeyModifiers,
+) {
     match key {
         // vim navigation
         KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
-            approval.selected = approval.selected.saturating_sub(1);
+            app.approval_selected = app.approval_selected.saturating_sub(1);
         }
         KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
-            if approval.selected < ApprovalState::OPTIONS.len() - 1 {
-                approval.selected += 1;
+            if app.approval_selected < APPROVAL_OPTIONS.len() - 1 {
+                app.approval_selected += 1;
             }
         }
         // number keys for direct selection
         KeyCode::Char(c @ '1'..='6') => {
             let idx = (c as u8 - b'1') as usize;
-            if idx < ApprovalState::OPTIONS.len() {
-                let response = ApprovalState::OPTIONS[idx].1.clone();
-                let approval = app.pending_approval.take().unwrap();
-                approval.respond.send(response).ok();
+            if idx < APPROVAL_OPTIONS.len() {
+                send_approval_response(client, active_thread_id, APPROVAL_OPTIONS[idx].1).await;
+                app.approval_selected = 0;
             }
         }
         KeyCode::Enter => {
-            let response = ApprovalState::OPTIONS[approval.selected].1.clone();
-            let approval = app.pending_approval.take().unwrap();
-            approval.respond.send(response).ok();
+            send_approval_response(
+                client,
+                active_thread_id,
+                APPROVAL_OPTIONS[app.approval_selected].1,
+            )
+            .await;
+            app.approval_selected = 0;
         }
-        // customize
+        // customize — enter customize dialog
         KeyCode::Char('c') | KeyCode::Char('C') => {
-            let approval = app.pending_approval.take().unwrap();
-            let args = infer_args(&approval.tool, &approval.input_preview);
-            app.pending_customize = Some(crate::app::CustomizeState {
-                tool: approval.tool,
-                args,
-                arg_cursor: 0,
-                effect_idx: 0,
-                scope_idx: 0,
-                focus: 0,
-                respond: approval.respond,
-                network_idx: 1, // default: allow
-                fs_rules: vec![crate::app::FsRuleState {
-                    path: "$PWD".into(),
-                    read: true,
-                    write: true,
-                    create: true,
-                    delete: true,
-                    execute: true,
-                }],
-                fs_sub_focus: 0,
-                fs_path_cursor: 0,
-            });
+            // Read tool and input_preview from the pending approval in broker
+            if let Some(tid) = active_thread_id {
+                let pending_path =
+                    structfs_core_store::Path::parse(&format!("threads/{tid}/approval/pending"))
+                        .unwrap();
+                if let Ok(Some(record)) = client.read(&pending_path).await {
+                    if let Some(structfs_core_store::Value::Map(m)) = record.as_value() {
+                        let tool = m
+                            .get("tool_name")
+                            .and_then(|v| match v {
+                                structfs_core_store::Value::String(s) => Some(s.clone()),
+                                _ => None,
+                            })
+                            .unwrap_or_default();
+                        let input_preview = m
+                            .get("input_preview")
+                            .and_then(|v| match v {
+                                structfs_core_store::Value::String(s) => Some(s.clone()),
+                                _ => None,
+                            })
+                            .unwrap_or_default();
+                        let args = infer_args(&tool, &input_preview);
+                        app.pending_customize = Some(crate::app::CustomizeState {
+                            tool,
+                            args,
+                            arg_cursor: 0,
+                            effect_idx: 0,
+                            scope_idx: 0,
+                            focus: 0,
+                            network_idx: 1, // default: allow
+                            fs_rules: vec![crate::app::FsRuleState {
+                                path: "$PWD".into(),
+                                read: true,
+                                write: true,
+                                create: true,
+                                delete: true,
+                                execute: true,
+                            }],
+                            fs_sub_focus: 0,
+                            fs_path_cursor: 0,
+                        });
+                    }
+                }
+            }
         }
         // quick keys
         KeyCode::Char('y') | KeyCode::Char('Y') => {
-            let approval = app.pending_approval.take().unwrap();
-            approval.respond.send(ApprovalResponse::AllowOnce).ok();
+            send_approval_response(client, active_thread_id, "allow_once").await;
+            app.approval_selected = 0;
         }
         KeyCode::Char('s') | KeyCode::Char('S') => {
-            let approval = app.pending_approval.take().unwrap();
-            approval.respond.send(ApprovalResponse::AllowSession).ok();
+            send_approval_response(client, active_thread_id, "allow_session").await;
+            app.approval_selected = 0;
         }
         KeyCode::Char('a') | KeyCode::Char('A') => {
-            let approval = app.pending_approval.take().unwrap();
-            approval.respond.send(ApprovalResponse::AllowAlways).ok();
+            send_approval_response(client, active_thread_id, "allow_always").await;
+            app.approval_selected = 0;
         }
         KeyCode::Char('n') | KeyCode::Char('N') => {
-            let approval = app.pending_approval.take().unwrap();
-            approval.respond.send(ApprovalResponse::DenyOnce).ok();
+            send_approval_response(client, active_thread_id, "deny_once").await;
+            app.approval_selected = 0;
         }
         KeyCode::Char('d') | KeyCode::Char('D') => {
-            let approval = app.pending_approval.take().unwrap();
-            approval.respond.send(ApprovalResponse::DenyAlways).ok();
+            send_approval_response(client, active_thread_id, "deny_always").await;
+            app.approval_selected = 0;
         }
         KeyCode::Esc => {
-            let approval = app.pending_approval.take().unwrap();
-            approval.respond.send(ApprovalResponse::DenyOnce).ok();
+            send_approval_response(client, active_thread_id, "deny_once").await;
+            app.approval_selected = 0;
         }
         _ => {}
     }
@@ -604,25 +629,11 @@ fn draw(frame: &mut Frame, vs: &ViewState, theme: &Theme) -> (Option<usize>, usi
 
     let mut content_height: Option<usize> = None;
 
-    if let Some(ref tid) = vs.active_thread {
-        // Build a ThreadView for rendering: prefer thread_views (has streaming data),
-        // fall back to committed_messages from broker.
-        let view = if let Some(tv) = vs.thread_views.get(tid.as_str()) {
-            if !tv.messages.is_empty() {
-                tv.clone()
-            } else {
-                ThreadView {
-                    messages: vs.committed_messages.clone(),
-                    thinking: false,
-                    ..Default::default()
-                }
-            }
-        } else {
-            ThreadView {
-                messages: vs.committed_messages.clone(),
-                thinking: false,
-                ..Default::default()
-            }
+    if vs.active_thread.is_some() {
+        // Build a ThreadView from broker-sourced data
+        let view = crate::app::ThreadView {
+            messages: vs.messages.clone(),
+            thinking: vs.thinking,
         };
         content_height = Some(crate::thread_view::draw_thread(
             frame,
@@ -646,13 +657,7 @@ fn draw(frame: &mut Frame, vs: &ViewState, theme: &Theme) -> (Option<usize>, usi
             InputMode::Insert(InsertContext::Search) => " search ",
             _ => "",
         };
-        // Check if active thread is thinking
-        let thinking = vs
-            .active_thread
-            .as_ref()
-            .and_then(|tid| vs.thread_views.get(tid.as_str()))
-            .is_some_and(|tv| tv.thinking);
-        let title = if thinking {
+        let title = if vs.thinking {
             " streaming... "
         } else {
             ctx_label
@@ -665,7 +670,7 @@ fn draw(frame: &mut Frame, vs: &ViewState, theme: &Theme) -> (Option<usize>, usi
         frame.render_widget(input, input_area);
 
         // Cursor
-        if vs.pending_approval.is_none() && vs.pending_customize.is_none() {
+        if vs.approval_pending.is_none() && vs.pending_customize.is_none() {
             match vs.input_mode {
                 InputMode::Insert(InsertContext::Search) => {
                     // Search cursor would be in the filter bar, but we keep it simple
@@ -687,8 +692,8 @@ fn draw(frame: &mut Frame, vs: &ViewState, theme: &Theme) -> (Option<usize>, usi
     // Modal overlays
     if let Some(customize) = vs.pending_customize {
         draw_customize_dialog(frame, customize, theme);
-    } else if let Some(approval) = vs.pending_approval {
-        draw_approval_dialog(frame, approval, theme);
+    } else if let Some((ref tool, ref preview)) = vs.approval_pending {
+        draw_approval_dialog(frame, tool, preview, vs.approval_selected, theme);
     }
 
     (content_height, content_area.height as usize)
@@ -704,20 +709,9 @@ fn draw_status_bar(frame: &mut Frame, vs: &ViewState, theme: &Theme, area: Rect)
         InputMode::Insert(_) => Span::styled(" INSERT ", theme.insert_badge),
     };
 
-    let context_info = if let Some(ref tid) = vs.active_thread {
-        let view = vs.thread_views.get(tid.as_str());
-        let (ti, to) = view.map(|v| (v.tokens_in, v.tokens_out)).unwrap_or((0, 0));
-        let ps = view.map(|v| &v.policy_stats);
-        let mut s = format!(" {}in/{}out", ti, to);
-        if let Some(ps) = ps {
-            if ps.allowed > 0 || ps.denied > 0 || ps.asked > 0 {
-                s.push_str(&format!(
-                    " | ok:{} no:{} ask:{}",
-                    ps.allowed, ps.denied, ps.asked
-                ));
-            }
-        }
-        s
+    let context_info = if vs.active_thread.is_some() {
+        let (ti, to) = vs.turn_tokens;
+        format!(" {}in/{}out", ti, to)
     } else {
         let count = vs.inbox_threads.len();
         format!(" {} thread{}", count, if count == 1 { "" } else { "s" })
@@ -742,7 +736,13 @@ fn draw_status_bar(frame: &mut Frame, vs: &ViewState, theme: &Theme, area: Rect)
 // Approval dialog (unchanged from original)
 // ---------------------------------------------------------------------------
 
-fn draw_approval_dialog(frame: &mut Frame, approval: &ApprovalState, theme: &Theme) {
+fn draw_approval_dialog(
+    frame: &mut Frame,
+    tool: &str,
+    input_preview: &str,
+    selected: usize,
+    theme: &Theme,
+) {
     let area = frame.area();
     let dialog_width = 50.min(area.width.saturating_sub(4));
     let dialog_height = 13;
@@ -762,30 +762,25 @@ fn draw_approval_dialog(frame: &mut Frame, approval: &ApprovalState, theme: &The
 
     let mut lines = vec![
         Line::from(vec![
-            Span::styled(format!("[{}] ", approval.tool), theme.approval_tool),
-            Span::styled(&approval.input_preview, theme.approval_preview),
+            Span::styled(format!("[{tool}] "), theme.approval_tool),
+            Span::styled(input_preview, theme.approval_preview),
         ]),
         Line::from(""),
     ];
 
-    for (i, (label, resp)) in ApprovalState::OPTIONS.iter().enumerate() {
-        let is_allow = matches!(
-            resp,
-            ApprovalResponse::AllowOnce
-                | ApprovalResponse::AllowSession
-                | ApprovalResponse::AllowAlways
-        );
+    for (i, (label, resp_str)) in APPROVAL_OPTIONS.iter().enumerate() {
+        let is_allow = resp_str.starts_with("allow");
         let base_style = if is_allow {
             theme.approval_allow
         } else {
             theme.approval_deny
         };
-        let style = if i == approval.selected {
+        let style = if i == selected {
             theme.approval_selected
         } else {
             base_style
         };
-        let marker = if i == approval.selected { "> " } else { "  " };
+        let marker = if i == selected { "> " } else { "  " };
         let num = i + 1;
         lines.push(Line::from(Span::styled(
             format!("{marker}{num}. {label}"),
@@ -821,6 +816,7 @@ fn infer_args(tool: &str, preview: &str) -> Vec<String> {
 }
 
 /// Build a clash Node from the customize state.
+#[allow(dead_code)]
 fn build_node_from_customize(cust: &crate::app::CustomizeState) -> clash::policy::match_tree::Node {
     use clash::policy::match_tree::*;
 
@@ -894,6 +890,7 @@ fn build_node_from_customize(cust: &crate::app::CustomizeState) -> clash::policy
 }
 
 /// Build a sandbox from the customize state. Returns None if no restrictions.
+#[allow(dead_code)]
 fn build_sandbox_from_customize(
     cust: &crate::app::CustomizeState,
 ) -> Option<(String, clash::policy::sandbox_types::SandboxPolicy)> {
@@ -953,13 +950,18 @@ fn build_sandbox_from_customize(
     ))
 }
 
-fn handle_customize_key(app: &mut App, key: KeyCode) {
+async fn handle_customize_key(
+    app: &mut App,
+    client: &ox_broker::ClientHandle,
+    active_thread_id: &Option<String>,
+    key: KeyCode,
+) {
     let cust = app.pending_customize.as_mut().unwrap();
     let total = cust.total_fields();
     match key {
         KeyCode::Esc => {
-            let cust = app.pending_customize.take().unwrap();
-            cust.respond.send(ApprovalResponse::DenyOnce).ok();
+            app.pending_customize.take();
+            send_approval_response(client, active_thread_id, "deny_once").await;
         }
         KeyCode::Tab | KeyCode::Down => {
             cust.focus = if cust.focus >= total - 1 {
@@ -979,14 +981,11 @@ fn handle_customize_key(app: &mut App, key: KeyCode) {
         }
         KeyCode::Enter => {
             let cust = app.pending_customize.take().unwrap();
-            let node = build_node_from_customize(&cust);
-            let sandbox = build_sandbox_from_customize(&cust);
-            let response = ApprovalResponse::CustomNode {
-                node: Box::new(node),
-                sandbox,
-                scope: SCOPES[cust.scope_idx].to_string(),
-            };
-            cust.respond.send(response).ok();
+            // Determine effect and scope, write as string response
+            let effect = EFFECTS[cust.effect_idx];
+            let scope = SCOPES[cust.scope_idx];
+            let response = format!("{effect}_{scope}");
+            send_approval_response(client, active_thread_id, &response).await;
         }
         _ => {
             let num_args = cust.args.len();

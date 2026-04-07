@@ -3,13 +3,12 @@ use ox_kernel::{
     AgentEvent, CompletionRequest, Record, StreamEvent, ToolCall, ToolRegistry, Value, Writer, path,
 };
 use ox_runtime::{AgentModule, AgentRuntime, HostEffects, HostStore};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::thread;
 use structfs_serde_store::json_to_value;
 
-use crate::app::{AppControl, AppEvent, ApprovalResponse};
 use crate::policy::PolicyStats;
 
 pub(crate) const SYSTEM_PROMPT: &str = "\
@@ -30,8 +29,6 @@ struct ThreadHandle {
 pub struct AgentPool {
     module: AgentModule,
     threads: HashMap<String, ThreadHandle>,
-    event_tx: mpsc::Sender<AppEvent>,
-    control_tx: mpsc::Sender<AppControl>,
     // Config cloned into each worker
     model: String,
     provider: String,
@@ -57,8 +54,6 @@ impl AgentPool {
         no_policy: bool,
         inbox: ox_inbox::InboxStore,
         inbox_root: PathBuf,
-        event_tx: mpsc::Sender<AppEvent>,
-        control_tx: mpsc::Sender<AppControl>,
         broker: ox_broker::BrokerStore,
         rt_handle: tokio::runtime::Handle,
     ) -> Result<Self, String> {
@@ -67,8 +62,6 @@ impl AgentPool {
         Ok(Self {
             module,
             threads: HashMap::new(),
-            event_tx,
-            control_tx,
             model,
             provider,
             max_tokens,
@@ -132,6 +125,7 @@ impl AgentPool {
     }
 
     /// Path to the inbox root directory (for direct file reads).
+    #[allow(dead_code)]
     pub fn inbox_root(&self) -> &std::path::Path {
         &self.inbox_root
     }
@@ -157,8 +151,6 @@ impl AgentPool {
             .insert(thread_id.clone(), ThreadHandle { prompt_tx });
 
         let module = self.module.clone();
-        let event_tx = self.event_tx.clone();
-        let control_tx = self.control_tx.clone();
         let model = self.model.clone();
         let provider = self.provider.clone();
         let max_tokens = self.max_tokens;
@@ -172,7 +164,7 @@ impl AgentPool {
         thread::spawn(move || {
             agent_worker(
                 thread_id, title, module, model, provider, max_tokens, api_key, workspace,
-                no_policy, inbox_root, prompt_rx, event_tx, control_tx, broker, rt_handle,
+                no_policy, inbox_root, prompt_rx, broker, rt_handle,
             );
         });
     }
@@ -195,8 +187,6 @@ fn agent_worker(
     no_policy: bool,
     inbox_root: PathBuf,
     prompt_rx: mpsc::Receiver<String>,
-    event_tx: mpsc::Sender<AppEvent>,
-    control_tx: mpsc::Sender<AppControl>,
     broker: ox_broker::BrokerStore,
     rt_handle: tokio::runtime::Handle,
 ) {
@@ -227,19 +217,17 @@ fn agent_worker(
     )) {
         Ok(handles) => handles,
         Err(e) => {
-            event_tx
-                .send(AppEvent::Done {
-                    thread_id: thread_id.clone(),
-                    result: Err::<String, _>(format!("mount failed: {e}")),
-                })
-                .ok();
+            eprintln!("mount failed for thread {thread_id}: {e}");
             return;
         }
     };
 
     // Create scoped client + SyncClientAdapter
     let scoped_client = broker.client().scoped(&format!("threads/{thread_id}"));
-    let mut adapter = ox_broker::SyncClientAdapter::new(scoped_client, rt_handle.clone());
+    let mut adapter = ox_broker::SyncClientAdapter::new(scoped_client.clone(), rt_handle.clone());
+
+    // Unscoped broker client for inbox writes
+    let broker_client = broker.client();
 
     // Construct ProviderConfig directly (no GateStore read needed)
     let provider_config = match provider.as_str() {
@@ -306,12 +294,7 @@ fn agent_worker(
             &path!("history/append"),
             Record::parsed(json_to_value(user_json)),
         ) {
-            event_tx
-                .send(AppEvent::Done {
-                    thread_id: thread_id.clone(),
-                    result: Err::<String, _>(e.to_string()),
-                })
-                .ok();
+            eprintln!("history append failed for thread {thread_id}: {e}");
             continue;
         }
 
@@ -322,8 +305,8 @@ fn agent_worker(
             api_key: api_key_for_transport.clone(),
             tools,
             policy,
-            event_tx: event_tx.clone(),
-            control_tx: control_tx.clone(),
+            scoped_client: scoped_client.clone(),
+            rt_handle: rt_handle.clone(),
             stats: PolicyStats::default(),
         };
 
@@ -333,28 +316,59 @@ fn agent_worker(
         adapter = returned_store.backend;
         client = returned_store.effects.client;
         tools = returned_store.effects.tools;
-        let stats = returned_store.effects.stats.clone();
         policy = returned_store.effects.policy;
 
         // Persist conversation state for restart recovery
-        save_thread_state(&mut adapter, &inbox_root, &thread_id, &title, &event_tx);
+        save_thread_state(&mut adapter, &inbox_root, &thread_id, &title);
 
-        event_tx
-            .send(AppEvent::PolicyStats {
-                thread_id: thread_id.clone(),
-                stats,
-            })
+        // Write inbox metadata updates through broker
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        {
+            let new_state = if result.is_ok() {
+                "waiting_for_input"
+            } else {
+                "errored"
+            };
+            let mut update = BTreeMap::new();
+            update.insert("id".to_string(), Value::String(thread_id.clone()));
+            update.insert(
+                "thread_state".to_string(),
+                Value::String(new_state.to_string()),
+            );
+            update.insert("updated_at".to_string(), Value::Integer(now));
+            rt_handle
+                .block_on(broker_client.write(
+                    &ox_kernel::Path::from_components(vec![
+                        "inbox".to_string(),
+                        "threads".to_string(),
+                    ]),
+                    Record::parsed(Value::Map(update)),
+                ))
+                .ok();
+        }
+
+        // Clear turn state (thinking = false)
+        rt_handle
+            .block_on(scoped_client.write(
+                &path!("history/turn/thinking"),
+                Record::parsed(Value::Bool(false)),
+            ))
             .ok();
 
-        let done_result = match result {
-            Ok(()) => Ok(String::new()),
-            Err(e) => Err(e),
-        };
-        event_tx
-            .send(AppEvent::Done {
-                thread_id: thread_id.clone(),
-                result: done_result,
-            })
+        if let Err(e) = &result {
+            // Write error to history
+            let msg = serde_json::json!({"role": "assistant", "content": [{"type": "text", "text": format!("error: {e}")}]});
+            adapter
+                .write(&path!("history/append"), Record::parsed(json_to_value(msg)))
+                .ok();
+        }
+
+        // Commit the turn
+        adapter
+            .write(&path!("history/commit"), Record::parsed(Value::Null))
             .ok();
     }
 
@@ -363,13 +377,11 @@ fn agent_worker(
 }
 
 /// Save the conversation state from the store to the thread directory.
-/// Sends a `SaveComplete` event so the main thread can write-through to SQLite.
 fn save_thread_state(
     store: &mut dyn structfs_core_store::Store,
     inbox_root: &std::path::Path,
     thread_id: &str,
     title: &str,
-    event_tx: &mpsc::Sender<AppEvent>,
 ) {
     let thread_dir = inbox_root.join("threads").join(thread_id);
     let now = std::time::SystemTime::now()
@@ -377,7 +389,7 @@ fn save_thread_state(
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
 
-    let result = ox_inbox::snapshot::save(
+    ox_inbox::snapshot::save(
         store,
         &thread_dir,
         thread_id,
@@ -385,18 +397,8 @@ fn save_thread_state(
         &[],
         now,
         &ox_inbox::snapshot::PARTICIPATING_MOUNTS,
-    );
-
-    if let Ok(save_result) = result {
-        event_tx
-            .send(AppEvent::SaveComplete {
-                thread_id: thread_id.to_string(),
-                last_seq: save_result.last_seq,
-                last_hash: save_result.last_hash,
-                updated_at: now,
-            })
-            .ok();
-    }
+    )
+    .ok();
 }
 
 // ---------------------------------------------------------------------------
@@ -406,15 +408,25 @@ fn save_thread_state(
 /// Host-side effects for a CLI agent worker, owning tools and policy so they
 /// can be transferred into/out of the HostStore each turn.
 pub(crate) struct CliEffects {
+    #[allow(dead_code)]
     pub(crate) thread_id: String,
     pub(crate) client: reqwest::blocking::Client,
     config: ProviderConfig,
     api_key: String,
     pub(crate) tools: ToolRegistry,
     pub(crate) policy: crate::policy::PolicyGuard,
-    event_tx: mpsc::Sender<AppEvent>,
-    control_tx: mpsc::Sender<AppControl>,
+    scoped_client: ox_broker::ClientHandle,
+    rt_handle: tokio::runtime::Handle,
     pub(crate) stats: PolicyStats,
+}
+
+impl CliEffects {
+    /// Write a value to the broker through the scoped client (blocking).
+    fn broker_write(&self, path: &structfs_core_store::Path, value: Value) {
+        self.rt_handle
+            .block_on(self.scoped_client.write(path, Record::parsed(value)))
+            .ok();
+    }
 }
 
 impl HostEffects for CliEffects {
@@ -422,8 +434,8 @@ impl HostEffects for CliEffects {
         &mut self,
         request: &CompletionRequest,
     ) -> Result<(Vec<StreamEvent>, u32, u32), String> {
-        let tx = self.event_tx.clone();
-        let tid = self.thread_id.clone();
+        let scoped = self.scoped_client.clone();
+        let handle = self.rt_handle.clone();
         let (events, usage) = crate::transport::streaming_fetch(
             &self.client,
             &self.config,
@@ -431,22 +443,23 @@ impl HostEffects for CliEffects {
             request,
             &|event| {
                 if let StreamEvent::TextDelta(text) = event {
-                    tx.send(AppEvent::Agent {
-                        thread_id: tid.clone(),
-                        event: AgentEvent::TextDelta(text.clone()),
-                    })
-                    .ok();
+                    handle
+                        .block_on(scoped.write(
+                            &path!("history/turn/streaming"),
+                            Record::parsed(Value::String(text.clone())),
+                        ))
+                        .ok();
                 }
             },
         )?;
         if usage.input_tokens > 0 || usage.output_tokens > 0 {
-            self.event_tx
-                .send(AppEvent::Usage {
-                    thread_id: self.thread_id.clone(),
-                    input_tokens: usage.input_tokens,
-                    output_tokens: usage.output_tokens,
-                })
-                .ok();
+            let mut tmap = BTreeMap::new();
+            tmap.insert("in".to_string(), Value::Integer(usage.input_tokens as i64));
+            tmap.insert(
+                "out".to_string(),
+                Value::Integer(usage.output_tokens as i64),
+            );
+            self.broker_write(&path!("history/turn/tokens"), Value::Map(tmap));
         }
         Ok((events, usage.input_tokens, usage.output_tokens))
     }
@@ -456,22 +469,10 @@ impl HostEffects for CliEffects {
         match decision {
             crate::policy::CheckResult::Allow => {
                 self.stats.allowed += 1;
-                self.event_tx
-                    .send(AppEvent::PolicyStats {
-                        thread_id: self.thread_id.clone(),
-                        stats: self.stats.clone(),
-                    })
-                    .ok();
                 self.execute_tool_inner(call)
             }
             crate::policy::CheckResult::Deny(reason) => {
                 self.stats.denied += 1;
-                self.event_tx
-                    .send(AppEvent::PolicyStats {
-                        thread_id: self.thread_id.clone(),
-                        stats: self.stats.clone(),
-                    })
-                    .ok();
                 Err(format!("denied: {reason}"))
             }
             crate::policy::CheckResult::Ask {
@@ -480,92 +481,94 @@ impl HostEffects for CliEffects {
                 ..
             } => {
                 self.stats.asked += 1;
-                self.event_tx
-                    .send(AppEvent::PolicyStats {
-                        thread_id: self.thread_id.clone(),
-                        stats: self.stats.clone(),
-                    })
-                    .ok();
-                let (resp_tx, resp_rx) = mpsc::channel();
-                self.control_tx
-                    .send(AppControl::PermissionRequest {
-                        thread_id: self.thread_id.clone(),
-                        tool,
-                        input_preview,
-                        respond: resp_tx,
-                    })
-                    .ok();
-                match resp_rx.recv() {
-                    Ok(ApprovalResponse::AllowOnce) => {
-                        self.stats.allowed += 1;
-                        self.execute_tool_inner(call)
-                    }
-                    Ok(ApprovalResponse::AllowSession) => {
-                        self.policy.session_allow(&call.name, &call.input);
-                        self.stats.allowed += 1;
-                        self.execute_tool_inner(call)
-                    }
-                    Ok(ApprovalResponse::AllowAlways) => {
-                        self.policy.persist_allow(&call.name, &call.input);
-                        self.stats.allowed += 1;
-                        self.execute_tool_inner(call)
-                    }
-                    Ok(ApprovalResponse::DenyOnce) => {
-                        self.stats.denied += 1;
-                        Err("denied by user".into())
-                    }
-                    Ok(ApprovalResponse::DenySession) => {
-                        self.policy.session_deny(&call.name, &call.input);
-                        self.stats.denied += 1;
-                        Err("denied by user".into())
-                    }
-                    Ok(ApprovalResponse::DenyAlways) => {
-                        self.policy.persist_deny(&call.name, &call.input);
-                        self.stats.denied += 1;
-                        Err("denied by user".into())
-                    }
-                    Ok(ApprovalResponse::CustomNode {
-                        node,
-                        sandbox,
-                        scope,
-                    }) => {
-                        let is_allow = crate::app::node_is_allow(&node);
-                        match scope.as_str() {
-                            "always" => {
-                                if let Some((name, sb)) = sandbox {
-                                    self.policy.add_sandbox(&name, sb, true);
-                                }
-                                self.policy.add_persistent_node(*node);
-                            }
-                            "session" => {
-                                if let Some((name, sb)) = sandbox {
-                                    self.policy.add_sandbox(&name, sb, false);
-                                }
-                                self.policy.add_session_node(*node);
-                            }
-                            _ => {} // "once"
-                        }
-                        if is_allow {
+
+                // Write approval request through broker — blocks until TUI responds
+                let mut req = BTreeMap::new();
+                req.insert("tool_name".to_string(), Value::String(tool));
+                req.insert("input_preview".to_string(), Value::String(input_preview));
+                let result = self.rt_handle.block_on(
+                    self.scoped_client
+                        .write(&path!("approval/request"), Record::parsed(Value::Map(req))),
+                );
+
+                if result.is_ok() {
+                    // Read the response
+                    let resp = self
+                        .rt_handle
+                        .block_on(self.scoped_client.read(&path!("approval/response")))
+                        .ok()
+                        .flatten()
+                        .and_then(|r| match r.as_value() {
+                            Some(Value::String(s)) => Some(s.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| "deny_once".to_string());
+
+                    match resp.as_str() {
+                        "allow_once" => {
                             self.stats.allowed += 1;
                             self.execute_tool_inner(call)
-                        } else {
+                        }
+                        "allow_session" => {
+                            self.policy.session_allow(&call.name, &call.input);
+                            self.stats.allowed += 1;
+                            self.execute_tool_inner(call)
+                        }
+                        "allow_always" => {
+                            self.policy.persist_allow(&call.name, &call.input);
+                            self.stats.allowed += 1;
+                            self.execute_tool_inner(call)
+                        }
+                        "deny_session" => {
+                            self.policy.session_deny(&call.name, &call.input);
                             self.stats.denied += 1;
-                            Err("denied by custom rule".into())
+                            Err("denied by user".into())
+                        }
+                        "deny_always" => {
+                            self.policy.persist_deny(&call.name, &call.input);
+                            self.stats.denied += 1;
+                            Err("denied by user".into())
+                        }
+                        _ => {
+                            // "deny_once" or unknown
+                            self.stats.denied += 1;
+                            Err("denied by user".into())
                         }
                     }
-                    Err(_) => Err("denied: TUI disconnected".into()),
+                } else {
+                    self.stats.denied += 1;
+                    Err("denied: approval timeout".into())
                 }
             }
         }
     }
 
     fn emit_event(&mut self, event: AgentEvent) {
-        self.event_tx
-            .send(AppEvent::Agent {
-                thread_id: self.thread_id.clone(),
-                event,
-            })
-            .ok();
+        match event {
+            AgentEvent::TurnStart => {
+                self.broker_write(&path!("history/turn/thinking"), Value::Bool(true));
+            }
+            AgentEvent::TextDelta(text) => {
+                self.broker_write(&path!("history/turn/streaming"), Value::String(text));
+            }
+            AgentEvent::ToolCallStart { name } => {
+                let mut map = BTreeMap::new();
+                map.insert("name".to_string(), Value::String(name));
+                map.insert("status".to_string(), Value::String("running".to_string()));
+                self.broker_write(&path!("history/turn/tool"), Value::Map(map));
+            }
+            AgentEvent::ToolCallResult { .. } => {
+                self.broker_write(&path!("history/turn/tool"), Value::Null);
+            }
+            AgentEvent::TurnEnd => {
+                self.broker_write(&path!("history/turn/thinking"), Value::Bool(false));
+            }
+            AgentEvent::Error(e) => {
+                let msg = serde_json::json!({"role": "assistant", "content": [{"type": "text", "text": format!("error: {e}")}]});
+                self.broker_write(&path!("history/append"), json_to_value(msg));
+                self.broker_write(&path!("history/turn/thinking"), Value::Bool(false));
+            }
+        }
     }
 }
 

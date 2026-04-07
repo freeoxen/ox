@@ -384,19 +384,13 @@ mod tests {
         // Agent writes approval request (should block)
         let agent_task = tokio::spawn(async move {
             let mut map = std::collections::BTreeMap::new();
-            map.insert(
-                "tool_name".to_string(),
-                Value::String("bash".to_string()),
-            );
+            map.insert("tool_name".to_string(), Value::String("bash".to_string()));
             map.insert(
                 "input_preview".to_string(),
                 Value::String("rm -rf /".to_string()),
             );
             agent_client
-                .write(
-                    &path!("approval/request"),
-                    Record::parsed(Value::Map(map)),
-                )
+                .write(&path!("approval/request"), Record::parsed(Value::Map(map)))
                 .await
         });
 

@@ -8,11 +8,10 @@ use ratatui::widgets::Paragraph;
 /// Render the title/header bar into `area`.
 pub fn draw_tabs(frame: &mut Frame, vs: &ViewState, theme: &Theme, area: Rect) {
     let spans = if let Some(ref tid) = vs.active_thread {
-        // Thread view — show thread title
+        // Thread view — show thread title from messages
         let title = vs
-            .thread_views
-            .get(tid)
-            .and_then(|v| v.messages.first())
+            .messages
+            .first()
             .map(|m| match m {
                 crate::app::ChatMessage::User(s) => {
                     let truncated: String = s.chars().take(50).collect();

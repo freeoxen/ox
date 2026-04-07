@@ -5,42 +5,11 @@
 //! This decouples rendering from mutable App access and broker writes.
 
 use std::collections::BTreeMap;
-use std::collections::HashMap;
 
 use ox_broker::ClientHandle;
 use structfs_core_store::{Value, path};
 
-use crate::app::{
-    App, ApprovalState, ChatMessage, CustomizeState, InputMode, SearchState, ThreadView,
-};
-use crate::policy::PolicyStats;
-
-// ---------------------------------------------------------------------------
-// StreamingTurn — lightweight cache for in-progress turns
-// ---------------------------------------------------------------------------
-
-/// Lightweight streaming cache for an in-progress agent turn.
-///
-/// Populated by draining `AppEvent`s in the event loop (Task 2).
-/// For now this is defined but not yet stored in App.
-#[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
-pub struct StreamingTurn {
-    /// Accumulated text delta for the current assistant response.
-    pub text: String,
-    /// Whether the agent is currently thinking/streaming.
-    pub thinking: bool,
-    /// Tool calls observed this turn (name only).
-    pub tool_calls: Vec<String>,
-    /// Tool results observed this turn.
-    pub tool_results: Vec<(String, String)>,
-    /// Cumulative input tokens for this turn.
-    pub tokens_in: u32,
-    /// Cumulative output tokens for this turn.
-    pub tokens_out: u32,
-    /// Policy stats for this turn.
-    pub policy_stats: PolicyStats,
-}
+use crate::app::{App, ChatMessage, CustomizeState, InputMode, SearchState};
 
 // ---------------------------------------------------------------------------
 // InboxThread — parsed thread metadata for inbox display
@@ -92,12 +61,18 @@ pub struct ViewState<'a> {
 
     /// Inbox threads (only populated on inbox screen).
     pub inbox_threads: Vec<InboxThread>,
-    /// Committed messages for the active thread (only populated on thread screen).
-    pub committed_messages: Vec<ChatMessage>,
+    /// Messages for the active thread (committed + in-progress turn).
+    pub messages: Vec<ChatMessage>,
+    /// Whether the agent is currently thinking/streaming.
+    pub thinking: bool,
+    /// Current tool call status: (tool_name, status).
+    pub tool_status: Option<(String, String)>,
+    /// Turn token usage: (input_tokens, output_tokens).
+    pub turn_tokens: (u32, u32),
+    /// Pending approval: (tool_name, input_preview), or None.
+    pub approval_pending: Option<(String, String)>,
 
     // -- App-borrowed (references) ---------------------------------------
-    /// Live thread views with streaming data.
-    pub thread_views: &'a HashMap<String, ThreadView>,
     /// Search state.
     pub search: &'a SearchState,
     /// Input history.
@@ -106,8 +81,8 @@ pub struct ViewState<'a> {
     pub model: &'a str,
     /// Provider name.
     pub provider: &'a str,
-    /// Pending approval dialog.
-    pub pending_approval: &'a Option<ApprovalState>,
+    /// Approval dialog selection index.
+    pub approval_selected: usize,
     /// Pending customize dialog.
     pub pending_customize: &'a Option<CustomizeState>,
     /// App input mode (from App, not broker — used until full migration).
@@ -334,7 +309,11 @@ pub async fn fetch_view_state<'a>(client: &ClientHandle, app: &'a App) -> ViewSt
 
     // Conditional reads based on screen
     let mut inbox_threads = Vec::new();
-    let mut committed_messages = Vec::new();
+    let mut messages = Vec::new();
+    let mut thinking = false;
+    let mut tool_status: Option<(String, String)> = None;
+    let mut turn_tokens: (u32, u32) = (0, 0);
+    let mut approval_pending: Option<(String, String)> = None;
 
     if screen == "inbox" {
         // Read inbox threads
@@ -344,17 +323,90 @@ pub async fn fetch_view_state<'a>(client: &ClientHandle, app: &'a App) -> ViewSt
             }
         }
     } else if screen == "thread" {
-        // Read committed messages for the active thread
         if let Some(tid) = &active_thread {
-            let msg_path = structfs_core_store::Path::from_components(vec![
-                "threads".to_string(),
-                tid.clone(),
-                "history".to_string(),
-                "messages".to_string(),
-            ]);
+            let prefix = format!("threads/{tid}");
+
+            // Read committed messages
+            let msg_path =
+                structfs_core_store::Path::parse(&format!("{prefix}/history/messages")).unwrap();
             if let Ok(Some(record)) = client.read(&msg_path).await {
                 if let Some(Value::Array(arr)) = record.as_value() {
-                    committed_messages = parse_chat_messages(arr);
+                    messages = parse_chat_messages(arr);
+                }
+            }
+
+            // Read turn/thinking
+            let thinking_path =
+                structfs_core_store::Path::parse(&format!("{prefix}/history/turn/thinking"))
+                    .unwrap();
+            if let Ok(Some(record)) = client.read(&thinking_path).await {
+                if let Some(Value::Bool(b)) = record.as_value() {
+                    thinking = *b;
+                }
+            }
+
+            // Read turn/tool
+            let tool_path =
+                structfs_core_store::Path::parse(&format!("{prefix}/history/turn/tool")).unwrap();
+            if let Ok(Some(record)) = client.read(&tool_path).await {
+                if let Some(Value::Map(m)) = record.as_value() {
+                    let name = m
+                        .get("name")
+                        .and_then(|v| match v {
+                            Value::String(s) => Some(s.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    let status = m
+                        .get("status")
+                        .and_then(|v| match v {
+                            Value::String(s) => Some(s.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    tool_status = Some((name, status));
+                }
+            }
+
+            // Read turn/tokens
+            let tokens_path =
+                structfs_core_store::Path::parse(&format!("{prefix}/history/turn/tokens")).unwrap();
+            if let Ok(Some(record)) = client.read(&tokens_path).await {
+                if let Some(Value::Map(m)) = record.as_value() {
+                    let in_t = m
+                        .get("in")
+                        .and_then(|v| match v {
+                            Value::Integer(i) => Some(*i as u32),
+                            _ => None,
+                        })
+                        .unwrap_or(0);
+                    let out_t = m
+                        .get("out")
+                        .and_then(|v| match v {
+                            Value::Integer(i) => Some(*i as u32),
+                            _ => None,
+                        })
+                        .unwrap_or(0);
+                    turn_tokens = (in_t, out_t);
+                }
+            }
+
+            // Read approval/pending
+            let approval_path =
+                structfs_core_store::Path::parse(&format!("{prefix}/approval/pending")).unwrap();
+            if let Ok(Some(record)) = client.read(&approval_path).await {
+                if let Some(Value::Map(m)) = record.as_value() {
+                    let tool_name = m.get("tool_name").and_then(|v| match v {
+                        Value::String(s) => Some(s.clone()),
+                        _ => None,
+                    });
+                    let input_preview = m.get("input_preview").and_then(|v| match v {
+                        Value::String(s) => Some(s.clone()),
+                        _ => None,
+                    });
+                    if let Some(tn) = tool_name {
+                        approval_pending = Some((tn, input_preview.unwrap_or_default()));
+                    }
                 }
             }
         }
@@ -372,13 +424,16 @@ pub async fn fetch_view_state<'a>(client: &ClientHandle, app: &'a App) -> ViewSt
         cursor,
         pending_action,
         inbox_threads,
-        committed_messages,
-        thread_views: &app.thread_views,
+        messages,
+        thinking,
+        tool_status,
+        turn_tokens,
+        approval_pending,
         search: &app.search,
         input_history: &app.input_history,
         model: &app.model,
         provider: &app.provider,
-        pending_approval: &app.pending_approval,
+        approval_selected: app.approval_selected,
         pending_customize: &app.pending_customize,
         input_mode: &app.mode,
     }
