@@ -90,6 +90,18 @@ pub async fn run_async(
                             "inbox"
                         };
 
+                        // Search chip dismissal (1-9 in normal mode, inbox, search active)
+                        if mode == "normal"
+                            && screen == "inbox"
+                            && app.search.is_active()
+                        {
+                            if let KeyCode::Char(c @ '1'..='9') = key.code {
+                                let idx = (c as u8 - b'1') as usize;
+                                app.search.dismiss_chip(idx);
+                                continue;
+                            }
+                        }
+
                         let mut event_map = BTreeMap::new();
                         event_map.insert("mode".to_string(), Value::String(mode.to_string()));
                         event_map.insert("key".to_string(), Value::String(key_str.clone()));

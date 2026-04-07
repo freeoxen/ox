@@ -35,7 +35,10 @@ mod tests {
 
     #[test]
     fn simple_char() {
-        assert_eq!(encode_key(KeyModifiers::NONE, KeyCode::Char('j')), Some("j".to_string()));
+        assert_eq!(
+            encode_key(KeyModifiers::NONE, KeyCode::Char('j')),
+            Some("j".to_string())
+        );
     }
 
     #[test]
@@ -48,9 +51,18 @@ mod tests {
 
     #[test]
     fn special_keys() {
-        assert_eq!(encode_key(KeyModifiers::NONE, KeyCode::Enter), Some("Enter".to_string()));
-        assert_eq!(encode_key(KeyModifiers::NONE, KeyCode::Esc), Some("Esc".to_string()));
-        assert_eq!(encode_key(KeyModifiers::NONE, KeyCode::Up), Some("Up".to_string()));
+        assert_eq!(
+            encode_key(KeyModifiers::NONE, KeyCode::Enter),
+            Some("Enter".to_string())
+        );
+        assert_eq!(
+            encode_key(KeyModifiers::NONE, KeyCode::Esc),
+            Some("Esc".to_string())
+        );
+        assert_eq!(
+            encode_key(KeyModifiers::NONE, KeyCode::Up),
+            Some("Up".to_string())
+        );
     }
 
     #[test]
