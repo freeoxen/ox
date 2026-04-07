@@ -316,14 +316,17 @@ impl Writer for UiStore {
                 self.cursor = 0;
                 Ok(path!("input"))
             }
+            // Scroll commands: names match VISUAL direction.
+            // scroll_up = viewport moves up = see older = scroll value increases
+            // scroll_down = viewport moves down = see newer = scroll value decreases
             "scroll_up" => {
-                self.scroll = self.scroll.saturating_sub(1);
-                Ok(path!("scroll"))
-            }
-            "scroll_down" => {
                 if self.scroll < self.scroll_max {
                     self.scroll += 1;
                 }
+                Ok(path!("scroll"))
+            }
+            "scroll_down" => {
+                self.scroll = self.scroll.saturating_sub(1);
                 Ok(path!("scroll"))
             }
             "scroll_to_top" => {
@@ -334,20 +337,20 @@ impl Writer for UiStore {
                 self.scroll = 0;
                 Ok(path!("scroll"))
             }
-            "scroll_page_down" => {
+            "scroll_page_up" => {
                 self.scroll = (self.scroll + self.viewport_height).min(self.scroll_max);
                 Ok(path!("scroll"))
             }
-            "scroll_page_up" => {
+            "scroll_page_down" => {
                 self.scroll = self.scroll.saturating_sub(self.viewport_height);
                 Ok(path!("scroll"))
             }
-            "scroll_half_page_down" => {
+            "scroll_half_page_up" => {
                 let half = self.viewport_height / 2;
                 self.scroll = (self.scroll + half).min(self.scroll_max);
                 Ok(path!("scroll"))
             }
-            "scroll_half_page_up" => {
+            "scroll_half_page_down" => {
                 let half = self.viewport_height / 2;
                 self.scroll = self.scroll.saturating_sub(half);
                 Ok(path!("scroll"))
@@ -815,8 +818,9 @@ mod tests {
             )
             .unwrap();
 
+        // scroll_up = visual up = increases scroll value
         for _ in 0..10 {
-            store.write(&path!("scroll_down"), empty_cmd()).unwrap();
+            store.write(&path!("scroll_up"), empty_cmd()).unwrap();
         }
         assert_eq!(read_str(&mut store, "scroll"), Value::Integer(5));
     }
@@ -831,7 +835,7 @@ mod tests {
             )
             .unwrap();
         for _ in 0..8 {
-            store.write(&path!("scroll_down"), empty_cmd()).unwrap();
+            store.write(&path!("scroll_up"), empty_cmd()).unwrap();
         }
         assert_eq!(read_str(&mut store, "scroll"), Value::Integer(8));
 
@@ -882,27 +886,27 @@ mod tests {
             )
             .unwrap();
 
-        // Full page down
+        // Full page up (visual up = increases scroll)
         store
-            .write(&path!("scroll_page_down"), empty_cmd())
+            .write(&path!("scroll_page_up"), empty_cmd())
             .unwrap();
         assert_eq!(read_str(&mut store, "scroll"), Value::Integer(20));
-
-        // Half page down
-        store
-            .write(&path!("scroll_half_page_down"), empty_cmd())
-            .unwrap();
-        assert_eq!(read_str(&mut store, "scroll"), Value::Integer(30));
 
         // Half page up
         store
             .write(&path!("scroll_half_page_up"), empty_cmd())
             .unwrap();
+        assert_eq!(read_str(&mut store, "scroll"), Value::Integer(30));
+
+        // Half page down (visual down = decreases scroll)
+        store
+            .write(&path!("scroll_half_page_down"), empty_cmd())
+            .unwrap();
         assert_eq!(read_str(&mut store, "scroll"), Value::Integer(20));
 
-        // Full page up
+        // Full page down
         store
-            .write(&path!("scroll_page_up"), empty_cmd())
+            .write(&path!("scroll_page_down"), empty_cmd())
             .unwrap();
         assert_eq!(read_str(&mut store, "scroll"), Value::Integer(0));
     }
@@ -940,9 +944,9 @@ mod tests {
             )
             .unwrap();
 
-        // Page down with viewport > max — clamps to max
+        // Page up with viewport > max — clamps to max
         store
-            .write(&path!("scroll_page_down"), empty_cmd())
+            .write(&path!("scroll_page_up"), empty_cmd())
             .unwrap();
         assert_eq!(read_str(&mut store, "scroll"), Value::Integer(10));
     }

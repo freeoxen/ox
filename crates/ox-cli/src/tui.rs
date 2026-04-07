@@ -325,10 +325,9 @@ async fn dispatch_mouse(client: &ox_broker::ClientHandle, app: &App, kind: Mouse
     match kind {
         MouseEventKind::ScrollUp => {
             if app.active_thread.is_some() {
-                // Thread: scroll down (increase scroll = see older messages)
                 let _ = client
                     .write(
-                        &path!("ui/scroll_down"),
+                        &path!("ui/scroll_up"),
                         Record::parsed(Value::Map(BTreeMap::new())),
                     )
                     .await;
@@ -345,7 +344,7 @@ async fn dispatch_mouse(client: &ox_broker::ClientHandle, app: &App, kind: Mouse
             if app.active_thread.is_some() {
                 let _ = client
                     .write(
-                        &path!("ui/scroll_up"),
+                        &path!("ui/scroll_down"),
                         Record::parsed(Value::Map(BTreeMap::new())),
                     )
                     .await;

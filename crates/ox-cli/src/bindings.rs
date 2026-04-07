@@ -99,34 +99,10 @@ fn normal_mode(out: &mut Vec<Binding>) {
         "Move selection up",
     ));
 
-    out.push(bind_screen(
-        "normal",
-        "j",
-        "thread",
-        cmd("ui/scroll_up"),
-        "Scroll up",
-    ));
-    out.push(bind_screen(
-        "normal",
-        "Down",
-        "thread",
-        cmd("ui/scroll_up"),
-        "Scroll up",
-    ));
-    out.push(bind_screen(
-        "normal",
-        "k",
-        "thread",
-        cmd("ui/scroll_down"),
-        "Scroll down",
-    ));
-    out.push(bind_screen(
-        "normal",
-        "Up",
-        "thread",
-        cmd("ui/scroll_down"),
-        "Scroll down",
-    ));
+    out.push(bind_screen("normal", "j", "thread", cmd("ui/scroll_down"), "Scroll down"));
+    out.push(bind_screen("normal", "Down", "thread", cmd("ui/scroll_down"), "Scroll down"));
+    out.push(bind_screen("normal", "k", "thread", cmd("ui/scroll_up"), "Scroll up"));
+    out.push(bind_screen("normal", "Up", "thread", cmd("ui/scroll_up"), "Scroll up"));
 
     // Screen transitions
     out.push(bind_screen(
@@ -187,8 +163,8 @@ fn normal_mode(out: &mut Vec<Binding>) {
     // g/G: go to top/bottom
     out.push(bind_screen("normal", "g", "inbox", cmd("ui/select_first"), "Go to first"));
     out.push(bind_screen("normal", "G", "inbox", cmd("ui/select_last"), "Go to last"));
-    out.push(bind_screen("normal", "g", "thread", cmd("ui/scroll_to_bottom"), "Go to newest"));
-    out.push(bind_screen("normal", "G", "thread", cmd("ui/scroll_to_top"), "Go to oldest"));
+    out.push(bind_screen("normal", "g", "thread", cmd("ui/scroll_to_top"), "Go to top"));
+    out.push(bind_screen("normal", "G", "thread", cmd("ui/scroll_to_bottom"), "Go to bottom"));
 
     // Ctrl+d/u: half-page scroll
     out.push(bind_screen("normal", "Ctrl+d", "thread", cmd("ui/scroll_half_page_down"), "Half page down"));
