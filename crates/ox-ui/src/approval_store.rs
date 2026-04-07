@@ -1,13 +1,13 @@
-//! ApprovalStore — per-thread approval request/response state.
+//! ApprovalStore — per-thread approval request/response state (async, deferred).
 //!
-//! The agent writes to "request" to post an approval request.
-//! The TUI reads "pending" to discover requests.
-//! The user writes to "response" to post a decision.
-//! The agent reads "response" to get the decision.
+//! The agent writes to "request" to post an approval request — the returned
+//! future blocks until the TUI writes to "response" with a decision.
+//! The TUI reads "pending" to discover the current request.
 
 use std::collections::BTreeMap;
 
-use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer};
+use ox_broker::async_store::{AsyncReader, AsyncWriter, BoxFuture};
+use structfs_core_store::{Error as StoreError, Path, Record, Value};
 
 /// An approval request from the agent.
 #[derive(Debug, Clone)]
@@ -18,14 +18,14 @@ pub struct ApprovalRequest {
 
 pub struct ApprovalStore {
     pending: Option<ApprovalRequest>,
-    response: Option<String>,
+    deferred_tx: Option<tokio::sync::oneshot::Sender<String>>,
 }
 
 impl ApprovalStore {
     pub fn new() -> Self {
         ApprovalStore {
             pending: None,
-            response: None,
+            deferred_tx: None,
         }
     }
 }
@@ -36,14 +36,14 @@ impl Default for ApprovalStore {
     }
 }
 
-impl Reader for ApprovalStore {
-    fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
+impl AsyncReader for ApprovalStore {
+    fn read(&mut self, from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
         let key = if from.is_empty() {
             ""
         } else {
             from.components[0].as_str()
         };
-        match key {
+        let result = match key {
             "pending" => Ok(Some(Record::parsed(match &self.pending {
                 Some(req) => {
                     let mut map = BTreeMap::new();
@@ -59,80 +59,104 @@ impl Reader for ApprovalStore {
                 }
                 None => Value::Null,
             }))),
-            "response" => Ok(Some(Record::parsed(match &self.response {
-                Some(decision) => Value::String(decision.clone()),
-                None => Value::Null,
-            }))),
             _ => Ok(None),
-        }
+        };
+        Box::pin(std::future::ready(result))
     }
 }
 
-impl Writer for ApprovalStore {
-    fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
+impl AsyncWriter for ApprovalStore {
+    fn write(&mut self, to: &Path, data: Record) -> BoxFuture<Result<Path, StoreError>> {
         let action = if to.is_empty() {
             ""
         } else {
             to.components[0].as_str()
         };
-        let value = data.as_value().ok_or_else(|| {
-            StoreError::store("approval", "write", "write data must contain a value")
-        })?;
+        let value = match data.as_value() {
+            Some(v) => v.clone(),
+            None => {
+                return Box::pin(std::future::ready(Err(StoreError::store(
+                    "approval",
+                    "write",
+                    "write data must contain a value",
+                ))));
+            }
+        };
 
         match action {
             "request" => {
                 let map = match value {
                     Value::Map(m) => m,
                     _ => {
-                        return Err(StoreError::store(
+                        return Box::pin(std::future::ready(Err(StoreError::store(
                             "approval",
                             "request",
                             "request must be a Map with tool_name and input_preview",
-                        ));
+                        ))));
                     }
                 };
-                let tool_name = map
-                    .get("tool_name")
-                    .and_then(|v| match v {
-                        Value::String(s) => Some(s.clone()),
-                        _ => None,
-                    })
-                    .ok_or_else(|| StoreError::store("approval", "request", "missing tool_name"))?;
-                let input_preview = map
-                    .get("input_preview")
-                    .and_then(|v| match v {
-                        Value::String(s) => Some(s.clone()),
-                        _ => None,
-                    })
-                    .unwrap_or_default();
+                let tool_name = match map.get("tool_name") {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => {
+                        return Box::pin(std::future::ready(Err(StoreError::store(
+                            "approval",
+                            "request",
+                            "missing tool_name",
+                        ))));
+                    }
+                };
+                let input_preview = match map.get("input_preview") {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => String::new(),
+                };
 
                 self.pending = Some(ApprovalRequest {
                     tool_name,
                     input_preview,
                 });
-                self.response = None;
-                Ok(to.clone())
+
+                let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+                self.deferred_tx = Some(tx);
+
+                let path = to.clone();
+                Box::pin(async move {
+                    // Block until the response arrives via the oneshot channel
+                    let _decision = rx.await.map_err(|_| {
+                        StoreError::store(
+                            "approval",
+                            "request",
+                            "response channel dropped without a response",
+                        )
+                    })?;
+                    Ok(path)
+                })
             }
             "response" => {
                 let decision = match value {
-                    Value::String(s) => s.clone(),
+                    Value::String(s) => s,
                     _ => {
-                        return Err(StoreError::store(
+                        return Box::pin(std::future::ready(Err(StoreError::store(
                             "approval",
                             "response",
                             "response must be a String decision",
-                        ));
+                        ))));
                     }
                 };
-                self.response = Some(decision);
+
+                // Unblock the deferred request future
+                if let Some(tx) = self.deferred_tx.take() {
+                    let _ = tx.send(decision);
+                }
                 self.pending = None;
-                Ok(to.clone())
+
+                let path = to.clone();
+                Box::pin(std::future::ready(Ok(path)))
             }
-            _ => Err(StoreError::store(
+            _ => Box::pin(std::future::ready(Err(StoreError::store(
                 "approval",
                 "write",
                 "unknown approval path",
-            )),
+            )))),
         }
     }
 }
@@ -142,15 +166,15 @@ mod tests {
     use super::*;
     use structfs_core_store::path;
 
-    #[test]
-    fn initial_state_has_no_pending() {
+    #[tokio::test]
+    async fn initial_state_has_no_pending() {
         let mut store = ApprovalStore::new();
-        let pending = store.read(&path!("pending")).unwrap().unwrap();
+        let pending = store.read(&path!("pending")).await.unwrap().unwrap();
         assert_eq!(pending.as_value().unwrap(), &Value::Null);
     }
 
-    #[test]
-    fn request_creates_pending() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn request_creates_pending_and_blocks() {
         let mut store = ApprovalStore::new();
         let mut map = BTreeMap::new();
         map.insert("tool_name".to_string(), Value::String("bash".to_string()));
@@ -158,11 +182,12 @@ mod tests {
             "input_preview".to_string(),
             Value::String("ls -la".to_string()),
         );
-        store
-            .write(&path!("request"), Record::parsed(Value::Map(map)))
-            .unwrap();
 
-        let pending = store.read(&path!("pending")).unwrap().unwrap();
+        // Write request — capture the deferred future but don't await yet
+        let deferred = store.write(&path!("request"), Record::parsed(Value::Map(map)));
+
+        // Pending should be set
+        let pending = store.read(&path!("pending")).await.unwrap().unwrap();
         let m = match pending.as_value().unwrap() {
             Value::Map(m) => m,
             _ => panic!("expected map"),
@@ -171,61 +196,57 @@ mod tests {
             m.get("tool_name").unwrap(),
             &Value::String("bash".to_string())
         );
+
+        // Write response to unblock
+        store
+            .write(
+                &path!("response"),
+                Record::parsed(Value::String("allow_once".to_string())),
+            )
+            .await
+            .unwrap();
+
+        // Now the deferred future should resolve
+        let result = deferred.await;
+        assert!(result.is_ok());
     }
 
-    #[test]
-    fn response_clears_pending() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn response_clears_pending() {
         let mut store = ApprovalStore::new();
         let mut map = BTreeMap::new();
         map.insert("tool_name".to_string(), Value::String("bash".to_string()));
-        store
-            .write(&path!("request"), Record::parsed(Value::Map(map)))
-            .unwrap();
+        let _deferred = store.write(&path!("request"), Record::parsed(Value::Map(map)));
 
         store
             .write(
                 &path!("response"),
                 Record::parsed(Value::String("allow_once".to_string())),
             )
+            .await
             .unwrap();
 
         // Pending is cleared
-        let pending = store.read(&path!("pending")).unwrap().unwrap();
+        let pending = store.read(&path!("pending")).await.unwrap().unwrap();
         assert_eq!(pending.as_value().unwrap(), &Value::Null);
-
-        // Response is available
-        let resp = store.read(&path!("response")).unwrap().unwrap();
-        assert_eq!(
-            resp.as_value().unwrap(),
-            &Value::String("allow_once".to_string())
-        );
     }
 
-    #[test]
-    fn request_clears_previous_response() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn request_clears_previous_deferred() {
         let mut store = ApprovalStore::new();
 
-        // First cycle
+        // First request
         let mut map = BTreeMap::new();
         map.insert("tool_name".to_string(), Value::String("bash".to_string()));
-        store
-            .write(&path!("request"), Record::parsed(Value::Map(map)))
-            .unwrap();
-        store
-            .write(
-                &path!("response"),
-                Record::parsed(Value::String("allow_once".to_string())),
-            )
-            .unwrap();
+        let first_deferred = store.write(&path!("request"), Record::parsed(Value::Map(map)));
 
-        // Second request clears old response
+        // Second request overwrites; first sender is dropped
         let mut map2 = BTreeMap::new();
         map2.insert("tool_name".to_string(), Value::String("write".to_string()));
-        store
-            .write(&path!("request"), Record::parsed(Value::Map(map2)))
-            .unwrap();
+        let _second_deferred = store.write(&path!("request"), Record::parsed(Value::Map(map2)));
 
-        let resp = store.read(&path!("response")).unwrap().unwrap();
-        assert_eq!(resp.as_value().unwrap(), &Value::Null);
+        // The first deferred should error (sender dropped)
+        let result = first_deferred.await;
+        assert!(result.is_err());
     }
 }

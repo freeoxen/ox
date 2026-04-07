@@ -10,9 +10,10 @@ authors.workspace = true
 description = "UI stores for ox — state machines driven by StructFS command protocol"
 
 [dependencies]
+ox-broker = { path = "../ox-broker" }
 structfs-core-store = { workspace = true }
 structfs-serde-store = { workspace = true }
+tokio = { workspace = true }
 
 [dev-dependencies]
-ox-broker = { path = "../ox-broker" }
 tokio = { version = "1", features = ["sync", "time", "rt", "macros", "rt-multi-thread"] }

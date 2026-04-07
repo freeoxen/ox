@@ -101,6 +101,17 @@ pub async fn mount_thread(
         .map_err(|e: structfs_core_store::Error| e.to_string())?;
     handles.push(broker.mount(gate_path, gate).await);
 
+    // Approval — async store with deferred write pattern
+    handles.push(
+        broker
+            .mount_async(
+                structfs_core_store::Path::parse(&format!("{prefix}/approval"))
+                    .map_err(|e| e.to_string())?,
+                ox_ui::ApprovalStore::new(),
+            )
+            .await,
+    );
+
     Ok(ThreadMountHandles {
         server_handles: handles,
         thread_id: thread_id.to_string(),
@@ -110,7 +121,7 @@ pub async fn mount_thread(
 /// Unmount all five stores for a thread.
 pub async fn unmount_thread(broker: &BrokerStore, thread_id: &str) {
     let prefix = format!("threads/{thread_id}");
-    for store_name in &["system", "history", "tools", "model", "gate"] {
+    for store_name in &["system", "history", "tools", "model", "gate", "approval"] {
         if let Ok(path) = structfs_core_store::Path::parse(&format!("{prefix}/{store_name}")) {
             broker.unmount(&path).await;
         }
@@ -295,7 +306,7 @@ mod tests {
         unmount_thread(&broker, "t_unmount").await;
 
         // All five stores should be gone (NoRoute)
-        for store_name in &["system", "history", "tools", "model", "gate"] {
+        for store_name in &["system", "history", "tools", "model", "gate", "approval"] {
             let path = structfs_core_store::Path::parse(&format!("threads/t_unmount/{store_name}"))
                 .unwrap();
             let result = client.read(&path).await;
@@ -358,5 +369,73 @@ mod tests {
         .await;
 
         result.expect("spawn_blocking task should succeed");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn approval_deferred_write_through_broker() {
+        let broker = BrokerStore::default();
+        let _handles = mount_thread(&broker, "t_approval", test_config())
+            .await
+            .unwrap();
+
+        let agent_client = broker.client().scoped("threads/t_approval");
+        let tui_client = broker.client().scoped("threads/t_approval");
+
+        // Agent writes approval request (should block)
+        let agent_task = tokio::spawn(async move {
+            let mut map = std::collections::BTreeMap::new();
+            map.insert(
+                "tool_name".to_string(),
+                Value::String("bash".to_string()),
+            );
+            map.insert(
+                "input_preview".to_string(),
+                Value::String("rm -rf /".to_string()),
+            );
+            agent_client
+                .write(
+                    &path!("approval/request"),
+                    Record::parsed(Value::Map(map)),
+                )
+                .await
+        });
+
+        // Give it time to register
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !agent_task.is_finished(),
+            "agent should be blocked waiting for response"
+        );
+
+        // TUI reads pending
+        let pending = tui_client
+            .read(&path!("approval/pending"))
+            .await
+            .unwrap()
+            .unwrap();
+        let val = pending.as_value().unwrap();
+        match val {
+            Value::Map(m) => assert_eq!(
+                m.get("tool_name").unwrap(),
+                &Value::String("bash".to_string())
+            ),
+            _ => panic!("expected map with tool_name"),
+        }
+
+        // TUI writes response
+        tui_client
+            .write(
+                &path!("approval/response"),
+                Record::parsed(Value::String("allow_once".to_string())),
+            )
+            .await
+            .unwrap();
+
+        // Agent's write should now resolve
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), agent_task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(result.is_ok());
     }
 }

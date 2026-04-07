@@ -48,7 +48,7 @@ pub async fn setup(inbox: InboxStore, bindings: Vec<Binding>) -> BrokerHandle {
     servers.push(broker.mount(path!("inbox"), inbox).await);
 
     // Mount ApprovalStore (per-app for now; per-thread in C3c)
-    servers.push(broker.mount(path!("approval"), ApprovalStore::new()).await);
+    servers.push(broker.mount_async(path!("approval"), ApprovalStore::new()).await);
 
     BrokerHandle {
         broker,
