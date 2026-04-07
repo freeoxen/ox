@@ -26,7 +26,7 @@ in `ox-kernel/src/snapshot.rs`. ToolsProvider returns None.
 - Real thread title flow through save_thread_state
 - Message count derived from last_seq in inbox display
 
-### Phase C: StructFS TUI Rewrite (CURRENT — C1/C2/C3a/C3b/C4/C5 complete)
+### Phase C: StructFS TUI Rewrite (CURRENT — C1/C2/C3a/C3b/C4/C5/C6 complete)
 
 **Spec:** `docs/superpowers/specs/2026-04-06-structfs-tui-design.md`
 
@@ -99,16 +99,31 @@ in `ox-kernel/src/snapshot.rs`. ToolsProvider returns None.
 - `crates/ox-cli/src/state_sync.rs` — deleted (-143 lines)
 - Net: -151 lines
 
+#### C6: Events Through Broker (complete, 61 ox-cli + 28 ox-broker + 53 ox-ui tests)
+- `crates/ox-broker/src/async_store.rs` — AsyncReader/AsyncWriter traits, BoxFuture
+  (broker-internal, not exported to StructFS)
+- `crates/ox-broker/src/server.rs` — async_server_loop (reads inline, writes spawned as tasks)
+- `crates/ox-broker/src/lib.rs` — mount_async for async stores
+- `crates/ox-ui/src/approval_store.rs` — AsyncReader + AsyncWriter with deferred write:
+  write("request") blocks until write("response") resolves via tokio oneshot
+- `crates/ox-cli/src/agents.rs` — CliEffects writes turn/*, approval/*, inbox/* through broker;
+  no more event_tx/control_tx mpsc channels; agent_worker commits turns and writes inbox
+  metadata through broker
+- `crates/ox-cli/src/view_state.rs` — reads turn/thinking, turn/tool, turn/tokens,
+  approval/pending from broker; no more thread_views/streaming_turns references
+- `crates/ox-cli/src/app.rs` — deleted: AppEvent, AppControl, ApprovalResponse, ApprovalState,
+  ThreadView, StreamingTurn, event_rx, control_rx, thread_views, streaming_turns,
+  pending_approval, handle_event, drain_agent_events, update_streaming
+- `crates/ox-cli/src/tui.rs` — approval dialog reads from ViewState, writes response through
+  broker; no drain_agent_events or control_rx polling
+- `crates/ox-cli/src/thread_mount.rs` — per-thread ApprovalStore via mount_async
+- Net: -439 lines
+
 ## What's Next
 
 ### Remaining for full spec completion:
 
-1. **Events Through Broker** (highest value next)
-   - CliEffects writes to `threads/{id}/history/turn/*` paths instead of mpsc
-   - StreamingTurn cache disappears, event_rx disappears
-   - Thread content fully from broker (committed + in-progress)
-
-2. **Search State in UiStore**
+1. **Search State in UiStore** (highest value next)
    - Move search.live_query and search.chips into UiStore
    - Eliminates the last handle_search_key direct-mutation path
 
@@ -121,8 +136,11 @@ in `ox-kernel/src/snapshot.rs`. ToolsProvider returns None.
 
 ### Key Architecture Decisions
 - **Scroll commands match visual direction**: scroll_up = visual up = see older
-- **ViewState per-frame snapshot**: fetch_view_state reads broker + App streaming cache each frame
+- **ViewState per-frame snapshot**: fetch_view_state reads all state from broker each frame
 - **Draw is pure**: &ViewState in, Frame out — no &mut App, no side effects, testable
+- **No mpsc channels for agent data**: all events through broker turn/* paths
+- **Approval through broker**: deferred write blocks agent until TUI writes response
+- **AsyncReader/AsyncWriter**: broker-internal traits, not StructFS — stores return detached futures
 - **pending_action pattern**: UiStore sets a string field, TUI reads from ViewState after draw
 - **Search is the last escape hatch**: handle_search_key bypasses broker (7 lines)
 - **Two InboxStore instances**: one in App/AgentPool, one in broker (same SQLite)
@@ -140,3 +158,5 @@ in `ox-kernel/src/snapshot.rs`. ToolsProvider returns None.
 - **Plans:** `docs/superpowers/plans/2026-04-07-agent-worker-bridge.md` (executed)
 - **Spec:** `docs/superpowers/specs/2026-04-07-draw-rewrite-design.md`
 - **Plans:** `docs/superpowers/plans/2026-04-07-draw-rewrite.md` (executed)
+- **Spec:** `docs/superpowers/specs/2026-04-07-events-through-broker-design.md`
+- **Plans:** `docs/superpowers/plans/2026-04-07-events-through-broker.md` (executed)
