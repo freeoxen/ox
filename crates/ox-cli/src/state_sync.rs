@@ -5,7 +5,8 @@
 
 use crate::app::{App, InputMode, InsertContext};
 use ox_broker::ClientHandle;
-use structfs_core_store::{Value, path};
+use std::collections::BTreeMap;
+use structfs_core_store::{path, Record, Value};
 
 /// Read UiStore state from the broker and sync to App fields.
 ///
@@ -74,4 +75,66 @@ pub async fn sync_ui_to_app(client: &ClientHandle, app: &mut App) -> Option<Stri
         Value::String(s) => Some(s.clone()),
         _ => None,
     })
+}
+
+/// Write App state back to UiStore via the broker.
+///
+/// Called after App methods that change state (open_selected_thread,
+/// send_input, archive_selected_thread) to keep UiStore in sync.
+/// Without this, the next sync_ui_to_app would overwrite App's
+/// changes with stale UiStore state.
+pub async fn sync_app_to_ui(client: &ClientHandle, app: &App) {
+    // Open/close thread
+    match &app.active_thread {
+        Some(tid) => {
+            let mut cmd = BTreeMap::new();
+            cmd.insert("thread_id".to_string(), Value::String(tid.clone()));
+            let _ = client
+                .write(&path!("ui/open"), Record::parsed(Value::Map(cmd)))
+                .await;
+        }
+        None => {
+            let _ = client
+                .write(
+                    &path!("ui/close"),
+                    Record::parsed(Value::Map(BTreeMap::new())),
+                )
+                .await;
+        }
+    }
+
+    // Mode — sync App's mode to UiStore.
+    match &app.mode {
+        InputMode::Normal => {
+            let _ = client
+                .write(
+                    &path!("ui/exit_insert"),
+                    Record::parsed(Value::Map(BTreeMap::new())),
+                )
+                .await;
+        }
+        InputMode::Insert(ctx) => {
+            let ctx_str = match ctx {
+                InsertContext::Compose => "compose",
+                InsertContext::Reply => "reply",
+                InsertContext::Search => "search",
+            };
+            let mut cmd = BTreeMap::new();
+            cmd.insert("context".to_string(), Value::String(ctx_str.to_string()));
+            let _ = client
+                .write(&path!("ui/enter_insert"), Record::parsed(Value::Map(cmd)))
+                .await;
+        }
+    }
+
+    // Input + cursor
+    let mut input_cmd = BTreeMap::new();
+    input_cmd.insert("text".to_string(), Value::String(app.input.clone()));
+    input_cmd.insert("cursor".to_string(), Value::Integer(app.cursor as i64));
+    let _ = client
+        .write(&path!("ui/set_input"), Record::parsed(Value::Map(input_cmd)))
+        .await;
+
+    // Selected row
+    // (Not synced here — row_count is set each frame, selection is managed by UiStore)
 }

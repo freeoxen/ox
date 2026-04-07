@@ -21,7 +21,7 @@ pub async fn run_async(
     terminal: &mut ratatui::DefaultTerminal,
 ) -> std::io::Result<()> {
     use crate::key_encode::encode_key;
-    use crate::state_sync::sync_ui_to_app;
+    use crate::state_sync::{sync_app_to_ui, sync_ui_to_app};
     use std::collections::BTreeMap;
     use structfs_core_store::{Record, Value, path};
 
@@ -29,10 +29,22 @@ pub async fn run_async(
         // 1. Sync broker state → App fields, check for pending actions
         if let Some(action) = sync_ui_to_app(client, app).await {
             match action.as_str() {
-                "send_input" => app.send_input(),
+                "send_input" => {
+                    app.send_input();
+                    // send_input changes mode → Normal, clears input. Sync back.
+                    sync_app_to_ui(client, app).await;
+                }
                 "quit" => app.should_quit = true,
-                "open_selected" => app.open_selected_thread(),
-                "archive_selected" => app.archive_selected_thread(),
+                "open_selected" => {
+                    app.open_selected_thread();
+                    // open_selected_thread sets active_thread. Sync back.
+                    sync_app_to_ui(client, app).await;
+                }
+                "archive_selected" => {
+                    app.archive_selected_thread();
+                    // archive may change selection. Sync back.
+                    sync_app_to_ui(client, app).await;
+                }
                 _ => {}
             }
             // Clear the pending action
