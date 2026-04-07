@@ -241,11 +241,22 @@ pub struct ThreadView {
     pub policy_stats: PolicyStats,
 }
 
+/// Lightweight streaming state for in-progress agent turns.
+#[derive(Debug, Clone, Default)]
+pub struct StreamingTurn {
+    pub text: String,
+    pub tool_name: Option<String>,
+    pub thinking: bool,
+    pub tokens_in: u32,
+    pub tokens_out: u32,
+}
+
 /// TUI-side application state — multi-thread aware.
 pub struct App {
     pub pool: AgentPool,
     pub active_thread: Option<String>, // None = inbox view
     pub thread_views: HashMap<String, ThreadView>,
+    pub streaming_turns: HashMap<String, StreamingTurn>,
     // Modal mode
     pub mode: InputMode,
     pub search: SearchState,
@@ -313,6 +324,7 @@ impl App {
             pool,
             active_thread: None,
             thread_views: HashMap::new(),
+            streaming_turns: HashMap::new(),
             mode: InputMode::default(),
             search: SearchState::default(),
             selected_row: 0,
@@ -883,6 +895,53 @@ impl App {
         self.active_thread
             .as_ref()
             .and_then(|tid| self.thread_views.get(tid))
+    }
+
+    /// Drain agent events, updating both streaming_turns and thread_views.
+    pub fn drain_agent_events(&mut self) {
+        while let Ok(event) = self.event_rx.try_recv() {
+            self.update_streaming(&event);
+            self.handle_event(event);
+        }
+    }
+
+    fn update_streaming(&mut self, event: &AppEvent) {
+        match event {
+            AppEvent::Agent { thread_id, event } => {
+                let st = self.streaming_turns.entry(thread_id.clone()).or_default();
+                match event {
+                    AgentEvent::TurnStart => {
+                        st.thinking = true;
+                        st.text.clear();
+                        st.tool_name = None;
+                    }
+                    AgentEvent::TextDelta(text) => {
+                        st.text.push_str(text);
+                    }
+                    AgentEvent::ToolCallStart { name } => {
+                        st.tool_name = Some(name.clone());
+                    }
+                    AgentEvent::ToolCallResult { .. } => {
+                        st.tool_name = None;
+                    }
+                    AgentEvent::TurnEnd => {
+                        st.thinking = false;
+                    }
+                    AgentEvent::Error(_) => {
+                        st.thinking = false;
+                    }
+                }
+            }
+            AppEvent::Usage { thread_id, input_tokens, output_tokens } => {
+                let st = self.streaming_turns.entry(thread_id.clone()).or_default();
+                st.tokens_in += input_tokens;
+                st.tokens_out += output_tokens;
+            }
+            AppEvent::Done { thread_id, .. } => {
+                self.streaming_turns.remove(thread_id);
+            }
+            _ => {}
+        }
     }
 }
 
