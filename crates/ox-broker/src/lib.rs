@@ -1,6 +1,7 @@
 //! Async BrokerStore for StructFS — routes reads/writes between stores
 //! by path prefix.
 
+pub mod async_store;
 mod broker;
 mod client;
 mod server;
@@ -111,6 +112,18 @@ impl BrokerStore {
     pub async fn unmount(&self, prefix: &structfs_core_store::Path) {
         let mut inner = self.inner.lock().await;
         inner.unmount(prefix);
+    }
+
+    /// Mount an async store at the given prefix and spawn its server task.
+    ///
+    /// Reads are resolved inline; writes are spawned as independent tasks so a
+    /// deferred write does not block the store from handling subsequent requests.
+    pub async fn mount_async<S: async_store::AsyncReader + async_store::AsyncWriter>(
+        &self,
+        prefix: structfs_core_store::Path,
+        store: S,
+    ) -> tokio::task::JoinHandle<()> {
+        server::spawn_async_server(self.inner.clone(), prefix, store).await
     }
 
     /// Shut down the broker, rejecting all future requests.
@@ -278,5 +291,172 @@ mod integration_tests {
         fn write(&mut self, to: &Path, _data: Record) -> Result<Path, StoreError> {
             Ok(to.clone())
         }
+    }
+
+    // ---- AsyncReader / AsyncWriter tests ----
+
+    use crate::async_store::{AsyncReader, AsyncWriter, BoxFuture};
+
+    /// A simple async store backed by a BTreeMap — all operations resolve immediately.
+    struct AsyncMemoryStore {
+        data: std::collections::BTreeMap<String, Value>,
+    }
+
+    impl AsyncMemoryStore {
+        fn new() -> Self {
+            Self {
+                data: std::collections::BTreeMap::new(),
+            }
+        }
+        fn with(key: &str, value: Value) -> Self {
+            let mut s = Self::new();
+            s.data.insert(key.to_string(), value);
+            s
+        }
+    }
+
+    impl AsyncReader for AsyncMemoryStore {
+        fn read(&mut self, from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
+            let result = Ok(self
+                .data
+                .get(&from.to_string())
+                .map(|v| Record::parsed(v.clone())));
+            Box::pin(async move { result })
+        }
+    }
+
+    impl AsyncWriter for AsyncMemoryStore {
+        fn write(&mut self, to: &Path, data: Record) -> BoxFuture<Result<Path, StoreError>> {
+            if let Some(value) = data.as_value() {
+                self.data.insert(to.to_string(), value.clone());
+            }
+            let path = to.clone();
+            Box::pin(async move { Ok(path) })
+        }
+    }
+
+    #[tokio::test]
+    async fn mount_async_store_reads_and_writes() {
+        let broker = BrokerStore::default();
+        let client = broker.client();
+
+        let store = AsyncMemoryStore::with("greeting", Value::String("hello".to_string()));
+        let _handle = broker.mount_async(path!("async_mem"), store).await;
+
+        // Read existing value
+        let result = client
+            .read(&path!("async_mem/greeting"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            result.as_value().unwrap(),
+            &Value::String("hello".to_string()),
+        );
+
+        // Write a new value
+        client
+            .write(
+                &path!("async_mem/name"),
+                Record::parsed(Value::String("world".to_string())),
+            )
+            .await
+            .unwrap();
+
+        // Read it back
+        let result = client
+            .read(&path!("async_mem/name"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            result.as_value().unwrap(),
+            &Value::String("world".to_string()),
+        );
+    }
+
+    /// A store that defers write("block") until write("unblock") is called.
+    struct DeferredWriteStore {
+        blocker: Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+    }
+
+    impl DeferredWriteStore {
+        fn new() -> Self {
+            Self {
+                blocker: Arc::new(tokio::sync::Mutex::new(None)),
+            }
+        }
+    }
+
+    impl AsyncReader for DeferredWriteStore {
+        fn read(&mut self, _from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
+            Box::pin(async move { Ok(None) })
+        }
+    }
+
+    impl AsyncWriter for DeferredWriteStore {
+        fn write(&mut self, to: &Path, _data: Record) -> BoxFuture<Result<Path, StoreError>> {
+            let key = to.to_string();
+            let blocker = self.blocker.clone();
+            let path = to.clone();
+            Box::pin(async move {
+                if key == "block" {
+                    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+                    {
+                        let mut guard = blocker.lock().await;
+                        *guard = Some(tx);
+                    }
+                    // Wait until "unblock" fires the sender
+                    let _ = rx.await;
+                } else if key == "unblock" {
+                    let mut guard = blocker.lock().await;
+                    if let Some(tx) = guard.take() {
+                        let _ = tx.send(());
+                    }
+                }
+                Ok(path)
+            })
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_store_deferred_write() {
+        let broker = BrokerStore::default();
+        let client_a = broker.client();
+        let client_b = broker.client();
+
+        let store = DeferredWriteStore::new();
+        let _handle = broker.mount_async(path!("deferred"), store).await;
+
+        // Kick off a write that will block until "unblock" is sent
+        let block_fut = tokio::spawn({
+            let client = client_a.clone();
+            async move {
+                client
+                    .write(
+                        &path!("deferred/block"),
+                        Record::parsed(Value::String("waiting".to_string())),
+                    )
+                    .await
+            }
+        });
+
+        // Give the block write time to register the sender
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // block_fut should still be pending — it hasn't resolved yet
+        assert!(!block_fut.is_finished());
+
+        // Send "unblock" from a second client — this resolves the block write
+        client_b
+            .write(
+                &path!("deferred/unblock"),
+                Record::parsed(Value::String("go".to_string())),
+            )
+            .await
+            .unwrap();
+
+        // Now the block write should resolve
+        block_fut.await.unwrap().unwrap();
     }
 }

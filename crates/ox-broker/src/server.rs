@@ -77,6 +77,46 @@ where
     })
 }
 
+/// Spawn a server task that wraps an async store (AsyncReader + AsyncWriter).
+///
+/// Reads are resolved inline; writes are spawned as independent tasks so a
+/// deferred write does not block the store from handling subsequent requests.
+pub(crate) async fn spawn_async_server<S: crate::async_store::AsyncReader + crate::async_store::AsyncWriter>(
+    inner: Arc<Mutex<BrokerInner>>,
+    prefix: structfs_core_store::Path,
+    store: S,
+) -> tokio::task::JoinHandle<()> {
+    let rx = {
+        let mut inner_guard = inner.lock().await;
+        inner_guard.mount(prefix)
+    };
+    tokio::spawn(async move {
+        async_server_loop(store, rx).await;
+    })
+}
+
+/// The async server loop: reads resolved inline, writes spawned as tasks.
+async fn async_server_loop<S: crate::async_store::AsyncReader + crate::async_store::AsyncWriter>(
+    mut store: S,
+    mut rx: tokio::sync::mpsc::Receiver<Request>,
+) {
+    while let Some(request) = rx.recv().await {
+        match request {
+            Request::Read { path, reply } => {
+                let result = store.read(&path).await;
+                let _ = reply.send(result);
+            }
+            Request::Write { path, data, reply } => {
+                let fut = store.write(&path, data);
+                tokio::spawn(async move {
+                    let result = fut.await;
+                    let _ = reply.send(result);
+                });
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
