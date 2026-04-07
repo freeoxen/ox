@@ -24,6 +24,7 @@ use crate::policy::PolicyStats;
 /// Populated by draining `AppEvent`s in the event loop (Task 2).
 /// For now this is defined but not yet stored in App.
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
 pub struct StreamingTurn {
     /// Accumulated text delta for the current assistant response.
     pub text: String,
@@ -65,6 +66,7 @@ pub struct InboxThread {
 /// Borrows from App where possible to avoid cloning large structures.
 /// Broker-sourced data (ui state, inbox threads, committed messages)
 /// is owned because it comes from async reads.
+#[allow(dead_code)]
 pub struct ViewState<'a> {
     // -- Broker-sourced (owned) ------------------------------------------
     /// Current screen: "inbox" or "thread".

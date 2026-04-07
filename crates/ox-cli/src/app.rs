@@ -14,6 +14,7 @@ use crate::policy::PolicyStats;
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 pub enum InsertContext {
     /// Composing a new thread from the inbox.
     Compose,
@@ -24,6 +25,7 @@ pub enum InsertContext {
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
+#[allow(dead_code)]
 pub enum InputMode {
     #[default]
     Normal,
