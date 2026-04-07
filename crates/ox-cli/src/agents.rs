@@ -222,9 +222,9 @@ fn agent_worker(
         provider: provider.clone(),
         api_key: api_key.clone(),
     };
-    let _mount_handles = match rt_handle
-        .block_on(crate::thread_mount::mount_thread(&broker, &thread_id, config))
-    {
+    let _mount_handles = match rt_handle.block_on(crate::thread_mount::mount_thread(
+        &broker, &thread_id, config,
+    )) {
         Ok(handles) => handles,
         Err(e) => {
             event_tx

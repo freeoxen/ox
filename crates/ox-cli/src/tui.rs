@@ -127,10 +127,7 @@ pub async fn run_async(
                         };
 
                         // Search chip dismissal (1-9 in normal mode, inbox, search active)
-                        if mode == "normal"
-                            && screen == "inbox"
-                            && app.search.is_active()
-                        {
+                        if mode == "normal" && screen == "inbox" && app.search.is_active() {
                             if let KeyCode::Char(c @ '1'..='9') = key.code {
                                 let idx = (c as u8 - b'1') as usize;
                                 app.search.dismiss_chip(idx);
@@ -176,23 +173,18 @@ pub async fn run_async(
                     // Click on approval dialog — needs &mut app
                     if let MouseEventKind::Down(_) = mouse.kind {
                         if let Some(ref mut approval) = app.pending_approval {
-                            let term_h = crossterm::terminal::size()
-                                .map(|(_, h)| h)
-                                .unwrap_or(24);
+                            let term_h = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24);
                             let dialog_h = 13u16;
                             let dialog_top = term_h.saturating_sub(dialog_h) / 2;
                             let first_option_row = dialog_top + 3;
                             if mouse.row >= first_option_row
                                 && mouse.row
-                                    < first_option_row
-                                        + ApprovalState::OPTIONS.len() as u16
+                                    < first_option_row + ApprovalState::OPTIONS.len() as u16
                             {
                                 let idx = (mouse.row - first_option_row) as usize;
                                 approval.selected = idx;
-                                let response =
-                                    ApprovalState::OPTIONS[idx].1.clone();
-                                let approval =
-                                    app.pending_approval.take().unwrap();
+                                let response = ApprovalState::OPTIONS[idx].1.clone();
+                                let approval = app.pending_approval.take().unwrap();
                                 approval.respond.send(response).ok();
                             }
                         }

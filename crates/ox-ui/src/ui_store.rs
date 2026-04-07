@@ -356,9 +356,9 @@ impl Writer for UiStore {
                 Ok(path!("scroll"))
             }
             "set_scroll_max" => {
-                let max = cmd.get_int("max").ok_or_else(|| {
-                    StoreError::store("ui", "set_scroll_max", "missing max")
-                })?;
+                let max = cmd
+                    .get_int("max")
+                    .ok_or_else(|| StoreError::store("ui", "set_scroll_max", "missing max"))?;
                 self.scroll_max = max.max(0) as usize;
                 if self.scroll > self.scroll_max {
                     self.scroll = self.scroll_max;
@@ -887,9 +887,7 @@ mod tests {
             .unwrap();
 
         // Full page up (visual up = increases scroll)
-        store
-            .write(&path!("scroll_page_up"), empty_cmd())
-            .unwrap();
+        store.write(&path!("scroll_page_up"), empty_cmd()).unwrap();
         assert_eq!(read_str(&mut store, "scroll"), Value::Integer(20));
 
         // Half page up
@@ -945,9 +943,7 @@ mod tests {
             .unwrap();
 
         // Page up with viewport > max — clamps to max
-        store
-            .write(&path!("scroll_page_up"), empty_cmd())
-            .unwrap();
+        store.write(&path!("scroll_page_up"), empty_cmd()).unwrap();
         assert_eq!(read_str(&mut store, "scroll"), Value::Integer(10));
     }
 }

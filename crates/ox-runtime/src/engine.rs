@@ -297,7 +297,9 @@ impl AgentModule {
 // ---------------------------------------------------------------------------
 
 /// Get the guest's exported memory.
-fn get_memory<B: Reader + Writer + Send, E: HostEffects>(caller: &mut Caller<'_, AgentState<B, E>>) -> Option<wasmtime::Memory> {
+fn get_memory<B: Reader + Writer + Send, E: HostEffects>(
+    caller: &mut Caller<'_, AgentState<B, E>>,
+) -> Option<wasmtime::Memory> {
     caller
         .get_export("memory")
         .and_then(|ext| ext.into_memory())
@@ -322,7 +324,10 @@ fn read_guest_string<B: Reader + Writer + Send, E: HostEffects>(
 }
 
 /// Set the pending result bytes on the agent state.
-fn set_pending<B: Reader + Writer + Send, E: HostEffects>(caller: &mut Caller<'_, AgentState<B, E>>, bytes: &[u8]) {
+fn set_pending<B: Reader + Writer + Send, E: HostEffects>(
+    caller: &mut Caller<'_, AgentState<B, E>>,
+    bytes: &[u8],
+) {
     caller.data_mut().pending_result = Some(bytes.to_vec());
 }
 

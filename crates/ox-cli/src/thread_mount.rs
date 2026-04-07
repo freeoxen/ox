@@ -10,7 +10,7 @@ use ox_context::{ModelProvider, SystemProvider, ToolsProvider};
 use ox_gate::GateStore;
 use ox_history::HistoryProvider;
 use ox_inbox::snapshot;
-use structfs_core_store::{path, Record, Value, Writer};
+use structfs_core_store::{Record, Value, Writer, path};
 use tokio::task::JoinHandle;
 
 /// Configuration for mounting a thread's stores.
@@ -43,8 +43,8 @@ pub async fn mount_thread(
     let mut handles = Vec::new();
 
     // System
-    let path = structfs_core_store::Path::parse(&format!("{prefix}/system"))
-        .map_err(|e| e.to_string())?;
+    let path =
+        structfs_core_store::Path::parse(&format!("{prefix}/system")).map_err(|e| e.to_string())?;
     handles.push(
         broker
             .mount(path, SystemProvider::new(config.system_prompt))
@@ -57,8 +57,8 @@ pub async fn mount_thread(
     handles.push(broker.mount(path, HistoryProvider::new()).await);
 
     // Tools
-    let path = structfs_core_store::Path::parse(&format!("{prefix}/tools"))
-        .map_err(|e| e.to_string())?;
+    let path =
+        structfs_core_store::Path::parse(&format!("{prefix}/tools")).map_err(|e| e.to_string())?;
     handles.push(
         broker
             .mount(path, ToolsProvider::new(config.tool_schemas))
@@ -66,8 +66,8 @@ pub async fn mount_thread(
     );
 
     // Model
-    let path = structfs_core_store::Path::parse(&format!("{prefix}/model"))
-        .map_err(|e| e.to_string())?;
+    let path =
+        structfs_core_store::Path::parse(&format!("{prefix}/model")).map_err(|e| e.to_string())?;
     handles.push(
         broker
             .mount(
@@ -78,8 +78,8 @@ pub async fn mount_thread(
     );
 
     // Gate — configured with provider + API key
-    let gate_path = structfs_core_store::Path::parse(&format!("{prefix}/gate"))
-        .map_err(|e| e.to_string())?;
+    let gate_path =
+        structfs_core_store::Path::parse(&format!("{prefix}/gate")).map_err(|e| e.to_string())?;
     let mut gate = GateStore::new();
     // Set the bootstrap account to the configured provider
     gate.write(
@@ -295,10 +295,8 @@ mod tests {
 
         // All five stores should be gone (NoRoute)
         for store_name in &["system", "history", "tools", "model", "gate"] {
-            let path = structfs_core_store::Path::parse(&format!(
-                "threads/t_unmount/{store_name}"
-            ))
-            .unwrap();
+            let path = structfs_core_store::Path::parse(&format!("threads/t_unmount/{store_name}"))
+                .unwrap();
             let result = client.read(&path).await;
             assert!(result.is_err(), "expected NoRoute for {store_name}");
         }
@@ -351,8 +349,7 @@ mod tests {
             let prompt_record = prompt_result.unwrap().unwrap();
             let value = prompt_record.as_value().unwrap().clone();
             let json = structfs_serde_store::value_to_json(value);
-            let request: ox_kernel::CompletionRequest =
-                serde_json::from_value(json).unwrap();
+            let request: ox_kernel::CompletionRequest = serde_json::from_value(json).unwrap();
             assert_eq!(request.model, "claude-sonnet-4-20250514");
             assert_eq!(request.system, "You are a test assistant.");
             assert_eq!(request.messages.len(), 1);

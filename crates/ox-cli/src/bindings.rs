@@ -99,10 +99,34 @@ fn normal_mode(out: &mut Vec<Binding>) {
         "Move selection up",
     ));
 
-    out.push(bind_screen("normal", "j", "thread", cmd("ui/scroll_down"), "Scroll down"));
-    out.push(bind_screen("normal", "Down", "thread", cmd("ui/scroll_down"), "Scroll down"));
-    out.push(bind_screen("normal", "k", "thread", cmd("ui/scroll_up"), "Scroll up"));
-    out.push(bind_screen("normal", "Up", "thread", cmd("ui/scroll_up"), "Scroll up"));
+    out.push(bind_screen(
+        "normal",
+        "j",
+        "thread",
+        cmd("ui/scroll_down"),
+        "Scroll down",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "Down",
+        "thread",
+        cmd("ui/scroll_down"),
+        "Scroll down",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "k",
+        "thread",
+        cmd("ui/scroll_up"),
+        "Scroll up",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "Up",
+        "thread",
+        cmd("ui/scroll_up"),
+        "Scroll up",
+    ));
 
     // Screen transitions
     out.push(bind_screen(
@@ -161,18 +185,66 @@ fn normal_mode(out: &mut Vec<Binding>) {
 
     // -- Vim fast navigation --
     // g/G: go to top/bottom
-    out.push(bind_screen("normal", "g", "inbox", cmd("ui/select_first"), "Go to first"));
-    out.push(bind_screen("normal", "G", "inbox", cmd("ui/select_last"), "Go to last"));
-    out.push(bind_screen("normal", "g", "thread", cmd("ui/scroll_to_top"), "Go to top"));
-    out.push(bind_screen("normal", "G", "thread", cmd("ui/scroll_to_bottom"), "Go to bottom"));
+    out.push(bind_screen(
+        "normal",
+        "g",
+        "inbox",
+        cmd("ui/select_first"),
+        "Go to first",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "G",
+        "inbox",
+        cmd("ui/select_last"),
+        "Go to last",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "g",
+        "thread",
+        cmd("ui/scroll_to_top"),
+        "Go to top",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "G",
+        "thread",
+        cmd("ui/scroll_to_bottom"),
+        "Go to bottom",
+    ));
 
     // Ctrl+d/u: half-page scroll
-    out.push(bind_screen("normal", "Ctrl+d", "thread", cmd("ui/scroll_half_page_down"), "Half page down"));
-    out.push(bind_screen("normal", "Ctrl+u", "thread", cmd("ui/scroll_half_page_up"), "Half page up"));
+    out.push(bind_screen(
+        "normal",
+        "Ctrl+d",
+        "thread",
+        cmd("ui/scroll_half_page_down"),
+        "Half page down",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "Ctrl+u",
+        "thread",
+        cmd("ui/scroll_half_page_up"),
+        "Half page up",
+    ));
 
     // Ctrl+f/b: full page scroll
-    out.push(bind_screen("normal", "Ctrl+f", "thread", cmd("ui/scroll_page_down"), "Page down"));
-    out.push(bind_screen("normal", "Ctrl+b", "thread", cmd("ui/scroll_page_up"), "Page up"));
+    out.push(bind_screen(
+        "normal",
+        "Ctrl+f",
+        "thread",
+        cmd("ui/scroll_page_down"),
+        "Page down",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "Ctrl+b",
+        "thread",
+        cmd("ui/scroll_page_up"),
+        "Page up",
+    ));
 
     // Thread actions
     out.push(bind_screen(
@@ -247,8 +319,20 @@ fn insert_mode(out: &mut Vec<Binding>) {
         "Exit insert mode",
     ));
     // Ctrl+u: screen-specific because search mode handles its own clear
-    out.push(bind_screen("insert", "Ctrl+u", "inbox", cmd("ui/clear_input"), "Clear line"));
-    out.push(bind_screen("insert", "Ctrl+u", "thread", cmd("ui/clear_input"), "Clear line"));
+    out.push(bind_screen(
+        "insert",
+        "Ctrl+u",
+        "inbox",
+        cmd("ui/clear_input"),
+        "Clear line",
+    ));
+    out.push(bind_screen(
+        "insert",
+        "Ctrl+u",
+        "thread",
+        cmd("ui/clear_input"),
+        "Clear line",
+    ));
 }
 
 // ---------------------------------------------------------------------------

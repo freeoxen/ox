@@ -6,7 +6,7 @@
 use crate::app::{App, InputMode, InsertContext};
 use ox_broker::ClientHandle;
 use std::collections::BTreeMap;
-use structfs_core_store::{path, Record, Value};
+use structfs_core_store::{Record, Value, path};
 
 /// Read UiStore state from the broker and sync to App fields.
 ///
@@ -132,7 +132,10 @@ pub async fn sync_app_to_ui(client: &ClientHandle, app: &App) {
     input_cmd.insert("text".to_string(), Value::String(app.input.clone()));
     input_cmd.insert("cursor".to_string(), Value::Integer(app.cursor as i64));
     let _ = client
-        .write(&path!("ui/set_input"), Record::parsed(Value::Map(input_cmd)))
+        .write(
+            &path!("ui/set_input"),
+            Record::parsed(Value::Map(input_cmd)),
+        )
         .await;
 
     // Selected row
