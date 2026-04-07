@@ -51,32 +51,51 @@ pub trait AsyncWriter: Send + 'static {
 
 ### Async Server Loop
 
-The async server loop spawns each request as a separate task so that
-a deferred write doesn't block the store from receiving other requests.
-The store uses `Arc<Mutex<Self>>` for interior mutability.
+The async server loop calls store methods sequentially (with `&mut self`),
+but spawns deferred write futures as independent tasks. The store produces
+the future synchronously, the future resolves asynchronously without
+holding the store. No mutex needed.
 
 ```rust
 async fn async_server_loop<S: AsyncReader + AsyncWriter>(
-    store: Arc<Mutex<S>>,
+    mut store: S,
     mut rx: tokio::sync::mpsc::Receiver<Request>,
 ) {
     while let Some(request) = rx.recv().await {
-        let store = store.clone();
-        tokio::spawn(async move {
-            match request {
-                Request::Read { path, reply } => {
-                    let result = store.lock().await.read(&path).await;
-                    let _ = reply.send(result);
-                }
-                Request::Write { path, data, reply } => {
-                    let result = store.lock().await.write(&path, data).await;
-                    let _ = reply.send(result);
-                }
+        match request {
+            Request::Read { path, reply } => {
+                // Reads are fast — resolve inline.
+                let result = store.read(&path).await;
+                let _ = reply.send(result);
             }
-        });
+            Request::Write { path, data, reply } => {
+                // Store produces the future synchronously (&mut self),
+                // setting up internal state (e.g., creating a oneshot).
+                // The returned future is 'static + Send — it doesn't
+                // borrow the store. Spawn it as an independent task.
+                let fut = store.write(&path, data);
+                tokio::spawn(async move {
+                    let result = fut.await;
+                    let _ = reply.send(result);
+                });
+            }
+        }
     }
 }
 ```
+
+**Key pattern:** `store.write()` takes `&mut self` and returns a future
+that is detached from the store. For fast writes, the future resolves
+immediately (like a sync write wrapped in `async { Ok(path) }`). For
+deferred writes (approval/request), the store creates a `oneshot::channel`,
+stores the sender in its own state, and returns a future that awaits the
+receiver. The future doesn't borrow the store — it owns the receiver.
+
+This means:
+- No mutex on the store
+- The server loop stays sequential for store access
+- Deferred futures run independently as spawned tasks
+- Reads and other writes proceed normally while a deferred write is pending
 
 ### BrokerStore::mount_async
 
@@ -96,33 +115,48 @@ as before — the existing sync server loop is unchanged.
 
 ApprovalStore implements `AsyncReader + AsyncWriter`. Its write to
 `request` returns a future that doesn't resolve until a separate write
-to `response` arrives. Internally it uses a `tokio::sync::oneshot`
-channel shared between the two write calls.
+to `response` arrives.
+
+The mechanism:
+
+1. **`write("request", data)`** — store creates a `oneshot::channel()`.
+   Stores the sender and request data in its own state. Returns a
+   future that awaits the receiver. The future is `'static + Send` —
+   it owns the receiver, doesn't borrow the store.
+
+2. **`read("pending")`** — returns the stored request data (or null).
+   Fast, non-blocking.
+
+3. **`write("response", data)`** — reads the stored oneshot sender,
+   calls `sender.send(decision)`. The spawned future from step 1
+   resolves. Clears the pending request. Returns immediately.
 
 ```
 Agent writes approval/request:
-  → ApprovalStore.write("request") stores request data, creates oneshot
-  → Returns future that awaits oneshot receiver
-  → Agent's client.write() blocks (waiting on the future)
+  → store.write("request") creates oneshot, stores sender, returns future
+  → Server loop spawns the future as a task
+  → Server loop continues (can handle reads and response writes)
+  → Agent's client.write() blocks (SyncClientAdapter.block_on → future)
 
 TUI reads approval/pending:
-  → ApprovalStore.read("pending") returns the stored request data
+  → store.read("pending") returns request data (fast, inline)
 
 TUI writes approval/response:
-  → ApprovalStore.write("response") sends decision on oneshot sender
-  → Request future resolves with the decision
-  → Agent's blocked write returns
+  → store.write("response") sends on oneshot sender, returns immediately
+  → Spawned future from request resolves with the decision
+  → Broker sends reply to agent's client
+  → Agent's blocked write returns with the decision
 
 Timeout:
-  → Client-side timeout fires (broker default 30s, configurable)
+  → Client-side timeout fires (broker default, configurable per-thread)
   → Agent treats timeout as denial
+  → Oneshot receiver is dropped, sender.send() in future response
+    would be a no-op
 ```
 
-The async server loop spawns the request write and response write as
-separate tasks, so the response can arrive while the request future
-is still pending. The mutex serializes access to the store state, but
-each task only holds the lock briefly (to read/write state and
-create/resolve the oneshot).
+No mutex. The server loop calls store methods sequentially. The only
+concurrency is between the server loop and the spawned future, which
+communicates through the oneshot channel (no shared mutable state).
 
 ## Write Side: CliEffects
 
