@@ -24,6 +24,7 @@ pub struct ThreadConfig {
 }
 
 /// Handles returned from mounting a thread — keep alive to keep servers running.
+#[allow(dead_code)]
 pub struct ThreadMountHandles {
     pub server_handles: Vec<JoinHandle<()>>,
     pub thread_id: String,

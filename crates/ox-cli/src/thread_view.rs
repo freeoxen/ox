@@ -129,7 +129,7 @@ fn count_wrapped_lines(lines: &[Line], width: usize) -> usize {
         .iter()
         .map(|line| {
             let w: usize = line.spans.iter().map(|s| s.content.len()).sum();
-            if w == 0 { 1 } else { (w + width - 1) / width }
+            if w == 0 { 1 } else { w.div_ceil(width) }
         })
         .sum()
 }
