@@ -11,6 +11,8 @@ use std::path::Path as FilePath;
 
 use wasmtime::{Caller, Engine, Linker, Module, Store};
 
+use structfs_core_store::{Reader, Writer};
+
 use crate::bridge;
 use crate::host_store::{HostEffects, HostStore};
 
@@ -19,9 +21,9 @@ use crate::host_store::{HostEffects, HostStore};
 // ---------------------------------------------------------------------------
 
 /// Host-side state accessible to imported functions during module execution.
-pub struct AgentState<E: HostEffects> {
+pub struct AgentState<B: Reader + Writer + Send, E: HostEffects> {
     /// The HostStore that mediates all reads/writes for the guest.
-    pub host_store: HostStore<E>,
+    pub host_store: HostStore<B, E>,
     /// The pending result bytes from the last store_read or store_write.
     pending_result: Option<Vec<u8>>,
 }
@@ -90,23 +92,23 @@ impl AgentModule {
     ///
     /// The host's `store_read`, `store_write`, and `store_result` functions
     /// are linked as imports in the `"ox"` module namespace.
-    pub fn run<E: HostEffects + 'static>(
+    pub fn run<B: Reader + Writer + Send + 'static, E: HostEffects + 'static>(
         &self,
-        host_store: HostStore<E>,
-    ) -> (HostStore<E>, Result<(), String>) {
+        host_store: HostStore<B, E>,
+    ) -> (HostStore<B, E>, Result<(), String>) {
         let state = AgentState {
             host_store,
             pending_result: None,
         };
 
         // -- Linker: register host imports ------------------------------------
-        let mut linker: Linker<AgentState<E>> = Linker::new(&self.engine);
+        let mut linker: Linker<AgentState<B, E>> = Linker::new(&self.engine);
 
         // store_read(path_ptr, path_len) -> i32
         if let Err(e) = linker.func_wrap(
             "ox",
             "store_read",
-            |mut caller: Caller<'_, AgentState<E>>, path_ptr: i32, path_len: i32| -> i32 {
+            |mut caller: Caller<'_, AgentState<B, E>>, path_ptr: i32, path_len: i32| -> i32 {
                 let memory = match get_memory(&mut caller) {
                     Some(m) => m,
                     None => {
@@ -167,7 +169,7 @@ impl AgentModule {
         if let Err(e) = linker.func_wrap(
             "ox",
             "store_write",
-            |mut caller: Caller<'_, AgentState<E>>,
+            |mut caller: Caller<'_, AgentState<B, E>>,
              path_ptr: i32,
              path_len: i32,
              data_ptr: i32,
@@ -241,7 +243,7 @@ impl AgentModule {
         if let Err(e) = linker.func_wrap(
             "ox",
             "store_result",
-            |mut caller: Caller<'_, AgentState<E>>, buf_ptr: i32| {
+            |mut caller: Caller<'_, AgentState<B, E>>, buf_ptr: i32| {
                 let pending = caller.data_mut().pending_result.take().unwrap_or_default();
                 let memory = match get_memory(&mut caller) {
                     Some(m) => m,
@@ -295,15 +297,15 @@ impl AgentModule {
 // ---------------------------------------------------------------------------
 
 /// Get the guest's exported memory.
-fn get_memory<E: HostEffects>(caller: &mut Caller<'_, AgentState<E>>) -> Option<wasmtime::Memory> {
+fn get_memory<B: Reader + Writer + Send, E: HostEffects>(caller: &mut Caller<'_, AgentState<B, E>>) -> Option<wasmtime::Memory> {
     caller
         .get_export("memory")
         .and_then(|ext| ext.into_memory())
 }
 
 /// Read a UTF-8 string from guest linear memory.
-fn read_guest_string<E: HostEffects>(
-    caller: &Caller<'_, AgentState<E>>,
+fn read_guest_string<B: Reader + Writer + Send, E: HostEffects>(
+    caller: &Caller<'_, AgentState<B, E>>,
     memory: &wasmtime::Memory,
     ptr: i32,
     len: i32,
@@ -320,7 +322,7 @@ fn read_guest_string<E: HostEffects>(
 }
 
 /// Set the pending result bytes on the agent state.
-fn set_pending<E: HostEffects>(caller: &mut Caller<'_, AgentState<E>>, bytes: &[u8]) {
+fn set_pending<B: Reader + Writer + Send, E: HostEffects>(caller: &mut Caller<'_, AgentState<B, E>>, bytes: &[u8]) {
     caller.data_mut().pending_result = Some(bytes.to_vec());
 }
 

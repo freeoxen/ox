@@ -5,7 +5,6 @@
 //! emission) and delegating them to a [`HostEffects`] implementation
 //! provided by the host (e.g. ox-cli).
 
-use ox_context::Namespace;
 use ox_kernel::{AgentEvent, CompletionRequest, StreamEvent, ToolCall};
 use std::collections::BTreeMap;
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer, path};
@@ -77,23 +76,23 @@ impl Writer for SimpleStore {
 /// - **`gate/response`** (read) — returns pending stream events
 /// - **`tools/execute`** (write) — executes a tool call
 /// - **`events/emit`** (write) — emits an agent event
-pub struct HostStore<E: HostEffects> {
-    /// The underlying namespace for non-effectful operations.
-    pub namespace: Namespace,
+pub struct HostStore<B: Reader + Writer + Send, E: HostEffects> {
+    /// The underlying backend for non-effectful operations.
+    pub backend: B,
+    /// In-memory store for tool results (previously mounted in Namespace).
+    tool_results: SimpleStore,
     /// The effects handler.
     pub effects: E,
     /// Pending stream events from the most recent completion.
     pending_events: Option<Vec<StreamEvent>>,
 }
 
-impl<E: HostEffects> HostStore<E> {
-    /// Create a new HostStore wrapping the given namespace and effects handler.
-    ///
-    /// Automatically mounts a `tool_results` store for storing tool outputs.
-    pub fn new(mut namespace: Namespace, effects: E) -> Self {
-        namespace.mount("tool_results", Box::new(SimpleStore::new()));
+impl<B: Reader + Writer + Send, E: HostEffects> HostStore<B, E> {
+    /// Create a new HostStore wrapping the given backend and effects handler.
+    pub fn new(backend: B, effects: E) -> Self {
         Self {
-            namespace,
+            backend,
+            tool_results: SimpleStore::new(),
             effects,
             pending_events: None,
         }
@@ -101,12 +100,22 @@ impl<E: HostEffects> HostStore<E> {
 
     /// Handle a read operation, intercepting effectful paths.
     pub fn handle_read(&mut self, path: &Path) -> Result<Option<Record>, StoreError> {
+        if path == &path!("prompt") {
+            return ox_context::synthesize_prompt(&mut self.backend);
+        }
+
         if path == &path!("gate/response") {
             return self.read_gate_response();
         }
 
-        // Delegate everything else to the namespace.
-        self.namespace.read(path)
+        // Intercept tool_results reads — route to owned SimpleStore.
+        if !path.is_empty() && path.components[0] == "tool_results" {
+            let sub = Path::from_components(path.components[1..].to_vec());
+            return self.tool_results.read(&sub);
+        }
+
+        // Delegate everything else to the backend.
+        self.backend.read(path)
     }
 
     /// Handle a write operation, intercepting effectful paths.
@@ -121,7 +130,11 @@ impl<E: HostEffects> HostStore<E> {
             "gate" if path == &path!("gate/complete") => self.write_gate_complete(data),
             "tools" if path == &path!("tools/execute") => self.write_tools_execute(data),
             "events" if path == &path!("events/emit") => self.write_events_emit(data),
-            _ => self.namespace.write(path, data),
+            "tool_results" => {
+                let sub = Path::from_components(path.components[1..].to_vec());
+                self.tool_results.write(&sub, data)
+            }
+            _ => self.backend.write(path, data),
         }
     }
 
@@ -170,11 +183,12 @@ impl<E: HostEffects> HostStore<E> {
             result: result.clone(),
         });
 
-        // Write the result into the namespace at tool_results/{call.id}
+        // Write the result into tool_results at {call.id}
         let result_path = Path::parse(&format!("tool_results/{}", call.id))
             .map_err(|e| StoreError::store("tools", "execute", e.to_string()))?;
+        let sub = Path::from_components(result_path.components[1..].to_vec());
         let result_record = Record::parsed(Value::String(result));
-        self.namespace.write(&result_path, result_record)?;
+        self.tool_results.write(&sub, result_record)?;
 
         Ok(result_path)
     }
@@ -292,7 +306,7 @@ fn json_to_agent_event(json: serde_json::Value) -> Result<AgentEvent, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ox_context::{ModelProvider, SystemProvider, ToolsProvider};
+    use ox_context::{ModelProvider, Namespace, SystemProvider, ToolsProvider};
     use ox_history::HistoryProvider;
     struct MockEffects {
         complete_calls: usize,
@@ -478,7 +492,7 @@ mod tests {
         let ns = make_namespace();
         let mut store = HostStore::new(ns, MockEffects::new());
 
-        // Writing to history/append should delegate to namespace
+        // Writing to history/append should delegate to backend
         let msg = serde_json::json!({
             "role": "user",
             "content": "hello",
@@ -487,5 +501,28 @@ mod tests {
         let record = Record::parsed(value);
         let result = store.handle_write(&path!("history/append"), record);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn read_prompt_synthesizes_from_backend() {
+        let ns = make_namespace();
+        let mut store = HostStore::new(ns, MockEffects::new());
+
+        // Write a user message so synthesis has content
+        let msg = serde_json::json!({"role": "user", "content": "hello"});
+        let value = structfs_serde_store::json_to_value(msg);
+        store
+            .handle_write(&path!("history/append"), Record::parsed(value))
+            .unwrap();
+
+        // Read prompt should synthesize a CompletionRequest
+        let result = store.handle_read(&path!("prompt")).unwrap();
+        assert!(result.is_some());
+        let json =
+            structfs_serde_store::value_to_json(result.unwrap().as_value().cloned().unwrap());
+        let request: ox_kernel::CompletionRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(request.model, "test-model");
+        assert_eq!(request.system, "You are a test agent.");
+        assert_eq!(request.messages.len(), 1);
     }
 }

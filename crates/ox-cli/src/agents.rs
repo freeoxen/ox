@@ -309,7 +309,7 @@ fn agent_worker(
         let host_store = HostStore::new(namespace, effects);
         let (returned_store, result) = module.run(host_store);
 
-        namespace = returned_store.namespace;
+        namespace = returned_store.backend;
         client = returned_store.effects.client;
         tools = returned_store.effects.tools;
         let stats = returned_store.effects.stats.clone();
