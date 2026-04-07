@@ -21,6 +21,9 @@ ox-gate = { path = "../ox-gate" }
 ox-history = { path = "../ox-history" }
 ox-runtime = { path = "../ox-runtime" }
 ox-inbox = { path = "../ox-inbox" }
+ox-broker = { path = "../ox-broker" }
+ox-ui = { path = "../ox-ui" }
+tokio = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.28"
 ratatui = "0.29"
