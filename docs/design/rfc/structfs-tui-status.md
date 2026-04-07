@@ -26,7 +26,7 @@ in `ox-kernel/src/snapshot.rs`. ToolsProvider returns None.
 - Real thread title flow through save_thread_state
 - Message count derived from last_seq in inbox display
 
-### Phase C: StructFS TUI Rewrite (CURRENT — C1/C2/C3a/C3b/C4 complete)
+### Phase C: StructFS TUI Rewrite (CURRENT — C1/C2/C3a/C3b/C4/C5 complete)
 
 **Spec:** `docs/superpowers/specs/2026-04-06-structfs-tui-design.md`
 
@@ -85,15 +85,30 @@ in `ox-kernel/src/snapshot.rs`. ToolsProvider returns None.
   HostStore<SyncClientAdapter, CliEffects>, mounts/unmounts on worker thread
 - `crates/ox-cli/src/main.rs` — restructured init: runtime + broker before App::new
 
+#### C5: Draw Rewrite (complete, 10 tests in view_state + 60 total in ox-cli)
+- `crates/ox-cli/src/view_state.rs` — ViewState struct, fetch_view_state(), parse_chat_messages(),
+  StreamingTurn, InboxThread, parse_inbox_threads()
+- `crates/ox-cli/src/tui.rs` — event loop fetches ViewState per frame, draw is pure (&ViewState in,
+  Frame out), drain_agent_events replaces inline handle_event, borrow scoping for pending_action
+- `crates/ox-cli/src/inbox_view.rs` — draw_inbox/draw_filter_bar take &ViewState
+- `crates/ox-cli/src/tab_bar.rs` — draw_tabs takes &ViewState
+- `crates/ox-cli/src/app.rs` — 7 fields removed (selected_row, inbox_scroll, cached_threads,
+  last_content_height, last_viewport_height, should_quit, scroll), 6 methods removed
+  (send_input, refresh_visible_threads, ensure_selected_visible, get_visible_threads,
+  open_selected_thread, archive_selected_thread), StreamingTurn + drain_agent_events added
+- `crates/ox-cli/src/state_sync.rs` — deleted (-143 lines)
+- Net: -151 lines
+
 ## What's Next
 
 ### Remaining for full spec completion:
 
-1. **Draw Rewrite** (highest value next)
-   - Read directly from broker client instead of synced App fields
-   - Eliminates the sync bridge (state_sync.rs becomes unnecessary)
+1. **Events Through Broker** (highest value next)
+   - CliEffects writes to `threads/{id}/history/turn/*` paths instead of mpsc
+   - StreamingTurn cache disappears, event_rx disappears
+   - Thread content fully from broker (committed + in-progress)
 
-3. **Search State in UiStore**
+2. **Search State in UiStore**
    - Move search.live_query and search.chips into UiStore
    - Eliminates the last handle_search_key direct-mutation path
 
@@ -106,8 +121,9 @@ in `ox-kernel/src/snapshot.rs`. ToolsProvider returns None.
 
 ### Key Architecture Decisions
 - **Scroll commands match visual direction**: scroll_up = visual up = see older
-- **Bidirectional sync**: UiStore → App (each frame), App → UiStore (after App methods)
-- **pending_action pattern**: UiStore sets a string field, TUI reads it and calls App methods
+- **ViewState per-frame snapshot**: fetch_view_state reads broker + App streaming cache each frame
+- **Draw is pure**: &ViewState in, Frame out — no &mut App, no side effects, testable
+- **pending_action pattern**: UiStore sets a string field, TUI reads from ViewState after draw
 - **Search is the last escape hatch**: handle_search_key bypasses broker (7 lines)
 - **Two InboxStore instances**: one in App/AgentPool, one in broker (same SQLite)
 - **HostStore generic over backend**: `HostStore<B, E>` works with Namespace (ox-web) or SyncClientAdapter (ox-cli)
@@ -122,3 +138,5 @@ in `ox-kernel/src/snapshot.rs`. ToolsProvider returns None.
 - **Plans:** `docs/superpowers/plans/2026-04-06-broker-wiring-plan-c3a.md` (executed)
 - **Plans:** `docs/superpowers/plans/2026-04-06-async-event-loop-plan-c3b.md` (executed)
 - **Plans:** `docs/superpowers/plans/2026-04-07-agent-worker-bridge.md` (executed)
+- **Spec:** `docs/superpowers/specs/2026-04-07-draw-rewrite-design.md`
+- **Plans:** `docs/superpowers/plans/2026-04-07-draw-rewrite.md` (executed)
