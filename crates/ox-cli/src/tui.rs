@@ -77,6 +77,18 @@ pub async fn run_async(
             let _ = client
                 .write(&path!("ui/set_scroll_max"), Record::parsed(Value::Map(sm)))
                 .await;
+
+            let mut vh = BTreeMap::new();
+            vh.insert(
+                "height".to_string(),
+                Value::Integer(app.last_viewport_height as i64),
+            );
+            let _ = client
+                .write(
+                    &path!("ui/set_viewport_height"),
+                    Record::parsed(Value::Map(vh)),
+                )
+                .await;
         }
 
         // 4. Poll terminal event (blocking — bridge via block_in_place)

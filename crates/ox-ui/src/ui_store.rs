@@ -49,6 +49,7 @@ pub struct UiStore {
     row_count: usize,
     scroll: usize,
     scroll_max: usize,
+    viewport_height: usize,
     input: String,
     cursor: usize,
     modal: Option<Value>,
@@ -72,6 +73,7 @@ impl UiStore {
             row_count: 0,
             scroll: 0,
             scroll_max: 0,
+            viewport_height: 0,
             input: String::new(),
             cursor: 0,
             modal: None,
@@ -156,6 +158,10 @@ impl UiStore {
         );
         map.insert("scroll".to_string(), Value::Integer(self.scroll as i64));
         map.insert(
+            "viewport_height".to_string(),
+            Value::Integer(self.viewport_height as i64),
+        );
+        map.insert(
             "scroll_max".to_string(),
             Value::Integer(self.scroll_max as i64),
         );
@@ -210,6 +216,7 @@ impl Reader for UiStore {
             "row_count" => Value::Integer(self.row_count as i64),
             "scroll" => Value::Integer(self.scroll as i64),
             "scroll_max" => Value::Integer(self.scroll_max as i64),
+            "viewport_height" => Value::Integer(self.viewport_height as i64),
             "input" => Value::String(self.input.clone()),
             "cursor" => Value::Integer(self.cursor as i64),
             "modal" => self.modal_value(),
@@ -319,6 +326,32 @@ impl Writer for UiStore {
                 }
                 Ok(path!("scroll"))
             }
+            "scroll_to_top" => {
+                self.scroll = self.scroll_max;
+                Ok(path!("scroll"))
+            }
+            "scroll_to_bottom" => {
+                self.scroll = 0;
+                Ok(path!("scroll"))
+            }
+            "scroll_page_down" => {
+                self.scroll = (self.scroll + self.viewport_height).min(self.scroll_max);
+                Ok(path!("scroll"))
+            }
+            "scroll_page_up" => {
+                self.scroll = self.scroll.saturating_sub(self.viewport_height);
+                Ok(path!("scroll"))
+            }
+            "scroll_half_page_down" => {
+                let half = self.viewport_height / 2;
+                self.scroll = (self.scroll + half).min(self.scroll_max);
+                Ok(path!("scroll"))
+            }
+            "scroll_half_page_up" => {
+                let half = self.viewport_height / 2;
+                self.scroll = self.scroll.saturating_sub(half);
+                Ok(path!("scroll"))
+            }
             "set_scroll_max" => {
                 let max = cmd.get_int("max").ok_or_else(|| {
                     StoreError::store("ui", "set_scroll_max", "missing max")
@@ -328,6 +361,23 @@ impl Writer for UiStore {
                     self.scroll = self.scroll_max;
                 }
                 Ok(path!("scroll_max"))
+            }
+            "set_viewport_height" => {
+                let h = cmd.get_int("height").ok_or_else(|| {
+                    StoreError::store("ui", "set_viewport_height", "missing height")
+                })?;
+                self.viewport_height = h.max(0) as usize;
+                Ok(path!("viewport_height"))
+            }
+            "select_first" => {
+                self.selected_row = 0;
+                Ok(path!("selected_row"))
+            }
+            "select_last" => {
+                if self.row_count > 0 {
+                    self.selected_row = self.row_count - 1;
+                }
+                Ok(path!("selected_row"))
             }
             "set_row_count" => {
                 let count = cmd.get_int("count").ok_or_else(|| {
@@ -793,5 +843,107 @@ mod tests {
             )
             .unwrap();
         assert_eq!(read_str(&mut store, "scroll"), Value::Integer(3));
+    }
+
+    // --- Vim navigation ---
+
+    #[test]
+    fn scroll_to_top_and_bottom() {
+        let mut store = UiStore::new();
+        store
+            .write(
+                &path!("set_scroll_max"),
+                cmd_map(&[("max", Value::Integer(50))]),
+            )
+            .unwrap();
+
+        store.write(&path!("scroll_to_top"), empty_cmd()).unwrap();
+        assert_eq!(read_str(&mut store, "scroll"), Value::Integer(50));
+
+        store
+            .write(&path!("scroll_to_bottom"), empty_cmd())
+            .unwrap();
+        assert_eq!(read_str(&mut store, "scroll"), Value::Integer(0));
+    }
+
+    #[test]
+    fn page_and_half_page_scroll() {
+        let mut store = UiStore::new();
+        store
+            .write(
+                &path!("set_scroll_max"),
+                cmd_map(&[("max", Value::Integer(100))]),
+            )
+            .unwrap();
+        store
+            .write(
+                &path!("set_viewport_height"),
+                cmd_map(&[("height", Value::Integer(20))]),
+            )
+            .unwrap();
+
+        // Full page down
+        store
+            .write(&path!("scroll_page_down"), empty_cmd())
+            .unwrap();
+        assert_eq!(read_str(&mut store, "scroll"), Value::Integer(20));
+
+        // Half page down
+        store
+            .write(&path!("scroll_half_page_down"), empty_cmd())
+            .unwrap();
+        assert_eq!(read_str(&mut store, "scroll"), Value::Integer(30));
+
+        // Half page up
+        store
+            .write(&path!("scroll_half_page_up"), empty_cmd())
+            .unwrap();
+        assert_eq!(read_str(&mut store, "scroll"), Value::Integer(20));
+
+        // Full page up
+        store
+            .write(&path!("scroll_page_up"), empty_cmd())
+            .unwrap();
+        assert_eq!(read_str(&mut store, "scroll"), Value::Integer(0));
+    }
+
+    #[test]
+    fn select_first_and_last() {
+        let mut store = UiStore::new();
+        store
+            .write(
+                &path!("set_row_count"),
+                cmd_map(&[("count", Value::Integer(10))]),
+            )
+            .unwrap();
+
+        store.write(&path!("select_last"), empty_cmd()).unwrap();
+        assert_eq!(read_str(&mut store, "selected_row"), Value::Integer(9));
+
+        store.write(&path!("select_first"), empty_cmd()).unwrap();
+        assert_eq!(read_str(&mut store, "selected_row"), Value::Integer(0));
+    }
+
+    #[test]
+    fn page_scroll_clamps_to_max() {
+        let mut store = UiStore::new();
+        store
+            .write(
+                &path!("set_scroll_max"),
+                cmd_map(&[("max", Value::Integer(10))]),
+            )
+            .unwrap();
+        store
+            .write(
+                &path!("set_viewport_height"),
+                cmd_map(&[("height", Value::Integer(20))]),
+            )
+            .unwrap();
+
+        // Page down with viewport > max — clamps to max
+        store
+            .write(&path!("scroll_page_down"), empty_cmd())
+            .unwrap();
+        assert_eq!(read_str(&mut store, "scroll"), Value::Integer(10));
     }
 }

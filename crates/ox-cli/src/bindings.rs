@@ -183,6 +183,21 @@ fn normal_mode(out: &mut Vec<Binding>) {
         "Search",
     ));
 
+    // -- Vim fast navigation --
+    // g/G: go to top/bottom
+    out.push(bind_screen("normal", "g", "inbox", cmd("ui/select_first"), "Go to first"));
+    out.push(bind_screen("normal", "G", "inbox", cmd("ui/select_last"), "Go to last"));
+    out.push(bind_screen("normal", "g", "thread", cmd("ui/scroll_to_bottom"), "Go to newest"));
+    out.push(bind_screen("normal", "G", "thread", cmd("ui/scroll_to_top"), "Go to oldest"));
+
+    // Ctrl+d/u: half-page scroll
+    out.push(bind_screen("normal", "Ctrl+d", "thread", cmd("ui/scroll_half_page_down"), "Half page down"));
+    out.push(bind_screen("normal", "Ctrl+u", "thread", cmd("ui/scroll_half_page_up"), "Half page up"));
+
+    // Ctrl+f/b: full page scroll
+    out.push(bind_screen("normal", "Ctrl+f", "thread", cmd("ui/scroll_page_down"), "Page down"));
+    out.push(bind_screen("normal", "Ctrl+b", "thread", cmd("ui/scroll_page_up"), "Page up"));
+
     // Thread actions
     out.push(bind_screen(
         "normal",
