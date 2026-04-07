@@ -7,74 +7,6 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use std::time::Duration;
 
-/// Run the TUI event loop. Blocks until the user quits.
-pub fn run(
-    app: &mut App,
-    theme: &Theme,
-    terminal: &mut ratatui::DefaultTerminal,
-) -> std::io::Result<()> {
-    loop {
-        terminal.draw(|frame| draw(frame, app, theme))?;
-
-        if event::poll(Duration::from_millis(50))? {
-            match event::read()? {
-                Event::Key(key) => {
-                    if app.pending_customize.is_some() {
-                        handle_customize_key(app, key.code);
-                    } else if app.pending_approval.is_some() {
-                        handle_approval_key(app, key.code, key.modifiers);
-                    } else {
-                        match &app.mode {
-                            InputMode::Normal => {
-                                handle_normal_key(app, key.modifiers, key.code);
-                            }
-                            InputMode::Insert(ctx) => {
-                                handle_insert_key(app, ctx.clone(), key.modifiers, key.code);
-                            }
-                        }
-                    }
-                }
-                Event::Mouse(mouse) => {
-                    handle_mouse(app, mouse.kind, mouse.row);
-                }
-                _ => {}
-            }
-        }
-
-        // Drain agent events
-        while let Ok(event) = app.event_rx.try_recv() {
-            app.handle_event(event);
-        }
-
-        // Check for permission requests
-        if app.pending_approval.is_none() && app.pending_customize.is_none() {
-            if let Ok(AppControl::PermissionRequest {
-                thread_id,
-                tool,
-                input_preview,
-                respond,
-            }) = app.control_rx.try_recv()
-            {
-                // Update inbox state to blocked
-                app.update_thread_state(&thread_id, "blocked_on_approval");
-                // Auto-switch to the requesting thread's tab
-                app.open_thread(thread_id.clone());
-                app.pending_approval = Some(ApprovalState {
-                    thread_id,
-                    tool,
-                    input_preview,
-                    selected: 0,
-                    respond,
-                });
-            }
-        }
-
-        if app.should_quit {
-            return Ok(());
-        }
-    }
-}
-
 /// Async event loop that dispatches through the BrokerStore.
 ///
 /// ALL state mutations go through UiStore via the broker. Text editing
@@ -175,17 +107,10 @@ pub async fn run_async(
                             .await;
 
                         if result.is_err() {
-                            // No binding — route text editing through UiStore
+                            // No binding — route through broker or search fallback
                             if let InputMode::Insert(ref ctx) = app.mode {
                                 if *ctx == InsertContext::Search {
-                                    // Search editing stays direct — search state
-                                    // is not in UiStore yet
-                                    handle_insert_key(
-                                        app,
-                                        ctx.clone(),
-                                        key.modifiers,
-                                        key.code,
-                                    );
+                                    handle_search_key(app, key.code);
                                 } else {
                                     dispatch_text_edit(
                                         client,
@@ -280,7 +205,6 @@ async fn dispatch_text_edit(
         (_, KeyCode::Left) if !is_search => {
             let pos = app.cursor.saturating_sub(1);
             let mut cmd = BTreeMap::new();
-            cmd.insert("text".to_string(), Value::String(app.input.clone()));
             cmd.insert("cursor".to_string(), Value::Integer(pos as i64));
             let _ = client
                 .write(&path!("ui/set_input"), Record::parsed(Value::Map(cmd)))
@@ -289,7 +213,6 @@ async fn dispatch_text_edit(
         (_, KeyCode::Right) if !is_search => {
             let pos = (app.cursor + 1).min(app.input.len());
             let mut cmd = BTreeMap::new();
-            cmd.insert("text".to_string(), Value::String(app.input.clone()));
             cmd.insert("cursor".to_string(), Value::Integer(pos as i64));
             let _ = client
                 .write(&path!("ui/set_input"), Record::parsed(Value::Map(cmd)))
@@ -297,7 +220,6 @@ async fn dispatch_text_edit(
         }
         (KeyModifiers::CONTROL, KeyCode::Char('a')) if !is_search => {
             let mut cmd = BTreeMap::new();
-            cmd.insert("text".to_string(), Value::String(app.input.clone()));
             cmd.insert("cursor".to_string(), Value::Integer(0));
             let _ = client
                 .write(&path!("ui/set_input"), Record::parsed(Value::Map(cmd)))
@@ -306,7 +228,6 @@ async fn dispatch_text_edit(
         (KeyModifiers::CONTROL, KeyCode::Char('e')) if !is_search => {
             let pos = app.input.len() as i64;
             let mut cmd = BTreeMap::new();
-            cmd.insert("text".to_string(), Value::String(app.input.clone()));
             cmd.insert("cursor".to_string(), Value::Integer(pos));
             let _ = client
                 .write(&path!("ui/set_input"), Record::parsed(Value::Map(cmd)))
@@ -373,188 +294,14 @@ async fn dispatch_mouse(
 }
 
 // ---------------------------------------------------------------------------
-// Normal mode key handler
+// Search text editing (only path that still bypasses broker)
 // ---------------------------------------------------------------------------
 
-fn handle_normal_key(app: &mut App, modifiers: KeyModifiers, code: KeyCode) {
-    let in_thread = app.active_thread.is_some();
-    let in_inbox = !in_thread;
-
-    match (modifiers, code) {
-        // Quit / back
-        (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
-            if in_thread {
-                app.go_to_inbox();
-            } else {
-                app.should_quit = true;
-            }
-        }
-        (_, KeyCode::Esc) | (_, KeyCode::Char('q')) => {
-            if in_thread {
-                app.go_to_inbox();
-            } else if code == KeyCode::Char('q') {
-                app.should_quit = true;
-            }
-        }
-
-        // Enter insert mode
-        (_, KeyCode::Char('i')) => {
-            if in_thread {
-                app.enter_reply();
-            } else {
-                app.enter_compose();
-            }
-        }
-        (_, KeyCode::Char('/')) if in_inbox => {
-            app.enter_search();
-        }
-
-        // Navigation
-        (_, KeyCode::Char('j') | KeyCode::Down) if in_inbox => {
-            let count = app.cached_threads.len();
-            if count > 0 && app.selected_row < count - 1 {
-                app.selected_row += 1;
-            }
-        }
-        (_, KeyCode::Char('k') | KeyCode::Up) if in_inbox => {
-            app.selected_row = app.selected_row.saturating_sub(1);
-        }
-        (_, KeyCode::Char('j') | KeyCode::Down) if in_thread => {
-            app.scroll = app.scroll.saturating_sub(1);
-        }
-        (_, KeyCode::Char('k') | KeyCode::Up) if in_thread => {
-            app.scroll = app.scroll.saturating_add(1);
-        }
-
-        // Enter — open thread or send if draft exists
-        (_, KeyCode::Enter) => {
-            if !app.input.is_empty() {
-                app.send_input();
-            } else if in_inbox {
-                app.open_selected_thread();
-            }
-        }
-
-        // Archive (inbox only)
-        (_, KeyCode::Char('d')) if in_inbox => {
-            app.archive_selected_thread();
-        }
-
-        // Dismiss search chips by number (inbox only)
-        (_, KeyCode::Char(c @ '1'..='9')) if in_inbox && app.search.is_active() => {
-            let idx = (c as u8 - b'1') as usize;
-            app.search.dismiss_chip(idx);
-        }
-
-        // Back to inbox
-        (KeyModifiers::CONTROL, KeyCode::Char('t')) => app.go_to_inbox(),
-
-        // Quick approve shortcuts (thread only, when pending)
-        (_, KeyCode::Char('y')) if in_thread && app.pending_approval.is_some() => {
-            let approval = app.pending_approval.take().unwrap();
-            approval.respond.send(ApprovalResponse::AllowOnce).ok();
-        }
-        (_, KeyCode::Char('n')) if in_thread && app.pending_approval.is_some() => {
-            let approval = app.pending_approval.take().unwrap();
-            approval.respond.send(ApprovalResponse::DenyOnce).ok();
-        }
-        (_, KeyCode::Char('s')) if in_thread && app.pending_approval.is_some() => {
-            let approval = app.pending_approval.take().unwrap();
-            approval.respond.send(ApprovalResponse::AllowSession).ok();
-        }
-        (_, KeyCode::Char('a')) if in_thread && app.pending_approval.is_some() => {
-            let approval = app.pending_approval.take().unwrap();
-            approval.respond.send(ApprovalResponse::AllowAlways).ok();
-        }
-
-        _ => {}
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Insert mode key handler
-// ---------------------------------------------------------------------------
-
-fn handle_insert_key(app: &mut App, ctx: InsertContext, modifiers: KeyModifiers, code: KeyCode) {
-    match (modifiers, code) {
-        // Send — Ctrl+S always works. Ctrl+Enter may arrive as different
-        // key codes depending on the terminal emulator.
-        (KeyModifiers::CONTROL, KeyCode::Char('s'))
-        | (KeyModifiers::CONTROL, KeyCode::Enter)
-        | (KeyModifiers::CONTROL, KeyCode::Char('\n'))
-        | (KeyModifiers::CONTROL, KeyCode::Char('\r')) => {
-            app.send_input();
-        }
-        // Exit insert
-        (_, KeyCode::Esc) => {
-            app.exit_insert();
-        }
-        // Enter — newline for compose/reply, save chip for search
-        (_, KeyCode::Enter) => match ctx {
-            InsertContext::Search => {
-                app.search.save_chip();
-            }
-            InsertContext::Compose | InsertContext::Reply => {
-                app.input.insert(app.cursor, '\n');
-                app.cursor += 1;
-            }
-        },
-        // Clear line
-        (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
-            if ctx == InsertContext::Search {
-                app.search.live_query.clear();
-            } else {
-                app.input.clear();
-                app.cursor = 0;
-            }
-        }
-        // Text editing
-        (_, KeyCode::Backspace) => {
-            if ctx == InsertContext::Search {
-                app.search.live_query.pop();
-            } else if app.cursor > 0 {
-                app.cursor -= 1;
-                app.input.remove(app.cursor);
-            }
-        }
-        (_, KeyCode::Left) => {
-            if ctx != InsertContext::Search {
-                app.cursor = app.cursor.saturating_sub(1);
-            }
-        }
-        (_, KeyCode::Right) => {
-            if ctx != InsertContext::Search && app.cursor < app.input.len() {
-                app.cursor += 1;
-            }
-        }
-        (_, KeyCode::Up) => {
-            if ctx != InsertContext::Search {
-                app.history_up();
-            }
-        }
-        (_, KeyCode::Down) => {
-            if ctx != InsertContext::Search {
-                app.history_down();
-            }
-        }
-        (KeyModifiers::CONTROL, KeyCode::Char('a')) => {
-            if ctx != InsertContext::Search {
-                app.cursor = 0;
-            }
-        }
-        (KeyModifiers::CONTROL, KeyCode::Char('e')) => {
-            if ctx != InsertContext::Search {
-                app.cursor = app.input.len();
-            }
-        }
-        (_, KeyCode::Char(c)) => {
-            if ctx == InsertContext::Search {
-                app.search.live_query.push(c);
-            } else {
-                app.input.insert(app.cursor, c);
-                app.cursor += 1;
-            }
-        }
+fn handle_search_key(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Enter => app.search.save_chip(),
+        KeyCode::Backspace => { app.search.live_query.pop(); }
+        KeyCode::Char(c) => app.search.live_query.push(c),
         _ => {}
     }
 }
@@ -638,55 +385,6 @@ fn handle_approval_key(app: &mut App, key: KeyCode, _modifiers: KeyModifiers) {
         KeyCode::Esc => {
             let approval = app.pending_approval.take().unwrap();
             approval.respond.send(ApprovalResponse::DenyOnce).ok();
-        }
-        _ => {}
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Mouse handler
-// ---------------------------------------------------------------------------
-
-fn handle_mouse(app: &mut App, kind: MouseEventKind, row: u16) {
-    match kind {
-        MouseEventKind::ScrollUp => {
-            if app.pending_approval.is_none() && app.pending_customize.is_none() {
-                if app.active_thread.is_some() {
-                    app.scroll = app.scroll.saturating_add(3);
-                } else {
-                    app.selected_row = app.selected_row.saturating_sub(1);
-                }
-            }
-        }
-        MouseEventKind::ScrollDown => {
-            if app.pending_approval.is_none() && app.pending_customize.is_none() {
-                if app.active_thread.is_some() {
-                    app.scroll = app.scroll.saturating_sub(3);
-                } else {
-                    let count = app.cached_threads.len();
-                    if count > 0 && app.selected_row < count - 1 {
-                        app.selected_row += 1;
-                    }
-                }
-            }
-        }
-        MouseEventKind::Down(_) => {
-            // Click on approval dialog options
-            if let Some(ref mut approval) = app.pending_approval {
-                let term_h = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24);
-                let dialog_h = 13u16;
-                let dialog_top = term_h.saturating_sub(dialog_h) / 2;
-                let first_option_row = dialog_top + 3;
-                if row >= first_option_row
-                    && row < first_option_row + ApprovalState::OPTIONS.len() as u16
-                {
-                    let idx = (row - first_option_row) as usize;
-                    approval.selected = idx;
-                    let response = ApprovalState::OPTIONS[idx].1.clone();
-                    let approval = app.pending_approval.take().unwrap();
-                    approval.respond.send(response).ok();
-                }
-            }
         }
         _ => {}
     }

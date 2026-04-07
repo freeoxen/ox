@@ -325,33 +325,8 @@ impl App {
         })
     }
 
-    // -- Mode transitions -----------------------------------------------------
-
-    /// Enter insert mode for composing a new thread (from inbox).
-    pub fn enter_compose(&mut self) {
-        self.mode = InputMode::Insert(InsertContext::Compose);
-        self.input.clear();
-        self.cursor = 0;
-    }
-
-    /// Enter insert mode for replying to the active thread.
-    pub fn enter_reply(&mut self) {
-        if self.active_thread.is_some() {
-            self.mode = InputMode::Insert(InsertContext::Reply);
-            self.input.clear();
-            self.cursor = 0;
-        }
-    }
-
-    /// Enter insert mode for search/filtering (inbox only).
-    pub fn enter_search(&mut self) {
-        self.mode = InputMode::Insert(InsertContext::Search);
-    }
-
-    /// Exit insert mode back to Normal.
-    pub fn exit_insert(&mut self) {
-        self.mode = InputMode::Normal;
-    }
+    // Mode transitions (enter_compose, enter_reply, enter_search, exit_insert,
+    // go_to_inbox) are now handled by UiStore commands through the broker.
 
     /// Send the current input, context-dependent on mode.
     ///
@@ -743,10 +718,6 @@ impl App {
     // -- Tab management -------------------------------------------------------
 
     /// Switch to inbox view (no active thread).
-    pub fn go_to_inbox(&mut self) {
-        self.active_thread = None;
-    }
-
     /// Open a thread view. Loads conversation history and stats from inbox if needed.
     pub fn open_thread(&mut self, thread_id: String) {
         let view = self.thread_views.entry(thread_id.clone()).or_default();

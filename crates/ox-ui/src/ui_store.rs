@@ -343,9 +343,7 @@ impl Writer for UiStore {
                     .get_int("at")
                     .map(|n| (n.max(0) as usize).min(self.input.len()))
                     .unwrap_or(self.cursor);
-                for c in ch.chars() {
-                    self.input.insert(at, c);
-                }
+                self.input.insert_str(at, ch);
                 self.cursor = at + ch.len();
                 Ok(path!("input"))
             }
