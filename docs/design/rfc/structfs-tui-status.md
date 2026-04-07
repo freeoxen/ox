@@ -26,7 +26,7 @@ in `ox-kernel/src/snapshot.rs`. ToolsProvider returns None.
 - Real thread title flow through save_thread_state
 - Message count derived from last_seq in inbox display
 
-### Phase C: StructFS TUI Rewrite (CURRENT — C1/C2/C3a/C3b complete)
+### Phase C: StructFS TUI Rewrite (CURRENT — C1/C2/C3a/C3b/C4 complete)
 
 **Spec:** `docs/superpowers/specs/2026-04-06-structfs-tui-design.md`
 
@@ -72,17 +72,24 @@ in `ox-kernel/src/snapshot.rs`. ToolsProvider returns None.
 - `crates/ox-cli/src/main.rs` — tokio runtime, BrokerSetup, run_async
 - Dead code removed: old run(), handle_normal_key, handle_mouse, App mode transition methods
 
+#### C4: Agent Worker Bridge (complete, 4 tests in thread_mount + 15 in ox-runtime + 3 in ox-broker)
+- `crates/ox-context/src/lib.rs` — extracted `synthesize_prompt()` as standalone public function
+- `crates/ox-runtime/src/host_store.rs` — `HostStore<B, E>` generic over backend (Namespace or
+  SyncClientAdapter), owns tool_results directly, intercepts prompt synthesis
+- `crates/ox-runtime/src/engine.rs` — `AgentState<B, E>` and `AgentModule::run<B, E>` generic
+- `crates/ox-broker/src/sync_adapter.rs` — `SyncClientAdapter` (sync Reader/Writer over async
+  ClientHandle via `Handle::block_on`), `BrokerStore` derives Clone
+- `crates/ox-cli/src/thread_mount.rs` — `mount_thread()`/`unmount_thread()` for per-thread
+  store lifecycle, `restore_thread_state()` via SyncClientAdapter
+- `crates/ox-cli/src/agents.rs` — agent_worker uses scoped ClientHandle through broker,
+  HostStore<SyncClientAdapter, CliEffects>, mounts/unmounts on worker thread
+- `crates/ox-cli/src/main.rs` — restructured init: runtime + broker before App::new
+
 ## What's Next
 
 ### Remaining for full spec completion:
 
-1. **Agent Worker Bridge** (highest value next)
-   - Workers get `broker.client().scoped("threads/{id}")` instead of building Namespace
-   - ThreadRegistry for dynamic mount/unmount of per-thread namespaces
-   - HostStore wraps scoped ClientHandle instead of direct Namespace
-   - Plans: none written yet, needs planning
-
-2. **Draw Rewrite**
+1. **Draw Rewrite** (highest value next)
    - Read directly from broker client instead of synced App fields
    - Eliminates the sync bridge (state_sync.rs becomes unnecessary)
 
@@ -103,6 +110,10 @@ in `ox-kernel/src/snapshot.rs`. ToolsProvider returns None.
 - **pending_action pattern**: UiStore sets a string field, TUI reads it and calls App methods
 - **Search is the last escape hatch**: handle_search_key bypasses broker (7 lines)
 - **Two InboxStore instances**: one in App/AgentPool, one in broker (same SQLite)
+- **HostStore generic over backend**: `HostStore<B, E>` works with Namespace (ox-web) or SyncClientAdapter (ox-cli)
+- **Workers mount their own stores**: worker thread calls `rt_handle.block_on(mount_thread(...))`, owns lifecycle
+- **SyncClientAdapter uses Handle::block_on**: works from plain OS threads (not tokio tasks)
+- **ProviderConfig constructed directly**: workers don't read GateStore for transport config
 
 ### Reference Files
 - **Spec:** `docs/superpowers/specs/2026-04-06-structfs-tui-design.md`
@@ -110,3 +121,4 @@ in `ox-kernel/src/snapshot.rs`. ToolsProvider returns None.
 - **Plans:** `docs/superpowers/plans/2026-04-06-core-stores-plan-c2.md` (executed)
 - **Plans:** `docs/superpowers/plans/2026-04-06-broker-wiring-plan-c3a.md` (executed)
 - **Plans:** `docs/superpowers/plans/2026-04-06-async-event-loop-plan-c3b.md` (executed)
+- **Plans:** `docs/superpowers/plans/2026-04-07-agent-worker-bridge.md` (executed)
