@@ -24,6 +24,28 @@ stores: call `store.write()`, send the result immediately. For the
 approval flow, a store's write needs to return a future that resolves
 later — when a second write from a different client provides the answer.
 
+### Scope Boundary
+
+The async traits are **broker-internal infrastructure**, not a StructFS
+primitive. The public interface to ox — what Wasm modules see, what the
+kernel uses, what stores implement — stays synchronous Reader/Writer.
+That's the StructFS contract.
+
+- `AsyncReader` / `AsyncWriter` are defined in `ox-broker`, not in
+  `structfs-core-store` or `ox-kernel`.
+- They are not re-exported by any public ox crate.
+- Regular stores (UiStore, HistoryProvider, InboxStore, etc.) implement
+  sync Reader/Writer and are mounted with `broker.mount()` — unchanged.
+- Only stores that need deferred replies (ApprovalStore) implement the
+  async traits and are mounted with `broker.mount_async()`.
+- From the Wasm guest's perspective, `store_read` / `store_write` are
+  synchronous. The SyncClientAdapter bridges to the broker's async
+  internals via `handle.block_on()`. The guest never sees a future.
+
+This is the same layering the broker already uses: tokio channels,
+oneshot replies, async server loops — all internal, none leaking into
+the stores or the StructFS interface.
+
 ### Async Reader/Writer Traits
 
 ```rust
