@@ -77,9 +77,11 @@ pub fn run(
 
 /// Async event loop that dispatches through the BrokerStore.
 ///
-/// Simple state commands (navigation, mode, scroll) go through
-/// InputStore → BrokerStore → UiStore. Complex commands (send,
-/// open thread, archive, quit) are handled directly by App methods.
+/// ALL state mutations go through UiStore via the broker. Text editing
+/// commands (insert_char, delete_char) are dispatched directly to UiStore
+/// when no InputStore binding matches. Application-level commands
+/// (send, open, archive, quit) are signaled via UiStore's pending_action
+/// field and handled by App methods.
 pub async fn run_async(
     app: &mut App,
     client: &ox_broker::ClientHandle,
@@ -92,8 +94,23 @@ pub async fn run_async(
     use structfs_core_store::{path, Record, Value};
 
     loop {
-        // 1. Sync broker state → App fields
-        sync_ui_to_app(client, app).await;
+        // 1. Sync broker state → App fields, check for pending actions
+        if let Some(action) = sync_ui_to_app(client, app).await {
+            match action.as_str() {
+                "send_input" => app.send_input(),
+                "quit" => app.should_quit = true,
+                "open_selected" => app.open_selected_thread(),
+                "archive_selected" => app.archive_selected_thread(),
+                _ => {}
+            }
+            // Clear the pending action
+            let _ = client
+                .write(
+                    &path!("ui/clear_pending_action"),
+                    Record::parsed(Value::Map(BTreeMap::new())),
+                )
+                .await;
+        }
 
         // 2. Sync inbox row count to UiStore
         let row_count = app.cached_threads.len() as i64;
@@ -142,18 +159,12 @@ pub async fn run_async(
                         };
 
                         let mut event_map = BTreeMap::new();
-                        event_map.insert(
-                            "mode".to_string(),
-                            Value::String(mode.to_string()),
-                        );
-                        event_map.insert(
-                            "key".to_string(),
-                            Value::String(key_str.clone()),
-                        );
-                        event_map.insert(
-                            "screen".to_string(),
-                            Value::String(screen.to_string()),
-                        );
+                        event_map
+                            .insert("mode".to_string(), Value::String(mode.to_string()));
+                        event_map
+                            .insert("key".to_string(), Value::String(key_str.clone()));
+                        event_map
+                            .insert("screen".to_string(), Value::String(screen.to_string()));
 
                         // Try InputStore dispatch
                         let result = client
@@ -163,37 +174,34 @@ pub async fn run_async(
                             )
                             .await;
 
-                        match result {
-                            Ok(returned_path) => {
-                                // Check if the dispatched command is an app-level action
-                                let path_str = returned_path.to_string();
-                                if path_str.contains("send_input") {
-                                    app.send_input();
-                                } else if path_str.contains("open_selected") {
-                                    app.open_selected_thread();
-                                } else if path_str.contains("archive_selected") {
-                                    app.archive_selected_thread();
-                                } else if path_str.contains("quit") {
-                                    app.should_quit = true;
-                                }
-                                // Otherwise: state command handled by UiStore,
-                                // sync_ui_to_app will pick it up next iteration
-                            }
-                            Err(_) => {
-                                // No binding found — handle text input directly
-                                if let InputMode::Insert(ctx) = app.mode.clone() {
+                        if result.is_err() {
+                            // No binding — route text editing through UiStore
+                            if let InputMode::Insert(ref ctx) = app.mode {
+                                if *ctx == InsertContext::Search {
+                                    // Search editing stays direct — search state
+                                    // is not in UiStore yet
                                     handle_insert_key(
                                         app,
-                                        ctx,
+                                        ctx.clone(),
                                         key.modifiers,
                                         key.code,
                                     );
+                                } else {
+                                    dispatch_text_edit(
+                                        client,
+                                        app,
+                                        key.modifiers,
+                                        key.code,
+                                    )
+                                    .await;
                                 }
                             }
                         }
                     }
                 }
-                Event::Mouse(mouse) => handle_mouse(app, mouse.kind, mouse.row),
+                Event::Mouse(mouse) => {
+                    dispatch_mouse(client, app, mouse.kind).await;
+                }
                 _ => {}
             }
         }
@@ -228,6 +236,139 @@ pub async fn run_async(
         if app.should_quit {
             return Ok(());
         }
+    }
+}
+
+/// Dispatch text editing commands through UiStore via the broker.
+/// Called when no InputStore binding matches in insert mode.
+async fn dispatch_text_edit(
+    client: &ox_broker::ClientHandle,
+    app: &App,
+    modifiers: KeyModifiers,
+    code: KeyCode,
+) {
+    use std::collections::BTreeMap;
+    use structfs_core_store::{path, Record, Value};
+
+    let is_search = matches!(app.mode, InputMode::Insert(InsertContext::Search));
+
+    match (modifiers, code) {
+        (_, KeyCode::Char(c)) if !is_search => {
+            let mut cmd = BTreeMap::new();
+            cmd.insert("char".to_string(), Value::String(c.to_string()));
+            cmd.insert("at".to_string(), Value::Integer(app.cursor as i64));
+            let _ = client
+                .write(&path!("ui/insert_char"), Record::parsed(Value::Map(cmd)))
+                .await;
+        }
+        (_, KeyCode::Enter) if !is_search => {
+            let mut cmd = BTreeMap::new();
+            cmd.insert("char".to_string(), Value::String("\n".to_string()));
+            cmd.insert("at".to_string(), Value::Integer(app.cursor as i64));
+            let _ = client
+                .write(&path!("ui/insert_char"), Record::parsed(Value::Map(cmd)))
+                .await;
+        }
+        (_, KeyCode::Backspace) if !is_search => {
+            let _ = client
+                .write(
+                    &path!("ui/delete_char"),
+                    Record::parsed(Value::Map(BTreeMap::new())),
+                )
+                .await;
+        }
+        (_, KeyCode::Left) if !is_search => {
+            let pos = app.cursor.saturating_sub(1);
+            let mut cmd = BTreeMap::new();
+            cmd.insert("text".to_string(), Value::String(app.input.clone()));
+            cmd.insert("cursor".to_string(), Value::Integer(pos as i64));
+            let _ = client
+                .write(&path!("ui/set_input"), Record::parsed(Value::Map(cmd)))
+                .await;
+        }
+        (_, KeyCode::Right) if !is_search => {
+            let pos = (app.cursor + 1).min(app.input.len());
+            let mut cmd = BTreeMap::new();
+            cmd.insert("text".to_string(), Value::String(app.input.clone()));
+            cmd.insert("cursor".to_string(), Value::Integer(pos as i64));
+            let _ = client
+                .write(&path!("ui/set_input"), Record::parsed(Value::Map(cmd)))
+                .await;
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('a')) if !is_search => {
+            let mut cmd = BTreeMap::new();
+            cmd.insert("text".to_string(), Value::String(app.input.clone()));
+            cmd.insert("cursor".to_string(), Value::Integer(0));
+            let _ = client
+                .write(&path!("ui/set_input"), Record::parsed(Value::Map(cmd)))
+                .await;
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('e')) if !is_search => {
+            let pos = app.input.len() as i64;
+            let mut cmd = BTreeMap::new();
+            cmd.insert("text".to_string(), Value::String(app.input.clone()));
+            cmd.insert("cursor".to_string(), Value::Integer(pos));
+            let _ = client
+                .write(&path!("ui/set_input"), Record::parsed(Value::Map(cmd)))
+                .await;
+        }
+        // Search text editing and unhandled keys: no-op here.
+        // Search uses app.search.live_query directly — handled in the
+        // caller via handle_insert_key fallback for search context.
+        _ => {}
+    }
+}
+
+/// Dispatch mouse events through UiStore via the broker.
+async fn dispatch_mouse(
+    client: &ox_broker::ClientHandle,
+    app: &App,
+    kind: MouseEventKind,
+) {
+    use std::collections::BTreeMap;
+    use structfs_core_store::{path, Record, Value};
+
+    if app.pending_approval.is_some() || app.pending_customize.is_some() {
+        return;
+    }
+
+    match kind {
+        MouseEventKind::ScrollUp => {
+            if app.active_thread.is_some() {
+                // Thread: scroll down (increase scroll = see older messages)
+                let _ = client
+                    .write(
+                        &path!("ui/scroll_down"),
+                        Record::parsed(Value::Map(BTreeMap::new())),
+                    )
+                    .await;
+            } else {
+                let _ = client
+                    .write(
+                        &path!("ui/select_prev"),
+                        Record::parsed(Value::Map(BTreeMap::new())),
+                    )
+                    .await;
+            }
+        }
+        MouseEventKind::ScrollDown => {
+            if app.active_thread.is_some() {
+                let _ = client
+                    .write(
+                        &path!("ui/scroll_up"),
+                        Record::parsed(Value::Map(BTreeMap::new())),
+                    )
+                    .await;
+            } else {
+                let _ = client
+                    .write(
+                        &path!("ui/select_next"),
+                        Record::parsed(Value::Map(BTreeMap::new())),
+                    )
+                    .await;
+            }
+        }
+        _ => {}
     }
 }
 

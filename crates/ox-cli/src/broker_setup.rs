@@ -5,7 +5,7 @@
 
 use ox_broker::BrokerStore;
 use ox_inbox::InboxStore;
-use ox_ui::{Binding, InputStore, UiStore};
+use ox_ui::{ApprovalStore, Binding, InputStore, UiStore};
 use structfs_core_store::path;
 use tokio::task::JoinHandle;
 
@@ -47,6 +47,9 @@ pub async fn setup(inbox: InboxStore, bindings: Vec<Binding>) -> BrokerHandle {
     // Mount InboxStore
     servers.push(broker.mount(path!("inbox"), inbox).await);
 
+    // Mount ApprovalStore (per-app for now; per-thread in C3c)
+    servers.push(broker.mount(path!("approval"), ApprovalStore::new()).await);
+
     BrokerHandle {
         broker,
         _servers: servers,
@@ -57,7 +60,7 @@ pub async fn setup(inbox: InboxStore, bindings: Vec<Binding>) -> BrokerHandle {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
-    use structfs_core_store::{path, Record, Value};
+    use structfs_core_store::{Record, Value, path};
 
     fn test_inbox() -> InboxStore {
         let dir = tempfile::tempdir().unwrap();
@@ -137,10 +140,7 @@ mod tests {
 
         // Open a thread so we're on the thread screen
         let mut open_cmd = BTreeMap::new();
-        open_cmd.insert(
-            "thread_id".to_string(),
-            Value::String("t_test".to_string()),
-        );
+        open_cmd.insert("thread_id".to_string(), Value::String("t_test".to_string()));
         client
             .write(&path!("ui/open"), Record::parsed(Value::Map(open_cmd)))
             .await

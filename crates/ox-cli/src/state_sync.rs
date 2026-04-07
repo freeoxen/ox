@@ -5,21 +5,22 @@
 
 use crate::app::{App, InputMode, InsertContext};
 use ox_broker::ClientHandle;
-use structfs_core_store::{path, Value};
+use structfs_core_store::{Value, path};
 
 /// Read UiStore state from the broker and sync to App fields.
 ///
 /// Updates: mode, insert_context, active_thread, selected_row,
-/// scroll, input, cursor. Does NOT touch thread_views, search,
+/// scroll, input, cursor. Returns pending_action if one was set
+/// by a command dispatch. Does NOT touch thread_views, search,
 /// event channels, or agent state.
-pub async fn sync_ui_to_app(client: &ClientHandle, app: &mut App) {
+pub async fn sync_ui_to_app(client: &ClientHandle, app: &mut App) -> Option<String> {
     // Read all UiStore state in one call
     let state = match client.read(&path!("ui")).await {
         Ok(Some(record)) => match record.as_value() {
             Some(Value::Map(m)) => m.clone(),
-            _ => return,
+            _ => return None,
         },
-        _ => return,
+        _ => return None,
     };
 
     // Mode + insert context
@@ -67,4 +68,10 @@ pub async fn sync_ui_to_app(client: &ClientHandle, app: &mut App) {
     if let Some(Value::Integer(n)) = state.get("cursor") {
         app.cursor = *n as usize;
     }
+
+    // Pending action
+    state.get("pending_action").and_then(|v| match v {
+        Value::String(s) => Some(s.clone()),
+        _ => None,
+    })
 }

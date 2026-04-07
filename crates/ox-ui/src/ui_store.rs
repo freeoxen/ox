@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use structfs_core_store::{path, Error as StoreError, Path, Reader, Record, Value, Writer};
+use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer, path};
 
 use crate::command::{Command, TxnLog};
 
@@ -52,6 +52,10 @@ pub struct UiStore {
     cursor: usize,
     modal: Option<Value>,
     status: Option<String>,
+    /// Pending application-level action for the TUI to handle.
+    /// Set by commands like send_input/quit/open_selected that
+    /// require App-level logic the store can't perform.
+    pending_action: Option<String>,
     txn_log: TxnLog,
 }
 
@@ -70,6 +74,7 @@ impl UiStore {
             cursor: 0,
             modal: None,
             status: None,
+            pending_action: None,
             txn_log: TxnLog::new(),
         }
     }
@@ -119,6 +124,13 @@ impl UiStore {
         }
     }
 
+    fn pending_action_value(&self) -> Value {
+        match &self.pending_action {
+            Some(s) => Value::String(s.clone()),
+            None => Value::Null,
+        }
+    }
+
     fn modal_value(&self) -> Value {
         match &self.modal {
             Some(v) => v.clone(),
@@ -145,6 +157,7 @@ impl UiStore {
         map.insert("cursor".to_string(), Value::Integer(self.cursor as i64));
         map.insert("modal".to_string(), self.modal_value());
         map.insert("status".to_string(), self.status_value());
+        map.insert("pending_action".to_string(), self.pending_action_value());
         Value::Map(map)
     }
 
@@ -194,6 +207,7 @@ impl Reader for UiStore {
             "cursor" => Value::Integer(self.cursor as i64),
             "modal" => self.modal_value(),
             "status" => self.status_value(),
+            "pending_action" => self.pending_action_value(),
             _ => return Ok(None),
         };
         Ok(Some(Record::parsed(value)))
@@ -320,6 +334,37 @@ impl Writer for UiStore {
                 self.status = cmd.get_str("text").map(|s| s.to_string());
                 Ok(path!("status"))
             }
+            // -- Text editing commands --
+            "insert_char" => {
+                let ch = cmd
+                    .get_str("char")
+                    .ok_or_else(|| StoreError::store("ui", "insert_char", "missing char"))?;
+                let at = cmd
+                    .get_int("at")
+                    .map(|n| (n.max(0) as usize).min(self.input.len()))
+                    .unwrap_or(self.cursor);
+                for c in ch.chars() {
+                    self.input.insert(at, c);
+                }
+                self.cursor = at + ch.len();
+                Ok(path!("input"))
+            }
+            "delete_char" => {
+                if self.cursor > 0 {
+                    self.cursor -= 1;
+                    self.input.remove(self.cursor);
+                }
+                Ok(path!("input"))
+            }
+            // -- Application-level actions (set pending for TUI to handle) --
+            "send_input" | "quit" | "open_selected" | "archive_selected" => {
+                self.pending_action = Some(command.to_string());
+                Ok(path!("pending_action"))
+            }
+            "clear_pending_action" => {
+                self.pending_action = None;
+                Ok(path!("pending_action"))
+            }
             _ => Err(StoreError::store("ui", "write", "unknown command")),
         }
     }
@@ -348,19 +393,16 @@ mod tests {
 
     fn read_str(store: &mut UiStore, key: &str) -> Value {
         let p = path!(key);
-        store
-            .read(&p)
-            .unwrap()
-            .unwrap()
-            .as_value()
-            .unwrap()
-            .clone()
+        store.read(&p).unwrap().unwrap().as_value().unwrap().clone()
     }
 
     #[test]
     fn initial_state() {
         let mut store = UiStore::new();
-        assert_eq!(read_str(&mut store, "screen"), Value::String("inbox".into()));
+        assert_eq!(
+            read_str(&mut store, "screen"),
+            Value::String("inbox".into())
+        );
         assert_eq!(read_str(&mut store, "mode"), Value::String("normal".into()));
         assert_eq!(read_str(&mut store, "selected_row"), Value::Integer(0));
     }
@@ -486,20 +528,14 @@ mod tests {
                 cmd_map(&[("context", Value::String("compose".into()))]),
             )
             .unwrap();
-        assert_eq!(
-            read_str(&mut store, "mode"),
-            Value::String("insert".into())
-        );
+        assert_eq!(read_str(&mut store, "mode"), Value::String("insert".into()));
         assert_eq!(
             read_str(&mut store, "insert_context"),
             Value::String("compose".into())
         );
 
         store.write(&path!("exit_insert"), empty_cmd()).unwrap();
-        assert_eq!(
-            read_str(&mut store, "mode"),
-            Value::String("normal".into())
-        );
+        assert_eq!(read_str(&mut store, "mode"), Value::String("normal".into()));
         assert_eq!(read_str(&mut store, "insert_context"), Value::Null);
     }
 
@@ -544,10 +580,7 @@ mod tests {
                 ]),
             )
             .unwrap();
-        assert_eq!(
-            read_str(&mut store, "input"),
-            Value::String("hello".into())
-        );
+        assert_eq!(read_str(&mut store, "input"), Value::String("hello".into()));
         assert_eq!(read_str(&mut store, "cursor"), Value::Integer(3));
 
         store.write(&path!("clear_input"), empty_cmd()).unwrap();
@@ -582,9 +615,7 @@ mod tests {
             .unwrap();
 
         let txn_cmd = cmd_map(&[("txn", Value::String("txn_1".into()))]);
-        store
-            .write(&path!("select_next"), txn_cmd.clone())
-            .unwrap();
+        store.write(&path!("select_next"), txn_cmd.clone()).unwrap();
         assert_eq!(read_str(&mut store, "selected_row"), Value::Integer(1));
 
         // Same txn again — should not advance
@@ -605,5 +636,95 @@ mod tests {
         let mut store = UiStore::new();
         let result = store.write(&path!("open"), empty_cmd());
         assert!(result.is_err());
+    }
+
+    // --- Text editing commands ---
+
+    #[test]
+    fn insert_char_at_cursor() {
+        let mut store = UiStore::new();
+        store
+            .write(
+                &path!("insert_char"),
+                cmd_map(&[("char", Value::String("h".into())), ("at", Value::Integer(0))]),
+            )
+            .unwrap();
+        assert_eq!(read_str(&mut store, "input"), Value::String("h".into()));
+        assert_eq!(read_str(&mut store, "cursor"), Value::Integer(1));
+
+        store
+            .write(
+                &path!("insert_char"),
+                cmd_map(&[("char", Value::String("i".into())), ("at", Value::Integer(1))]),
+            )
+            .unwrap();
+        assert_eq!(read_str(&mut store, "input"), Value::String("hi".into()));
+        assert_eq!(read_str(&mut store, "cursor"), Value::Integer(2));
+    }
+
+    #[test]
+    fn delete_char_at_cursor() {
+        let mut store = UiStore::new();
+        store
+            .write(
+                &path!("set_input"),
+                cmd_map(&[
+                    ("text", Value::String("hello".into())),
+                    ("cursor", Value::Integer(3)),
+                ]),
+            )
+            .unwrap();
+
+        store.write(&path!("delete_char"), empty_cmd()).unwrap();
+        assert_eq!(read_str(&mut store, "input"), Value::String("helo".into()));
+        assert_eq!(read_str(&mut store, "cursor"), Value::Integer(2));
+    }
+
+    #[test]
+    fn delete_char_at_zero_is_noop() {
+        let mut store = UiStore::new();
+        store
+            .write(
+                &path!("set_input"),
+                cmd_map(&[
+                    ("text", Value::String("hi".into())),
+                    ("cursor", Value::Integer(0)),
+                ]),
+            )
+            .unwrap();
+
+        store.write(&path!("delete_char"), empty_cmd()).unwrap();
+        assert_eq!(read_str(&mut store, "input"), Value::String("hi".into()));
+        assert_eq!(read_str(&mut store, "cursor"), Value::Integer(0));
+    }
+
+    // --- Pending action commands ---
+
+    #[test]
+    fn send_input_sets_pending_action() {
+        let mut store = UiStore::new();
+        store.write(&path!("send_input"), empty_cmd()).unwrap();
+        assert_eq!(
+            read_str(&mut store, "pending_action"),
+            Value::String("send_input".into())
+        );
+    }
+
+    #[test]
+    fn quit_sets_pending_action() {
+        let mut store = UiStore::new();
+        store.write(&path!("quit"), empty_cmd()).unwrap();
+        assert_eq!(
+            read_str(&mut store, "pending_action"),
+            Value::String("quit".into())
+        );
+    }
+
+    #[test]
+    fn clear_pending_action() {
+        let mut store = UiStore::new();
+        store.write(&path!("send_input"), empty_cmd()).unwrap();
+        store.write(&path!("clear_pending_action"), empty_cmd()).unwrap();
+        assert_eq!(read_str(&mut store, "pending_action"), Value::Null);
     }
 }
