@@ -88,7 +88,7 @@ impl Writer for ApprovalStore {
                             "approval",
                             "request",
                             "request must be a Map with tool_name and input_preview",
-                        ))
+                        ));
                     }
                 };
                 let tool_name = map
@@ -97,9 +97,7 @@ impl Writer for ApprovalStore {
                         Value::String(s) => Some(s.clone()),
                         _ => None,
                     })
-                    .ok_or_else(|| {
-                        StoreError::store("approval", "request", "missing tool_name")
-                    })?;
+                    .ok_or_else(|| StoreError::store("approval", "request", "missing tool_name"))?;
                 let input_preview = map
                     .get("input_preview")
                     .and_then(|v| match v {
@@ -123,7 +121,7 @@ impl Writer for ApprovalStore {
                             "approval",
                             "response",
                             "response must be a String decision",
-                        ))
+                        ));
                     }
                 };
                 self.response = Some(decision);

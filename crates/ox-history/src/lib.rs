@@ -327,11 +327,7 @@ impl Writer for HistoryProvider {
                     if self.turn.write(sub, value) {
                         Ok(to.clone())
                     } else {
-                        Err(StoreError::store(
-                            "history",
-                            "write",
-                            "invalid turn write",
-                        ))
+                        Err(StoreError::store("history", "write", "invalid turn write"))
                     }
                 } else {
                     Err(StoreError::store(
@@ -517,11 +513,8 @@ mod tests {
             Record::parsed(Value::String("Hi there".to_string())),
         )
         .unwrap();
-        hp.write(
-            &path!("turn/thinking"),
-            Record::parsed(Value::Bool(true)),
-        )
-        .unwrap();
+        hp.write(&path!("turn/thinking"), Record::parsed(Value::Bool(true)))
+            .unwrap();
 
         // Messages should include the in-progress turn
         let messages = hp.read(&path!("messages")).unwrap().unwrap();
@@ -560,11 +553,8 @@ mod tests {
     #[test]
     fn turn_read_paths() {
         let mut hp = HistoryProvider::new();
-        hp.write(
-            &path!("turn/thinking"),
-            Record::parsed(Value::Bool(true)),
-        )
-        .unwrap();
+        hp.write(&path!("turn/thinking"), Record::parsed(Value::Bool(true)))
+            .unwrap();
 
         let val = hp.read(&path!("turn/thinking")).unwrap().unwrap();
         assert_eq!(unwrap_value(val), Value::Bool(true));

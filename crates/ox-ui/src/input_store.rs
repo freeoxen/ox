@@ -184,21 +184,14 @@ impl InputStore {
                 map.insert("type".to_string(), Value::String("command".to_string()));
             }
             Action::Macro(steps) => {
-                map.insert(
-                    "steps".to_string(),
-                    Value::Integer(steps.len() as i64),
-                );
+                map.insert("steps".to_string(), Value::Integer(steps.len() as i64));
                 map.insert("type".to_string(), Value::String("macro".to_string()));
             }
         }
         Value::Map(map)
     }
 
-    fn bindings_matching(
-        &self,
-        mode: Option<&str>,
-        screen: Option<&str>,
-    ) -> Vec<Value> {
+    fn bindings_matching(&self, mode: Option<&str>, screen: Option<&str>) -> Vec<Value> {
         self.bindings
             .iter()
             .filter(|b| {
@@ -262,9 +255,7 @@ impl InputStore {
 
         let before = self.bindings.len();
         self.bindings.retain(|b| {
-            !(b.context.mode == mode
-                && b.context.key == key
-                && b.context.screen == screen)
+            !(b.context.mode == mode && b.context.key == key && b.context.screen == screen)
         });
         if self.bindings.len() == before {
             return Err(StoreError::store("input", "unbind", "binding not found"));
@@ -284,10 +275,13 @@ impl InputStore {
         let description = extract_str(map, "description").unwrap_or_default();
         let screen = extract_str(map, "screen");
 
-        let steps_arr = map.get("steps").and_then(|v| match v {
-            Value::Array(a) => Some(a),
-            _ => None,
-        }).ok_or_else(|| StoreError::store("input", "macro", "missing steps array"))?;
+        let steps_arr = map
+            .get("steps")
+            .and_then(|v| match v {
+                Value::Array(a) => Some(a),
+                _ => None,
+            })
+            .ok_or_else(|| StoreError::store("input", "macro", "missing steps array"))?;
 
         let mut steps = Vec::new();
         for step in steps_arr {
@@ -298,12 +292,11 @@ impl InputStore {
                         "input",
                         "macro",
                         "each step must be a Map",
-                    ))
+                    ));
                 }
             };
-            let target_str = extract_str(step_map, "target").ok_or_else(|| {
-                StoreError::store("input", "macro", "step missing target")
-            })?;
+            let target_str = extract_str(step_map, "target")
+                .ok_or_else(|| StoreError::store("input", "macro", "step missing target"))?;
             let target = Path::parse(&target_str)
                 .map_err(|e| StoreError::store("input", "macro", e.to_string()))?;
             let fields = parse_fields(step_map.get("fields"));
@@ -408,27 +401,17 @@ impl Writer for InputStore {
                 // Key event dispatch: data is {mode, key, screen?, ...context}
                 let map = match value {
                     Value::Map(m) => m,
-                    _ => {
-                        return Err(StoreError::store(
-                            "input",
-                            "key",
-                            "key event must be a Map",
-                        ))
-                    }
+                    _ => return Err(StoreError::store("input", "key", "key event must be a Map")),
                 };
-                let mode = extract_str(map, "mode").ok_or_else(|| {
-                    StoreError::store("input", "key", "missing mode")
-                })?;
-                let key = extract_str(map, "key").ok_or_else(|| {
-                    StoreError::store("input", "key", "missing key")
-                })?;
+                let mode = extract_str(map, "mode")
+                    .ok_or_else(|| StoreError::store("input", "key", "missing mode"))?;
+                let key = extract_str(map, "key")
+                    .ok_or_else(|| StoreError::store("input", "key", "missing key"))?;
                 let screen = extract_str(map, "screen");
 
                 let binding = self
                     .resolve(&mode, &key, screen.as_deref())
-                    .ok_or_else(|| {
-                        StoreError::store("input", "key", "no binding for key")
-                    })?;
+                    .ok_or_else(|| StoreError::store("input", "key", "no binding for key"))?;
                 let action = binding.action.clone();
 
                 self.execute_action(&action, map)
@@ -466,13 +449,7 @@ mod tests {
         }
     }
 
-    fn screen_binding(
-        mode: &str,
-        key: &str,
-        screen: &str,
-        target: &str,
-        desc: &str,
-    ) -> Binding {
+    fn screen_binding(mode: &str, key: &str, screen: &str, target: &str, desc: &str) -> Binding {
         Binding {
             context: BindingContext {
                 mode: mode.to_string(),
@@ -553,7 +530,9 @@ mod tests {
         let (dispatcher, log) = mock_dispatcher();
         store.set_dispatcher(dispatcher);
 
-        store.write(&path!("key"), key_event("normal", "j", "inbox")).unwrap();
+        store
+            .write(&path!("key"), key_event("normal", "j", "inbox"))
+            .unwrap();
 
         let log = log.lock().unwrap();
         assert_eq!(log.len(), 1);
@@ -571,8 +550,12 @@ mod tests {
         let (dispatcher, log) = mock_dispatcher();
         store.set_dispatcher(dispatcher);
 
-        store.write(&path!("key"), key_event("normal", "j", "inbox")).unwrap();
-        store.write(&path!("key"), key_event("normal", "j", "thread")).unwrap();
+        store
+            .write(&path!("key"), key_event("normal", "j", "inbox"))
+            .unwrap();
+        store
+            .write(&path!("key"), key_event("normal", "j", "thread"))
+            .unwrap();
 
         let log = log.lock().unwrap();
         assert_eq!(log[0].0, "ui/select_next");
@@ -652,7 +635,9 @@ mod tests {
         let (dispatcher, log) = mock_dispatcher();
         store.set_dispatcher(dispatcher);
 
-        store.write(&path!("key"), key_event("normal", "G", "thread")).unwrap();
+        store
+            .write(&path!("key"), key_event("normal", "G", "thread"))
+            .unwrap();
 
         let log = log.lock().unwrap();
         assert_eq!(log.len(), 2);
@@ -738,7 +723,9 @@ mod tests {
             .unwrap();
 
         // Verify it works
-        store.write(&path!("key"), key_event("normal", "x", "inbox")).unwrap();
+        store
+            .write(&path!("key"), key_event("normal", "x", "inbox"))
+            .unwrap();
 
         let log = log.lock().unwrap();
         assert_eq!(log[0].0, "ui/close");
@@ -758,15 +745,14 @@ mod tests {
             "target".to_string(),
             Value::String("ui/scroll_down".to_string()),
         );
-        bind_val.insert(
-            "description".to_string(),
-            Value::String("new".to_string()),
-        );
+        bind_val.insert("description".to_string(), Value::String("new".to_string()));
         store
             .write(&path!("bind"), Record::parsed(Value::Map(bind_val)))
             .unwrap();
 
-        store.write(&path!("key"), key_event("normal", "j", "inbox")).unwrap();
+        store
+            .write(&path!("key"), key_event("normal", "j", "inbox"))
+            .unwrap();
 
         let log = log.lock().unwrap();
         assert_eq!(log[0].0, "ui/scroll_down");
@@ -805,10 +791,7 @@ mod tests {
             Value::Array(vec![
                 Value::Map({
                     let mut s = BTreeMap::new();
-                    s.insert(
-                        "target".to_string(),
-                        Value::String("ui/close".to_string()),
-                    );
+                    s.insert("target".to_string(), Value::String("ui/close".to_string()));
                     s
                 }),
                 Value::Map({
@@ -825,7 +808,9 @@ mod tests {
             .write(&path!("macro"), Record::parsed(Value::Map(macro_val)))
             .unwrap();
 
-        store.write(&path!("key"), key_event("normal", "G", "inbox")).unwrap();
+        store
+            .write(&path!("key"), key_event("normal", "G", "inbox"))
+            .unwrap();
 
         let log = log.lock().unwrap();
         assert_eq!(log.len(), 2);

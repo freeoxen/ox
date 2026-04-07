@@ -18,7 +18,7 @@ pub use ui_store::UiStore;
 mod integration_tests {
     use super::*;
     use std::collections::BTreeMap;
-    use structfs_core_store::{path, Record, Value, Writer};
+    use structfs_core_store::{Record, Value, Writer, path};
 
     /// End-to-end: key event → InputStore → BrokerStore → UiStore state change.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -70,8 +70,7 @@ mod integration_tests {
         let mut input = InputStore::new(bindings);
         input.set_dispatcher(Box::new(move |target, data| {
             tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current()
-                    .block_on(client_for_dispatch.write(target, data))
+                tokio::runtime::Handle::current().block_on(client_for_dispatch.write(target, data))
             })
         }));
         broker.mount(path!("input"), input).await;
@@ -79,7 +78,11 @@ mod integration_tests {
         let client = broker.client();
 
         // Verify initial state
-        let row = client.read(&path!("ui/selected_row")).await.unwrap().unwrap();
+        let row = client
+            .read(&path!("ui/selected_row"))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(row.as_value().unwrap(), &Value::Integer(0));
 
         // Dispatch "j" on inbox screen → should select_next
@@ -93,7 +96,11 @@ mod integration_tests {
             .unwrap();
 
         // Verify state changed
-        let row = client.read(&path!("ui/selected_row")).await.unwrap().unwrap();
+        let row = client
+            .read(&path!("ui/selected_row"))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(row.as_value().unwrap(), &Value::Integer(1));
     }
 }
