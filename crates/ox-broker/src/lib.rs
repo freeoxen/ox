@@ -4,6 +4,7 @@
 mod broker;
 mod client;
 mod server;
+mod sync_adapter;
 mod types;
 
 #[cfg(test)]
@@ -49,6 +50,7 @@ pub(crate) mod test_support {
 }
 
 pub use client::ClientHandle;
+pub use sync_adapter::SyncClientAdapter;
 pub use types::Request;
 
 use std::sync::Arc;
@@ -59,6 +61,7 @@ use structfs_core_store::{Reader, Writer};
 
 /// The top-level BrokerStore — creates the shared routing state and
 /// provides methods for mounting stores and minting client handles.
+#[derive(Clone)]
 pub struct BrokerStore {
     inner: Arc<Mutex<broker::BrokerInner>>,
     default_timeout: Duration,
