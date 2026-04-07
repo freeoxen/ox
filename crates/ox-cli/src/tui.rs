@@ -80,12 +80,15 @@ pub async fn run_async(
             let vs = fetch_view_state(client, app).await;
 
             // Set row_count in UiStore (for inbox navigation bounds)
-            let row_count = vs.inbox_threads.len() as i64;
-            let mut rc = BTreeMap::new();
-            rc.insert("count".to_string(), Value::Integer(row_count));
-            let _ = client
-                .write(&path!("ui/set_row_count"), Record::parsed(Value::Map(rc)))
-                .await;
+            // Only write on inbox screen — thread screen has no row selection.
+            if vs.screen == "inbox" {
+                let row_count = vs.inbox_threads.len() as i64;
+                let mut rc = BTreeMap::new();
+                rc.insert("count".to_string(), Value::Integer(row_count));
+                let _ = client
+                    .write(&path!("ui/set_row_count"), Record::parsed(Value::Map(rc)))
+                    .await;
+            }
 
             // Draw
             terminal.draw(|frame| {

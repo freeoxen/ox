@@ -280,6 +280,8 @@ impl Writer for UiStore {
                 self.screen = Screen::Inbox;
                 self.mode = Mode::Normal;
                 self.insert_context = None;
+                self.scroll = 0;
+                self.scroll_max = 0;
                 Ok(path!("screen"))
             }
             "enter_insert" => {
