@@ -48,6 +48,7 @@ pub struct UiStore {
     selected_row: usize,
     row_count: usize,
     scroll: usize,
+    scroll_max: usize,
     input: String,
     cursor: usize,
     modal: Option<Value>,
@@ -70,6 +71,7 @@ impl UiStore {
             selected_row: 0,
             row_count: 0,
             scroll: 0,
+            scroll_max: 0,
             input: String::new(),
             cursor: 0,
             modal: None,
@@ -153,6 +155,10 @@ impl UiStore {
             Value::Integer(self.row_count as i64),
         );
         map.insert("scroll".to_string(), Value::Integer(self.scroll as i64));
+        map.insert(
+            "scroll_max".to_string(),
+            Value::Integer(self.scroll_max as i64),
+        );
         map.insert("input".to_string(), Value::String(self.input.clone()));
         map.insert("cursor".to_string(), Value::Integer(self.cursor as i64));
         map.insert("modal".to_string(), self.modal_value());
@@ -203,6 +209,7 @@ impl Reader for UiStore {
             "selected_row" => Value::Integer(self.selected_row as i64),
             "row_count" => Value::Integer(self.row_count as i64),
             "scroll" => Value::Integer(self.scroll as i64),
+            "scroll_max" => Value::Integer(self.scroll_max as i64),
             "input" => Value::String(self.input.clone()),
             "cursor" => Value::Integer(self.cursor as i64),
             "modal" => self.modal_value(),
@@ -307,8 +314,20 @@ impl Writer for UiStore {
                 Ok(path!("scroll"))
             }
             "scroll_down" => {
-                self.scroll = self.scroll.saturating_add(1);
+                if self.scroll < self.scroll_max {
+                    self.scroll += 1;
+                }
                 Ok(path!("scroll"))
+            }
+            "set_scroll_max" => {
+                let max = cmd.get_int("max").ok_or_else(|| {
+                    StoreError::store("ui", "set_scroll_max", "missing max")
+                })?;
+                self.scroll_max = max.max(0) as usize;
+                if self.scroll > self.scroll_max {
+                    self.scroll = self.scroll_max;
+                }
+                Ok(path!("scroll_max"))
             }
             "set_row_count" => {
                 let count = cmd.get_int("count").ok_or_else(|| {
@@ -644,7 +663,10 @@ mod tests {
         store
             .write(
                 &path!("insert_char"),
-                cmd_map(&[("char", Value::String("h".into())), ("at", Value::Integer(0))]),
+                cmd_map(&[
+                    ("char", Value::String("h".into())),
+                    ("at", Value::Integer(0)),
+                ]),
             )
             .unwrap();
         assert_eq!(read_str(&mut store, "input"), Value::String("h".into()));
@@ -653,7 +675,10 @@ mod tests {
         store
             .write(
                 &path!("insert_char"),
-                cmd_map(&[("char", Value::String("i".into())), ("at", Value::Integer(1))]),
+                cmd_map(&[
+                    ("char", Value::String("i".into())),
+                    ("at", Value::Integer(1)),
+                ]),
             )
             .unwrap();
         assert_eq!(read_str(&mut store, "input"), Value::String("hi".into()));
@@ -722,7 +747,51 @@ mod tests {
     fn clear_pending_action() {
         let mut store = UiStore::new();
         store.write(&path!("send_input"), empty_cmd()).unwrap();
-        store.write(&path!("clear_pending_action"), empty_cmd()).unwrap();
+        store
+            .write(&path!("clear_pending_action"), empty_cmd())
+            .unwrap();
         assert_eq!(read_str(&mut store, "pending_action"), Value::Null);
+    }
+
+    // --- Scroll bounds ---
+
+    #[test]
+    fn scroll_clamps_to_max() {
+        let mut store = UiStore::new();
+        store
+            .write(
+                &path!("set_scroll_max"),
+                cmd_map(&[("max", Value::Integer(5))]),
+            )
+            .unwrap();
+
+        for _ in 0..10 {
+            store.write(&path!("scroll_down"), empty_cmd()).unwrap();
+        }
+        assert_eq!(read_str(&mut store, "scroll"), Value::Integer(5));
+    }
+
+    #[test]
+    fn set_scroll_max_clamps_current() {
+        let mut store = UiStore::new();
+        store
+            .write(
+                &path!("set_scroll_max"),
+                cmd_map(&[("max", Value::Integer(10))]),
+            )
+            .unwrap();
+        for _ in 0..8 {
+            store.write(&path!("scroll_down"), empty_cmd()).unwrap();
+        }
+        assert_eq!(read_str(&mut store, "scroll"), Value::Integer(8));
+
+        // Shrink max — scroll clamps
+        store
+            .write(
+                &path!("set_scroll_max"),
+                cmd_map(&[("max", Value::Integer(3))]),
+            )
+            .unwrap();
+        assert_eq!(read_str(&mut store, "scroll"), Value::Integer(3));
     }
 }

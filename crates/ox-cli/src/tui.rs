@@ -56,12 +56,25 @@ pub async fn run_async(
                 .await;
         }
 
-        // 2. Sync inbox row count to UiStore
+        // 2. Sync bounds to UiStore
         let row_count = app.cached_threads.len() as i64;
         let mut rc = BTreeMap::new();
         rc.insert("count".to_string(), Value::Integer(row_count));
         let _ = client
             .write(&path!("ui/set_row_count"), Record::parsed(Value::Map(rc)))
+            .await;
+
+        // Scroll max: message count for the active thread (0 if no thread)
+        let scroll_max = app
+            .active_thread
+            .as_ref()
+            .and_then(|tid| app.thread_views.get(tid))
+            .map(|view| view.messages.len().saturating_sub(1))
+            .unwrap_or(0) as i64;
+        let mut sm = BTreeMap::new();
+        sm.insert("max".to_string(), Value::Integer(scroll_max));
+        let _ = client
+            .write(&path!("ui/set_scroll_max"), Record::parsed(Value::Map(sm)))
             .await;
 
         // 3. Draw
