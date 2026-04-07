@@ -257,6 +257,10 @@ pub struct App {
     pub input: String,
     pub cursor: usize,
     pub scroll: u16,
+    /// Content height from last draw_thread, used to set scroll_max.
+    pub last_content_height: usize,
+    /// Viewport height from last draw, used for scroll_max calculation.
+    pub last_viewport_height: usize,
     pub should_quit: bool,
     pub model: String,
     pub provider: String,
@@ -312,6 +316,8 @@ impl App {
             input: String::new(),
             cursor: 0,
             scroll: 0,
+            last_content_height: 0,
+            last_viewport_height: 0,
             should_quit: false,
             model,
             provider,

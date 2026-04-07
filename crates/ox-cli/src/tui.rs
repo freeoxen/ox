@@ -64,21 +64,20 @@ pub async fn run_async(
             .write(&path!("ui/set_row_count"), Record::parsed(Value::Map(rc)))
             .await;
 
-        // Scroll max: message count for the active thread (0 if no thread)
-        let scroll_max = app
-            .active_thread
-            .as_ref()
-            .and_then(|tid| app.thread_views.get(tid))
-            .map(|view| view.messages.len().saturating_sub(1))
-            .unwrap_or(0) as i64;
-        let mut sm = BTreeMap::new();
-        sm.insert("max".to_string(), Value::Integer(scroll_max));
-        let _ = client
-            .write(&path!("ui/set_scroll_max"), Record::parsed(Value::Map(sm)))
-            .await;
-
-        // 3. Draw
+        // 3. Draw (draw_thread reports content_height via app.last_content_height)
         terminal.draw(|frame| draw(frame, app, theme))?;
+
+        // 4. Set scroll_max from rendered content height (after draw)
+        if app.active_thread.is_some() && app.last_viewport_height > 0 {
+            let scroll_max = app
+                .last_content_height
+                .saturating_sub(app.last_viewport_height) as i64;
+            let mut sm = BTreeMap::new();
+            sm.insert("max".to_string(), Value::Integer(scroll_max.max(0)));
+            let _ = client
+                .write(&path!("ui/set_scroll_max"), Record::parsed(Value::Map(sm)))
+                .await;
+        }
 
         // 4. Poll terminal event (blocking — bridge via block_in_place)
         let terminal_event = tokio::task::block_in_place(|| {
@@ -494,7 +493,9 @@ fn draw(frame: &mut Frame, app: &mut App, theme: &Theme) {
     // We need to clone the active view data before calling draw_inbox (which borrows app mutably).
     if let Some(tid) = app.active_thread.clone() {
         let view = app.thread_views.entry(tid).or_default().clone();
-        crate::thread_view::draw_thread(frame, &view, app.scroll, theme, content_area);
+        app.last_content_height =
+            crate::thread_view::draw_thread(frame, &view, app.scroll, theme, content_area);
+        app.last_viewport_height = content_area.height as usize;
     } else {
         // Refresh cached threads once per frame, adjust scroll
         app.refresh_visible_threads();

@@ -3,17 +3,25 @@ use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap};
 
 /// Render a single thread's messages into `area`.
-pub fn draw_thread(frame: &mut Frame, view: &ThreadView, scroll: u16, theme: &Theme, area: Rect) {
+///
+/// Returns the total content height in rendered lines (after wrapping)
+/// so the caller can set scroll_max on UiStore.
+pub fn draw_thread(
+    frame: &mut Frame,
+    view: &ThreadView,
+    scroll: u16,
+    theme: &Theme,
+    area: Rect,
+) -> usize {
     let mut lines: Vec<Line> = Vec::new();
 
     for msg in &view.messages {
         match msg {
             ChatMessage::User(text) => {
                 lines.push(Line::from(""));
-                // Handle multiline user messages
                 for (i, line) in text.lines().enumerate() {
                     let prefix = if i == 0 { "> " } else { "  " };
                     lines.push(Line::from(vec![
@@ -79,17 +87,53 @@ pub fn draw_thread(frame: &mut Frame, view: &ThreadView, scroll: u16, theme: &Th
         lines.push(Line::from(Span::styled("  ...", theme.thinking)));
     }
 
-    let text = Text::from(lines);
-    let msg_height = area.height as usize;
-    let total_lines = text.lines.len();
+    // Count rendered lines after wrapping
+    let viewport_width = area.width as usize;
+    let content_height = count_wrapped_lines(&lines, viewport_width);
+    let viewport_height = area.height as usize;
+    let max_scroll = content_height.saturating_sub(viewport_height);
+
+    // Compute ratatui scroll offset (scroll=0 means showing bottom/newest)
     let computed_scroll = if scroll == 0 {
-        total_lines.saturating_sub(msg_height) as u16
+        max_scroll as u16
     } else {
-        let max_scroll = total_lines.saturating_sub(msg_height) as u16;
-        max_scroll.saturating_sub(scroll)
+        (max_scroll as u16).saturating_sub(scroll)
     };
+
+    let text = Text::from(lines);
     let widget = Paragraph::new(text)
         .wrap(Wrap { trim: false })
         .scroll((computed_scroll, 0));
     frame.render_widget(widget, area);
+
+    // Scroll bar
+    if content_height > viewport_height {
+        let scroll_position = max_scroll.saturating_sub(scroll as usize);
+        let mut scrollbar_state = ScrollbarState::new(max_scroll).position(scroll_position);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
+        frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
+    }
+
+    content_height
+}
+
+/// Count the total rendered lines after word wrapping.
+///
+/// For each Line, estimates the wrapped line count based on the sum
+/// of span character widths divided by viewport width.
+fn count_wrapped_lines(lines: &[Line], width: usize) -> usize {
+    if width == 0 {
+        return lines.len();
+    }
+    lines
+        .iter()
+        .map(|line| {
+            let w: usize = line.spans.iter().map(|s| s.content.len()).sum();
+            if w == 0 {
+                1
+            } else {
+                (w + width - 1) / width
+            }
+        })
+        .sum()
 }
