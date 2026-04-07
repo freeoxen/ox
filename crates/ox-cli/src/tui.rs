@@ -75,6 +75,162 @@ pub fn run(
     }
 }
 
+/// Async event loop that dispatches through the BrokerStore.
+///
+/// Simple state commands (navigation, mode, scroll) go through
+/// InputStore → BrokerStore → UiStore. Complex commands (send,
+/// open thread, archive, quit) are handled directly by App methods.
+pub async fn run_async(
+    app: &mut App,
+    client: &ox_broker::ClientHandle,
+    theme: &Theme,
+    terminal: &mut ratatui::DefaultTerminal,
+) -> std::io::Result<()> {
+    use crate::key_encode::encode_key;
+    use crate::state_sync::sync_ui_to_app;
+    use std::collections::BTreeMap;
+    use structfs_core_store::{path, Record, Value};
+
+    loop {
+        // 1. Sync broker state → App fields
+        sync_ui_to_app(client, app).await;
+
+        // 2. Sync inbox row count to UiStore
+        let row_count = app.cached_threads.len() as i64;
+        let mut rc = BTreeMap::new();
+        rc.insert("count".to_string(), Value::Integer(row_count));
+        let _ = client
+            .write(&path!("ui/set_row_count"), Record::parsed(Value::Map(rc)))
+            .await;
+
+        // 3. Draw
+        terminal.draw(|frame| draw(frame, app, theme))?;
+
+        // 4. Poll terminal event (blocking — bridge via block_in_place)
+        let terminal_event = tokio::task::block_in_place(|| {
+            if event::poll(Duration::from_millis(50)).unwrap_or(false) {
+                event::read().ok()
+            } else {
+                None
+            }
+        });
+
+        // 5. Handle event
+        if let Some(evt) = terminal_event {
+            match evt {
+                Event::Key(key) => {
+                    // Customize dialog — bypass broker entirely
+                    if app.pending_customize.is_some() {
+                        handle_customize_key(app, key.code);
+                    }
+                    // Approval dialog — direct handling
+                    else if app.pending_approval.is_some()
+                        && matches!(app.mode, InputMode::Normal)
+                    {
+                        handle_approval_key(app, key.code, key.modifiers);
+                    }
+                    // Normal + Insert — dispatch through broker
+                    else if let Some(key_str) = encode_key(key.modifiers, key.code) {
+                        let mode = match &app.mode {
+                            InputMode::Normal => "normal",
+                            InputMode::Insert(_) => "insert",
+                        };
+                        let screen = if app.active_thread.is_some() {
+                            "thread"
+                        } else {
+                            "inbox"
+                        };
+
+                        let mut event_map = BTreeMap::new();
+                        event_map.insert(
+                            "mode".to_string(),
+                            Value::String(mode.to_string()),
+                        );
+                        event_map.insert(
+                            "key".to_string(),
+                            Value::String(key_str.clone()),
+                        );
+                        event_map.insert(
+                            "screen".to_string(),
+                            Value::String(screen.to_string()),
+                        );
+
+                        // Try InputStore dispatch
+                        let result = client
+                            .write(
+                                &path!("input/key"),
+                                Record::parsed(Value::Map(event_map)),
+                            )
+                            .await;
+
+                        match result {
+                            Ok(returned_path) => {
+                                // Check if the dispatched command is an app-level action
+                                let path_str = returned_path.to_string();
+                                if path_str.contains("send_input") {
+                                    app.send_input();
+                                } else if path_str.contains("open_selected") {
+                                    app.open_selected_thread();
+                                } else if path_str.contains("archive_selected") {
+                                    app.archive_selected_thread();
+                                } else if path_str.contains("quit") {
+                                    app.should_quit = true;
+                                }
+                                // Otherwise: state command handled by UiStore,
+                                // sync_ui_to_app will pick it up next iteration
+                            }
+                            Err(_) => {
+                                // No binding found — handle text input directly
+                                if let InputMode::Insert(ctx) = app.mode.clone() {
+                                    handle_insert_key(
+                                        app,
+                                        ctx,
+                                        key.modifiers,
+                                        key.code,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                Event::Mouse(mouse) => handle_mouse(app, mouse.kind, mouse.row),
+                _ => {}
+            }
+        }
+
+        // 6. Drain agent events (unchanged)
+        while let Ok(event) = app.event_rx.try_recv() {
+            app.handle_event(event);
+        }
+
+        // 7. Permission requests (unchanged)
+        if app.pending_approval.is_none() && app.pending_customize.is_none() {
+            if let Ok(AppControl::PermissionRequest {
+                thread_id,
+                tool,
+                input_preview,
+                respond,
+            }) = app.control_rx.try_recv()
+            {
+                app.update_thread_state(&thread_id, "blocked_on_approval");
+                app.open_thread(thread_id.clone());
+                app.pending_approval = Some(ApprovalState {
+                    thread_id,
+                    tool,
+                    input_preview,
+                    selected: 0,
+                    respond,
+                });
+            }
+        }
+
+        // 8. Quit
+        if app.should_quit {
+            return Ok(());
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Normal mode key handler
 // ---------------------------------------------------------------------------
