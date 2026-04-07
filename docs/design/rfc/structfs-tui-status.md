@@ -1,6 +1,6 @@
 # StructFS TUI Rewrite — Status & Context
 
-**Date:** 2026-04-06
+**Date:** 2026-04-07
 **Purpose:** Handoff document for continuing implementation in a new session
 
 ## What's Done
@@ -25,70 +25,88 @@ in `ox-kernel/src/snapshot.rs`. ToolsProvider returns None.
 - Startup reconciliation in `ox-inbox/src/reconcile.rs`
 - Real thread title flow through save_thread_state
 - Message count derived from last_seq in inbox display
-- `ox-inbox/src/reconcile.rs` — hash-based consistency check on startup
 
-## What's Next
-
-### Phase C: StructFS TUI Rewrite
+### Phase C: StructFS TUI Rewrite (CURRENT — C1/C2/C3a/C3b complete)
 
 **Spec:** `docs/superpowers/specs/2026-04-06-structfs-tui-design.md`
 
-Three implementation plans:
+#### C1: BrokerStore (complete, 23 tests)
+- `crates/ox-broker/` — new crate
+- Async router: reply channel on Request, component-based routing, scoped clients
+- `BrokerStore`, `ClientHandle`, `Request` public API
+- Path-typed mount/unmount, zero string conversion in hot paths
+- Backpressure test, cross-store communication test (block_in_place pattern)
 
-1. **Plan C1: BrokerStore** (plan written, ready to execute)
-   - `docs/superpowers/plans/2026-04-06-broker-store-plan-c1.md`
-   - New `ox-broker` crate — async StructFS router
-   - 5 tasks, ~20 tests
-   - Adapts appiware's `broker_store.rs` (at `../appiware/host/src/broker_store.rs`)
-     to use ox's Record/Value/StoreError types instead of generic serde
-   - Key types: BrokerStore, BrokerInner, ClientHandle (async, scoped), ServerHandle
-   - Produces: working async broker that routes reads/writes between sync stores
+#### C2: Core Stores (complete, 53 tests in ox-ui + 16 in ox-history)
+- `crates/ox-ui/` — new crate
+- **Command protocol** (`command.rs`): parse preconditions + txn from writes, TxnLog dedup
+- **UiStore** (`ui_store.rs`): screen, mode, selection, scroll, input, cursor, modal, status,
+  pending_action. Commands: select_next/prev, open/close, enter/exit_insert, set_input,
+  clear_input, insert_char, delete_char, scroll_up/down/to_top/to_bottom, page/half-page
+  scroll, select_first/last, set_row_count, set_scroll_max, set_viewport_height,
+  send_input/quit/open_selected/archive_selected (pending_action), show/dismiss_modal
+- **InputStore** (`input_store.rs`): context-aware binding resolution (mode, key, screen),
+  runtime bind/unbind/macro, CommandDispatcher callback, queryable bindings for help
+- **ApprovalStore** (`approval_store.rs`): request/response/pending paths
+- **TurnState** (`ox-history/src/turn.rs`): streaming, thinking, tool, tokens, commit
 
-2. **Plan C2: Stores** (plan not yet written)
-   - UiStore, InputStore, ThreadStore (with StoreBacking trait), ConfigStore
-   - Extended HistoryProvider with `history/turn/*` for streaming state
-   - ApprovalStore for per-thread permission flow
-   - All implement sync Reader/Writer, tested in isolation
+#### C3a: Broker Wiring (complete, 7 tests)
+- `crates/ox-cli/src/bindings.rs` — default key binding table (normal/insert/approval modes,
+  screen-specific, vim navigation g/G/Ctrl+d/u/f/b)
+- `crates/ox-cli/src/broker_setup.rs` — BrokerSetup mounts UiStore + InputStore + InboxStore +
+  ApprovalStore, InputStore gets block_in_place dispatcher
+- Integration tests: all stores reachable, key dispatch through broker, screen-specific routing
 
-3. **Plan C3: Integration** (plan not yet written)
-   - Rewrite TUI event loop on top of broker
-   - Mount stores, wire agent workers with scoped ClientHandles
-   - Replace App struct, AppEvent channels, ThreadView mirrors
+#### C3b: Async Event Loop (complete, 99 total tests)
+- `crates/ox-cli/src/key_encode.rs` — crossterm KeyEvent → string
+- `crates/ox-cli/src/state_sync.rs` — bidirectional sync: UiStore → App (each frame) +
+  App → UiStore (after App methods that change state)
+- `crates/ox-cli/src/tui.rs` — `run_async` replaces sync `run`:
+  - Key events → InputStore dispatch through broker
+  - Text editing (compose/reply) → insert_char/delete_char through broker
+  - Search text editing → handle_search_key (direct, search state not in UiStore yet)
+  - Mouse scroll → broker, mouse click on approval → direct
+  - Approval/customize dialogs → direct (dialog state machines)
+  - pending_action field for app-level commands (send, open, archive, quit)
+  - Scroll bar via ratatui Scrollbar widget, content-height-based scroll_max
+- `crates/ox-cli/src/main.rs` — tokio runtime, BrokerSetup, run_async
+- Dead code removed: old run(), handle_normal_key, handle_mouse, App mode transition methods
 
-### Key Architecture Decisions (from spec)
+## What's Next
 
-- **Broker as bus:** All state in stores, all interaction through path reads/writes
-- **Sync stores, async broker:** Stores implement Reader/Writer (unchanged). Broker
-  wraps them in async tasks. Wasm guests stay synchronous.
-- **Scoped clients:** Agent workers get ClientHandle scoped to `threads/{id}/`.
-  They write `history/append`, broker resolves as `threads/{id}/history/append`.
-  Worker doesn't know its full path (Plan 9 namespace model).
-- **Command protocol:** Writes carry preconditions + transaction IDs for idempotency.
-  `write(path!("ui/select_next"), {from: "t_abc", txn: "a7f3"})` — UiStore validates
-  precondition, applies atomically.
-- **No PersistenceStore:** Stores have platform-specific backings (StoreBacking trait).
-  ThreadStore owns the portable bundle. Persistence is construction, not runtime.
-- **Turn state in HistoryProvider:** `history/turn/streaming`, `history/turn/thinking`,
-  `history/turn/tool`, `history/turn/tokens`. Commit finalizes to ledger. No separate
-  LiveStore.
-- **Branching:** Child thread references parent ledger through broker. Copy-on-delete
-  materializes parent entries into child before deletion.
-- **Error propagation:** Result flows back through write chain. No special error bus.
-- **InputStore is a store:** Holds binding table, queryable for help. Keeps broker
-  agnostic and TUI event loop platform-independent.
+### Remaining for full spec completion:
+
+1. **Agent Worker Bridge** (highest value next)
+   - Workers get `broker.client().scoped("threads/{id}")` instead of building Namespace
+   - ThreadRegistry for dynamic mount/unmount of per-thread namespaces
+   - HostStore wraps scoped ClientHandle instead of direct Namespace
+   - Plans: none written yet, needs planning
+
+2. **Draw Rewrite**
+   - Read directly from broker client instead of synced App fields
+   - Eliminates the sync bridge (state_sync.rs becomes unnecessary)
+
+3. **Search State in UiStore**
+   - Move search.live_query and search.chips into UiStore
+   - Eliminates the last handle_search_key direct-mutation path
+
+4. **StoreBacking Trait**
+   - Platform-agnostic persistence abstraction
+   - Stores cache in memory, backings are authoritative
+
+5. **ConfigStore**
+   - Read-only settings projection (theme, provider, model, bindings)
+
+### Key Architecture Decisions
+- **Scroll commands match visual direction**: scroll_up = visual up = see older
+- **Bidirectional sync**: UiStore → App (each frame), App → UiStore (after App methods)
+- **pending_action pattern**: UiStore sets a string field, TUI reads it and calls App methods
+- **Search is the last escape hatch**: handle_search_key bypasses broker (7 lines)
+- **Two InboxStore instances**: one in App/AgentPool, one in broker (same SQLite)
 
 ### Reference Files
-
 - **Spec:** `docs/superpowers/specs/2026-04-06-structfs-tui-design.md`
-- **Plan C1:** `docs/superpowers/plans/2026-04-06-broker-store-plan-c1.md`
-- **Appiware broker (reference):** `../appiware/host/src/broker_store.rs`
-- **Appiware store traits:** `../appiware/store/src/store.rs`
-- **Current TUI:** `crates/ox-cli/src/app.rs`, `tui.rs`, `agents.rs`
-- **Snapshot RFC:** `docs/design/rfc/snapshot-protocol.md`
-- **Portable state spec:** `docs/superpowers/specs/2026-04-05-portable-agent-state-design.md`
-
-## Execution
-
-Start a new session, read `docs/superpowers/plans/2026-04-06-broker-store-plan-c1.md`,
-and execute with subagent-driven development. Use `/jevan` persona. After C1,
-write Plans C2 and C3.
+- **Plans:** `docs/superpowers/plans/2026-04-06-broker-store-plan-c1.md` (executed)
+- **Plans:** `docs/superpowers/plans/2026-04-06-core-stores-plan-c2.md` (executed)
+- **Plans:** `docs/superpowers/plans/2026-04-06-broker-wiring-plan-c3a.md` (executed)
+- **Plans:** `docs/superpowers/plans/2026-04-06-async-event-loop-plan-c3b.md` (executed)
