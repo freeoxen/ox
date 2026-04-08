@@ -9,6 +9,7 @@ mod event_loop;
 mod inbox_view;
 mod key_encode;
 mod key_handlers;
+mod parse;
 mod policy;
 #[allow(dead_code)]
 mod session;
