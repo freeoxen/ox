@@ -154,16 +154,26 @@ in `ox-kernel/src/snapshot.rs`. ToolsProvider returns None.
 - **Spec:** `docs/superpowers/specs/2026-04-07-s-tier-polish-design.md`
 - **Plan:** `docs/superpowers/plans/2026-04-07-s-tier-polish.md`
 
+#### Phase 3: StoreBacking + ConfigStore (complete, 75 ox-ui + 67 ox-cli + 48 ox-inbox tests)
+- StoreBacking trait in ox-kernel for platform-agnostic persistence
+- JsonFileBacking in ox-inbox (load/save with atomic write, 4 tests)
+- ConfigStore in ox-ui with 4-layer cascade: ephemeral thread → saved thread → global → default (11 tests)
+- ConfigStore mounted at `config/` in broker, initialized from CLI args
+- ThreadRegistry routes model config reads/writes to ConfigStore via broker client
+- Workers read config from ConfigStore at spawn (no baked-in config)
+- App reduced to 4 fields: pool, input_history, history_cursor, input_draft
+- "model" removed from snapshot PARTICIPATING_MOUNTS
+- **Spec:** `docs/superpowers/specs/2026-04-08-storebacking-configstore-design.md`
+- **Plan:** `docs/superpowers/plans/2026-04-08-storebacking-configstore.md`
+
 ## What's Next
 
 ### Remaining for full spec completion:
 
-1. **StoreBacking Trait**
-   - Platform-agnostic persistence abstraction
-   - Stores cache in memory, backings are authoritative
-
-5. **ConfigStore**
-   - Read-only settings projection (theme, provider, model, bindings)
+All items from the original StructFS TUI spec are complete. Remaining work
+is feature-level (completions-as-tools unification, runtime config UI,
+StoreBacking integration with ConfigStore for file persistence, web
+platform IndexedDB backing).
 
 ### Key Architecture Decisions
 - **Scroll commands match visual direction**: scroll_up = visual up = see older
