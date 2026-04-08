@@ -15,6 +15,7 @@ members = [
     "crates/ox-runtime",
     "crates/ox-broker",
     "crates/ox-ui",
+    "crates/ox-store-util",
 ]
 
 [workspace.package]
