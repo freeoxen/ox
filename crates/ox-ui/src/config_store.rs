@@ -19,6 +19,8 @@ pub struct ConfigStore {
     runtime: BTreeMap<String, Value>,
     /// Per-thread overrides. Key = thread_id, Value = path→value map.
     threads: BTreeMap<String, BTreeMap<String, Value>>,
+    /// Optional persistence backing. None = purely in-memory.
+    backing: Option<Box<dyn ox_store_util::StoreBacking>>,
 }
 
 impl ConfigStore {
@@ -28,7 +30,46 @@ impl ConfigStore {
             base,
             runtime: BTreeMap::new(),
             threads: BTreeMap::new(),
+            backing: None,
         }
+    }
+
+    /// Create with base values and a persistence backing.
+    /// Loads saved values from backing into the base layer.
+    pub fn with_backing(
+        mut base: BTreeMap<String, Value>,
+        backing: Box<dyn ox_store_util::StoreBacking>,
+    ) -> Self {
+        if let Ok(Some(Value::Map(saved))) = backing.load() {
+            for (k, v) in saved {
+                base.insert(k, v);
+            }
+        }
+        Self {
+            base,
+            runtime: BTreeMap::new(),
+            threads: BTreeMap::new(),
+            backing: Some(backing),
+        }
+    }
+
+    /// Attach a persistence backing after construction.
+    pub fn set_backing(&mut self, backing: Box<dyn ox_store_util::StoreBacking>) {
+        self.backing = Some(backing);
+    }
+
+    /// Persist the runtime layer to backing. API keys excluded.
+    pub fn save_runtime(&self) -> Result<(), StoreError> {
+        let Some(ref backing) = self.backing else {
+            return Ok(());
+        };
+        let filtered: BTreeMap<String, Value> = self
+            .runtime
+            .iter()
+            .filter(|(k, _)| !k.contains("api_key"))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        backing.save(&Value::Map(filtered))
     }
 
     /// Resolve a path through the global layers (runtime → base).
@@ -372,5 +413,128 @@ mod tests {
         let p = Path::parse("threads/t_abc/gate/api_key").unwrap();
         let val = store.read(&p).unwrap().unwrap().as_value().unwrap().clone();
         assert_eq!(val, Value::String("***".into()));
+    }
+
+    #[test]
+    fn save_runtime_persists_to_backing() {
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Default)]
+        struct CaptureBacking {
+            saved: Arc<Mutex<Option<Value>>>,
+        }
+        impl ox_store_util::StoreBacking for CaptureBacking {
+            fn load(&self) -> Result<Option<Value>, StoreError> {
+                Ok(None)
+            }
+            fn save(&self, value: &Value) -> Result<(), StoreError> {
+                *self.saved.lock().unwrap() = Some(value.clone());
+                Ok(())
+            }
+        }
+
+        let saved = Arc::new(Mutex::new(None));
+        let backing = CaptureBacking {
+            saved: saved.clone(),
+        };
+        let mut config = ConfigStore::new(BTreeMap::new());
+        config.set_backing(Box::new(backing));
+
+        config
+            .write(
+                &path!("gate/model"),
+                Record::parsed(Value::String("gpt-4o".into())),
+            )
+            .unwrap();
+        config.save_runtime().unwrap();
+
+        let saved_val = saved.lock().unwrap().clone().unwrap();
+        match saved_val {
+            Value::Map(m) => {
+                assert_eq!(
+                    m.get("gate/model").unwrap(),
+                    &Value::String("gpt-4o".into())
+                );
+            }
+            _ => panic!("expected map"),
+        }
+    }
+
+    #[test]
+    fn save_runtime_excludes_api_key() {
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Default)]
+        struct CaptureBacking {
+            saved: Arc<Mutex<Option<Value>>>,
+        }
+        impl ox_store_util::StoreBacking for CaptureBacking {
+            fn load(&self) -> Result<Option<Value>, StoreError> {
+                Ok(None)
+            }
+            fn save(&self, value: &Value) -> Result<(), StoreError> {
+                *self.saved.lock().unwrap() = Some(value.clone());
+                Ok(())
+            }
+        }
+
+        let saved = Arc::new(Mutex::new(None));
+        let backing = CaptureBacking {
+            saved: saved.clone(),
+        };
+        let mut config = ConfigStore::new(BTreeMap::new());
+        config.set_backing(Box::new(backing));
+
+        config
+            .write(
+                &path!("gate/api_key"),
+                Record::parsed(Value::String("sk-secret".into())),
+            )
+            .unwrap();
+        config
+            .write(
+                &path!("gate/model"),
+                Record::parsed(Value::String("gpt-4o".into())),
+            )
+            .unwrap();
+        config.save_runtime().unwrap();
+
+        let saved_val = saved.lock().unwrap().clone().unwrap();
+        match saved_val {
+            Value::Map(m) => {
+                assert!(
+                    !m.contains_key("gate/api_key"),
+                    "api_key must not be persisted"
+                );
+                assert!(m.contains_key("gate/model"));
+            }
+            _ => panic!("expected map"),
+        }
+    }
+
+    #[test]
+    fn with_backing_loads_saved_values_into_base() {
+        struct PreloadBacking;
+        impl ox_store_util::StoreBacking for PreloadBacking {
+            fn load(&self) -> Result<Option<Value>, StoreError> {
+                let mut m = BTreeMap::new();
+                m.insert(
+                    "gate/model".to_string(),
+                    Value::String("from-disk".into()),
+                );
+                Ok(Some(Value::Map(m)))
+            }
+            fn save(&self, _value: &Value) -> Result<(), StoreError> {
+                Ok(())
+            }
+        }
+
+        let mut config =
+            ConfigStore::with_backing(BTreeMap::new(), Box::new(PreloadBacking));
+        let record = config.read(&path!("gate/model")).unwrap().unwrap();
+        assert_eq!(
+            record.as_value().unwrap(),
+            &Value::String("from-disk".into())
+        );
     }
 }
