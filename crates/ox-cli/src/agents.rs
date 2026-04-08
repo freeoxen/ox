@@ -291,6 +291,29 @@ fn agent_worker(
         tools = returned_store.effects.tools;
         policy = returned_store.effects.policy;
 
+        if let Err(e) = &result {
+            // Write error to history before commit
+            let msg = serde_json::json!({"role": "assistant", "content": [{"type": "text", "text": format!("error: {e}")}]});
+            adapter
+                .write(&path!("history/append"), Record::parsed(json_to_value(msg)))
+                .ok();
+        }
+
+        // Commit the turn — finalizes streaming text into permanent messages.
+        // Must happen BEFORE save so the ledger gets committed messages, not
+        // duplicated streaming partials.
+        adapter
+            .write(&path!("history/commit"), Record::parsed(Value::Null))
+            .ok();
+
+        // Clear turn state (thinking = false)
+        rt_handle
+            .block_on(scoped_client.write(
+                &path!("history/turn/thinking"),
+                Record::parsed(Value::Bool(false)),
+            ))
+            .ok();
+
         // Persist conversation state for restart recovery
         save_thread_state(&mut adapter, &inbox_root, &thread_id, &title);
 
@@ -322,27 +345,6 @@ fn agent_worker(
                 ))
                 .ok();
         }
-
-        // Clear turn state (thinking = false)
-        rt_handle
-            .block_on(scoped_client.write(
-                &path!("history/turn/thinking"),
-                Record::parsed(Value::Bool(false)),
-            ))
-            .ok();
-
-        if let Err(e) = &result {
-            // Write error to history
-            let msg = serde_json::json!({"role": "assistant", "content": [{"type": "text", "text": format!("error: {e}")}]});
-            adapter
-                .write(&path!("history/append"), Record::parsed(json_to_value(msg)))
-                .ok();
-        }
-
-        // Commit the turn
-        adapter
-            .write(&path!("history/commit"), Record::parsed(Value::Null))
-            .ok();
     }
 
     // Worker exit — ThreadRegistry retains thread state in memory until process exit.
