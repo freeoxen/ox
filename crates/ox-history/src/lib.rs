@@ -303,6 +303,12 @@ impl Writer for HistoryProvider {
                 let json = value_to_json(value);
                 let msg = parse_wire_message(&json)
                     .map_err(|e| StoreError::store("history", "write", e))?;
+                // Clear streaming text when an assistant message is appended —
+                // the streaming content is now committed as part of this message,
+                // so it shouldn't also appear as a partial in reads.
+                if matches!(msg, Message::Assistant { .. }) {
+                    self.turn.streaming.clear();
+                }
                 self.messages.push(msg);
                 Ok(to.clone())
             }
@@ -558,6 +564,34 @@ mod tests {
 
         let val = hp.read(&path!("turn/thinking")).unwrap().unwrap();
         assert_eq!(unwrap_value(val), Value::Bool(true));
+    }
+
+    #[test]
+    fn append_assistant_clears_streaming() {
+        let mut hp = HistoryProvider::new();
+        append_user_msg(&mut hp, "hello");
+
+        // Simulate streaming
+        hp.write(
+            &path!("turn/streaming"),
+            Record::parsed(Value::String("Streaming text".to_string())),
+        )
+        .unwrap();
+        hp.write(&path!("turn/thinking"), Record::parsed(Value::Bool(true)))
+            .unwrap();
+
+        // Append the committed assistant message (as the kernel does mid-turn)
+        append_assistant_msg(&mut hp, "Streaming text");
+
+        // Messages should NOT have the streaming partial duplicated
+        let messages = hp.read(&path!("messages")).unwrap().unwrap();
+        let val = unwrap_value(messages);
+        let arr = match &val {
+            Value::Array(a) => a,
+            _ => panic!("expected array"),
+        };
+        // Should be 2: user + committed assistant. NOT 3 (user + committed + partial).
+        assert_eq!(arr.len(), 2);
     }
 
     #[test]
