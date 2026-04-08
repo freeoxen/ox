@@ -26,65 +26,6 @@ pub enum InputMode {
     Insert(InsertContext),
 }
 
-// ---------------------------------------------------------------------------
-// Search / filter state
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Default)]
-pub struct SearchState {
-    /// Saved filter chips (committed search terms).
-    pub chips: Vec<String>,
-    /// Current text being typed in the search bar.
-    pub live_query: String,
-}
-
-impl SearchState {
-    /// Commit the live query as a chip (if non-empty).
-    pub fn save_chip(&mut self) {
-        let trimmed = self.live_query.trim().to_string();
-        if !trimmed.is_empty() {
-            self.chips.push(trimmed);
-        }
-        self.live_query.clear();
-    }
-
-    /// Remove a chip by index.
-    pub fn dismiss_chip(&mut self, idx: usize) {
-        if idx < self.chips.len() {
-            self.chips.remove(idx);
-        }
-    }
-
-    /// Whether search has any active filters.
-    pub fn is_active(&self) -> bool {
-        !self.chips.is_empty() || !self.live_query.is_empty()
-    }
-
-    /// Check whether a thread (title, labels, state) matches all chips + live query.
-    #[allow(dead_code)]
-    pub fn matches(&self, title: &str, labels: &[String], state: &str) -> bool {
-        let hay = format!(
-            "{} {} {}",
-            title.to_lowercase(),
-            labels
-                .iter()
-                .map(|l| l.to_lowercase())
-                .collect::<Vec<_>>()
-                .join(" "),
-            state.to_lowercase()
-        );
-        for chip in &self.chips {
-            if !hay.contains(&chip.to_lowercase()) {
-                return false;
-            }
-        }
-        if !self.live_query.is_empty() && !hay.contains(&self.live_query.to_lowercase()) {
-            return false;
-        }
-        true
-    }
-}
-
 /// Per-thread rendering state — built from broker data each frame.
 #[derive(Debug, Clone, Default)]
 pub struct ThreadView {
@@ -183,7 +124,6 @@ pub struct App {
     pub active_thread: Option<String>, // None = inbox view
     // Modal mode
     pub mode: InputMode,
-    pub search: SearchState,
     // Shared UI state
     pub input: String,
     pub cursor: usize,
@@ -231,7 +171,6 @@ impl App {
             pool,
             active_thread: None,
             mode: InputMode::default(),
-            search: SearchState::default(),
             input: String::new(),
             cursor: 0,
             model,
@@ -253,7 +192,7 @@ impl App {
         self.input = text;
         match self.mode.clone() {
             InputMode::Insert(InsertContext::Search) => {
-                self.search.save_chip();
+                // Search chip saving handled by broker (UiStore search_save_chip).
             }
             InputMode::Insert(InsertContext::Compose) => {
                 self.do_compose();

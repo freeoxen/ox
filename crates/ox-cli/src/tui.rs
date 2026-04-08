@@ -93,7 +93,7 @@ pub async fn run_async(
             has_active_thread = vs.active_thread.is_some();
             active_thread_id = vs.active_thread.clone();
             selected_thread_id = vs.inbox_threads.get(vs.selected_row).map(|t| t.id.clone());
-            search_active = vs.search.is_active();
+            search_active = vs.search_active;
             cursor_pos = vs.cursor;
             input_len = vs.input.len();
             has_approval_pending = vs.approval_pending.is_some();
@@ -183,7 +183,14 @@ pub async fn run_async(
                         if mode == "normal" && screen == "inbox" && search_active {
                             if let KeyCode::Char(c @ '1'..='9') = key.code {
                                 let idx = (c as u8 - b'1') as usize;
-                                app.search.dismiss_chip(idx);
+                                let mut cmd = BTreeMap::new();
+                                cmd.insert("index".to_string(), Value::Integer(idx as i64));
+                                let _ = client
+                                    .write(
+                                        &path!("ui/search_dismiss_chip"),
+                                        Record::parsed(Value::Map(cmd)),
+                                    )
+                                    .await;
                                 continue;
                             }
                         }
@@ -202,7 +209,7 @@ pub async fn run_async(
                             // No binding — route through broker or search fallback
                             if let InputMode::Insert(ref ctx) = app.mode {
                                 if *ctx == InsertContext::Search {
-                                    handle_search_key(app, key.modifiers, key.code);
+                                    dispatch_search_edit(client, key.modifiers, key.code).await;
                                 } else {
                                     match key.code {
                                         KeyCode::Up => app.history_up(),
@@ -455,17 +462,53 @@ async fn dispatch_mouse_owned(
 }
 
 // ---------------------------------------------------------------------------
-// Search text editing (only path that still bypasses broker)
+// Search text editing — dispatched through UiStore via broker
 // ---------------------------------------------------------------------------
 
-fn handle_search_key(app: &mut App, modifiers: KeyModifiers, code: KeyCode) {
+/// Dispatch search text editing through UiStore via the broker.
+async fn dispatch_search_edit(
+    client: &ox_broker::ClientHandle,
+    modifiers: KeyModifiers,
+    code: KeyCode,
+) {
+    use std::collections::BTreeMap;
+    use structfs_core_store::{Record, Value, path};
+
     match (modifiers, code) {
-        (_, KeyCode::Enter) => app.search.save_chip(),
-        (KeyModifiers::CONTROL, KeyCode::Char('u')) => app.search.live_query.clear(),
-        (_, KeyCode::Backspace) => {
-            app.search.live_query.pop();
+        (_, KeyCode::Enter) => {
+            let _ = client
+                .write(
+                    &path!("ui/search_save_chip"),
+                    Record::parsed(Value::Map(BTreeMap::new())),
+                )
+                .await;
         }
-        (_, KeyCode::Char(c)) => app.search.live_query.push(c),
+        (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
+            let _ = client
+                .write(
+                    &path!("ui/search_clear"),
+                    Record::parsed(Value::Map(BTreeMap::new())),
+                )
+                .await;
+        }
+        (_, KeyCode::Backspace) => {
+            let _ = client
+                .write(
+                    &path!("ui/search_delete_char"),
+                    Record::parsed(Value::Map(BTreeMap::new())),
+                )
+                .await;
+        }
+        (_, KeyCode::Char(c)) => {
+            let mut cmd = BTreeMap::new();
+            cmd.insert("char".to_string(), Value::String(c.to_string()));
+            let _ = client
+                .write(
+                    &path!("ui/search_insert_char"),
+                    Record::parsed(Value::Map(cmd)),
+                )
+                .await;
+        }
         _ => {}
     }
 }
@@ -593,7 +636,7 @@ async fn handle_approval_key(
 /// Returns `(content_height, viewport_height)` for scroll_max calculation.
 fn draw(frame: &mut Frame, vs: &ViewState, theme: &Theme) -> (Option<usize>, usize) {
     let in_insert = matches!(vs.input_mode, InputMode::Insert(_));
-    let show_filter = vs.active_thread.is_none() && vs.search.is_active();
+    let show_filter = vs.active_thread.is_none() && vs.search_active;
 
     // Build layout constraints
     let mut constraints = vec![Constraint::Length(1)]; // tab bar

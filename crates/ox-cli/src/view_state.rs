@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use ox_broker::ClientHandle;
 use structfs_core_store::{Value, path};
 
-use crate::app::{App, ChatMessage, CustomizeState, InputMode, SearchState};
+use crate::app::{App, ChatMessage, CustomizeState, InputMode};
 
 // ---------------------------------------------------------------------------
 // InboxThread — parsed thread metadata for inbox display
@@ -72,9 +72,12 @@ pub struct ViewState<'a> {
     /// Pending approval: (tool_name, input_preview), or None.
     pub approval_pending: Option<(String, String)>,
 
+    // -- Broker-sourced search state --------------------------------------
+    pub search_chips: Vec<String>,
+    pub search_live_query: String,
+    pub search_active: bool,
+
     // -- App-borrowed (references) ---------------------------------------
-    /// Search state.
-    pub search: &'a SearchState,
     /// Input history.
     pub input_history: &'a [String],
     /// Model name.
@@ -307,6 +310,25 @@ pub async fn fetch_view_state<'a>(client: &ClientHandle, app: &'a App) -> ViewSt
         _ => None,
     };
 
+    let search_chips = match ui_state.get("search_chips") {
+        Some(Value::Array(arr)) => arr
+            .iter()
+            .filter_map(|v| match v {
+                Value::String(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    let search_live_query = match ui_state.get("search_live_query") {
+        Some(Value::String(s)) => s.clone(),
+        _ => String::new(),
+    };
+    let search_active = match ui_state.get("search_active") {
+        Some(Value::Bool(b)) => *b,
+        _ => false,
+    };
+
     // Conditional reads based on screen
     let mut inbox_threads = Vec::new();
     let mut messages = Vec::new();
@@ -429,7 +451,9 @@ pub async fn fetch_view_state<'a>(client: &ClientHandle, app: &'a App) -> ViewSt
         tool_status,
         turn_tokens,
         approval_pending,
-        search: &app.search,
+        search_chips,
+        search_live_query,
+        search_active,
         input_history: &app.input_history,
         model: &app.model,
         provider: &app.provider,
@@ -437,6 +461,40 @@ pub async fn fetch_view_state<'a>(client: &ClientHandle, app: &'a App) -> ViewSt
         pending_customize: &app.pending_customize,
         input_mode: &app.mode,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Standalone search filter
+// ---------------------------------------------------------------------------
+
+/// Check whether a thread matches all search chips and the live query.
+#[allow(dead_code)]
+pub fn search_matches(
+    chips: &[String],
+    live_query: &str,
+    title: &str,
+    labels: &[String],
+    state: &str,
+) -> bool {
+    let hay = format!(
+        "{} {} {}",
+        title.to_lowercase(),
+        labels
+            .iter()
+            .map(|l| l.to_lowercase())
+            .collect::<Vec<_>>()
+            .join(" "),
+        state.to_lowercase()
+    );
+    for chip in chips {
+        if !hay.contains(&chip.to_lowercase()) {
+            return false;
+        }
+    }
+    if !live_query.is_empty() && !hay.contains(&live_query.to_lowercase()) {
+        return false;
+    }
+    true
 }
 
 // ---------------------------------------------------------------------------

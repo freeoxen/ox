@@ -12,7 +12,7 @@ pub fn draw_inbox(frame: &mut Frame, vs: &ViewState, theme: &Theme, area: Rect) 
 
     if threads.is_empty() {
         let empty = Paragraph::new(Line::from(Span::styled(
-            if vs.search.is_active() {
+            if vs.search_active {
                 "  No threads match the current filter"
             } else {
                 "  No threads — press i to compose"
@@ -106,13 +106,13 @@ pub fn draw_inbox(frame: &mut Frame, vs: &ViewState, theme: &Theme, area: Rect) 
 /// Render the search/filter bar.
 pub fn draw_filter_bar(frame: &mut Frame, vs: &ViewState, theme: &Theme, area: Rect) {
     let mut spans = vec![Span::styled("/ ", theme.tool_name)];
-    for (i, chip) in vs.search.chips.iter().enumerate() {
+    for (i, chip) in vs.search_chips.iter().enumerate() {
         spans.push(Span::styled(
             format!("[{}: {}] ", i + 1, chip),
             theme.tool_meta,
         ));
     }
-    spans.push(Span::styled(&vs.search.live_query, theme.user_text));
+    spans.push(Span::styled(&vs.search_live_query, theme.user_text));
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
