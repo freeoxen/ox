@@ -59,22 +59,6 @@ struct Cli {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
-    let model = cli.model.unwrap_or_else(|| match cli.provider.as_str() {
-        "openai" => "gpt-4o".to_string(),
-        _ => "claude-sonnet-4-20250514".to_string(),
-    });
-
-    let api_key = cli.api_key.unwrap_or_else(|| match cli.provider.as_str() {
-        "openai" => std::env::var("OPENAI_API_KEY").unwrap_or_default(),
-        _ => std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
-    });
-
-    if api_key.is_empty() {
-        eprintln!("error: no API key provided");
-        eprintln!("  pass --api-key or set ANTHROPIC_API_KEY / OPENAI_API_KEY");
-        std::process::exit(1);
-    }
-
     let workspace =
         std::fs::canonicalize(&cli.workspace).unwrap_or_else(|_| PathBuf::from(&cli.workspace));
 
@@ -83,6 +67,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
         PathBuf::from(home).join(".ox")
     };
+
+    // Resolve config: defaults → ~/.ox/config.toml → OX_* env vars → CLI flags
+    let overrides = config::CliOverrides {
+        provider: if cli.provider != "anthropic" {
+            Some(cli.provider.clone())
+        } else {
+            None
+        },
+        model: cli.model.clone(),
+        api_key: cli.api_key.clone(),
+        max_tokens: if cli.max_tokens != 4096 {
+            Some(cli.max_tokens as i64)
+        } else {
+            None
+        },
+    };
+    let resolved = config::resolve_config(&inbox_root, &overrides);
+
+    if resolved.gate.api_key.is_none() {
+        eprintln!("error: no API key provided");
+        eprintln!(
+            "  pass --api-key, set OX_GATE_API_KEY, or set ANTHROPIC_API_KEY / OPENAI_API_KEY"
+        );
+        std::process::exit(1);
+    }
+
+    let flat_config = resolved.to_flat_map();
 
     let theme = theme::Theme::default();
 
@@ -99,10 +110,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         broker_inbox,
         broker_bindings,
         inbox_root.clone(),
-        cli.provider.clone(),
-        model.clone(),
-        cli.max_tokens,
-        api_key.clone(),
+        flat_config,
     ));
     let client = broker_handle.client();
 

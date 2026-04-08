@@ -32,10 +32,7 @@ pub async fn setup(
     inbox: InboxStore,
     bindings: Vec<Binding>,
     inbox_root: std::path::PathBuf,
-    provider: String,
-    model: String,
-    max_tokens: u32,
-    api_key: String,
+    config_values: std::collections::BTreeMap<String, structfs_core_store::Value>,
 ) -> BrokerHandle {
     let broker = BrokerStore::default();
     let mut servers = Vec::new();
@@ -56,44 +53,12 @@ pub async fn setup(
     // Mount InboxStore
     servers.push(broker.mount(path!("inbox"), inbox).await);
 
-    // Mount ConfigStore with base defaults + runtime overrides from CLI args
+    // Mount ConfigStore with figment-resolved values + TOML file backing
     {
-        use ox_ui::ConfigStore;
-        use structfs_core_store::{Record, Value, Writer};
-
-        let mut base = std::collections::BTreeMap::new();
-        base.insert(
-            "gate/model".to_string(),
-            Value::String("claude-sonnet-4-20250514".into()),
-        );
-        base.insert(
-            "gate/provider".to_string(),
-            Value::String("anthropic".into()),
-        );
-        base.insert("gate/max_tokens".to_string(), Value::Integer(4096));
-
-        let mut config = ConfigStore::new(base);
-        config
-            .write(
-                &path!("gate/provider"),
-                Record::parsed(Value::String(provider)),
-            )
-            .ok();
-        config
-            .write(&path!("gate/model"), Record::parsed(Value::String(model)))
-            .ok();
-        config
-            .write(
-                &path!("gate/max_tokens"),
-                Record::parsed(Value::Integer(max_tokens as i64)),
-            )
-            .ok();
-        config
-            .write(
-                &path!("gate/api_key"),
-                Record::parsed(Value::String(api_key)),
-            )
-            .ok();
+        let toml_path = inbox_root.join("config.toml");
+        let backing = crate::toml_backing::TomlFileBacking::new(toml_path);
+        let config =
+            ox_ui::ConfigStore::with_backing(config_values, Box::new(backing));
 
         servers.push(broker.mount(path!("config"), config).await);
     }
@@ -127,16 +92,21 @@ mod tests {
 
     async fn test_setup() -> BrokerHandle {
         let bindings = crate::bindings::default_bindings();
-        setup(
-            test_inbox(),
-            bindings,
-            test_inbox_root(),
-            "anthropic".into(),
-            "claude-sonnet-4-20250514".into(),
-            4096,
-            "test-key".into(),
-        )
-        .await
+        let mut config = BTreeMap::new();
+        config.insert(
+            "gate/model".to_string(),
+            Value::String("claude-sonnet-4-20250514".into()),
+        );
+        config.insert(
+            "gate/provider".to_string(),
+            Value::String("anthropic".into()),
+        );
+        config.insert("gate/max_tokens".to_string(), Value::Integer(4096));
+        config.insert(
+            "gate/api_key".to_string(),
+            Value::String("test-key".into()),
+        );
+        setup(test_inbox(), bindings, test_inbox_root(), config).await
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
