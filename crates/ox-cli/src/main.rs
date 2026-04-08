@@ -1,3 +1,5 @@
+#[macro_use]
+mod broker_cmd;
 mod agents;
 mod app;
 mod bindings;

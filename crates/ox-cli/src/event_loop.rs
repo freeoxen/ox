@@ -19,8 +19,7 @@ pub async fn run_async(
     terminal: &mut ratatui::DefaultTerminal,
 ) -> std::io::Result<()> {
     use crate::key_encode::encode_key;
-    use std::collections::BTreeMap;
-    use structfs_core_store::{Record, Value, path};
+    use structfs_core_store::path;
 
     loop {
         // 1. Fetch ViewState, draw, extract owned data needed after drop.
@@ -51,10 +50,8 @@ pub async fn run_async(
             // Only write on inbox screen — thread screen has no row selection.
             if vs.screen == "inbox" {
                 let row_count = vs.inbox_threads.len() as i64;
-                let mut rc = BTreeMap::new();
-                rc.insert("count".to_string(), Value::Integer(row_count));
                 let _ = client
-                    .write(&path!("ui/set_row_count"), Record::parsed(Value::Map(rc)))
+                    .write(&path!("ui/set_row_count"), cmd!("count" => row_count))
                     .await;
             }
 
@@ -68,18 +65,17 @@ pub async fn run_async(
             // Update scroll_max and viewport_height in broker (after draw)
             if vs.active_thread.is_some() && viewport_height > 0 {
                 let scroll_max = content_height.unwrap_or(0).saturating_sub(viewport_height) as i64;
-                let mut sm = BTreeMap::new();
-                sm.insert("max".to_string(), Value::Integer(scroll_max.max(0)));
                 let _ = client
-                    .write(&path!("ui/set_scroll_max"), Record::parsed(Value::Map(sm)))
+                    .write(
+                        &path!("ui/set_scroll_max"),
+                        cmd!("max" => scroll_max.max(0)),
+                    )
                     .await;
 
-                let mut vh = BTreeMap::new();
-                vh.insert("height".to_string(), Value::Integer(viewport_height as i64));
                 let _ = client
                     .write(
                         &path!("ui/set_viewport_height"),
-                        Record::parsed(Value::Map(vh)),
+                        cmd!("height" => viewport_height as i64),
                     )
                     .await;
             }
@@ -112,33 +108,23 @@ pub async fn run_async(
                     );
                     // Clear input and exit insert mode through broker
                     let _ = client
-                        .write(
-                            &path!("ui/clear_input"),
-                            Record::parsed(Value::Map(BTreeMap::new())),
-                        )
+                        .write(&path!("ui/clear_input"), cmd!())
                         .await;
                     let _ = client
-                        .write(
-                            &path!("ui/exit_insert"),
-                            Record::parsed(Value::Map(BTreeMap::new())),
-                        )
+                        .write(&path!("ui/exit_insert"), cmd!())
                         .await;
                     // If compose created a new thread, open it in UiStore
                     if let Some(tid) = new_tid {
-                        let mut cmd = BTreeMap::new();
-                        cmd.insert("thread_id".to_string(), Value::String(tid));
                         let _ = client
-                            .write(&path!("ui/open"), Record::parsed(Value::Map(cmd)))
+                            .write(&path!("ui/open"), cmd!("thread_id" => tid))
                             .await;
                     }
                 }
                 "quit" => return Ok(()),
                 "open_selected" => {
                     if let Some(id) = &selected_thread_id {
-                        let mut cmd = BTreeMap::new();
-                        cmd.insert("thread_id".to_string(), Value::String(id.clone()));
                         let _ = client
-                            .write(&path!("ui/open"), Record::parsed(Value::Map(cmd)))
+                            .write(&path!("ui/open"), cmd!("thread_id" => id))
                             .await;
                     }
                 }
@@ -148,11 +134,9 @@ pub async fn run_async(
                             "threads".to_string(),
                             id.clone(),
                         ]);
-                        let mut map = BTreeMap::new();
-                        map.insert("inbox_state".to_string(), Value::String("done".to_string()));
                         app.pool
                             .inbox()
-                            .write(&update_path, Record::parsed(Value::Map(map)))
+                            .write(&update_path, cmd!("inbox_state" => "done"))
                             .ok();
                     }
                 }
@@ -160,10 +144,7 @@ pub async fn run_async(
             }
             // Clear the pending action
             let _ = client
-                .write(
-                    &path!("ui/clear_pending_action"),
-                    Record::parsed(Value::Map(BTreeMap::new())),
-                )
+                .write(&path!("ui/clear_pending_action"), cmd!())
                 .await;
         }
 
@@ -210,26 +191,22 @@ pub async fn run_async(
                         if mode == "normal" && screen == "inbox" && search_active {
                             if let KeyCode::Char(c @ '1'..='9') = key.code {
                                 let idx = (c as u8 - b'1') as usize;
-                                let mut cmd = BTreeMap::new();
-                                cmd.insert("index".to_string(), Value::Integer(idx as i64));
                                 let _ = client
                                     .write(
                                         &path!("ui/search_dismiss_chip"),
-                                        Record::parsed(Value::Map(cmd)),
+                                        cmd!("index" => idx as i64),
                                     )
                                     .await;
                                 continue;
                             }
                         }
 
-                        let mut event_map = BTreeMap::new();
-                        event_map.insert("mode".to_string(), Value::String(mode.to_string()));
-                        event_map.insert("key".to_string(), Value::String(key_str.clone()));
-                        event_map.insert("screen".to_string(), Value::String(screen.to_string()));
-
                         // Try InputStore dispatch
                         let result = client
-                            .write(&path!("input/key"), Record::parsed(Value::Map(event_map)))
+                            .write(
+                                &path!("input/key"),
+                                cmd!("mode" => mode, "key" => key_str.clone(), "screen" => screen),
+                            )
                             .await;
 
                         if result.is_err() && mode_owned == "insert" {
@@ -239,32 +216,20 @@ pub async fn run_async(
                                 match key.code {
                                     KeyCode::Up => {
                                         if let Some((text, cursor)) = app.history_up(&input_text) {
-                                            let mut cmd = BTreeMap::new();
-                                            cmd.insert("text".to_string(), Value::String(text));
-                                            cmd.insert(
-                                                "cursor".to_string(),
-                                                Value::Integer(cursor as i64),
-                                            );
                                             let _ = client
                                                 .write(
                                                     &path!("ui/set_input"),
-                                                    Record::parsed(Value::Map(cmd)),
+                                                    cmd!("text" => text, "cursor" => cursor as i64),
                                                 )
                                                 .await;
                                         }
                                     }
                                     KeyCode::Down => {
                                         if let Some((text, cursor)) = app.history_down() {
-                                            let mut cmd = BTreeMap::new();
-                                            cmd.insert("text".to_string(), Value::String(text));
-                                            cmd.insert(
-                                                "cursor".to_string(),
-                                                Value::Integer(cursor as i64),
-                                            );
                                             let _ = client
                                                 .write(
                                                     &path!("ui/set_input"),
-                                                    Record::parsed(Value::Map(cmd)),
+                                                    cmd!("text" => text, "cursor" => cursor as i64),
                                                 )
                                                 .await;
                                         }
@@ -332,62 +297,53 @@ async fn dispatch_text_edit_owned(
     modifiers: KeyModifiers,
     code: KeyCode,
 ) {
-    use std::collections::BTreeMap;
-    use structfs_core_store::{Record, Value, path};
+    use structfs_core_store::path;
 
     match (modifiers, code) {
         (KeyModifiers::CONTROL, KeyCode::Char('a')) => {
-            let mut cmd = BTreeMap::new();
-            cmd.insert("cursor".to_string(), Value::Integer(0));
             let _ = client
-                .write(&path!("ui/set_input"), Record::parsed(Value::Map(cmd)))
+                .write(&path!("ui/set_input"), cmd!("cursor" => 0_i64))
                 .await;
         }
         (KeyModifiers::CONTROL, KeyCode::Char('e')) => {
-            let mut cmd = BTreeMap::new();
-            cmd.insert("cursor".to_string(), Value::Integer(input_len as i64));
             let _ = client
-                .write(&path!("ui/set_input"), Record::parsed(Value::Map(cmd)))
+                .write(
+                    &path!("ui/set_input"),
+                    cmd!("cursor" => input_len as i64),
+                )
                 .await;
         }
         (_, KeyCode::Char(c)) => {
-            let mut cmd = BTreeMap::new();
-            cmd.insert("char".to_string(), Value::String(c.to_string()));
-            cmd.insert("at".to_string(), Value::Integer(cursor as i64));
             let _ = client
-                .write(&path!("ui/insert_char"), Record::parsed(Value::Map(cmd)))
+                .write(
+                    &path!("ui/insert_char"),
+                    cmd!("char" => c.to_string(), "at" => cursor as i64),
+                )
                 .await;
         }
         (_, KeyCode::Enter) => {
-            let mut cmd = BTreeMap::new();
-            cmd.insert("char".to_string(), Value::String("\n".to_string()));
-            cmd.insert("at".to_string(), Value::Integer(cursor as i64));
             let _ = client
-                .write(&path!("ui/insert_char"), Record::parsed(Value::Map(cmd)))
+                .write(
+                    &path!("ui/insert_char"),
+                    cmd!("char" => "\n", "at" => cursor as i64),
+                )
                 .await;
         }
         (_, KeyCode::Backspace) => {
             let _ = client
-                .write(
-                    &path!("ui/delete_char"),
-                    Record::parsed(Value::Map(BTreeMap::new())),
-                )
+                .write(&path!("ui/delete_char"), cmd!())
                 .await;
         }
         (_, KeyCode::Left) => {
             let pos = cursor.saturating_sub(1);
-            let mut cmd = BTreeMap::new();
-            cmd.insert("cursor".to_string(), Value::Integer(pos as i64));
             let _ = client
-                .write(&path!("ui/set_input"), Record::parsed(Value::Map(cmd)))
+                .write(&path!("ui/set_input"), cmd!("cursor" => pos as i64))
                 .await;
         }
         (_, KeyCode::Right) => {
             let pos = (cursor + 1).min(input_len);
-            let mut cmd = BTreeMap::new();
-            cmd.insert("cursor".to_string(), Value::Integer(pos as i64));
             let _ = client
-                .write(&path!("ui/set_input"), Record::parsed(Value::Map(cmd)))
+                .write(&path!("ui/set_input"), cmd!("cursor" => pos as i64))
                 .await;
         }
         _ => {}
@@ -403,8 +359,7 @@ async fn dispatch_mouse_owned(
     has_pending_customize: bool,
     kind: MouseEventKind,
 ) {
-    use std::collections::BTreeMap;
-    use structfs_core_store::{Record, Value, path};
+    use structfs_core_store::path;
 
     if has_pending_approval || has_pending_customize {
         return;
@@ -414,34 +369,22 @@ async fn dispatch_mouse_owned(
         MouseEventKind::ScrollUp => {
             if has_active_thread {
                 let _ = client
-                    .write(
-                        &path!("ui/scroll_up"),
-                        Record::parsed(Value::Map(BTreeMap::new())),
-                    )
+                    .write(&path!("ui/scroll_up"), cmd!())
                     .await;
             } else {
                 let _ = client
-                    .write(
-                        &path!("ui/select_prev"),
-                        Record::parsed(Value::Map(BTreeMap::new())),
-                    )
+                    .write(&path!("ui/select_prev"), cmd!())
                     .await;
             }
         }
         MouseEventKind::ScrollDown => {
             if has_active_thread {
                 let _ = client
-                    .write(
-                        &path!("ui/scroll_down"),
-                        Record::parsed(Value::Map(BTreeMap::new())),
-                    )
+                    .write(&path!("ui/scroll_down"), cmd!())
                     .await;
             } else {
                 let _ = client
-                    .write(
-                        &path!("ui/select_next"),
-                        Record::parsed(Value::Map(BTreeMap::new())),
-                    )
+                    .write(&path!("ui/select_next"), cmd!())
                     .await;
             }
         }
@@ -459,41 +402,29 @@ async fn dispatch_search_edit(
     modifiers: KeyModifiers,
     code: KeyCode,
 ) {
-    use std::collections::BTreeMap;
-    use structfs_core_store::{Record, Value, path};
+    use structfs_core_store::path;
 
     match (modifiers, code) {
         (_, KeyCode::Enter) => {
             let _ = client
-                .write(
-                    &path!("ui/search_save_chip"),
-                    Record::parsed(Value::Map(BTreeMap::new())),
-                )
+                .write(&path!("ui/search_save_chip"), cmd!())
                 .await;
         }
         (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
             let _ = client
-                .write(
-                    &path!("ui/search_clear"),
-                    Record::parsed(Value::Map(BTreeMap::new())),
-                )
+                .write(&path!("ui/search_clear"), cmd!())
                 .await;
         }
         (_, KeyCode::Backspace) => {
             let _ = client
-                .write(
-                    &path!("ui/search_delete_char"),
-                    Record::parsed(Value::Map(BTreeMap::new())),
-                )
+                .write(&path!("ui/search_delete_char"), cmd!())
                 .await;
         }
         (_, KeyCode::Char(c)) => {
-            let mut cmd = BTreeMap::new();
-            cmd.insert("char".to_string(), Value::String(c.to_string()));
             let _ = client
                 .write(
                     &path!("ui/search_insert_char"),
-                    Record::parsed(Value::Map(cmd)),
+                    cmd!("char" => c.to_string()),
                 )
                 .await;
         }
