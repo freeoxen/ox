@@ -1,3 +1,6 @@
+pub mod file_backing;
+pub use file_backing::JsonFileBacking;
+
 pub mod ledger;
 pub mod model;
 mod reader;
