@@ -6,8 +6,8 @@
 //! 3. Base (figment-resolved startup values, immutable after init)
 //!
 //! Reads and writes use the same paths — no command paths.
-//! Global: config/model/id, config/gate/provider
-//! Per-thread: config/threads/{id}/model/id
+//! Global: config/gate/model, config/gate/provider
+//! Per-thread: config/threads/{id}/gate/model
 
 use std::collections::BTreeMap;
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer};
