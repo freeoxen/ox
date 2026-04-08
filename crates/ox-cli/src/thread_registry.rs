@@ -159,7 +159,9 @@ impl ThreadRegistry {
                     tokio::runtime::Handle::current(),
                 );
                 let read_only = ox_store_util::ReadOnly::new(config_adapter);
-                ns.gate = GateStore::new().with_config(Box::new(read_only));
+                let thread_overrides = ox_store_util::LocalConfig::new();
+                let cascade = ox_store_util::Cascade::new(thread_overrides, read_only);
+                ns.gate = GateStore::new().with_config(Box::new(cascade));
             }
 
             self.threads.insert(thread_id.to_string(), ns);
