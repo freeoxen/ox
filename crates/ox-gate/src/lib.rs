@@ -362,8 +362,7 @@ impl Reader for GateStore {
                             .map(|a| a.key.is_empty())
                             .unwrap_or(true);
                         if local_empty {
-                            if let Some(k) = self.config_string("gate/api_key")
-                            {
+                            if let Some(k) = self.config_string("gate/api_key") {
                                 return Ok(Some(Record::parsed(Value::String(k))));
                             }
                         }

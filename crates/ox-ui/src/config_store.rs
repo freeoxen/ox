@@ -119,7 +119,7 @@ impl Writer for ConfigStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use structfs_core_store::{path, Reader, Writer};
+    use structfs_core_store::{Reader, Writer, path};
 
     fn store_with_defaults() -> ConfigStore {
         let mut base = BTreeMap::new();

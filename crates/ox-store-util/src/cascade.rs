@@ -50,7 +50,10 @@ mod tests {
         fallback.set("gate/model", Value::String("fallback-model".into()));
         let mut cascade = Cascade::new(primary, fallback);
         let record = cascade.read(&path!("gate/model")).unwrap().unwrap();
-        assert_eq!(record.as_value().unwrap(), &Value::String("primary-model".into()));
+        assert_eq!(
+            record.as_value().unwrap(),
+            &Value::String("primary-model".into())
+        );
     }
 
     #[test]
@@ -60,7 +63,10 @@ mod tests {
         fallback.set("gate/model", Value::String("fallback-model".into()));
         let mut cascade = Cascade::new(primary, fallback);
         let record = cascade.read(&path!("gate/model")).unwrap().unwrap();
-        assert_eq!(record.as_value().unwrap(), &Value::String("fallback-model".into()));
+        assert_eq!(
+            record.as_value().unwrap(),
+            &Value::String("fallback-model".into())
+        );
     }
 
     #[test]
@@ -74,7 +80,12 @@ mod tests {
         let mut fallback = LocalConfig::new();
         fallback.set("gate/model", Value::String("fallback".into()));
         let mut cascade = Cascade::new(LocalConfig::new(), fallback);
-        cascade.write(&path!("gate/model"), Record::parsed(Value::String("written".into()))).unwrap();
+        cascade
+            .write(
+                &path!("gate/model"),
+                Record::parsed(Value::String("written".into())),
+            )
+            .unwrap();
         let record = cascade.read(&path!("gate/model")).unwrap().unwrap();
         assert_eq!(record.as_value().unwrap(), &Value::String("written".into()));
     }
@@ -84,8 +95,20 @@ mod tests {
         let mut fallback = LocalConfig::new();
         fallback.set("gate/model", Value::String("original".into()));
         let mut cascade = Cascade::new(LocalConfig::new(), fallback);
-        cascade.write(&path!("gate/model"), Record::parsed(Value::String("override".into()))).unwrap();
-        let record = cascade.fallback.read(&path!("gate/model")).unwrap().unwrap();
-        assert_eq!(record.as_value().unwrap(), &Value::String("original".into()));
+        cascade
+            .write(
+                &path!("gate/model"),
+                Record::parsed(Value::String("override".into())),
+            )
+            .unwrap();
+        let record = cascade
+            .fallback
+            .read(&path!("gate/model"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            record.as_value().unwrap(),
+            &Value::String("original".into())
+        );
     }
 }
