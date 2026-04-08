@@ -112,10 +112,16 @@ pub async fn run_async(
                     );
                     // Clear input and exit insert mode through broker
                     let _ = client
-                        .write(&path!("ui/clear_input"), Record::parsed(Value::Map(BTreeMap::new())))
+                        .write(
+                            &path!("ui/clear_input"),
+                            Record::parsed(Value::Map(BTreeMap::new())),
+                        )
                         .await;
                     let _ = client
-                        .write(&path!("ui/exit_insert"), Record::parsed(Value::Map(BTreeMap::new())))
+                        .write(
+                            &path!("ui/exit_insert"),
+                            Record::parsed(Value::Map(BTreeMap::new())),
+                        )
                         .await;
                     // If compose created a new thread, open it in UiStore
                     if let Some(tid) = new_tid {
@@ -237,10 +243,7 @@ pub async fn run_async(
                                                 app.history_up(&input_text)
                                             {
                                                 let mut cmd = BTreeMap::new();
-                                                cmd.insert(
-                                                    "text".to_string(),
-                                                    Value::String(text),
-                                                );
+                                                cmd.insert("text".to_string(), Value::String(text));
                                                 cmd.insert(
                                                     "cursor".to_string(),
                                                     Value::Integer(cursor as i64),
@@ -256,10 +259,7 @@ pub async fn run_async(
                                         KeyCode::Down => {
                                             if let Some((text, cursor)) = app.history_down() {
                                                 let mut cmd = BTreeMap::new();
-                                                cmd.insert(
-                                                    "text".to_string(),
-                                                    Value::String(text),
-                                                );
+                                                cmd.insert("text".to_string(), Value::String(text));
                                                 cmd.insert(
                                                     "cursor".to_string(),
                                                     Value::Integer(cursor as i64),
@@ -292,8 +292,7 @@ pub async fn run_async(
                     // Click on approval dialog
                     if let MouseEventKind::Down(_) = mouse.kind {
                         if has_approval_pending {
-                            let term_h =
-                                crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24);
+                            let term_h = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24);
                             let dialog_h = 13u16;
                             let dialog_top = term_h.saturating_sub(dialog_h) / 2;
                             let first_option_row = dialog_top + 3;

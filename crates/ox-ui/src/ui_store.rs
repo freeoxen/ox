@@ -147,7 +147,12 @@ impl UiStore {
     }
 
     fn search_chips_value(&self) -> Value {
-        Value::Array(self.search_chips.iter().map(|s| Value::String(s.clone())).collect())
+        Value::Array(
+            self.search_chips
+                .iter()
+                .map(|s| Value::String(s.clone()))
+                .collect(),
+        )
     }
 
     fn search_active(&self) -> bool {
@@ -183,8 +188,14 @@ impl UiStore {
         map.insert("status".to_string(), self.status_value());
         map.insert("pending_action".to_string(), self.pending_action_value());
         map.insert("search_chips".to_string(), self.search_chips_value());
-        map.insert("search_live_query".to_string(), Value::String(self.search_live_query.clone()));
-        map.insert("search_active".to_string(), Value::Bool(self.search_active()));
+        map.insert(
+            "search_live_query".to_string(),
+            Value::String(self.search_live_query.clone()),
+        );
+        map.insert(
+            "search_active".to_string(),
+            Value::Bool(self.search_active()),
+        );
         Value::Map(map)
     }
 
@@ -470,9 +481,9 @@ impl Writer for UiStore {
                 Ok(path!("search_chips"))
             }
             "search_dismiss_chip" => {
-                let idx = cmd
-                    .get_int("index")
-                    .ok_or_else(|| StoreError::store("ui", "search_dismiss_chip", "missing index"))?;
+                let idx = cmd.get_int("index").ok_or_else(|| {
+                    StoreError::store("ui", "search_dismiss_chip", "missing index")
+                })?;
                 let idx = idx as usize;
                 if idx < self.search_chips.len() {
                     self.search_chips.remove(idx);
@@ -1072,9 +1083,7 @@ mod tests {
                 cmd_map(&[("char", Value::String("x".into()))]),
             )
             .unwrap();
-        store
-            .write(&path!("search_clear"), empty_cmd())
-            .unwrap();
+        store.write(&path!("search_clear"), empty_cmd()).unwrap();
         assert_eq!(
             read_str(&mut store, "search_live_query"),
             Value::String("".into())
@@ -1131,10 +1140,7 @@ mod tests {
         store
             .write(&path!("search_save_chip"), empty_cmd())
             .unwrap();
-        assert_eq!(
-            read_str(&mut store, "search_chips"),
-            Value::Array(vec![])
-        );
+        assert_eq!(read_str(&mut store, "search_chips"), Value::Array(vec![]));
     }
 
     #[test]
@@ -1174,10 +1180,7 @@ mod tests {
                 cmd_map(&[("index", Value::Integer(99))]),
             )
             .unwrap();
-        assert_eq!(
-            read_str(&mut store, "search_chips"),
-            Value::Array(vec![])
-        );
+        assert_eq!(read_str(&mut store, "search_chips"), Value::Array(vec![]));
     }
 
     #[test]

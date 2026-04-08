@@ -113,7 +113,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut terminal = ratatui::init();
     crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture).ok();
 
-    let result = rt.block_on(event_loop::run_async(&mut app, &client, &theme, &mut terminal));
+    let result = rt.block_on(event_loop::run_async(
+        &mut app,
+        &client,
+        &theme,
+        &mut terminal,
+    ));
 
     crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture).ok();
     ratatui::restore();

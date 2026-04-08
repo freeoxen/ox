@@ -93,10 +93,7 @@ pub(crate) fn draw(frame: &mut Frame, vs: &ViewState, theme: &Theme) -> (Option<
         // Cursor
         if vs.approval_pending.is_none() && vs.pending_customize.is_none() {
             if vs.insert_context.as_deref() != Some("search") {
-                frame.set_cursor_position((
-                    input_area.x + vs.cursor as u16 + 2,
-                    input_area.y + 1,
-                ));
+                frame.set_cursor_position((input_area.x + vs.cursor as u16 + 2, input_area.y + 1));
             }
         }
     }
@@ -134,7 +131,11 @@ fn draw_status_bar(frame: &mut Frame, vs: &ViewState, theme: &Theme, area: Rect)
         format!(" {} thread{}", count, if count == 1 { "" } else { "s" })
     };
 
-    let hints = match (vs.mode.as_str(), vs.insert_context.as_deref(), vs.active_thread.is_some()) {
+    let hints = match (
+        vs.mode.as_str(),
+        vs.insert_context.as_deref(),
+        vs.active_thread.is_some(),
+    ) {
         ("normal", _, false) => " | i compose | / search | Enter open | d archive | q quit",
         ("normal", _, true) => " | i reply | j/k scroll | q/Esc inbox",
         ("insert", Some("search"), _) => " | Enter chip | Esc cancel",
