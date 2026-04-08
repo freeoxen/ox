@@ -36,9 +36,8 @@ No new trait. Just Reader. Stores already know this interface.
 
 ### Capability Wrappers
 
-Wrapper stores that restrict capabilities on an inner store. Live
-in ox-kernel alongside Reader/Writer/Store — platform-agnostic,
-composable.
+Wrapper stores that restrict capabilities on an inner store. Live in a new `ox-store-util` crate in the ox workspace —
+platform-agnostic StructFS utility stores, composable.
 
 **`ReadOnly<S: Store>`** — implements Reader (delegates), rejects
 all writes with StoreError. Use: give ModelProvider and GateStore
@@ -309,7 +308,7 @@ When ThreadRegistry mounts a thread, it:
 
 For standalone ThreadNamespace (no broker), stores use local fields.
 
-### LocalConfig (ox-kernel)
+### LocalConfig (ox-store-util)
 
 Simple in-memory Reader/Writer for standalone and test use:
 
@@ -327,7 +326,20 @@ impl Reader for LocalConfig { ... }
 impl Writer for LocalConfig { ... }
 ```
 
-Lives in ox-kernel alongside StoreBacking. Platform-agnostic.
+Lives in ox-store-util alongside ReadOnly, Masked. Platform-agnostic.
+
+### ox-store-util Crate
+
+New workspace member at `crates/ox-store-util/`. Contains generic
+StructFS store utilities:
+
+- `ReadOnly<S>` — capability restriction wrapper
+- `Masked<S>` — path-based masking wrapper
+- `LocalConfig` — in-memory Reader/Writer
+- `StoreBacking` trait — moved from ox-kernel (it's a generic
+  StructFS primitive, not agent-specific)
+
+Depends only on `structfs-core-store`. No ox-specific dependencies.
 
 ## What Changes from Phase 3
 
@@ -343,17 +355,16 @@ Lives in ox-kernel alongside StoreBacking. Platform-agnostic.
 
 ## Execution Order
 
-1. Capability wrappers in ox-kernel (ReadOnly, Masked)
-2. LocalConfig in ox-kernel (standalone Reader/Writer for config)
-3. Refactor ConfigStore to path-based namespace (replace flat keys)
-4. Add figment integration in ox-cli (config loading)
-5. Add ConfigStore persistence (global TOML, per-thread JSON)
-6. Add config handle to ModelProvider (ReadOnly, with_config builder)
-7. Add config handle to GateStore (ReadOnly, with_config builder)
-8. Revert ThreadRegistry redirect, wire config handles at mount
-9. Update ViewState to use Masked config for display
-10. Clean up: remove redundant agent config writes
-11. Quality gates + status update
+1. Create ox-store-util crate (ReadOnly, Masked, LocalConfig, move StoreBacking)
+2. Refactor ConfigStore to path-based namespace (replace flat keys)
+3. Add figment integration in ox-cli (config loading)
+4. Add ConfigStore persistence (global TOML, per-thread JSON)
+5. Add config handle to ModelProvider (ReadOnly, with_config builder)
+6. Add config handle to GateStore (ReadOnly, with_config builder)
+7. Revert ThreadRegistry redirect, wire config handles at mount
+8. Update ViewState to use Masked config for display
+9. Clean up: remove redundant agent config writes
+10. Quality gates + status update
 
 ## Testing
 
