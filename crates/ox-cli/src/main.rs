@@ -1,6 +1,8 @@
 #[macro_use]
 mod broker_cmd;
 mod agents;
+mod config;
+mod toml_backing;
 mod app;
 mod bindings;
 mod broker_setup;
