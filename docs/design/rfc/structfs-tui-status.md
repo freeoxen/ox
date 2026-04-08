@@ -189,11 +189,20 @@ in `ox-kernel/src/snapshot.rs`. ToolsProvider returns None.
 - **Spec:** `docs/superpowers/specs/2026-04-08-config-completion-design.md`
 - **Plan:** `docs/superpowers/plans/2026-04-08-config-completion-b.md`
 
+#### Phase 4c: ConfigStore S-Tier Refactor (complete, 14/14 quality gates)
+- Cascade<A, B> wrapper in ox-store-util — layered reads with fallback
+- ConfigStore simplified: two flat layers (base + runtime), no masking, no thread scoping
+- Thread config handles: Cascade<LocalConfig, ReadOnly<SyncClientAdapter>>
+- Masking removed from ConfigStore — consumers use Masked wrapper
+- _raw suffix hack removed — GateStore reads gate/api_key directly
+- ConfigStore: ~80 lines (was ~240)
+- **Plan:** `docs/superpowers/plans/2026-04-08-config-store-stier.md`
+
 ## What's Next
 
 ### Remaining work:
 
-Config system complete (Phases 4a + 4b). Remaining feature-level work:
+Config system complete (Phases 4a–4c). Remaining feature-level work:
 completions-as-tools unification, runtime config UI (model/provider switcher
 in TUI), per-thread config persistence on save, web platform IndexedDB backing.
 
