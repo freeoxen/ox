@@ -238,9 +238,7 @@ pub async fn run_async(
                             } else {
                                 match key.code {
                                     KeyCode::Up => {
-                                        if let Some((text, cursor)) =
-                                            app.history_up(&input_text)
-                                        {
+                                        if let Some((text, cursor)) = app.history_up(&input_text) {
                                             let mut cmd = BTreeMap::new();
                                             cmd.insert("text".to_string(), Value::String(text));
                                             cmd.insert(
