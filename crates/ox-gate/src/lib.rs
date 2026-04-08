@@ -93,7 +93,7 @@ impl GateStore {
         let path = Path::parse(path_str).ok()?;
         let record = config.read(&path).ok()??;
         match record.as_value() {
-            Some(Value::String(s)) if !s.is_empty() && s != "***" => Some(s.clone()),
+            Some(Value::String(s)) if !s.is_empty() => Some(s.clone()),
             _ => None,
         }
     }
@@ -124,9 +124,7 @@ impl GateStore {
                     if !local_key.is_empty() {
                         true
                     } else if name == &self.bootstrap {
-                        self.config_string("gate/api_key_raw")
-                            .or_else(|| self.config_string("gate/api_key"))
-                            .is_some()
+                        self.config_string("gate/api_key").is_some()
                     } else {
                         false
                     }
@@ -159,9 +157,7 @@ impl GateStore {
                     if !local_key.is_empty() {
                         true
                     } else if name == &self.bootstrap {
-                        self.config_string("gate/api_key_raw")
-                            .or_else(|| self.config_string("gate/api_key"))
-                            .is_some()
+                        self.config_string("gate/api_key").is_some()
                     } else {
                         false
                     }
@@ -366,9 +362,7 @@ impl Reader for GateStore {
                             .map(|a| a.key.is_empty())
                             .unwrap_or(true);
                         if local_empty {
-                            if let Some(k) = self
-                                .config_string("gate/api_key_raw")
-                                .or_else(|| self.config_string("gate/api_key"))
+                            if let Some(k) = self.config_string("gate/api_key")
                             {
                                 return Ok(Some(Record::parsed(Value::String(k))));
                             }

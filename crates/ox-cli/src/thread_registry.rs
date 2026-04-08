@@ -153,7 +153,7 @@ impl ThreadRegistry {
 
             // Wire config handle into GateStore if broker client is available
             if let Some(client) = &self.broker_client {
-                let config_client = client.scoped(&format!("config/threads/{thread_id}"));
+                let config_client = client.scoped("config");
                 let config_adapter = ox_broker::SyncClientAdapter::new(
                     config_client,
                     tokio::runtime::Handle::current(),
