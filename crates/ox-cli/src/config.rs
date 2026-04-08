@@ -34,9 +34,15 @@ impl Default for GateConfig {
     }
 }
 
-fn default_provider() -> String { "anthropic".to_string() }
-fn default_model() -> String { "claude-sonnet-4-20250514".to_string() }
-fn default_max_tokens() -> i64 { 4096 }
+fn default_provider() -> String {
+    "anthropic".to_string()
+}
+fn default_model() -> String {
+    "claude-sonnet-4-20250514".to_string()
+}
+fn default_max_tokens() -> i64 {
+    4096
+}
 
 #[derive(Debug, Default)]
 pub struct CliOverrides {
@@ -48,17 +54,34 @@ pub struct CliOverrides {
 
 impl OxConfig {
     pub fn apply_overrides(&mut self, overrides: &CliOverrides) {
-        if let Some(ref p) = overrides.provider { self.gate.provider = p.clone(); }
-        if let Some(ref m) = overrides.model { self.gate.model = m.clone(); }
-        if let Some(ref k) = overrides.api_key { self.gate.api_key = Some(k.clone()); }
-        if let Some(t) = overrides.max_tokens { self.gate.max_tokens = t; }
+        if let Some(ref p) = overrides.provider {
+            self.gate.provider = p.clone();
+        }
+        if let Some(ref m) = overrides.model {
+            self.gate.model = m.clone();
+        }
+        if let Some(ref k) = overrides.api_key {
+            self.gate.api_key = Some(k.clone());
+        }
+        if let Some(t) = overrides.max_tokens {
+            self.gate.max_tokens = t;
+        }
     }
 
     pub fn to_flat_map(&self) -> BTreeMap<String, Value> {
         let mut map = BTreeMap::new();
-        map.insert("gate/model".to_string(), Value::String(self.gate.model.clone()));
-        map.insert("gate/max_tokens".to_string(), Value::Integer(self.gate.max_tokens));
-        map.insert("gate/provider".to_string(), Value::String(self.gate.provider.clone()));
+        map.insert(
+            "gate/model".to_string(),
+            Value::String(self.gate.model.clone()),
+        );
+        map.insert(
+            "gate/max_tokens".to_string(),
+            Value::Integer(self.gate.max_tokens),
+        );
+        map.insert(
+            "gate/provider".to_string(),
+            Value::String(self.gate.provider.clone()),
+        );
         if let Some(ref key) = self.gate.api_key {
             map.insert("gate/api_key".to_string(), Value::String(key.clone()));
         }
@@ -103,9 +126,15 @@ mod tests {
     fn defaults_produce_expected_base() {
         let config = OxConfig::default();
         let flat = config.to_flat_map();
-        assert_eq!(flat.get("gate/model").unwrap(), &Value::String("claude-sonnet-4-20250514".into()));
+        assert_eq!(
+            flat.get("gate/model").unwrap(),
+            &Value::String("claude-sonnet-4-20250514".into())
+        );
         assert_eq!(flat.get("gate/max_tokens").unwrap(), &Value::Integer(4096));
-        assert_eq!(flat.get("gate/provider").unwrap(), &Value::String("anthropic".into()));
+        assert_eq!(
+            flat.get("gate/provider").unwrap(),
+            &Value::String("anthropic".into())
+        );
         assert!(!flat.contains_key("gate/api_key"));
     }
 
@@ -120,9 +149,18 @@ mod tests {
         let mut config = OxConfig::default();
         config.apply_overrides(&overrides);
         let flat = config.to_flat_map();
-        assert_eq!(flat.get("gate/provider").unwrap(), &Value::String("openai".into()));
-        assert_eq!(flat.get("gate/model").unwrap(), &Value::String("gpt-4o".into()));
-        assert_eq!(flat.get("gate/api_key").unwrap(), &Value::String("sk-test".into()));
+        assert_eq!(
+            flat.get("gate/provider").unwrap(),
+            &Value::String("openai".into())
+        );
+        assert_eq!(
+            flat.get("gate/model").unwrap(),
+            &Value::String("gpt-4o".into())
+        );
+        assert_eq!(
+            flat.get("gate/api_key").unwrap(),
+            &Value::String("sk-test".into())
+        );
         assert_eq!(flat.get("gate/max_tokens").unwrap(), &Value::Integer(4096));
     }
 
@@ -132,19 +170,33 @@ mod tests {
         std::fs::write(
             dir.path().join("config.toml"),
             "[gate]\nmodel = \"from-file\"\nmax_tokens = 8192\nprovider = \"openai\"\n",
-        ).unwrap();
+        )
+        .unwrap();
         let config = resolve_config(dir.path(), &CliOverrides::default());
         let flat = config.to_flat_map();
-        assert_eq!(flat.get("gate/model").unwrap(), &Value::String("from-file".into()));
+        assert_eq!(
+            flat.get("gate/model").unwrap(),
+            &Value::String("from-file".into())
+        );
         assert_eq!(flat.get("gate/max_tokens").unwrap(), &Value::Integer(8192));
-        assert_eq!(flat.get("gate/provider").unwrap(), &Value::String("openai".into()));
+        assert_eq!(
+            flat.get("gate/provider").unwrap(),
+            &Value::String("openai".into())
+        );
     }
 
     #[test]
     fn cli_overrides_beat_file() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.toml"), "[gate]\nmodel = \"from-file\"\n").unwrap();
-        let overrides = CliOverrides { model: Some("from-cli".into()), ..Default::default() };
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[gate]\nmodel = \"from-file\"\n",
+        )
+        .unwrap();
+        let overrides = CliOverrides {
+            model: Some("from-cli".into()),
+            ..Default::default()
+        };
         let config = resolve_config(dir.path(), &overrides);
         assert_eq!(config.gate.model, "from-cli");
     }

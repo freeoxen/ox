@@ -205,34 +205,31 @@ fn agent_worker(
         },
         _ => "anthropic".to_string(),
     };
-    let provider = match adapter.read(
-        &structfs_core_store::Path::from_components(vec![
-            "gate".into(),
-            "accounts".into(),
-            bootstrap.clone(),
-            "provider".into(),
-        ]),
-    ) {
+    let provider = match adapter.read(&structfs_core_store::Path::from_components(vec![
+        "gate".into(),
+        "accounts".into(),
+        bootstrap.clone(),
+        "provider".into(),
+    ])) {
         Ok(Some(r)) => match r.as_value() {
             Some(Value::String(s)) => s.clone(),
             _ => "anthropic".to_string(),
         },
         _ => "anthropic".to_string(),
     };
-    let api_key_for_transport = match adapter.read(
-        &structfs_core_store::Path::from_components(vec![
+    let api_key_for_transport =
+        match adapter.read(&structfs_core_store::Path::from_components(vec![
             "gate".into(),
             "accounts".into(),
             bootstrap.clone(),
             "key".into(),
-        ]),
-    ) {
-        Ok(Some(r)) => match r.as_value() {
-            Some(Value::String(s)) => s.clone(),
+        ])) {
+            Ok(Some(r)) => match r.as_value() {
+                Some(Value::String(s)) => s.clone(),
+                _ => String::new(),
+            },
             _ => String::new(),
-        },
-        _ => String::new(),
-    };
+        };
     let provider_config = match provider.as_str() {
         "openai" => ProviderConfig::openai(),
         _ => ProviderConfig::anthropic(),

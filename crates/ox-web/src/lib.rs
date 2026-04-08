@@ -13,11 +13,11 @@
 //! ```
 
 use ox_context::{Namespace, SystemProvider, ToolsProvider};
-use ox_kernel::ModelInfo;
 use ox_core::{AgentEvent, CompletionRequest, ContentBlock, ToolSchema, serialize_tool_results};
 use ox_gate::codec::{anthropic as anthropic_codec, openai as openai_codec};
 use ox_gate::{AccountConfig, GateStore, ProviderConfig};
 use ox_history::HistoryProvider;
+use ox_kernel::ModelInfo;
 use ox_kernel::{Path, Reader, Record, ToolRegistry, ToolResult, Value, Writer, path};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -110,10 +110,7 @@ impl OxAgent {
         context.mount("gate", Box::new(gate));
 
         context
-            .write(
-                &path!("gate/model"),
-                Record::parsed(Value::String(model)),
-            )
+            .write(&path!("gate/model"), Record::parsed(Value::String(model)))
             .ok();
         context
             .write(

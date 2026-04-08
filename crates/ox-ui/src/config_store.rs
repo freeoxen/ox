@@ -518,10 +518,7 @@ mod tests {
         impl ox_store_util::StoreBacking for PreloadBacking {
             fn load(&self) -> Result<Option<Value>, StoreError> {
                 let mut m = BTreeMap::new();
-                m.insert(
-                    "gate/model".to_string(),
-                    Value::String("from-disk".into()),
-                );
+                m.insert("gate/model".to_string(), Value::String("from-disk".into()));
                 Ok(Some(Value::Map(m)))
             }
             fn save(&self, _value: &Value) -> Result<(), StoreError> {
@@ -529,8 +526,7 @@ mod tests {
             }
         }
 
-        let mut config =
-            ConfigStore::with_backing(BTreeMap::new(), Box::new(PreloadBacking));
+        let mut config = ConfigStore::with_backing(BTreeMap::new(), Box::new(PreloadBacking));
         let record = config.read(&path!("gate/model")).unwrap().unwrap();
         assert_eq!(
             record.as_value().unwrap(),

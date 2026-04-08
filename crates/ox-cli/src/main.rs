@@ -1,11 +1,10 @@
 #[macro_use]
 mod broker_cmd;
 mod agents;
-mod config;
-mod toml_backing;
 mod app;
 mod bindings;
 mod broker_setup;
+mod config;
 mod dialogs;
 mod event_loop;
 mod inbox_view;
@@ -19,6 +18,7 @@ mod tab_bar;
 mod theme;
 pub(crate) mod thread_registry;
 mod thread_view;
+mod toml_backing;
 mod tools;
 mod transport;
 mod tui;

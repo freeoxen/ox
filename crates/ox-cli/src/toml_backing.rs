@@ -21,9 +21,9 @@ impl ox_store_util::StoreBacking for TomlFileBacking {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(StoreError::store("toml_backing", "load", e.to_string())),
         };
-        let table: toml::Table = content
-            .parse()
-            .map_err(|e: toml::de::Error| StoreError::store("toml_backing", "load", e.to_string()))?;
+        let table: toml::Table = content.parse().map_err(|e: toml::de::Error| {
+            StoreError::store("toml_backing", "load", e.to_string())
+        })?;
         let mut flat = BTreeMap::new();
         flatten_toml("", &toml::Value::Table(table), &mut flat);
         Ok(Some(Value::Map(flat)))
@@ -31,7 +31,11 @@ impl ox_store_util::StoreBacking for TomlFileBacking {
 
     fn save(&self, value: &Value) -> Result<(), StoreError> {
         let Value::Map(flat) = value else {
-            return Err(StoreError::store("toml_backing", "save", "expected Value::Map"));
+            return Err(StoreError::store(
+                "toml_backing",
+                "save",
+                "expected Value::Map",
+            ));
         };
         let mut root = toml::Table::new();
         for (path_key, val) in flat {
@@ -57,29 +61,49 @@ fn flatten_toml(prefix: &str, value: &toml::Value, out: &mut BTreeMap<String, Va
     match value {
         toml::Value::Table(table) => {
             for (key, val) in table {
-                let path = if prefix.is_empty() { key.clone() } else { format!("{prefix}/{key}") };
+                let path = if prefix.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{prefix}/{key}")
+                };
                 flatten_toml(&path, val, out);
             }
         }
-        toml::Value::String(s) => { out.insert(prefix.to_string(), Value::String(s.clone())); }
-        toml::Value::Integer(n) => { out.insert(prefix.to_string(), Value::Integer(*n)); }
-        toml::Value::Boolean(b) => { out.insert(prefix.to_string(), Value::Bool(*b)); }
+        toml::Value::String(s) => {
+            out.insert(prefix.to_string(), Value::String(s.clone()));
+        }
+        toml::Value::Integer(n) => {
+            out.insert(prefix.to_string(), Value::Integer(*n));
+        }
+        toml::Value::Boolean(b) => {
+            out.insert(prefix.to_string(), Value::Bool(*b));
+        }
         _ => {}
     }
 }
 
 fn insert_nested(table: &mut toml::Table, parts: &[&str], value: &Value) {
-    if parts.is_empty() { return; }
+    if parts.is_empty() {
+        return;
+    }
     if parts.len() == 1 {
         match value {
-            Value::String(s) => { table.insert(parts[0].to_string(), toml::Value::String(s.clone())); }
-            Value::Integer(n) => { table.insert(parts[0].to_string(), toml::Value::Integer(*n)); }
-            Value::Bool(b) => { table.insert(parts[0].to_string(), toml::Value::Boolean(*b)); }
+            Value::String(s) => {
+                table.insert(parts[0].to_string(), toml::Value::String(s.clone()));
+            }
+            Value::Integer(n) => {
+                table.insert(parts[0].to_string(), toml::Value::Integer(*n));
+            }
+            Value::Bool(b) => {
+                table.insert(parts[0].to_string(), toml::Value::Boolean(*b));
+            }
             _ => {}
         }
         return;
     }
-    let sub = table.entry(parts[0].to_string()).or_insert_with(|| toml::Value::Table(toml::Table::new()));
+    let sub = table
+        .entry(parts[0].to_string())
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()));
     if let toml::Value::Table(sub_table) = sub {
         insert_nested(sub_table, &parts[1..], value);
     }
@@ -105,9 +129,15 @@ mod tests {
         let loaded = backing.load().unwrap().unwrap();
         match loaded {
             Value::Map(m) => {
-                assert_eq!(m.get("gate/model").unwrap(), &Value::String("gpt-4o".into()));
+                assert_eq!(
+                    m.get("gate/model").unwrap(),
+                    &Value::String("gpt-4o".into())
+                );
                 assert_eq!(m.get("gate/max_tokens").unwrap(), &Value::Integer(8192));
-                assert_eq!(m.get("gate/provider").unwrap(), &Value::String("openai".into()));
+                assert_eq!(
+                    m.get("gate/provider").unwrap(),
+                    &Value::String("openai".into())
+                );
             }
             _ => panic!("expected map"),
         }
@@ -123,7 +153,10 @@ mod tests {
         map.insert("gate/max_tokens".to_string(), Value::Integer(8192));
         backing.save(&Value::Map(map)).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("[gate]"), "expected [gate] section, got:\n{content}");
+        assert!(
+            content.contains("[gate]"),
+            "expected [gate] section, got:\n{content}"
+        );
         assert!(content.contains("gpt-4o"));
     }
 }

@@ -57,8 +57,7 @@ pub async fn setup(
     {
         let toml_path = inbox_root.join("config.toml");
         let backing = crate::toml_backing::TomlFileBacking::new(toml_path);
-        let config =
-            ox_ui::ConfigStore::with_backing(config_values, Box::new(backing));
+        let config = ox_ui::ConfigStore::with_backing(config_values, Box::new(backing));
 
         servers.push(broker.mount(path!("config"), config).await);
     }
@@ -102,10 +101,7 @@ mod tests {
             Value::String("anthropic".into()),
         );
         config.insert("gate/max_tokens".to_string(), Value::Integer(4096));
-        config.insert(
-            "gate/api_key".to_string(),
-            Value::String("test-key".into()),
-        );
+        config.insert("gate/api_key".to_string(), Value::String("test-key".into()));
         setup(test_inbox(), bindings, test_inbox_root(), config).await
     }
 
@@ -244,10 +240,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(
-            key.as_value().unwrap(),
-            &Value::String("test-key".into())
-        );
+        assert_eq!(key.as_value().unwrap(), &Value::String("test-key".into()));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

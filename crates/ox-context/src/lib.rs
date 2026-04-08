@@ -578,10 +578,7 @@ mod tests {
         let val = unwrap_value(ns.read(&path!("system")).unwrap().unwrap());
         assert_eq!(val, Value::String("original".to_string()));
         let val = unwrap_value(ns.read(&path!("gate/model")).unwrap().unwrap());
-        assert_eq!(
-            val,
-            Value::String("claude-sonnet-4-20250514".to_string())
-        );
+        assert_eq!(val, Value::String("claude-sonnet-4-20250514".to_string()));
     }
 
     #[test]
