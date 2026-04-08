@@ -1,4 +1,4 @@
-use crate::app::{APPROVAL_OPTIONS, App, InputMode, InsertContext};
+use crate::app::{APPROVAL_OPTIONS, App};
 use crate::theme::Theme;
 use crate::view_state::{ViewState, fetch_view_state};
 use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
@@ -35,6 +35,8 @@ pub async fn run_async(
         let pending_action: Option<String>;
         let input_text: String;
         let screen_owned: String;
+        let mode_owned: String;
+        let insert_context_owned: Option<String>;
         let has_active_thread: bool;
         let active_thread_id: Option<String>;
         let selected_thread_id: Option<String>;
@@ -90,6 +92,8 @@ pub async fn run_async(
             pending_action = vs.pending_action.clone();
             input_text = vs.input.clone();
             screen_owned = vs.screen.clone();
+            mode_owned = vs.mode.clone();
+            insert_context_owned = vs.insert_context.clone();
             has_active_thread = vs.active_thread.is_some();
             active_thread_id = vs.active_thread.clone();
             selected_thread_id = vs.inbox_threads.get(vs.selected_row).map(|t| t.id.clone());
@@ -104,13 +108,31 @@ pub async fn run_async(
         if let Some(action) = &pending_action {
             match action.as_str() {
                 "send_input" => {
-                    app.send_input_with_text(input_text.clone());
-                    sync_mode_to_broker(client, app).await;
+                    let new_tid = app.send_input_with_text(
+                        input_text.clone(),
+                        &mode_owned,
+                        insert_context_owned.as_deref(),
+                        active_thread_id.as_deref(),
+                    );
+                    // Clear input and exit insert mode through broker
+                    let _ = client
+                        .write(&path!("ui/clear_input"), Record::parsed(Value::Map(BTreeMap::new())))
+                        .await;
+                    let _ = client
+                        .write(&path!("ui/exit_insert"), Record::parsed(Value::Map(BTreeMap::new())))
+                        .await;
+                    // If compose created a new thread, open it in UiStore
+                    if let Some(tid) = new_tid {
+                        let mut cmd = BTreeMap::new();
+                        cmd.insert("thread_id".to_string(), Value::String(tid));
+                        let _ = client
+                            .write(&path!("ui/open"), Record::parsed(Value::Map(cmd)))
+                            .await;
+                    }
                 }
                 "quit" => return Ok(()),
                 "open_selected" => {
                     if let Some(id) = &selected_thread_id {
-                        app.open_thread(id.clone());
                         let mut cmd = BTreeMap::new();
                         cmd.insert("thread_id".to_string(), Value::String(id.clone()));
                         let _ = client
@@ -161,7 +183,7 @@ pub async fn run_async(
                         handle_customize_key(app, client, &active_thread_id, key.code).await;
                     }
                     // Approval dialog — direct handling (reads from broker)
-                    else if has_approval_pending && matches!(app.mode, InputMode::Normal) {
+                    else if has_approval_pending && mode_owned == "normal" {
                         handle_approval_key(
                             app,
                             client,
@@ -173,10 +195,7 @@ pub async fn run_async(
                     }
                     // Normal + Insert — dispatch through broker
                     else if let Some(key_str) = encode_key(key.modifiers, key.code) {
-                        let mode = match &app.mode {
-                            InputMode::Normal => "normal",
-                            InputMode::Insert(_) => "insert",
-                        };
+                        let mode = mode_owned.as_str();
                         let screen = screen_owned.as_str();
 
                         // Search chip dismissal (1-9 in normal mode, inbox, search active)
@@ -206,14 +225,31 @@ pub async fn run_async(
                             .await;
 
                         if result.is_err() {
-                            // No binding — route through broker or search fallback
-                            if let InputMode::Insert(ref ctx) = app.mode {
-                                if *ctx == InsertContext::Search {
+                            if mode_owned == "insert" {
+                                if insert_context_owned.as_deref() == Some("search") {
                                     dispatch_search_edit(client, key.modifiers, key.code).await;
                                 } else {
                                     match key.code {
-                                        KeyCode::Up => app.history_up(),
-                                        KeyCode::Down => app.history_down(),
+                                        KeyCode::Up => {
+                                            if let Some((text, cursor)) = app.history_up(&input_text) {
+                                                let mut cmd = BTreeMap::new();
+                                                cmd.insert("text".to_string(), Value::String(text));
+                                                cmd.insert("cursor".to_string(), Value::Integer(cursor as i64));
+                                                let _ = client
+                                                    .write(&path!("ui/set_input"), Record::parsed(Value::Map(cmd)))
+                                                    .await;
+                                            }
+                                        }
+                                        KeyCode::Down => {
+                                            if let Some((text, cursor)) = app.history_down() {
+                                                let mut cmd = BTreeMap::new();
+                                                cmd.insert("text".to_string(), Value::String(text));
+                                                cmd.insert("cursor".to_string(), Value::Integer(cursor as i64));
+                                                let _ = client
+                                                    .write(&path!("ui/set_input"), Record::parsed(Value::Map(cmd)))
+                                                    .await;
+                                            }
+                                        }
                                         _ => {
                                             dispatch_text_edit_owned(
                                                 client,
@@ -281,55 +317,6 @@ async fn send_approval_response(
             structfs_core_store::Path::parse(&format!("threads/{tid}/approval/response")).unwrap();
         let _ = client
             .write(&path, Record::parsed(Value::String(response.to_string())))
-            .await;
-    }
-}
-
-/// Sync App's mode back to broker after send_input changes it.
-async fn sync_mode_to_broker(client: &ox_broker::ClientHandle, app: &App) {
-    use std::collections::BTreeMap;
-    use structfs_core_store::{Record, Value, path};
-
-    match &app.mode {
-        InputMode::Normal => {
-            let _ = client
-                .write(
-                    &path!("ui/exit_insert"),
-                    Record::parsed(Value::Map(BTreeMap::new())),
-                )
-                .await;
-        }
-        InputMode::Insert(ctx) => {
-            let ctx_str = match ctx {
-                InsertContext::Compose => "compose",
-                InsertContext::Reply => "reply",
-                InsertContext::Search => "search",
-            };
-            let mut cmd = BTreeMap::new();
-            cmd.insert("context".to_string(), Value::String(ctx_str.to_string()));
-            let _ = client
-                .write(&path!("ui/enter_insert"), Record::parsed(Value::Map(cmd)))
-                .await;
-        }
-    }
-
-    // Sync input + cursor (send_input clears them)
-    let mut input_cmd = BTreeMap::new();
-    input_cmd.insert("text".to_string(), Value::String(app.input.clone()));
-    input_cmd.insert("cursor".to_string(), Value::Integer(app.cursor as i64));
-    let _ = client
-        .write(
-            &path!("ui/set_input"),
-            Record::parsed(Value::Map(input_cmd)),
-        )
-        .await;
-
-    // Sync active_thread if send_input opened a new thread
-    if let Some(tid) = &app.active_thread {
-        let mut cmd = BTreeMap::new();
-        cmd.insert("thread_id".to_string(), Value::String(tid.clone()));
-        let _ = client
-            .write(&path!("ui/open"), Record::parsed(Value::Map(cmd)))
             .await;
     }
 }
@@ -635,7 +622,7 @@ async fn handle_approval_key(
 ///
 /// Returns `(content_height, viewport_height)` for scroll_max calculation.
 fn draw(frame: &mut Frame, vs: &ViewState, theme: &Theme) -> (Option<usize>, usize) {
-    let in_insert = matches!(vs.input_mode, InputMode::Insert(_));
+    let in_insert = vs.mode == "insert";
     let show_filter = vs.active_thread.is_none() && vs.search_active;
 
     // Build layout constraints
@@ -694,10 +681,10 @@ fn draw(frame: &mut Frame, vs: &ViewState, theme: &Theme) -> (Option<usize>, usi
         let input_area = chunks[idx];
         idx += 1;
 
-        let ctx_label = match vs.input_mode {
-            InputMode::Insert(InsertContext::Compose) => " compose ",
-            InputMode::Insert(InsertContext::Reply) => " reply ",
-            InputMode::Insert(InsertContext::Search) => " search ",
+        let ctx_label = match vs.insert_context.as_deref() {
+            Some("compose") => " compose ",
+            Some("reply") => " reply ",
+            Some("search") => " search ",
             _ => "",
         };
         let title = if vs.thinking {
@@ -714,16 +701,11 @@ fn draw(frame: &mut Frame, vs: &ViewState, theme: &Theme) -> (Option<usize>, usi
 
         // Cursor
         if vs.approval_pending.is_none() && vs.pending_customize.is_none() {
-            match vs.input_mode {
-                InputMode::Insert(InsertContext::Search) => {
-                    // Search cursor would be in the filter bar, but we keep it simple
-                }
-                _ => {
-                    frame.set_cursor_position((
-                        input_area.x + vs.cursor as u16 + 2,
-                        input_area.y + 1,
-                    ));
-                }
+            if vs.insert_context.as_deref() != Some("search") {
+                frame.set_cursor_position((
+                    input_area.x + vs.cursor as u16 + 2,
+                    input_area.y + 1,
+                ));
             }
         }
     }
@@ -747,9 +729,10 @@ fn draw(frame: &mut Frame, vs: &ViewState, theme: &Theme) -> (Option<usize>, usi
 // ---------------------------------------------------------------------------
 
 fn draw_status_bar(frame: &mut Frame, vs: &ViewState, theme: &Theme, area: Rect) {
-    let mode_badge = match vs.input_mode {
-        InputMode::Normal => Span::styled(" NORMAL ", theme.title_badge),
-        InputMode::Insert(_) => Span::styled(" INSERT ", theme.insert_badge),
+    let mode_badge = if vs.mode == "insert" {
+        Span::styled(" INSERT ", theme.insert_badge)
+    } else {
+        Span::styled(" NORMAL ", theme.title_badge)
     };
 
     let context_info = if vs.active_thread.is_some() {
@@ -760,11 +743,12 @@ fn draw_status_bar(frame: &mut Frame, vs: &ViewState, theme: &Theme, area: Rect)
         format!(" {} thread{}", count, if count == 1 { "" } else { "s" })
     };
 
-    let hints = match (vs.input_mode, vs.active_thread.is_some()) {
-        (InputMode::Normal, false) => " | i compose | / search | Enter open | d archive | q quit",
-        (InputMode::Normal, true) => " | i reply | j/k scroll | q/Esc inbox",
-        (InputMode::Insert(InsertContext::Search), _) => " | Enter chip | Esc cancel",
-        (InputMode::Insert(_), _) => " | ^Enter send | Esc cancel",
+    let hints = match (vs.mode.as_str(), vs.insert_context.as_deref(), vs.active_thread.is_some()) {
+        ("normal", _, false) => " | i compose | / search | Enter open | d archive | q quit",
+        ("normal", _, true) => " | i reply | j/k scroll | q/Esc inbox",
+        ("insert", Some("search"), _) => " | Enter chip | Esc cancel",
+        ("insert", _, _) => " | ^Enter send | Esc cancel",
+        _ => "",
     };
 
     let status_line = Line::from(vec![

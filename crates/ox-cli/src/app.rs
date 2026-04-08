@@ -3,29 +3,6 @@ use structfs_core_store::Writer as StructWriter;
 
 use crate::agents::AgentPool;
 
-// ---------------------------------------------------------------------------
-// Modal input mode
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
-pub enum InsertContext {
-    /// Composing a new thread from the inbox.
-    Compose,
-    /// Replying to the active thread.
-    Reply,
-    /// Filtering the inbox.
-    Search,
-}
-
-#[derive(Debug, Clone, PartialEq, Default)]
-#[allow(dead_code)]
-pub enum InputMode {
-    #[default]
-    Normal,
-    Insert(InsertContext),
-}
-
 /// Per-thread rendering state — built from broker data each frame.
 #[derive(Debug, Clone, Default)]
 pub struct ThreadView {
@@ -121,12 +98,6 @@ impl CustomizeState {
 /// the fields that are mutated by event handling or needed for agent control.
 pub struct App {
     pub pool: AgentPool,
-    pub active_thread: Option<String>, // None = inbox view
-    // Modal mode
-    pub mode: InputMode,
-    // Shared UI state
-    pub input: String,
-    pub cursor: usize,
     pub model: String,
     pub provider: String,
     // Input history
@@ -169,10 +140,6 @@ impl App {
 
         Ok(Self {
             pool,
-            active_thread: None,
-            mode: InputMode::default(),
-            input: String::new(),
-            cursor: 0,
             model,
             provider,
             input_history: Vec::new(),
@@ -186,41 +153,31 @@ impl App {
     // Mode transitions (enter_compose, enter_reply, enter_search, exit_insert,
     // go_to_inbox) are now handled by UiStore commands through the broker.
 
-    /// Send input with explicit text (from ViewState), context-dependent on mode.
-    pub fn send_input_with_text(&mut self, text: String) {
-        // Temporarily set self.input so do_compose/do_reply can read it
-        self.input = text;
-        match self.mode.clone() {
-            InputMode::Insert(InsertContext::Search) => {
-                // Search chip saving handled by broker (UiStore search_save_chip).
+    /// Send input with explicit context from ViewState.
+    /// Returns Some(thread_id) if a new thread was composed.
+    pub fn send_input_with_text(
+        &mut self,
+        text: String,
+        mode: &str,
+        insert_context: Option<&str>,
+        active_thread: Option<&str>,
+    ) -> Option<String> {
+        if text.is_empty() {
+            return None;
+        }
+        match (mode, insert_context) {
+            ("insert", Some("compose")) | ("normal", None) if active_thread.is_none() => {
+                self.do_compose(text)
             }
-            InputMode::Insert(InsertContext::Compose) => {
-                self.do_compose();
-                self.mode = InputMode::Normal;
+            ("insert", Some("reply")) | ("normal", _) if active_thread.is_some() => {
+                self.do_reply(text, active_thread.unwrap());
+                None
             }
-            InputMode::Insert(InsertContext::Reply) => {
-                self.do_reply();
-                self.mode = InputMode::Normal;
-            }
-            InputMode::Normal => {
-                if !self.input.is_empty() {
-                    if self.active_thread.is_some() {
-                        self.do_reply();
-                    } else {
-                        self.do_compose();
-                    }
-                }
-            }
+            _ => None,
         }
     }
 
-    /// Create a new thread from the current input.
-    fn do_compose(&mut self) {
-        if self.input.is_empty() {
-            return;
-        }
-        let input = std::mem::take(&mut self.input);
-        self.cursor = 0;
+    fn do_compose(&mut self, input: String) -> Option<String> {
         self.input_history.push(input.clone());
         self.history_cursor = self.input_history.len();
         self.input_draft.clear();
@@ -228,60 +185,57 @@ impl App {
         let title: String = input.chars().take(40).collect();
         match self.pool.create_thread(&title) {
             Ok(tid) => {
-                self.open_thread(tid.clone());
-                // scroll reset handled by broker
                 self.update_thread_state(&tid, "running");
                 self.pool.send_prompt(&tid, input).ok();
+                Some(tid)
             }
             Err(e) => {
                 eprintln!("failed to create thread: {e}");
+                None
             }
         }
     }
 
-    /// Send a reply to the active thread.
-    fn do_reply(&mut self) {
-        if self.input.is_empty() {
-            return;
-        }
-        if let Some(tid) = self.active_thread.clone() {
-            let input = std::mem::take(&mut self.input);
-            self.cursor = 0;
-            self.input_history.push(input.clone());
-            self.history_cursor = self.input_history.len();
-            self.input_draft.clear();
+    fn do_reply(&mut self, input: String, thread_id: &str) {
+        self.input_history.push(input.clone());
+        self.history_cursor = self.input_history.len();
+        self.input_draft.clear();
 
-            // scroll reset handled by broker
-            self.update_thread_state(&tid, "running");
-            self.pool.send_prompt(&tid, input).ok();
-        }
+        self.update_thread_state(thread_id, "running");
+        self.pool.send_prompt(thread_id, input).ok();
     }
 
-    /// Navigate input history up (older).
-    pub fn history_up(&mut self) {
+    /// Navigate input history up (older). Returns (new_input, new_cursor) or None.
+    pub fn history_up(&mut self, current_input: &str) -> Option<(String, usize)> {
         if self.input_history.is_empty() {
-            return;
+            return None;
         }
         if self.history_cursor == self.input_history.len() {
-            self.input_draft = self.input.clone();
+            self.input_draft = current_input.to_string();
         }
         if self.history_cursor > 0 {
             self.history_cursor -= 1;
-            self.input = self.input_history[self.history_cursor].clone();
-            self.cursor = self.input.len();
+            let text = self.input_history[self.history_cursor].clone();
+            let cursor = text.len();
+            Some((text, cursor))
+        } else {
+            None
         }
     }
 
-    /// Navigate input history down (newer).
-    pub fn history_down(&mut self) {
+    /// Navigate input history down (newer). Returns (new_input, new_cursor) or None.
+    pub fn history_down(&mut self) -> Option<(String, usize)> {
         if self.history_cursor < self.input_history.len() {
             self.history_cursor += 1;
-            if self.history_cursor == self.input_history.len() {
-                self.input = self.input_draft.clone();
+            let text = if self.history_cursor == self.input_history.len() {
+                self.input_draft.clone()
             } else {
-                self.input = self.input_history[self.history_cursor].clone();
-            }
-            self.cursor = self.input.len();
+                self.input_history[self.history_cursor].clone()
+            };
+            let cursor = text.len();
+            Some((text, cursor))
+        } else {
+            None
         }
     }
 
@@ -303,12 +257,6 @@ impl App {
             .ok();
     }
 
-    // -- Tab management -------------------------------------------------------
-
-    /// Open a thread view.
-    pub fn open_thread(&mut self, thread_id: String) {
-        self.active_thread = Some(thread_id);
-    }
 }
 
 // ---------------------------------------------------------------------------

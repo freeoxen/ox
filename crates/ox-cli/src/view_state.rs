@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use ox_broker::ClientHandle;
 use structfs_core_store::{Value, path};
 
-use crate::app::{App, ChatMessage, CustomizeState, InputMode};
+use crate::app::{App, ChatMessage, CustomizeState};
 
 // ---------------------------------------------------------------------------
 // InboxThread — parsed thread metadata for inbox display
@@ -88,8 +88,8 @@ pub struct ViewState<'a> {
     pub approval_selected: usize,
     /// Pending customize dialog.
     pub pending_customize: &'a Option<CustomizeState>,
-    /// App input mode (from App, not broker — used until full migration).
-    pub input_mode: &'a InputMode,
+    /// Insert context from broker (e.g. "compose", "reply", "search"), or None in normal mode.
+    pub insert_context: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -310,6 +310,11 @@ pub async fn fetch_view_state<'a>(client: &ClientHandle, app: &'a App) -> ViewSt
         _ => None,
     };
 
+    let insert_context = match ui_state.get("insert_context") {
+        Some(Value::String(s)) => Some(s.clone()),
+        _ => None,
+    };
+
     let search_chips = match ui_state.get("search_chips") {
         Some(Value::Array(arr)) => arr
             .iter()
@@ -459,7 +464,7 @@ pub async fn fetch_view_state<'a>(client: &ClientHandle, app: &'a App) -> ViewSt
         provider: &app.provider,
         approval_selected: app.approval_selected,
         pending_customize: &app.pending_customize,
-        input_mode: &app.mode,
+        insert_context,
     }
 }
 
