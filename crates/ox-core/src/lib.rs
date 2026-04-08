@@ -74,7 +74,7 @@ impl Agent {
         mut tools: ToolRegistry,
     ) -> Self {
         let send: Arc<SendFn> = Arc::new(send);
-        let gate = GateStore::new();
+        let mut gate = GateStore::new();
 
         // Register completion tools for keyed accounts
         for tool in gate.create_completion_tools(send.clone()) {

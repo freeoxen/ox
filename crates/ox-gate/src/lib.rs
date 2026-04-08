@@ -18,7 +18,7 @@ pub use tools::completion_tool;
 use ox_kernel::{ModelInfo, Tool, ToolSchema};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
-use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer};
+use structfs_core_store::{Error as StoreError, Path, Reader, Record, Store, Value, Writer};
 use structfs_serde_store::{from_value, to_value};
 
 /// Gate store — manages providers, accounts, and model catalogs.
@@ -37,6 +37,7 @@ pub struct GateStore {
     accounts: HashMap<String, AccountConfig>,
     bootstrap: String,
     catalogs: HashMap<String, Vec<ModelInfo>>,
+    config: Option<Box<dyn Store + Send + Sync>>,
 }
 
 impl GateStore {
@@ -72,15 +73,68 @@ impl GateStore {
             accounts,
             bootstrap: "anthropic".to_string(),
             catalogs: HashMap::new(),
+            config: None,
+        }
+    }
+
+    /// Attach a config handle for config-aware reads.
+    ///
+    /// When reading convenience paths (`model`, `max_tokens`) and the bootstrap
+    /// account's key, GateStore checks the config handle first, falling back to
+    /// local fields.
+    pub fn with_config(mut self, config: Box<dyn Store + Send + Sync>) -> Self {
+        self.config = Some(config);
+        self
+    }
+
+    /// Read a string value from the config handle at the given path.
+    fn config_string(&mut self, path_str: &str) -> Option<String> {
+        let config = self.config.as_mut()?;
+        let path = Path::parse(path_str).ok()?;
+        let record = config.read(&path).ok()??;
+        match record.as_value() {
+            Some(Value::String(s)) if !s.is_empty() && s != "***" => Some(s.clone()),
+            _ => None,
+        }
+    }
+
+    /// Read an integer value from the config handle at the given path.
+    fn config_integer(&mut self, path_str: &str) -> Option<i64> {
+        let config = self.config.as_mut()?;
+        let path = Path::parse(path_str).ok()?;
+        let record = config.read(&path).ok()??;
+        match record.as_value() {
+            Some(Value::Integer(n)) => Some(*n),
+            _ => None,
         }
     }
 
     /// Generate [`ToolSchema`]s for all accounts with API keys set.
-    pub fn completion_tool_schemas(&self) -> Vec<ToolSchema> {
-        self.accounts
+    pub fn completion_tool_schemas(&mut self) -> Vec<ToolSchema> {
+        let names: Vec<String> = self.accounts.keys().cloned().collect();
+        names
             .iter()
-            .filter(|(_, account)| !account.key.is_empty())
-            .filter_map(|(name, account)| {
+            .filter_map(|name| {
+                let has_key = {
+                    let local_key = self
+                        .accounts
+                        .get(name)
+                        .map(|a| a.key.clone())
+                        .unwrap_or_default();
+                    if !local_key.is_empty() {
+                        true
+                    } else if name == &self.bootstrap {
+                        self.config_string("gate/api_key_raw")
+                            .or_else(|| self.config_string("gate/api_key"))
+                            .is_some()
+                    } else {
+                        false
+                    }
+                };
+                if !has_key {
+                    return None;
+                }
+                let account = self.accounts.get(name)?;
                 let provider = self.providers.get(&account.provider)?;
                 Some(tools::completion_tool_schema(name, provider))
             })
@@ -91,11 +145,31 @@ impl GateStore {
     ///
     /// `send` is a synchronous function that sends a [`ox_kernel::CompletionRequest`]
     /// and returns parsed [`ox_kernel::StreamEvent`]s.
-    pub fn create_completion_tools(&self, send: Arc<tools::SendFn>) -> Vec<Box<dyn Tool>> {
-        self.accounts
+    pub fn create_completion_tools(&mut self, send: Arc<tools::SendFn>) -> Vec<Box<dyn Tool>> {
+        let names: Vec<String> = self.accounts.keys().cloned().collect();
+        names
             .iter()
-            .filter(|(_, account)| !account.key.is_empty())
-            .filter_map(|(name, account)| {
+            .filter_map(|name| {
+                let has_key = {
+                    let local_key = self
+                        .accounts
+                        .get(name)
+                        .map(|a| a.key.clone())
+                        .unwrap_or_default();
+                    if !local_key.is_empty() {
+                        true
+                    } else if name == &self.bootstrap {
+                        self.config_string("gate/api_key_raw")
+                            .or_else(|| self.config_string("gate/api_key"))
+                            .is_some()
+                    } else {
+                        false
+                    }
+                };
+                if !has_key {
+                    return None;
+                }
+                let account = self.accounts.get(name)?;
                 let provider = self.providers.get(&account.provider)?;
                 Some(Box::new(tools::completion_tool(
                     name.clone(),
@@ -223,6 +297,9 @@ impl Reader for GateStore {
             "bootstrap" => Ok(Some(Record::parsed(Value::String(self.bootstrap.clone())))),
 
             "model" => {
+                if let Some(s) = self.config_string("gate/model") {
+                    return Ok(Some(Record::parsed(Value::String(s))));
+                }
                 let account = self
                     .accounts
                     .get(&self.bootstrap)
@@ -231,6 +308,9 @@ impl Reader for GateStore {
             }
 
             "max_tokens" => {
+                if let Some(n) = self.config_integer("gate/max_tokens") {
+                    return Ok(Some(Record::parsed(Value::Integer(n))));
+                }
                 let account = self
                     .accounts
                     .get(&self.bootstrap)
@@ -275,6 +355,27 @@ impl Reader for GateStore {
                     return Ok(None);
                 }
                 let name = from.components[1].as_str();
+
+                // Check config for bootstrap account key before account lookup
+                if from.components.len() > 2 {
+                    let field = from.components[2].as_str();
+                    if field == "key" && name == self.bootstrap {
+                        let local_empty = self
+                            .accounts
+                            .get(name)
+                            .map(|a| a.key.is_empty())
+                            .unwrap_or(true);
+                        if local_empty {
+                            if let Some(k) = self
+                                .config_string("gate/api_key_raw")
+                                .or_else(|| self.config_string("gate/api_key"))
+                            {
+                                return Ok(Some(Record::parsed(Value::String(k))));
+                            }
+                        }
+                    }
+                }
+
                 let Some(config) = self.accounts.get(name) else {
                     return Ok(None);
                 };
@@ -1002,5 +1103,70 @@ mod tests {
             Value::String(s) => assert_eq!(s, "openai"),
             _ => panic!("expected string"),
         }
+    }
+
+    // -- Config handle tests --
+
+    #[test]
+    fn gate_config_handle_overrides_model() {
+        use ox_store_util::LocalConfig;
+        let mut config = LocalConfig::new();
+        config.set("gate/model", Value::String("config-model".into()));
+        let mut gate = GateStore::new().with_config(Box::new(config));
+        let record = gate.read(&path!("model")).unwrap().unwrap();
+        match record {
+            Record::Parsed(Value::String(s)) => assert_eq!(s, "config-model"),
+            _ => panic!("expected string"),
+        }
+    }
+
+    #[test]
+    fn gate_config_handle_overrides_max_tokens() {
+        use ox_store_util::LocalConfig;
+        let mut config = LocalConfig::new();
+        config.set("gate/max_tokens", Value::Integer(16384));
+        let mut gate = GateStore::new().with_config(Box::new(config));
+        let record = gate.read(&path!("max_tokens")).unwrap().unwrap();
+        match record {
+            Record::Parsed(Value::Integer(n)) => assert_eq!(n, 16384),
+            _ => panic!("expected integer"),
+        }
+    }
+
+    #[test]
+    fn gate_config_handle_overrides_bootstrap_key() {
+        use ox_store_util::LocalConfig;
+        let mut config = LocalConfig::new();
+        config.set("gate/api_key", Value::String("config-key-123".into()));
+        let mut gate = GateStore::new().with_config(Box::new(config));
+        let record = gate
+            .read(&path!("accounts/anthropic/key"))
+            .unwrap()
+            .unwrap();
+        match record {
+            Record::Parsed(Value::String(s)) => assert_eq!(s, "config-key-123"),
+            _ => panic!("expected string"),
+        }
+    }
+
+    #[test]
+    fn gate_config_handle_falls_back_to_local() {
+        let mut gate = GateStore::new();
+        let record = gate.read(&path!("model")).unwrap().unwrap();
+        match record {
+            Record::Parsed(Value::String(s)) => assert_eq!(s, "claude-sonnet-4-20250514"),
+            _ => panic!("expected string"),
+        }
+    }
+
+    #[test]
+    fn gate_config_key_populates_completion_schemas() {
+        use ox_store_util::LocalConfig;
+        let mut config = LocalConfig::new();
+        config.set("gate/api_key", Value::String("sk-from-config".into()));
+        let mut gate = GateStore::new().with_config(Box::new(config));
+        let schemas = gate.completion_tool_schemas();
+        assert_eq!(schemas.len(), 1);
+        assert_eq!(schemas[0].name, "complete_anthropic");
     }
 }
