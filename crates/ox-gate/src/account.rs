@@ -11,4 +11,11 @@ pub struct AccountConfig {
     pub key: String,
     /// Default model for completions on this account.
     pub model: String,
+    /// Maximum tokens for completions on this account.
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: u32,
+}
+
+fn default_max_tokens() -> u32 {
+    4096
 }

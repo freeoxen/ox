@@ -149,6 +149,7 @@ mod tests {
             provider: "test".to_string(),
             key: "sk-test".to_string(),
             model: "test-model".to_string(),
+            max_tokens: 4096,
         };
         let provider = ProviderConfig::anthropic();
         let send: Arc<SendFn> = Arc::new(mock_send);
@@ -166,6 +167,7 @@ mod tests {
             provider: "test".to_string(),
             key: "sk-test".to_string(),
             model: "test-model".to_string(),
+            max_tokens: 4096,
         };
         let provider = ProviderConfig::anthropic();
         let send: Arc<SendFn> = Arc::new(mock_send);
