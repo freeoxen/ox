@@ -166,14 +166,24 @@ in `ox-kernel/src/snapshot.rs`. ToolsProvider returns None.
 - **Spec:** `docs/superpowers/specs/2026-04-08-storebacking-configstore-design.md`
 - **Plan:** `docs/superpowers/plans/2026-04-08-storebacking-configstore.md`
 
+#### Phase 4a: Config System Completion — Store Utilities + Config Handles (complete)
+- New `ox-store-util` crate: ReadOnly, Masked, LocalConfig, StoreBacking (moved from ox-kernel)
+- ConfigStore refactored to path-based namespace (model/id, gate/api_key — no set_ commands)
+- Stores read config through Reader handle via with_config() builder
+- ModelProvider reads from config handle, falls back to local fields for standalone
+- ThreadRegistry wires ReadOnly<SyncClientAdapter> config handles at mount time
+- Phase 3 ThreadRegistry redirect reverted — stores own their reads
+- **Spec:** `docs/superpowers/specs/2026-04-08-config-completion-design.md`
+- **Plan:** `docs/superpowers/plans/2026-04-08-config-completion-a.md`
+
 ## What's Next
 
-### Remaining for full spec completion:
+### Remaining work:
 
-All items from the original StructFS TUI spec are complete. Remaining work
-is feature-level (completions-as-tools unification, runtime config UI,
-StoreBacking integration with ConfigStore for file persistence, web
-platform IndexedDB backing).
+Phase 4b: figment integration for composable CLI config (TOML file + env vars +
+CLI flags), ConfigStore persistence (global TOML, per-thread JSON), GateStore
+config handle, ViewState Masked display. Completions-as-tools unification.
+Web platform IndexedDB backing.
 
 ### Key Architecture Decisions
 - **Scroll commands match visual direction**: scroll_up = visual up = see older
