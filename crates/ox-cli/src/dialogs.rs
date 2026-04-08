@@ -1,4 +1,4 @@
-use crate::app::APPROVAL_OPTIONS;
+use crate::types::APPROVAL_OPTIONS;
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -21,7 +21,7 @@ pub(crate) fn infer_args(tool: &str, preview: &str) -> Vec<String> {
 /// Build a clash Node from the customize state.
 #[allow(dead_code)]
 pub(crate) fn build_node_from_customize(
-    cust: &crate::app::CustomizeState,
+    cust: &crate::types::CustomizeState,
 ) -> clash::policy::match_tree::Node {
     use clash::policy::match_tree::*;
 
@@ -97,7 +97,7 @@ pub(crate) fn build_node_from_customize(
 /// Build a sandbox from the customize state. Returns None if no restrictions.
 #[allow(dead_code)]
 pub(crate) fn build_sandbox_from_customize(
-    cust: &crate::app::CustomizeState,
+    cust: &crate::types::CustomizeState,
 ) -> Option<(String, clash::policy::sandbox_types::SandboxPolicy)> {
     use clash::policy::sandbox_types::*;
 
@@ -219,7 +219,7 @@ pub(crate) fn draw_approval_dialog(
 
 pub(crate) fn draw_customize_dialog(
     frame: &mut Frame,
-    cust: &crate::app::CustomizeState,
+    cust: &crate::types::CustomizeState,
     theme: &Theme,
 ) {
     let area = frame.area();

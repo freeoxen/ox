@@ -17,6 +17,7 @@ mod theme;
 pub(crate) mod thread_registry;
 mod thread_view;
 mod tools;
+mod types;
 mod transport;
 mod tui;
 pub(crate) mod view_state;

@@ -1,4 +1,4 @@
-use crate::app::{ChatMessage, ThreadView};
+use crate::types::{ChatMessage, ThreadView};
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;

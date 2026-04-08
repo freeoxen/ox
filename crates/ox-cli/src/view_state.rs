@@ -9,7 +9,8 @@ use std::collections::BTreeMap;
 use ox_broker::ClientHandle;
 use structfs_core_store::{Value, path};
 
-use crate::app::{App, ChatMessage, CustomizeState};
+use crate::app::App;
+use crate::types::{ChatMessage, CustomizeState};
 
 // ---------------------------------------------------------------------------
 // InboxThread — parsed thread metadata for inbox display

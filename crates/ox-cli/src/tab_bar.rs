@@ -13,7 +13,7 @@ pub fn draw_tabs(frame: &mut Frame, vs: &ViewState, theme: &Theme, area: Rect) {
             .messages
             .first()
             .map(|m| match m {
-                crate::app::ChatMessage::User(s) => {
+                crate::types::ChatMessage::User(s) => {
                     let truncated: String = s.chars().take(50).collect();
                     truncated
                 }

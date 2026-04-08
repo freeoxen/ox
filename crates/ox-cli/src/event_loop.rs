@@ -1,4 +1,5 @@
-use crate::app::{APPROVAL_OPTIONS, App};
+use crate::app::App;
+use crate::types::APPROVAL_OPTIONS;
 use crate::theme::Theme;
 use crate::view_state::fetch_view_state;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};

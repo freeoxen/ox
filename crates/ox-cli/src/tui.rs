@@ -52,7 +52,7 @@ pub(crate) fn draw(frame: &mut Frame, vs: &ViewState, theme: &Theme) -> (Option<
 
     if vs.active_thread.is_some() {
         // Build a ThreadView from broker-sourced data
-        let view = crate::app::ThreadView {
+        let view = crate::types::ThreadView {
             messages: vs.messages.clone(),
             thinking: vs.thinking,
         };

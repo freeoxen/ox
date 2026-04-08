@@ -1,4 +1,5 @@
-use crate::app::{APPROVAL_OPTIONS, App};
+use crate::app::App;
+use crate::types::APPROVAL_OPTIONS;
 use crossterm::event::KeyCode;
 
 /// Write an approval response through the broker for the given thread.
@@ -76,7 +77,7 @@ pub(crate) async fn handle_approval_key(
                             })
                             .unwrap_or_default();
                         let args = crate::dialogs::infer_args(&tool, &input_preview);
-                        app.pending_customize = Some(crate::app::CustomizeState {
+                        app.pending_customize = Some(crate::types::CustomizeState {
                             tool,
                             args,
                             arg_cursor: 0,
@@ -84,7 +85,7 @@ pub(crate) async fn handle_approval_key(
                             scope_idx: 0,
                             focus: 0,
                             network_idx: 1, // default: allow
-                            fs_rules: vec![crate::app::FsRuleState {
+                            fs_rules: vec![crate::types::FsRuleState {
                                 path: "$PWD".into(),
                                 read: true,
                                 write: true,
@@ -278,7 +279,7 @@ pub(crate) async fn handle_customize_key(
                     _ => {}
                 }
             } else if cust.focus == cust.add_fs_field() && matches!(key, KeyCode::Char(' ')) {
-                cust.fs_rules.push(crate::app::FsRuleState {
+                cust.fs_rules.push(crate::types::FsRuleState {
                     path: String::new(),
                     read: true,
                     write: false,
