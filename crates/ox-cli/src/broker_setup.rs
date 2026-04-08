@@ -32,6 +32,10 @@ pub async fn setup(
     inbox: InboxStore,
     bindings: Vec<Binding>,
     inbox_root: std::path::PathBuf,
+    provider: String,
+    model: String,
+    max_tokens: u32,
+    api_key: String,
 ) -> BrokerHandle {
     let broker = BrokerStore::default();
     let mut servers = Vec::new();
@@ -51,6 +55,46 @@ pub async fn setup(
 
     // Mount InboxStore
     servers.push(broker.mount(path!("inbox"), inbox).await);
+
+    // Mount ConfigStore with system defaults + CLI overrides
+    {
+        use ox_ui::ConfigStore;
+        use structfs_core_store::{Record, Value, Writer};
+
+        let mut defaults = std::collections::BTreeMap::new();
+        defaults.insert(
+            "model".to_string(),
+            Value::String("claude-sonnet-4-20250514".into()),
+        );
+        defaults.insert("provider".to_string(), Value::String("anthropic".into()));
+        defaults.insert("max_tokens".to_string(), Value::Integer(4096));
+
+        let mut config = ConfigStore::new(defaults);
+        let set = |store: &mut ConfigStore, cmd: &str, val: Value| {
+            let mut m = std::collections::BTreeMap::new();
+            m.insert("value".to_string(), val);
+            store
+                .write(
+                    &structfs_core_store::Path::parse(cmd).unwrap(),
+                    Record::parsed(Value::Map(m)),
+                )
+                .ok();
+        };
+        set(
+            &mut config,
+            "set_provider_if_unset",
+            Value::String(provider),
+        );
+        set(&mut config, "set_model_if_unset", Value::String(model));
+        set(
+            &mut config,
+            "set_max_tokens_if_unset",
+            Value::Integer(max_tokens as i64),
+        );
+        set(&mut config, "set_api_key", Value::String(api_key));
+
+        servers.push(broker.mount(path!("config"), config).await);
+    }
 
     // Mount ThreadRegistry at threads/ — lazy-mounts per-thread stores from disk
     servers.push(
@@ -84,10 +128,23 @@ mod tests {
         tempfile::tempdir().unwrap().into_path()
     }
 
+    async fn test_setup() -> BrokerHandle {
+        let bindings = crate::bindings::default_bindings();
+        setup(
+            test_inbox(),
+            bindings,
+            test_inbox_root(),
+            "anthropic".into(),
+            "claude-sonnet-4-20250514".into(),
+            4096,
+            "test-key".into(),
+        )
+        .await
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn broker_setup_mounts_all_stores() {
-        let bindings = crate::bindings::default_bindings();
-        let handle = setup(test_inbox(), bindings, test_inbox_root()).await;
+        let handle = test_setup().await;
         let client = handle.client();
 
         // UiStore is mounted — read initial state
@@ -115,8 +172,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn key_dispatch_through_broker() {
-        let bindings = crate::bindings::default_bindings();
-        let handle = setup(test_inbox(), bindings, test_inbox_root()).await;
+        let handle = test_setup().await;
         let client = handle.client();
 
         // Set row count so selection can advance
@@ -151,8 +207,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn screen_specific_binding_routes_correctly() {
-        let bindings = crate::bindings::default_bindings();
-        let handle = setup(test_inbox(), bindings, test_inbox_root()).await;
+        let handle = test_setup().await;
         let client = handle.client();
 
         // Open a thread so we're on the thread screen
@@ -191,5 +246,27 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(row.as_value().unwrap(), &Value::Integer(0));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn config_store_mounted_with_defaults() {
+        let handle = test_setup().await;
+        let client = handle.client();
+
+        let model = client.read(&path!("config/model")).await.unwrap().unwrap();
+        assert_eq!(
+            model.as_value().unwrap(),
+            &Value::String("claude-sonnet-4-20250514".into())
+        );
+
+        let provider = client
+            .read(&path!("config/provider"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            provider.as_value().unwrap(),
+            &Value::String("anthropic".into())
+        );
     }
 }

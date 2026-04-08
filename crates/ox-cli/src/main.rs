@@ -97,6 +97,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         broker_inbox,
         broker_bindings,
         inbox_root.clone(),
+        cli.provider.clone(),
+        model.clone(),
+        cli.max_tokens,
+        api_key.clone(),
     ));
     let client = broker_handle.client();
 
