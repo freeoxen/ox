@@ -9,7 +9,8 @@ use structfs_serde_store::{json_to_value, value_to_json};
 
 /// Mounts that participate in context.json snapshots.
 /// History is excluded — it lives in the ledger, not context.json.
-pub const PARTICIPATING_MOUNTS: [&str; 3] = ["system", "model", "gate"];
+/// Model config is excluded — it's managed by ConfigStore.
+pub const PARTICIPATING_MOUNTS: [&str; 2] = ["system", "gate"];
 
 /// Result from a save operation — used to update SQLite cache.
 #[derive(Debug, Clone)]
@@ -196,8 +197,8 @@ mod tests {
         assert_eq!(ctx.thread_id, "t_test1");
         assert_eq!(ctx.title, "Test thread");
         assert!(ctx.stores.contains_key("system"));
-        assert!(ctx.stores.contains_key("model"));
         assert!(ctx.stores.contains_key("gate"));
+        assert!(!ctx.stores.contains_key("model")); // model managed by ConfigStore
         assert!(!ctx.stores.contains_key("tools"));
         assert!(!ctx.stores.contains_key("history"));
     }
