@@ -89,10 +89,7 @@ mod tests {
             Value::String("***".into()),
         );
         let result = masked.read(&path!("model/id")).unwrap().unwrap();
-        assert_eq!(
-            result.as_value().unwrap(),
-            &Value::String("gpt-4o".into())
-        );
+        assert_eq!(result.as_value().unwrap(), &Value::String("gpt-4o".into()));
     }
 
     #[test]
@@ -113,9 +110,7 @@ mod tests {
             vec!["gate/api_key".into()],
             Value::String("***".into()),
         );
-        let result = masked
-            .read(&Path::parse("nonexistent").unwrap())
-            .unwrap();
+        let result = masked.read(&Path::parse("nonexistent").unwrap()).unwrap();
         assert!(result.is_none());
     }
 
@@ -127,15 +122,9 @@ mod tests {
             Value::String("REDACTED".into()),
         );
         let key = masked.read(&path!("gate/api_key")).unwrap().unwrap();
-        assert_eq!(
-            key.as_value().unwrap(),
-            &Value::String("REDACTED".into())
-        );
+        assert_eq!(key.as_value().unwrap(), &Value::String("REDACTED".into()));
         let model = masked.read(&path!("model/id")).unwrap().unwrap();
-        assert_eq!(
-            model.as_value().unwrap(),
-            &Value::String("REDACTED".into())
-        );
+        assert_eq!(model.as_value().unwrap(), &Value::String("REDACTED".into()));
         // Unmasked still works
         let provider = masked.read(&path!("gate/provider")).unwrap().unwrap();
         assert_eq!(

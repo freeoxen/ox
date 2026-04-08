@@ -73,9 +73,7 @@ mod tests {
 
     #[test]
     fn write_rejected() {
-        let inner = TestStore {
-            value: Value::Null,
-        };
+        let inner = TestStore { value: Value::Null };
         let mut ro = ReadOnly::new(inner);
         let result = ro.write(&path!("anything"), Record::parsed(Value::Null));
         assert!(result.is_err());

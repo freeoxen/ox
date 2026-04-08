@@ -78,10 +78,7 @@ mod tests {
         let mut config = LocalConfig::new();
         config.set("model/id", Value::String("gpt-4o".into()));
         let result = config.read(&path!("model/id")).unwrap().unwrap();
-        assert_eq!(
-            result.as_value().unwrap(),
-            &Value::String("gpt-4o".into())
-        );
+        assert_eq!(result.as_value().unwrap(), &Value::String("gpt-4o".into()));
     }
 
     #[test]
@@ -94,10 +91,7 @@ mod tests {
             )
             .unwrap();
         let result = config.read(&path!("gate/provider")).unwrap().unwrap();
-        assert_eq!(
-            result.as_value().unwrap(),
-            &Value::String("openai".into())
-        );
+        assert_eq!(result.as_value().unwrap(), &Value::String("openai".into()));
     }
 
     #[test]

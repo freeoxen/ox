@@ -192,7 +192,6 @@ impl ThreadRegistry {
             None
         }
     }
-
 }
 
 impl AsyncReader for ThreadRegistry {

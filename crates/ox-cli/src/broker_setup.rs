@@ -74,7 +74,10 @@ pub async fn setup(
 
         let mut config = ConfigStore::new(base);
         config
-            .write(&path!("gate/provider"), Record::parsed(Value::String(provider)))
+            .write(
+                &path!("gate/provider"),
+                Record::parsed(Value::String(provider)),
+            )
             .ok();
         config
             .write(&path!("model/id"), Record::parsed(Value::String(model)))
@@ -86,7 +89,10 @@ pub async fn setup(
             )
             .ok();
         config
-            .write(&path!("gate/api_key"), Record::parsed(Value::String(api_key)))
+            .write(
+                &path!("gate/api_key"),
+                Record::parsed(Value::String(api_key)),
+            )
             .ok();
 
         servers.push(broker.mount(path!("config"), config).await);

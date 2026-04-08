@@ -192,7 +192,7 @@ impl Writer for ConfigStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use structfs_core_store::{path, Reader, Writer};
+    use structfs_core_store::{Reader, Writer, path};
 
     fn store_with_defaults() -> ConfigStore {
         let mut base = BTreeMap::new();
@@ -290,11 +290,23 @@ mod tests {
             .write(&p2, Record::parsed(Value::String("model-b".into())))
             .unwrap();
         assert_eq!(
-            store.read(&p1).unwrap().unwrap().as_value().unwrap().clone(),
+            store
+                .read(&p1)
+                .unwrap()
+                .unwrap()
+                .as_value()
+                .unwrap()
+                .clone(),
             Value::String("model-a".into())
         );
         assert_eq!(
-            store.read(&p2).unwrap().unwrap().as_value().unwrap().clone(),
+            store
+                .read(&p2)
+                .unwrap()
+                .unwrap()
+                .as_value()
+                .unwrap()
+                .clone(),
             Value::String("model-b".into())
         );
     }
