@@ -34,6 +34,15 @@ impl ClientHandle {
         }
     }
 
+    /// Return a clone with a different timeout.
+    pub fn with_timeout(&self, timeout: Duration) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            scope: self.scope.clone(),
+            timeout,
+        }
+    }
+
     /// Create a scoped client that prepends `prefix` to all paths.
     ///
     /// The scoped client sees a sub-namespace: writing to "history/append"
