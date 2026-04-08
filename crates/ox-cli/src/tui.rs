@@ -91,10 +91,11 @@ pub(crate) fn draw(frame: &mut Frame, vs: &ViewState, theme: &Theme) -> (Option<
         frame.render_widget(input, input_area);
 
         // Cursor
-        if vs.approval_pending.is_none() && vs.pending_customize.is_none() {
-            if vs.insert_context.as_deref() != Some("search") {
-                frame.set_cursor_position((input_area.x + vs.cursor as u16 + 2, input_area.y + 1));
-            }
+        if vs.approval_pending.is_none()
+            && vs.pending_customize.is_none()
+            && vs.insert_context.as_deref() != Some("search")
+        {
+            frame.set_cursor_position((input_area.x + vs.cursor as u16 + 2, input_area.y + 1));
         }
     }
 

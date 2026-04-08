@@ -232,56 +232,54 @@ pub async fn run_async(
                             .write(&path!("input/key"), Record::parsed(Value::Map(event_map)))
                             .await;
 
-                        if result.is_err() {
-                            if mode_owned == "insert" {
-                                if insert_context_owned.as_deref() == Some("search") {
-                                    dispatch_search_edit(client, key.modifiers, key.code).await;
-                                } else {
-                                    match key.code {
-                                        KeyCode::Up => {
-                                            if let Some((text, cursor)) =
-                                                app.history_up(&input_text)
-                                            {
-                                                let mut cmd = BTreeMap::new();
-                                                cmd.insert("text".to_string(), Value::String(text));
-                                                cmd.insert(
-                                                    "cursor".to_string(),
-                                                    Value::Integer(cursor as i64),
-                                                );
-                                                let _ = client
-                                                    .write(
-                                                        &path!("ui/set_input"),
-                                                        Record::parsed(Value::Map(cmd)),
-                                                    )
-                                                    .await;
-                                            }
+                        if result.is_err() && mode_owned == "insert" {
+                            if insert_context_owned.as_deref() == Some("search") {
+                                dispatch_search_edit(client, key.modifiers, key.code).await;
+                            } else {
+                                match key.code {
+                                    KeyCode::Up => {
+                                        if let Some((text, cursor)) =
+                                            app.history_up(&input_text)
+                                        {
+                                            let mut cmd = BTreeMap::new();
+                                            cmd.insert("text".to_string(), Value::String(text));
+                                            cmd.insert(
+                                                "cursor".to_string(),
+                                                Value::Integer(cursor as i64),
+                                            );
+                                            let _ = client
+                                                .write(
+                                                    &path!("ui/set_input"),
+                                                    Record::parsed(Value::Map(cmd)),
+                                                )
+                                                .await;
                                         }
-                                        KeyCode::Down => {
-                                            if let Some((text, cursor)) = app.history_down() {
-                                                let mut cmd = BTreeMap::new();
-                                                cmd.insert("text".to_string(), Value::String(text));
-                                                cmd.insert(
-                                                    "cursor".to_string(),
-                                                    Value::Integer(cursor as i64),
-                                                );
-                                                let _ = client
-                                                    .write(
-                                                        &path!("ui/set_input"),
-                                                        Record::parsed(Value::Map(cmd)),
-                                                    )
-                                                    .await;
-                                            }
+                                    }
+                                    KeyCode::Down => {
+                                        if let Some((text, cursor)) = app.history_down() {
+                                            let mut cmd = BTreeMap::new();
+                                            cmd.insert("text".to_string(), Value::String(text));
+                                            cmd.insert(
+                                                "cursor".to_string(),
+                                                Value::Integer(cursor as i64),
+                                            );
+                                            let _ = client
+                                                .write(
+                                                    &path!("ui/set_input"),
+                                                    Record::parsed(Value::Map(cmd)),
+                                                )
+                                                .await;
                                         }
-                                        _ => {
-                                            dispatch_text_edit_owned(
-                                                client,
-                                                cursor_pos,
-                                                input_len,
-                                                key.modifiers,
-                                                key.code,
-                                            )
-                                            .await;
-                                        }
+                                    }
+                                    _ => {
+                                        dispatch_text_edit_owned(
+                                            client,
+                                            cursor_pos,
+                                            input_len,
+                                            key.modifiers,
+                                            key.code,
+                                        )
+                                        .await;
                                     }
                                 }
                             }

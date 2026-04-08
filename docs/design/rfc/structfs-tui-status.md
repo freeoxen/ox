@@ -131,15 +131,24 @@ in `ox-kernel/src/snapshot.rs`. ToolsProvider returns None.
 - `crates/ox-cli/src/thread_mount.rs` — deleted (replaced by ThreadRegistry)
 - Fixes: thread history loading for previously-saved threads (lazy mount on view)
 
+#### Phase 1: App Convergence (complete, 64 ox-ui + 61 ox-cli tests)
+- Search state (chips + live_query) moved into UiStore with 6 new commands
+- `SearchState` struct, `handle_search_key` deleted from ox-cli
+- `active_thread`, `mode`, `input`, `cursor` removed from App (UiStore is single source of truth)
+- `InputMode`, `InsertContext` enums deleted from app.rs (ViewState uses strings)
+- `sync_mode_to_broker` deleted
+- `open_thread` deleted (broker `ui/open` command only)
+- `history_up`/`history_down` take explicit parameters, return new state
+- `tui.rs` split: event_loop.rs (~507), key_handlers.rs (~295), dialogs.rs (~365), tui.rs (~151)
+- App fields reduced from 13 to 8: pool, model, provider, input_history, history_cursor, input_draft, approval_selected, pending_customize
+- **Spec:** `docs/superpowers/specs/2026-04-07-app-convergence-design.md`
+- **Plan:** `docs/superpowers/plans/2026-04-07-app-convergence.md`
+
 ## What's Next
 
 ### Remaining for full spec completion:
 
-1. **Search State in UiStore**
-   - Move search.live_query and search.chips into UiStore
-   - Eliminates the last handle_search_key direct-mutation path
-
-2. **StoreBacking Trait**
+1. **StoreBacking Trait**
    - Platform-agnostic persistence abstraction
    - Stores cache in memory, backings are authoritative
 
@@ -154,7 +163,7 @@ in `ox-kernel/src/snapshot.rs`. ToolsProvider returns None.
 - **Approval through broker**: deferred write blocks agent until TUI writes response
 - **AsyncReader/AsyncWriter**: broker-internal traits, not StructFS — stores return detached futures
 - **pending_action pattern**: UiStore sets a string field, TUI reads from ViewState after draw
-- **Search is the last escape hatch**: handle_search_key bypasses broker (7 lines)
+- **Search through broker**: search_insert_char/search_save_chip/search_dismiss_chip through UiStore (no escape hatches)
 - **Two InboxStore instances**: one in App/AgentPool, one in broker (same SQLite)
 - **HostStore generic over backend**: `HostStore<B, E>` works with Namespace (ox-web) or SyncClientAdapter (ox-cli)
 - **ThreadRegistry owns thread lifecycle**: lazy mount from disk, internal routing, single opaque mount at `threads/`
