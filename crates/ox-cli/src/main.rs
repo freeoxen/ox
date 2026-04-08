@@ -2,8 +2,11 @@ mod agents;
 mod app;
 mod bindings;
 mod broker_setup;
+mod dialogs;
+mod event_loop;
 mod inbox_view;
 mod key_encode;
+mod key_handlers;
 mod policy;
 #[allow(dead_code)]
 mod session;
@@ -110,7 +113,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut terminal = ratatui::init();
     crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture).ok();
 
-    let result = rt.block_on(tui::run_async(&mut app, &client, &theme, &mut terminal));
+    let result = rt.block_on(event_loop::run_async(&mut app, &client, &theme, &mut terminal));
 
     crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture).ok();
     ratatui::restore();
