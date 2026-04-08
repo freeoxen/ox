@@ -144,6 +144,16 @@ in `ox-kernel/src/snapshot.rs`. ToolsProvider returns None.
 - **Spec:** `docs/superpowers/specs/2026-04-07-app-convergence-design.md`
 - **Plan:** `docs/superpowers/plans/2026-04-07-app-convergence.md`
 
+#### Phase 2: S-Tier Polish (complete, 64 ox-ui + 65 ox-cli tests)
+- `cmd!` macro eliminates broker command boilerplate (broker_cmd.rs, ~90 lines)
+- Rendering types extracted to types.rs (ChatMessage, ThreadView, CustomizeState, etc.)
+- Dialog state (approval_selected, pending_customize) moved from App to event-loop-local DialogState
+- Parsing functions extracted to parse.rs (parse_chat_messages, parse_inbox_threads, search_matches + 10 tests)
+- App reduced to 6 fields: pool, model, provider, input_history, history_cursor, input_draft
+- No file over 500 lines; largest is event_loop.rs at 445
+- **Spec:** `docs/superpowers/specs/2026-04-07-s-tier-polish-design.md`
+- **Plan:** `docs/superpowers/plans/2026-04-07-s-tier-polish.md`
+
 ## What's Next
 
 ### Remaining for full spec completion:
