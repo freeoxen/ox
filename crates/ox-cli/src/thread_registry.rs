@@ -145,11 +145,22 @@ impl ThreadRegistry {
     fn ensure_mounted(&mut self, thread_id: &str) -> &mut ThreadNamespace {
         if !self.threads.contains_key(thread_id) {
             let thread_dir = self.inbox_root.join("threads").join(thread_id);
-            let ns = if thread_dir.exists() {
+            let mut ns = if thread_dir.exists() {
                 ThreadNamespace::from_thread_dir(&thread_dir)
             } else {
                 ThreadNamespace::new_default()
             };
+
+            // Wire config handle into GateStore if broker client is available
+            if let Some(client) = &self.broker_client {
+                let config_client = client.scoped(&format!("config/threads/{thread_id}"));
+                let config_adapter = ox_broker::SyncClientAdapter::new(
+                    config_client,
+                    tokio::runtime::Handle::current(),
+                );
+                let read_only = ox_store_util::ReadOnly::new(config_adapter);
+                ns.gate = GateStore::new().with_config(Box::new(read_only));
+            }
 
             self.threads.insert(thread_id.to_string(), ns);
         }

@@ -233,6 +233,41 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn thread_gate_reads_api_key_from_config() {
+        let handle = test_setup().await;
+        let client = handle.client();
+
+        // The thread's GateStore should read the API key from ConfigStore
+        // via its config handle (bootstrap account = anthropic)
+        let key = client
+            .read(&path!("threads/t_gate/gate/accounts/anthropic/key"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            key.as_value().unwrap(),
+            &Value::String("test-key".into())
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn thread_gate_reads_model_from_config() {
+        let handle = test_setup().await;
+        let client = handle.client();
+
+        // GateStore config handle reads gate/model from ConfigStore
+        let model = client
+            .read(&path!("threads/t_cfg/gate/model"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            model.as_value().unwrap(),
+            &Value::String("claude-sonnet-4-20250514".into())
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn config_store_mounted_with_defaults() {
         let handle = test_setup().await;
         let client = handle.client();

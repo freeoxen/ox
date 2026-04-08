@@ -197,63 +197,54 @@ fn agent_worker(
             .ok();
     }
 
-    // Read config from broker (resolves through ConfigStore)
-    let _model = match adapter.read(&path!("gate/model")) {
+    // Read provider and API key from thread's GateStore (resolves through config handle)
+    let bootstrap = match adapter.read(&path!("gate/bootstrap")) {
         Ok(Some(r)) => match r.as_value() {
             Some(Value::String(s)) => s.clone(),
-            _ => "claude-sonnet-4-20250514".to_string(),
+            _ => "anthropic".to_string(),
         },
-        _ => "claude-sonnet-4-20250514".to_string(),
+        _ => "anthropic".to_string(),
     };
-    let _max_tokens = match adapter.read(&path!("gate/max_tokens")) {
+    let provider = match adapter.read(
+        &structfs_core_store::Path::from_components(vec![
+            "gate".into(),
+            "accounts".into(),
+            bootstrap.clone(),
+            "provider".into(),
+        ]),
+    ) {
         Ok(Some(r)) => match r.as_value() {
-            Some(Value::Integer(n)) => *n as u32,
-            _ => 4096,
+            Some(Value::String(s)) => s.clone(),
+            _ => "anthropic".to_string(),
         },
-        _ => 4096,
+        _ => "anthropic".to_string(),
     };
-
-    // Read provider and API key from global config (unscoped client)
-    let provider = tokio::task::block_in_place(|| {
-        rt_handle.block_on(async {
-            match broker_client
-                .read(&structfs_core_store::path!("config/gate/provider"))
-                .await
-            {
-                Ok(Some(r)) => match r.as_value() {
-                    Some(Value::String(s)) => s.clone(),
-                    _ => "anthropic".to_string(),
-                },
-                _ => "anthropic".to_string(),
-            }
-        })
-    });
-    let api_key_for_transport = tokio::task::block_in_place(|| {
-        rt_handle.block_on(async {
-            match broker_client
-                .read(&structfs_core_store::path!("config/gate/api_key_raw"))
-                .await
-            {
-                Ok(Some(r)) => match r.as_value() {
-                    Some(Value::String(s)) => s.clone(),
-                    _ => String::new(),
-                },
-                _ => String::new(),
-            }
-        })
-    });
+    let api_key_for_transport = match adapter.read(
+        &structfs_core_store::Path::from_components(vec![
+            "gate".into(),
+            "accounts".into(),
+            bootstrap.clone(),
+            "key".into(),
+        ]),
+    ) {
+        Ok(Some(r)) => match r.as_value() {
+            Some(Value::String(s)) => s.clone(),
+            _ => String::new(),
+        },
+        _ => String::new(),
+    };
     let provider_config = match provider.as_str() {
         "openai" => ProviderConfig::openai(),
         _ => ProviderConfig::anthropic(),
     };
 
-    // Register completion tools using a temporary GateStore
+    // Register completion tools using a temporary GateStore with the resolved key
     let mut gate_for_tools = GateStore::new();
     gate_for_tools
         .write(
             &ox_kernel::Path::from_components(vec![
                 "accounts".to_string(),
-                provider.clone(),
+                bootstrap.clone(),
                 "key".to_string(),
             ]),
             Record::parsed(Value::String(api_key_for_transport.clone())),
