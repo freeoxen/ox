@@ -63,14 +63,14 @@ pub async fn setup(
 
         let mut base = std::collections::BTreeMap::new();
         base.insert(
-            "model/id".to_string(),
+            "gate/model".to_string(),
             Value::String("claude-sonnet-4-20250514".into()),
         );
         base.insert(
             "gate/provider".to_string(),
             Value::String("anthropic".into()),
         );
-        base.insert("model/max_tokens".to_string(), Value::Integer(4096));
+        base.insert("gate/max_tokens".to_string(), Value::Integer(4096));
 
         let mut config = ConfigStore::new(base);
         config
@@ -80,11 +80,11 @@ pub async fn setup(
             )
             .ok();
         config
-            .write(&path!("model/id"), Record::parsed(Value::String(model)))
+            .write(&path!("gate/model"), Record::parsed(Value::String(model)))
             .ok();
         config
             .write(
-                &path!("model/max_tokens"),
+                &path!("gate/max_tokens"),
                 Record::parsed(Value::Integer(max_tokens as i64)),
             )
             .ok();
@@ -246,13 +246,13 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn thread_model_resolves_through_config() {
+    async fn thread_model_reads_from_gate_store() {
         let handle = test_setup().await;
         let client = handle.client();
 
-        // Read model for a thread — should fall through to global config
+        // Read model for a thread — uses GateStore default
         let model = client
-            .read(&path!("threads/t_test/model/id"))
+            .read(&path!("threads/t_test/gate/model"))
             .await
             .unwrap()
             .unwrap();
@@ -260,23 +260,6 @@ mod tests {
             model.as_value().unwrap(),
             &Value::String("claude-sonnet-4-20250514".into())
         );
-
-        // Change global model
-        client
-            .write(
-                &path!("config/model/id"),
-                Record::parsed(Value::String("gpt-4o".into())),
-            )
-            .await
-            .unwrap();
-
-        // Thread should now see the new global model
-        let model = client
-            .read(&path!("threads/t_test/model/id"))
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(model.as_value().unwrap(), &Value::String("gpt-4o".into()));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -285,7 +268,7 @@ mod tests {
         let client = handle.client();
 
         let model = client
-            .read(&path!("config/model/id"))
+            .read(&path!("config/gate/model"))
             .await
             .unwrap()
             .unwrap();

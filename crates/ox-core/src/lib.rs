@@ -19,7 +19,7 @@
 //! ```
 
 // --- Re-exports from ox-context ---
-pub use ox_context::{ModelInfo, ModelProvider, Namespace, SystemProvider, ToolsProvider};
+pub use ox_context::{Namespace, SystemProvider, ToolsProvider};
 
 // --- Re-exports from ox-gate ---
 pub use ox_gate::{AccountConfig, GateStore, ProviderConfig, completion_tool};
@@ -85,11 +85,20 @@ impl Agent {
         context.mount("system", Box::new(SystemProvider::new(system_prompt)));
         context.mount("history", Box::new(HistoryProvider::new()));
         context.mount("tools", Box::new(ToolsProvider::new(tools.schemas())));
-        context.mount(
-            "model",
-            Box::new(ModelProvider::new(model.clone(), max_tokens)),
-        );
         context.mount("gate", Box::new(gate));
+
+        context
+            .write(
+                &path!("gate/model"),
+                Record::parsed(Value::String(model.clone())),
+            )
+            .ok();
+        context
+            .write(
+                &path!("gate/max_tokens"),
+                Record::parsed(Value::Integer(max_tokens as i64)),
+            )
+            .ok();
 
         Self {
             kernel: Kernel::new(model),

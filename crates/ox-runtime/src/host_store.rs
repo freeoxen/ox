@@ -306,7 +306,8 @@ fn json_to_agent_event(json: serde_json::Value) -> Result<AgentEvent, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ox_context::{ModelProvider, Namespace, SystemProvider, ToolsProvider};
+    use ox_context::{Namespace, SystemProvider, ToolsProvider};
+    use ox_gate::GateStore;
     use ox_history::HistoryProvider;
     struct MockEffects {
         complete_calls: usize,
@@ -358,10 +359,17 @@ mod tests {
         );
         ns.mount("history", Box::new(HistoryProvider::new()));
         ns.mount("tools", Box::new(ToolsProvider::new(vec![])));
-        ns.mount(
-            "model",
-            Box::new(ModelProvider::new("test-model".into(), 1024)),
-        );
+        ns.mount("gate", Box::new(GateStore::new()));
+        ns.write(
+            &structfs_core_store::path!("gate/model"),
+            Record::parsed(Value::String("test-model".into())),
+        )
+        .unwrap();
+        ns.write(
+            &structfs_core_store::path!("gate/max_tokens"),
+            Record::parsed(Value::Integer(1024)),
+        )
+        .unwrap();
         ns
     }
 

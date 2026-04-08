@@ -198,14 +198,14 @@ fn agent_worker(
     }
 
     // Read config from broker (resolves through ConfigStore)
-    let _model = match adapter.read(&path!("model/id")) {
+    let _model = match adapter.read(&path!("gate/model")) {
         Ok(Some(r)) => match r.as_value() {
             Some(Value::String(s)) => s.clone(),
             _ => "claude-sonnet-4-20250514".to_string(),
         },
         _ => "claude-sonnet-4-20250514".to_string(),
     };
-    let _max_tokens = match adapter.read(&path!("model/max_tokens")) {
+    let _max_tokens = match adapter.read(&path!("gate/max_tokens")) {
         Ok(Some(r)) => match r.as_value() {
             Some(Value::Integer(n)) => *n as u32,
             _ => 4096,

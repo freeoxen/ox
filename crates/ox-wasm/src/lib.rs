@@ -190,7 +190,7 @@ fn agent_main() -> Result<(), String> {
     let mut bridge = HostBridge;
 
     // Read model identifier from the namespace.
-    let model = match bridge.read(&path!("model/id")) {
+    let model = match bridge.read(&path!("gate/model")) {
         Ok(Some(record)) => match record.as_value() {
             Some(Value::String(m)) => m.clone(),
             _ => "unknown".to_string(),

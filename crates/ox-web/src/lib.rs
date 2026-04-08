@@ -12,7 +12,8 @@
 //! const reply = await agent.prompt("Hello");
 //! ```
 
-use ox_context::{ModelInfo, ModelProvider, Namespace, SystemProvider, ToolsProvider};
+use ox_context::{Namespace, SystemProvider, ToolsProvider};
+use ox_kernel::ModelInfo;
 use ox_core::{AgentEvent, CompletionRequest, ContentBlock, ToolSchema, serialize_tool_results};
 use ox_gate::codec::{anthropic as anthropic_codec, openai as openai_codec};
 use ox_gate::{AccountConfig, GateStore, ProviderConfig};
@@ -106,8 +107,20 @@ impl OxAgent {
         );
         context.mount("history", Box::new(HistoryProvider::new()));
         context.mount("tools", Box::new(ToolsProvider::new(schemas)));
-        context.mount("model", Box::new(ModelProvider::new(model, max_tokens)));
         context.mount("gate", Box::new(gate));
+
+        context
+            .write(
+                &path!("gate/model"),
+                Record::parsed(Value::String(model)),
+            )
+            .ok();
+        context
+            .write(
+                &path!("gate/max_tokens"),
+                Record::parsed(Value::Integer(max_tokens as i64)),
+            )
+            .ok();
 
         Self {
             context: Rc::new(RefCell::new(context)),
@@ -283,12 +296,12 @@ impl OxAgent {
             .flatten()
             .map(record_to_json);
         let model_id = ctx
-            .read(&path!("model/id"))
+            .read(&path!("gate/model"))
             .ok()
             .flatten()
             .map(record_to_json);
         let model_max_tokens = ctx
-            .read(&path!("model/max_tokens"))
+            .read(&path!("gate/max_tokens"))
             .ok()
             .flatten()
             .map(record_to_json);
@@ -350,7 +363,7 @@ impl OxAgent {
         let record = Record::parsed(Value::String(model_id.to_string()));
         self.context
             .borrow_mut()
-            .write(&path!("model/id"), record)
+            .write(&path!("gate/model"), record)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         if let Some(ref cb) = self.event_callback {
             emit_js(Some(cb), "context_changed", "");
@@ -805,7 +818,7 @@ async fn run_agentic_loop(
     let model_id = {
         let record = context_ref
             .borrow_mut()
-            .read(&path!("model/id"))
+            .read(&path!("gate/model"))
             .map_err(|e| e.to_string())?;
         match record {
             Some(Record::Parsed(Value::String(s))) => s,

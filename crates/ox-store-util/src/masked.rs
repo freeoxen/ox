@@ -69,7 +69,7 @@ mod tests {
 
     fn test_store() -> MapStore {
         let mut data = BTreeMap::new();
-        data.insert("model/id".to_string(), Value::String("gpt-4o".into()));
+        data.insert("gate/model".to_string(), Value::String("gpt-4o".into()));
         data.insert(
             "gate/api_key".to_string(),
             Value::String("sk-secret".into()),
@@ -88,7 +88,7 @@ mod tests {
             vec!["gate/api_key".into()],
             Value::String("***".into()),
         );
-        let result = masked.read(&path!("model/id")).unwrap().unwrap();
+        let result = masked.read(&path!("gate/model")).unwrap().unwrap();
         assert_eq!(result.as_value().unwrap(), &Value::String("gpt-4o".into()));
     }
 
@@ -118,12 +118,12 @@ mod tests {
     fn multiple_masked_paths() {
         let mut masked = Masked::new(
             test_store(),
-            vec!["gate/api_key".into(), "model/id".into()],
+            vec!["gate/api_key".into(), "gate/model".into()],
             Value::String("REDACTED".into()),
         );
         let key = masked.read(&path!("gate/api_key")).unwrap().unwrap();
         assert_eq!(key.as_value().unwrap(), &Value::String("REDACTED".into()));
-        let model = masked.read(&path!("model/id")).unwrap().unwrap();
+        let model = masked.read(&path!("gate/model")).unwrap().unwrap();
         assert_eq!(model.as_value().unwrap(), &Value::String("REDACTED".into()));
         // Unmasked still works
         let provider = masked.read(&path!("gate/provider")).unwrap().unwrap();

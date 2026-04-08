@@ -147,7 +147,7 @@ pub fn restore(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ox_context::{ModelProvider, Namespace, SystemProvider, ToolsProvider};
+    use ox_context::{Namespace, SystemProvider, ToolsProvider};
     use ox_gate::GateStore;
     use ox_history::HistoryProvider;
     use structfs_core_store::{Reader, Writer, path};
@@ -157,13 +157,6 @@ mod tests {
         ns.mount(
             "system",
             Box::new(SystemProvider::new("You are helpful.".to_string())),
-        );
-        ns.mount(
-            "model",
-            Box::new(ModelProvider::new(
-                "claude-sonnet-4-20250514".to_string(),
-                4096,
-            )),
         );
         ns.mount("tools", Box::new(ToolsProvider::new(vec![])));
         ns.mount("history", Box::new(HistoryProvider::new()));
@@ -198,7 +191,7 @@ mod tests {
         assert_eq!(ctx.title, "Test thread");
         assert!(ctx.stores.contains_key("system"));
         assert!(ctx.stores.contains_key("gate"));
-        assert!(!ctx.stores.contains_key("model")); // model managed by ConfigStore
+        assert!(!ctx.stores.contains_key("model")); // model now in gate store
         assert!(!ctx.stores.contains_key("tools"));
         assert!(!ctx.stores.contains_key("history"));
     }
@@ -234,8 +227,8 @@ mod tests {
             _ => panic!("expected string"),
         }
 
-        // Verify model
-        let record = ns2.read(&path!("model/id")).unwrap().unwrap();
+        // Verify model (now read from gate store)
+        let record = ns2.read(&path!("gate/model")).unwrap().unwrap();
         match record.as_value().unwrap() {
             structfs_core_store::Value::String(s) => assert_eq!(s, "claude-sonnet-4-20250514"),
             _ => panic!("expected string"),

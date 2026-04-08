@@ -197,14 +197,14 @@ mod tests {
     fn store_with_defaults() -> ConfigStore {
         let mut base = BTreeMap::new();
         base.insert(
-            "model/id".to_string(),
+            "gate/model".to_string(),
             Value::String("claude-sonnet-4-20250514".into()),
         );
         base.insert(
             "gate/provider".to_string(),
             Value::String("anthropic".into()),
         );
-        base.insert("model/max_tokens".to_string(), Value::Integer(4096));
+        base.insert("gate/max_tokens".to_string(), Value::Integer(4096));
         ConfigStore::new(base)
     }
 
@@ -220,7 +220,7 @@ mod tests {
     fn read_returns_base_default() {
         let mut store = store_with_defaults();
         assert_eq!(
-            read_val(&mut store, "model/id"),
+            read_val(&mut store, "gate/model"),
             Some(Value::String("claude-sonnet-4-20250514".into()))
         );
         assert_eq!(
@@ -228,7 +228,7 @@ mod tests {
             Some(Value::String("anthropic".into()))
         );
         assert_eq!(
-            read_val(&mut store, "model/max_tokens"),
+            read_val(&mut store, "gate/max_tokens"),
             Some(Value::Integer(4096))
         );
     }
@@ -238,12 +238,12 @@ mod tests {
         let mut store = store_with_defaults();
         store
             .write(
-                &path!("model/id"),
+                &path!("gate/model"),
                 Record::parsed(Value::String("gpt-4o".into())),
             )
             .unwrap();
         assert_eq!(
-            read_val(&mut store, "model/id"),
+            read_val(&mut store, "gate/model"),
             Some(Value::String("gpt-4o".into()))
         );
     }
@@ -253,11 +253,11 @@ mod tests {
         let mut store = store_with_defaults();
         store
             .write(
-                &path!("model/id"),
+                &path!("gate/model"),
                 Record::parsed(Value::String("gpt-4o".into())),
             )
             .unwrap();
-        let p = Path::parse("threads/t_abc/model/id").unwrap();
+        let p = Path::parse("threads/t_abc/gate/model").unwrap();
         let val = store.read(&p).unwrap().unwrap().as_value().unwrap().clone();
         assert_eq!(val, Value::String("gpt-4o".into()));
     }
@@ -265,7 +265,7 @@ mod tests {
     #[test]
     fn thread_override_wins() {
         let mut store = store_with_defaults();
-        let p = Path::parse("threads/t_abc/model/id").unwrap();
+        let p = Path::parse("threads/t_abc/gate/model").unwrap();
         store
             .write(&p, Record::parsed(Value::String("per-thread".into())))
             .unwrap();
@@ -273,7 +273,7 @@ mod tests {
         assert_eq!(val, Value::String("per-thread".into()));
         // Global unchanged
         assert_eq!(
-            read_val(&mut store, "model/id"),
+            read_val(&mut store, "gate/model"),
             Some(Value::String("claude-sonnet-4-20250514".into()))
         );
     }
@@ -281,8 +281,8 @@ mod tests {
     #[test]
     fn different_threads_independent() {
         let mut store = store_with_defaults();
-        let p1 = Path::parse("threads/t_1/model/id").unwrap();
-        let p2 = Path::parse("threads/t_2/model/id").unwrap();
+        let p1 = Path::parse("threads/t_1/gate/model").unwrap();
+        let p2 = Path::parse("threads/t_2/gate/model").unwrap();
         store
             .write(&p1, Record::parsed(Value::String("model-a".into())))
             .unwrap();
@@ -347,7 +347,7 @@ mod tests {
         let val = read_val(&mut store, "").unwrap();
         match val {
             Value::Map(m) => {
-                assert!(m.contains_key("model/id"));
+                assert!(m.contains_key("gate/model"));
                 assert!(m.contains_key("gate/provider"));
             }
             _ => panic!("expected Map"),

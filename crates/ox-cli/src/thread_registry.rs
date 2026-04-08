@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use ox_broker::async_store::{AsyncReader, AsyncWriter, BoxFuture};
-use ox_context::{ModelProvider, SystemProvider, ToolsProvider};
+use ox_context::{SystemProvider, ToolsProvider};
 use ox_gate::GateStore;
 use ox_history::HistoryProvider;
 use ox_ui::ApprovalStore;
@@ -23,9 +23,8 @@ use crate::agents::SYSTEM_PROMPT;
 pub struct ThreadNamespace {
     system: SystemProvider,
     history: HistoryProvider,
-    pub model: ModelProvider,
     tools: ToolsProvider,
-    gate: GateStore,
+    pub gate: GateStore,
     pub approval: ApprovalStore,
 }
 
@@ -35,7 +34,6 @@ impl ThreadNamespace {
         Self {
             system: SystemProvider::new(SYSTEM_PROMPT.to_string()),
             history: HistoryProvider::new(),
-            model: ModelProvider::new("claude-sonnet-4-20250514".to_string(), 4096),
             tools: ToolsProvider::new(vec![]),
             gate: GateStore::new(),
             approval: ApprovalStore::new(),
@@ -94,7 +92,6 @@ impl ThreadNamespace {
         match prefix {
             "system" => Some((&mut self.system as &mut dyn Store, sub)),
             "history" => Some((&mut self.history as &mut dyn Store, sub)),
-            "model" => Some((&mut self.model as &mut dyn Store, sub)),
             "tools" => Some((&mut self.tools as &mut dyn Store, sub)),
             "gate" => Some((&mut self.gate as &mut dyn Store, sub)),
             _ => None,
@@ -148,23 +145,11 @@ impl ThreadRegistry {
     fn ensure_mounted(&mut self, thread_id: &str) -> &mut ThreadNamespace {
         if !self.threads.contains_key(thread_id) {
             let thread_dir = self.inbox_root.join("threads").join(thread_id);
-            let mut ns = if thread_dir.exists() {
+            let ns = if thread_dir.exists() {
                 ThreadNamespace::from_thread_dir(&thread_dir)
             } else {
                 ThreadNamespace::new_default()
             };
-
-            // Wire config handle if broker client is available
-            if let Some(client) = &self.broker_client {
-                let config_client = client.scoped(&format!("config/threads/{thread_id}"));
-                let config_adapter = ox_broker::SyncClientAdapter::new(
-                    config_client,
-                    tokio::runtime::Handle::current(),
-                );
-                let read_only = ox_store_util::ReadOnly::new(config_adapter);
-                ns.model = ModelProvider::new("claude-sonnet-4-20250514".into(), 4096)
-                    .with_config(Box::new(read_only));
-            }
 
             self.threads.insert(thread_id.to_string(), ns);
         }
@@ -321,8 +306,8 @@ mod tests {
             other => panic!("expected integer 1, got {:?}", other),
         }
 
-        // Read model id
-        let model_path = Path::parse("t_a/model/id").unwrap();
+        // Read model id from gate store
+        let model_path = Path::parse("t_a/gate/model").unwrap();
         let result = futures_or_poll(reg.read(&model_path)).unwrap();
         match result.unwrap().as_value().unwrap() {
             Value::String(s) => assert_eq!(s, "claude-sonnet-4-20250514"),

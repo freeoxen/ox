@@ -4,17 +4,15 @@
 //! and writes to mounted [`Store`] implementations by path prefix — similar to
 //! how a Unix VFS mounts devices at path prefixes.
 //!
-//! Three concrete providers are included:
+//! Two concrete providers are included:
 //!
 //! - [`SystemProvider`] — holds the system prompt string
 //! - [`ToolsProvider`] — read-only snapshot of tool schemas
-//! - [`ModelProvider`] — model ID and max_tokens settings
 //!
 //! Reading `path!("prompt")` from the namespace synthesizes a complete
 //! [`CompletionRequest`] by collecting state from all mounted providers.
 
 use ox_kernel::CompletionRequest;
-pub use ox_kernel::ModelInfo;
 use std::collections::BTreeMap;
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Store, Value, Writer, path};
 use structfs_serde_store::{to_value, value_to_json};
@@ -29,7 +27,7 @@ use structfs_serde_store::{to_value, value_to_json};
 /// to the store mounted at `"history"` with sub-path `path!("messages")`.
 ///
 /// The special path `"prompt"` is synthetic — it assembles a CompletionRequest
-/// by reading from sibling stores (system, history, tools, model).
+/// by reading from sibling stores (system, history, tools, gate).
 pub struct Namespace {
     mounts: BTreeMap<String, Box<dyn Store>>,
 }
@@ -62,8 +60,8 @@ impl Namespace {
 /// - `system` → system prompt string
 /// - `history/messages` → conversation messages array
 /// - `tools/schemas` → tool schema array
-/// - `model/id` → model identifier string
-/// - `model/max_tokens` → token limit integer
+/// - `gate/model` → model identifier string
+/// - `gate/max_tokens` → token limit integer
 ///
 /// When `reader` is a [`Namespace`], each path routes to the appropriate mounted
 /// store. This function exists as a standalone so it can be called with any
@@ -122,11 +120,11 @@ pub fn synthesize_prompt(reader: &mut dyn Reader) -> Result<Option<Record>, Stor
 
     // Read model ID
     let model_id = {
-        let record = reader.read(&path!("model/id"))?.ok_or_else(|| {
+        let record = reader.read(&path!("gate/model"))?.ok_or_else(|| {
             StoreError::store(
                 "synthesize_prompt",
                 "read",
-                "model store returned None for id",
+                "gate store returned None for model",
             )
         })?;
         match record {
@@ -135,7 +133,7 @@ pub fn synthesize_prompt(reader: &mut dyn Reader) -> Result<Option<Record>, Stor
                 return Err(StoreError::store(
                     "synthesize_prompt",
                     "read",
-                    "expected string from model store for id",
+                    "expected string from gate store for model",
                 ));
             }
         }
@@ -143,11 +141,11 @@ pub fn synthesize_prompt(reader: &mut dyn Reader) -> Result<Option<Record>, Stor
 
     // Read max_tokens
     let max_tokens = {
-        let record = reader.read(&path!("model/max_tokens"))?.ok_or_else(|| {
+        let record = reader.read(&path!("gate/max_tokens"))?.ok_or_else(|| {
             StoreError::store(
                 "synthesize_prompt",
                 "read",
-                "model store returned None for max_tokens",
+                "gate store returned None for max_tokens",
             )
         })?;
         match record {
@@ -156,7 +154,7 @@ pub fn synthesize_prompt(reader: &mut dyn Reader) -> Result<Option<Record>, Stor
                 return Err(StoreError::store(
                     "synthesize_prompt",
                     "read",
-                    "expected integer from model store for max_tokens",
+                    "expected integer from gate store for max_tokens",
                 ));
             }
         }
@@ -225,7 +223,7 @@ fn split_path(path: &Path) -> (&str, Path) {
 }
 
 // ---------------------------------------------------------------------------
-// Concrete stores: System, Tools, Model
+// Concrete stores: System, Tools
 // ---------------------------------------------------------------------------
 
 /// Provides the system prompt string.
@@ -386,163 +384,6 @@ impl Writer for ToolsProvider {
     }
 }
 
-/// Provides model ID and max_tokens settings.
-///
-/// An optional config handle can be attached via [`ModelProvider::with_config`].
-/// When present, reads for `id` and `max_tokens` first consult the config
-/// store; local fields serve as fallback defaults.
-pub struct ModelProvider {
-    model: String,
-    max_tokens: u32,
-    config: Option<Box<dyn Store + Send + Sync>>,
-}
-
-impl ModelProvider {
-    /// Create a new provider with the given model ID and token limit.
-    pub fn new(model: String, max_tokens: u32) -> Self {
-        Self {
-            model,
-            max_tokens,
-            config: None,
-        }
-    }
-
-    /// Attach a config store whose values take priority over local defaults.
-    pub fn with_config(mut self, config: Box<dyn Store + Send + Sync>) -> Self {
-        self.config = Some(config);
-        self
-    }
-
-    fn snapshot_state(&self) -> Value {
-        let mut map = std::collections::BTreeMap::new();
-        map.insert(
-            "max_tokens".to_string(),
-            Value::Integer(self.max_tokens as i64),
-        );
-        map.insert("model".to_string(), Value::String(self.model.clone()));
-        Value::Map(map)
-    }
-}
-
-impl Reader for ModelProvider {
-    fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
-        let key = if from.is_empty() {
-            ""
-        } else {
-            from.components[0].as_str()
-        };
-        match key {
-            "" | "id" => {
-                if let Some(ref mut config) = self.config {
-                    if let Ok(Some(record)) = config.read(&path!("model/id")) {
-                        return Ok(Some(record));
-                    }
-                }
-                Ok(Some(Record::parsed(Value::String(self.model.clone()))))
-            }
-            "max_tokens" => {
-                if let Some(ref mut config) = self.config {
-                    if let Ok(Some(record)) = config.read(&path!("model/max_tokens")) {
-                        return Ok(Some(record));
-                    }
-                }
-                Ok(Some(Record::parsed(Value::Integer(self.max_tokens as i64))))
-            }
-            "snapshot" => {
-                let state = self.snapshot_state();
-                if from.components.len() >= 2 {
-                    match from.components[1].as_str() {
-                        "hash" => {
-                            let hash = ox_kernel::snapshot::snapshot_hash(&state);
-                            Ok(Some(Record::parsed(Value::String(hash))))
-                        }
-                        "state" => Ok(Some(Record::parsed(state))),
-                        _ => Ok(None),
-                    }
-                } else {
-                    Ok(Some(Record::parsed(ox_kernel::snapshot::snapshot_record(
-                        state,
-                    ))))
-                }
-            }
-            _ => Ok(None),
-        }
-    }
-}
-
-impl Writer for ModelProvider {
-    fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
-        let key = if to.is_empty() {
-            ""
-        } else {
-            to.components[0].as_str()
-        };
-        match key {
-            "" | "id" => match data {
-                Record::Parsed(Value::String(s)) => {
-                    self.model = s;
-                    Ok(to.clone())
-                }
-                _ => Err(StoreError::store(
-                    "model",
-                    "write",
-                    "expected string for id",
-                )),
-            },
-            "max_tokens" => match data {
-                Record::Parsed(Value::Integer(n)) => {
-                    self.max_tokens = n as u32;
-                    Ok(to.clone())
-                }
-                _ => Err(StoreError::store(
-                    "model",
-                    "write",
-                    "expected integer for max_tokens",
-                )),
-            },
-            "snapshot" => {
-                let value = match data {
-                    Record::Parsed(v) => v,
-                    _ => {
-                        return Err(StoreError::store(
-                            "model",
-                            "write",
-                            "expected parsed record",
-                        ));
-                    }
-                };
-                let state = if to.components.len() >= 2 && to.components[1].as_str() == "state" {
-                    value
-                } else {
-                    ox_kernel::snapshot::extract_snapshot_state(value)
-                        .map_err(|e| StoreError::store("model", "write", e))?
-                };
-                match state {
-                    Value::Map(m) => {
-                        if let Some(Value::String(model)) = m.get("model") {
-                            self.model = model.clone();
-                        }
-                        if let Some(Value::Integer(n)) = m.get("max_tokens") {
-                            self.max_tokens = *n as u32;
-                        }
-                        Ok(to.clone())
-                    }
-                    _ => Err(StoreError::store(
-                        "model",
-                        "write",
-                        "snapshot state must be a map with model and max_tokens",
-                    )),
-                }
-            }
-            _ => Err(StoreError::store(
-                "model",
-                "write",
-                format!("unknown path: {to}"),
-            )),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -632,96 +473,6 @@ mod tests {
         assert_ne!(h1, h2);
     }
 
-    // -- ModelProvider snapshot tests --
-
-    #[test]
-    fn model_snapshot_read_returns_hash_and_state() {
-        let mut mp = ModelProvider::new("claude-sonnet-4-20250514".to_string(), 4096);
-        let val = unwrap_value(mp.read(&path!("snapshot")).unwrap().unwrap());
-        match &val {
-            Value::Map(m) => {
-                let hash = match m.get("hash").unwrap() {
-                    Value::String(s) => s.clone(),
-                    _ => panic!("expected string hash"),
-                };
-                assert_eq!(hash.len(), 16);
-                let state = m.get("state").unwrap();
-                match state {
-                    Value::Map(sm) => {
-                        assert_eq!(
-                            sm.get("model").unwrap(),
-                            &Value::String("claude-sonnet-4-20250514".to_string())
-                        );
-                        assert_eq!(sm.get("max_tokens").unwrap(), &Value::Integer(4096));
-                    }
-                    _ => panic!("expected map state"),
-                }
-            }
-            _ => panic!("expected map"),
-        }
-    }
-
-    #[test]
-    fn model_snapshot_read_state_only() {
-        let mut mp = ModelProvider::new("gpt-4o".to_string(), 8192);
-        let val = unwrap_value(mp.read(&path!("snapshot/state")).unwrap().unwrap());
-        match val {
-            Value::Map(m) => {
-                assert_eq!(
-                    m.get("model").unwrap(),
-                    &Value::String("gpt-4o".to_string())
-                );
-                assert_eq!(m.get("max_tokens").unwrap(), &Value::Integer(8192));
-            }
-            _ => panic!("expected map"),
-        }
-    }
-
-    #[test]
-    fn model_snapshot_read_hash_only() {
-        let mut mp = ModelProvider::new("gpt-4o".to_string(), 8192);
-        let val = unwrap_value(mp.read(&path!("snapshot/hash")).unwrap().unwrap());
-        match val {
-            Value::String(h) => assert_eq!(h.len(), 16),
-            _ => panic!("expected string"),
-        }
-    }
-
-    #[test]
-    fn model_snapshot_write_restores_state() {
-        let mut mp = ModelProvider::new("old-model".to_string(), 1024);
-        let mut state_map = std::collections::BTreeMap::new();
-        state_map.insert("model".to_string(), Value::String("new-model".to_string()));
-        state_map.insert("max_tokens".to_string(), Value::Integer(8192));
-        let mut snap_map = std::collections::BTreeMap::new();
-        snap_map.insert("state".to_string(), Value::Map(state_map));
-        mp.write(&path!("snapshot"), Record::parsed(Value::Map(snap_map)))
-            .unwrap();
-
-        let val = unwrap_value(mp.read(&path!("id")).unwrap().unwrap());
-        assert_eq!(val, Value::String("new-model".to_string()));
-        let val = unwrap_value(mp.read(&path!("max_tokens")).unwrap().unwrap());
-        assert_eq!(val, Value::Integer(8192));
-    }
-
-    #[test]
-    fn model_snapshot_write_state_path() {
-        let mut mp = ModelProvider::new("old".to_string(), 1024);
-        let mut state_map = std::collections::BTreeMap::new();
-        state_map.insert("model".to_string(), Value::String("new".to_string()));
-        state_map.insert("max_tokens".to_string(), Value::Integer(2048));
-        mp.write(
-            &path!("snapshot/state"),
-            Record::parsed(Value::Map(state_map)),
-        )
-        .unwrap();
-
-        let val = unwrap_value(mp.read(&path!("id")).unwrap().unwrap());
-        assert_eq!(val, Value::String("new".to_string()));
-        let val = unwrap_value(mp.read(&path!("max_tokens")).unwrap().unwrap());
-        assert_eq!(val, Value::Integer(2048));
-    }
-
     // -- ToolsProvider snapshot tests --
 
     #[test]
@@ -748,13 +499,6 @@ mod tests {
             "system",
             Box::new(SystemProvider::new("You are helpful.".to_string())),
         );
-        ns.mount(
-            "model",
-            Box::new(ModelProvider::new(
-                "claude-sonnet-4-20250514".to_string(),
-                4096,
-            )),
-        );
         ns.mount("tools", Box::new(ToolsProvider::new(vec![])));
         ns.mount("history", Box::new(ox_history::HistoryProvider::new()));
         ns.mount("gate", Box::new(ox_gate::GateStore::new()));
@@ -767,7 +511,6 @@ mod tests {
 
         // Participating stores return Some
         assert!(ns.read(&path!("system/snapshot")).unwrap().is_some());
-        assert!(ns.read(&path!("model/snapshot")).unwrap().is_some());
         assert!(ns.read(&path!("history/snapshot")).unwrap().is_some());
         assert!(ns.read(&path!("gate/snapshot")).unwrap().is_some());
 
@@ -811,74 +554,34 @@ mod tests {
             "system",
             Box::new(SystemProvider::new("original".to_string())),
         );
-        ns.mount(
-            "model",
-            Box::new(ModelProvider::new("model-a".to_string(), 1024)),
-        );
+        ns.mount("gate", Box::new(ox_gate::GateStore::new()));
 
-        // Read snapshots
         let sys_snap = unwrap_value(ns.read(&path!("system/snapshot/state")).unwrap().unwrap());
-        let model_snap = unwrap_value(ns.read(&path!("model/snapshot/state")).unwrap().unwrap());
+        let gate_snap = unwrap_value(ns.read(&path!("gate/snapshot/state")).unwrap().unwrap());
 
-        // Mutate
         ns.write(
             &path!("system"),
             Record::parsed(Value::String("changed".to_string())),
         )
         .unwrap();
         ns.write(
-            &path!("model/id"),
-            Record::parsed(Value::String("model-b".to_string())),
+            &path!("gate/model"),
+            Record::parsed(Value::String("gpt-4o".to_string())),
         )
         .unwrap();
 
-        // Restore from snapshots
         ns.write(&path!("system/snapshot/state"), Record::parsed(sys_snap))
             .unwrap();
-        ns.write(&path!("model/snapshot/state"), Record::parsed(model_snap))
+        ns.write(&path!("gate/snapshot/state"), Record::parsed(gate_snap))
             .unwrap();
 
-        // Verify restoration
         let val = unwrap_value(ns.read(&path!("system")).unwrap().unwrap());
         assert_eq!(val, Value::String("original".to_string()));
-
-        let val = unwrap_value(ns.read(&path!("model/id")).unwrap().unwrap());
-        assert_eq!(val, Value::String("model-a".to_string()));
-    }
-
-    #[test]
-    fn model_provider_reads_from_config_handle() {
-        use ox_store_util::LocalConfig;
-
-        let mut config = LocalConfig::new();
-        config.set("model/id", Value::String("config-model".into()));
-        config.set("model/max_tokens", Value::Integer(8192));
-
-        let mut provider =
-            ModelProvider::new("default-model".into(), 4096).with_config(Box::new(config));
-
-        let model = provider.read(&path!("id")).unwrap().unwrap();
+        let val = unwrap_value(ns.read(&path!("gate/model")).unwrap().unwrap());
         assert_eq!(
-            model.as_value().unwrap(),
-            &Value::String("config-model".into())
+            val,
+            Value::String("claude-sonnet-4-20250514".to_string())
         );
-
-        let tokens = provider.read(&path!("max_tokens")).unwrap().unwrap();
-        assert_eq!(tokens.as_value().unwrap(), &Value::Integer(8192));
-    }
-
-    #[test]
-    fn model_provider_falls_back_to_local() {
-        let mut provider = ModelProvider::new("local-model".into(), 2048);
-
-        let model = provider.read(&path!("id")).unwrap().unwrap();
-        assert_eq!(
-            model.as_value().unwrap(),
-            &Value::String("local-model".into())
-        );
-
-        let tokens = provider.read(&path!("max_tokens")).unwrap().unwrap();
-        assert_eq!(tokens.as_value().unwrap(), &Value::Integer(2048));
     }
 
     #[test]

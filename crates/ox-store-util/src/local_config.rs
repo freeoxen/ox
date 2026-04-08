@@ -69,15 +69,15 @@ mod tests {
     #[test]
     fn read_empty_returns_none() {
         let mut config = LocalConfig::new();
-        let result = config.read(&path!("model/id")).unwrap();
+        let result = config.read(&path!("gate/model")).unwrap();
         assert!(result.is_none());
     }
 
     #[test]
     fn set_then_read() {
         let mut config = LocalConfig::new();
-        config.set("model/id", Value::String("gpt-4o".into()));
-        let result = config.read(&path!("model/id")).unwrap().unwrap();
+        config.set("gate/model", Value::String("gpt-4o".into()));
+        let result = config.read(&path!("gate/model")).unwrap().unwrap();
         assert_eq!(result.as_value().unwrap(), &Value::String("gpt-4o".into()));
     }
 
@@ -97,7 +97,7 @@ mod tests {
     #[test]
     fn read_root_returns_all() {
         let mut config = LocalConfig::new();
-        config.set("model/id", Value::String("gpt-4o".into()));
+        config.set("gate/model", Value::String("gpt-4o".into()));
         config.set("gate/provider", Value::String("openai".into()));
         let result = config
             .read(&Path::from_components(vec![]))
@@ -106,7 +106,7 @@ mod tests {
         match result.as_value().unwrap() {
             Value::Map(m) => {
                 assert_eq!(m.len(), 2);
-                assert!(m.contains_key("model/id"));
+                assert!(m.contains_key("gate/model"));
                 assert!(m.contains_key("gate/provider"));
             }
             _ => panic!("expected Map"),
@@ -116,14 +116,14 @@ mod tests {
     #[test]
     fn write_overwrites_existing() {
         let mut config = LocalConfig::new();
-        config.set("model/id", Value::String("old".into()));
+        config.set("gate/model", Value::String("old".into()));
         config
             .write(
-                &path!("model/id"),
+                &path!("gate/model"),
                 Record::parsed(Value::String("new".into())),
             )
             .unwrap();
-        let result = config.read(&path!("model/id")).unwrap().unwrap();
+        let result = config.read(&path!("gate/model")).unwrap().unwrap();
         assert_eq!(result.as_value().unwrap(), &Value::String("new".into()));
     }
 }

@@ -339,7 +339,8 @@ fn set_pending<B: Reader + Writer + Send, E: HostEffects>(
 mod tests {
     use super::*;
     use crate::host_store::{HostEffects, HostStore};
-    use ox_context::{ModelProvider, Namespace, SystemProvider, ToolsProvider};
+    use ox_context::{Namespace, SystemProvider, ToolsProvider};
+    use ox_gate::GateStore;
     use ox_history::HistoryProvider;
     use ox_kernel::{AgentEvent, CompletionRequest, StreamEvent, ToolCall};
     use structfs_core_store::{Record, Writer, path};
@@ -423,10 +424,7 @@ mod tests {
         );
         ns.mount("history", Box::new(HistoryProvider::new()));
         ns.mount("tools", Box::new(ToolsProvider::new(vec![])));
-        ns.mount(
-            "model",
-            Box::new(ModelProvider::new("test-model".into(), 1024)),
-        );
+        ns.mount("gate", Box::new(GateStore::new()));
 
         // Write a user message so prompt synthesis has something to work with.
         let user_msg = serde_json::json!({ "role": "user", "content": "Say hello." });
