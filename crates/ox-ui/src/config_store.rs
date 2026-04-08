@@ -264,7 +264,7 @@ impl Writer for ConfigStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use structfs_core_store::{path, Reader, Writer};
+    use structfs_core_store::{Reader, Writer, path};
 
     fn store_with_defaults() -> ConfigStore {
         let mut defaults = BTreeMap::new();
@@ -272,10 +272,7 @@ mod tests {
             "model".to_string(),
             Value::String("claude-sonnet-4-20250514".into()),
         );
-        defaults.insert(
-            "provider".to_string(),
-            Value::String("anthropic".into()),
-        );
+        defaults.insert("provider".to_string(), Value::String("anthropic".into()));
         defaults.insert("max_tokens".to_string(), Value::Integer(4096));
         ConfigStore::new(defaults)
     }
@@ -365,7 +362,13 @@ mod tests {
             .unwrap();
         // Thread read should return the override
         let rp = structfs_core_store::Path::parse("threads/t_abc/model").unwrap();
-        let val = store.read(&rp).unwrap().unwrap().as_value().unwrap().clone();
+        let val = store
+            .read(&rp)
+            .unwrap()
+            .unwrap()
+            .as_value()
+            .unwrap()
+            .clone();
         assert_eq!(val, Value::String("claude-opus-4-20250514".into()));
     }
 
@@ -391,7 +394,13 @@ mod tests {
             )
             .unwrap();
         let rp = structfs_core_store::Path::parse("threads/t_abc/model").unwrap();
-        let val = store.read(&rp).unwrap().unwrap().as_value().unwrap().clone();
+        let val = store
+            .read(&rp)
+            .unwrap()
+            .unwrap()
+            .as_value()
+            .unwrap()
+            .clone();
         assert_eq!(val, Value::String("ephemeral-model".into()));
     }
 
@@ -410,11 +419,23 @@ mod tests {
         let r1 = structfs_core_store::Path::parse("threads/t_1/model").unwrap();
         let r2 = structfs_core_store::Path::parse("threads/t_2/model").unwrap();
         assert_eq!(
-            store.read(&r1).unwrap().unwrap().as_value().unwrap().clone(),
+            store
+                .read(&r1)
+                .unwrap()
+                .unwrap()
+                .as_value()
+                .unwrap()
+                .clone(),
             Value::String("model-a".into())
         );
         assert_eq!(
-            store.read(&r2).unwrap().unwrap().as_value().unwrap().clone(),
+            store
+                .read(&r2)
+                .unwrap()
+                .unwrap()
+                .as_value()
+                .unwrap()
+                .clone(),
             Value::String("model-b".into())
         );
     }
@@ -428,10 +449,7 @@ mod tests {
                 cmd(&[("value", Value::String("sk-secret-key-123".into()))]),
             )
             .unwrap();
-        assert_eq!(
-            read_val(&mut store, "api_key"),
-            Value::String("***".into())
-        );
+        assert_eq!(read_val(&mut store, "api_key"), Value::String("***".into()));
     }
 
     #[test]

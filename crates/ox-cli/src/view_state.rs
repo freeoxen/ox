@@ -69,10 +69,10 @@ pub struct ViewState<'a> {
     // -- App-borrowed (references) ---------------------------------------
     /// Input history.
     pub input_history: &'a [String],
-    /// Model name.
-    pub model: &'a str,
-    /// Provider name.
-    pub provider: &'a str,
+    /// Model name (read from broker ConfigStore).
+    pub model: String,
+    /// Provider name (read from broker ConfigStore).
+    pub provider: String,
     /// Approval dialog selection index.
     pub approval_selected: usize,
     /// Pending customize dialog.
@@ -273,6 +273,22 @@ pub async fn fetch_view_state<'a>(
         }
     }
 
+    // Read model and provider from broker ConfigStore
+    let model = match client.read(&path!("config/model")).await {
+        Ok(Some(r)) => match r.as_value() {
+            Some(Value::String(s)) => s.clone(),
+            _ => String::new(),
+        },
+        _ => String::new(),
+    };
+    let provider = match client.read(&path!("config/provider")).await {
+        Ok(Some(r)) => match r.as_value() {
+            Some(Value::String(s)) => s.clone(),
+            _ => String::new(),
+        },
+        _ => String::new(),
+    };
+
     ViewState {
         screen,
         mode,
@@ -294,8 +310,8 @@ pub async fn fetch_view_state<'a>(
         search_live_query,
         search_active,
         input_history: &app.input_history,
-        model: &app.model,
-        provider: &app.provider,
+        model,
+        provider,
         approval_selected: dialog.approval_selected,
         pending_customize: &dialog.pending_customize,
         insert_context,

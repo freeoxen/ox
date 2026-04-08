@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use structfs_core_store::Writer as StructWriter;
+use structfs_core_store::Writer as _;
 
 use crate::agents::AgentPool;
 
@@ -10,8 +10,6 @@ use crate::agents::AgentPool;
 /// the fields that are mutated by event handling or needed for agent control.
 pub struct App {
     pub pool: AgentPool,
-    pub model: String,
-    pub provider: String,
     // Input history
     pub input_history: Vec<String>,
     history_cursor: usize,
@@ -20,12 +18,7 @@ pub struct App {
 
 impl App {
     /// Create the App, initializing the AgentPool.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        provider: String,
-        model: String,
-        max_tokens: u32,
-        api_key: String,
         workspace: PathBuf,
         inbox_root: PathBuf,
         no_policy: bool,
@@ -34,23 +27,10 @@ impl App {
     ) -> Result<Self, String> {
         let inbox = ox_inbox::InboxStore::open(&inbox_root).map_err(|e| e.to_string())?;
 
-        let pool = AgentPool::new(
-            model.clone(),
-            provider.clone(),
-            max_tokens,
-            api_key,
-            workspace,
-            no_policy,
-            inbox,
-            inbox_root,
-            broker,
-            rt_handle,
-        )?;
+        let pool = AgentPool::new(workspace, no_policy, inbox, inbox_root, broker, rt_handle)?;
 
         Ok(Self {
             pool,
-            model,
-            provider,
             input_history: Vec::new(),
             history_cursor: 0,
             input_draft: String::new(),

@@ -128,6 +128,7 @@ impl Writer for ThreadNamespace {
 pub struct ThreadRegistry {
     threads: HashMap<String, ThreadNamespace>,
     inbox_root: PathBuf,
+    broker_client: Option<ox_broker::ClientHandle>,
 }
 
 impl ThreadRegistry {
@@ -135,7 +136,12 @@ impl ThreadRegistry {
         Self {
             threads: HashMap::new(),
             inbox_root,
+            broker_client: None,
         }
+    }
+
+    pub fn set_broker_client(&mut self, client: ox_broker::ClientHandle) {
+        self.broker_client = Some(client);
     }
 
     /// Ensure a thread is mounted, lazy-loading from disk if needed.
@@ -173,6 +179,37 @@ impl ThreadRegistry {
             None
         }
     }
+
+    /// Check if a sub-path is a config path that should resolve through ConfigStore.
+    fn is_config_path(sub: &Path) -> bool {
+        if sub.is_empty() {
+            return false;
+        }
+        matches!(sub.components[0].as_str(), "model")
+    }
+
+    /// Resolve a config read through the broker's ConfigStore.
+    fn resolve_config_read(
+        &self,
+        thread_id: &str,
+        sub: &Path,
+    ) -> BoxFuture<Result<Option<Record>, StoreError>> {
+        let Some(client) = &self.broker_client else {
+            return Box::pin(std::future::ready(Ok(None)));
+        };
+
+        let config_key = if sub.components.len() <= 1 || sub.components[1] == "id" {
+            "model"
+        } else if sub.components[1] == "max_tokens" {
+            "max_tokens"
+        } else {
+            return Box::pin(std::future::ready(Ok(None)));
+        };
+
+        let config_path = Path::parse(&format!("config/threads/{thread_id}/{config_key}")).unwrap();
+        let client = client.clone();
+        Box::pin(async move { client.read(&config_path).await })
+    }
 }
 
 impl AsyncReader for ThreadRegistry {
@@ -180,14 +217,22 @@ impl AsyncReader for ThreadRegistry {
         let Some((thread_id, sub)) = Self::split_thread_path(from) else {
             return Box::pin(std::future::ready(Ok(None)));
         };
-        let ns = self.ensure_mounted(&thread_id);
 
+        // Approval paths → async ApprovalStore
         if let Some(approval_sub) = Self::is_approval_path(&sub) {
-            ns.approval.read(&approval_sub)
-        } else {
-            let result = ns.read(&sub);
-            Box::pin(std::future::ready(result))
+            let ns = self.ensure_mounted(&thread_id);
+            return ns.approval.read(&approval_sub);
         }
+
+        // Config paths → resolve through ConfigStore via broker (if available)
+        if Self::is_config_path(&sub) && self.broker_client.is_some() {
+            return self.resolve_config_read(&thread_id, &sub);
+        }
+
+        // Everything else → local sync stores
+        let ns = self.ensure_mounted(&thread_id);
+        let result = ns.read(&sub);
+        Box::pin(std::future::ready(result))
     }
 }
 
@@ -198,14 +243,41 @@ impl AsyncWriter for ThreadRegistry {
                 path: to.clone(),
             })));
         };
-        let ns = self.ensure_mounted(&thread_id);
 
+        // Approval paths → async ApprovalStore
         if let Some(approval_sub) = Self::is_approval_path(&sub) {
-            ns.approval.write(&approval_sub, data)
-        } else {
-            let result = ns.write(&sub, data);
-            Box::pin(std::future::ready(result))
+            let ns = self.ensure_mounted(&thread_id);
+            return ns.approval.write(&approval_sub, data);
         }
+
+        // Config writes (model/id, model/max_tokens) → route to ConfigStore
+        if Self::is_config_path(&sub) {
+            if let Some(client) = &self.broker_client {
+                let config_cmd = if sub.components[0] == "model" {
+                    if sub.components.len() <= 1 || sub.components[1] == "id" {
+                        Some("set_model")
+                    } else if sub.components[1] == "max_tokens" {
+                        Some("set_max_tokens")
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                if let Some(cmd_name) = config_cmd {
+                    let config_path =
+                        Path::parse(&format!("config/threads/{thread_id}/{cmd_name}")).unwrap();
+                    let client = client.clone();
+                    return Box::pin(async move { client.write(&config_path, data).await });
+                }
+            }
+        }
+
+        // Everything else → local sync stores
+        let ns = self.ensure_mounted(&thread_id);
+        let result = ns.write(&sub, data);
+        Box::pin(std::future::ready(result))
     }
 }
 

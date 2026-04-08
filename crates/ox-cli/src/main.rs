@@ -106,10 +106,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create App with broker — pass rt handle so AgentPool workers can use it
     let mut app = app::App::new(
-        cli.provider,
-        model,
-        cli.max_tokens,
-        api_key,
         workspace,
         inbox_root.clone(),
         cli.no_policy,

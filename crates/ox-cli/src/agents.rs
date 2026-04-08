@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::thread;
+use structfs_core_store::Reader as _;
 use structfs_serde_store::json_to_value;
 
 use crate::policy::PolicyStats;
@@ -29,11 +30,6 @@ struct ThreadHandle {
 pub struct AgentPool {
     module: AgentModule,
     threads: HashMap<String, ThreadHandle>,
-    // Config cloned into each worker
-    model: String,
-    provider: String,
-    max_tokens: u32,
-    api_key: String,
     workspace: PathBuf,
     no_policy: bool,
     inbox: ox_inbox::InboxStore,
@@ -44,12 +40,7 @@ pub struct AgentPool {
 
 impl AgentPool {
     /// Create a new pool: initializes the Wasm runtime and loads the agent module.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        model: String,
-        provider: String,
-        max_tokens: u32,
-        api_key: String,
         workspace: PathBuf,
         no_policy: bool,
         inbox: ox_inbox::InboxStore,
@@ -62,10 +53,6 @@ impl AgentPool {
         Ok(Self {
             module,
             threads: HashMap::new(),
-            model,
-            provider,
-            max_tokens,
-            api_key,
             workspace,
             no_policy,
             inbox,
@@ -131,7 +118,6 @@ impl AgentPool {
     }
 
     fn read_thread_title(&mut self, thread_id: &str) -> Option<String> {
-        use structfs_core_store::Reader as _;
         let path =
             ox_kernel::Path::from_components(vec!["threads".to_string(), thread_id.to_string()]);
         let record = self.inbox.read(&path).ok()??;
@@ -151,10 +137,6 @@ impl AgentPool {
             .insert(thread_id.clone(), ThreadHandle { prompt_tx });
 
         let module = self.module.clone();
-        let model = self.model.clone();
-        let provider = self.provider.clone();
-        let max_tokens = self.max_tokens;
-        let api_key = self.api_key.clone();
         let workspace = self.workspace.clone();
         let no_policy = self.no_policy;
         let inbox_root = self.inbox_root.clone();
@@ -163,8 +145,8 @@ impl AgentPool {
 
         thread::spawn(move || {
             agent_worker(
-                thread_id, title, module, model, provider, max_tokens, api_key, workspace,
-                no_policy, inbox_root, prompt_rx, broker, rt_handle,
+                thread_id, title, module, workspace, no_policy, inbox_root, prompt_rx, broker,
+                rt_handle,
             );
         });
     }
@@ -179,10 +161,6 @@ fn agent_worker(
     thread_id: String,
     title: String,
     module: AgentModule,
-    model: String,
-    provider: String,
-    max_tokens: u32,
-    api_key: String,
     workspace: PathBuf,
     no_policy: bool,
     inbox_root: PathBuf,
@@ -209,15 +187,8 @@ fn agent_worker(
     let scoped_client = broker.client().scoped(&format!("threads/{thread_id}"));
     let mut adapter = ox_broker::SyncClientAdapter::new(scoped_client.clone(), rt_handle.clone());
 
-    // Unscoped broker client for inbox writes
+    // Unscoped broker client for inbox writes and global config reads
     let broker_client = broker.client();
-
-    // Construct ProviderConfig directly (no GateStore read needed)
-    let provider_config = match provider.as_str() {
-        "openai" => ProviderConfig::openai(),
-        _ => ProviderConfig::anthropic(),
-    };
-    let api_key_for_transport = api_key.clone();
 
     // Write tool schemas via adapter (triggers ThreadRegistry lazy-mount from disk)
     if let Ok(val) = structfs_serde_store::to_value(&tools.schemas()) {
@@ -226,43 +197,55 @@ fn agent_worker(
             .ok();
     }
 
-    // Write model config (overrides ThreadRegistry defaults with CLI args)
-    adapter
-        .write(
-            &path!("model/id"),
-            Record::parsed(Value::String(model.clone())),
-        )
-        .ok();
-    adapter
-        .write(
-            &path!("model/max_tokens"),
-            Record::parsed(Value::Integer(max_tokens as i64)),
-        )
-        .ok();
+    // Read config from broker (resolves through ConfigStore)
+    let _model = match adapter.read(&path!("model/id")) {
+        Ok(Some(r)) => match r.as_value() {
+            Some(Value::String(s)) => s.clone(),
+            _ => "claude-sonnet-4-20250514".to_string(),
+        },
+        _ => "claude-sonnet-4-20250514".to_string(),
+    };
+    let _max_tokens = match adapter.read(&path!("model/max_tokens")) {
+        Ok(Some(r)) => match r.as_value() {
+            Some(Value::Integer(n)) => *n as u32,
+            _ => 4096,
+        },
+        _ => 4096,
+    };
 
-    // Write API key and model to gate via adapter
-    adapter
-        .write(
-            &ox_kernel::Path::from_components(vec![
-                "gate".to_string(),
-                "accounts".to_string(),
-                provider.clone(),
-                "key".to_string(),
-            ]),
-            Record::parsed(Value::String(api_key.clone())),
-        )
-        .ok();
-    adapter
-        .write(
-            &ox_kernel::Path::from_components(vec![
-                "gate".to_string(),
-                "accounts".to_string(),
-                provider.clone(),
-                "model".to_string(),
-            ]),
-            Record::parsed(Value::String(model.clone())),
-        )
-        .ok();
+    // Read provider and API key from global config (unscoped client)
+    let provider = tokio::task::block_in_place(|| {
+        rt_handle.block_on(async {
+            match broker_client
+                .read(&structfs_core_store::path!("config/provider"))
+                .await
+            {
+                Ok(Some(r)) => match r.as_value() {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => "anthropic".to_string(),
+                },
+                _ => "anthropic".to_string(),
+            }
+        })
+    });
+    let api_key_for_transport = tokio::task::block_in_place(|| {
+        rt_handle.block_on(async {
+            match broker_client
+                .read(&structfs_core_store::path!("config/api_key_raw"))
+                .await
+            {
+                Ok(Some(r)) => match r.as_value() {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => String::new(),
+                },
+                _ => String::new(),
+            }
+        })
+    });
+    let provider_config = match provider.as_str() {
+        "openai" => ProviderConfig::openai(),
+        _ => ProviderConfig::anthropic(),
+    };
 
     // Register completion tools using a temporary GateStore
     let mut gate_for_tools = GateStore::new();
@@ -273,7 +256,7 @@ fn agent_worker(
                 provider.clone(),
                 "key".to_string(),
             ]),
-            Record::parsed(Value::String(api_key)),
+            Record::parsed(Value::String(api_key_for_transport.clone())),
         )
         .ok();
     let send = Arc::new(crate::transport::make_send_fn(

@@ -97,14 +97,9 @@ pub async fn setup(
     }
 
     // Mount ThreadRegistry at threads/ — lazy-mounts per-thread stores from disk
-    servers.push(
-        broker
-            .mount_async(
-                path!("threads"),
-                crate::thread_registry::ThreadRegistry::new(inbox_root),
-            )
-            .await,
-    );
+    let mut registry = crate::thread_registry::ThreadRegistry::new(inbox_root);
+    registry.set_broker_client(broker.client());
+    servers.push(broker.mount_async(path!("threads"), registry).await);
 
     BrokerHandle {
         broker,
@@ -246,6 +241,39 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(row.as_value().unwrap(), &Value::Integer(0));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn thread_model_resolves_through_config() {
+        let handle = test_setup().await;
+        let client = handle.client();
+
+        // Read model for a thread — should fall through to global config
+        let model = client
+            .read(&path!("threads/t_test/model/id"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            model.as_value().unwrap(),
+            &Value::String("claude-sonnet-4-20250514".into())
+        );
+
+        // Change global model
+        let mut cmd = BTreeMap::new();
+        cmd.insert("value".to_string(), Value::String("gpt-4o".into()));
+        client
+            .write(&path!("config/set_model"), Record::parsed(Value::Map(cmd)))
+            .await
+            .unwrap();
+
+        // Thread should now see the new global model
+        let model = client
+            .read(&path!("threads/t_test/model/id"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(model.as_value().unwrap(), &Value::String("gpt-4o".into()));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
