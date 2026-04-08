@@ -1,10 +1,16 @@
 use crate::app::App;
-use crate::types::APPROVAL_OPTIONS;
 use crate::theme::Theme;
+use crate::types::{APPROVAL_OPTIONS, CustomizeState};
 use crate::view_state::fetch_view_state;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
 use std::time::Duration;
 use structfs_core_store::Writer as StructWriter;
+
+/// Dialog-local state, owned by the event loop (not App, not broker).
+pub(crate) struct DialogState {
+    pub approval_selected: usize,
+    pub pending_customize: Option<CustomizeState>,
+}
 
 /// Async event loop that dispatches through the BrokerStore.
 ///
@@ -21,6 +27,11 @@ pub async fn run_async(
 ) -> std::io::Result<()> {
     use crate::key_encode::encode_key;
     use structfs_core_store::path;
+
+    let mut dialog = DialogState {
+        approval_selected: 0,
+        pending_customize: None,
+    };
 
     loop {
         // 1. Fetch ViewState, draw, extract owned data needed after drop.
@@ -45,7 +56,7 @@ pub async fn run_async(
         let mut content_height: Option<usize> = None;
         let mut viewport_height: usize = 0;
         {
-            let vs = fetch_view_state(client, app).await;
+            let vs = fetch_view_state(client, app, &dialog).await;
 
             // Set row_count in UiStore (for inbox navigation bounds)
             // Only write on inbox screen — thread screen has no row selection.
@@ -108,12 +119,8 @@ pub async fn run_async(
                         active_thread_id.as_deref(),
                     );
                     // Clear input and exit insert mode through broker
-                    let _ = client
-                        .write(&path!("ui/clear_input"), cmd!())
-                        .await;
-                    let _ = client
-                        .write(&path!("ui/exit_insert"), cmd!())
-                        .await;
+                    let _ = client.write(&path!("ui/clear_input"), cmd!()).await;
+                    let _ = client.write(&path!("ui/exit_insert"), cmd!()).await;
                     // If compose created a new thread, open it in UiStore
                     if let Some(tid) = new_tid {
                         let _ = client
@@ -163,9 +170,9 @@ pub async fn run_async(
             match evt {
                 Event::Key(key) => {
                     // Customize dialog — bypass broker entirely
-                    if app.pending_customize.is_some() {
+                    if dialog.pending_customize.is_some() {
                         crate::key_handlers::handle_customize_key(
-                            app,
+                            &mut dialog,
                             client,
                             &active_thread_id,
                             key.code,
@@ -175,7 +182,7 @@ pub async fn run_async(
                     // Approval dialog — direct handling (reads from broker)
                     else if has_approval_pending && mode_owned == "normal" {
                         crate::key_handlers::handle_approval_key(
-                            app,
+                            &mut dialog,
                             client,
                             &active_thread_id,
                             key.code,
@@ -262,7 +269,7 @@ pub async fn run_async(
                                 && mouse.row < first_option_row + APPROVAL_OPTIONS.len() as u16
                             {
                                 let idx = (mouse.row - first_option_row) as usize;
-                                app.approval_selected = idx;
+                                dialog.approval_selected = idx;
                                 crate::key_handlers::send_approval_response(
                                     client,
                                     &active_thread_id,
@@ -276,7 +283,7 @@ pub async fn run_async(
                             client,
                             has_active_thread,
                             has_approval_pending,
-                            app.pending_customize.is_some(),
+                            dialog.pending_customize.is_some(),
                             mouse.kind,
                         )
                         .await;
@@ -308,10 +315,7 @@ async fn dispatch_text_edit_owned(
         }
         (KeyModifiers::CONTROL, KeyCode::Char('e')) => {
             let _ = client
-                .write(
-                    &path!("ui/set_input"),
-                    cmd!("cursor" => input_len as i64),
-                )
+                .write(&path!("ui/set_input"), cmd!("cursor" => input_len as i64))
                 .await;
         }
         (_, KeyCode::Char(c)) => {
@@ -331,9 +335,7 @@ async fn dispatch_text_edit_owned(
                 .await;
         }
         (_, KeyCode::Backspace) => {
-            let _ = client
-                .write(&path!("ui/delete_char"), cmd!())
-                .await;
+            let _ = client.write(&path!("ui/delete_char"), cmd!()).await;
         }
         (_, KeyCode::Left) => {
             let pos = cursor.saturating_sub(1);
@@ -369,24 +371,16 @@ async fn dispatch_mouse_owned(
     match kind {
         MouseEventKind::ScrollUp => {
             if has_active_thread {
-                let _ = client
-                    .write(&path!("ui/scroll_up"), cmd!())
-                    .await;
+                let _ = client.write(&path!("ui/scroll_up"), cmd!()).await;
             } else {
-                let _ = client
-                    .write(&path!("ui/select_prev"), cmd!())
-                    .await;
+                let _ = client.write(&path!("ui/select_prev"), cmd!()).await;
             }
         }
         MouseEventKind::ScrollDown => {
             if has_active_thread {
-                let _ = client
-                    .write(&path!("ui/scroll_down"), cmd!())
-                    .await;
+                let _ = client.write(&path!("ui/scroll_down"), cmd!()).await;
             } else {
-                let _ = client
-                    .write(&path!("ui/select_next"), cmd!())
-                    .await;
+                let _ = client.write(&path!("ui/select_next"), cmd!()).await;
             }
         }
         _ => {}
@@ -407,19 +401,13 @@ async fn dispatch_search_edit(
 
     match (modifiers, code) {
         (_, KeyCode::Enter) => {
-            let _ = client
-                .write(&path!("ui/search_save_chip"), cmd!())
-                .await;
+            let _ = client.write(&path!("ui/search_save_chip"), cmd!()).await;
         }
         (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
-            let _ = client
-                .write(&path!("ui/search_clear"), cmd!())
-                .await;
+            let _ = client.write(&path!("ui/search_clear"), cmd!()).await;
         }
         (_, KeyCode::Backspace) => {
-            let _ = client
-                .write(&path!("ui/search_delete_char"), cmd!())
-                .await;
+            let _ = client.write(&path!("ui/search_delete_char"), cmd!()).await;
         }
         (_, KeyCode::Char(c)) => {
             let _ = client

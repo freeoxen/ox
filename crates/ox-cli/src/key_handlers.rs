@@ -1,4 +1,3 @@
-use crate::app::App;
 use crate::types::APPROVAL_OPTIONS;
 use crossterm::event::KeyCode;
 
@@ -20,7 +19,7 @@ pub(crate) async fn send_approval_response(
 }
 
 pub(crate) async fn handle_approval_key(
-    app: &mut App,
+    dialog: &mut crate::event_loop::DialogState,
     client: &ox_broker::ClientHandle,
     active_thread_id: &Option<String>,
     key: KeyCode,
@@ -29,11 +28,11 @@ pub(crate) async fn handle_approval_key(
     match key {
         // vim navigation
         KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
-            app.approval_selected = app.approval_selected.saturating_sub(1);
+            dialog.approval_selected = dialog.approval_selected.saturating_sub(1);
         }
         KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
-            if app.approval_selected < APPROVAL_OPTIONS.len() - 1 {
-                app.approval_selected += 1;
+            if dialog.approval_selected < APPROVAL_OPTIONS.len() - 1 {
+                dialog.approval_selected += 1;
             }
         }
         // number keys for direct selection
@@ -41,17 +40,17 @@ pub(crate) async fn handle_approval_key(
             let idx = (c as u8 - b'1') as usize;
             if idx < APPROVAL_OPTIONS.len() {
                 send_approval_response(client, active_thread_id, APPROVAL_OPTIONS[idx].1).await;
-                app.approval_selected = 0;
+                dialog.approval_selected = 0;
             }
         }
         KeyCode::Enter => {
             send_approval_response(
                 client,
                 active_thread_id,
-                APPROVAL_OPTIONS[app.approval_selected].1,
+                APPROVAL_OPTIONS[dialog.approval_selected].1,
             )
             .await;
-            app.approval_selected = 0;
+            dialog.approval_selected = 0;
         }
         // customize — enter customize dialog
         KeyCode::Char('c') | KeyCode::Char('C') => {
@@ -77,7 +76,7 @@ pub(crate) async fn handle_approval_key(
                             })
                             .unwrap_or_default();
                         let args = crate::dialogs::infer_args(&tool, &input_preview);
-                        app.pending_customize = Some(crate::types::CustomizeState {
+                        dialog.pending_customize = Some(crate::types::CustomizeState {
                             tool,
                             args,
                             arg_cursor: 0,
@@ -103,45 +102,45 @@ pub(crate) async fn handle_approval_key(
         // quick keys
         KeyCode::Char('y') | KeyCode::Char('Y') => {
             send_approval_response(client, active_thread_id, "allow_once").await;
-            app.approval_selected = 0;
+            dialog.approval_selected = 0;
         }
         KeyCode::Char('s') | KeyCode::Char('S') => {
             send_approval_response(client, active_thread_id, "allow_session").await;
-            app.approval_selected = 0;
+            dialog.approval_selected = 0;
         }
         KeyCode::Char('a') | KeyCode::Char('A') => {
             send_approval_response(client, active_thread_id, "allow_always").await;
-            app.approval_selected = 0;
+            dialog.approval_selected = 0;
         }
         KeyCode::Char('n') | KeyCode::Char('N') => {
             send_approval_response(client, active_thread_id, "deny_once").await;
-            app.approval_selected = 0;
+            dialog.approval_selected = 0;
         }
         KeyCode::Char('d') | KeyCode::Char('D') => {
             send_approval_response(client, active_thread_id, "deny_always").await;
-            app.approval_selected = 0;
+            dialog.approval_selected = 0;
         }
         KeyCode::Esc => {
             send_approval_response(client, active_thread_id, "deny_once").await;
-            app.approval_selected = 0;
+            dialog.approval_selected = 0;
         }
         _ => {}
     }
 }
 
 pub(crate) async fn handle_customize_key(
-    app: &mut App,
+    dialog: &mut crate::event_loop::DialogState,
     client: &ox_broker::ClientHandle,
     active_thread_id: &Option<String>,
     key: KeyCode,
 ) {
     use crate::dialogs::{EFFECTS, NETWORKS, SCOPES};
 
-    let cust = app.pending_customize.as_mut().unwrap();
+    let cust = dialog.pending_customize.as_mut().unwrap();
     let total = cust.total_fields();
     match key {
         KeyCode::Esc => {
-            app.pending_customize.take();
+            dialog.pending_customize.take();
             send_approval_response(client, active_thread_id, "deny_once").await;
         }
         KeyCode::Tab | KeyCode::Down => {
@@ -161,7 +160,7 @@ pub(crate) async fn handle_customize_key(
             cust.arg_cursor = 0;
         }
         KeyCode::Enter => {
-            let cust = app.pending_customize.take().unwrap();
+            let cust = dialog.pending_customize.take().unwrap();
             // Determine effect and scope, write as string response
             let effect = EFFECTS[cust.effect_idx];
             let scope = SCOPES[cust.scope_idx];

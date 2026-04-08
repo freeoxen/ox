@@ -1,5 +1,5 @@
-use crate::types::APPROVAL_OPTIONS;
 use crate::theme::Theme;
+use crate::types::APPROVAL_OPTIONS;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span, Text};

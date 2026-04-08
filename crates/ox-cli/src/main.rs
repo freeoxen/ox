@@ -18,9 +18,9 @@ mod theme;
 pub(crate) mod thread_registry;
 mod thread_view;
 mod tools;
-mod types;
 mod transport;
 mod tui;
+mod types;
 pub(crate) mod view_state;
 
 use clap::Parser;

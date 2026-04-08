@@ -2,7 +2,6 @@ use std::path::PathBuf;
 use structfs_core_store::Writer as StructWriter;
 
 use crate::agents::AgentPool;
-use crate::types::CustomizeState;
 
 /// TUI-side application state — multi-thread aware.
 ///
@@ -17,9 +16,6 @@ pub struct App {
     pub input_history: Vec<String>,
     history_cursor: usize,
     input_draft: String,
-    // Modals
-    pub approval_selected: usize,
-    pub pending_customize: Option<CustomizeState>,
 }
 
 impl App {
@@ -58,8 +54,6 @@ impl App {
             input_history: Vec::new(),
             history_cursor: 0,
             input_draft: String::new(),
-            approval_selected: 0,
-            pending_customize: None,
         })
     }
 

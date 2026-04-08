@@ -1,5 +1,5 @@
-use crate::types::{ChatMessage, ThreadView};
 use crate::theme::Theme;
+use crate::types::{ChatMessage, ThreadView};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span, Text};
