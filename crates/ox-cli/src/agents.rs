@@ -217,7 +217,7 @@ fn agent_worker(
     let provider = tokio::task::block_in_place(|| {
         rt_handle.block_on(async {
             match broker_client
-                .read(&structfs_core_store::path!("config/provider"))
+                .read(&structfs_core_store::path!("config/gate/provider"))
                 .await
             {
                 Ok(Some(r)) => match r.as_value() {
@@ -231,7 +231,7 @@ fn agent_worker(
     let api_key_for_transport = tokio::task::block_in_place(|| {
         rt_handle.block_on(async {
             match broker_client
-                .read(&structfs_core_store::path!("config/api_key_raw"))
+                .read(&structfs_core_store::path!("config/gate/api_key_raw"))
                 .await
             {
                 Ok(Some(r)) => match r.as_value() {

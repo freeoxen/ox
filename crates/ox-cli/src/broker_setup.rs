@@ -56,42 +56,38 @@ pub async fn setup(
     // Mount InboxStore
     servers.push(broker.mount(path!("inbox"), inbox).await);
 
-    // Mount ConfigStore with system defaults + CLI overrides
+    // Mount ConfigStore with base defaults + runtime overrides from CLI args
     {
         use ox_ui::ConfigStore;
         use structfs_core_store::{Record, Value, Writer};
 
-        let mut defaults = std::collections::BTreeMap::new();
-        defaults.insert(
-            "model".to_string(),
+        let mut base = std::collections::BTreeMap::new();
+        base.insert(
+            "model/id".to_string(),
             Value::String("claude-sonnet-4-20250514".into()),
         );
-        defaults.insert("provider".to_string(), Value::String("anthropic".into()));
-        defaults.insert("max_tokens".to_string(), Value::Integer(4096));
+        base.insert(
+            "gate/provider".to_string(),
+            Value::String("anthropic".into()),
+        );
+        base.insert("model/max_tokens".to_string(), Value::Integer(4096));
 
-        let mut config = ConfigStore::new(defaults);
-        let set = |store: &mut ConfigStore, cmd: &str, val: Value| {
-            let mut m = std::collections::BTreeMap::new();
-            m.insert("value".to_string(), val);
-            store
-                .write(
-                    &structfs_core_store::Path::parse(cmd).unwrap(),
-                    Record::parsed(Value::Map(m)),
-                )
-                .ok();
-        };
-        set(
-            &mut config,
-            "set_provider_if_unset",
-            Value::String(provider),
-        );
-        set(&mut config, "set_model_if_unset", Value::String(model));
-        set(
-            &mut config,
-            "set_max_tokens_if_unset",
-            Value::Integer(max_tokens as i64),
-        );
-        set(&mut config, "set_api_key", Value::String(api_key));
+        let mut config = ConfigStore::new(base);
+        config
+            .write(&path!("gate/provider"), Record::parsed(Value::String(provider)))
+            .ok();
+        config
+            .write(&path!("model/id"), Record::parsed(Value::String(model)))
+            .ok();
+        config
+            .write(
+                &path!("model/max_tokens"),
+                Record::parsed(Value::Integer(max_tokens as i64)),
+            )
+            .ok();
+        config
+            .write(&path!("gate/api_key"), Record::parsed(Value::String(api_key)))
+            .ok();
 
         servers.push(broker.mount(path!("config"), config).await);
     }
@@ -260,10 +256,11 @@ mod tests {
         );
 
         // Change global model
-        let mut cmd = BTreeMap::new();
-        cmd.insert("value".to_string(), Value::String("gpt-4o".into()));
         client
-            .write(&path!("config/set_model"), Record::parsed(Value::Map(cmd)))
+            .write(
+                &path!("config/model/id"),
+                Record::parsed(Value::String("gpt-4o".into())),
+            )
             .await
             .unwrap();
 
@@ -281,14 +278,18 @@ mod tests {
         let handle = test_setup().await;
         let client = handle.client();
 
-        let model = client.read(&path!("config/model")).await.unwrap().unwrap();
+        let model = client
+            .read(&path!("config/model/id"))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
             model.as_value().unwrap(),
             &Value::String("claude-sonnet-4-20250514".into())
         );
 
         let provider = client
-            .read(&path!("config/provider"))
+            .read(&path!("config/gate/provider"))
             .await
             .unwrap()
             .unwrap();

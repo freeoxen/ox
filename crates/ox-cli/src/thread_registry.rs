@@ -198,15 +198,10 @@ impl ThreadRegistry {
             return Box::pin(std::future::ready(Ok(None)));
         };
 
-        let config_key = if sub.components.len() <= 1 || sub.components[1] == "id" {
-            "model"
-        } else if sub.components[1] == "max_tokens" {
-            "max_tokens"
-        } else {
-            return Box::pin(std::future::ready(Ok(None)));
-        };
-
-        let config_path = Path::parse(&format!("config/threads/{thread_id}/{config_key}")).unwrap();
+        // Pass the sub-path directly to config/threads/{id}/{sub}
+        let sub_str = sub.to_string();
+        let config_path =
+            Path::parse(&format!("config/threads/{thread_id}/{sub_str}")).unwrap();
         let client = client.clone();
         Box::pin(async move { client.read(&config_path).await })
     }
@@ -253,24 +248,11 @@ impl AsyncWriter for ThreadRegistry {
         // Config writes (model/id, model/max_tokens) → route to ConfigStore
         if Self::is_config_path(&sub) {
             if let Some(client) = &self.broker_client {
-                let config_cmd = if sub.components[0] == "model" {
-                    if sub.components.len() <= 1 || sub.components[1] == "id" {
-                        Some("set_model")
-                    } else if sub.components[1] == "max_tokens" {
-                        Some("set_max_tokens")
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
-
-                if let Some(cmd_name) = config_cmd {
-                    let config_path =
-                        Path::parse(&format!("config/threads/{thread_id}/{cmd_name}")).unwrap();
-                    let client = client.clone();
-                    return Box::pin(async move { client.write(&config_path, data).await });
-                }
+                let sub_str = sub.to_string();
+                let config_path =
+                    Path::parse(&format!("config/threads/{thread_id}/{sub_str}")).unwrap();
+                let client = client.clone();
+                return Box::pin(async move { client.write(&config_path, data).await });
             }
         }
 

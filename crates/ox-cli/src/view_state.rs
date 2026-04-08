@@ -274,14 +274,14 @@ pub async fn fetch_view_state<'a>(
     }
 
     // Read model and provider from broker ConfigStore
-    let model = match client.read(&path!("config/model")).await {
+    let model = match client.read(&path!("config/model/id")).await {
         Ok(Some(r)) => match r.as_value() {
             Some(Value::String(s)) => s.clone(),
             _ => String::new(),
         },
         _ => String::new(),
     };
-    let provider = match client.read(&path!("config/provider")).await {
+    let provider = match client.read(&path!("config/gate/provider")).await {
         Ok(Some(r)) => match r.as_value() {
             Some(Value::String(s)) => s.clone(),
             _ => String::new(),
