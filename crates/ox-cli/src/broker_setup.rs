@@ -5,7 +5,7 @@
 
 use ox_broker::BrokerStore;
 use ox_inbox::InboxStore;
-use ox_ui::{ApprovalStore, Binding, InputStore, UiStore};
+use ox_ui::{Binding, InputStore, UiStore};
 use structfs_core_store::path;
 use tokio::task::JoinHandle;
 
@@ -27,7 +27,12 @@ impl BrokerHandle {
 /// - `ui/` → UiStore (in-memory state machine)
 /// - `input/` → InputStore (key binding translation)
 /// - `inbox/` → InboxStore (SQLite-backed thread index)
-pub async fn setup(inbox: InboxStore, bindings: Vec<Binding>) -> BrokerHandle {
+/// - `threads/` → ThreadRegistry (lazy per-thread store lifecycle)
+pub async fn setup(
+    inbox: InboxStore,
+    bindings: Vec<Binding>,
+    inbox_root: std::path::PathBuf,
+) -> BrokerHandle {
     let broker = BrokerStore::default();
     let mut servers = Vec::new();
 
@@ -47,10 +52,13 @@ pub async fn setup(inbox: InboxStore, bindings: Vec<Binding>) -> BrokerHandle {
     // Mount InboxStore
     servers.push(broker.mount(path!("inbox"), inbox).await);
 
-    // Mount ApprovalStore (per-app for now; per-thread in C3c)
+    // Mount ThreadRegistry at threads/ — lazy-mounts per-thread stores from disk
     servers.push(
         broker
-            .mount_async(path!("approval"), ApprovalStore::new())
+            .mount_async(
+                path!("threads"),
+                crate::thread_registry::ThreadRegistry::new(inbox_root),
+            )
             .await,
     );
 
@@ -71,10 +79,15 @@ mod tests {
         InboxStore::open(dir.path()).unwrap()
     }
 
+    #[allow(deprecated)]
+    fn test_inbox_root() -> std::path::PathBuf {
+        tempfile::tempdir().unwrap().into_path()
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn broker_setup_mounts_all_stores() {
         let bindings = crate::bindings::default_bindings();
-        let handle = setup(test_inbox(), bindings).await;
+        let handle = setup(test_inbox(), bindings, test_inbox_root()).await;
         let client = handle.client();
 
         // UiStore is mounted — read initial state
@@ -103,7 +116,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn key_dispatch_through_broker() {
         let bindings = crate::bindings::default_bindings();
-        let handle = setup(test_inbox(), bindings).await;
+        let handle = setup(test_inbox(), bindings, test_inbox_root()).await;
         let client = handle.client();
 
         // Set row count so selection can advance
@@ -139,7 +152,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn screen_specific_binding_routes_correctly() {
         let bindings = crate::bindings::default_bindings();
-        let handle = setup(test_inbox(), bindings).await;
+        let handle = setup(test_inbox(), bindings, test_inbox_root()).await;
         let client = handle.client();
 
         // Open a thread so we're on the thread screen

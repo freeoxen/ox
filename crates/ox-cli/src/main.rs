@@ -9,7 +9,6 @@ mod policy;
 mod session;
 mod tab_bar;
 mod theme;
-pub(crate) mod thread_mount;
 pub(crate) mod thread_registry;
 mod thread_view;
 mod tools;
@@ -87,7 +86,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let broker_inbox = ox_inbox::InboxStore::open(&inbox_root)
         .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;
     let broker_bindings = bindings::default_bindings();
-    let broker_handle = rt.block_on(broker_setup::setup(broker_inbox, broker_bindings));
+    let broker_handle = rt.block_on(broker_setup::setup(
+        broker_inbox,
+        broker_bindings,
+        inbox_root.clone(),
+    ));
     let client = broker_handle.client();
 
     // Create App with broker — pass rt handle so AgentPool workers can use it

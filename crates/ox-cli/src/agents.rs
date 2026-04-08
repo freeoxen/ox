@@ -203,26 +203,9 @@ fn agent_worker(
         crate::policy::PolicyGuard::load(&workspace)
     };
 
-    // Mount thread stores in the broker
-    let config = crate::thread_mount::ThreadConfig {
-        system_prompt: SYSTEM_PROMPT.to_string(),
-        model: model.clone(),
-        max_tokens,
-        tool_schemas: tools.schemas(),
-        provider: provider.clone(),
-        api_key: api_key.clone(),
-    };
-    let _mount_handles = match rt_handle.block_on(crate::thread_mount::mount_thread(
-        &broker, &thread_id, config,
-    )) {
-        Ok(handles) => handles,
-        Err(e) => {
-            eprintln!("mount failed for thread {thread_id}: {e}");
-            return;
-        }
-    };
-
     // Create scoped client + SyncClientAdapter
+    // The first write through the adapter triggers ThreadRegistry's lazy-mount,
+    // which restores history/system/model from disk if a snapshot exists.
     let scoped_client = broker.client().scoped(&format!("threads/{thread_id}"));
     let mut adapter = ox_broker::SyncClientAdapter::new(scoped_client.clone(), rt_handle.clone());
 
@@ -235,6 +218,51 @@ fn agent_worker(
         _ => ProviderConfig::anthropic(),
     };
     let api_key_for_transport = api_key.clone();
+
+    // Write tool schemas via adapter (triggers ThreadRegistry lazy-mount from disk)
+    if let Ok(val) = structfs_serde_store::to_value(&tools.schemas()) {
+        adapter
+            .write(&path!("tools/schemas"), Record::parsed(val))
+            .ok();
+    }
+
+    // Write model config (overrides ThreadRegistry defaults with CLI args)
+    adapter
+        .write(
+            &path!("model/id"),
+            Record::parsed(Value::String(model.clone())),
+        )
+        .ok();
+    adapter
+        .write(
+            &path!("model/max_tokens"),
+            Record::parsed(Value::Integer(max_tokens as i64)),
+        )
+        .ok();
+
+    // Write API key and model to gate via adapter
+    adapter
+        .write(
+            &ox_kernel::Path::from_components(vec![
+                "gate".to_string(),
+                "accounts".to_string(),
+                provider.clone(),
+                "key".to_string(),
+            ]),
+            Record::parsed(Value::String(api_key.clone())),
+        )
+        .ok();
+    adapter
+        .write(
+            &ox_kernel::Path::from_components(vec![
+                "gate".to_string(),
+                "accounts".to_string(),
+                provider.clone(),
+                "model".to_string(),
+            ]),
+            Record::parsed(Value::String(model.clone())),
+        )
+        .ok();
 
     // Register completion tools using a temporary GateStore
     let mut gate_for_tools = GateStore::new();
@@ -254,32 +282,6 @@ fn agent_worker(
     ));
     for tool in gate_for_tools.create_completion_tools(send) {
         tools.register(tool);
-    }
-
-    // Restore conversation state through the adapter
-    crate::thread_mount::restore_thread_state(&mut adapter, &inbox_root, &thread_id).ok();
-
-    // Legacy format: restore from raw JSONL if no snapshot exists
-    let thread_dir = inbox_root.join("threads").join(&thread_id);
-    if !thread_dir.join("context.json").exists() {
-        let jsonl_path = thread_dir.join(format!("{thread_id}.jsonl"));
-        if jsonl_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&jsonl_path) {
-                for line in content.lines() {
-                    if line.is_empty() {
-                        continue;
-                    }
-                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
-                        adapter
-                            .write(
-                                &path!("history/append"),
-                                Record::parsed(json_to_value(json)),
-                            )
-                            .ok();
-                    }
-                }
-            }
-        }
     }
 
     // Ownership ping-pong state
@@ -372,8 +374,8 @@ fn agent_worker(
             .ok();
     }
 
-    // Unmount thread stores on worker exit
-    rt_handle.block_on(crate::thread_mount::unmount_thread(&broker, &thread_id));
+    // Worker exit — ThreadRegistry retains thread state in memory until process exit.
+    // No explicit unmount needed.
 }
 
 /// Save the conversation state from the store to the thread directory.

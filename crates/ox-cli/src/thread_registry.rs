@@ -47,8 +47,12 @@ impl ThreadNamespace {
         let mut ns = Self::new_default();
 
         // Restore from context.json + ledger.jsonl
-        ox_inbox::snapshot::restore(&mut ns, thread_dir, &ox_inbox::snapshot::PARTICIPATING_MOUNTS)
-            .ok();
+        ox_inbox::snapshot::restore(
+            &mut ns,
+            thread_dir,
+            &ox_inbox::snapshot::PARTICIPATING_MOUNTS,
+        )
+        .ok();
 
         // Legacy: replay raw JSONL if no context.json existed
         let ledger_path = thread_dir.join("ledger.jsonl");
@@ -63,9 +67,7 @@ impl ThreadNamespace {
                                 if line.is_empty() {
                                     continue;
                                 }
-                                if let Ok(json) =
-                                    serde_json::from_str::<serde_json::Value>(line)
-                                {
+                                if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
                                     let value = structfs_serde_store::json_to_value(json);
                                     let append_path =
                                         Path::parse("history/append").expect("valid path");
@@ -222,12 +224,8 @@ mod tests {
     /// Poll a BoxFuture that should resolve immediately.
     fn futures_or_poll<T>(mut fut: Pin<Box<dyn Future<Output = T> + Send>>) -> T {
         use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-        static VTABLE: RawWakerVTable = RawWakerVTable::new(
-            |p| RawWaker::new(p, &VTABLE),
-            |_| {},
-            |_| {},
-            |_| {},
-        );
+        static VTABLE: RawWakerVTable =
+            RawWakerVTable::new(|p| RawWaker::new(p, &VTABLE), |_| {}, |_| {}, |_| {});
         let raw = RawWaker::new(std::ptr::null(), &VTABLE);
         let waker = unsafe { Waker::from_raw(raw) };
         let mut cx = Context::from_waker(&waker);
@@ -261,11 +259,8 @@ mod tests {
         // Build a namespace, write a message, save to disk
         let mut ns = ThreadNamespace::new_default();
         let msg = serde_json::json!({"role": "user", "content": "hello from snapshot"});
-        ns.write(
-            &path!("history/append"),
-            Record::parsed(json_to_value(msg)),
-        )
-        .unwrap();
+        ns.write(&path!("history/append"), Record::parsed(json_to_value(msg)))
+            .unwrap();
 
         ox_inbox::snapshot::save(
             &mut ns,

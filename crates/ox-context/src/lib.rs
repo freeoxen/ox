@@ -833,7 +833,8 @@ mod tests {
             {"name": "test_tool", "description": "A test", "input_schema": {"type": "object"}}
         ]);
         let schemas_value = structfs_serde_store::json_to_value(schemas_json);
-        tp.write(&path!("schemas"), Record::parsed(schemas_value)).unwrap();
+        tp.write(&path!("schemas"), Record::parsed(schemas_value))
+            .unwrap();
 
         // Read back — should have 1 schema
         let record = tp.read(&path!("schemas")).unwrap().unwrap();
