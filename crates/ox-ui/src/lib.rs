@@ -6,11 +6,13 @@
 
 pub mod approval_store;
 pub mod command;
+pub mod config_store;
 pub mod input_store;
 pub mod ui_store;
 
 pub use approval_store::ApprovalStore;
 pub use command::{Command, TxnLog};
+pub use config_store::ConfigStore;
 pub use input_store::{Action, ActionField, Binding, BindingContext, InputStore};
 pub use ui_store::UiStore;
 
