@@ -353,12 +353,36 @@ impl Reader for ToolsProvider {
 }
 
 impl Writer for ToolsProvider {
-    fn write(&mut self, _to: &Path, _data: Record) -> Result<Path, StoreError> {
-        Err(StoreError::store(
-            "tools",
-            "write",
-            "tools store is read-only",
-        ))
+    fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
+        let key = if to.is_empty() {
+            ""
+        } else {
+            to.components[0].as_str()
+        };
+        match key {
+            "" | "schemas" => {
+                let value = match data {
+                    Record::Parsed(v) => v,
+                    _ => {
+                        return Err(StoreError::store(
+                            "tools",
+                            "write",
+                            "expected parsed record",
+                        ));
+                    }
+                };
+                let schemas: Vec<ox_kernel::ToolSchema> =
+                    structfs_serde_store::from_value(value)
+                        .map_err(|e| StoreError::store("tools", "write", e.to_string()))?;
+                self.schemas = schemas;
+                Ok(to.clone())
+            }
+            _ => Err(StoreError::store(
+                "tools",
+                "write",
+                format!("unknown write path: {to}"),
+            )),
+        }
     }
 }
 
@@ -791,5 +815,31 @@ mod tests {
 
         let val = unwrap_value(ns.read(&path!("model/id")).unwrap().unwrap());
         assert_eq!(val, Value::String("model-a".to_string()));
+    }
+
+    #[test]
+    fn tools_provider_accepts_schema_write() {
+        let mut tp = ToolsProvider::new(vec![]);
+
+        // Initially empty
+        let record = tp.read(&path!("schemas")).unwrap().unwrap();
+        match unwrap_value(record) {
+            Value::Array(a) => assert!(a.is_empty()),
+            _ => panic!("expected array"),
+        }
+
+        // Write schemas
+        let schemas_json = serde_json::json!([
+            {"name": "test_tool", "description": "A test", "input_schema": {"type": "object"}}
+        ]);
+        let schemas_value = structfs_serde_store::json_to_value(schemas_json);
+        tp.write(&path!("schemas"), Record::parsed(schemas_value)).unwrap();
+
+        // Read back — should have 1 schema
+        let record = tp.read(&path!("schemas")).unwrap().unwrap();
+        match unwrap_value(record) {
+            Value::Array(a) => assert_eq!(a.len(), 1),
+            _ => panic!("expected array"),
+        }
     }
 }
