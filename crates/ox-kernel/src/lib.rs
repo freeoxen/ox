@@ -29,6 +29,9 @@ pub use structfs_core_store::{
 
 pub mod snapshot;
 
+pub mod backing;
+pub use backing::StoreBacking;
+
 // ---------------------------------------------------------------------------
 // Message types
 // ---------------------------------------------------------------------------
