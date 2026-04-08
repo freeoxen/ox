@@ -23,7 +23,7 @@ use crate::agents::SYSTEM_PROMPT;
 pub struct ThreadNamespace {
     system: SystemProvider,
     history: HistoryProvider,
-    model: ModelProvider,
+    pub model: ModelProvider,
     tools: ToolsProvider,
     gate: GateStore,
     pub approval: ApprovalStore,
@@ -148,11 +148,24 @@ impl ThreadRegistry {
     fn ensure_mounted(&mut self, thread_id: &str) -> &mut ThreadNamespace {
         if !self.threads.contains_key(thread_id) {
             let thread_dir = self.inbox_root.join("threads").join(thread_id);
-            let ns = if thread_dir.exists() {
+            let mut ns = if thread_dir.exists() {
                 ThreadNamespace::from_thread_dir(&thread_dir)
             } else {
                 ThreadNamespace::new_default()
             };
+
+            // Wire config handle if broker client is available
+            if let Some(client) = &self.broker_client {
+                let config_client = client.scoped(&format!("config/threads/{thread_id}"));
+                let config_adapter = ox_broker::SyncClientAdapter::new(
+                    config_client,
+                    tokio::runtime::Handle::current(),
+                );
+                let read_only = ox_store_util::ReadOnly::new(config_adapter);
+                ns.model = ModelProvider::new("claude-sonnet-4-20250514".into(), 4096)
+                    .with_config(Box::new(read_only));
+            }
+
             self.threads.insert(thread_id.to_string(), ns);
         }
         self.threads.get_mut(thread_id).expect("just inserted")
@@ -180,31 +193,6 @@ impl ThreadRegistry {
         }
     }
 
-    /// Check if a sub-path is a config path that should resolve through ConfigStore.
-    fn is_config_path(sub: &Path) -> bool {
-        if sub.is_empty() {
-            return false;
-        }
-        matches!(sub.components[0].as_str(), "model")
-    }
-
-    /// Resolve a config read through the broker's ConfigStore.
-    fn resolve_config_read(
-        &self,
-        thread_id: &str,
-        sub: &Path,
-    ) -> BoxFuture<Result<Option<Record>, StoreError>> {
-        let Some(client) = &self.broker_client else {
-            return Box::pin(std::future::ready(Ok(None)));
-        };
-
-        // Pass the sub-path directly to config/threads/{id}/{sub}
-        let sub_str = sub.to_string();
-        let config_path =
-            Path::parse(&format!("config/threads/{thread_id}/{sub_str}")).unwrap();
-        let client = client.clone();
-        Box::pin(async move { client.read(&config_path).await })
-    }
 }
 
 impl AsyncReader for ThreadRegistry {
@@ -212,22 +200,14 @@ impl AsyncReader for ThreadRegistry {
         let Some((thread_id, sub)) = Self::split_thread_path(from) else {
             return Box::pin(std::future::ready(Ok(None)));
         };
-
-        // Approval paths → async ApprovalStore
-        if let Some(approval_sub) = Self::is_approval_path(&sub) {
-            let ns = self.ensure_mounted(&thread_id);
-            return ns.approval.read(&approval_sub);
-        }
-
-        // Config paths → resolve through ConfigStore via broker (if available)
-        if Self::is_config_path(&sub) && self.broker_client.is_some() {
-            return self.resolve_config_read(&thread_id, &sub);
-        }
-
-        // Everything else → local sync stores
         let ns = self.ensure_mounted(&thread_id);
-        let result = ns.read(&sub);
-        Box::pin(std::future::ready(result))
+
+        if let Some(approval_sub) = Self::is_approval_path(&sub) {
+            ns.approval.read(&approval_sub)
+        } else {
+            let result = ns.read(&sub);
+            Box::pin(std::future::ready(result))
+        }
     }
 }
 
@@ -238,28 +218,14 @@ impl AsyncWriter for ThreadRegistry {
                 path: to.clone(),
             })));
         };
-
-        // Approval paths → async ApprovalStore
-        if let Some(approval_sub) = Self::is_approval_path(&sub) {
-            let ns = self.ensure_mounted(&thread_id);
-            return ns.approval.write(&approval_sub, data);
-        }
-
-        // Config writes (model/id, model/max_tokens) → route to ConfigStore
-        if Self::is_config_path(&sub) {
-            if let Some(client) = &self.broker_client {
-                let sub_str = sub.to_string();
-                let config_path =
-                    Path::parse(&format!("config/threads/{thread_id}/{sub_str}")).unwrap();
-                let client = client.clone();
-                return Box::pin(async move { client.write(&config_path, data).await });
-            }
-        }
-
-        // Everything else → local sync stores
         let ns = self.ensure_mounted(&thread_id);
-        let result = ns.write(&sub, data);
-        Box::pin(std::future::ready(result))
+
+        if let Some(approval_sub) = Self::is_approval_path(&sub) {
+            ns.approval.write(&approval_sub, data)
+        } else {
+            let result = ns.write(&sub, data);
+            Box::pin(std::future::ready(result))
+        }
     }
 }
 

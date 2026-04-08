@@ -23,6 +23,7 @@ ox-runtime = { path = "../ox-runtime" }
 ox-inbox = { path = "../ox-inbox" }
 ox-broker = { path = "../ox-broker" }
 ox-ui = { path = "../ox-ui" }
+ox-store-util = { path = "../ox-store-util" }
 tokio = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.28"

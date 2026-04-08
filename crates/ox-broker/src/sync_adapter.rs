@@ -22,13 +22,13 @@ impl SyncClientAdapter {
 
 impl Reader for SyncClientAdapter {
     fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
-        self.handle.block_on(self.client.read(from))
+        tokio::task::block_in_place(|| self.handle.block_on(self.client.read(from)))
     }
 }
 
 impl Writer for SyncClientAdapter {
     fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
-        self.handle.block_on(self.client.write(to, data))
+        tokio::task::block_in_place(|| self.handle.block_on(self.client.write(to, data)))
     }
 }
 
