@@ -387,15 +387,30 @@ impl Writer for ToolsProvider {
 }
 
 /// Provides model ID and max_tokens settings.
+///
+/// An optional config handle can be attached via [`ModelProvider::with_config`].
+/// When present, reads for `id` and `max_tokens` first consult the config
+/// store; local fields serve as fallback defaults.
 pub struct ModelProvider {
     model: String,
     max_tokens: u32,
+    config: Option<Box<dyn Store + Send + Sync>>,
 }
 
 impl ModelProvider {
     /// Create a new provider with the given model ID and token limit.
     pub fn new(model: String, max_tokens: u32) -> Self {
-        Self { model, max_tokens }
+        Self {
+            model,
+            max_tokens,
+            config: None,
+        }
+    }
+
+    /// Attach a config store whose values take priority over local defaults.
+    pub fn with_config(mut self, config: Box<dyn Store + Send + Sync>) -> Self {
+        self.config = Some(config);
+        self
     }
 
     fn snapshot_state(&self) -> Value {
@@ -417,8 +432,22 @@ impl Reader for ModelProvider {
             from.components[0].as_str()
         };
         match key {
-            "" | "id" => Ok(Some(Record::parsed(Value::String(self.model.clone())))),
-            "max_tokens" => Ok(Some(Record::parsed(Value::Integer(self.max_tokens as i64)))),
+            "" | "id" => {
+                if let Some(ref mut config) = self.config {
+                    if let Ok(Some(record)) = config.read(&path!("model/id")) {
+                        return Ok(Some(record));
+                    }
+                }
+                Ok(Some(Record::parsed(Value::String(self.model.clone()))))
+            }
+            "max_tokens" => {
+                if let Some(ref mut config) = self.config {
+                    if let Ok(Some(record)) = config.read(&path!("model/max_tokens")) {
+                        return Ok(Some(record));
+                    }
+                }
+                Ok(Some(Record::parsed(Value::Integer(self.max_tokens as i64))))
+            }
             "snapshot" => {
                 let state = self.snapshot_state();
                 if from.components.len() >= 2 {
@@ -815,6 +844,41 @@ mod tests {
 
         let val = unwrap_value(ns.read(&path!("model/id")).unwrap().unwrap());
         assert_eq!(val, Value::String("model-a".to_string()));
+    }
+
+    #[test]
+    fn model_provider_reads_from_config_handle() {
+        use ox_store_util::LocalConfig;
+
+        let mut config = LocalConfig::new();
+        config.set("model/id", Value::String("config-model".into()));
+        config.set("model/max_tokens", Value::Integer(8192));
+
+        let mut provider =
+            ModelProvider::new("default-model".into(), 4096).with_config(Box::new(config));
+
+        let model = provider.read(&path!("id")).unwrap().unwrap();
+        assert_eq!(
+            model.as_value().unwrap(),
+            &Value::String("config-model".into())
+        );
+
+        let tokens = provider.read(&path!("max_tokens")).unwrap().unwrap();
+        assert_eq!(tokens.as_value().unwrap(), &Value::Integer(8192));
+    }
+
+    #[test]
+    fn model_provider_falls_back_to_local() {
+        let mut provider = ModelProvider::new("local-model".into(), 2048);
+
+        let model = provider.read(&path!("id")).unwrap().unwrap();
+        assert_eq!(
+            model.as_value().unwrap(),
+            &Value::String("local-model".into())
+        );
+
+        let tokens = provider.read(&path!("max_tokens")).unwrap().unwrap();
+        assert_eq!(tokens.as_value().unwrap(), &Value::Integer(2048));
     }
 
     #[test]
