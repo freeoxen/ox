@@ -6,11 +6,13 @@
 //! - `StoreBacking` — platform-agnostic persistence abstraction
 
 pub mod backing;
+pub mod cascade;
 pub mod local_config;
 pub mod masked;
 pub mod read_only;
 
 pub use backing::StoreBacking;
+pub use cascade::Cascade;
 pub use local_config::LocalConfig;
 pub use masked::Masked;
 pub use read_only::ReadOnly;
