@@ -26,7 +26,7 @@ in `ox-kernel/src/snapshot.rs`. ToolsProvider returns None.
 - Real thread title flow through save_thread_state
 - Message count derived from last_seq in inbox display
 
-### Phase C: StructFS TUI Rewrite (CURRENT — C1/C2/C3a/C3b/C4/C5/C6 complete)
+### Phase C: StructFS TUI Rewrite (CURRENT — C1/C2/C3a/C3b/C4/C5/C6/C7 complete)
 
 **Spec:** `docs/superpowers/specs/2026-04-06-structfs-tui-design.md`
 
@@ -116,18 +116,30 @@ in `ox-kernel/src/snapshot.rs`. ToolsProvider returns None.
   pending_approval, handle_event, drain_agent_events, update_streaming
 - `crates/ox-cli/src/tui.rs` — approval dialog reads from ViewState, writes response through
   broker; no drain_agent_events or control_rx polling
-- `crates/ox-cli/src/thread_mount.rs` — per-thread ApprovalStore via mount_async
 - Net: -439 lines
+
+#### C7: ThreadRegistry (complete, 5 tests in thread_registry + 61 total ox-cli)
+- `crates/ox-cli/src/thread_registry.rs` — AsyncStore at `threads/`, owns per-thread stores,
+  lazy-mounts from disk on first access, internal routing (Namespace pattern)
+- ThreadNamespace: per-thread store collection (system, history, model, tools, gate, approval),
+  sync Reader/Writer for save/restore, approval routed async separately
+- `crates/ox-context/src/lib.rs` — ToolsProvider now writable (accepts schemas writes)
+- `crates/ox-cli/src/broker_setup.rs` — mounts ThreadRegistry at `threads/`, removed global
+  ApprovalStore (now per-thread inside ThreadNamespace)
+- `crates/ox-cli/src/agents.rs` — worker skips mounting (ThreadRegistry lazy-mounts),
+  writes tool schemas + API key through adapter after lazy mount
+- `crates/ox-cli/src/thread_mount.rs` — deleted (replaced by ThreadRegistry)
+- Fixes: thread history loading for previously-saved threads (lazy mount on view)
 
 ## What's Next
 
 ### Remaining for full spec completion:
 
-1. **Search State in UiStore** (highest value next)
+1. **Search State in UiStore**
    - Move search.live_query and search.chips into UiStore
    - Eliminates the last handle_search_key direct-mutation path
 
-4. **StoreBacking Trait**
+2. **StoreBacking Trait**
    - Platform-agnostic persistence abstraction
    - Stores cache in memory, backings are authoritative
 
@@ -145,7 +157,8 @@ in `ox-kernel/src/snapshot.rs`. ToolsProvider returns None.
 - **Search is the last escape hatch**: handle_search_key bypasses broker (7 lines)
 - **Two InboxStore instances**: one in App/AgentPool, one in broker (same SQLite)
 - **HostStore generic over backend**: `HostStore<B, E>` works with Namespace (ox-web) or SyncClientAdapter (ox-cli)
-- **Workers mount their own stores**: worker thread calls `rt_handle.block_on(mount_thread(...))`, owns lifecycle
+- **ThreadRegistry owns thread lifecycle**: lazy mount from disk, internal routing, single opaque mount at `threads/`
+- **Workers don't mount**: ThreadRegistry lazy-mounts on first access, workers write config via adapter
 - **SyncClientAdapter uses Handle::block_on**: works from plain OS threads (not tokio tasks)
 - **ProviderConfig constructed directly**: workers don't read GateStore for transport config
 
@@ -160,3 +173,5 @@ in `ox-kernel/src/snapshot.rs`. ToolsProvider returns None.
 - **Plans:** `docs/superpowers/plans/2026-04-07-draw-rewrite.md` (executed)
 - **Spec:** `docs/superpowers/specs/2026-04-07-events-through-broker-design.md`
 - **Plans:** `docs/superpowers/plans/2026-04-07-events-through-broker.md` (executed)
+- **Spec:** `docs/superpowers/specs/2026-04-07-thread-registry-design.md`
+- **Plans:** `docs/superpowers/plans/2026-04-07-thread-registry.md` (executed)
