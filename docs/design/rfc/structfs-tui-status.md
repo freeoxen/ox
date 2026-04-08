@@ -176,14 +176,26 @@ in `ox-kernel/src/snapshot.rs`. ToolsProvider returns None.
 - **Spec:** `docs/superpowers/specs/2026-04-08-config-completion-design.md`
 - **Plan:** `docs/superpowers/plans/2026-04-08-config-completion-a.md`
 
+#### Phase 4b: Config System Last Mile (complete, 14/14 quality gates)
+- ModelProvider collapsed into GateStore — single source of truth for all LLM config
+- GateStore: max_tokens on AccountConfig, convenience model/max_tokens paths, with_config()
+- synthesize_prompt reads gate/model and gate/max_tokens (no model/ mount)
+- figment integration: defaults → ~/.ox/config.toml → OX_* env vars → CLI flags
+- TomlFileBacking persists runtime config to ~/.ox/config.toml (API keys excluded)
+- ConfigStore persistence via StoreBacking
+- ThreadRegistry wires ReadOnly config handles into GateStore
+- Agent worker reads config through thread stores, not direct broker reads
+- Config namespace: all paths under gate/ — no model/ section
+- **Spec:** `docs/superpowers/specs/2026-04-08-config-completion-design.md`
+- **Plan:** `docs/superpowers/plans/2026-04-08-config-completion-b.md`
+
 ## What's Next
 
 ### Remaining work:
 
-Phase 4b: figment integration for composable CLI config (TOML file + env vars +
-CLI flags), ConfigStore persistence (global TOML, per-thread JSON), GateStore
-config handle, ViewState Masked display. Completions-as-tools unification.
-Web platform IndexedDB backing.
+Config system complete (Phases 4a + 4b). Remaining feature-level work:
+completions-as-tools unification, runtime config UI (model/provider switcher
+in TUI), per-thread config persistence on save, web platform IndexedDB backing.
 
 ### Key Architecture Decisions
 - **Scroll commands match visual direction**: scroll_up = visual up = see older
