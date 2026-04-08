@@ -34,6 +34,67 @@ in-memory store implementing Reader. Set values at construction.
 
 No new trait. Just Reader. Stores already know this interface.
 
+### Capability Wrappers
+
+Wrapper stores that restrict capabilities on an inner store. Live
+in ox-kernel alongside Reader/Writer/Store — platform-agnostic,
+composable.
+
+**`ReadOnly<S: Store>`** — implements Reader (delegates), rejects
+all writes with StoreError. Use: give ModelProvider and GateStore
+read-only config handles so they can't accidentally write to
+ConfigStore.
+
+**`Masked<S: Reader>`** — implements Reader, applies path-based
+masking on reads. Returns a mask value (e.g. `"***"`) for masked
+paths, passes through for others. Use: mask `gate/api_key` when
+exposing config to the TUI/ViewState.
+
+These are generic — they work with any Reader/Store, not just config.
+
+```rust
+pub struct ReadOnly<S> {
+    inner: S,
+}
+
+impl<S: Reader> Reader for ReadOnly<S> {
+    fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
+        self.inner.read(from)
+    }
+}
+
+impl<S> Writer for ReadOnly<S> {
+    fn write(&mut self, _to: &Path, _data: Record) -> Result<Path, StoreError> {
+        Err(StoreError::store("ReadOnly", "write", "read-only capability"))
+    }
+}
+
+pub struct Masked<S> {
+    inner: S,
+    masked_paths: Vec<Path>,
+    mask_value: Value,
+}
+
+impl<S: Reader> Reader for Masked<S> {
+    fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
+        if self.masked_paths.iter().any(|p| from.starts_with(p)) {
+            return Ok(Some(Record::parsed(self.mask_value.clone())));
+        }
+        self.inner.read(from)
+    }
+}
+```
+
+**Capability assignment:**
+
+| Consumer | Config handle | Why |
+|----------|--------------|-----|
+| ModelProvider | `ReadOnly<SyncClientAdapter>` | Reads model config, can't write back |
+| GateStore | `ReadOnly<SyncClientAdapter>` | Reads api_key/provider, can't write back |
+| ViewState (TUI display) | `Masked<SyncClientAdapter>` | api_key shows as "***" |
+| Event loop | Direct broker client write | Full config write access |
+| ox-web stores | `LocalConfig` (ReadWrite) | Standalone, no restrictions needed |
+
 ### ConfigStore Namespace (Path-Based Read/Write)
 
 Reads and writes use the same paths. No special command paths.
@@ -282,18 +343,22 @@ Lives in ox-kernel alongside StoreBacking. Platform-agnostic.
 
 ## Execution Order
 
-1. LocalConfig in ox-kernel (standalone Reader for config)
-2. Refactor ConfigStore to path-based namespace (replace flat keys)
-3. Add figment integration in ox-cli (config loading)
-4. Add ConfigStore persistence (global TOML, per-thread JSON)
-5. Add config handle to ModelProvider (with_config builder)
-6. Add config handle to GateStore (with_config builder)
-7. Revert ThreadRegistry redirect, wire config handles at mount
-8. Clean up: remove redundant agent config writes
-9. Quality gates + status update
+1. Capability wrappers in ox-kernel (ReadOnly, Masked)
+2. LocalConfig in ox-kernel (standalone Reader/Writer for config)
+3. Refactor ConfigStore to path-based namespace (replace flat keys)
+4. Add figment integration in ox-cli (config loading)
+5. Add ConfigStore persistence (global TOML, per-thread JSON)
+6. Add config handle to ModelProvider (ReadOnly, with_config builder)
+7. Add config handle to GateStore (ReadOnly, with_config builder)
+8. Revert ThreadRegistry redirect, wire config handles at mount
+9. Update ViewState to use Masked config for display
+10. Clean up: remove redundant agent config writes
+11. Quality gates + status update
 
 ## Testing
 
+- ReadOnly: write rejected, read passes through
+- Masked: masked paths return mask value, others pass through
 - LocalConfig: unit tests for path-based read/write
 - ConfigStore: update existing tests for path-based writes + cascade
 - figment: integration test for file + env + flag composition
