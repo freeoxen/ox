@@ -58,6 +58,8 @@ pub struct UiStore {
     /// Set by commands like send_input/quit/open_selected that
     /// require App-level logic the store can't perform.
     pending_action: Option<String>,
+    search_chips: Vec<String>,
+    search_live_query: String,
     txn_log: TxnLog,
 }
 
@@ -79,6 +81,8 @@ impl UiStore {
             modal: None,
             status: None,
             pending_action: None,
+            search_chips: Vec::new(),
+            search_live_query: String::new(),
             txn_log: TxnLog::new(),
         }
     }
@@ -142,6 +146,14 @@ impl UiStore {
         }
     }
 
+    fn search_chips_value(&self) -> Value {
+        Value::Array(self.search_chips.iter().map(|s| Value::String(s.clone())).collect())
+    }
+
+    fn search_active(&self) -> bool {
+        !self.search_chips.is_empty() || !self.search_live_query.is_empty()
+    }
+
     fn all_fields_map(&self) -> Value {
         let mut map = BTreeMap::new();
         map.insert("screen".to_string(), self.screen_value());
@@ -170,6 +182,9 @@ impl UiStore {
         map.insert("modal".to_string(), self.modal_value());
         map.insert("status".to_string(), self.status_value());
         map.insert("pending_action".to_string(), self.pending_action_value());
+        map.insert("search_chips".to_string(), self.search_chips_value());
+        map.insert("search_live_query".to_string(), Value::String(self.search_live_query.clone()));
+        map.insert("search_active".to_string(), Value::Bool(self.search_active()));
         Value::Map(map)
     }
 
@@ -222,6 +237,9 @@ impl Reader for UiStore {
             "modal" => self.modal_value(),
             "status" => self.status_value(),
             "pending_action" => self.pending_action_value(),
+            "search_chips" => self.search_chips_value(),
+            "search_live_query" => Value::String(self.search_live_query.clone()),
+            "search_active" => Value::Bool(self.search_active()),
             _ => return Ok(None),
         };
         Ok(Some(Record::parsed(value)))
@@ -427,6 +445,39 @@ impl Writer for UiStore {
                     self.input.remove(self.cursor);
                 }
                 Ok(path!("input"))
+            }
+            "search_insert_char" => {
+                let ch = cmd
+                    .get_str("char")
+                    .ok_or_else(|| StoreError::store("ui", "search_insert_char", "missing char"))?;
+                self.search_live_query.push_str(ch);
+                Ok(path!("search_live_query"))
+            }
+            "search_delete_char" => {
+                self.search_live_query.pop();
+                Ok(path!("search_live_query"))
+            }
+            "search_clear" => {
+                self.search_live_query.clear();
+                Ok(path!("search_live_query"))
+            }
+            "search_save_chip" => {
+                let trimmed = self.search_live_query.trim().to_string();
+                if !trimmed.is_empty() {
+                    self.search_chips.push(trimmed);
+                }
+                self.search_live_query.clear();
+                Ok(path!("search_chips"))
+            }
+            "search_dismiss_chip" => {
+                let idx = cmd
+                    .get_int("index")
+                    .ok_or_else(|| StoreError::store("ui", "search_dismiss_chip", "missing index"))?;
+                let idx = idx as usize;
+                if idx < self.search_chips.len() {
+                    self.search_chips.remove(idx);
+                }
+                Ok(path!("search_chips"))
             }
             // -- Application-level actions (set pending for TUI to handle) --
             "send_input" | "quit" | "open_selected" | "archive_selected" => {
@@ -947,5 +998,227 @@ mod tests {
         // Page up with viewport > max — clamps to max
         store.write(&path!("scroll_page_up"), empty_cmd()).unwrap();
         assert_eq!(read_str(&mut store, "scroll"), Value::Integer(10));
+    }
+
+    // --- Search commands ---
+
+    #[test]
+    fn search_insert_char() {
+        let mut store = UiStore::new();
+        store
+            .write(
+                &path!("search_insert_char"),
+                cmd_map(&[("char", Value::String("h".into()))]),
+            )
+            .unwrap();
+        assert_eq!(
+            read_str(&mut store, "search_live_query"),
+            Value::String("h".into())
+        );
+        store
+            .write(
+                &path!("search_insert_char"),
+                cmd_map(&[("char", Value::String("i".into()))]),
+            )
+            .unwrap();
+        assert_eq!(
+            read_str(&mut store, "search_live_query"),
+            Value::String("hi".into())
+        );
+    }
+
+    #[test]
+    fn search_delete_char() {
+        let mut store = UiStore::new();
+        store
+            .write(
+                &path!("search_insert_char"),
+                cmd_map(&[("char", Value::String("a".into()))]),
+            )
+            .unwrap();
+        store
+            .write(
+                &path!("search_insert_char"),
+                cmd_map(&[("char", Value::String("b".into()))]),
+            )
+            .unwrap();
+        store
+            .write(&path!("search_delete_char"), empty_cmd())
+            .unwrap();
+        assert_eq!(
+            read_str(&mut store, "search_live_query"),
+            Value::String("a".into())
+        );
+    }
+
+    #[test]
+    fn search_delete_char_empty_is_noop() {
+        let mut store = UiStore::new();
+        store
+            .write(&path!("search_delete_char"), empty_cmd())
+            .unwrap();
+        assert_eq!(
+            read_str(&mut store, "search_live_query"),
+            Value::String("".into())
+        );
+    }
+
+    #[test]
+    fn search_clear() {
+        let mut store = UiStore::new();
+        store
+            .write(
+                &path!("search_insert_char"),
+                cmd_map(&[("char", Value::String("x".into()))]),
+            )
+            .unwrap();
+        store
+            .write(&path!("search_clear"), empty_cmd())
+            .unwrap();
+        assert_eq!(
+            read_str(&mut store, "search_live_query"),
+            Value::String("".into())
+        );
+    }
+
+    #[test]
+    fn search_save_chip() {
+        let mut store = UiStore::new();
+        for ch in ['b', 'u', 'g'] {
+            store
+                .write(
+                    &path!("search_insert_char"),
+                    cmd_map(&[("char", Value::String(ch.to_string()))]),
+                )
+                .unwrap();
+        }
+        store
+            .write(&path!("search_save_chip"), empty_cmd())
+            .unwrap();
+        assert_eq!(
+            read_str(&mut store, "search_chips"),
+            Value::Array(vec![Value::String("bug".into())])
+        );
+        assert_eq!(
+            read_str(&mut store, "search_live_query"),
+            Value::String("".into())
+        );
+    }
+
+    #[test]
+    fn search_save_chip_trims_whitespace() {
+        let mut store = UiStore::new();
+        for ch in [' ', 'a', ' '] {
+            store
+                .write(
+                    &path!("search_insert_char"),
+                    cmd_map(&[("char", Value::String(ch.to_string()))]),
+                )
+                .unwrap();
+        }
+        store
+            .write(&path!("search_save_chip"), empty_cmd())
+            .unwrap();
+        assert_eq!(
+            read_str(&mut store, "search_chips"),
+            Value::Array(vec![Value::String("a".into())])
+        );
+    }
+
+    #[test]
+    fn search_save_chip_empty_is_noop() {
+        let mut store = UiStore::new();
+        store
+            .write(&path!("search_save_chip"), empty_cmd())
+            .unwrap();
+        assert_eq!(
+            read_str(&mut store, "search_chips"),
+            Value::Array(vec![])
+        );
+    }
+
+    #[test]
+    fn search_dismiss_chip() {
+        let mut store = UiStore::new();
+        for word in ["alpha", "beta"] {
+            for ch in word.chars() {
+                store
+                    .write(
+                        &path!("search_insert_char"),
+                        cmd_map(&[("char", Value::String(ch.to_string()))]),
+                    )
+                    .unwrap();
+            }
+            store
+                .write(&path!("search_save_chip"), empty_cmd())
+                .unwrap();
+        }
+        store
+            .write(
+                &path!("search_dismiss_chip"),
+                cmd_map(&[("index", Value::Integer(0))]),
+            )
+            .unwrap();
+        assert_eq!(
+            read_str(&mut store, "search_chips"),
+            Value::Array(vec![Value::String("beta".into())])
+        );
+    }
+
+    #[test]
+    fn search_dismiss_chip_out_of_bounds_is_noop() {
+        let mut store = UiStore::new();
+        store
+            .write(
+                &path!("search_dismiss_chip"),
+                cmd_map(&[("index", Value::Integer(99))]),
+            )
+            .unwrap();
+        assert_eq!(
+            read_str(&mut store, "search_chips"),
+            Value::Array(vec![])
+        );
+    }
+
+    #[test]
+    fn search_active_derived() {
+        let mut store = UiStore::new();
+        assert_eq!(read_str(&mut store, "search_active"), Value::Bool(false));
+
+        store
+            .write(
+                &path!("search_insert_char"),
+                cmd_map(&[("char", Value::String("x".into()))]),
+            )
+            .unwrap();
+        assert_eq!(read_str(&mut store, "search_active"), Value::Bool(true));
+
+        store.write(&path!("search_clear"), empty_cmd()).unwrap();
+        assert_eq!(read_str(&mut store, "search_active"), Value::Bool(false));
+
+        store
+            .write(
+                &path!("search_insert_char"),
+                cmd_map(&[("char", Value::String("y".into()))]),
+            )
+            .unwrap();
+        store
+            .write(&path!("search_save_chip"), empty_cmd())
+            .unwrap();
+        assert_eq!(read_str(&mut store, "search_active"), Value::Bool(true));
+    }
+
+    #[test]
+    fn search_fields_in_all_map() {
+        let mut store = UiStore::new();
+        let val = read_str(&mut store, "");
+        match val {
+            Value::Map(m) => {
+                assert!(m.contains_key("search_chips"));
+                assert!(m.contains_key("search_live_query"));
+                assert!(m.contains_key("search_active"));
+            }
+            _ => panic!("expected Map"),
+        }
     }
 }
