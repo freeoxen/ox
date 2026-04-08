@@ -137,6 +137,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture).ok();
     ratatui::restore();
 
+    // Persist runtime config changes to ~/.ox/config.toml
+    rt.block_on(client.write(
+        &structfs_core_store::path!("config/save"),
+        structfs_core_store::Record::parsed(structfs_core_store::Value::Null),
+    ))
+    .ok();
+
     result?;
     Ok(())
 }

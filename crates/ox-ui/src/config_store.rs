@@ -225,6 +225,14 @@ impl Writer for ConfigStore {
                 "cannot write to config root",
             ));
         }
+
+        // "save" command: persist runtime config to backing
+        if path_str == "save" {
+            return self
+                .save_runtime()
+                .map(|()| to.clone());
+        }
+
         self.runtime.insert(path_str, value);
         Ok(to.clone())
     }
@@ -507,6 +515,55 @@ mod tests {
                     "api_key must not be persisted"
                 );
                 assert!(m.contains_key("gate/model"));
+            }
+            _ => panic!("expected map"),
+        }
+    }
+
+    #[test]
+    fn write_save_triggers_persistence() {
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Default)]
+        struct CaptureBacking {
+            saved: Arc<Mutex<Option<Value>>>,
+        }
+        impl ox_store_util::StoreBacking for CaptureBacking {
+            fn load(&self) -> Result<Option<Value>, StoreError> {
+                Ok(None)
+            }
+            fn save(&self, value: &Value) -> Result<(), StoreError> {
+                *self.saved.lock().unwrap() = Some(value.clone());
+                Ok(())
+            }
+        }
+
+        let saved = Arc::new(Mutex::new(None));
+        let backing = CaptureBacking {
+            saved: saved.clone(),
+        };
+        let mut config = ConfigStore::new(BTreeMap::new());
+        config.set_backing(Box::new(backing));
+
+        config
+            .write(
+                &path!("gate/model"),
+                Record::parsed(Value::String("gpt-4o".into())),
+            )
+            .unwrap();
+
+        // Write to "save" triggers persistence
+        config
+            .write(&path!("save"), Record::parsed(Value::Null))
+            .unwrap();
+
+        let saved_val = saved.lock().unwrap().clone().unwrap();
+        match saved_val {
+            Value::Map(m) => {
+                assert_eq!(
+                    m.get("gate/model").unwrap(),
+                    &Value::String("gpt-4o".into())
+                );
             }
             _ => panic!("expected map"),
         }

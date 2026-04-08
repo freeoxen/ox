@@ -97,7 +97,7 @@ pub fn resolve_config(config_dir: &Path, overrides: &CliOverrides) -> OxConfig {
     let figment = Figment::new()
         .merge(figment::providers::Serialized::defaults(OxConfig::default()))
         .merge(Toml::file(toml_path))
-        .merge(Env::prefixed("OX_").split("_"));
+        .merge(Env::prefixed("OX_").split("__"));
 
     let mut config: OxConfig = figment.extract().unwrap_or_default();
     config.apply_overrides(overrides);
@@ -183,6 +183,24 @@ mod tests {
             flat.get("gate/provider").unwrap(),
             &Value::String("openai".into())
         );
+    }
+
+    #[test]
+    fn env_var_with_double_underscore_separator() {
+        let dir = tempfile::tempdir().unwrap();
+        // SAFETY: test runs single-threaded for this env var manipulation
+        unsafe {
+            std::env::set_var("OX_GATE__MODEL", "env-model");
+            std::env::set_var("OX_GATE__API_KEY", "sk-from-env");
+        }
+        let config = resolve_config(dir.path(), &CliOverrides::default());
+        unsafe {
+            std::env::remove_var("OX_GATE__MODEL");
+            std::env::remove_var("OX_GATE__API_KEY");
+        }
+
+        assert_eq!(config.gate.model, "env-model");
+        assert_eq!(config.gate.api_key.as_deref(), Some("sk-from-env"));
     }
 
     #[test]
