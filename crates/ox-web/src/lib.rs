@@ -198,7 +198,7 @@ impl OxAgent {
         }
     }
 
-    /// Set the active provider (writes bootstrap account name).
+    /// Set the active provider (writes default account name).
     pub fn set_provider(&self, provider: &str) -> Result<(), JsValue> {
         self.context
             .borrow_mut()
@@ -216,15 +216,15 @@ impl OxAgent {
     /// Get the current active provider.
     pub fn get_provider(&self) -> String {
         let mut ctx = self.context.borrow_mut();
-        // Read bootstrap account name, then read that account's provider
-        let bootstrap = match ctx.read(&path!("gate/defaults/account")) {
+        // Read default account name, then read that account's provider
+        let default_account = match ctx.read(&path!("gate/defaults/account")) {
             Ok(Some(Record::Parsed(Value::String(s)))) => s,
             _ => return "anthropic".to_string(),
         };
         let provider_path = Path::from_components(vec![
             "gate".to_string(),
             "accounts".to_string(),
-            bootstrap,
+            default_account,
             "provider".to_string(),
         ]);
         match ctx.read(&provider_path) {
@@ -315,7 +315,7 @@ impl OxAgent {
             .flatten()
             .map(record_to_json);
 
-        let gate_bootstrap = ctx
+        let gate_account = ctx
             .read(&path!("gate/defaults/account"))
             .ok()
             .flatten()
@@ -333,7 +333,7 @@ impl OxAgent {
                 "messages": history_messages,
             },
             "gate": {
-                "bootstrap": gate_bootstrap,
+                "account": gate_account,
             },
         });
         snapshot.to_string()
@@ -780,8 +780,8 @@ async fn run_agentic_loop(
         .map_err(|e| e.to_string())?;
     emit_js(callback, "context_changed", "");
 
-    // Read bootstrap account → provider config from gate
-    let bootstrap = {
+    // Read default account → provider config from gate
+    let default_account = {
         let mut ctx = context_ref.borrow_mut();
         match ctx.read(&path!("gate/defaults/account")) {
             Ok(Some(Record::Parsed(Value::String(s)))) => s,
@@ -792,7 +792,7 @@ async fn run_agentic_loop(
         let provider_path = Path::from_components(vec![
             "gate".to_string(),
             "accounts".to_string(),
-            bootstrap.clone(),
+            default_account.clone(),
             "provider".to_string(),
         ]);
         let mut ctx = context_ref.borrow_mut();
@@ -803,7 +803,7 @@ async fn run_agentic_loop(
     };
     let provider_config = read_provider_config(context_ref, &provider);
 
-    let api_key = read_api_key(context_ref, &bootstrap);
+    let api_key = read_api_key(context_ref, &default_account);
 
     if api_key.is_empty() {
         return Err(format!("No API key set for provider '{provider}'"));

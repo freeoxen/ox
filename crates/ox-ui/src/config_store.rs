@@ -6,7 +6,7 @@
 //!
 //! No masking — consumers that need masking use a `Masked` wrapper.
 //! No thread scoping — threads use `Cascade<LocalConfig, ReadOnly<handle>>`.
-//! Reads and writes use the same paths: gate/model, gate/provider, etc.
+//! Reads and writes use flat string keys (e.g. gate/defaults/model).
 
 use std::collections::BTreeMap;
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer};
@@ -61,7 +61,7 @@ impl ConfigStore {
         let filtered: BTreeMap<String, Value> = self
             .runtime
             .iter()
-            .filter(|(k, _)| !k.contains("/key"))
+            .filter(|(k, _)| !k.ends_with("/key"))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         backing.save(&Value::Map(filtered))
