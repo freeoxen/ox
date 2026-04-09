@@ -193,4 +193,162 @@ mod tests {
         turn.write("thinking", &Value::Bool(true));
         assert!(turn.is_active());
     }
+
+    #[test]
+    fn is_active_with_streaming_only() {
+        let mut turn = TurnState::new();
+        turn.write("streaming", &Value::String("text".to_string()));
+        assert!(turn.is_active());
+    }
+
+    #[test]
+    fn is_active_with_tool_only() {
+        let mut turn = TurnState::new();
+        let mut tool_map = BTreeMap::new();
+        tool_map.insert("name".to_string(), Value::String("bash".to_string()));
+        tool_map.insert("status".to_string(), Value::String("running".to_string()));
+        turn.write("tool", &Value::Map(tool_map));
+        assert!(turn.is_active());
+    }
+
+    #[test]
+    fn clear_resets_tool_and_tokens() {
+        let mut turn = TurnState::new();
+        let mut tool_map = BTreeMap::new();
+        tool_map.insert("name".to_string(), Value::String("bash".to_string()));
+        tool_map.insert("status".to_string(), Value::String("done".to_string()));
+        turn.write("tool", &Value::Map(tool_map));
+        let mut tokens = BTreeMap::new();
+        tokens.insert("in".to_string(), Value::Integer(100));
+        tokens.insert("out".to_string(), Value::Integer(50));
+        turn.write("tokens", &Value::Map(tokens));
+
+        turn.clear();
+        assert!(turn.tool.is_none());
+        assert_eq!(turn.tokens, (0, 0));
+    }
+
+    #[test]
+    fn tool_clear_via_null() {
+        let mut turn = TurnState::new();
+        let mut tool_map = BTreeMap::new();
+        tool_map.insert("name".to_string(), Value::String("bash".to_string()));
+        tool_map.insert("status".to_string(), Value::String("running".to_string()));
+        turn.write("tool", &Value::Map(tool_map));
+        assert!(turn.tool.is_some());
+
+        // Clear tool by writing Null
+        assert!(turn.write("tool", &Value::Null));
+        assert!(turn.tool.is_none());
+    }
+
+    #[test]
+    fn streaming_write_wrong_type_returns_false() {
+        let mut turn = TurnState::new();
+        assert!(!turn.write("streaming", &Value::Integer(42)));
+        assert!(turn.streaming.is_empty());
+    }
+
+    #[test]
+    fn thinking_write_wrong_type_returns_false() {
+        let mut turn = TurnState::new();
+        assert!(!turn.write("thinking", &Value::String("yes".to_string())));
+        assert!(!turn.thinking);
+    }
+
+    #[test]
+    fn tool_write_non_map_non_null_returns_false() {
+        let mut turn = TurnState::new();
+        assert!(!turn.write("tool", &Value::String("bash".to_string())));
+        assert!(turn.tool.is_none());
+    }
+
+    #[test]
+    fn tool_write_map_missing_name_returns_false() {
+        let mut turn = TurnState::new();
+        let mut map = BTreeMap::new();
+        map.insert("status".to_string(), Value::String("running".to_string()));
+        assert!(!turn.write("tool", &Value::Map(map)));
+        assert!(turn.tool.is_none());
+    }
+
+    #[test]
+    fn tool_write_map_missing_status_returns_false() {
+        let mut turn = TurnState::new();
+        let mut map = BTreeMap::new();
+        map.insert("name".to_string(), Value::String("bash".to_string()));
+        assert!(!turn.write("tool", &Value::Map(map)));
+        assert!(turn.tool.is_none());
+    }
+
+    #[test]
+    fn tool_write_map_non_string_values_returns_false() {
+        let mut turn = TurnState::new();
+        let mut map = BTreeMap::new();
+        map.insert("name".to_string(), Value::Integer(1));
+        map.insert("status".to_string(), Value::Integer(2));
+        assert!(!turn.write("tool", &Value::Map(map)));
+    }
+
+    #[test]
+    fn tokens_write_wrong_type_returns_false() {
+        let mut turn = TurnState::new();
+        assert!(!turn.write("tokens", &Value::String("100".to_string())));
+        assert_eq!(turn.tokens, (0, 0));
+    }
+
+    #[test]
+    fn tokens_write_map_missing_in_returns_false() {
+        let mut turn = TurnState::new();
+        let mut map = BTreeMap::new();
+        map.insert("out".to_string(), Value::Integer(50));
+        assert!(!turn.write("tokens", &Value::Map(map)));
+    }
+
+    #[test]
+    fn tokens_write_map_missing_out_returns_false() {
+        let mut turn = TurnState::new();
+        let mut map = BTreeMap::new();
+        map.insert("in".to_string(), Value::Integer(100));
+        assert!(!turn.write("tokens", &Value::Map(map)));
+    }
+
+    #[test]
+    fn tokens_write_map_non_integer_values_returns_false() {
+        let mut turn = TurnState::new();
+        let mut map = BTreeMap::new();
+        map.insert("in".to_string(), Value::String("100".to_string()));
+        map.insert("out".to_string(), Value::String("50".to_string()));
+        assert!(!turn.write("tokens", &Value::Map(map)));
+    }
+
+    #[test]
+    fn read_unknown_subpath_returns_none() {
+        let turn = TurnState::new();
+        assert!(turn.read("nonexistent").is_none());
+    }
+
+    #[test]
+    fn write_unknown_subpath_returns_false() {
+        let mut turn = TurnState::new();
+        assert!(!turn.write("nonexistent", &Value::Null));
+    }
+
+    #[test]
+    fn tokens_read_returns_map() {
+        let mut turn = TurnState::new();
+        let mut map = BTreeMap::new();
+        map.insert("in".to_string(), Value::Integer(200));
+        map.insert("out".to_string(), Value::Integer(75));
+        turn.write("tokens", &Value::Map(map));
+
+        let val = turn.read("tokens").unwrap();
+        match val {
+            Value::Map(m) => {
+                assert_eq!(m.get("in"), Some(&Value::Integer(200)));
+                assert_eq!(m.get("out"), Some(&Value::Integer(75)));
+            }
+            _ => panic!("expected map"),
+        }
+    }
 }

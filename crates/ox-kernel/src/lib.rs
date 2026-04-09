@@ -671,6 +671,119 @@ pub fn serialize_tool_results(results: &[ToolResult]) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+
+    // -----------------------------------------------------------------------
+    // Mock store for kernel tests
+    // -----------------------------------------------------------------------
+
+    /// A simple in-memory store that responds to `prompt` reads with a
+    /// pre-configured CompletionRequest and captures `history/append` writes.
+    struct MockStore {
+        prompt: Option<Value>,
+        appended: Vec<Value>,
+        data: BTreeMap<String, Value>,
+    }
+
+    impl MockStore {
+        /// Create a store pre-loaded with a CompletionRequest at `prompt`.
+        fn with_prompt(request: &CompletionRequest) -> Self {
+            let json = serde_json::to_value(request).unwrap();
+            let value = structfs_serde_store::json_to_value(json);
+            Self {
+                prompt: Some(value),
+                appended: Vec::new(),
+                data: BTreeMap::new(),
+            }
+        }
+
+        /// Create a store with no prompt (for error-path tests).
+        fn empty() -> Self {
+            Self {
+                prompt: None,
+                appended: Vec::new(),
+                data: BTreeMap::new(),
+            }
+        }
+    }
+
+    impl Reader for MockStore {
+        fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
+            if from == &path!("prompt") {
+                return Ok(self.prompt.as_ref().map(|v| Record::parsed(v.clone())));
+            }
+            let key = from.to_string();
+            Ok(self.data.get(&key).map(|v| Record::parsed(v.clone())))
+        }
+    }
+
+    impl Writer for MockStore {
+        fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
+            if to == &path!("history/append") {
+                if let Record::Parsed(v) = &data {
+                    self.appended.push(v.clone());
+                }
+                return Ok(to.clone());
+            }
+            let value = match data {
+                Record::Parsed(v) => v,
+                _ => {
+                    return Err(StoreError::store(
+                        "mock",
+                        "write",
+                        "expected parsed record",
+                    ));
+                }
+            };
+            self.data.insert(to.to_string(), value);
+            Ok(to.clone())
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Test helpers
+    // -----------------------------------------------------------------------
+
+    fn make_request() -> CompletionRequest {
+        CompletionRequest {
+            model: "test-model".into(),
+            max_tokens: 1024,
+            system: "You are a test agent.".into(),
+            messages: vec![serde_json::json!({
+                "role": "user",
+                "content": "Hello",
+            })],
+            tools: vec![],
+            stream: true,
+        }
+    }
+
+    fn make_request_with_tools() -> CompletionRequest {
+        CompletionRequest {
+            model: "test-model".into(),
+            max_tokens: 1024,
+            system: "You are a test agent.".into(),
+            messages: vec![serde_json::json!({
+                "role": "user",
+                "content": "What is the weather?",
+            })],
+            tools: vec![ToolSchema {
+                name: "get_weather".into(),
+                description: "Gets the weather".into(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": { "city": { "type": "string" } },
+                    "required": ["city"]
+                }),
+            }],
+            stream: true,
+        }
+    }
+
+
+    // -----------------------------------------------------------------------
+    // Tool / Registry tests (existing)
+    // -----------------------------------------------------------------------
 
     #[test]
     fn fn_tool_executes_closure() {
@@ -706,5 +819,952 @@ mod tests {
         assert!(registry.get("noop").is_some());
         assert_eq!(registry.schemas().len(), 1);
         assert_eq!(registry.schemas()[0].name, "noop");
+    }
+
+    #[test]
+    fn registry_replaces_tool_with_same_name() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(FnTool::new(
+            "echo",
+            "v1",
+            serde_json::json!({"type": "object"}),
+            |_| Ok("v1".into()),
+        )));
+        registry.register(Box::new(FnTool::new(
+            "echo",
+            "v2",
+            serde_json::json!({"type": "object"}),
+            |_| Ok("v2".into()),
+        )));
+        assert_eq!(registry.schemas().len(), 1);
+        assert_eq!(registry.get("echo").unwrap().description(), "v2");
+    }
+
+    #[test]
+    fn registry_get_missing_returns_none() {
+        let registry = ToolRegistry::new();
+        assert!(registry.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn fn_tool_execute_error() {
+        let tool = FnTool::new(
+            "fail",
+            "Always fails",
+            serde_json::json!({"type": "object"}),
+            |_| Err("broken".into()),
+        );
+        let result = tool.execute(serde_json::json!({}));
+        assert_eq!(result.unwrap_err(), "broken");
+    }
+
+    // -----------------------------------------------------------------------
+    // Kernel constructor and state tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn kernel_new_is_idle() {
+        let kernel = Kernel::new("test-model".into());
+        assert_eq!(kernel.state(), KernelState::Idle);
+        assert_eq!(kernel.model(), "test-model");
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 1: initiate_completion
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn initiate_completion_happy_path() {
+        let mut kernel = Kernel::new("test-model".into());
+        let request = make_request();
+        let mut store = MockStore::with_prompt(&request);
+
+        let result = kernel.initiate_completion(&mut store).unwrap();
+        assert_eq!(result.model, "test-model");
+        assert_eq!(result.max_tokens, 1024);
+        assert_eq!(result.system, "You are a test agent.");
+        assert_eq!(result.messages.len(), 1);
+        assert!(result.stream);
+    }
+
+    #[test]
+    fn initiate_completion_preserves_tools() {
+        let mut kernel = Kernel::new("test-model".into());
+        let request = make_request_with_tools();
+        let mut store = MockStore::with_prompt(&request);
+
+        let result = kernel.initiate_completion(&mut store).unwrap();
+        assert_eq!(result.tools.len(), 1);
+        assert_eq!(result.tools[0].name, "get_weather");
+    }
+
+    #[test]
+    fn initiate_completion_no_prompt_errors() {
+        let mut kernel = Kernel::new("test-model".into());
+        let mut store = MockStore::empty();
+
+        let result = kernel.initiate_completion(&mut store);
+        assert!(result.is_err());
+        // The error message should indicate the prompt couldn't be read
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("prompt") || err.contains("failed"),
+            "error should mention prompt: {err}"
+        );
+    }
+
+
+    // -----------------------------------------------------------------------
+    // Phase 2: consume_events
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn consume_events_text_only() {
+        let mut kernel = Kernel::new("test-model".into());
+        let events = vec![
+            StreamEvent::TextDelta("Hello, ".into()),
+            StreamEvent::TextDelta("world!".into()),
+            StreamEvent::MessageStop,
+        ];
+        let mut agent_events = Vec::new();
+        let content = kernel
+            .consume_events(events, &mut |e| agent_events.push(e))
+            .unwrap();
+
+        assert_eq!(content.len(), 1);
+        match &content[0] {
+            ContentBlock::Text { text } => assert_eq!(text, "Hello, world!"),
+            _ => panic!("expected text block"),
+        }
+    }
+
+    #[test]
+    fn consume_events_emits_turn_start() {
+        let mut kernel = Kernel::new("test-model".into());
+        let events = vec![
+            StreamEvent::TextDelta("hi".into()),
+            StreamEvent::MessageStop,
+        ];
+        let mut agent_events = Vec::new();
+        kernel
+            .consume_events(events, &mut |e| agent_events.push(e))
+            .unwrap();
+
+        assert!(matches!(agent_events[0], AgentEvent::TurnStart));
+    }
+
+    #[test]
+    fn consume_events_emits_text_deltas() {
+        let mut kernel = Kernel::new("test-model".into());
+        let events = vec![
+            StreamEvent::TextDelta("chunk1".into()),
+            StreamEvent::TextDelta("chunk2".into()),
+            StreamEvent::MessageStop,
+        ];
+        let mut agent_events = Vec::new();
+        kernel
+            .consume_events(events, &mut |e| agent_events.push(e))
+            .unwrap();
+
+        // TurnStart, TextDelta("chunk1"), TextDelta("chunk2")
+        assert!(matches!(&agent_events[1], AgentEvent::TextDelta(t) if t == "chunk1"));
+        assert!(matches!(&agent_events[2], AgentEvent::TextDelta(t) if t == "chunk2"));
+    }
+
+    #[test]
+    fn consume_events_tool_call() {
+        let mut kernel = Kernel::new("test-model".into());
+        let events = vec![
+            StreamEvent::ToolUseStart {
+                id: "call_1".into(),
+                name: "get_weather".into(),
+            },
+            StreamEvent::ToolUseInputDelta(r#"{"city":"#.into()),
+            StreamEvent::ToolUseInputDelta(r#""NYC"}"#.into()),
+            StreamEvent::MessageStop,
+        ];
+        let mut agent_events = Vec::new();
+        let content = kernel
+            .consume_events(events, &mut |e| agent_events.push(e))
+            .unwrap();
+
+        assert_eq!(content.len(), 1);
+        match &content[0] {
+            ContentBlock::ToolUse(tc) => {
+                assert_eq!(tc.id, "call_1");
+                assert_eq!(tc.name, "get_weather");
+                assert_eq!(tc.input, serde_json::json!({"city": "NYC"}));
+            }
+            _ => panic!("expected tool use block"),
+        }
+    }
+
+    #[test]
+    fn consume_events_mixed_text_and_tool() {
+        let mut kernel = Kernel::new("test-model".into());
+        let events = vec![
+            StreamEvent::TextDelta("Let me check the weather.".into()),
+            StreamEvent::ToolUseStart {
+                id: "call_1".into(),
+                name: "get_weather".into(),
+            },
+            StreamEvent::ToolUseInputDelta(r#"{"city":"NYC"}"#.into()),
+            StreamEvent::MessageStop,
+        ];
+        let mut agent_events = Vec::new();
+        let content = kernel
+            .consume_events(events, &mut |e| agent_events.push(e))
+            .unwrap();
+
+        assert_eq!(content.len(), 2);
+        match &content[0] {
+            ContentBlock::Text { text } => {
+                assert_eq!(text, "Let me check the weather.");
+            }
+            _ => panic!("expected text block first"),
+        }
+        match &content[1] {
+            ContentBlock::ToolUse(tc) => {
+                assert_eq!(tc.name, "get_weather");
+            }
+            _ => panic!("expected tool use block second"),
+        }
+    }
+
+    #[test]
+    fn consume_events_multiple_tool_calls() {
+        let mut kernel = Kernel::new("test-model".into());
+        let events = vec![
+            StreamEvent::ToolUseStart {
+                id: "call_1".into(),
+                name: "tool_a".into(),
+            },
+            StreamEvent::ToolUseInputDelta(r#"{}"#.into()),
+            StreamEvent::ToolUseStart {
+                id: "call_2".into(),
+                name: "tool_b".into(),
+            },
+            StreamEvent::ToolUseInputDelta(r#"{"x": 1}"#.into()),
+            StreamEvent::MessageStop,
+        ];
+        let mut agent_events = Vec::new();
+        let content = kernel
+            .consume_events(events, &mut |e| agent_events.push(e))
+            .unwrap();
+
+        assert_eq!(content.len(), 2);
+        match &content[0] {
+            ContentBlock::ToolUse(tc) => {
+                assert_eq!(tc.id, "call_1");
+                assert_eq!(tc.name, "tool_a");
+            }
+            _ => panic!("expected first tool use"),
+        }
+        match &content[1] {
+            ContentBlock::ToolUse(tc) => {
+                assert_eq!(tc.id, "call_2");
+                assert_eq!(tc.name, "tool_b");
+                assert_eq!(tc.input, serde_json::json!({"x": 1}));
+            }
+            _ => panic!("expected second tool use"),
+        }
+    }
+
+    #[test]
+    fn consume_events_empty() {
+        let mut kernel = Kernel::new("test-model".into());
+        let events = vec![];
+        let mut agent_events = Vec::new();
+        let content = kernel
+            .consume_events(events, &mut |e| agent_events.push(e))
+            .unwrap();
+
+        assert!(content.is_empty());
+    }
+
+    #[test]
+    fn consume_events_message_stop_only() {
+        let mut kernel = Kernel::new("test-model".into());
+        let events = vec![StreamEvent::MessageStop];
+        let mut agent_events = Vec::new();
+        let content = kernel
+            .consume_events(events, &mut |e| agent_events.push(e))
+            .unwrap();
+
+        assert!(content.is_empty());
+    }
+
+    #[test]
+    fn consume_events_error_returns_err() {
+        let mut kernel = Kernel::new("test-model".into());
+        let events = vec![
+            StreamEvent::TextDelta("partial".into()),
+            StreamEvent::Error("server error".into()),
+        ];
+        let mut agent_events = Vec::new();
+        let result = kernel.consume_events(events, &mut |e| agent_events.push(e));
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "server error");
+        // Kernel should be back to Idle after error
+        assert_eq!(kernel.state(), KernelState::Idle);
+    }
+
+    #[test]
+    fn consume_events_error_emits_error_event() {
+        let mut kernel = Kernel::new("test-model".into());
+        let events = vec![StreamEvent::Error("boom".into())];
+        let mut agent_events = Vec::new();
+        let _ = kernel.consume_events(events, &mut |e| agent_events.push(e));
+
+        // Should have TurnStart then Error
+        assert!(agent_events.iter().any(
+            |e| matches!(e, AgentEvent::Error(msg) if msg == "boom")
+        ));
+    }
+
+    #[test]
+    fn consume_events_error_flushes_partial_text() {
+        let mut kernel = Kernel::new("test-model".into());
+        // Text before error should be flushed into content blocks
+        // (even though the result is Err, the flush happens internally)
+        let events = vec![
+            StreamEvent::TextDelta("partial ".into()),
+            StreamEvent::TextDelta("text".into()),
+            StreamEvent::Error("fail".into()),
+        ];
+        let mut agent_events = Vec::new();
+        let result = kernel.consume_events(events, &mut |e| agent_events.push(e));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn consume_events_tool_with_invalid_json_input() {
+        let mut kernel = Kernel::new("test-model".into());
+        let events = vec![
+            StreamEvent::ToolUseStart {
+                id: "call_1".into(),
+                name: "bad_tool".into(),
+            },
+            StreamEvent::ToolUseInputDelta("not valid json".into()),
+            StreamEvent::MessageStop,
+        ];
+        let mut agent_events = Vec::new();
+        let content = kernel
+            .consume_events(events, &mut |e| agent_events.push(e))
+            .unwrap();
+
+        // Invalid JSON input should fall back to Null
+        assert_eq!(content.len(), 1);
+        match &content[0] {
+            ContentBlock::ToolUse(tc) => {
+                assert_eq!(tc.input, serde_json::Value::Null);
+            }
+            _ => panic!("expected tool use block"),
+        }
+    }
+
+    #[test]
+    fn consume_events_tool_with_empty_input() {
+        let mut kernel = Kernel::new("test-model".into());
+        let events = vec![
+            StreamEvent::ToolUseStart {
+                id: "call_1".into(),
+                name: "no_args_tool".into(),
+            },
+            // No ToolUseInputDelta events
+            StreamEvent::MessageStop,
+        ];
+        let mut agent_events = Vec::new();
+        let content = kernel
+            .consume_events(events, &mut |e| agent_events.push(e))
+            .unwrap();
+
+        assert_eq!(content.len(), 1);
+        match &content[0] {
+            ContentBlock::ToolUse(tc) => {
+                // Empty string parses to Null
+                assert_eq!(tc.input, serde_json::Value::Null);
+            }
+            _ => panic!("expected tool use block"),
+        }
+    }
+
+    #[test]
+    fn consume_events_text_after_tool_via_delta() {
+        // Regression: TextDelta after a tool should flush the tool first
+        let mut kernel = Kernel::new("test-model".into());
+        let events = vec![
+            StreamEvent::ToolUseStart {
+                id: "call_1".into(),
+                name: "tool_a".into(),
+            },
+            StreamEvent::ToolUseInputDelta(r#"{}"#.into()),
+            StreamEvent::TextDelta("Some trailing text".into()),
+            StreamEvent::MessageStop,
+        ];
+        let mut agent_events = Vec::new();
+        let content = kernel
+            .consume_events(events, &mut |e| agent_events.push(e))
+            .unwrap();
+
+        assert_eq!(content.len(), 2);
+        assert!(matches!(&content[0], ContentBlock::ToolUse(_)));
+        match &content[1] {
+            ContentBlock::Text { text } => assert_eq!(text, "Some trailing text"),
+            _ => panic!("expected text block after tool"),
+        }
+    }
+
+    #[test]
+    fn consume_events_resets_to_idle() {
+        let mut kernel = Kernel::new("test-model".into());
+        let events = vec![
+            StreamEvent::TextDelta("done".into()),
+            StreamEvent::MessageStop,
+        ];
+        let mut noop = |_: AgentEvent| {};
+        kernel.consume_events(events, &mut noop).unwrap();
+        assert_eq!(kernel.state(), KernelState::Idle);
+    }
+
+    #[test]
+    fn consume_events_can_be_called_twice() {
+        let mut kernel = Kernel::new("test-model".into());
+        let mut noop = |_: AgentEvent| {};
+
+        let events1 = vec![
+            StreamEvent::TextDelta("first".into()),
+            StreamEvent::MessageStop,
+        ];
+        let content1 = kernel.consume_events(events1, &mut noop).unwrap();
+        assert_eq!(content1.len(), 1);
+
+        let events2 = vec![
+            StreamEvent::TextDelta("second".into()),
+            StreamEvent::MessageStop,
+        ];
+        let content2 = kernel.consume_events(events2, &mut noop).unwrap();
+        assert_eq!(content2.len(), 1);
+        match &content2[0] {
+            ContentBlock::Text { text } => assert_eq!(text, "second"),
+            _ => panic!("expected text"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 3: complete_turn
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn complete_turn_no_tool_calls() {
+        let mut kernel = Kernel::new("test-model".into());
+        let request = make_request();
+        let mut store = MockStore::with_prompt(&request);
+
+        let content = vec![ContentBlock::Text {
+            text: "Hello!".into(),
+        }];
+        let tool_calls = kernel.complete_turn(&mut store, &content).unwrap();
+
+        assert!(tool_calls.is_empty());
+    }
+
+    #[test]
+    fn complete_turn_writes_assistant_message_to_history() {
+        let mut kernel = Kernel::new("test-model".into());
+        let request = make_request();
+        let mut store = MockStore::with_prompt(&request);
+
+        let content = vec![ContentBlock::Text {
+            text: "Hi there!".into(),
+        }];
+        kernel.complete_turn(&mut store, &content).unwrap();
+
+        // Verify something was appended to history
+        assert_eq!(store.appended.len(), 1);
+
+        // Verify the appended value is a valid assistant message
+        let json = structfs_serde_store::value_to_json(store.appended[0].clone());
+        assert_eq!(json["role"], "assistant");
+        assert!(json["content"].is_array());
+        assert_eq!(json["content"][0]["type"], "text");
+        assert_eq!(json["content"][0]["text"], "Hi there!");
+    }
+
+    #[test]
+    fn complete_turn_with_tool_calls() {
+        let mut kernel = Kernel::new("test-model".into());
+        let request = make_request_with_tools();
+        let mut store = MockStore::with_prompt(&request);
+
+        let content = vec![
+            ContentBlock::Text {
+                text: "Let me check.".into(),
+            },
+            ContentBlock::ToolUse(ToolCall {
+                id: "call_1".into(),
+                name: "get_weather".into(),
+                input: serde_json::json!({"city": "NYC"}),
+            }),
+        ];
+        let tool_calls = kernel.complete_turn(&mut store, &content).unwrap();
+
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].id, "call_1");
+        assert_eq!(tool_calls[0].name, "get_weather");
+        assert_eq!(tool_calls[0].input, serde_json::json!({"city": "NYC"}));
+    }
+
+    #[test]
+    fn complete_turn_multiple_tool_calls() {
+        let mut kernel = Kernel::new("test-model".into());
+        let request = make_request();
+        let mut store = MockStore::with_prompt(&request);
+
+        let content = vec![
+            ContentBlock::ToolUse(ToolCall {
+                id: "call_1".into(),
+                name: "tool_a".into(),
+                input: serde_json::json!({}),
+            }),
+            ContentBlock::ToolUse(ToolCall {
+                id: "call_2".into(),
+                name: "tool_b".into(),
+                input: serde_json::json!({"x": 42}),
+            }),
+        ];
+        let tool_calls = kernel.complete_turn(&mut store, &content).unwrap();
+
+        assert_eq!(tool_calls.len(), 2);
+        assert_eq!(tool_calls[0].name, "tool_a");
+        assert_eq!(tool_calls[1].name, "tool_b");
+    }
+
+    #[test]
+    fn complete_turn_writes_tool_use_to_history() {
+        let mut kernel = Kernel::new("test-model".into());
+        let request = make_request();
+        let mut store = MockStore::with_prompt(&request);
+
+        let content = vec![ContentBlock::ToolUse(ToolCall {
+            id: "call_1".into(),
+            name: "echo".into(),
+            input: serde_json::json!({"text": "hi"}),
+        })];
+        kernel.complete_turn(&mut store, &content).unwrap();
+
+        // The assistant message should include the tool_use block
+        let json = structfs_serde_store::value_to_json(store.appended[0].clone());
+        assert_eq!(json["role"], "assistant");
+        assert_eq!(json["content"][0]["type"], "tool_use");
+        assert_eq!(json["content"][0]["name"], "echo");
+        assert_eq!(json["content"][0]["id"], "call_1");
+    }
+
+    #[test]
+    fn complete_turn_empty_content() {
+        let mut kernel = Kernel::new("test-model".into());
+        let request = make_request();
+        let mut store = MockStore::with_prompt(&request);
+
+        let content: Vec<ContentBlock> = vec![];
+        let tool_calls = kernel.complete_turn(&mut store, &content).unwrap();
+
+        assert!(tool_calls.is_empty());
+        // Should still write an assistant message (with empty content)
+        assert_eq!(store.appended.len(), 1);
+        let json = structfs_serde_store::value_to_json(store.appended[0].clone());
+        assert_eq!(json["role"], "assistant");
+        assert!(json["content"].as_array().unwrap().is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Full loop: initiate -> consume -> complete
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn full_loop_text_response() {
+        let mut kernel = Kernel::new("test-model".into());
+        let request = make_request();
+        let mut store = MockStore::with_prompt(&request);
+
+        // Phase 1: initiate
+        let req = kernel.initiate_completion(&mut store).unwrap();
+        assert_eq!(req.model, "test-model");
+
+        // Phase 2: consume (simulate LLM response)
+        let events = vec![
+            StreamEvent::TextDelta("I'm doing great!".into()),
+            StreamEvent::MessageStop,
+        ];
+        let mut agent_events = Vec::new();
+        let content = kernel
+            .consume_events(events, &mut |e| agent_events.push(e))
+            .unwrap();
+
+        // Phase 3: complete
+        let tool_calls = kernel.complete_turn(&mut store, &content).unwrap();
+        assert!(tool_calls.is_empty());
+
+        // Verify history was updated
+        assert_eq!(store.appended.len(), 1);
+        let json = structfs_serde_store::value_to_json(store.appended[0].clone());
+        assert_eq!(json["role"], "assistant");
+        assert_eq!(json["content"][0]["text"], "I'm doing great!");
+
+        // Verify agent events
+        assert!(matches!(agent_events[0], AgentEvent::TurnStart));
+        assert!(
+            matches!(&agent_events[1], AgentEvent::TextDelta(t) if t == "I'm doing great!")
+        );
+    }
+
+    #[test]
+    fn full_loop_tool_call_response() {
+        let mut kernel = Kernel::new("test-model".into());
+        let request = make_request_with_tools();
+        let mut store = MockStore::with_prompt(&request);
+
+        // Phase 1
+        let _req = kernel.initiate_completion(&mut store).unwrap();
+
+        // Phase 2: LLM wants to use a tool
+        let events = vec![
+            StreamEvent::TextDelta("Let me look that up.".into()),
+            StreamEvent::ToolUseStart {
+                id: "toolu_01".into(),
+                name: "get_weather".into(),
+            },
+            StreamEvent::ToolUseInputDelta(r#"{"city":"NYC"}"#.into()),
+            StreamEvent::MessageStop,
+        ];
+        let mut agent_events = Vec::new();
+        let content = kernel
+            .consume_events(events, &mut |e| agent_events.push(e))
+            .unwrap();
+
+        assert_eq!(content.len(), 2);
+
+        // Phase 3
+        let tool_calls = kernel.complete_turn(&mut store, &content).unwrap();
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].name, "get_weather");
+
+        // Verify history has the assistant message
+        assert_eq!(store.appended.len(), 1);
+        let json = structfs_serde_store::value_to_json(store.appended[0].clone());
+        assert_eq!(json["content"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn full_loop_can_repeat_phases() {
+        // Simulate: initiate -> consume -> complete (tool call) ->
+        //           write tool results -> initiate -> consume -> complete (done)
+        let mut kernel = Kernel::new("test-model".into());
+        let request = make_request_with_tools();
+        let mut store = MockStore::with_prompt(&request);
+        let mut noop = |_: AgentEvent| {};
+
+        // Turn 1: tool call
+        let _req = kernel.initiate_completion(&mut store).unwrap();
+        let events = vec![
+            StreamEvent::ToolUseStart {
+                id: "toolu_01".into(),
+                name: "get_weather".into(),
+            },
+            StreamEvent::ToolUseInputDelta(r#"{"city":"NYC"}"#.into()),
+            StreamEvent::MessageStop,
+        ];
+        let content = kernel.consume_events(events, &mut noop).unwrap();
+        let tool_calls = kernel.complete_turn(&mut store, &content).unwrap();
+        assert_eq!(tool_calls.len(), 1);
+
+        // Write tool results (simulating what run_turn does)
+        let results = vec![ToolResult {
+            tool_use_id: "toolu_01".into(),
+            content: "Sunny, 72F".into(),
+        }];
+        let results_json = serialize_tool_results(&results);
+        let record = Record::parsed(structfs_serde_store::json_to_value(results_json));
+        store.write(&path!("history/append"), record).unwrap();
+
+        // Turn 2: final text response
+        let _req2 = kernel.initiate_completion(&mut store).unwrap();
+        let events2 = vec![
+            StreamEvent::TextDelta("The weather in NYC is sunny, 72F.".into()),
+            StreamEvent::MessageStop,
+        ];
+        let content2 = kernel.consume_events(events2, &mut noop).unwrap();
+        let tool_calls2 = kernel.complete_turn(&mut store, &content2).unwrap();
+        assert!(tool_calls2.is_empty());
+
+        // 3 appends: assistant (tool call), tool results, assistant (final)
+        assert_eq!(store.appended.len(), 3);
+    }
+
+    // -----------------------------------------------------------------------
+    // run_turn (composed loop)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn run_turn_text_only_response() {
+        let mut kernel = Kernel::new("test-model".into());
+        let request = make_request();
+        let mut store = MockStore::with_prompt(&request);
+        let registry = ToolRegistry::new();
+        let mut agent_events = Vec::new();
+
+        let send = |_req: &CompletionRequest| -> Result<Vec<StreamEvent>, String> {
+            Ok(vec![
+                StreamEvent::TextDelta("Hello!".into()),
+                StreamEvent::MessageStop,
+            ])
+        };
+
+        let content = kernel
+            .run_turn(&mut store, &send, &registry, &mut |e| {
+                agent_events.push(e)
+            })
+            .unwrap();
+
+        assert_eq!(content.len(), 1);
+        match &content[0] {
+            ContentBlock::Text { text } => assert_eq!(text, "Hello!"),
+            _ => panic!("expected text"),
+        }
+        // Should have TurnStart, TextDelta, TurnEnd
+        assert!(matches!(agent_events.first(), Some(AgentEvent::TurnStart)));
+        assert!(matches!(agent_events.last(), Some(AgentEvent::TurnEnd)));
+    }
+
+    #[test]
+    fn run_turn_with_tool_execution() {
+        let mut kernel = Kernel::new("test-model".into());
+        let request = make_request_with_tools();
+        let mut store = MockStore::with_prompt(&request);
+
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(FnTool::new(
+            "get_weather",
+            "Gets the weather",
+            serde_json::json!({
+                "type": "object",
+                "properties": { "city": { "type": "string" } },
+                "required": ["city"]
+            }),
+            |input| {
+                let city = input["city"].as_str().unwrap_or("unknown");
+                Ok(format!("Sunny in {city}"))
+            },
+        )));
+
+        let call_count = std::cell::Cell::new(0);
+        let send = |_req: &CompletionRequest| -> Result<Vec<StreamEvent>, String> {
+            let n = call_count.get();
+            call_count.set(n + 1);
+            if n == 0 {
+                // First call: model wants to use a tool
+                Ok(vec![
+                    StreamEvent::ToolUseStart {
+                        id: "toolu_01".into(),
+                        name: "get_weather".into(),
+                    },
+                    StreamEvent::ToolUseInputDelta(r#"{"city":"NYC"}"#.into()),
+                    StreamEvent::MessageStop,
+                ])
+            } else {
+                // Second call: model gives final answer
+                Ok(vec![
+                    StreamEvent::TextDelta("It's sunny in NYC!".into()),
+                    StreamEvent::MessageStop,
+                ])
+            }
+        };
+
+        let mut agent_events = Vec::new();
+        let content = kernel
+            .run_turn(&mut store, &send, &registry, &mut |e| {
+                agent_events.push(e)
+            })
+            .unwrap();
+
+        // Final content should be text
+        assert_eq!(content.len(), 1);
+        match &content[0] {
+            ContentBlock::Text { text } => assert_eq!(text, "It's sunny in NYC!"),
+            _ => panic!("expected text"),
+        }
+
+        // Check agent events include tool call lifecycle
+        assert!(agent_events.iter().any(
+            |e| matches!(e, AgentEvent::ToolCallStart { name } if name == "get_weather")
+        ));
+        assert!(agent_events.iter().any(
+            |e| matches!(e, AgentEvent::ToolCallResult { name, result }
+                if name == "get_weather" && result.contains("Sunny"))
+        ));
+    }
+
+    #[test]
+    fn run_turn_unknown_tool_returns_error_string() {
+        let mut kernel = Kernel::new("test-model".into());
+        let request = make_request();
+        let mut store = MockStore::with_prompt(&request);
+        let registry = ToolRegistry::new(); // empty, no tools registered
+
+        let call_count = std::cell::Cell::new(0);
+        let send = |_req: &CompletionRequest| -> Result<Vec<StreamEvent>, String> {
+            let n = call_count.get();
+            call_count.set(n + 1);
+            if n == 0 {
+                Ok(vec![
+                    StreamEvent::ToolUseStart {
+                        id: "toolu_01".into(),
+                        name: "nonexistent".into(),
+                    },
+                    StreamEvent::ToolUseInputDelta(r#"{}"#.into()),
+                    StreamEvent::MessageStop,
+                ])
+            } else {
+                Ok(vec![
+                    StreamEvent::TextDelta("ok".into()),
+                    StreamEvent::MessageStop,
+                ])
+            }
+        };
+
+        let mut agent_events = Vec::new();
+        let _content = kernel
+            .run_turn(&mut store, &send, &registry, &mut |e| {
+                agent_events.push(e)
+            })
+            .unwrap();
+
+        // The tool result should contain an error message about unknown tool
+        // Check appended history for the tool result message
+        assert!(store.appended.len() >= 2);
+        let tool_result_json =
+            structfs_serde_store::value_to_json(store.appended[1].clone());
+        let content_arr = tool_result_json["content"].as_array().unwrap();
+        let result_content = content_arr[0]["content"].as_str().unwrap();
+        assert!(
+            result_content.contains("unknown tool"),
+            "expected 'unknown tool' error, got: {result_content}"
+        );
+    }
+
+    #[test]
+    fn run_turn_send_error_propagates() {
+        let mut kernel = Kernel::new("test-model".into());
+        let request = make_request();
+        let mut store = MockStore::with_prompt(&request);
+        let registry = ToolRegistry::new();
+
+        let send = |_req: &CompletionRequest| -> Result<Vec<StreamEvent>, String> {
+            Err("network error".into())
+        };
+
+        let mut noop = |_: AgentEvent| {};
+        let result = kernel.run_turn(&mut store, &send, &registry, &mut noop);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "network error");
+    }
+
+    // -----------------------------------------------------------------------
+    // Serialization helpers
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn serialize_assistant_message_text_only() {
+        let blocks = vec![ContentBlock::Text {
+            text: "Hello!".into(),
+        }];
+        let json = serialize_assistant_message(&blocks);
+        assert_eq!(json["role"], "assistant");
+        assert_eq!(json["content"][0]["type"], "text");
+        assert_eq!(json["content"][0]["text"], "Hello!");
+    }
+
+    #[test]
+    fn serialize_assistant_message_tool_use() {
+        let blocks = vec![ContentBlock::ToolUse(ToolCall {
+            id: "call_1".into(),
+            name: "echo".into(),
+            input: serde_json::json!({"text": "hi"}),
+        })];
+        let json = serialize_assistant_message(&blocks);
+        assert_eq!(json["role"], "assistant");
+        assert_eq!(json["content"][0]["type"], "tool_use");
+        assert_eq!(json["content"][0]["id"], "call_1");
+        assert_eq!(json["content"][0]["name"], "echo");
+        assert_eq!(json["content"][0]["input"]["text"], "hi");
+    }
+
+    #[test]
+    fn serialize_assistant_message_mixed() {
+        let blocks = vec![
+            ContentBlock::Text {
+                text: "Here:".into(),
+            },
+            ContentBlock::ToolUse(ToolCall {
+                id: "c1".into(),
+                name: "t1".into(),
+                input: serde_json::json!({}),
+            }),
+        ];
+        let json = serialize_assistant_message(&blocks);
+        let content = json["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[1]["type"], "tool_use");
+    }
+
+    #[test]
+    fn serialize_assistant_message_empty() {
+        let blocks: Vec<ContentBlock> = vec![];
+        let json = serialize_assistant_message(&blocks);
+        assert_eq!(json["role"], "assistant");
+        assert!(json["content"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn serialize_tool_results_single() {
+        let results = vec![ToolResult {
+            tool_use_id: "call_1".into(),
+            content: "result text".into(),
+        }];
+        let json = serialize_tool_results(&results);
+        assert_eq!(json["role"], "user");
+        assert_eq!(json["content"][0]["type"], "tool_result");
+        assert_eq!(json["content"][0]["tool_use_id"], "call_1");
+        assert_eq!(json["content"][0]["content"], "result text");
+    }
+
+    #[test]
+    fn serialize_tool_results_multiple() {
+        let results = vec![
+            ToolResult {
+                tool_use_id: "c1".into(),
+                content: "r1".into(),
+            },
+            ToolResult {
+                tool_use_id: "c2".into(),
+                content: "r2".into(),
+            },
+        ];
+        let json = serialize_tool_results(&results);
+        let content = json["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["tool_use_id"], "c1");
+        assert_eq!(content[1]["tool_use_id"], "c2");
+    }
+
+    #[test]
+    fn serialize_tool_results_empty() {
+        let results: Vec<ToolResult> = vec![];
+        let json = serialize_tool_results(&results);
+        assert_eq!(json["role"], "user");
+        assert!(json["content"].as_array().unwrap().is_empty());
     }
 }

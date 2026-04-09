@@ -609,4 +609,351 @@ mod tests {
         let count = hp.read(&path!("count")).unwrap().unwrap();
         assert_eq!(unwrap_value(count), Value::Integer(1));
     }
+
+    // ---- parse_wire_message error/edge cases ----
+
+    #[test]
+    fn parse_wire_message_missing_role() {
+        let wire = serde_json::json!({"content": "hello"});
+        let result = parse_wire_message(&wire);
+        assert_eq!(result.unwrap_err(), "missing role");
+    }
+
+    #[test]
+    fn parse_wire_message_unknown_role() {
+        let wire = serde_json::json!({"role": "system", "content": "you are helpful"});
+        let result = parse_wire_message(&wire);
+        assert!(result.unwrap_err().contains("unknown role: system"));
+    }
+
+    #[test]
+    fn parse_wire_message_user_without_content() {
+        let wire = serde_json::json!({"role": "user"});
+        let msg = parse_wire_message(&wire).unwrap();
+        match msg {
+            Message::User { content } => assert_eq!(content, ""),
+            _ => panic!("expected user message"),
+        }
+    }
+
+    #[test]
+    fn parse_wire_message_user_with_non_string_content() {
+        // content is an array but not tool_result type — falls through to plain user
+        let wire = serde_json::json!({"role": "user", "content": [{"type": "text", "text": "hi"}]});
+        let msg = parse_wire_message(&wire).unwrap();
+        match msg {
+            Message::User { content } => assert_eq!(content, ""),
+            _ => panic!("expected user message"),
+        }
+    }
+
+    #[test]
+    fn parse_wire_message_tool_result() {
+        let wire = serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "tu_1", "content": "result text"},
+                {"type": "tool_result", "tool_use_id": "tu_2", "content": "result 2"}
+            ]
+        });
+        let msg = parse_wire_message(&wire).unwrap();
+        match msg {
+            Message::ToolResult { results } => {
+                assert_eq!(results.len(), 2);
+                assert_eq!(results[0].tool_use_id, "tu_1");
+                assert_eq!(results[1].content, "result 2");
+            }
+            _ => panic!("expected tool result"),
+        }
+    }
+
+    #[test]
+    fn parse_wire_message_tool_result_missing_fields() {
+        // Items with missing tool_use_id or content should be filtered out
+        let wire = serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "tu_1"},
+                {"type": "tool_result", "content": "orphan"},
+                {"type": "tool_result", "tool_use_id": "tu_3", "content": "ok"}
+            ]
+        });
+        let msg = parse_wire_message(&wire).unwrap();
+        match msg {
+            Message::ToolResult { results } => {
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0].tool_use_id, "tu_3");
+            }
+            _ => panic!("expected tool result"),
+        }
+    }
+
+    #[test]
+    fn parse_wire_message_assistant_with_tool_use() {
+        let wire = serde_json::json!({
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "Let me help."},
+                {"type": "tool_use", "id": "tu_1", "name": "bash", "input": {"cmd": "ls"}}
+            ]
+        });
+        let msg = parse_wire_message(&wire).unwrap();
+        match msg {
+            Message::Assistant { content } => {
+                assert_eq!(content.len(), 2);
+                match &content[0] {
+                    ContentBlock::Text { text } => assert_eq!(text, "Let me help."),
+                    _ => panic!("expected text block"),
+                }
+                match &content[1] {
+                    ContentBlock::ToolUse(tc) => {
+                        assert_eq!(tc.id, "tu_1");
+                        assert_eq!(tc.name, "bash");
+                    }
+                    _ => panic!("expected tool_use block"),
+                }
+            }
+            _ => panic!("expected assistant message"),
+        }
+    }
+
+    #[test]
+    fn parse_wire_message_assistant_no_content() {
+        let wire = serde_json::json!({"role": "assistant"});
+        let msg = parse_wire_message(&wire).unwrap();
+        match msg {
+            Message::Assistant { content } => assert!(content.is_empty()),
+            _ => panic!("expected assistant message"),
+        }
+    }
+
+    #[test]
+    fn parse_assistant_content_unknown_type() {
+        // Unknown block types should be filtered out
+        let wire = serde_json::json!({
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "text": "hmm"},
+                {"type": "text", "text": "hello"}
+            ]
+        });
+        let msg = parse_wire_message(&wire).unwrap();
+        match msg {
+            Message::Assistant { content } => {
+                assert_eq!(content.len(), 1);
+                match &content[0] {
+                    ContentBlock::Text { text } => assert_eq!(text, "hello"),
+                    _ => panic!("expected text block"),
+                }
+            }
+            _ => panic!("expected assistant message"),
+        }
+    }
+
+    #[test]
+    fn parse_assistant_content_text_missing_text_field() {
+        // text block without "text" key should be filtered out
+        let wire = serde_json::json!({
+            "role": "assistant",
+            "content": [{"type": "text"}]
+        });
+        let msg = parse_wire_message(&wire).unwrap();
+        match msg {
+            Message::Assistant { content } => assert!(content.is_empty()),
+            _ => panic!("expected assistant message"),
+        }
+    }
+
+    #[test]
+    fn parse_assistant_content_tool_use_missing_fields() {
+        // tool_use block without "id" should be filtered out
+        let wire = serde_json::json!({
+            "role": "assistant",
+            "content": [{"type": "tool_use", "name": "bash", "input": {}}]
+        });
+        let msg = parse_wire_message(&wire).unwrap();
+        match msg {
+            Message::Assistant { content } => assert!(content.is_empty()),
+            _ => panic!("expected assistant message"),
+        }
+    }
+
+    // ---- Writer error paths ----
+
+    #[test]
+    fn write_unknown_path_error() {
+        let mut hp = HistoryProvider::new();
+        let result = hp.write(
+            &path!("nonexistent"),
+            Record::parsed(Value::Null),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn write_turn_no_subpath_error() {
+        let mut hp = HistoryProvider::new();
+        let result = hp.write(&path!("turn"), Record::parsed(Value::Null));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn write_turn_invalid_subpath_error() {
+        let mut hp = HistoryProvider::new();
+        let result = hp.write(
+            &path!("turn/nonexistent"),
+            Record::parsed(Value::String("test".to_string())),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn write_append_invalid_message_error() {
+        let mut hp = HistoryProvider::new();
+        // A value that will fail parse_wire_message (no role)
+        let json = serde_json::json!({"content": "no role"});
+        let value = json_to_value(json);
+        let result = hp.write(&path!("append"), Record::parsed(value));
+        assert!(result.is_err());
+    }
+
+    // ---- Reader edge cases ----
+
+    #[test]
+    fn read_unknown_path_returns_none() {
+        let mut hp = HistoryProvider::new();
+        let result = hp.read(&path!("nonexistent")).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn read_turn_no_subpath_returns_none() {
+        let mut hp = HistoryProvider::new();
+        let result = hp.read(&path!("turn")).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn read_turn_unknown_subpath_returns_none() {
+        let mut hp = HistoryProvider::new();
+        let result = hp.read(&path!("turn/nonexistent")).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn read_snapshot_unknown_subpath_returns_none() {
+        let mut hp = HistoryProvider::new();
+        let result = hp.read(&path!("snapshot/nonexistent")).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn read_empty_path_returns_messages() {
+        let mut hp = HistoryProvider::new();
+        append_user_msg(&mut hp, "hello");
+        let result = hp.read(&Path::from_components(vec![])).unwrap().unwrap();
+        let val = unwrap_value(result);
+        match &val {
+            Value::Array(arr) => assert_eq!(arr.len(), 1),
+            _ => panic!("expected array"),
+        }
+    }
+
+    #[test]
+    fn write_empty_path_appends() {
+        let mut hp = HistoryProvider::new();
+        let json = serde_json::json!({"role": "user", "content": "hello"});
+        let value = json_to_value(json);
+        hp.write(&Path::from_components(vec![]), Record::parsed(value)).unwrap();
+        assert_eq!(hp.messages().len(), 1);
+    }
+
+    #[test]
+    fn write_clear_path() {
+        let mut hp = HistoryProvider::new();
+        append_user_msg(&mut hp, "hello");
+        assert_eq!(hp.messages().len(), 1);
+        hp.write(&path!("clear"), Record::parsed(Value::Null))
+            .unwrap();
+        assert_eq!(hp.messages().len(), 0);
+    }
+
+    // ---- Tool result serialization roundtrip ----
+
+    #[test]
+    fn tool_result_message_roundtrip() {
+        let mut hp = HistoryProvider::new();
+        let wire = serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "tu_1", "content": "output"}
+            ]
+        });
+        let value = json_to_value(wire);
+        hp.write(&path!("append"), Record::parsed(value)).unwrap();
+
+        let messages = hp.read(&path!("messages")).unwrap().unwrap();
+        let val = unwrap_value(messages);
+        match &val {
+            Value::Array(arr) => {
+                assert_eq!(arr.len(), 1);
+                // The tool result should be serialized back as a user message with content array
+            }
+            _ => panic!("expected array"),
+        }
+    }
+
+    // ---- HistoryProvider::default ----
+
+    #[test]
+    fn default_creates_empty() {
+        let hp = HistoryProvider::default();
+        assert_eq!(hp.messages().len(), 0);
+        assert!(!hp.turn.is_active());
+    }
+
+    // ---- Snapshot hash empty vs non-empty ----
+
+    #[test]
+    fn snapshot_empty_hash_is_zero_sentinel() {
+        let mut hp = HistoryProvider::new();
+        let val = unwrap_value(hp.read(&path!("snapshot/hash")).unwrap().unwrap());
+        assert_eq!(val, Value::String("0000000000000000".to_string()));
+    }
+
+    #[test]
+    fn turn_read_streaming() {
+        let mut hp = HistoryProvider::new();
+        let val = hp.read(&path!("turn/streaming")).unwrap().unwrap();
+        assert_eq!(unwrap_value(val), Value::String(String::new()));
+    }
+
+    #[test]
+    fn turn_read_tokens() {
+        let mut hp = HistoryProvider::new();
+        let val = hp.read(&path!("turn/tokens")).unwrap().unwrap();
+        match unwrap_value(val) {
+            Value::Map(m) => {
+                assert_eq!(m.get("in"), Some(&Value::Integer(0)));
+                assert_eq!(m.get("out"), Some(&Value::Integer(0)));
+            }
+            _ => panic!("expected map"),
+        }
+    }
+
+    #[test]
+    fn turn_read_tool_null_when_inactive() {
+        let mut hp = HistoryProvider::new();
+        let val = hp.read(&path!("turn/tool")).unwrap().unwrap();
+        assert_eq!(unwrap_value(val), Value::Null);
+    }
+
+    #[test]
+    fn write_snapshot_error() {
+        let mut hp = HistoryProvider::new();
+        let result = hp.write(&path!("snapshot"), Record::parsed(Value::Null));
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("snapshot write not supported"));
+    }
 }

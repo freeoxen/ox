@@ -708,4 +708,685 @@ mod tests {
         assert_eq!(last_seq, -1);
         assert!(last_hash.is_none());
     }
+
+    // ---- Writer error paths ----
+
+    #[test]
+    fn write_unrecognized_path_returns_error() {
+        let (mut store, _dir) = test_store();
+        let result = store.write(
+            &structfs_core_store::path!("bogus"),
+            Record::parsed(Value::Null),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn create_thread_missing_title_returns_error() {
+        let (mut store, _dir) = test_store();
+        let map = std::collections::BTreeMap::new();
+        let result = store.write(
+            &structfs_core_store::path!("threads"),
+            Record::parsed(Value::Map(map)),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn create_thread_non_map_returns_error() {
+        let (mut store, _dir) = test_store();
+        let result = store.write(
+            &structfs_core_store::path!("threads"),
+            Record::parsed(Value::String("not a map".to_string())),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn update_thread_non_map_returns_error() {
+        let (mut store, _dir) = test_store();
+        // Create a thread first
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("title".to_string(), Value::String("Thread".to_string()));
+        let path = store
+            .write(
+                &structfs_core_store::path!("threads"),
+                Record::parsed(Value::Map(map)),
+            )
+            .unwrap();
+        let id = path.iter().nth(1).unwrap().clone();
+
+        // Try to update with a non-map value
+        let update_path = Path::parse(&format!("threads/{}", id)).unwrap();
+        let result = store.write(
+            &update_path,
+            Record::parsed(Value::String("not a map".to_string())),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn update_thread_invalid_inbox_state_returns_error() {
+        let (mut store, _dir) = test_store();
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("title".to_string(), Value::String("Thread".to_string()));
+        let path = store
+            .write(
+                &structfs_core_store::path!("threads"),
+                Record::parsed(Value::Map(map)),
+            )
+            .unwrap();
+        let id = path.iter().nth(1).unwrap().clone();
+
+        let mut update = std::collections::BTreeMap::new();
+        update.insert(
+            "inbox_state".to_string(),
+            Value::String("invalid".to_string()),
+        );
+        let update_path = Path::parse(&format!("threads/{}", id)).unwrap();
+        let result = store.write(&update_path, Record::parsed(Value::Map(update)));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn update_thread_token_count_and_last_seq() {
+        let (mut store, _dir) = test_store();
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("title".to_string(), Value::String("Thread".to_string()));
+        let path = store
+            .write(
+                &structfs_core_store::path!("threads"),
+                Record::parsed(Value::Map(map)),
+            )
+            .unwrap();
+        let id = path.iter().nth(1).unwrap().clone();
+
+        let mut update = std::collections::BTreeMap::new();
+        update.insert("token_count".to_string(), Value::Integer(999));
+        update.insert("last_seq".to_string(), Value::Integer(42));
+        update.insert(
+            "last_hash".to_string(),
+            Value::String("abc123".to_string()),
+        );
+        let update_path = Path::parse(&format!("threads/{}", id)).unwrap();
+        store
+            .write(&update_path, Record::parsed(Value::Map(update)))
+            .unwrap();
+
+        let db = store.db.lock().unwrap();
+        let (tc, ls, lh): (i64, i64, String) = db
+            .query_row(
+                "SELECT token_count, last_seq, last_hash FROM threads WHERE id = ?1",
+                [&id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(tc, 999);
+        assert_eq!(ls, 42);
+        assert_eq!(lh, "abc123");
+    }
+
+    #[test]
+    fn update_thread_last_hash_null_clears_it() {
+        let (mut store, _dir) = test_store();
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("title".to_string(), Value::String("Thread".to_string()));
+        let path = store
+            .write(
+                &structfs_core_store::path!("threads"),
+                Record::parsed(Value::Map(map)),
+            )
+            .unwrap();
+        let id = path.iter().nth(1).unwrap().clone();
+
+        // First set a hash
+        let mut update = std::collections::BTreeMap::new();
+        update.insert(
+            "last_hash".to_string(),
+            Value::String("abc123".to_string()),
+        );
+        let update_path = Path::parse(&format!("threads/{}", id)).unwrap();
+        store
+            .write(&update_path, Record::parsed(Value::Map(update)))
+            .unwrap();
+
+        // Now clear it with Null
+        let mut update2 = std::collections::BTreeMap::new();
+        update2.insert("last_hash".to_string(), Value::Null);
+        store
+            .write(&update_path, Record::parsed(Value::Map(update2)))
+            .unwrap();
+
+        let db = store.db.lock().unwrap();
+        let last_hash: Option<String> = db
+            .query_row(
+                "SELECT last_hash FROM threads WHERE id = ?1",
+                [&id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(last_hash.is_none());
+    }
+
+    #[test]
+    fn set_labels_non_array_returns_error() {
+        let (mut store, _dir) = test_store();
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("title".to_string(), Value::String("Thread".to_string()));
+        let path = store
+            .write(
+                &structfs_core_store::path!("threads"),
+                Record::parsed(Value::Map(map)),
+            )
+            .unwrap();
+        let id = path.iter().nth(1).unwrap().clone();
+
+        let labels_path = Path::parse(&format!("threads/{}/labels", id)).unwrap();
+        let result = store.write(
+            &labels_path,
+            Record::parsed(Value::String("not an array".to_string())),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn create_task_missing_title_returns_error() {
+        let (mut store, _dir) = test_store();
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("title".to_string(), Value::String("Thread".to_string()));
+        let path = store
+            .write(
+                &structfs_core_store::path!("threads"),
+                Record::parsed(Value::Map(map)),
+            )
+            .unwrap();
+        let id = path.iter().nth(1).unwrap().clone();
+
+        let tasks_path = Path::parse(&format!("threads/{}/tasks", id)).unwrap();
+        let task_map = std::collections::BTreeMap::new();
+        let result = store.write(&tasks_path, Record::parsed(Value::Map(task_map)));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn create_task_non_map_returns_error() {
+        let (mut store, _dir) = test_store();
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("title".to_string(), Value::String("Thread".to_string()));
+        let path = store
+            .write(
+                &structfs_core_store::path!("threads"),
+                Record::parsed(Value::Map(map)),
+            )
+            .unwrap();
+        let id = path.iter().nth(1).unwrap().clone();
+
+        let tasks_path = Path::parse(&format!("threads/{}/tasks", id)).unwrap();
+        let result = store.write(
+            &tasks_path,
+            Record::parsed(Value::String("not a map".to_string())),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn update_task_non_map_returns_error() {
+        let (mut store, _dir) = test_store();
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("title".to_string(), Value::String("Thread".to_string()));
+        let path = store
+            .write(
+                &structfs_core_store::path!("threads"),
+                Record::parsed(Value::Map(map)),
+            )
+            .unwrap();
+        let thread_id = path.iter().nth(1).unwrap().clone();
+
+        // Create task
+        let tasks_path = Path::parse(&format!("threads/{}/tasks", thread_id)).unwrap();
+        let mut task_map = std::collections::BTreeMap::new();
+        task_map.insert("title".to_string(), Value::String("Task".to_string()));
+        let task_path = store
+            .write(&tasks_path, Record::parsed(Value::Map(task_map)))
+            .unwrap();
+        let task_id = task_path.iter().nth(3).unwrap().clone();
+
+        // Try to update with non-map
+        let update_path =
+            Path::parse(&format!("threads/{}/tasks/{}", thread_id, task_id)).unwrap();
+        let result = store.write(
+            &update_path,
+            Record::parsed(Value::String("not a map".to_string())),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn update_task_wrong_thread_returns_error() {
+        let (mut store, _dir) = test_store();
+        // Create two threads
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("title".to_string(), Value::String("Thread A".to_string()));
+        let path_a = store
+            .write(
+                &structfs_core_store::path!("threads"),
+                Record::parsed(Value::Map(map)),
+            )
+            .unwrap();
+        let thread_a = path_a.iter().nth(1).unwrap().clone();
+
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("title".to_string(), Value::String("Thread B".to_string()));
+        let path_b = store
+            .write(
+                &structfs_core_store::path!("threads"),
+                Record::parsed(Value::Map(map)),
+            )
+            .unwrap();
+        let thread_b = path_b.iter().nth(1).unwrap().clone();
+
+        // Create task under thread A
+        let tasks_path = Path::parse(&format!("threads/{}/tasks", thread_a)).unwrap();
+        let mut task_map = std::collections::BTreeMap::new();
+        task_map.insert("title".to_string(), Value::String("Task".to_string()));
+        let task_path = store
+            .write(&tasks_path, Record::parsed(Value::Map(task_map)))
+            .unwrap();
+        let task_id = task_path.iter().nth(3).unwrap().clone();
+
+        // Try to update task using thread B's path
+        let wrong_path =
+            Path::parse(&format!("threads/{}/tasks/{}", thread_b, task_id)).unwrap();
+        let mut update = std::collections::BTreeMap::new();
+        update.insert("title".to_string(), Value::String("Changed".to_string()));
+        let result = store.write(&wrong_path, Record::parsed(Value::Map(update)));
+        assert!(result.is_err());
+    }
+
+    // ---- Reader edge cases ----
+
+    #[test]
+    fn read_unrecognized_path_returns_none() {
+        let (mut store, _dir) = test_store();
+        let result = store
+            .read(&structfs_core_store::path!("bogus"))
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn get_nonexistent_thread_returns_none() {
+        let (mut store, _dir) = test_store();
+        let path = Path::parse("threads/nonexistent_id").unwrap();
+        let result = store.read(&path).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn list_empty_inbox() {
+        let (mut store, _dir) = test_store();
+        let result = store
+            .read(&structfs_core_store::path!("threads"))
+            .unwrap()
+            .unwrap();
+        let Value::Array(threads) = result.as_value().unwrap() else {
+            panic!("expected array")
+        };
+        assert!(threads.is_empty());
+    }
+
+    #[test]
+    fn list_empty_done() {
+        let (mut store, _dir) = test_store();
+        let result = store
+            .read(&structfs_core_store::path!("done"))
+            .unwrap()
+            .unwrap();
+        let Value::Array(threads) = result.as_value().unwrap() else {
+            panic!("expected array")
+        };
+        assert!(threads.is_empty());
+    }
+
+    #[test]
+    fn list_empty_labels() {
+        let (mut store, _dir) = test_store();
+        let result = store
+            .read(&structfs_core_store::path!("labels"))
+            .unwrap()
+            .unwrap();
+        let Value::Array(labels) = result.as_value().unwrap() else {
+            panic!("expected array")
+        };
+        assert!(labels.is_empty());
+    }
+
+    #[test]
+    fn search_no_matches_returns_empty() {
+        let (mut store, _dir) = test_store();
+        let result = store
+            .read(&structfs_core_store::path!("search/xyz_no_match"))
+            .unwrap()
+            .unwrap();
+        let Value::Array(threads) = result.as_value().unwrap() else {
+            panic!("expected array")
+        };
+        assert!(threads.is_empty());
+    }
+
+    #[test]
+    fn search_by_label_match() {
+        let (mut store, _dir) = test_store();
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("title".to_string(), Value::String("Plain".to_string()));
+        map.insert(
+            "labels".to_string(),
+            Value::Array(vec![Value::String("searchable_label".to_string())]),
+        );
+        store
+            .write(
+                &structfs_core_store::path!("threads"),
+                Record::parsed(Value::Map(map)),
+            )
+            .unwrap();
+
+        let result = store
+            .read(&structfs_core_store::path!("search/searchable_label"))
+            .unwrap()
+            .unwrap();
+        let Value::Array(threads) = result.as_value().unwrap() else {
+            panic!("expected array")
+        };
+        assert_eq!(threads.len(), 1);
+    }
+
+    #[test]
+    fn search_with_underscore_characters() {
+        let (mut store, _dir) = test_store();
+        let mut map = std::collections::BTreeMap::new();
+        map.insert(
+            "title".to_string(),
+            Value::String("done_now task".to_string()),
+        );
+        store
+            .write(
+                &structfs_core_store::path!("threads"),
+                Record::parsed(Value::Map(map)),
+            )
+            .unwrap();
+
+        // Search with underscore (valid path component)
+        let result = store
+            .read(&structfs_core_store::path!("search/done_now"))
+            .unwrap()
+            .unwrap();
+        let Value::Array(threads) = result.as_value().unwrap() else {
+            panic!("expected array")
+        };
+        assert_eq!(threads.len(), 1);
+    }
+
+    #[test]
+    fn by_state_no_match_returns_empty() {
+        let (mut store, _dir) = test_store();
+        let result = store
+            .read(&structfs_core_store::path!("by_state/errored"))
+            .unwrap()
+            .unwrap();
+        let Value::Array(threads) = result.as_value().unwrap() else {
+            panic!("expected array")
+        };
+        assert!(threads.is_empty());
+    }
+
+    #[test]
+    fn list_tasks_on_thread_with_no_tasks() {
+        let (mut store, _dir) = test_store();
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("title".to_string(), Value::String("Thread".to_string()));
+        let path = store
+            .write(
+                &structfs_core_store::path!("threads"),
+                Record::parsed(Value::Map(map)),
+            )
+            .unwrap();
+        let id = path.iter().nth(1).unwrap().clone();
+
+        let tasks_path = Path::parse(&format!("threads/{}/tasks", id)).unwrap();
+        let result = store.read(&tasks_path).unwrap().unwrap();
+        let Value::Array(tasks) = result.as_value().unwrap() else {
+            panic!("expected array")
+        };
+        assert!(tasks.is_empty());
+    }
+
+    #[test]
+    fn list_children_no_children_returns_empty() {
+        let (mut store, _dir) = test_store();
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("title".to_string(), Value::String("Parent".to_string()));
+        let path = store
+            .write(
+                &structfs_core_store::path!("threads"),
+                Record::parsed(Value::Map(map)),
+            )
+            .unwrap();
+        let id = path.iter().nth(1).unwrap().clone();
+
+        let children_path = Path::parse(&format!("threads/{}/children", id)).unwrap();
+        let result = store.read(&children_path).unwrap().unwrap();
+        let Value::Array(children) = result.as_value().unwrap() else {
+            panic!("expected array")
+        };
+        assert!(children.is_empty());
+    }
+
+    #[test]
+    fn thread_metadata_includes_labels_in_read() {
+        let (mut store, _dir) = test_store();
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("title".to_string(), Value::String("Labeled".to_string()));
+        map.insert(
+            "labels".to_string(),
+            Value::Array(vec![
+                Value::String("alpha".to_string()),
+                Value::String("beta".to_string()),
+            ]),
+        );
+        let path = store
+            .write(
+                &structfs_core_store::path!("threads"),
+                Record::parsed(Value::Map(map)),
+            )
+            .unwrap();
+        let id = path.iter().nth(1).unwrap().clone();
+
+        let read_path = Path::parse(&format!("threads/{}", id)).unwrap();
+        let result = store.read(&read_path).unwrap().unwrap();
+        let Value::Map(m) = result.as_value().unwrap() else {
+            panic!("expected map")
+        };
+        let Value::Array(labels) = m.get("labels").unwrap() else {
+            panic!("expected labels array")
+        };
+        assert_eq!(labels.len(), 2);
+    }
+
+    #[test]
+    fn update_task_title() {
+        let (mut store, _dir) = test_store();
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("title".to_string(), Value::String("Thread".to_string()));
+        let path = store
+            .write(
+                &structfs_core_store::path!("threads"),
+                Record::parsed(Value::Map(map)),
+            )
+            .unwrap();
+        let thread_id = path.iter().nth(1).unwrap().clone();
+
+        let tasks_path = Path::parse(&format!("threads/{}/tasks", thread_id)).unwrap();
+        let mut task_map = std::collections::BTreeMap::new();
+        task_map.insert("title".to_string(), Value::String("Old title".to_string()));
+        let task_path = store
+            .write(&tasks_path, Record::parsed(Value::Map(task_map)))
+            .unwrap();
+        let task_id = task_path.iter().nth(3).unwrap().clone();
+
+        // Update title
+        let update_path =
+            Path::parse(&format!("threads/{}/tasks/{}", thread_id, task_id)).unwrap();
+        let mut update = std::collections::BTreeMap::new();
+        update.insert("title".to_string(), Value::String("New title".to_string()));
+        store
+            .write(&update_path, Record::parsed(Value::Map(update)))
+            .unwrap();
+
+        let result = store.read(&tasks_path).unwrap().unwrap();
+        let Value::Array(tasks) = result.as_value().unwrap() else {
+            panic!("expected array")
+        };
+        let Value::Map(task) = &tasks[0] else {
+            panic!("expected map")
+        };
+        assert_eq!(
+            task.get("title"),
+            Some(&Value::String("New title".to_string()))
+        );
+    }
+
+    #[test]
+    fn labels_by_nonexistent_label_returns_empty() {
+        let (mut store, _dir) = test_store();
+        let result = store
+            .read(&structfs_core_store::path!("labels/nonexistent"))
+            .unwrap()
+            .unwrap();
+        let Value::Array(threads) = result.as_value().unwrap() else {
+            panic!("expected array")
+        };
+        assert!(threads.is_empty());
+    }
+
+    #[test]
+    fn done_threads_not_in_by_state_or_labels() {
+        let (mut store, _dir) = test_store();
+        // Create and archive a thread with a label
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("title".to_string(), Value::String("Done thread".to_string()));
+        map.insert(
+            "labels".to_string(),
+            Value::Array(vec![Value::String("my_label".to_string())]),
+        );
+        let path = store
+            .write(
+                &structfs_core_store::path!("threads"),
+                Record::parsed(Value::Map(map)),
+            )
+            .unwrap();
+        let id = path.iter().nth(1).unwrap().clone();
+        let mut update = std::collections::BTreeMap::new();
+        update.insert("inbox_state".to_string(), Value::String("done".to_string()));
+        store
+            .write(
+                &Path::parse(&format!("threads/{}", id)).unwrap(),
+                Record::parsed(Value::Map(update)),
+            )
+            .unwrap();
+
+        // by_state should not include done threads
+        let result = store
+            .read(&structfs_core_store::path!("by_state/running"))
+            .unwrap()
+            .unwrap();
+        let Value::Array(arr) = result.as_value().unwrap() else {
+            panic!()
+        };
+        assert!(arr.is_empty());
+
+        // labels filter should not include done threads
+        let result = store
+            .read(&structfs_core_store::path!("labels/my_label"))
+            .unwrap()
+            .unwrap();
+        let Value::Array(arr) = result.as_value().unwrap() else {
+            panic!()
+        };
+        assert!(arr.is_empty());
+    }
+
+    #[test]
+    fn set_labels_to_empty_clears_all() {
+        let (mut store, _dir) = test_store();
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("title".to_string(), Value::String("Thread".to_string()));
+        map.insert(
+            "labels".to_string(),
+            Value::Array(vec![Value::String("old".to_string())]),
+        );
+        let path = store
+            .write(
+                &structfs_core_store::path!("threads"),
+                Record::parsed(Value::Map(map)),
+            )
+            .unwrap();
+        let id = path.iter().nth(1).unwrap().clone();
+
+        let labels_path = Path::parse(&format!("threads/{}/labels", id)).unwrap();
+        store
+            .write(&labels_path, Record::parsed(Value::Array(vec![])))
+            .unwrap();
+
+        // Verify labels cleared
+        let result = store
+            .read(&structfs_core_store::path!("labels"))
+            .unwrap()
+            .unwrap();
+        let Value::Array(labels) = result.as_value().unwrap() else {
+            panic!()
+        };
+        assert!(labels.is_empty());
+    }
+
+    #[test]
+    fn update_thread_block_reason() {
+        let (mut store, _dir) = test_store();
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("title".to_string(), Value::String("Thread".to_string()));
+        let path = store
+            .write(
+                &structfs_core_store::path!("threads"),
+                Record::parsed(Value::Map(map)),
+            )
+            .unwrap();
+        let id = path.iter().nth(1).unwrap().clone();
+
+        let mut update = std::collections::BTreeMap::new();
+        update.insert(
+            "thread_state".to_string(),
+            Value::String("blocked_on_approval".to_string()),
+        );
+        update.insert(
+            "block_reason".to_string(),
+            Value::String("needs review".to_string()),
+        );
+        let update_path = Path::parse(&format!("threads/{}", id)).unwrap();
+        store
+            .write(&update_path, Record::parsed(Value::Map(update)))
+            .unwrap();
+
+        let read_path = Path::parse(&format!("threads/{}", id)).unwrap();
+        let result = store.read(&read_path).unwrap().unwrap();
+        let Value::Map(m) = result.as_value().unwrap() else {
+            panic!("expected map")
+        };
+        assert_eq!(
+            m.get("block_reason"),
+            Some(&Value::String("needs review".to_string()))
+        );
+        assert_eq!(
+            m.get("thread_state"),
+            Some(&Value::String("blocked_on_approval".to_string()))
+        );
+    }
 }
