@@ -37,10 +37,7 @@ pub async fn run_async(
     let mut settings = if needs_setup {
         // Navigate to settings screen via broker
         client
-            .write(
-                &structfs_core_store::path!("ui/go_to_settings"),
-                structfs_core_store::Record::parsed(structfs_core_store::Value::Null),
-            )
+            .write(&structfs_core_store::path!("ui/go_to_settings"), cmd!())
             .await
             .ok();
         SettingsState::new_wizard()
@@ -537,9 +534,7 @@ pub async fn run_async(
                                     client
                                         .write(
                                             &structfs_core_store::path!("ui/go_to_inbox"),
-                                            structfs_core_store::Record::parsed(
-                                                structfs_core_store::Value::Null,
-                                            ),
+                                            cmd!(),
                                         )
                                         .await
                                         .ok();
@@ -666,9 +661,7 @@ pub async fn run_async(
                                     client
                                         .write(
                                             &structfs_core_store::path!("ui/go_to_inbox"),
-                                            structfs_core_store::Record::parsed(
-                                                structfs_core_store::Value::Null,
-                                            ),
+                                            cmd!(),
                                         )
                                         .await
                                         .ok();

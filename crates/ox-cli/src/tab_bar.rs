@@ -7,7 +7,12 @@ use ratatui::widgets::Paragraph;
 
 /// Render the title/header bar into `area`.
 pub fn draw_tabs(frame: &mut Frame, vs: &ViewState, theme: &Theme, area: Rect) {
-    let spans = if let Some(ref tid) = vs.active_thread {
+    let spans = if vs.screen == "settings" {
+        vec![
+            Span::styled(" ox ", theme.title_badge),
+            Span::styled(" settings ", theme.title_info),
+        ]
+    } else if let Some(ref tid) = vs.active_thread {
         // Thread view — show thread title from messages
         let title = vs
             .messages
