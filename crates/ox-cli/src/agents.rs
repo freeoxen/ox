@@ -459,9 +459,7 @@ impl HostEffects for CliEffects {
 
                 // Write approval request through broker — blocks until TUI responds.
                 // No timeout: approval waits for human input indefinitely.
-                let approval_client = self
-                    .scoped_client
-                    .with_timeout(std::time::Duration::MAX);
+                let approval_client = self.scoped_client.with_timeout(std::time::Duration::MAX);
                 let mut req = BTreeMap::new();
                 req.insert("tool_name".to_string(), Value::String(tool));
                 req.insert("input_preview".to_string(), Value::String(input_preview));

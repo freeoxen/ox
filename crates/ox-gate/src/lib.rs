@@ -1122,10 +1122,7 @@ mod tests {
     fn config_handle_overrides_defaults_model() {
         use ox_store_util::LocalConfig;
         let mut config = LocalConfig::new();
-        config.set(
-            "gate/defaults/model",
-            Value::String("config-model".into()),
-        );
+        config.set("gate/defaults/model", Value::String("config-model".into()));
         let mut gate = GateStore::new().with_config(Box::new(config));
         let record = gate.read(&path!("defaults/model")).unwrap().unwrap();
         match record {
@@ -1176,10 +1173,7 @@ mod tests {
         );
         let mut gate = GateStore::new().with_config(Box::new(config));
         // defaults.account is "anthropic", but config provides openai key
-        let record = gate
-            .read(&path!("accounts/openai/key"))
-            .unwrap()
-            .unwrap();
+        let record = gate.read(&path!("accounts/openai/key")).unwrap().unwrap();
         match record {
             Record::Parsed(Value::String(s)) => assert_eq!(s, "sk-openai-config"),
             _ => panic!("expected string"),

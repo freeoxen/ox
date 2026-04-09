@@ -82,9 +82,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or(false);
     if !has_key {
         eprintln!("error: no API key for account '{default_account}'");
-        eprintln!(
-            "  configure in ~/.ox/config.toml under [gate.accounts.{default_account}]"
-        );
+        eprintln!("  configure in ~/.ox/config.toml under [gate.accounts.{default_account}]");
         eprintln!(
             "  or set OX_GATE__ACCOUNTS__{}_KEY",
             default_account.to_uppercase()

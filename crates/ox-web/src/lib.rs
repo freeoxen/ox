@@ -110,7 +110,10 @@ impl OxAgent {
         context.mount("gate", Box::new(gate));
 
         context
-            .write(&path!("gate/defaults/model"), Record::parsed(Value::String(model)))
+            .write(
+                &path!("gate/defaults/model"),
+                Record::parsed(Value::String(model)),
+            )
             .ok();
         context
             .write(
