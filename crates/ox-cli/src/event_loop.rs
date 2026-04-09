@@ -515,10 +515,132 @@ pub async fn run_async(
                                     ).await.ok();
                                     true
                                 }
+                                "Left" if settings.focus == SettingsFocus::Defaults => {
+                                    match settings.defaults_focus {
+                                        0 => {
+                                            if !settings.accounts.is_empty() {
+                                                settings.default_account_idx =
+                                                    if settings.default_account_idx == 0 {
+                                                        settings.accounts.len() - 1
+                                                    } else {
+                                                        settings.default_account_idx - 1
+                                                    };
+                                                settings.default_model_idx = 0;
+                                            }
+                                        }
+                                        1 => {
+                                            let dialect = settings
+                                                .accounts
+                                                .get(settings.default_account_idx)
+                                                .map(|a| a.dialect.as_str())
+                                                .unwrap_or("anthropic");
+                                            let models =
+                                                crate::settings_state::models_for_dialect(dialect);
+                                            if !models.is_empty() {
+                                                settings.default_model_idx =
+                                                    if settings.default_model_idx == 0 {
+                                                        models.len() - 1
+                                                    } else {
+                                                        settings.default_model_idx - 1
+                                                    };
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                    true
+                                }
+                                "Right" if settings.focus == SettingsFocus::Defaults => {
+                                    match settings.defaults_focus {
+                                        0 => {
+                                            if !settings.accounts.is_empty() {
+                                                settings.default_account_idx =
+                                                    (settings.default_account_idx + 1)
+                                                        % settings.accounts.len();
+                                                settings.default_model_idx = 0;
+                                            }
+                                        }
+                                        1 => {
+                                            let dialect = settings
+                                                .accounts
+                                                .get(settings.default_account_idx)
+                                                .map(|a| a.dialect.as_str())
+                                                .unwrap_or("anthropic");
+                                            let models =
+                                                crate::settings_state::models_for_dialect(dialect);
+                                            if !models.is_empty() {
+                                                settings.default_model_idx =
+                                                    (settings.default_model_idx + 1) % models.len();
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                    true
+                                }
+                                "Backspace"
+                                    if settings.focus == SettingsFocus::Defaults
+                                        && settings.defaults_focus == 2 =>
+                                {
+                                    settings.default_max_tokens.pop();
+                                    true
+                                }
                                 "Enter" if settings.focus == SettingsFocus::Defaults => {
-                                    // Advance wizard from SetDefaults to Done
+                                    // Determine current selections
+                                    let acct_name = settings
+                                        .accounts
+                                        .get(settings.default_account_idx)
+                                        .map(|a| a.name.clone())
+                                        .unwrap_or_default();
+                                    let dialect = settings
+                                        .accounts
+                                        .get(settings.default_account_idx)
+                                        .map(|a| a.dialect.as_str())
+                                        .unwrap_or("anthropic");
+                                    let models =
+                                        crate::settings_state::models_for_dialect(dialect);
+                                    let model = models
+                                        .get(settings.default_model_idx)
+                                        .copied()
+                                        .unwrap_or("claude-sonnet-4-20250514");
+                                    let max_tokens: i64 =
+                                        settings.default_max_tokens.parse().unwrap_or(4096);
+
+                                    // Write to ConfigStore via broker
+                                    use structfs_core_store::{Record, Value};
+                                    client
+                                        .write(
+                                            &path!("config/gate/defaults/account"),
+                                            Record::parsed(Value::String(acct_name)),
+                                        )
+                                        .await
+                                        .ok();
+                                    client
+                                        .write(
+                                            &path!("config/gate/defaults/model"),
+                                            Record::parsed(Value::String(model.to_string())),
+                                        )
+                                        .await
+                                        .ok();
+                                    client
+                                        .write(
+                                            &path!("config/gate/defaults/max_tokens"),
+                                            Record::parsed(Value::Integer(max_tokens)),
+                                        )
+                                        .await
+                                        .ok();
+                                    // Persist to disk
+                                    client
+                                        .write(
+                                            &path!("config/save"),
+                                            Record::parsed(Value::Null),
+                                        )
+                                        .await
+                                        .ok();
+
+                                    // Advance wizard if active
                                     if let Some(ref mut step) = settings.wizard {
-                                        if *step == crate::settings_state::WizardStep::SetDefaults {
+                                        if *step
+                                            == crate::settings_state::WizardStep::SetDefaults
+                                        {
                                             *step = crate::settings_state::WizardStep::Done;
                                         }
                                     }
@@ -632,6 +754,17 @@ pub async fn run_async(
                                             }
                                         }
                                     }
+                                    true
+                                }
+                                other
+                                    if settings.focus == SettingsFocus::Defaults
+                                        && settings.defaults_focus == 2
+                                        && other.len() == 1
+                                        && other.chars().next().unwrap().is_ascii_digit() =>
+                                {
+                                    settings
+                                        .default_max_tokens
+                                        .push(other.chars().next().unwrap());
                                     true
                                 }
                                 _ => false,

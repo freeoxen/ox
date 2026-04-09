@@ -30,6 +30,23 @@ pub struct AccountEditFields {
 
 pub const DIALECTS: [&str; 2] = ["anthropic", "openai"];
 
+pub const ANTHROPIC_MODELS: &[&str] = &[
+    "claude-sonnet-4-20250514",
+    "claude-haiku-4-5-20251001",
+];
+
+pub const OPENAI_MODELS: &[&str] = &[
+    "gpt-4o",
+    "gpt-4o-mini",
+];
+
+pub fn models_for_dialect(dialect: &str) -> &'static [&'static str] {
+    match dialect {
+        "openai" => OPENAI_MODELS,
+        _ => ANTHROPIC_MODELS,
+    }
+}
+
 /// Test connection status.
 #[derive(Debug, Clone)]
 pub enum TestStatus {

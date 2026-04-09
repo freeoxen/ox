@@ -138,6 +138,8 @@ fn draw_defaults_section(
     theme: &Theme,
     area: Rect,
 ) {
+    use crate::settings_state::models_for_dialect;
+
     let focused = state.focus == SettingsFocus::Defaults && state.editing.is_none();
     let block = Block::default()
         .title(" Defaults ")
@@ -154,9 +156,36 @@ fn draw_defaults_section(
         .map(|a| a.name.as_str())
         .unwrap_or("(none)");
 
+    let dialect = state
+        .accounts
+        .get(state.default_account_idx)
+        .map(|a| a.dialect.as_str())
+        .unwrap_or("anthropic");
+    let models = models_for_dialect(dialect);
+    let model_name = models
+        .get(state.default_model_idx)
+        .copied()
+        .unwrap_or("(unknown)");
+
+    let cursor = "\u{25b8} ";
+    let no_cursor = "  ";
+
     let lines = vec![
-        Line::from(format!("  Account:    {acct_name}")),
-        Line::from(format!("  Max tokens: {}", state.default_max_tokens)),
+        Line::from(format!(
+            "  Account:    {}{} (\u{2190}/\u{2192})",
+            if focused && state.defaults_focus == 0 { cursor } else { no_cursor },
+            acct_name
+        )),
+        Line::from(format!(
+            "  Model:      {}{} (\u{2190}/\u{2192})",
+            if focused && state.defaults_focus == 1 { cursor } else { no_cursor },
+            model_name
+        )),
+        Line::from(format!(
+            "  Max tokens: {}{}",
+            if focused && state.defaults_focus == 2 { cursor } else { no_cursor },
+            state.default_max_tokens
+        )),
     ];
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
