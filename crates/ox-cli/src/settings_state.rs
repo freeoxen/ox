@@ -79,6 +79,60 @@ impl SettingsState {
         }
     }
 
+    /// Refresh the account list from config and resolved keys.
+    pub fn refresh_accounts(
+        &mut self,
+        config: &crate::config::OxConfig,
+        keys_dir: &std::path::Path,
+    ) {
+        let keys = crate::config::resolve_keys(keys_dir, config);
+        let default_account = &config.gate.defaults.account;
+
+        self.accounts = config
+            .gate
+            .accounts
+            .iter()
+            .map(|(name, entry)| {
+                let endpoint_display = entry
+                    .endpoint
+                    .as_ref()
+                    .map(|ep| {
+                        ep.split("://")
+                            .nth(1)
+                            .unwrap_or(ep)
+                            .split('/')
+                            .next()
+                            .unwrap_or(ep)
+                            .to_string()
+                    })
+                    .unwrap_or_else(|| match entry.provider.as_str() {
+                        "anthropic" => "api.anthropic.com".to_string(),
+                        "openai" => "api.openai.com".to_string(),
+                        _ => "default".to_string(),
+                    });
+                AccountSummary {
+                    name: name.clone(),
+                    dialect: entry.provider.clone(),
+                    endpoint_display,
+                    has_key: keys.contains_key(name),
+                    is_default: name == default_account,
+                }
+            })
+            .collect();
+        self.accounts.sort_by(|a, b| a.name.cmp(&b.name));
+
+        self.default_account_idx = self
+            .accounts
+            .iter()
+            .position(|a| a.is_default)
+            .unwrap_or(0);
+        self.default_max_tokens = config.gate.defaults.max_tokens.to_string();
+
+        if self.selected_account >= self.accounts.len() {
+            self.selected_account = self.accounts.len().saturating_sub(1);
+        }
+    }
+
     pub fn new_wizard() -> Self {
         let mut s = Self::new();
         s.wizard = Some(WizardStep::AddAccount);

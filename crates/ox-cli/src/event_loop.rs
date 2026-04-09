@@ -33,7 +33,7 @@ pub async fn run_async(
         approval_selected: 0,
         pending_customize: None,
     };
-    let settings = SettingsState::new();
+    let mut settings = SettingsState::new();
 
     loop {
         // 1. Fetch ViewState, draw, extract owned data needed after drop.
@@ -158,6 +158,15 @@ pub async fn run_async(
                 .await;
         }
 
+        // Populate settings accounts from config when on the settings screen.
+        if screen_owned == "settings" && settings.accounts.is_empty() {
+            let config = crate::config::resolve_config(
+                app.pool.inbox_root(),
+                &crate::config::CliOverrides::default(),
+            );
+            settings.refresh_accounts(&config, &app.pool.inbox_root().join("keys"));
+        }
+
         // 5. Poll terminal event
         let terminal_event = tokio::task::block_in_place(|| {
             if event::poll(Duration::from_millis(50)).unwrap_or(false) {
@@ -196,6 +205,49 @@ pub async fn run_async(
                     else if let Some(key_str) = encode_key(key.modifiers, key.code) {
                         let mode = mode_owned.as_str();
                         let screen = screen_owned.as_str();
+
+                        // Settings screen navigation (before broker dispatch)
+                        if screen == "settings"
+                            && mode == "normal"
+                            && settings.editing.is_none()
+                        {
+                            use crate::settings_state::SettingsFocus;
+                            let handled = match key_str.as_str() {
+                                "j" | "Down" => {
+                                    if settings.focus == SettingsFocus::Accounts
+                                        && !settings.accounts.is_empty()
+                                    {
+                                        settings.selected_account = (settings.selected_account + 1)
+                                            .min(settings.accounts.len() - 1);
+                                    } else if settings.focus == SettingsFocus::Defaults {
+                                        settings.defaults_focus =
+                                            (settings.defaults_focus + 1).min(2);
+                                    }
+                                    true
+                                }
+                                "k" | "Up" => {
+                                    if settings.focus == SettingsFocus::Accounts {
+                                        settings.selected_account =
+                                            settings.selected_account.saturating_sub(1);
+                                    } else if settings.focus == SettingsFocus::Defaults {
+                                        settings.defaults_focus =
+                                            settings.defaults_focus.saturating_sub(1);
+                                    }
+                                    true
+                                }
+                                "Tab" => {
+                                    settings.focus = match settings.focus {
+                                        SettingsFocus::Accounts => SettingsFocus::Defaults,
+                                        SettingsFocus::Defaults => SettingsFocus::Accounts,
+                                    };
+                                    true
+                                }
+                                _ => false,
+                            };
+                            if handled {
+                                continue;
+                            }
+                        }
 
                         // Search chip dismissal (1-9 in normal mode, inbox, search active)
                         if mode == "normal" && screen == "inbox" && search_active {
