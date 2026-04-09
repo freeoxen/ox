@@ -21,20 +21,40 @@ use std::sync::Arc;
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Store, Value, Writer};
 use structfs_serde_store::{from_value, to_value};
 
-/// Gate store — manages providers, accounts, and model catalogs.
+/// Session defaults — which account, model, and token limit to use.
+#[derive(Debug, Clone)]
+struct Defaults {
+    account: String,
+    model: String,
+    max_tokens: u32,
+}
+
+impl Defaults {
+    fn new() -> Self {
+        Self {
+            account: "anthropic".to_string(),
+            model: "claude-sonnet-4-20250514".to_string(),
+            max_tokens: 4096,
+        }
+    }
+}
+
+/// Gate store — manages providers, accounts, model catalogs, and session defaults.
 ///
 /// Mount this at `"gate"` in the namespace. Read/write paths:
 ///
 /// - `providers/{name}` — ProviderConfig (dialect, endpoint, version)
 /// - `providers/{name}/models` — model catalog for provider
 /// - `accounts/{name}` — AccountConfig (provider, key)
-/// - `accounts/{name}/key` — API key
+/// - `accounts/{name}/key` — API key (falls back to config handle)
 /// - `accounts/{name}/provider` — provider name
-/// - `bootstrap` — name of the active account
+/// - `defaults/account` — name of the default account
+/// - `defaults/model` — default model ID (falls back to config handle)
+/// - `defaults/max_tokens` — default token limit (falls back to config handle)
 pub struct GateStore {
     providers: HashMap<String, ProviderConfig>,
     accounts: HashMap<String, AccountConfig>,
-    bootstrap: String,
+    defaults: Defaults,
     catalogs: HashMap<String, Vec<ModelInfo>>,
     config: Option<Box<dyn Store + Send + Sync>>,
 }
@@ -66,7 +86,7 @@ impl GateStore {
         Self {
             providers,
             accounts,
-            bootstrap: "anthropic".to_string(),
+            defaults: Defaults::new(),
             catalogs: HashMap::new(),
             config: None,
         }
@@ -74,9 +94,8 @@ impl GateStore {
 
     /// Attach a config handle for config-aware reads.
     ///
-    /// When reading convenience paths (`model`, `max_tokens`) and the bootstrap
-    /// account's key, GateStore checks the config handle first, falling back to
-    /// local fields.
+    /// When reading defaults and account keys, GateStore checks the config
+    /// handle first, falling back to local fields.
     pub fn with_config(mut self, config: Box<dyn Store + Send + Sync>) -> Self {
         self.config = Some(config);
         self
@@ -118,10 +137,9 @@ impl GateStore {
                         .unwrap_or_default();
                     if !local_key.is_empty() {
                         true
-                    } else if name == &self.bootstrap {
-                        self.config_string("gate/api_key").is_some()
                     } else {
-                        false
+                        self.config_string(&format!("gate/accounts/{name}/key"))
+                            .is_some()
                     }
                 };
                 if !has_key {
@@ -151,10 +169,9 @@ impl GateStore {
                         .unwrap_or_default();
                     if !local_key.is_empty() {
                         true
-                    } else if name == &self.bootstrap {
-                        self.config_string("gate/api_key").is_some()
                     } else {
-                        false
+                        self.config_string(&format!("gate/accounts/{name}/key"))
+                            .is_some()
                     }
                 };
                 if !has_key {
@@ -172,14 +189,24 @@ impl GateStore {
             .collect()
     }
 
-    /// Build the snapshot state: bootstrap + providers + accounts (keys excluded).
+    /// Build the snapshot state: defaults + providers + accounts (keys excluded).
     fn snapshot_state(&self) -> Value {
         let mut state = BTreeMap::new();
 
-        state.insert(
-            "bootstrap".to_string(),
-            Value::String(self.bootstrap.clone()),
+        let mut defaults_map = BTreeMap::new();
+        defaults_map.insert(
+            "account".to_string(),
+            Value::String(self.defaults.account.clone()),
         );
+        defaults_map.insert(
+            "model".to_string(),
+            Value::String(self.defaults.model.clone()),
+        );
+        defaults_map.insert(
+            "max_tokens".to_string(),
+            Value::Integer(self.defaults.max_tokens as i64),
+        );
+        state.insert("defaults".to_string(), Value::Map(defaults_map));
 
         let mut providers_map = BTreeMap::new();
         for (name, config) in &self.providers {
@@ -215,8 +242,20 @@ impl GateStore {
             }
         };
 
+        if let Some(Value::Map(defaults)) = state_map.get("defaults") {
+            if let Some(Value::String(a)) = defaults.get("account") {
+                self.defaults.account = a.clone();
+            }
+            if let Some(Value::String(m)) = defaults.get("model") {
+                self.defaults.model = m.clone();
+            }
+            if let Some(Value::Integer(n)) = defaults.get("max_tokens") {
+                self.defaults.max_tokens = *n as u32;
+            }
+        }
+        // Backwards compat: old snapshots have "bootstrap" at top level
         if let Some(Value::String(b)) = state_map.get("bootstrap") {
-            self.bootstrap = b.clone();
+            self.defaults.account = b.clone();
         }
 
         if let Some(providers_val) = state_map.get("providers") {
@@ -269,22 +308,38 @@ impl Reader for GateStore {
 
         let first = from.components[0].as_str();
         match first {
-            "bootstrap" => Ok(Some(Record::parsed(Value::String(self.bootstrap.clone())))),
-
-            "model" => {
-                if let Some(s) = self.config_string("gate/model") {
-                    return Ok(Some(Record::parsed(Value::String(s))));
+            "defaults" => {
+                if from.components.len() < 2 {
+                    return Ok(None);
                 }
-                // No account-level model anymore; return empty until defaults are added (Task 2)
-                Ok(None)
-            }
-
-            "max_tokens" => {
-                if let Some(n) = self.config_integer("gate/max_tokens") {
-                    return Ok(Some(Record::parsed(Value::Integer(n))));
+                let field = from.components[1].as_str();
+                match field {
+                    "account" => {
+                        if let Some(s) = self.config_string("gate/defaults/account") {
+                            return Ok(Some(Record::parsed(Value::String(s))));
+                        }
+                        Ok(Some(Record::parsed(Value::String(
+                            self.defaults.account.clone(),
+                        ))))
+                    }
+                    "model" => {
+                        if let Some(s) = self.config_string("gate/defaults/model") {
+                            return Ok(Some(Record::parsed(Value::String(s))));
+                        }
+                        Ok(Some(Record::parsed(Value::String(
+                            self.defaults.model.clone(),
+                        ))))
+                    }
+                    "max_tokens" => {
+                        if let Some(n) = self.config_integer("gate/defaults/max_tokens") {
+                            return Ok(Some(Record::parsed(Value::Integer(n))));
+                        }
+                        Ok(Some(Record::parsed(Value::Integer(
+                            self.defaults.max_tokens as i64,
+                        ))))
+                    }
+                    _ => Ok(None),
                 }
-                // No account-level max_tokens anymore; return empty until defaults are added (Task 2)
-                Ok(None)
             }
 
             "providers" => {
@@ -323,17 +378,19 @@ impl Reader for GateStore {
                 }
                 let name = from.components[1].as_str();
 
-                // Check config for bootstrap account key before account lookup
+                // Check config for per-account key before account lookup
                 if from.components.len() > 2 {
                     let field = from.components[2].as_str();
-                    if field == "key" && name == self.bootstrap {
+                    if field == "key" {
                         let local_empty = self
                             .accounts
                             .get(name)
                             .map(|a| a.key.is_empty())
                             .unwrap_or(true);
                         if local_empty {
-                            if let Some(k) = self.config_string("gate/api_key") {
+                            if let Some(k) =
+                                self.config_string(&format!("gate/accounts/{name}/key"))
+                            {
                                 return Ok(Some(Record::parsed(Value::String(k))));
                             }
                         }
@@ -400,19 +457,56 @@ impl Writer for GateStore {
 
         let first = to.components[0].as_str();
         match first {
-            "bootstrap" => match data {
-                Record::Parsed(Value::String(s)) => {
-                    self.bootstrap = s;
-                    Ok(to.clone())
+            "defaults" => {
+                if to.components.len() < 2 {
+                    return Err(StoreError::store(
+                        "gate",
+                        "write",
+                        "defaults requires a field name",
+                    ));
                 }
-                _ => Err(StoreError::store(
-                    "gate",
-                    "write",
-                    "expected string for bootstrap",
-                )),
-            },
-
-            // "model" and "max_tokens" convenience writes will be handled by Defaults (Task 2)
+                let field = to.components[1].as_str();
+                match field {
+                    "account" => match data {
+                        Record::Parsed(Value::String(s)) => {
+                            self.defaults.account = s;
+                            Ok(to.clone())
+                        }
+                        _ => Err(StoreError::store(
+                            "gate",
+                            "write",
+                            "expected string for defaults/account",
+                        )),
+                    },
+                    "model" => match data {
+                        Record::Parsed(Value::String(s)) => {
+                            self.defaults.model = s;
+                            Ok(to.clone())
+                        }
+                        _ => Err(StoreError::store(
+                            "gate",
+                            "write",
+                            "expected string for defaults/model",
+                        )),
+                    },
+                    "max_tokens" => match data {
+                        Record::Parsed(Value::Integer(n)) => {
+                            self.defaults.max_tokens = n as u32;
+                            Ok(to.clone())
+                        }
+                        _ => Err(StoreError::store(
+                            "gate",
+                            "write",
+                            "expected integer for defaults/max_tokens",
+                        )),
+                    },
+                    _ => Err(StoreError::store(
+                        "gate",
+                        "write",
+                        format!("unknown defaults field: {field}"),
+                    )),
+                }
+            }
 
             "providers" => {
                 if to.components.len() < 2 {
@@ -646,27 +740,67 @@ mod tests {
     }
 
     #[test]
-    fn test_bootstrap_roundtrip() {
+    fn test_defaults_roundtrip() {
         let mut gate = GateStore::new();
 
-        // Default is "anthropic"
-        let record = gate.read(&path!("bootstrap")).unwrap().unwrap();
+        // Default account is "anthropic"
+        let record = gate.read(&path!("defaults/account")).unwrap().unwrap();
         match record {
             Record::Parsed(Value::String(s)) => assert_eq!(s, "anthropic"),
             _ => panic!("expected string"),
         }
 
-        // Set to "openai"
+        // Default model
+        let record = gate.read(&path!("defaults/model")).unwrap().unwrap();
+        match record {
+            Record::Parsed(Value::String(s)) => assert_eq!(s, "claude-sonnet-4-20250514"),
+            _ => panic!("expected string"),
+        }
+
+        // Default max_tokens
+        let record = gate.read(&path!("defaults/max_tokens")).unwrap().unwrap();
+        match record {
+            Record::Parsed(Value::Integer(n)) => assert_eq!(n, 4096),
+            _ => panic!("expected integer"),
+        }
+
+        // Set account to "openai"
         gate.write(
-            &path!("bootstrap"),
+            &path!("defaults/account"),
             Record::parsed(Value::String("openai".to_string())),
         )
         .unwrap();
 
-        let record = gate.read(&path!("bootstrap")).unwrap().unwrap();
+        let record = gate.read(&path!("defaults/account")).unwrap().unwrap();
         match record {
             Record::Parsed(Value::String(s)) => assert_eq!(s, "openai"),
             _ => panic!("expected string"),
+        }
+
+        // Set model
+        gate.write(
+            &path!("defaults/model"),
+            Record::parsed(Value::String("gpt-4o".to_string())),
+        )
+        .unwrap();
+
+        let record = gate.read(&path!("defaults/model")).unwrap().unwrap();
+        match record {
+            Record::Parsed(Value::String(s)) => assert_eq!(s, "gpt-4o"),
+            _ => panic!("expected string"),
+        }
+
+        // Set max_tokens
+        gate.write(
+            &path!("defaults/max_tokens"),
+            Record::parsed(Value::Integer(8192)),
+        )
+        .unwrap();
+
+        let record = gate.read(&path!("defaults/max_tokens")).unwrap().unwrap();
+        match record {
+            Record::Parsed(Value::Integer(n)) => assert_eq!(n, 8192),
+            _ => panic!("expected integer"),
         }
     }
 
@@ -780,7 +914,7 @@ mod tests {
                 let state = m.get("state").unwrap();
                 match state {
                     Value::Map(sm) => {
-                        assert!(sm.contains_key("bootstrap"));
+                        assert!(sm.contains_key("defaults"));
                         assert!(sm.contains_key("providers"));
                         assert!(sm.contains_key("accounts"));
                         let accounts = match sm.get("accounts").unwrap() {
@@ -818,7 +952,7 @@ mod tests {
         let val = unwrap_value(gate.read(&path!("snapshot/state")).unwrap().unwrap());
         match val {
             Value::Map(m) => {
-                assert!(m.contains_key("bootstrap"));
+                assert!(m.contains_key("defaults"));
                 assert!(m.contains_key("providers"));
                 assert!(m.contains_key("accounts"));
             }
@@ -856,7 +990,11 @@ mod tests {
         .unwrap();
 
         let state_json = serde_json::json!({
-            "bootstrap": "openai",
+            "defaults": {
+                "account": "openai",
+                "model": "gpt-4o",
+                "max_tokens": 8192
+            },
             "providers": {
                 "openai": {
                     "dialect": "openai",
@@ -877,10 +1015,22 @@ mod tests {
         gate.write(&path!("snapshot"), Record::parsed(Value::Map(snap_map)))
             .unwrap();
 
-        let val = unwrap_value(gate.read(&path!("bootstrap")).unwrap().unwrap());
+        let val = unwrap_value(gate.read(&path!("defaults/account")).unwrap().unwrap());
         match val {
             Value::String(s) => assert_eq!(s, "openai"),
             _ => panic!("expected string"),
+        }
+
+        let val = unwrap_value(gate.read(&path!("defaults/model")).unwrap().unwrap());
+        match val {
+            Value::String(s) => assert_eq!(s, "gpt-4o"),
+            _ => panic!("expected string"),
+        }
+
+        let val = unwrap_value(gate.read(&path!("defaults/max_tokens")).unwrap().unwrap());
+        match val {
+            Value::Integer(n) => assert_eq!(n, 8192),
+            _ => panic!("expected integer"),
         }
 
         assert!(gate.read(&path!("providers/anthropic")).unwrap().is_none());
@@ -895,7 +1045,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_write_via_state_path() {
+    fn snapshot_restores_legacy_bootstrap_field() {
         let mut gate = GateStore::new();
         let state_json = serde_json::json!({
             "bootstrap": "openai",
@@ -916,7 +1066,41 @@ mod tests {
         gate.write(&path!("snapshot/state"), Record::parsed(state))
             .unwrap();
 
-        let val = unwrap_value(gate.read(&path!("bootstrap")).unwrap().unwrap());
+        // Legacy "bootstrap" should populate defaults.account
+        let val = unwrap_value(gate.read(&path!("defaults/account")).unwrap().unwrap());
+        match val {
+            Value::String(s) => assert_eq!(s, "openai"),
+            _ => panic!("expected string"),
+        }
+    }
+
+    #[test]
+    fn snapshot_write_via_state_path() {
+        let mut gate = GateStore::new();
+        let state_json = serde_json::json!({
+            "defaults": {
+                "account": "openai",
+                "model": "gpt-4o",
+                "max_tokens": 4096
+            },
+            "providers": {
+                "openai": {
+                    "dialect": "openai",
+                    "endpoint": "https://api.openai.com/v1/chat/completions",
+                    "version": ""
+                }
+            },
+            "accounts": {
+                "openai": {
+                    "provider": "openai"
+                }
+            }
+        });
+        let state = json_to_value(state_json);
+        gate.write(&path!("snapshot/state"), Record::parsed(state))
+            .unwrap();
+
+        let val = unwrap_value(gate.read(&path!("defaults/account")).unwrap().unwrap());
         match val {
             Value::String(s) => assert_eq!(s, "openai"),
             _ => panic!("expected string"),
@@ -926,12 +1110,15 @@ mod tests {
     // -- Config handle tests --
 
     #[test]
-    fn gate_config_handle_overrides_model() {
+    fn config_handle_overrides_defaults_model() {
         use ox_store_util::LocalConfig;
         let mut config = LocalConfig::new();
-        config.set("gate/model", Value::String("config-model".into()));
+        config.set(
+            "gate/defaults/model",
+            Value::String("config-model".into()),
+        );
         let mut gate = GateStore::new().with_config(Box::new(config));
-        let record = gate.read(&path!("model")).unwrap().unwrap();
+        let record = gate.read(&path!("defaults/model")).unwrap().unwrap();
         match record {
             Record::Parsed(Value::String(s)) => assert_eq!(s, "config-model"),
             _ => panic!("expected string"),
@@ -939,12 +1126,12 @@ mod tests {
     }
 
     #[test]
-    fn gate_config_handle_overrides_max_tokens() {
+    fn config_handle_overrides_defaults_max_tokens() {
         use ox_store_util::LocalConfig;
         let mut config = LocalConfig::new();
-        config.set("gate/max_tokens", Value::Integer(16384));
+        config.set("gate/defaults/max_tokens", Value::Integer(16384));
         let mut gate = GateStore::new().with_config(Box::new(config));
-        let record = gate.read(&path!("max_tokens")).unwrap().unwrap();
+        let record = gate.read(&path!("defaults/max_tokens")).unwrap().unwrap();
         match record {
             Record::Parsed(Value::Integer(n)) => assert_eq!(n, 16384),
             _ => panic!("expected integer"),
@@ -952,10 +1139,13 @@ mod tests {
     }
 
     #[test]
-    fn gate_config_handle_overrides_bootstrap_key() {
+    fn config_handle_overrides_any_account_key() {
         use ox_store_util::LocalConfig;
         let mut config = LocalConfig::new();
-        config.set("gate/api_key", Value::String("config-key-123".into()));
+        config.set(
+            "gate/accounts/anthropic/key",
+            Value::String("config-key-123".into()),
+        );
         let mut gate = GateStore::new().with_config(Box::new(config));
         let record = gate
             .read(&path!("accounts/anthropic/key"))
@@ -968,20 +1158,55 @@ mod tests {
     }
 
     #[test]
-    fn gate_model_returns_none_without_config() {
-        let mut gate = GateStore::new();
-        // Without config handle and without account-level model, returns None
-        assert!(gate.read(&path!("model")).unwrap().is_none());
+    fn config_handle_overrides_non_bootstrap_account_key() {
+        use ox_store_util::LocalConfig;
+        let mut config = LocalConfig::new();
+        config.set(
+            "gate/accounts/openai/key",
+            Value::String("sk-openai-config".into()),
+        );
+        let mut gate = GateStore::new().with_config(Box::new(config));
+        // defaults.account is "anthropic", but config provides openai key
+        let record = gate
+            .read(&path!("accounts/openai/key"))
+            .unwrap()
+            .unwrap();
+        match record {
+            Record::Parsed(Value::String(s)) => assert_eq!(s, "sk-openai-config"),
+            _ => panic!("expected string"),
+        }
     }
 
     #[test]
-    fn gate_config_key_populates_completion_schemas() {
+    fn config_key_populates_completion_schemas_any_account() {
         use ox_store_util::LocalConfig;
         let mut config = LocalConfig::new();
-        config.set("gate/api_key", Value::String("sk-from-config".into()));
+        config.set(
+            "gate/accounts/openai/key",
+            Value::String("sk-from-config".into()),
+        );
         let mut gate = GateStore::new().with_config(Box::new(config));
         let schemas = gate.completion_tool_schemas();
         assert_eq!(schemas.len(), 1);
-        assert_eq!(schemas[0].name, "complete_anthropic");
+        assert_eq!(schemas[0].name, "complete_openai");
+    }
+
+    #[test]
+    fn config_handle_falls_back_to_local_defaults() {
+        let mut gate = GateStore::new();
+        // No config handle — should return local defaults
+        let record = gate.read(&path!("defaults/model")).unwrap().unwrap();
+        match record {
+            Record::Parsed(Value::String(s)) => {
+                assert_eq!(s, "claude-sonnet-4-20250514");
+            }
+            _ => panic!("expected string"),
+        }
+
+        let record = gate.read(&path!("defaults/max_tokens")).unwrap().unwrap();
+        match record {
+            Record::Parsed(Value::Integer(n)) => assert_eq!(n, 4096),
+            _ => panic!("expected integer"),
+        }
     }
 }
