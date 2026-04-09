@@ -13,6 +13,7 @@ keywords = ["agent", "ai", "structfs", "broker", "async"]
 categories = ["data-structures", "asynchronous"]
 
 [dependencies]
+tracing = { workspace = true }
 structfs-core-store = { workspace = true }
 tokio = { workspace = true }
 

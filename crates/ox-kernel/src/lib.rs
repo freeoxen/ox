@@ -27,6 +27,11 @@ pub use structfs_core_store::{
     self as structfs, Error as StoreError, Path, Reader, Record, Store, Value, Writer, path,
 };
 
+pub use ox_path::oxpath;
+
+mod path_component;
+pub use path_component::PathComponent;
+
 pub mod snapshot;
 
 pub mod backing;
@@ -386,13 +391,19 @@ impl Kernel {
 
         let record = context
             .read(&path!("prompt"))
-            .map_err(|e| e.to_string())?
+            .map_err(|e| {
+                tracing::error!(error = %e, "failed to read prompt from context");
+                e.to_string()
+            })?
             .ok_or("failed to read prompt from context")?;
         let prompt_json = match record {
             Record::Parsed(v) => structfs_serde_store::value_to_json(v),
             _ => return Err("expected parsed prompt record".into()),
         };
-        serde_json::from_value(prompt_json).map_err(|e| e.to_string())
+        let request: CompletionRequest =
+            serde_json::from_value(prompt_json).map_err(|e| e.to_string())?;
+        tracing::debug!(model = %request.model, "initiating completion");
+        Ok(request)
     }
 
     /// Phase 2: Accumulate pre-parsed [`StreamEvent`]s into content blocks.
@@ -409,9 +420,16 @@ impl Kernel {
         self.state = KernelState::Streaming;
         emit(AgentEvent::TurnStart);
 
-        let content = self.accumulate_response(events, emit).inspect_err(|_| {
+        let content = self.accumulate_response(events, emit).inspect_err(|e| {
+            tracing::error!(error = %e, "stream accumulation failed");
             self.state = KernelState::Idle;
         })?;
+        let tool_count = content
+            .iter()
+            .filter(|b| matches!(b, ContentBlock::ToolUse(_)))
+            .count();
+        let event_count = content.len();
+        tracing::debug!(event_count, tool_count, "consumed events");
         self.state = KernelState::Idle;
         Ok(content)
     }
@@ -444,6 +462,11 @@ impl Kernel {
                 }
             })
             .collect();
+
+        if !tool_calls.is_empty() {
+            let names: Vec<&str> = tool_calls.iter().map(|tc| tc.name.as_str()).collect();
+            tracing::debug!(tools = ?names, "tool calls extracted");
+        }
 
         Ok(tool_calls)
     }

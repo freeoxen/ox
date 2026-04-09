@@ -42,10 +42,20 @@ async fn server_loop<S: Reader + Writer>(
     while let Some(request) = rx.recv().await {
         match request {
             Request::Read { path, reply } => {
-                let _ = reply.send(store.read(&path));
+                tracing::debug!(%path, "server read");
+                let result = store.read(&path);
+                if let Err(ref e) = result {
+                    tracing::warn!(%path, error = %e, "server read error");
+                }
+                let _ = reply.send(result);
             }
             Request::Write { path, data, reply } => {
-                let _ = reply.send(store.write(&path, data));
+                tracing::debug!(%path, "server write");
+                let result = store.write(&path, data);
+                if let Err(ref e) = result {
+                    tracing::warn!(%path, error = %e, "server write error");
+                }
+                let _ = reply.send(result);
             }
         }
     }

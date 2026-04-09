@@ -16,6 +16,7 @@ members = [
     "crates/ox-broker",
     "crates/ox-ui",
     "crates/ox-store-util",
+    "crates/ox-path",
 ]
 
 [workspace.package]
@@ -32,3 +33,4 @@ structfs-core-store = { git = "https://github.com/StructFS/structfs" }
 structfs-serde-store = { git = "https://github.com/StructFS/structfs" }
 sha2 = "0.10"
 tokio = { version = "1", features = ["sync", "time", "rt"] }
+tracing = "0.1"

@@ -33,6 +33,7 @@ pub fn save(
     updated_at: i64,
     mounts: &[&str],
 ) -> Result<SaveResult, String> {
+    tracing::info!(thread_id, path = %thread_dir.display(), "saving thread snapshot");
     std::fs::create_dir_all(thread_dir).map_err(|e| e.to_string())?;
 
     // 1. Read snapshot states from participating mounts
@@ -117,6 +118,8 @@ pub fn restore(
     // 1. Restore context (non-history stores)
     let ctx = thread_dir::read_context(thread_dir)?.ok_or("no context.json in thread directory")?;
 
+    tracing::info!(thread_id = %ctx.thread_id, path = %thread_dir.display(), "restoring thread snapshot");
+
     for &mount in mounts {
         if let Some(state_json) = ctx.stores.get(mount) {
             let path = structfs_core_store::Path::parse(&format!("{mount}/snapshot/state"))
@@ -140,6 +143,8 @@ pub fn restore(
             .write(&history_path, Record::parsed(value))
             .map_err(|e| e.to_string())?;
     }
+
+    tracing::info!(thread_id = %ctx.thread_id, message_count = entries.len(), "thread snapshot restored");
 
     Ok(())
 }

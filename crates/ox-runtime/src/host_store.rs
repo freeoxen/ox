@@ -101,10 +101,12 @@ impl<B: Reader + Writer + Send, E: HostEffects> HostStore<B, E> {
     /// Handle a read operation, intercepting effectful paths.
     pub fn handle_read(&mut self, path: &Path) -> Result<Option<Record>, StoreError> {
         if path == &path!("prompt") {
+            tracing::debug!(path = %path, "effectful read: prompt synthesis");
             return ox_context::synthesize_prompt(&mut self.backend);
         }
 
         if path == &path!("gate/response") {
+            tracing::debug!(path = %path, "effectful read: gate response");
             return self.read_gate_response();
         }
 
@@ -127,9 +129,25 @@ impl<B: Reader + Writer + Send, E: HostEffects> HostStore<B, E> {
         };
 
         match prefix {
-            "gate" if path == &path!("gate/complete") => self.write_gate_complete(data),
-            "tools" if path == &path!("tools/execute") => self.write_tools_execute(data),
-            "events" if path == &path!("events/emit") => self.write_events_emit(data),
+            "gate" if path == &path!("gate/complete") => {
+                tracing::debug!(path = %path, "effectful write: gate/complete");
+                self.write_gate_complete(data)
+            }
+            "tools" if path == &path!("tools/execute") => {
+                tracing::debug!(path = %path, "effectful write: tools/execute");
+                self.write_tools_execute(data)
+            }
+            "events" if path == &path!("events/emit") => {
+                tracing::debug!(path = %path, "effectful write: events/emit");
+                self.write_events_emit(data)
+            }
+            "events" if path == &path!("events/log") => {
+                // Wasm guest tracing — extract the log line and forward to host tracing
+                if let Some(Value::String(line)) = data.as_value() {
+                    tracing::info!(target: "ox_wasm", "{line}");
+                }
+                Ok(path.clone())
+            }
             "tool_results" => {
                 let sub = Path::from_components(path.components[1..].to_vec());
                 self.tool_results.write(&sub, data)
@@ -155,10 +173,12 @@ impl<B: Reader + Writer + Send, E: HostEffects> HostStore<B, E> {
     fn write_gate_complete(&mut self, data: Record) -> Result<Path, StoreError> {
         let request: CompletionRequest = record_to_typed(data, "gate", "complete")?;
 
-        let (events, _input_tokens, _output_tokens) = self
-            .effects
-            .complete(&request)
-            .map_err(|e| StoreError::store("gate", "complete", e))?;
+        tracing::debug!("completion request dispatched");
+        let (events, _input_tokens, _output_tokens) =
+            self.effects.complete(&request).map_err(|e| {
+                tracing::error!(error = %e, "completion request failed");
+                StoreError::store("gate", "complete", e)
+            })?;
 
         self.effects.emit_event(AgentEvent::TurnStart);
         self.pending_events = Some(events);
@@ -169,14 +189,16 @@ impl<B: Reader + Writer + Send, E: HostEffects> HostStore<B, E> {
     fn write_tools_execute(&mut self, data: Record) -> Result<Path, StoreError> {
         let call: ToolCall = record_to_typed(data, "tools", "execute")?;
 
+        tracing::debug!(tool = %call.name, "executing tool");
+
         self.effects.emit_event(AgentEvent::ToolCallStart {
             name: call.name.clone(),
         });
 
-        let result = self
-            .effects
-            .execute_tool(&call)
-            .map_err(|e| StoreError::store("tools", "execute", e))?;
+        let result = self.effects.execute_tool(&call).map_err(|e| {
+            tracing::error!(tool = %call.name, error = %e, "tool execution failed");
+            StoreError::store("tools", "execute", e)
+        })?;
 
         self.effects.emit_event(AgentEvent::ToolCallResult {
             name: call.name.clone(),

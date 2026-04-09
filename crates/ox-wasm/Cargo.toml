@@ -8,6 +8,7 @@ description = "Ox agent as a Wasm module — drives the kernel loop via host Str
 publish = false
 
 [dependencies]
+tracing = { workspace = true }
 ox-kernel = { path = "../ox-kernel" }
 structfs-core-store = { workspace = true }
 structfs-serde-store = { workspace = true }

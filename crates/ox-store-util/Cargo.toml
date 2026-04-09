@@ -9,4 +9,5 @@ homepage.workspace = true
 authors.workspace = true
 
 [dependencies]
+tracing = { workspace = true }
 structfs-core-store.workspace = true

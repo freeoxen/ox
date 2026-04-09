@@ -67,6 +67,8 @@ pub async fn setup(
     registry.set_broker_client(broker.client());
     servers.push(broker.mount_async(path!("threads"), registry).await);
 
+    tracing::info!(stores = servers.len(), "broker setup complete");
+
     BrokerHandle {
         broker,
         _servers: servers,

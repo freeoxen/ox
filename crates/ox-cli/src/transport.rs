@@ -251,9 +251,19 @@ pub fn streaming_fetch(
 ) -> Result<(Vec<StreamEvent>, UsageInfo), String> {
     let (url, headers, body) = build_request(config, api_key, request)?;
 
+    tracing::debug!(
+        url = %url,
+        dialect = %config.dialect,
+        model = %request.model,
+        messages = request.messages.len(),
+        tools = request.tools.len(),
+        "streaming fetch start"
+    );
+
     let mut last_err = String::new();
     for attempt in 0..3u32 {
         if attempt > 0 {
+            tracing::warn!(attempt, last_err = %last_err, "retrying streaming fetch");
             std::thread::sleep(std::time::Duration::from_secs(2u64.pow(attempt)));
         }
 
@@ -273,10 +283,12 @@ pub fn streaming_fetch(
         let status = resp.status();
         if status.as_u16() == 429 || status.is_server_error() {
             last_err = format!("HTTP {status}");
+            tracing::warn!(status = %status, "transient HTTP error");
             continue;
         }
         if !status.is_success() {
             let text = resp.text().unwrap_or_default();
+            tracing::error!(status = %status, body = %text, "HTTP request failed");
             return Err(format!("HTTP {status}: {text}"));
         }
 
@@ -293,9 +305,16 @@ pub fn streaming_fetch(
             }
         }
 
+        tracing::debug!(
+            events = all_events.len(),
+            input_tokens = parser.usage.input_tokens,
+            output_tokens = parser.usage.output_tokens,
+            "streaming fetch complete"
+        );
         return Ok((all_events, parser.usage));
     }
 
+    tracing::error!(last_err = %last_err, "streaming fetch exhausted retries");
     Err(format!("{last_err} (after 3 attempts)"))
 }
 

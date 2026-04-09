@@ -67,14 +67,20 @@ impl Namespace {
 /// store. This function exists as a standalone so it can be called with any
 /// [`Reader`] — for example a broker-backed adapter in the agent worker bridge.
 pub fn synthesize_prompt(reader: &mut dyn Reader) -> Result<Option<Record>, StoreError> {
+    tracing::debug!("synthesizing prompt");
+
     // Read system prompt
     let system_str = {
         let record = reader.read(&path!("system"))?.ok_or_else(|| {
             StoreError::store("synthesize_prompt", "read", "system store returned None")
         })?;
         match record {
-            Record::Parsed(Value::String(s)) => s,
+            Record::Parsed(Value::String(s)) => {
+                tracing::debug!(system_prompt_len = s.len(), "read system prompt");
+                s
+            }
             _ => {
+                tracing::error!("expected string from system store");
                 return Err(StoreError::store(
                     "synthesize_prompt",
                     "read",
@@ -162,10 +168,22 @@ pub fn synthesize_prompt(reader: &mut dyn Reader) -> Result<Option<Record>, Stor
         }
     };
 
-    let messages: Vec<serde_json::Value> = serde_json::from_value(messages_json)
-        .map_err(|e| StoreError::store("synthesize_prompt", "read", e.to_string()))?;
-    let tools: Vec<ox_kernel::ToolSchema> = serde_json::from_value(tools_json)
-        .map_err(|e| StoreError::store("synthesize_prompt", "read", e.to_string()))?;
+    let messages: Vec<serde_json::Value> = serde_json::from_value(messages_json).map_err(|e| {
+        tracing::error!(error = %e, "failed to parse messages");
+        StoreError::store("synthesize_prompt", "read", e.to_string())
+    })?;
+    let tools: Vec<ox_kernel::ToolSchema> = serde_json::from_value(tools_json).map_err(|e| {
+        tracing::error!(error = %e, "failed to parse tool schemas");
+        StoreError::store("synthesize_prompt", "read", e.to_string())
+    })?;
+
+    tracing::debug!(
+        message_count = messages.len(),
+        tool_count = tools.len(),
+        model = %model_id,
+        max_tokens,
+        "prompt components assembled"
+    );
 
     let request = CompletionRequest {
         model: model_id,

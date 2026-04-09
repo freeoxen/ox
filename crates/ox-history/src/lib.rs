@@ -310,6 +310,7 @@ impl Writer for HistoryProvider {
                     self.turn.streaming.clear();
                 }
                 self.messages.push(msg);
+                tracing::debug!(message_count = self.messages.len(), "message appended");
                 Ok(to.clone())
             }
             "clear" => {
@@ -352,6 +353,7 @@ impl Writer for HistoryProvider {
                     self.messages.push(Message::Assistant { content });
                 }
                 self.turn.clear();
+                tracing::debug!(message_count = self.messages.len(), "history committed");
                 Ok(to.clone())
             }
             "snapshot" => Err(StoreError::store(

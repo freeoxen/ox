@@ -144,6 +144,7 @@ impl AgentPool {
         let rt_handle = self.rt_handle.clone();
 
         thread::spawn(move || {
+            tracing::info!(thread_id = %thread_id, title = %title, "agent worker spawned");
             agent_worker(
                 thread_id, title, module, workspace, no_policy, inbox_root, prompt_rx, broker,
                 rt_handle,
@@ -260,14 +261,24 @@ fn agent_worker(
     let mut policy = policy;
     let mut client = reqwest::blocking::Client::new();
 
+    tracing::info!(
+        thread_id = %thread_id,
+        default_account = %default_account,
+        provider = %provider,
+        has_key = !api_key_for_transport.is_empty(),
+        "agent worker ready"
+    );
+
     while let Ok(input) = prompt_rx.recv() {
+        tracing::debug!(thread_id = %thread_id, input_len = input.len(), "prompt received");
+
         // Write user message to history
         let user_json = serde_json::json!({"role": "user", "content": input});
         if let Err(e) = adapter.write(
             &path!("history/append"),
             Record::parsed(json_to_value(user_json)),
         ) {
-            eprintln!("history append failed for thread {thread_id}: {e}");
+            tracing::error!(thread_id = %thread_id, error = %e, "history append failed");
             continue;
         }
 
@@ -284,12 +295,18 @@ fn agent_worker(
         };
 
         let host_store = HostStore::new(adapter, effects);
+        tracing::debug!(thread_id = %thread_id, "running wasm module");
         let (returned_store, result) = module.run(host_store);
 
         adapter = returned_store.backend;
         client = returned_store.effects.client;
         tools = returned_store.effects.tools;
         policy = returned_store.effects.policy;
+
+        match &result {
+            Ok(()) => tracing::debug!(thread_id = %thread_id, "agent run complete"),
+            Err(e) => tracing::error!(thread_id = %thread_id, error = %e, "agent run failed"),
+        }
 
         if let Err(e) = &result {
             // Write error to history before commit
@@ -440,6 +457,7 @@ impl HostEffects for CliEffects {
     }
 
     fn execute_tool(&mut self, call: &ToolCall) -> Result<String, String> {
+        tracing::debug!(tool = %call.name, id = %call.id, "execute_tool");
         let decision = self.policy.check(&call.name, &call.input);
         match decision {
             crate::policy::CheckResult::Allow => {

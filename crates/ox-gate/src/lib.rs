@@ -105,7 +105,10 @@ impl GateStore {
         let path = Path::parse(path_str).ok()?;
         let record = config.read(&path).ok()??;
         match record.as_value() {
-            Some(Value::String(s)) if !s.is_empty() => Some(s.clone()),
+            Some(Value::String(s)) if !s.is_empty() => {
+                tracing::debug!(path = path_str, "config string read from handle");
+                Some(s.clone())
+            }
             _ => None,
         }
     }
@@ -116,7 +119,14 @@ impl GateStore {
         let path = Path::parse(path_str).ok()?;
         let record = config.read(&path).ok()??;
         match record.as_value() {
-            Some(Value::Integer(n)) => Some(*n),
+            Some(Value::Integer(n)) => {
+                tracing::debug!(
+                    path = path_str,
+                    value = n,
+                    "config integer read from handle"
+                );
+                Some(*n)
+            }
             _ => None,
         }
     }
@@ -297,24 +307,33 @@ impl Reader for GateStore {
                 match field {
                     "account" => {
                         if let Some(s) = self.config_string("gate/defaults/account") {
+                            tracing::debug!(account = %s, "defaults/account from config");
                             return Ok(Some(Record::parsed(Value::String(s))));
                         }
+                        tracing::debug!(account = %self.defaults.account, "defaults/account from local");
                         Ok(Some(Record::parsed(Value::String(
                             self.defaults.account.clone(),
                         ))))
                     }
                     "model" => {
                         if let Some(s) = self.config_string("gate/defaults/model") {
+                            tracing::debug!(model = %s, "defaults/model from config");
                             return Ok(Some(Record::parsed(Value::String(s))));
                         }
+                        tracing::debug!(model = %self.defaults.model, "defaults/model from local");
                         Ok(Some(Record::parsed(Value::String(
                             self.defaults.model.clone(),
                         ))))
                     }
                     "max_tokens" => {
                         if let Some(n) = self.config_integer("gate/defaults/max_tokens") {
+                            tracing::debug!(max_tokens = n, "defaults/max_tokens from config");
                             return Ok(Some(Record::parsed(Value::Integer(n))));
                         }
+                        tracing::debug!(
+                            max_tokens = self.defaults.max_tokens,
+                            "defaults/max_tokens from local"
+                        );
                         Ok(Some(Record::parsed(Value::Integer(
                             self.defaults.max_tokens as i64,
                         ))))
@@ -362,8 +381,10 @@ impl Reader for GateStore {
                 // Keys come from config handle only (key files/env vars injected there)
                 if from.components.len() > 2 && from.components[2].as_str() == "key" {
                     if let Some(k) = self.config_string(&format!("gate/accounts/{name}/key")) {
+                        tracing::debug!(account = name, "account key read (present)");
                         return Ok(Some(Record::parsed(Value::String(k))));
                     }
+                    tracing::debug!(account = name, "account key read (empty)");
                     return Ok(Some(Record::parsed(Value::String(String::new()))));
                 }
 
