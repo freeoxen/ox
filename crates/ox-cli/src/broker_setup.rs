@@ -225,7 +225,7 @@ mod tests {
 
         // Read model for a thread — uses GateStore default
         let model = client
-            .read(&path!("threads/t_test/gate/model"))
+            .read(&path!("threads/t_test/gate/defaults/model"))
             .await
             .unwrap()
             .unwrap();
@@ -255,9 +255,9 @@ mod tests {
         let handle = test_setup().await;
         let client = handle.client();
 
-        // GateStore config handle reads gate/model from ConfigStore
+        // GateStore config handle reads gate/defaults/model from ConfigStore
         let model = client
-            .read(&path!("threads/t_cfg/gate/model"))
+            .read(&path!("threads/t_cfg/gate/defaults/model"))
             .await
             .unwrap()
             .unwrap();

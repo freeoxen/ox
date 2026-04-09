@@ -141,13 +141,15 @@ pub fn synthesize_prompt(reader: &mut dyn Reader) -> Result<Option<Record>, Stor
 
     // Read max_tokens
     let max_tokens = {
-        let record = reader.read(&path!("gate/defaults/max_tokens"))?.ok_or_else(|| {
-            StoreError::store(
-                "synthesize_prompt",
-                "read",
-                "gate store returned None for defaults/max_tokens",
-            )
-        })?;
+        let record = reader
+            .read(&path!("gate/defaults/max_tokens"))?
+            .ok_or_else(|| {
+                StoreError::store(
+                    "synthesize_prompt",
+                    "read",
+                    "gate store returned None for defaults/max_tokens",
+                )
+            })?;
         match record {
             Record::Parsed(Value::Integer(n)) => n as u32,
             _ => {
@@ -565,7 +567,7 @@ mod tests {
         )
         .unwrap();
         ns.write(
-            &path!("gate/model"),
+            &path!("gate/defaults/model"),
             Record::parsed(Value::String("gpt-4o".to_string())),
         )
         .unwrap();
@@ -577,7 +579,7 @@ mod tests {
 
         let val = unwrap_value(ns.read(&path!("system")).unwrap().unwrap());
         assert_eq!(val, Value::String("original".to_string()));
-        let val = unwrap_value(ns.read(&path!("gate/model")).unwrap().unwrap());
+        let val = unwrap_value(ns.read(&path!("gate/defaults/model")).unwrap().unwrap());
         assert_eq!(val, Value::String("claude-sonnet-4-20250514".to_string()));
     }
 

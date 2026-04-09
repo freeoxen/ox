@@ -319,8 +319,8 @@ mod tests {
             other => panic!("expected integer 1, got {:?}", other),
         }
 
-        // Read model id from gate store
-        let model_path = Path::parse("t_a/gate/model").unwrap();
+        // Read model id from gate store (defaults namespace)
+        let model_path = Path::parse("t_a/gate/defaults/model").unwrap();
         let result = futures_or_poll(reg.read(&model_path)).unwrap();
         match result.unwrap().as_value().unwrap() {
             Value::String(s) => assert_eq!(s, "claude-sonnet-4-20250514"),

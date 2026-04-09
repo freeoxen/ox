@@ -227,8 +227,8 @@ mod tests {
             _ => panic!("expected string"),
         }
 
-        // Verify model (now read from gate store)
-        let record = ns2.read(&path!("gate/model")).unwrap().unwrap();
+        // Verify model (now read from gate store defaults)
+        let record = ns2.read(&path!("gate/defaults/model")).unwrap().unwrap();
         match record.as_value().unwrap() {
             structfs_core_store::Value::String(s) => assert_eq!(s, "claude-sonnet-4-20250514"),
             _ => panic!("expected string"),

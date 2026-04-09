@@ -361,12 +361,12 @@ mod tests {
         ns.mount("tools", Box::new(ToolsProvider::new(vec![])));
         ns.mount("gate", Box::new(GateStore::new()));
         ns.write(
-            &structfs_core_store::path!("gate/model"),
+            &structfs_core_store::path!("gate/defaults/model"),
             Record::parsed(Value::String("test-model".into())),
         )
         .unwrap();
         ns.write(
-            &structfs_core_store::path!("gate/max_tokens"),
+            &structfs_core_store::path!("gate/defaults/max_tokens"),
             Record::parsed(Value::Integer(1024)),
         )
         .unwrap();
