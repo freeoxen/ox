@@ -145,7 +145,6 @@ impl OxAgent {
         if !has_account {
             let config = AccountConfig {
                 provider: provider.to_string(),
-                key: key.to_string(),
             };
             let value = to_value(&config).map_err(|e| JsValue::from_str(&e.to_string()))?;
             let account_path = Path::from_components(vec![

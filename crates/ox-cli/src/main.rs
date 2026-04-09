@@ -72,23 +72,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let resolved = config::resolve_config(&inbox_root, &overrides);
 
-    // Verify the default account has a key (from config file or env vars)
-    let default_account = &resolved.gate.defaults.account;
-    let has_key = resolved
-        .gate
-        .accounts
-        .get(default_account)
-        .map(|a| !a.key.is_empty())
-        .unwrap_or(false);
-    if !has_key {
-        eprintln!("error: no API key for account '{default_account}'");
-        eprintln!("  configure in ~/.ox/config.toml under [gate.accounts.{default_account}]");
-        eprintln!(
-            "  or set OX_GATE__ACCOUNTS__{}_KEY",
-            default_account.to_uppercase()
-        );
-        std::process::exit(1);
-    }
+    // TODO(Task 2): Wire up resolve_keys to check key files + env vars
+    let _needs_setup = false;
 
     let flat_config = resolved.to_flat_map();
 

@@ -45,8 +45,8 @@ impl Defaults {
 ///
 /// - `providers/{name}` — ProviderConfig (dialect, endpoint, version)
 /// - `providers/{name}/models` — model catalog for provider
-/// - `accounts/{name}` — AccountConfig (provider, key)
-/// - `accounts/{name}/key` — API key (falls back to config handle)
+/// - `accounts/{name}` — AccountConfig (provider)
+/// - `accounts/{name}/key` — API key (read-only, from config handle)
 /// - `accounts/{name}/provider` — provider name
 /// - `defaults/account` — name of the default account
 /// - `defaults/model` — default model ID (falls back to config handle)
@@ -72,14 +72,12 @@ impl GateStore {
             "anthropic".to_string(),
             AccountConfig {
                 provider: "anthropic".to_string(),
-                key: String::new(),
             },
         );
         accounts.insert(
             "openai".to_string(),
             AccountConfig {
                 provider: "openai".to_string(),
-                key: String::new(),
             },
         );
 
@@ -129,19 +127,9 @@ impl GateStore {
         names
             .iter()
             .filter_map(|name| {
-                let has_key = {
-                    let local_key = self
-                        .accounts
-                        .get(name)
-                        .map(|a| a.key.clone())
-                        .unwrap_or_default();
-                    if !local_key.is_empty() {
-                        true
-                    } else {
-                        self.config_string(&format!("gate/accounts/{name}/key"))
-                            .is_some()
-                    }
-                };
+                let has_key = self
+                    .config_string(&format!("gate/accounts/{name}/key"))
+                    .is_some();
                 if !has_key {
                     return None;
                 }
@@ -169,19 +157,9 @@ impl GateStore {
         names
             .iter()
             .filter_map(|name| {
-                let has_key = {
-                    let local_key = self
-                        .accounts
-                        .get(name)
-                        .map(|a| a.key.clone())
-                        .unwrap_or_default();
-                    if !local_key.is_empty() {
-                        true
-                    } else {
-                        self.config_string(&format!("gate/accounts/{name}/key"))
-                            .is_some()
-                    }
-                };
+                let has_key = self
+                    .config_string(&format!("gate/accounts/{name}/key"))
+                    .is_some();
                 if !has_key {
                     return None;
                 }
@@ -289,7 +267,6 @@ impl GateStore {
                             name.clone(),
                             AccountConfig {
                                 provider,
-                                key: String::new(),
                             },
                         );
                     }
@@ -387,23 +364,12 @@ impl Reader for GateStore {
                 }
                 let name = from.components[1].as_str();
 
-                // Check config for per-account key before account lookup
-                if from.components.len() > 2 {
-                    let field = from.components[2].as_str();
-                    if field == "key" {
-                        let local_empty = self
-                            .accounts
-                            .get(name)
-                            .map(|a| a.key.is_empty())
-                            .unwrap_or(true);
-                        if local_empty {
-                            if let Some(k) =
-                                self.config_string(&format!("gate/accounts/{name}/key"))
-                            {
-                                return Ok(Some(Record::parsed(Value::String(k))));
-                            }
-                        }
+                // Keys come from config handle only (key files/env vars injected there)
+                if from.components.len() > 2 && from.components[2].as_str() == "key" {
+                    if let Some(k) = self.config_string(&format!("gate/accounts/{name}/key")) {
+                        return Ok(Some(Record::parsed(Value::String(k))));
                     }
+                    return Ok(Some(Record::parsed(Value::String(String::new()))));
                 }
 
                 let Some(config) = self.accounts.get(name) else {
@@ -418,7 +384,6 @@ impl Reader for GateStore {
 
                 let field = from.components[2].as_str();
                 match field {
-                    "key" => Ok(Some(Record::parsed(Value::String(config.key.clone())))),
                     "provider" => Ok(Some(Record::parsed(Value::String(config.provider.clone())))),
                     _ => Ok(None),
                 }
@@ -601,25 +566,6 @@ impl Writer for GateStore {
 
                 let field = to.components[2].as_str();
                 match field {
-                    "key" => match data {
-                        Record::Parsed(Value::String(s)) => {
-                            if let Some(account) = self.accounts.get_mut(&name) {
-                                account.key = s;
-                            } else {
-                                return Err(StoreError::store(
-                                    "gate",
-                                    "write",
-                                    format!("no account named '{name}'"),
-                                ));
-                            }
-                            Ok(to.clone())
-                        }
-                        _ => Err(StoreError::store(
-                            "gate",
-                            "write",
-                            "expected string for key",
-                        )),
-                    },
                     "provider" => match data {
                         Record::Parsed(Value::String(s)) => {
                             if let Some(account) = self.accounts.get_mut(&name) {
@@ -704,17 +650,16 @@ mod tests {
     }
 
     #[test]
-    fn test_account_key_roundtrip() {
-        let mut gate = GateStore::new();
+    fn test_account_key_from_config_handle() {
+        use ox_store_util::LocalConfig;
+        let mut config = LocalConfig::new();
+        config.set(
+            "gate/accounts/anthropic/key",
+            Value::String("sk-test-123".into()),
+        );
+        let mut gate = GateStore::new().with_config(Box::new(config));
 
-        // Write key
-        gate.write(
-            &path!("accounts/anthropic/key"),
-            Record::parsed(Value::String("sk-test-123".to_string())),
-        )
-        .unwrap();
-
-        // Read key back
+        // Read key back — comes from config handle
         let record = gate
             .read(&path!("accounts/anthropic/key"))
             .unwrap()
@@ -731,7 +676,6 @@ mod tests {
 
         let config = AccountConfig {
             provider: "anthropic".to_string(),
-            key: "sk-new".to_string(),
         };
         let value = to_value(&config).unwrap();
         gate.write(&path!("accounts/custom"), Record::parsed(value))
@@ -848,11 +792,15 @@ mod tests {
     fn test_unknown_account_returns_none() {
         let mut gate = GateStore::new();
         assert!(gate.read(&path!("accounts/nonexistent")).unwrap().is_none());
-        assert!(
-            gate.read(&path!("accounts/nonexistent/key"))
-                .unwrap()
-                .is_none()
-        );
+        // Key reads for unknown accounts return empty string (no config handle)
+        let record = gate
+            .read(&path!("accounts/nonexistent/key"))
+            .unwrap()
+            .unwrap();
+        match record {
+            Record::Parsed(Value::String(s)) => assert!(s.is_empty()),
+            _ => panic!("expected empty string"),
+        }
     }
 
     #[test]
@@ -868,12 +816,13 @@ mod tests {
 
     #[test]
     fn test_tools_schemas_with_keys() {
-        let mut gate = GateStore::new();
-        gate.write(
-            &path!("accounts/anthropic/key"),
-            Record::parsed(Value::String("sk-test".to_string())),
-        )
-        .unwrap();
+        use ox_store_util::LocalConfig;
+        let mut config = LocalConfig::new();
+        config.set(
+            "gate/accounts/anthropic/key",
+            Value::String("sk-test".into()),
+        );
+        let mut gate = GateStore::new().with_config(Box::new(config));
 
         let record = gate.read(&path!("tools/schemas")).unwrap().unwrap();
         let json = match record {
@@ -887,12 +836,13 @@ mod tests {
 
     #[test]
     fn test_create_completion_tools() {
-        let mut gate = GateStore::new();
-        gate.write(
-            &path!("accounts/openai/key"),
-            Record::parsed(Value::String("sk-openai".to_string())),
-        )
-        .unwrap();
+        use ox_store_util::LocalConfig;
+        let mut config = LocalConfig::new();
+        config.set(
+            "gate/accounts/openai/key",
+            Value::String("sk-openai".into()),
+        );
+        let mut gate = GateStore::new().with_config(Box::new(config));
 
         let send: Arc<tools::SendFn> = Arc::new(|_| Ok(vec![]));
         let tools = gate.create_completion_tools(send);
@@ -971,12 +921,13 @@ mod tests {
 
     #[test]
     fn snapshot_excludes_api_keys() {
-        let mut gate = GateStore::new();
-        gate.write(
-            &path!("accounts/anthropic/key"),
-            Record::parsed(Value::String("sk-secret".to_string())),
-        )
-        .unwrap();
+        use ox_store_util::LocalConfig;
+        let mut config = LocalConfig::new();
+        config.set(
+            "gate/accounts/anthropic/key",
+            Value::String("sk-secret".into()),
+        );
+        let mut gate = GateStore::new().with_config(Box::new(config));
 
         let val = unwrap_value(gate.read(&path!("snapshot/state")).unwrap().unwrap());
         let json = value_to_json(val);
@@ -992,11 +943,6 @@ mod tests {
     #[test]
     fn snapshot_write_restores_state() {
         let mut gate = GateStore::new();
-        gate.write(
-            &path!("accounts/anthropic/key"),
-            Record::parsed(Value::String("sk-secret".to_string())),
-        )
-        .unwrap();
 
         let state_json = serde_json::json!({
             "defaults": {

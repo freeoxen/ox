@@ -1,5 +1,5 @@
 //! Config resolution via figment — defaults → TOML file → env vars → CLI flags.
-//! Config shape: gate.accounts.{name}.{provider,key} + gate.defaults.{account,model,max_tokens}
+//! Config shape: gate.accounts.{name}.{provider,endpoint} + gate.defaults.{account,model,max_tokens}
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -23,7 +23,7 @@ pub struct GateConfig {
 pub struct AccountEntry {
     pub provider: String,
     #[serde(default)]
-    pub key: String,
+    pub endpoint: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -83,10 +83,10 @@ impl OxConfig {
                 format!("gate/accounts/{name}/provider"),
                 Value::String(entry.provider.clone()),
             );
-            if !entry.key.is_empty() {
+            if let Some(ref ep) = entry.endpoint {
                 map.insert(
-                    format!("gate/accounts/{name}/key"),
-                    Value::String(entry.key.clone()),
+                    format!("gate/accounts/{name}/endpoint"),
+                    Value::String(ep.clone()),
                 );
             }
         }
@@ -176,11 +176,10 @@ mod tests {
             r#"
 [gate.accounts.personal]
 provider = "anthropic"
-key = "sk-ant-personal"
 
 [gate.accounts.openai]
 provider = "openai"
-key = "sk-oai-test"
+endpoint = "https://custom.openai.example/v1/chat/completions"
 
 [gate.defaults]
 account = "personal"
@@ -195,11 +194,16 @@ max_tokens = 8192
         assert_eq!(config.gate.defaults.max_tokens, 8192);
         assert_eq!(config.gate.accounts.len(), 2);
         assert_eq!(config.gate.accounts["personal"].provider, "anthropic");
-        assert_eq!(config.gate.accounts["personal"].key, "sk-ant-personal");
+        assert!(config.gate.accounts["personal"].endpoint.is_none());
+        assert_eq!(
+            config.gate.accounts["openai"].endpoint.as_deref(),
+            Some("https://custom.openai.example/v1/chat/completions")
+        );
 
         let flat = config.to_flat_map();
         assert!(flat.contains_key("gate/accounts/personal/provider"));
-        assert!(flat.contains_key("gate/accounts/personal/key"));
+        assert!(!flat.contains_key("gate/accounts/personal/endpoint"));
+        assert!(flat.contains_key("gate/accounts/openai/endpoint"));
     }
 
     #[test]
@@ -209,19 +213,16 @@ max_tokens = 8192
             std::env::set_var("OX_GATE__DEFAULTS__MODEL", "env-model");
             std::env::set_var("OX_GATE__DEFAULTS__ACCOUNT", "env-acct");
             std::env::set_var("OX_GATE__ACCOUNTS__MYACCT__PROVIDER", "anthropic");
-            std::env::set_var("OX_GATE__ACCOUNTS__MYACCT__KEY", "sk-from-env");
         }
         let config = resolve_config(dir.path(), &CliOverrides::default());
         assert_eq!(config.gate.defaults.model, "env-model");
         assert_eq!(config.gate.defaults.account, "env-acct");
         assert_eq!(config.gate.accounts["myacct"].provider, "anthropic");
-        assert_eq!(config.gate.accounts["myacct"].key, "sk-from-env");
 
         unsafe {
             std::env::remove_var("OX_GATE__DEFAULTS__MODEL");
             std::env::remove_var("OX_GATE__DEFAULTS__ACCOUNT");
             std::env::remove_var("OX_GATE__ACCOUNTS__MYACCT__PROVIDER");
-            std::env::remove_var("OX_GATE__ACCOUNTS__MYACCT__KEY");
         }
     }
 
