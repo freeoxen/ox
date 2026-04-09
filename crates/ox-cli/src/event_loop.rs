@@ -1,4 +1,5 @@
 use crate::app::App;
+use crate::settings_state::SettingsState;
 use crate::theme::Theme;
 use crate::types::{APPROVAL_OPTIONS, CustomizeState};
 use crate::view_state::fetch_view_state;
@@ -32,6 +33,7 @@ pub async fn run_async(
         approval_selected: 0,
         pending_customize: None,
     };
+    let settings = SettingsState::new();
 
     loop {
         // 1. Fetch ViewState, draw, extract owned data needed after drop.
@@ -69,7 +71,7 @@ pub async fn run_async(
 
             // Draw
             terminal.draw(|frame| {
-                let (ch, vh) = crate::tui::draw(frame, &vs, theme);
+                let (ch, vh) = crate::tui::draw(frame, &vs, &settings, theme);
                 content_height = ch;
                 viewport_height = vh;
             })?;

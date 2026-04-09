@@ -14,6 +14,8 @@ mod parse;
 mod policy;
 #[allow(dead_code)]
 mod session;
+mod settings_state;
+mod settings_view;
 mod tab_bar;
 mod theme;
 pub(crate) mod thread_registry;

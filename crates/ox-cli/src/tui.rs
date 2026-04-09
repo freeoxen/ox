@@ -12,7 +12,12 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 /// Main draw function. Takes a ViewState snapshot instead of &mut App.
 ///
 /// Returns `(content_height, viewport_height)` for scroll_max calculation.
-pub(crate) fn draw(frame: &mut Frame, vs: &ViewState, theme: &Theme) -> (Option<usize>, usize) {
+pub(crate) fn draw(
+    frame: &mut Frame,
+    vs: &ViewState,
+    settings: &crate::settings_state::SettingsState,
+    theme: &Theme,
+) -> (Option<usize>, usize) {
     let in_insert = vs.mode == "insert";
     let show_filter = vs.active_thread.is_none() && vs.search_active;
 
@@ -50,7 +55,9 @@ pub(crate) fn draw(frame: &mut Frame, vs: &ViewState, theme: &Theme) -> (Option<
 
     let mut content_height: Option<usize> = None;
 
-    if vs.active_thread.is_some() {
+    if vs.screen == "settings" {
+        crate::settings_view::draw_settings(frame, settings, theme, content_area);
+    } else if vs.active_thread.is_some() {
         // Build a ThreadView from broker-sourced data
         let view = crate::types::ThreadView {
             messages: vs.messages.clone(),
@@ -132,16 +139,22 @@ fn draw_status_bar(frame: &mut Frame, vs: &ViewState, theme: &Theme, area: Rect)
         format!(" {} thread{}", count, if count == 1 { "" } else { "s" })
     };
 
-    let hints = match (
-        vs.mode.as_str(),
-        vs.insert_context.as_deref(),
-        vs.active_thread.is_some(),
-    ) {
-        ("normal", _, false) => " | i compose | / search | Enter open | d archive | q quit",
-        ("normal", _, true) => " | i reply | j/k scroll | q/Esc inbox",
-        ("insert", Some("search"), _) => " | Enter chip | Esc cancel",
-        ("insert", _, _) => " | ^Enter send | Esc cancel",
-        _ => "",
+    let hints = if vs.screen == "settings" {
+        " | a add | e edit | d delete | t test | Esc back"
+    } else {
+        match (
+            vs.mode.as_str(),
+            vs.insert_context.as_deref(),
+            vs.active_thread.is_some(),
+        ) {
+            ("normal", _, false) => {
+                " | i compose | / search | s settings | Enter open | d archive | q quit"
+            }
+            ("normal", _, true) => " | i reply | j/k scroll | q/Esc inbox",
+            ("insert", Some("search"), _) => " | Enter chip | Esc cancel",
+            ("insert", _, _) => " | ^Enter send | Esc cancel",
+            _ => "",
+        }
     };
 
     let status_line = Line::from(vec![

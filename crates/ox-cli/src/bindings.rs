@@ -246,6 +246,36 @@ fn normal_mode(out: &mut Vec<Binding>) {
         "Page up",
     ));
 
+    // Settings
+    out.push(bind_screen(
+        "normal",
+        "s",
+        "inbox",
+        cmd("ui/go_to_settings"),
+        "Open settings",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "Esc",
+        "settings",
+        cmd("ui/go_to_inbox"),
+        "Back to inbox",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "q",
+        "settings",
+        cmd("ui/go_to_inbox"),
+        "Back to inbox",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "Ctrl+c",
+        "settings",
+        cmd("ui/quit"),
+        "Quit",
+    ));
+
     // Thread actions
     out.push(bind_screen(
         "normal",

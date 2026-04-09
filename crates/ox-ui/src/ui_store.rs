@@ -18,6 +18,7 @@ use crate::command::{Command, TxnLog};
 pub enum Screen {
     Inbox,
     Thread,
+    Settings,
 }
 
 /// Editing mode.
@@ -94,6 +95,7 @@ impl UiStore {
             match self.screen {
                 Screen::Inbox => "inbox",
                 Screen::Thread => "thread",
+                Screen::Settings => "settings",
             }
             .to_string(),
         )
@@ -311,6 +313,16 @@ impl Writer for UiStore {
                 self.insert_context = None;
                 self.scroll = 0;
                 self.scroll_max = 0;
+                Ok(path!("screen"))
+            }
+            "go_to_settings" => {
+                self.screen = Screen::Settings;
+                self.mode = Mode::Normal;
+                Ok(path!("screen"))
+            }
+            "go_to_inbox" => {
+                self.screen = Screen::Inbox;
+                self.mode = Mode::Normal;
                 Ok(path!("screen"))
             }
             "enter_insert" => {
