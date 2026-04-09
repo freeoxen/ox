@@ -1,7 +1,7 @@
 # Accounts-First Config Redesign
 
 **Date:** 2026-04-08
-**Status:** Draft
+**Status:** Implemented
 **Prereqs:** Phase 4c (ConfigStore S-tier refactor) complete
 
 ## Problem
