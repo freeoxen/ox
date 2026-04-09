@@ -2,6 +2,14 @@
 //!
 //! Owned by the event loop, not stored in the broker (ephemeral UI state).
 
+use tokio::sync::oneshot;
+
+/// Result of an async test connection + model fetch.
+pub struct TestResult {
+    pub test: Result<(String, u128), String>, // (dialect, elapsed_ms) or error
+    pub models: Result<Vec<ox_kernel::ModelInfo>, String>,
+}
+
 /// Which section of settings has focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsFocus {
@@ -63,6 +71,7 @@ pub struct SettingsState {
     pub defaults_focus: usize,
     pub discovered_models: Vec<ox_kernel::ModelInfo>,
     pub model_picker_idx: Option<usize>,
+    pub pending_test: Option<oneshot::Receiver<TestResult>>,
 }
 
 impl SettingsState {
@@ -80,6 +89,7 @@ impl SettingsState {
             defaults_focus: 0,
             discovered_models: Vec::new(),
             model_picker_idx: None,
+            pending_test: None,
         }
     }
 
@@ -125,11 +135,7 @@ impl SettingsState {
             .collect();
         self.accounts.sort_by(|a, b| a.name.cmp(&b.name));
 
-        self.default_account_idx = self
-            .accounts
-            .iter()
-            .position(|a| a.is_default)
-            .unwrap_or(0);
+        self.default_account_idx = self.accounts.iter().position(|a| a.is_default).unwrap_or(0);
         self.default_model = config.gate.defaults.model.clone();
         self.default_max_tokens = config.gate.defaults.max_tokens.to_string();
 

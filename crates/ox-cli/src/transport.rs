@@ -299,16 +299,60 @@ pub fn streaming_fetch(
     Err(format!("{last_err} (after 3 attempts)"))
 }
 
-/// Fetch available models from a provider's API.
+/// Test an API connection with a minimal completion request (async).
+/// Returns (dialect, elapsed_ms).
+pub async fn test_connection_async(
+    config: &ProviderConfig,
+    api_key: &str,
+) -> Result<(String, u128), String> {
+    let client = reqwest::Client::new();
+    let dialect = config.dialect.clone();
+
+    let model = match dialect.as_str() {
+        "openai" => "gpt-4o-mini",
+        _ => "claude-haiku-4-5-20251001",
+    };
+
+    let request = ox_kernel::CompletionRequest {
+        model: model.to_string(),
+        max_tokens: 1,
+        system: String::new(),
+        messages: vec![serde_json::json!({"role": "user", "content": "hi"})],
+        tools: vec![],
+        stream: true,
+    };
+
+    let (url, headers, body) = build_request(config, api_key, &request)?;
+
+    let start = std::time::Instant::now();
+    let mut req = client.post(&url).body(body);
+    for (k, v) in &headers {
+        req = req.header(k, v);
+    }
+
+    let resp = req.send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        let status = resp.status().as_u16();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("HTTP {status}: {text}"));
+    }
+    // Consume body to complete the request
+    let _ = resp.text().await;
+    let elapsed = start.elapsed().as_millis();
+
+    Ok((dialect, elapsed))
+}
+
+/// Fetch available models from a provider's API (async).
 ///
 /// Derives the models endpoint from the completion endpoint:
 /// - "https://api.anthropic.com/v1/messages" → "https://api.anthropic.com/v1/models"
 /// - "https://api.openai.com/v1/chat/completions" → "https://api.openai.com/v1/models"
-pub fn fetch_model_catalog(
+pub async fn fetch_model_catalog_async(
     config: &ProviderConfig,
     api_key: &str,
 ) -> Result<Vec<ox_kernel::ModelInfo>, String> {
-    let client = reqwest::blocking::Client::new();
+    let client = reqwest::Client::new();
 
     let base = config
         .endpoint
@@ -342,14 +386,14 @@ pub fn fetch_model_catalog(
             }
         }
 
-        let resp = req.send().map_err(|e| e.to_string())?;
+        let resp = req.send().await.map_err(|e| e.to_string())?;
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
-            let body = resp.text().unwrap_or_default();
+            let body = resp.text().await.unwrap_or_default();
             return Err(format!("HTTP {status}: {body}"));
         }
 
-        let body = resp.text().map_err(|e| e.to_string())?;
+        let body = resp.text().await.map_err(|e| e.to_string())?;
         let page: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
 
         if let Some(data) = page.get("data").and_then(|d| d.as_array()) {

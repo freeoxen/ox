@@ -49,6 +49,42 @@ pub async fn run_async(
     };
 
     loop {
+        // Poll pending async test connection
+        if let Some(ref mut rx) = settings.pending_test {
+            match rx.try_recv() {
+                Ok(result) => {
+                    match result.test {
+                        Ok((dialect, ms)) => {
+                            settings.test_status = crate::settings_state::TestStatus::Success(
+                                format!("Connected ({dialect}, {ms}ms)"),
+                            );
+                        }
+                        Err(e) => {
+                            settings.test_status = crate::settings_state::TestStatus::Failed(e);
+                        }
+                    }
+                    match result.models {
+                        Ok(models) => {
+                            settings.discovered_models = models;
+                            settings.model_picker_idx = None;
+                        }
+                        Err(_) => {
+                            settings.discovered_models.clear();
+                        }
+                    }
+                    settings.pending_test = None;
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                    // Still in progress — will check next frame
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                    settings.test_status =
+                        crate::settings_state::TestStatus::Failed("Test cancelled".into());
+                    settings.pending_test = None;
+                }
+            }
+        }
+
         // 1. Fetch ViewState, draw, extract owned data needed after drop.
         //
         // ViewState borrows from App so we scope it tightly: draw, then
@@ -220,8 +256,7 @@ pub async fn run_async(
                         let screen = screen_owned.as_str();
 
                         // Settings screen — edit dialog key handling
-                        if screen == "settings" && mode == "normal" && settings.editing.is_some()
-                        {
+                        if screen == "settings" && mode == "normal" && settings.editing.is_some() {
                             use crate::settings_state::{DIALECTS, TestStatus};
                             let inbox_root = app.pool.inbox_root().to_path_buf();
                             let keys_dir = inbox_root.join("keys");
@@ -346,7 +381,8 @@ pub async fn run_async(
                                         match step {
                                             WizardStep::AddAccount => {
                                                 *step = WizardStep::SetDefaults;
-                                                settings.focus = crate::settings_state::SettingsFocus::Defaults;
+                                                settings.focus =
+                                                    crate::settings_state::SettingsFocus::Defaults;
                                             }
                                             _ => {}
                                         }
@@ -376,44 +412,30 @@ pub async fn run_async(
                                             provider_config.endpoint = editing.endpoint.clone();
                                         }
                                         let api_key_for_test = editing.key.clone();
-                                        let model = match dialect {
-                                            "openai" => "gpt-4o-mini",
-                                            _ => "claude-haiku-4-5-20251001",
-                                        };
-                                        let request = ox_kernel::CompletionRequest {
-                                            model: model.to_string(),
-                                            max_tokens: 1,
-                                            system: String::new(),
-                                            messages: vec![serde_json::json!({"role": "user", "content": "hi"})],
-                                            tools: vec![],
-                                            stream: true,
-                                        };
+
                                         settings.test_status = TestStatus::Testing;
-                                        let start = std::time::Instant::now();
-                                        let send = crate::transport::make_send_fn(
-                                            provider_config.clone(),
-                                            api_key_for_test.clone(),
-                                        );
-                                        match send(&request) {
-                                            Ok(_) => {
-                                                let ms = start.elapsed().as_millis();
-                                                settings.test_status = TestStatus::Success(
-                                                    format!("Connected ({dialect}, {ms}ms)"),
-                                                );
-                                                match crate::transport::fetch_model_catalog(&provider_config, &api_key_for_test) {
-                                                    Ok(models) => {
-                                                        settings.discovered_models = models;
-                                                        settings.model_picker_idx = None;
-                                                    }
-                                                    Err(_) => {
-                                                        settings.discovered_models.clear();
-                                                    }
-                                                }
-                                            }
-                                            Err(e) => {
-                                                settings.test_status = TestStatus::Failed(e);
-                                            }
-                                        }
+                                        let (tx, rx) = tokio::sync::oneshot::channel();
+                                        settings.pending_test = Some(rx);
+
+                                        let pc = provider_config;
+                                        let key = api_key_for_test;
+                                        tokio::spawn(async move {
+                                            let test =
+                                                crate::transport::test_connection_async(&pc, &key)
+                                                    .await;
+                                            let models = if test.is_ok() {
+                                                crate::transport::fetch_model_catalog_async(
+                                                    &pc, &key,
+                                                )
+                                                .await
+                                            } else {
+                                                Err("skipped".into())
+                                            };
+                                            let _ = tx.send(crate::settings_state::TestResult {
+                                                test,
+                                                models,
+                                            });
+                                        });
                                     }
                                 }
                                 continue;
@@ -421,10 +443,7 @@ pub async fn run_async(
                         }
 
                         // Settings screen navigation (before broker dispatch)
-                        if screen == "settings"
-                            && mode == "normal"
-                            && settings.editing.is_none()
-                        {
+                        if screen == "settings" && mode == "normal" && settings.editing.is_none() {
                             use crate::settings_state::SettingsFocus;
                             let handled = match key_str.as_str() {
                                 "j" | "Down" => {
@@ -458,16 +477,15 @@ pub async fn run_async(
                                 }
                                 "a" => {
                                     if settings.focus == SettingsFocus::Accounts {
-                                        settings.editing = Some(
-                                            crate::settings_state::AccountEditFields {
+                                        settings.editing =
+                                            Some(crate::settings_state::AccountEditFields {
                                                 name: String::new(),
                                                 dialect: 0,
                                                 endpoint: String::new(),
                                                 key: String::new(),
                                                 focus: 0,
                                                 is_new: true,
-                                            },
-                                        );
+                                            });
                                         settings.test_status =
                                             crate::settings_state::TestStatus::Idle;
                                     }
@@ -483,13 +501,11 @@ pub async fn run_async(
                                                 .iter()
                                                 .position(|d| *d == acct.dialect)
                                                 .unwrap_or(0);
-                                            let inbox_root =
-                                                app.pool.inbox_root().to_path_buf();
+                                            let inbox_root = app.pool.inbox_root().to_path_buf();
                                             let keys_dir = inbox_root.join("keys");
-                                            let key_val = crate::config::read_key_file(
-                                                &keys_dir, &acct.name,
-                                            )
-                                            .unwrap_or_default();
+                                            let key_val =
+                                                crate::config::read_key_file(&keys_dir, &acct.name)
+                                                    .unwrap_or_default();
                                             let config = crate::config::resolve_config(
                                                 &inbox_root,
                                                 &crate::config::CliOverrides::default(),
@@ -500,29 +516,36 @@ pub async fn run_async(
                                                 .get(&acct.name)
                                                 .and_then(|e| e.endpoint.clone())
                                                 .unwrap_or_default();
-                                            settings.editing = Some(
-                                                crate::settings_state::AccountEditFields {
+                                            settings.editing =
+                                                Some(crate::settings_state::AccountEditFields {
                                                     name: acct.name.clone(),
                                                     dialect: dialect_idx,
                                                     endpoint,
                                                     key: key_val,
                                                     focus: 0,
                                                     is_new: false,
-                                                },
-                                            );
+                                                });
                                             settings.test_status =
                                                 crate::settings_state::TestStatus::Idle;
                                         }
                                     }
                                     true
                                 }
-                                "Enter" if settings.wizard == Some(crate::settings_state::WizardStep::Done) => {
+                                "Enter"
+                                    if settings.wizard
+                                        == Some(crate::settings_state::WizardStep::Done) =>
+                                {
                                     settings.wizard = None;
                                     // Navigate back to inbox
-                                    client.write(
-                                        &structfs_core_store::path!("ui/go_to_inbox"),
-                                        structfs_core_store::Record::parsed(structfs_core_store::Value::Null),
-                                    ).await.ok();
+                                    client
+                                        .write(
+                                            &structfs_core_store::path!("ui/go_to_inbox"),
+                                            structfs_core_store::Record::parsed(
+                                                structfs_core_store::Value::Null,
+                                            ),
+                                        )
+                                        .await
+                                        .ok();
                                     true
                                 }
                                 "Left" if settings.focus == SettingsFocus::Defaults => {
@@ -566,8 +589,8 @@ pub async fn run_async(
                                         1 => {
                                             if !settings.discovered_models.is_empty() {
                                                 let idx = settings.model_picker_idx.unwrap_or(0);
-                                                let new_idx = (idx + 1)
-                                                    % settings.discovered_models.len();
+                                                let new_idx =
+                                                    (idx + 1) % settings.discovered_models.len();
                                                 settings.model_picker_idx = Some(new_idx);
                                                 settings.default_model =
                                                     settings.discovered_models[new_idx].id.clone();
@@ -628,18 +651,13 @@ pub async fn run_async(
                                         .ok();
                                     // Persist to disk
                                     client
-                                        .write(
-                                            &path!("config/save"),
-                                            Record::parsed(Value::Null),
-                                        )
+                                        .write(&path!("config/save"), Record::parsed(Value::Null))
                                         .await
                                         .ok();
 
                                     // Advance wizard if active
                                     if let Some(ref mut step) = settings.wizard {
-                                        if *step
-                                            == crate::settings_state::WizardStep::SetDefaults
-                                        {
+                                        if *step == crate::settings_state::WizardStep::SetDefaults {
                                             *step = crate::settings_state::WizardStep::Done;
                                         }
                                     }
@@ -648,10 +666,15 @@ pub async fn run_async(
                                 "Esc" | "q" if settings.wizard.is_some() => {
                                     // Allow skipping wizard — go to inbox
                                     settings.wizard = None;
-                                    client.write(
-                                        &structfs_core_store::path!("ui/go_to_inbox"),
-                                        structfs_core_store::Record::parsed(structfs_core_store::Value::Null),
-                                    ).await.ok();
+                                    client
+                                        .write(
+                                            &structfs_core_store::path!("ui/go_to_inbox"),
+                                            structfs_core_store::Record::parsed(
+                                                structfs_core_store::Value::Null,
+                                            ),
+                                        )
+                                        .await
+                                        .ok();
                                     true
                                 }
                                 "d" => {
@@ -660,13 +683,10 @@ pub async fn run_async(
                                             settings.accounts.get(settings.selected_account)
                                         {
                                             let name = acct.name.clone();
-                                            let inbox_root =
-                                                app.pool.inbox_root().to_path_buf();
+                                            let inbox_root = app.pool.inbox_root().to_path_buf();
                                             let keys_dir = inbox_root.join("keys");
-                                            crate::config::delete_account(&inbox_root, &name)
-                                                .ok();
-                                            crate::config::delete_key_file(&keys_dir, &name)
-                                                .ok();
+                                            crate::config::delete_account(&inbox_root, &name).ok();
+                                            crate::config::delete_key_file(&keys_dir, &name).ok();
                                             let config = crate::config::resolve_config(
                                                 &inbox_root,
                                                 &crate::config::CliOverrides::default(),
@@ -681,13 +701,11 @@ pub async fn run_async(
                                         if let Some(acct) =
                                             settings.accounts.get(settings.selected_account)
                                         {
-                                            let inbox_root =
-                                                app.pool.inbox_root().to_path_buf();
+                                            let inbox_root = app.pool.inbox_root().to_path_buf();
                                             let keys_dir = inbox_root.join("keys");
-                                            let key = crate::config::read_key_file(
-                                                &keys_dir, &acct.name,
-                                            )
-                                            .unwrap_or_default();
+                                            let key =
+                                                crate::config::read_key_file(&keys_dir, &acct.name)
+                                                    .unwrap_or_default();
                                             if key.is_empty() {
                                                 settings.test_status =
                                                     crate::settings_state::TestStatus::Failed(
@@ -698,68 +716,48 @@ pub async fn run_async(
                                                     &inbox_root,
                                                     &crate::config::CliOverrides::default(),
                                                 );
-                                                let entry =
-                                                    config.gate.accounts.get(&acct.name);
+                                                let entry = config.gate.accounts.get(&acct.name);
                                                 let dialect = entry
                                                     .map(|e| e.provider.as_str())
                                                     .unwrap_or("anthropic");
                                                 let mut provider_config = match dialect {
-                                                    "openai" => {
-                                                        ox_gate::ProviderConfig::openai()
-                                                    }
-                                                    _ => {
-                                                        ox_gate::ProviderConfig::anthropic()
-                                                    }
+                                                    "openai" => ox_gate::ProviderConfig::openai(),
+                                                    _ => ox_gate::ProviderConfig::anthropic(),
                                                 };
                                                 if let Some(ep) =
                                                     entry.and_then(|e| e.endpoint.as_ref())
                                                 {
                                                     provider_config.endpoint = ep.clone();
                                                 }
-                                                let model = match dialect {
-                                                    "openai" => "gpt-4o-mini",
-                                                    _ => "claude-haiku-4-5-20251001",
-                                                };
-                                                let request = ox_kernel::CompletionRequest {
-                                                    model: model.to_string(),
-                                                    max_tokens: 1,
-                                                    system: String::new(),
-                                                    messages: vec![serde_json::json!({"role": "user", "content": "hi"})],
-                                                    tools: vec![],
-                                                    stream: true,
-                                                };
-                                                let api_key_for_test = key;
-                                                let start = std::time::Instant::now();
-                                                let send =
-                                                    crate::transport::make_send_fn(
-                                                        provider_config.clone(),
-                                                        api_key_for_test.clone(),
+
+                                                settings.test_status =
+                                                    crate::settings_state::TestStatus::Testing;
+                                                let (tx, rx) = tokio::sync::oneshot::channel();
+                                                settings.pending_test = Some(rx);
+
+                                                let pc = provider_config;
+                                                let k = key;
+                                                tokio::spawn(async move {
+                                                    let test =
+                                                        crate::transport::test_connection_async(
+                                                            &pc, &k,
+                                                        )
+                                                        .await;
+                                                    let models = if test.is_ok() {
+                                                        crate::transport::fetch_model_catalog_async(
+                                                            &pc, &k,
+                                                        )
+                                                        .await
+                                                    } else {
+                                                        Err("skipped".into())
+                                                    };
+                                                    let _ = tx.send(
+                                                        crate::settings_state::TestResult {
+                                                            test,
+                                                            models,
+                                                        },
                                                     );
-                                                match send(&request) {
-                                                    Ok(_) => {
-                                                        let ms =
-                                                            start.elapsed().as_millis();
-                                                        settings.test_status =
-                                                            crate::settings_state::TestStatus::Success(
-                                                                format!(
-                                                                    "Connected ({dialect}, {ms}ms)"
-                                                                ),
-                                                            );
-                                                        match crate::transport::fetch_model_catalog(&provider_config, &api_key_for_test) {
-                                                            Ok(models) => {
-                                                                settings.discovered_models = models;
-                                                                settings.model_picker_idx = None;
-                                                            }
-                                                            Err(_) => {
-                                                                settings.discovered_models.clear();
-                                                            }
-                                                        }
-                                                    }
-                                                    Err(e) => {
-                                                        settings.test_status =
-                                                            crate::settings_state::TestStatus::Failed(e);
-                                                    }
-                                                }
+                                                });
                                             }
                                         }
                                     }
@@ -771,9 +769,7 @@ pub async fn run_async(
                                         && other.len() == 1
                                         && !other.chars().next().unwrap().is_control() =>
                                 {
-                                    settings
-                                        .default_model
-                                        .push(other.chars().next().unwrap());
+                                    settings.default_model.push(other.chars().next().unwrap());
                                     settings.model_picker_idx = None;
                                     true
                                 }
