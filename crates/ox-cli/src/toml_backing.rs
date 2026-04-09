@@ -121,21 +121,30 @@ mod tests {
         let backing = TomlFileBacking::new(path.clone());
         assert!(backing.load().unwrap().is_none());
         let mut map = BTreeMap::new();
-        map.insert("gate/model".to_string(), Value::String("gpt-4o".into()));
-        map.insert("gate/max_tokens".to_string(), Value::Integer(8192));
-        map.insert("gate/provider".to_string(), Value::String("openai".into()));
+        map.insert(
+            "gate/defaults/model".to_string(),
+            Value::String("gpt-4o".into()),
+        );
+        map.insert("gate/defaults/max_tokens".to_string(), Value::Integer(8192));
+        map.insert(
+            "gate/defaults/account".to_string(),
+            Value::String("openai".into()),
+        );
         backing.save(&Value::Map(map)).unwrap();
         assert!(path.exists());
         let loaded = backing.load().unwrap().unwrap();
         match loaded {
             Value::Map(m) => {
                 assert_eq!(
-                    m.get("gate/model").unwrap(),
+                    m.get("gate/defaults/model").unwrap(),
                     &Value::String("gpt-4o".into())
                 );
-                assert_eq!(m.get("gate/max_tokens").unwrap(), &Value::Integer(8192));
                 assert_eq!(
-                    m.get("gate/provider").unwrap(),
+                    m.get("gate/defaults/max_tokens").unwrap(),
+                    &Value::Integer(8192)
+                );
+                assert_eq!(
+                    m.get("gate/defaults/account").unwrap(),
                     &Value::String("openai".into())
                 );
             }
@@ -149,13 +158,16 @@ mod tests {
         let path = dir.path().join("config.toml");
         let backing = TomlFileBacking::new(path.clone());
         let mut map = BTreeMap::new();
-        map.insert("gate/model".to_string(), Value::String("gpt-4o".into()));
-        map.insert("gate/max_tokens".to_string(), Value::Integer(8192));
+        map.insert(
+            "gate/defaults/model".to_string(),
+            Value::String("gpt-4o".into()),
+        );
+        map.insert("gate/defaults/max_tokens".to_string(), Value::Integer(8192));
         backing.save(&Value::Map(map)).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(
-            content.contains("[gate]"),
-            "expected [gate] section, got:\n{content}"
+            content.contains("[gate.defaults]"),
+            "expected [gate.defaults] section, got:\n{content}"
         );
         assert!(content.contains("gpt-4o"));
     }

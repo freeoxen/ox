@@ -89,13 +89,13 @@ impl Agent {
 
         context
             .write(
-                &path!("gate/model"),
+                &path!("gate/defaults/model"),
                 Record::parsed(Value::String(model.clone())),
             )
             .ok();
         context
             .write(
-                &path!("gate/max_tokens"),
+                &path!("gate/defaults/max_tokens"),
                 Record::parsed(Value::Integer(max_tokens as i64)),
             )
             .ok();
