@@ -211,6 +211,21 @@ in `ox-kernel/src/snapshot.rs`. ToolsProvider returns None.
 - **Spec:** `docs/superpowers/specs/2026-04-08-accounts-config-design.md`
 - **Plan:** `docs/superpowers/plans/2026-04-08-accounts-config.md`
 
+#### Phase 6: Init + Settings Screen (complete, 14/14 quality gates)
+- Key files in ~/.ox/keys/ (0700 permissions) replace key field on AccountConfig/AccountEntry
+- resolve_keys() loads from key files and env vars, injected into flat config map
+- AccountEntry gains optional endpoint field for custom API URLs
+- Screen::Settings variant with account CRUD (add/edit/delete)
+- Account fields: name, dialect (anthropic/openai), endpoint (custom URL), API key
+- Test connection: async minimal completion to verify key works
+- Model discovery from API after successful test (replaces hardcoded catalogs)
+- Wizard mode for ox init and first-run detection
+- Defaults editing: account picker, model picker (from API catalog or free text), max_tokens
+- ox init subcommand, first-run auto-detection (no keys → wizard)
+- Removed hard exit(1) on missing key
+- **Spec:** `docs/superpowers/specs/2026-04-08-init-settings-design.md`
+- **Plan:** `docs/superpowers/plans/2026-04-08-init-settings.md`
+
 ## What's Next
 
 ### Remaining work:
