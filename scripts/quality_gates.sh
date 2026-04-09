@@ -111,8 +111,8 @@ gate "bun test (ui)"              bash -c "cd crates/ox-web/ui && \"$BUN\" test"
 # 12. SvelteKit build
 gate "vite build (ui)"            bash -c "cd crates/ox-web/ui && \"$BUN\" run build"
 
-# 13. Coverage (Rust + TypeScript, threshold enforced)
-gate "coverage"                   "$ROOT/scripts/coverage.sh" --gate -t 60
+# 13. Coverage (Rust + TypeScript, thresholds from coverage.toml)
+gate "coverage"                   "$ROOT/scripts/coverage.sh" --gate
 
 # Summary
 echo ""

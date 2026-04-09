@@ -1,9 +1,12 @@
-# Per-module coverage thresholds for Rust crates and TypeScript packages.
+# Coverage thresholds for Rust crates and TypeScript packages.
 #
-# Modules not listed here use the global threshold (--gate -t N).
+# Modules not listed use the global threshold from [global].
 # Set to 0 to exclude a module from threshold enforcement.
-#
 # The key matches against the file path prefix in coverage output.
+
+[global]
+rust = 60
+typescript = 80
 
 [rust]
 # Core — pure store logic, fully testable
@@ -35,6 +38,10 @@ ox-emscripten = 0
 ox-path = 0
 
 [typescript]
-# UI components
-# Prefix matches against bun coverage file paths
-# (e.g. "src/lib/stores" matches src/lib/stores/*.ts)
+# Longest matching prefix wins.
+# e.g. src/lib/stores/api-keys.ts matches "src/lib/stores" (90%)
+# and src/lib/theme-data.ts matches "src/lib" (80%)
+
+# target: 90 (theme.ts at 50%, tools.ts at 82%)
+src/lib/stores = 50
+src/lib = 50

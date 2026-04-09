@@ -193,6 +193,13 @@ show_summary() {
 
     # ── Rust ──
     if [[ "$HAS_LLVM_COV" == "true" ]]; then
+        local rust_threshold
+        if [[ "$gate" == "true" ]]; then
+            rust_threshold=$(get_global_threshold "rust" "$threshold")
+        else
+            rust_threshold="$threshold"
+        fi
+
         local rust_total
         rust_total=$(get_rust_summary | grep "^TOTAL" || true)
 
@@ -200,21 +207,20 @@ show_summary() {
             local region_pct
             region_pct=$(echo "$rust_total" | awk '{print $4}' | tr -d '%')
             local pct_color
-            pct_color=$(color_pct "$region_pct" "$threshold")
+            pct_color=$(color_pct "$region_pct" "$rust_threshold")
 
-            echo -e "${BOLD}Rust Coverage:${NC} ${pct_color}${region_pct}%${NC} ${DIM}(target: ${threshold}%)${NC}"
+            echo -e "${BOLD}Rust Coverage:${NC} ${pct_color}${region_pct}%${NC} ${DIM}(target: ${rust_threshold}%)${NC}"
             echo ""
             echo -e "${BOLD}Top Rust Coverage Gaps:${NC}"
-            show_rust_gaps_internal "$threshold" "$top_n" "true"
+            show_rust_gaps_internal "$rust_threshold" "$top_n" "true"
 
-            if [[ "$gate" == "true" ]] && (( $(echo "$region_pct < $threshold" | bc -l) )); then
-                echo -e "${RED}FAIL: Rust overall ${region_pct}% below ${threshold}% threshold${NC}"
+            if [[ "$gate" == "true" ]] && (( $(echo "$region_pct < $rust_threshold" | bc -l) )); then
+                echo -e "${RED}FAIL: Rust overall ${region_pct}% below ${rust_threshold}% threshold${NC}"
                 failed=1
             fi
 
-            # Per-crate threshold checks
             if [[ "$gate" == "true" ]]; then
-                if ! check_rust_per_crate_thresholds "$threshold"; then
+                if ! check_rust_per_crate_thresholds "$rust_threshold"; then
                     failed=1
                 fi
             fi
@@ -223,26 +229,32 @@ show_summary() {
 
     # ── TypeScript ──
     if [[ "$HAS_BUN" == "true" ]]; then
+        local ts_threshold
+        if [[ "$gate" == "true" ]]; then
+            ts_threshold=$(get_global_threshold "typescript" "$threshold")
+        else
+            ts_threshold="$threshold"
+        fi
+
         local ts_pct
         ts_pct=$(get_ts_overall_pct)
 
         if [[ -n "$ts_pct" ]]; then
             local pct_color
-            pct_color=$(color_pct "$ts_pct" "$threshold")
+            pct_color=$(color_pct "$ts_pct" "$ts_threshold")
 
-            echo -e "${BOLD}TypeScript Coverage:${NC} ${pct_color}${ts_pct}%${NC} ${DIM}(target: ${threshold}%)${NC}"
+            echo -e "${BOLD}TypeScript Coverage:${NC} ${pct_color}${ts_pct}%${NC} ${DIM}(target: ${ts_threshold}%)${NC}"
             echo ""
             echo -e "${BOLD}Top TypeScript Coverage Gaps:${NC}"
-            show_ts_gaps_internal "$threshold" "$top_n" "true"
+            show_ts_gaps_internal "$ts_threshold" "$top_n" "true"
 
-            if [[ "$gate" == "true" ]] && (( $(echo "$ts_pct < $threshold" | bc -l) )); then
-                echo -e "${RED}FAIL: TypeScript overall ${ts_pct}% below ${threshold}% threshold${NC}"
+            if [[ "$gate" == "true" ]] && (( $(echo "$ts_pct < $ts_threshold" | bc -l) )); then
+                echo -e "${RED}FAIL: TypeScript overall ${ts_pct}% below ${ts_threshold}% threshold${NC}"
                 failed=1
             fi
 
-            # Per-file threshold checks
             if [[ "$gate" == "true" ]]; then
-                if ! check_ts_per_file_thresholds "$threshold"; then
+                if ! check_ts_per_file_thresholds "$ts_threshold"; then
                     failed=1
                 fi
             fi
@@ -255,6 +267,25 @@ show_summary() {
 # ─── Per-crate threshold enforcement ─────────────────────────────────────────
 
 COVERAGE_CONFIG="$PROJECT_ROOT/coverage.toml"
+
+# Read a global threshold from [global] section.
+# Usage: get_global_threshold rust|typescript [fallback]
+get_global_threshold() {
+    local lang="$1"
+    local fallback="${2:-$DEFAULT_THRESHOLD}"
+    [[ -f "$COVERAGE_CONFIG" ]] || { echo "$fallback"; return; }
+    local val
+    val=$(awk -F'=' -v lang="$lang" '
+        /^\[global\]/ { in_section = 1; next }
+        /^\[/ { in_section = 0 }
+        in_section && /^[^#]/ {
+            gsub(/[[:space:]]/, "", $1)
+            gsub(/[[:space:]]/, "", $2)
+            if ($1 == lang) { print $2; exit }
+        }
+    ' "$COVERAGE_CONFIG")
+    echo "${val:-$fallback}"
+}
 
 # Parse a crate's threshold from coverage.toml.
 # Returns the threshold, or empty string if not configured.
