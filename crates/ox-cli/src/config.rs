@@ -1,9 +1,8 @@
 //! Config resolution via figment — defaults → TOML file → env vars → CLI flags.
-//! All config lives under the `[gate]` section.
+//! Config shape: gate.accounts.{name}.{provider,key} + gate.defaults.{account,model,max_tokens}
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
-use std::path::Path;
+use std::collections::{BTreeMap, HashMap};
 use structfs_core_store::Value;
 
 #[derive(Debug, Deserialize, Serialize, Default, Clone)]
@@ -12,29 +11,42 @@ pub struct OxConfig {
     pub gate: GateConfig,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Default, Clone)]
 pub struct GateConfig {
-    #[serde(default = "default_provider")]
+    #[serde(default)]
+    pub accounts: HashMap<String, AccountEntry>,
+    #[serde(default)]
+    pub defaults: DefaultsConfig,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct AccountEntry {
     pub provider: String,
+    #[serde(default)]
+    pub key: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct DefaultsConfig {
+    #[serde(default = "default_account")]
+    pub account: String,
     #[serde(default = "default_model")]
     pub model: String,
     #[serde(default = "default_max_tokens")]
     pub max_tokens: i64,
-    pub api_key: Option<String>,
 }
 
-impl Default for GateConfig {
+impl Default for DefaultsConfig {
     fn default() -> Self {
         Self {
-            provider: default_provider(),
+            account: default_account(),
             model: default_model(),
             max_tokens: default_max_tokens(),
-            api_key: None,
         }
     }
 }
 
-fn default_provider() -> String {
+fn default_account() -> String {
     "anthropic".to_string()
 }
 fn default_model() -> String {
@@ -46,50 +58,55 @@ fn default_max_tokens() -> i64 {
 
 #[derive(Debug, Default)]
 pub struct CliOverrides {
-    pub provider: Option<String>,
+    pub account: Option<String>,
     pub model: Option<String>,
-    pub api_key: Option<String>,
     pub max_tokens: Option<i64>,
 }
 
 impl OxConfig {
     pub fn apply_overrides(&mut self, overrides: &CliOverrides) {
-        if let Some(ref p) = overrides.provider {
-            self.gate.provider = p.clone();
+        if let Some(ref a) = overrides.account {
+            self.gate.defaults.account = a.clone();
         }
         if let Some(ref m) = overrides.model {
-            self.gate.model = m.clone();
-        }
-        if let Some(ref k) = overrides.api_key {
-            self.gate.api_key = Some(k.clone());
+            self.gate.defaults.model = m.clone();
         }
         if let Some(t) = overrides.max_tokens {
-            self.gate.max_tokens = t;
+            self.gate.defaults.max_tokens = t;
         }
     }
 
     pub fn to_flat_map(&self) -> BTreeMap<String, Value> {
         let mut map = BTreeMap::new();
-        map.insert(
-            "gate/model".to_string(),
-            Value::String(self.gate.model.clone()),
-        );
-        map.insert(
-            "gate/max_tokens".to_string(),
-            Value::Integer(self.gate.max_tokens),
-        );
-        map.insert(
-            "gate/provider".to_string(),
-            Value::String(self.gate.provider.clone()),
-        );
-        if let Some(ref key) = self.gate.api_key {
-            map.insert("gate/api_key".to_string(), Value::String(key.clone()));
+        for (name, entry) in &self.gate.accounts {
+            map.insert(
+                format!("gate/accounts/{name}/provider"),
+                Value::String(entry.provider.clone()),
+            );
+            if !entry.key.is_empty() {
+                map.insert(
+                    format!("gate/accounts/{name}/key"),
+                    Value::String(entry.key.clone()),
+                );
+            }
         }
+        map.insert(
+            "gate/defaults/account".into(),
+            Value::String(self.gate.defaults.account.clone()),
+        );
+        map.insert(
+            "gate/defaults/model".into(),
+            Value::String(self.gate.defaults.model.clone()),
+        );
+        map.insert(
+            "gate/defaults/max_tokens".into(),
+            Value::Integer(self.gate.defaults.max_tokens),
+        );
         map
     }
 }
 
-pub fn resolve_config(config_dir: &Path, overrides: &CliOverrides) -> OxConfig {
+pub fn resolve_config(config_dir: &std::path::Path, overrides: &CliOverrides) -> OxConfig {
     use figment::Figment;
     use figment::providers::{Env, Format, Toml};
 
@@ -101,20 +118,6 @@ pub fn resolve_config(config_dir: &Path, overrides: &CliOverrides) -> OxConfig {
 
     let mut config: OxConfig = figment.extract().unwrap_or_default();
     config.apply_overrides(overrides);
-
-    // Legacy env var fallback: ANTHROPIC_API_KEY / OPENAI_API_KEY
-    if config.gate.api_key.is_none() {
-        let env_key = match config.gate.provider.as_str() {
-            "openai" => std::env::var("OPENAI_API_KEY").ok(),
-            _ => std::env::var("ANTHROPIC_API_KEY").ok(),
-        };
-        if let Some(key) = env_key {
-            if !key.is_empty() {
-                config.gate.api_key = Some(key);
-            }
-        }
-    }
-
     config
 }
 
@@ -127,41 +130,42 @@ mod tests {
         let config = OxConfig::default();
         let flat = config.to_flat_map();
         assert_eq!(
-            flat.get("gate/model").unwrap(),
+            flat.get("gate/defaults/model").unwrap(),
             &Value::String("claude-sonnet-4-20250514".into())
         );
-        assert_eq!(flat.get("gate/max_tokens").unwrap(), &Value::Integer(4096));
         assert_eq!(
-            flat.get("gate/provider").unwrap(),
+            flat.get("gate/defaults/max_tokens").unwrap(),
+            &Value::Integer(4096)
+        );
+        assert_eq!(
+            flat.get("gate/defaults/account").unwrap(),
             &Value::String("anthropic".into())
         );
-        assert!(!flat.contains_key("gate/api_key"));
+        assert!(!flat.keys().any(|k| k.starts_with("gate/accounts/")));
     }
 
     #[test]
     fn cli_overrides_merge_into_config() {
         let overrides = CliOverrides {
-            provider: Some("openai".into()),
+            account: Some("work".into()),
             model: Some("gpt-4o".into()),
-            api_key: Some("sk-test".into()),
             max_tokens: None,
         };
         let mut config = OxConfig::default();
         config.apply_overrides(&overrides);
         let flat = config.to_flat_map();
         assert_eq!(
-            flat.get("gate/provider").unwrap(),
-            &Value::String("openai".into())
+            flat.get("gate/defaults/account").unwrap(),
+            &Value::String("work".into())
         );
         assert_eq!(
-            flat.get("gate/model").unwrap(),
+            flat.get("gate/defaults/model").unwrap(),
             &Value::String("gpt-4o".into())
         );
         assert_eq!(
-            flat.get("gate/api_key").unwrap(),
-            &Value::String("sk-test".into())
+            flat.get("gate/defaults/max_tokens").unwrap(),
+            &Value::Integer(4096)
         );
-        assert_eq!(flat.get("gate/max_tokens").unwrap(), &Value::Integer(4096));
     }
 
     #[test]
@@ -169,38 +173,56 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("config.toml"),
-            "[gate]\nmodel = \"from-file\"\nmax_tokens = 8192\nprovider = \"openai\"\n",
+            r#"
+[gate.accounts.personal]
+provider = "anthropic"
+key = "sk-ant-personal"
+
+[gate.accounts.openai]
+provider = "openai"
+key = "sk-oai-test"
+
+[gate.defaults]
+account = "personal"
+model = "claude-opus-4-20250514"
+max_tokens = 8192
+"#,
         )
         .unwrap();
         let config = resolve_config(dir.path(), &CliOverrides::default());
+        assert_eq!(config.gate.defaults.account, "personal");
+        assert_eq!(config.gate.defaults.model, "claude-opus-4-20250514");
+        assert_eq!(config.gate.defaults.max_tokens, 8192);
+        assert_eq!(config.gate.accounts.len(), 2);
+        assert_eq!(config.gate.accounts["personal"].provider, "anthropic");
+        assert_eq!(config.gate.accounts["personal"].key, "sk-ant-personal");
+
         let flat = config.to_flat_map();
-        assert_eq!(
-            flat.get("gate/model").unwrap(),
-            &Value::String("from-file".into())
-        );
-        assert_eq!(flat.get("gate/max_tokens").unwrap(), &Value::Integer(8192));
-        assert_eq!(
-            flat.get("gate/provider").unwrap(),
-            &Value::String("openai".into())
-        );
+        assert!(flat.contains_key("gate/accounts/personal/provider"));
+        assert!(flat.contains_key("gate/accounts/personal/key"));
     }
 
     #[test]
-    fn env_var_with_double_underscore_separator() {
+    fn env_vars_resolve_through_figment() {
         let dir = tempfile::tempdir().unwrap();
-        // SAFETY: test runs single-threaded for this env var manipulation
         unsafe {
-            std::env::set_var("OX_GATE__MODEL", "env-model");
-            std::env::set_var("OX_GATE__API_KEY", "sk-from-env");
+            std::env::set_var("OX_GATE__DEFAULTS__MODEL", "env-model");
+            std::env::set_var("OX_GATE__DEFAULTS__ACCOUNT", "env-acct");
+            std::env::set_var("OX_GATE__ACCOUNTS__MYACCT__PROVIDER", "anthropic");
+            std::env::set_var("OX_GATE__ACCOUNTS__MYACCT__KEY", "sk-from-env");
         }
         let config = resolve_config(dir.path(), &CliOverrides::default());
-        unsafe {
-            std::env::remove_var("OX_GATE__MODEL");
-            std::env::remove_var("OX_GATE__API_KEY");
-        }
+        assert_eq!(config.gate.defaults.model, "env-model");
+        assert_eq!(config.gate.defaults.account, "env-acct");
+        assert_eq!(config.gate.accounts["myacct"].provider, "anthropic");
+        assert_eq!(config.gate.accounts["myacct"].key, "sk-from-env");
 
-        assert_eq!(config.gate.model, "env-model");
-        assert_eq!(config.gate.api_key.as_deref(), Some("sk-from-env"));
+        unsafe {
+            std::env::remove_var("OX_GATE__DEFAULTS__MODEL");
+            std::env::remove_var("OX_GATE__DEFAULTS__ACCOUNT");
+            std::env::remove_var("OX_GATE__ACCOUNTS__MYACCT__PROVIDER");
+            std::env::remove_var("OX_GATE__ACCOUNTS__MYACCT__KEY");
+        }
     }
 
     #[test]
@@ -208,7 +230,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("config.toml"),
-            "[gate]\nmodel = \"from-file\"\n",
+            "[gate.defaults]\nmodel = \"from-file\"\n",
         )
         .unwrap();
         let overrides = CliOverrides {
@@ -216,6 +238,6 @@ mod tests {
             ..Default::default()
         };
         let config = resolve_config(dir.path(), &overrides);
-        assert_eq!(config.gate.model, "from-cli");
+        assert_eq!(config.gate.defaults.model, "from-cli");
     }
 }
