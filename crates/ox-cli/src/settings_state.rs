@@ -72,6 +72,8 @@ pub struct SettingsState {
     pub discovered_models: Vec<ox_kernel::ModelInfo>,
     pub model_picker_idx: Option<usize>,
     pub pending_test: Option<oneshot::Receiver<TestResult>>,
+    pub delete_confirming: bool,
+    pub save_flash_until: Option<std::time::Instant>,
 }
 
 impl SettingsState {
@@ -90,6 +92,8 @@ impl SettingsState {
             discovered_models: Vec::new(),
             model_picker_idx: None,
             pending_test: None,
+            delete_confirming: false,
+            save_flash_until: None,
         }
     }
 

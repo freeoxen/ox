@@ -4,7 +4,7 @@ use crate::settings_state::{SettingsFocus, SettingsState, TestStatus};
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
@@ -70,20 +70,50 @@ fn draw_accounts_section(frame: &mut Frame, state: &SettingsState, theme: &Theme
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    // Column header
+    let header = format!(
+        "     {:<16} {:<12} {:<24} {}",
+        "Name", "API", "Endpoint", "Key"
+    );
+    if inner.height > 0 {
+        let header_area = Rect {
+            x: inner.x,
+            y: inner.y,
+            width: inner.width,
+            height: 1,
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                header,
+                Style::default().add_modifier(Modifier::DIM),
+            )),
+            header_area,
+        );
+    }
+
     for (i, acct) in state.accounts.iter().enumerate() {
-        if i >= inner.height as usize {
+        if i + 1 >= inner.height as usize {
             break;
         }
-        let marker = if acct.is_default { "\u{25cf}" } else { " " };
+        let select_marker = if i == state.selected_account {
+            "\u{25b8}"
+        } else {
+            " "
+        };
+        let default_marker = if acct.is_default { "\u{25cf}" } else { " " };
         let key_status = if acct.has_key { "\u{2713}" } else { "\u{2717}" };
-        let selected = i == state.selected_account && focused;
 
         let line_str = format!(
-            " {} {:<16} {:<12} {:<24} {}",
-            marker, acct.name, acct.dialect, acct.endpoint_display, key_status
+            "{}{} {:<16} {:<12} {:<24} {}",
+            select_marker,
+            default_marker,
+            acct.name,
+            acct.dialect,
+            acct.endpoint_display,
+            key_status
         );
 
-        let style = if selected {
+        let style = if i == state.selected_account && focused {
             theme.selected_bg
         } else {
             Style::default()
@@ -91,7 +121,7 @@ fn draw_accounts_section(frame: &mut Frame, state: &SettingsState, theme: &Theme
 
         let line_area = Rect {
             x: inner.x,
-            y: inner.y + i as u16,
+            y: inner.y + 1 + i as u16,
             width: inner.width,
             height: 1,
         };
@@ -107,7 +137,12 @@ fn draw_accounts_section(frame: &mut Frame, state: &SettingsState, theme: &Theme
             TestStatus::Failed(msg) => Some(format!("  \u{2717} {msg}")),
         };
         if let Some(text) = test_line {
-            let y = inner.y + state.accounts.len().min(inner.height as usize - 1) as u16;
+            let y = inner.y
+                + 1
+                + state
+                    .accounts
+                    .len()
+                    .min(inner.height.saturating_sub(2) as usize) as u16;
             if y < inner.y + inner.height {
                 let status_area = Rect {
                     x: inner.x,
@@ -123,8 +158,16 @@ fn draw_accounts_section(frame: &mut Frame, state: &SettingsState, theme: &Theme
 
 fn draw_defaults_section(frame: &mut Frame, state: &SettingsState, theme: &Theme, area: Rect) {
     let focused = state.focus == SettingsFocus::Defaults && state.editing.is_none();
+    let saved = state
+        .save_flash_until
+        .is_some_and(|t| t > std::time::Instant::now());
+    let title = if saved {
+        " Defaults \u{2713} Saved "
+    } else {
+        " Defaults "
+    };
     let block = Block::default()
-        .title(" Defaults ")
+        .title(title)
         .borders(Borders::ALL)
         .border_style(if focused {
             theme.title_badge
@@ -154,7 +197,7 @@ fn draw_defaults_section(frame: &mut Frame, state: &SettingsState, theme: &Theme
     let lines = vec![
         Line::from(format!(
             "  Account:    {}{} (\u{2190}/\u{2192})",
-            if focused && state.defaults_focus == 0 {
+            if state.defaults_focus == 0 {
                 cursor
             } else {
                 no_cursor
@@ -163,7 +206,7 @@ fn draw_defaults_section(frame: &mut Frame, state: &SettingsState, theme: &Theme
         )),
         Line::from(format!(
             "  Model:      {}{}",
-            if focused && state.defaults_focus == 1 {
+            if state.defaults_focus == 1 {
                 cursor
             } else {
                 no_cursor
@@ -172,7 +215,7 @@ fn draw_defaults_section(frame: &mut Frame, state: &SettingsState, theme: &Theme
         )),
         Line::from(format!(
             "  Max tokens: {}{}",
-            if focused && state.defaults_focus == 2 {
+            if state.defaults_focus == 2 {
                 cursor
             } else {
                 no_cursor
@@ -240,7 +283,7 @@ pub(crate) fn draw_account_edit_dialog(
             editing.name
         )),
         Line::from(format!(
-            "  Dialect:  {}{} (\u{2190}/\u{2192} to change)",
+            "  API:      {}{} (\u{2190}/\u{2192} to change)",
             if focus == 1 { cursor } else { no_cursor },
             dialect_str
         )),
@@ -248,7 +291,12 @@ pub(crate) fn draw_account_edit_dialog(
             "  Endpoint: {}{}",
             if focus == 2 { cursor } else { no_cursor },
             if editing.endpoint.is_empty() {
-                "(default for dialect)".to_string()
+                match *dialect_str {
+                    "anthropic" => "(api.anthropic.com)",
+                    "openai" => "(api.openai.com)",
+                    _ => "(default)",
+                }
+                .to_string()
             } else {
                 editing.endpoint.clone()
             }
