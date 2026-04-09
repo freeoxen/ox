@@ -60,8 +60,8 @@ impl Namespace {
 /// - `system` → system prompt string
 /// - `history/messages` → conversation messages array
 /// - `tools/schemas` → tool schema array
-/// - `gate/model` → model identifier string
-/// - `gate/max_tokens` → token limit integer
+/// - `gate/defaults/model` → model identifier string
+/// - `gate/defaults/max_tokens` → token limit integer
 ///
 /// When `reader` is a [`Namespace`], each path routes to the appropriate mounted
 /// store. This function exists as a standalone so it can be called with any
@@ -120,11 +120,11 @@ pub fn synthesize_prompt(reader: &mut dyn Reader) -> Result<Option<Record>, Stor
 
     // Read model ID
     let model_id = {
-        let record = reader.read(&path!("gate/model"))?.ok_or_else(|| {
+        let record = reader.read(&path!("gate/defaults/model"))?.ok_or_else(|| {
             StoreError::store(
                 "synthesize_prompt",
                 "read",
-                "gate store returned None for model",
+                "gate store returned None for defaults/model",
             )
         })?;
         match record {
@@ -133,7 +133,7 @@ pub fn synthesize_prompt(reader: &mut dyn Reader) -> Result<Option<Record>, Stor
                 return Err(StoreError::store(
                     "synthesize_prompt",
                     "read",
-                    "expected string from gate store for model",
+                    "expected string from gate store for defaults/model",
                 ));
             }
         }
@@ -141,11 +141,11 @@ pub fn synthesize_prompt(reader: &mut dyn Reader) -> Result<Option<Record>, Stor
 
     // Read max_tokens
     let max_tokens = {
-        let record = reader.read(&path!("gate/max_tokens"))?.ok_or_else(|| {
+        let record = reader.read(&path!("gate/defaults/max_tokens"))?.ok_or_else(|| {
             StoreError::store(
                 "synthesize_prompt",
                 "read",
-                "gate store returned None for max_tokens",
+                "gate store returned None for defaults/max_tokens",
             )
         })?;
         match record {
@@ -154,7 +154,7 @@ pub fn synthesize_prompt(reader: &mut dyn Reader) -> Result<Option<Record>, Stor
                 return Err(StoreError::store(
                     "synthesize_prompt",
                     "read",
-                    "expected integer from gate store for max_tokens",
+                    "expected integer from gate store for defaults/max_tokens",
                 ));
             }
         }
