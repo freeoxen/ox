@@ -75,6 +75,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         PathBuf::from(home).join(".ox")
     };
 
+    // Set up tracing → per-run log file under ~/.ox/logs/
+    let _guard = setup_tracing(&inbox_root);
+
+    tracing::info!(
+        workspace = %workspace.display(),
+        inbox_root = %inbox_root.display(),
+        "ox starting"
+    );
+
     // Resolve config: defaults → ~/.ox/config.toml → OX_* env vars → CLI flags
     let overrides = config::CliOverrides {
         account: cli.account.clone(),
@@ -87,6 +96,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let resolved_keys = config::resolve_keys(&keys_dir, &resolved);
     let force_wizard = matches!(cli.command, Some(Commands::Init));
     let needs_setup = force_wizard || !config::has_any_key(&keys_dir, &resolved);
+
+    tracing::info!(
+        force_wizard,
+        needs_setup,
+        accounts = resolved.gate.accounts.len(),
+        keys = resolved_keys.len(),
+        default_account = %resolved.gate.defaults.account,
+        model = %resolved.gate.defaults.model,
+        "config resolved"
+    );
+
+    // Validate config: catch mismatches that would silently cause 401s
+    if !needs_setup {
+        let default_acct = &resolved.gate.defaults.account;
+        if !resolved.gate.accounts.contains_key(default_acct) {
+            let available: Vec<&str> = resolved.gate.accounts.keys().map(|s| s.as_str()).collect();
+            tracing::error!(
+                default_account = %default_acct,
+                available = ?available,
+                "default account not found in configured accounts"
+            );
+            eprintln!(
+                "error: default account '{}' not found in config.\n\
+                 Available accounts: {}\n\
+                 Run `ox init` to reconfigure, or edit ~/.ox/config.toml",
+                default_acct,
+                if available.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    available.join(", ")
+                }
+            );
+            std::process::exit(1);
+        }
+        if !resolved_keys.contains_key(default_acct) {
+            tracing::error!(
+                default_account = %default_acct,
+                "no API key found for default account"
+            );
+            eprintln!(
+                "error: no API key for account '{}'.\n\
+                 Run `ox init` to reconfigure, or add key to ~/.ox/keys/{}.key",
+                default_acct, default_acct
+            );
+            std::process::exit(1);
+        }
+    }
 
     let flat_config = resolved.to_flat_map_with_keys(&resolved_keys);
 
@@ -140,6 +196,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ))
     .ok();
 
+    tracing::info!("ox shutting down");
     result?;
     Ok(())
+}
+
+/// Set up tracing with a per-run log file under `{inbox_root}/logs/`.
+///
+/// Returns a guard that must be held for the lifetime of the program to
+/// ensure the non-blocking writer flushes on drop.
+fn setup_tracing(inbox_root: &std::path::Path) -> tracing_appender::non_blocking::WorkerGuard {
+    let logs_dir = inbox_root.join("logs");
+    std::fs::create_dir_all(&logs_dir).ok();
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let log_path = logs_dir.join(format!("ox-{now}.log"));
+    let log_file = std::fs::File::create(&log_path).expect("failed to create log file");
+
+    let (writer, guard) = tracing_appender::non_blocking(log_file);
+
+    let filter = tracing_subscriber::EnvFilter::try_from_env("OX_LOG")
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(writer)
+        .with_ansi(false)
+        .with_target(true)
+        .with_thread_ids(true)
+        .with_env_filter(filter)
+        .finish();
+
+    if tracing::subscriber::set_global_default(subscriber).is_err() {
+        eprintln!("warning: tracing subscriber already set, logs may be missing");
+    }
+
+    guard
 }
