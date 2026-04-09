@@ -334,7 +334,9 @@ pub async fn run_async(
                                         }
                                         EditAction::Handled
                                     }
-                                    "t" => EditAction::None, // handled below (needs non-mut borrow)
+                                    "t" if editing.focus == 1 => {
+                                        EditAction::None // handled below as test connection
+                                    }
                                     other => {
                                         if other.len() == 1
                                             && !other.chars().next().unwrap().is_control()
