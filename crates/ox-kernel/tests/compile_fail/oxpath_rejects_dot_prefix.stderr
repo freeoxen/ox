@@ -1,0 +1,5 @@
+error: must start with a letter or underscore followed by letter/digit, got '.'
+ --> tests/compile_fail/oxpath_rejects_dot_prefix.rs:4:22
+  |
+4 |     let _p = oxpath!(".hidden");
+  |                      ^^^^^^^^^

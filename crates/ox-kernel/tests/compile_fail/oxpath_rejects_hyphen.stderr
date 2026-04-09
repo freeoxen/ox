@@ -1,0 +1,5 @@
+error: invalid character '-' in component "bad-name"
+ --> tests/compile_fail/oxpath_rejects_hyphen.rs:4:30
+  |
+4 |     let _p = oxpath!("gate", "bad-name", "model");
+  |                              ^^^^^^^^^^

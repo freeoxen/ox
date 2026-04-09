@@ -1,0 +1,5 @@
+error: invalid character ' ' in component "my account"
+ --> tests/compile_fail/oxpath_rejects_space.rs:4:22
+  |
+4 |     let _p = oxpath!("my account");
+  |                      ^^^^^^^^^^^^

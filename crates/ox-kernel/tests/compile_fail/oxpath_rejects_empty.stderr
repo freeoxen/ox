@@ -1,0 +1,5 @@
+error: empty path component
+ --> tests/compile_fail/oxpath_rejects_empty.rs:4:22
+  |
+4 |     let _p = oxpath!("");
+  |                      ^^
