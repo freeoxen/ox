@@ -25,6 +25,7 @@ pub async fn run_async(
     client: &ox_broker::ClientHandle,
     theme: &Theme,
     terminal: &mut ratatui::DefaultTerminal,
+    needs_setup: bool,
 ) -> std::io::Result<()> {
     use crate::key_encode::encode_key;
     use structfs_core_store::path;
@@ -33,7 +34,19 @@ pub async fn run_async(
         approval_selected: 0,
         pending_customize: None,
     };
-    let mut settings = SettingsState::new();
+    let mut settings = if needs_setup {
+        // Navigate to settings screen via broker
+        client
+            .write(
+                &structfs_core_store::path!("ui/go_to_settings"),
+                structfs_core_store::Record::parsed(structfs_core_store::Value::Null),
+            )
+            .await
+            .ok();
+        SettingsState::new_wizard()
+    } else {
+        SettingsState::new()
+    };
 
     loop {
         // 1. Fetch ViewState, draw, extract owned data needed after drop.
@@ -327,6 +340,17 @@ pub async fn run_async(
                                         &crate::config::CliOverrides::default(),
                                     );
                                     settings.refresh_accounts(&config, &keys_dir);
+                                    // Advance wizard after first account save
+                                    if let Some(ref mut step) = settings.wizard {
+                                        use crate::settings_state::WizardStep;
+                                        match step {
+                                            WizardStep::AddAccount => {
+                                                *step = WizardStep::SetDefaults;
+                                                settings.focus = crate::settings_state::SettingsFocus::Defaults;
+                                            }
+                                            _ => {}
+                                        }
+                                    }
                                     continue;
                                 }
                                 EditAction::Handled => {
@@ -480,6 +504,33 @@ pub async fn run_async(
                                                 crate::settings_state::TestStatus::Idle;
                                         }
                                     }
+                                    true
+                                }
+                                "Enter" if settings.wizard == Some(crate::settings_state::WizardStep::Done) => {
+                                    settings.wizard = None;
+                                    // Navigate back to inbox
+                                    client.write(
+                                        &structfs_core_store::path!("ui/go_to_inbox"),
+                                        structfs_core_store::Record::parsed(structfs_core_store::Value::Null),
+                                    ).await.ok();
+                                    true
+                                }
+                                "Enter" if settings.focus == SettingsFocus::Defaults => {
+                                    // Advance wizard from SetDefaults to Done
+                                    if let Some(ref mut step) = settings.wizard {
+                                        if *step == crate::settings_state::WizardStep::SetDefaults {
+                                            *step = crate::settings_state::WizardStep::Done;
+                                        }
+                                    }
+                                    true
+                                }
+                                "Esc" | "q" if settings.wizard.is_some() => {
+                                    // Allow skipping wizard — go to inbox
+                                    settings.wizard = None;
+                                    client.write(
+                                        &structfs_core_store::path!("ui/go_to_inbox"),
+                                        structfs_core_store::Record::parsed(structfs_core_store::Value::Null),
+                                    ).await.ok();
                                     true
                                 }
                                 "d" => {

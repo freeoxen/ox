@@ -27,12 +27,15 @@ mod tui;
 mod types;
 pub(crate) mod view_state;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "ox", about = "Agentic coding CLI")]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+
     /// Named account from config (overrides gate.defaults.account)
     #[arg(long)]
     account: Option<String>,
@@ -52,6 +55,12 @@ struct Cli {
     /// Disable policy enforcement (allow all tool calls)
     #[arg(long)]
     no_policy: bool,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Interactive setup wizard
+    Init,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -76,7 +85,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let keys_dir = inbox_root.join("keys");
     let resolved_keys = config::resolve_keys(&keys_dir, &resolved);
-    let _needs_setup = resolved_keys.is_empty();
+    let force_wizard = matches!(cli.command, Some(Commands::Init));
+    let needs_setup = force_wizard || !config::has_any_key(&keys_dir, &resolved);
 
     let flat_config = resolved.to_flat_map_with_keys(&resolved_keys);
 
@@ -117,6 +127,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &client,
         &theme,
         &mut terminal,
+        needs_setup,
     ));
 
     crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture).ok();

@@ -17,14 +17,38 @@ pub(crate) fn draw_settings(
 ) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(5),    // accounts
-            Constraint::Length(5), // defaults
-        ])
+        .constraints(if state.wizard.is_some() {
+            vec![
+                Constraint::Length(1), // wizard step
+                Constraint::Min(5),    // accounts
+                Constraint::Length(5), // defaults
+            ]
+        } else {
+            vec![
+                Constraint::Min(5),    // accounts
+                Constraint::Length(5), // defaults
+            ]
+        })
         .split(area);
 
-    draw_accounts_section(frame, state, theme, chunks[0]);
-    draw_defaults_section(frame, state, theme, chunks[1]);
+    let mut idx = 0;
+    if let Some(ref step) = state.wizard {
+        use crate::settings_state::WizardStep;
+        let step_text = match step {
+            WizardStep::AddAccount => " Step 1/2: Add your first account ",
+            WizardStep::SetDefaults => " Step 2/2: Set your defaults (Enter to confirm) ",
+            WizardStep::Done => " Setup complete! Press Enter to continue. ",
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled(step_text, theme.title_badge)),
+            chunks[idx],
+        );
+        idx += 1;
+    }
+
+    draw_accounts_section(frame, state, theme, chunks[idx]);
+    idx += 1;
+    draw_defaults_section(frame, state, theme, chunks[idx]);
 
     if let Some(ref editing) = state.editing {
         draw_account_edit_dialog(frame, editing, &state.test_status, theme);
