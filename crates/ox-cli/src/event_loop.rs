@@ -289,6 +289,7 @@ pub async fn run_async(
                                         }
                                         EditAction::Handled
                                     }
+                                    "t" => EditAction::None, // handled below (needs non-mut borrow)
                                     other => {
                                         if other.len() == 1
                                             && !other.chars().next().unwrap().is_control()
@@ -332,6 +333,56 @@ pub async fn run_async(
                                     continue;
                                 }
                                 EditAction::None => {}
+                            }
+
+                            // Handle 't' for test connection in edit dialog
+                            // (done after match so the &mut borrow on editing is dropped)
+                            if key_str == "t" {
+                                if let Some(ref editing) = settings.editing {
+                                    if editing.key.is_empty() {
+                                        settings.test_status =
+                                            TestStatus::Failed("No API key entered".into());
+                                    } else {
+                                        let dialect = DIALECTS[editing.dialect];
+                                        let mut provider_config = match dialect {
+                                            "openai" => ox_gate::ProviderConfig::openai(),
+                                            _ => ox_gate::ProviderConfig::anthropic(),
+                                        };
+                                        if !editing.endpoint.is_empty() {
+                                            provider_config.endpoint = editing.endpoint.clone();
+                                        }
+                                        let model = match dialect {
+                                            "openai" => "gpt-4o-mini",
+                                            _ => "claude-haiku-4-5-20251001",
+                                        };
+                                        let request = ox_kernel::CompletionRequest {
+                                            model: model.to_string(),
+                                            max_tokens: 1,
+                                            system: String::new(),
+                                            messages: vec![serde_json::json!({"role": "user", "content": "hi"})],
+                                            tools: vec![],
+                                            stream: true,
+                                        };
+                                        settings.test_status = TestStatus::Testing;
+                                        let start = std::time::Instant::now();
+                                        let send = crate::transport::make_send_fn(
+                                            provider_config,
+                                            editing.key.clone(),
+                                        );
+                                        match send(&request) {
+                                            Ok(_) => {
+                                                let ms = start.elapsed().as_millis();
+                                                settings.test_status = TestStatus::Success(
+                                                    format!("Connected ({dialect}, {ms}ms)"),
+                                                );
+                                            }
+                                            Err(e) => {
+                                                settings.test_status = TestStatus::Failed(e);
+                                            }
+                                        }
+                                    }
+                                }
+                                continue;
                             }
                         }
 
@@ -449,6 +500,85 @@ pub async fn run_async(
                                                 &crate::config::CliOverrides::default(),
                                             );
                                             settings.refresh_accounts(&config, &keys_dir);
+                                        }
+                                    }
+                                    true
+                                }
+                                "t" => {
+                                    if settings.focus == SettingsFocus::Accounts {
+                                        if let Some(acct) =
+                                            settings.accounts.get(settings.selected_account)
+                                        {
+                                            let inbox_root =
+                                                app.pool.inbox_root().to_path_buf();
+                                            let keys_dir = inbox_root.join("keys");
+                                            let key = crate::config::read_key_file(
+                                                &keys_dir, &acct.name,
+                                            )
+                                            .unwrap_or_default();
+                                            if key.is_empty() {
+                                                settings.test_status =
+                                                    crate::settings_state::TestStatus::Failed(
+                                                        "No key file found".into(),
+                                                    );
+                                            } else {
+                                                let config = crate::config::resolve_config(
+                                                    &inbox_root,
+                                                    &crate::config::CliOverrides::default(),
+                                                );
+                                                let entry =
+                                                    config.gate.accounts.get(&acct.name);
+                                                let dialect = entry
+                                                    .map(|e| e.provider.as_str())
+                                                    .unwrap_or("anthropic");
+                                                let mut provider_config = match dialect {
+                                                    "openai" => {
+                                                        ox_gate::ProviderConfig::openai()
+                                                    }
+                                                    _ => {
+                                                        ox_gate::ProviderConfig::anthropic()
+                                                    }
+                                                };
+                                                if let Some(ep) =
+                                                    entry.and_then(|e| e.endpoint.as_ref())
+                                                {
+                                                    provider_config.endpoint = ep.clone();
+                                                }
+                                                let model = match dialect {
+                                                    "openai" => "gpt-4o-mini",
+                                                    _ => "claude-haiku-4-5-20251001",
+                                                };
+                                                let request = ox_kernel::CompletionRequest {
+                                                    model: model.to_string(),
+                                                    max_tokens: 1,
+                                                    system: String::new(),
+                                                    messages: vec![serde_json::json!({"role": "user", "content": "hi"})],
+                                                    tools: vec![],
+                                                    stream: true,
+                                                };
+                                                let start = std::time::Instant::now();
+                                                let send =
+                                                    crate::transport::make_send_fn(
+                                                        provider_config,
+                                                        key,
+                                                    );
+                                                match send(&request) {
+                                                    Ok(_) => {
+                                                        let ms =
+                                                            start.elapsed().as_millis();
+                                                        settings.test_status =
+                                                            crate::settings_state::TestStatus::Success(
+                                                                format!(
+                                                                    "Connected ({dialect}, {ms}ms)"
+                                                                ),
+                                                            );
+                                                    }
+                                                    Err(e) => {
+                                                        settings.test_status =
+                                                            crate::settings_state::TestStatus::Failed(e);
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                     true

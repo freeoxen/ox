@@ -1,6 +1,6 @@
 //! Settings screen rendering.
 
-use crate::settings_state::{SettingsFocus, SettingsState};
+use crate::settings_state::{SettingsFocus, SettingsState, TestStatus};
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -83,6 +83,28 @@ fn draw_accounts_section(
             height: 1,
         };
         frame.render_widget(Paragraph::new(Span::styled(line_str, style)), line_area);
+    }
+
+    // Show test status below the account rows (only when no edit dialog is open)
+    if state.editing.is_none() {
+        let test_line = match &state.test_status {
+            TestStatus::Idle => None,
+            TestStatus::Testing => Some("  \u{23f3} Testing...".to_string()),
+            TestStatus::Success(msg) => Some(format!("  \u{2713} {msg}")),
+            TestStatus::Failed(msg) => Some(format!("  \u{2717} {msg}")),
+        };
+        if let Some(text) = test_line {
+            let y = inner.y + state.accounts.len().min(inner.height as usize - 1) as u16;
+            if y < inner.y + inner.height {
+                let status_area = Rect {
+                    x: inner.x,
+                    y,
+                    width: inner.width,
+                    height: 1,
+                };
+                frame.render_widget(Paragraph::new(Span::raw(text)), status_area);
+            }
+        }
     }
 }
 
