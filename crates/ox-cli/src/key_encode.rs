@@ -25,6 +25,7 @@ pub fn encode_key(modifiers: KeyModifiers, code: KeyCode) -> Option<String> {
         KeyCode::Left => Some("Left".to_string()),
         KeyCode::Right => Some("Right".to_string()),
         KeyCode::Tab => Some("Tab".to_string()),
+        KeyCode::BackTab => Some("Shift+Tab".to_string()),
         _ => None,
     }
 }

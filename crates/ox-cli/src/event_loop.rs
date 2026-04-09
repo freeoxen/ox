@@ -269,8 +269,13 @@ pub async fn run_async(
 
                             let action = if let Some(ref mut editing) = settings.editing {
                                 match key_str.as_str() {
-                                    "Tab" => {
+                                    "Tab" | "Down" => {
                                         editing.focus = (editing.focus + 1) % 4;
+                                        EditAction::Handled
+                                    }
+                                    "Shift+Tab" | "Up" => {
+                                        editing.focus =
+                                            if editing.focus == 0 { 3 } else { editing.focus - 1 };
                                         EditAction::Handled
                                     }
                                     "Esc" => EditAction::Cancel,
@@ -846,6 +851,29 @@ pub async fn run_async(
                     }
                 }
                 Event::Mouse(mouse) => {
+                    // Click on settings edit dialog
+                    if let MouseEventKind::Down(_) = mouse.kind {
+                        if screen_owned == "settings" && settings.editing.is_some() {
+                            let term_size = crossterm::terminal::size().unwrap_or((80, 24));
+                            let dialog_h = 10u16;
+                            let dialog_w = term_size.0 * 60 / 100;
+                            let dialog_top = term_size.1.saturating_sub(dialog_h) / 2;
+                            let dialog_left = (term_size.0.saturating_sub(dialog_w)) / 2;
+                            // Fields start at row offset 1 inside the bordered dialog
+                            // Row 0: Name, Row 1: Dialect, Row 2: Endpoint, Row 3: Key
+                            let field_first_row = dialog_top + 1;
+                            if mouse.row >= field_first_row
+                                && mouse.row < field_first_row + 4
+                                && mouse.column >= dialog_left
+                                && mouse.column < dialog_left + dialog_w
+                            {
+                                let field = (mouse.row - field_first_row) as usize;
+                                if let Some(ref mut editing) = settings.editing {
+                                    editing.focus = field;
+                                }
+                            }
+                        }
+                    }
                     // Click on approval dialog
                     if let MouseEventKind::Down(_) = mouse.kind {
                         if has_approval_pending {
