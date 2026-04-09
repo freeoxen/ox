@@ -93,15 +93,22 @@ mod tests {
         let bindings = crate::bindings::default_bindings();
         let mut config = BTreeMap::new();
         config.insert(
-            "gate/model".to_string(),
+            "gate/defaults/model".to_string(),
             Value::String("claude-sonnet-4-20250514".into()),
         );
         config.insert(
-            "gate/provider".to_string(),
+            "gate/defaults/account".to_string(),
             Value::String("anthropic".into()),
         );
-        config.insert("gate/max_tokens".to_string(), Value::Integer(4096));
-        config.insert("gate/api_key".to_string(), Value::String("test-key".into()));
+        config.insert("gate/defaults/max_tokens".to_string(), Value::Integer(4096));
+        config.insert(
+            "gate/accounts/anthropic/provider".to_string(),
+            Value::String("anthropic".into()),
+        );
+        config.insert(
+            "gate/accounts/anthropic/key".to_string(),
+            Value::String("test-key".into()),
+        );
         setup(test_inbox(), bindings, test_inbox_root(), config).await
     }
 
@@ -266,7 +273,7 @@ mod tests {
         let client = handle.client();
 
         let model = client
-            .read(&path!("config/gate/model"))
+            .read(&path!("config/gate/defaults/model"))
             .await
             .unwrap()
             .unwrap();
@@ -275,13 +282,13 @@ mod tests {
             &Value::String("claude-sonnet-4-20250514".into())
         );
 
-        let provider = client
-            .read(&path!("config/gate/provider"))
+        let account = client
+            .read(&path!("config/gate/defaults/account"))
             .await
             .unwrap()
             .unwrap();
         assert_eq!(
-            provider.as_value().unwrap(),
+            account.as_value().unwrap(),
             &Value::String("anthropic".into())
         );
     }

@@ -198,7 +198,7 @@ fn agent_worker(
     }
 
     // Read provider and API key from thread's GateStore (resolves through config handle)
-    let bootstrap = match adapter.read(&path!("gate/bootstrap")) {
+    let default_account = match adapter.read(&path!("gate/defaults/account")) {
         Ok(Some(r)) => match r.as_value() {
             Some(Value::String(s)) => s.clone(),
             _ => "anthropic".to_string(),
@@ -208,7 +208,7 @@ fn agent_worker(
     let provider = match adapter.read(&structfs_core_store::Path::from_components(vec![
         "gate".into(),
         "accounts".into(),
-        bootstrap.clone(),
+        default_account.clone(),
         "provider".into(),
     ])) {
         Ok(Some(r)) => match r.as_value() {
@@ -221,7 +221,7 @@ fn agent_worker(
         match adapter.read(&structfs_core_store::Path::from_components(vec![
             "gate".into(),
             "accounts".into(),
-            bootstrap.clone(),
+            default_account.clone(),
             "key".into(),
         ])) {
             Ok(Some(r)) => match r.as_value() {
@@ -241,7 +241,7 @@ fn agent_worker(
         .write(
             &ox_kernel::Path::from_components(vec![
                 "accounts".to_string(),
-                bootstrap.clone(),
+                default_account.clone(),
                 "key".to_string(),
             ]),
             Record::parsed(Value::String(api_key_for_transport.clone())),
