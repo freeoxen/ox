@@ -198,6 +198,19 @@ in `ox-kernel/src/snapshot.rs`. ToolsProvider returns None.
 - ConfigStore: ~80 lines (was ~240)
 - **Plan:** `docs/superpowers/plans/2026-04-08-config-store-stier.md`
 
+#### Phase 5: Accounts-First Config Redesign (complete, 14/14 quality gates)
+- AccountConfig shrunk to {provider, key} — model/max_tokens moved to GateStore Defaults
+- GateStore: defaults/{account,model,max_tokens} paths replace bootstrap/model/max_tokens
+- Per-account key resolution from config handle (any account, not just default)
+- figment types: GateConfig with accounts HashMap + DefaultsConfig
+- CLI: --account replaces --provider/--api-key
+- Config paths: gate/defaults/* namespace, gate/accounts/{name}/* namespace
+- Legacy env var mapping (ANTHROPIC_API_KEY/OPENAI_API_KEY) removed
+- Completion tools accept model/max_tokens as parameters
+- Backwards-compatible snapshot restore (legacy "bootstrap" field)
+- **Spec:** `docs/superpowers/specs/2026-04-08-accounts-config-design.md`
+- **Plan:** `docs/superpowers/plans/2026-04-08-accounts-config.md`
+
 ## What's Next
 
 ### Remaining work:
