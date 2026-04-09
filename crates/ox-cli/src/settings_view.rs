@@ -260,7 +260,7 @@ pub(crate) fn draw_account_edit_dialog(
         )),
         Line::from(""),
         Line::from(format!(
-            "  Tab/↓ next | Shift+Tab/↑ prev | t test | Enter save | Esc cancel{test_display}"
+            "  Tab/↓ next | Shift+Tab/↑ prev | Ctrl+t test | Enter save | Esc cancel{test_display}"
         )),
     ];
 

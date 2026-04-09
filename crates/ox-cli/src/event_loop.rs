@@ -339,7 +339,7 @@ pub async fn run_async(
                                         }
                                         EditAction::Handled
                                     }
-                                    "t" if editing.focus == 1 => {
+                                    "Ctrl+t" => {
                                         EditAction::None // handled below as test connection
                                     }
                                     other => {
@@ -396,9 +396,9 @@ pub async fn run_async(
                                 EditAction::None => {}
                             }
 
-                            // Handle 't' for test connection in edit dialog
+                            // Handle Ctrl+t for test connection in edit dialog
                             // (done after match so the &mut borrow on editing is dropped)
-                            if key_str == "t" {
+                            if key_str == "Ctrl+t" {
                                 if let Some(ref editing) = settings.editing {
                                     if editing.key.is_empty() {
                                         settings.test_status =
@@ -693,7 +693,7 @@ pub async fn run_async(
                                     }
                                     true
                                 }
-                                "t" => {
+                                "t" | "Ctrl+t" => {
                                     if settings.focus == SettingsFocus::Accounts {
                                         if let Some(acct) =
                                             settings.accounts.get(settings.selected_account)
