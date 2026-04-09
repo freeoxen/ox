@@ -299,6 +299,104 @@ pub fn streaming_fetch(
     Err(format!("{last_err} (after 3 attempts)"))
 }
 
+/// Fetch available models from a provider's API.
+///
+/// Derives the models endpoint from the completion endpoint:
+/// - "https://api.anthropic.com/v1/messages" → "https://api.anthropic.com/v1/models"
+/// - "https://api.openai.com/v1/chat/completions" → "https://api.openai.com/v1/models"
+pub fn fetch_model_catalog(
+    config: &ProviderConfig,
+    api_key: &str,
+) -> Result<Vec<ox_kernel::ModelInfo>, String> {
+    let client = reqwest::blocking::Client::new();
+
+    let base = config
+        .endpoint
+        .rfind("/v1/")
+        .map(|i| &config.endpoint[..i + 4])
+        .unwrap_or(&config.endpoint);
+    let models_base = format!("{base}models");
+
+    let mut all_models: Vec<ox_kernel::ModelInfo> = Vec::new();
+    let mut after_id: Option<String> = None;
+
+    loop {
+        let url = match (&after_id, config.dialect.as_str()) {
+            (Some(cursor), "anthropic") => {
+                format!("{models_base}?limit=1000&after_id={cursor}")
+            }
+            (None, "anthropic") => format!("{models_base}?limit=1000"),
+            _ => models_base.clone(),
+        };
+
+        let mut req = client.get(&url);
+        match config.dialect.as_str() {
+            "openai" => {
+                req = req.header("Authorization", format!("Bearer {api_key}"));
+            }
+            _ => {
+                req = req.header("x-api-key", api_key);
+                if !config.version.is_empty() {
+                    req = req.header("anthropic-version", &config.version);
+                }
+            }
+        }
+
+        let resp = req.send().map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().unwrap_or_default();
+            return Err(format!("HTTP {status}: {body}"));
+        }
+
+        let body = resp.text().map_err(|e| e.to_string())?;
+        let page: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+
+        if let Some(data) = page.get("data").and_then(|d| d.as_array()) {
+            for entry in data {
+                let id = entry
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let display_name = entry
+                    .get("display_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&id)
+                    .to_string();
+
+                // OpenAI returns everything — filter to chat models
+                if config.dialect == "openai"
+                    && !(id.contains("gpt")
+                        || id.contains("o1")
+                        || id.contains("o3")
+                        || id.contains("o4"))
+                {
+                    continue;
+                }
+
+                all_models.push(ox_kernel::ModelInfo { id, display_name });
+            }
+        }
+
+        // Only Anthropic paginates with has_more/last_id
+        let has_more = page
+            .get("has_more")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if !has_more {
+            break;
+        }
+        after_id = page
+            .get("last_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+    }
+
+    all_models.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(all_models)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

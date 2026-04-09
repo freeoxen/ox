@@ -138,8 +138,6 @@ fn draw_defaults_section(
     theme: &Theme,
     area: Rect,
 ) {
-    use crate::settings_state::models_for_dialect;
-
     let focused = state.focus == SettingsFocus::Defaults && state.editing.is_none();
     let block = Block::default()
         .title(" Defaults ")
@@ -156,16 +154,15 @@ fn draw_defaults_section(
         .map(|a| a.name.as_str())
         .unwrap_or("(none)");
 
-    let dialect = state
-        .accounts
-        .get(state.default_account_idx)
-        .map(|a| a.dialect.as_str())
-        .unwrap_or("anthropic");
-    let models = models_for_dialect(dialect);
-    let model_name = models
-        .get(state.default_model_idx)
-        .copied()
-        .unwrap_or("(unknown)");
+    let model_hint = if !state.discovered_models.is_empty() {
+        format!(
+            "{} (\u{2190}/\u{2192} {} models)",
+            state.default_model,
+            state.discovered_models.len()
+        )
+    } else {
+        state.default_model.clone()
+    };
 
     let cursor = "\u{25b8} ";
     let no_cursor = "  ";
@@ -177,9 +174,9 @@ fn draw_defaults_section(
             acct_name
         )),
         Line::from(format!(
-            "  Model:      {}{} (\u{2190}/\u{2192})",
+            "  Model:      {}{}",
             if focused && state.defaults_focus == 1 { cursor } else { no_cursor },
-            model_name
+            model_hint
         )),
         Line::from(format!(
             "  Max tokens: {}{}",

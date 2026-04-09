@@ -375,6 +375,7 @@ pub async fn run_async(
                                         if !editing.endpoint.is_empty() {
                                             provider_config.endpoint = editing.endpoint.clone();
                                         }
+                                        let api_key_for_test = editing.key.clone();
                                         let model = match dialect {
                                             "openai" => "gpt-4o-mini",
                                             _ => "claude-haiku-4-5-20251001",
@@ -390,8 +391,8 @@ pub async fn run_async(
                                         settings.test_status = TestStatus::Testing;
                                         let start = std::time::Instant::now();
                                         let send = crate::transport::make_send_fn(
-                                            provider_config,
-                                            editing.key.clone(),
+                                            provider_config.clone(),
+                                            api_key_for_test.clone(),
                                         );
                                         match send(&request) {
                                             Ok(_) => {
@@ -399,6 +400,15 @@ pub async fn run_async(
                                                 settings.test_status = TestStatus::Success(
                                                     format!("Connected ({dialect}, {ms}ms)"),
                                                 );
+                                                match crate::transport::fetch_model_catalog(&provider_config, &api_key_for_test) {
+                                                    Ok(models) => {
+                                                        settings.discovered_models = models;
+                                                        settings.model_picker_idx = None;
+                                                    }
+                                                    Err(_) => {
+                                                        settings.discovered_models.clear();
+                                                    }
+                                                }
                                             }
                                             Err(e) => {
                                                 settings.test_status = TestStatus::Failed(e);
@@ -525,24 +535,19 @@ pub async fn run_async(
                                                     } else {
                                                         settings.default_account_idx - 1
                                                     };
-                                                settings.default_model_idx = 0;
                                             }
                                         }
                                         1 => {
-                                            let dialect = settings
-                                                .accounts
-                                                .get(settings.default_account_idx)
-                                                .map(|a| a.dialect.as_str())
-                                                .unwrap_or("anthropic");
-                                            let models =
-                                                crate::settings_state::models_for_dialect(dialect);
-                                            if !models.is_empty() {
-                                                settings.default_model_idx =
-                                                    if settings.default_model_idx == 0 {
-                                                        models.len() - 1
-                                                    } else {
-                                                        settings.default_model_idx - 1
-                                                    };
+                                            if !settings.discovered_models.is_empty() {
+                                                let idx = settings.model_picker_idx.unwrap_or(0);
+                                                let new_idx = if idx == 0 {
+                                                    settings.discovered_models.len() - 1
+                                                } else {
+                                                    idx - 1
+                                                };
+                                                settings.model_picker_idx = Some(new_idx);
+                                                settings.default_model =
+                                                    settings.discovered_models[new_idx].id.clone();
                                             }
                                         }
                                         _ => {}
@@ -556,24 +561,28 @@ pub async fn run_async(
                                                 settings.default_account_idx =
                                                     (settings.default_account_idx + 1)
                                                         % settings.accounts.len();
-                                                settings.default_model_idx = 0;
                                             }
                                         }
                                         1 => {
-                                            let dialect = settings
-                                                .accounts
-                                                .get(settings.default_account_idx)
-                                                .map(|a| a.dialect.as_str())
-                                                .unwrap_or("anthropic");
-                                            let models =
-                                                crate::settings_state::models_for_dialect(dialect);
-                                            if !models.is_empty() {
-                                                settings.default_model_idx =
-                                                    (settings.default_model_idx + 1) % models.len();
+                                            if !settings.discovered_models.is_empty() {
+                                                let idx = settings.model_picker_idx.unwrap_or(0);
+                                                let new_idx = (idx + 1)
+                                                    % settings.discovered_models.len();
+                                                settings.model_picker_idx = Some(new_idx);
+                                                settings.default_model =
+                                                    settings.discovered_models[new_idx].id.clone();
                                             }
                                         }
                                         _ => {}
                                     }
+                                    true
+                                }
+                                "Backspace"
+                                    if settings.focus == SettingsFocus::Defaults
+                                        && settings.defaults_focus == 1 =>
+                                {
+                                    settings.default_model.pop();
+                                    settings.model_picker_idx = None;
                                     true
                                 }
                                 "Backspace"
@@ -590,17 +599,7 @@ pub async fn run_async(
                                         .get(settings.default_account_idx)
                                         .map(|a| a.name.clone())
                                         .unwrap_or_default();
-                                    let dialect = settings
-                                        .accounts
-                                        .get(settings.default_account_idx)
-                                        .map(|a| a.dialect.as_str())
-                                        .unwrap_or("anthropic");
-                                    let models =
-                                        crate::settings_state::models_for_dialect(dialect);
-                                    let model = models
-                                        .get(settings.default_model_idx)
-                                        .copied()
-                                        .unwrap_or("claude-sonnet-4-20250514");
+                                    let model = settings.default_model.clone();
                                     let max_tokens: i64 =
                                         settings.default_max_tokens.parse().unwrap_or(4096);
 
@@ -729,11 +728,12 @@ pub async fn run_async(
                                                     tools: vec![],
                                                     stream: true,
                                                 };
+                                                let api_key_for_test = key;
                                                 let start = std::time::Instant::now();
                                                 let send =
                                                     crate::transport::make_send_fn(
-                                                        provider_config,
-                                                        key,
+                                                        provider_config.clone(),
+                                                        api_key_for_test.clone(),
                                                     );
                                                 match send(&request) {
                                                     Ok(_) => {
@@ -745,6 +745,15 @@ pub async fn run_async(
                                                                     "Connected ({dialect}, {ms}ms)"
                                                                 ),
                                                             );
+                                                        match crate::transport::fetch_model_catalog(&provider_config, &api_key_for_test) {
+                                                            Ok(models) => {
+                                                                settings.discovered_models = models;
+                                                                settings.model_picker_idx = None;
+                                                            }
+                                                            Err(_) => {
+                                                                settings.discovered_models.clear();
+                                                            }
+                                                        }
                                                     }
                                                     Err(e) => {
                                                         settings.test_status =
@@ -754,6 +763,18 @@ pub async fn run_async(
                                             }
                                         }
                                     }
+                                    true
+                                }
+                                other
+                                    if settings.focus == SettingsFocus::Defaults
+                                        && settings.defaults_focus == 1
+                                        && other.len() == 1
+                                        && !other.chars().next().unwrap().is_control() =>
+                                {
+                                    settings
+                                        .default_model
+                                        .push(other.chars().next().unwrap());
+                                    settings.model_picker_idx = None;
                                     true
                                 }
                                 other

@@ -30,23 +30,6 @@ pub struct AccountEditFields {
 
 pub const DIALECTS: [&str; 2] = ["anthropic", "openai"];
 
-pub const ANTHROPIC_MODELS: &[&str] = &[
-    "claude-sonnet-4-20250514",
-    "claude-haiku-4-5-20251001",
-];
-
-pub const OPENAI_MODELS: &[&str] = &[
-    "gpt-4o",
-    "gpt-4o-mini",
-];
-
-pub fn models_for_dialect(dialect: &str) -> &'static [&'static str] {
-    match dialect {
-        "openai" => OPENAI_MODELS,
-        _ => ANTHROPIC_MODELS,
-    }
-}
-
 /// Test connection status.
 #[derive(Debug, Clone)]
 pub enum TestStatus {
@@ -75,9 +58,11 @@ pub struct SettingsState {
     pub test_status: TestStatus,
     pub wizard: Option<WizardStep>,
     pub default_account_idx: usize,
-    pub default_model_idx: usize,
+    pub default_model: String,
     pub default_max_tokens: String,
     pub defaults_focus: usize,
+    pub discovered_models: Vec<ox_kernel::ModelInfo>,
+    pub model_picker_idx: Option<usize>,
 }
 
 impl SettingsState {
@@ -90,9 +75,11 @@ impl SettingsState {
             test_status: TestStatus::Idle,
             wizard: None,
             default_account_idx: 0,
-            default_model_idx: 0,
+            default_model: "claude-sonnet-4-20250514".to_string(),
             default_max_tokens: "4096".to_string(),
             defaults_focus: 0,
+            discovered_models: Vec::new(),
+            model_picker_idx: None,
         }
     }
 
@@ -143,6 +130,7 @@ impl SettingsState {
             .iter()
             .position(|a| a.is_default)
             .unwrap_or(0);
+        self.default_model = config.gate.defaults.model.clone();
         self.default_max_tokens = config.gate.defaults.max_tokens.to_string();
 
         if self.selected_account >= self.accounts.len() {
