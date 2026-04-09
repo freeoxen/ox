@@ -140,15 +140,9 @@ impl OxAgent {
         ]);
         let has_account = ctx.read(&key_path).ok().flatten().is_some();
         if !has_account {
-            let default_model = match provider {
-                "openai" => "gpt-4o",
-                _ => "claude-sonnet-4-20250514",
-            };
             let config = AccountConfig {
                 provider: provider.to_string(),
                 key: key.to_string(),
-                model: default_model.to_string(),
-                max_tokens: 4096,
             };
             let value = to_value(&config).map_err(|e| JsValue::from_str(&e.to_string()))?;
             let account_path = Path::from_components(vec![

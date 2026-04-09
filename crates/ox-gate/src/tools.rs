@@ -37,7 +37,9 @@ pub fn completion_tool(
     provider: &ProviderConfig,
     send: Arc<SendFn>,
 ) -> FnTool {
-    let model = account.model.clone();
+    // TODO(task-9): accept model as a parameter instead of hardcoding
+    let _ = account;
+    let model = "claude-sonnet-4-20250514".to_string();
     let description = format!(
         "Send a completion to the {} account ({} dialect)",
         account_name, provider.dialect,
@@ -148,8 +150,6 @@ mod tests {
         let account = AccountConfig {
             provider: "test".to_string(),
             key: "sk-test".to_string(),
-            model: "test-model".to_string(),
-            max_tokens: 4096,
         };
         let provider = ProviderConfig::anthropic();
         let send: Arc<SendFn> = Arc::new(mock_send);
@@ -166,8 +166,6 @@ mod tests {
         let account = AccountConfig {
             provider: "test".to_string(),
             key: "sk-test".to_string(),
-            model: "test-model".to_string(),
-            max_tokens: 4096,
         };
         let provider = ProviderConfig::anthropic();
         let send: Arc<SendFn> = Arc::new(mock_send);

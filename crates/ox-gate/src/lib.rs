@@ -27,10 +27,9 @@ use structfs_serde_store::{from_value, to_value};
 ///
 /// - `providers/{name}` — ProviderConfig (dialect, endpoint, version)
 /// - `providers/{name}/models` — model catalog for provider
-/// - `accounts/{name}` — AccountConfig (provider, key, model)
+/// - `accounts/{name}` — AccountConfig (provider, key)
 /// - `accounts/{name}/key` — API key
 /// - `accounts/{name}/provider` — provider name
-/// - `accounts/{name}/model` — default model
 /// - `bootstrap` — name of the active account
 pub struct GateStore {
     providers: HashMap<String, ProviderConfig>,
@@ -54,8 +53,6 @@ impl GateStore {
             AccountConfig {
                 provider: "anthropic".to_string(),
                 key: String::new(),
-                model: "claude-sonnet-4-20250514".to_string(),
-                max_tokens: 4096,
             },
         );
         accounts.insert(
@@ -63,8 +60,6 @@ impl GateStore {
             AccountConfig {
                 provider: "openai".to_string(),
                 key: String::new(),
-                model: "gpt-4o".to_string(),
-                max_tokens: 4096,
             },
         );
 
@@ -196,14 +191,9 @@ impl GateStore {
         let mut accounts_map = BTreeMap::new();
         for (name, config) in &self.accounts {
             let mut acct = BTreeMap::new();
-            acct.insert("model".to_string(), Value::String(config.model.clone()));
             acct.insert(
                 "provider".to_string(),
                 Value::String(config.provider.clone()),
-            );
-            acct.insert(
-                "max_tokens".to_string(),
-                Value::Integer(config.max_tokens as i64),
             );
             accounts_map.insert(name.clone(), Value::Map(acct));
         }
@@ -247,22 +237,11 @@ impl GateStore {
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();
-                        let model = acct_json
-                            .get("model")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let max_tokens = acct_json
-                            .get("max_tokens")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(4096) as u32;
                         new_accounts.insert(
                             name.clone(),
                             AccountConfig {
                                 provider,
                                 key: String::new(),
-                                model,
-                                max_tokens,
                             },
                         );
                     }
@@ -296,24 +275,16 @@ impl Reader for GateStore {
                 if let Some(s) = self.config_string("gate/model") {
                     return Ok(Some(Record::parsed(Value::String(s))));
                 }
-                let account = self
-                    .accounts
-                    .get(&self.bootstrap)
-                    .ok_or_else(|| StoreError::store("gate", "read", "no bootstrap account"))?;
-                Ok(Some(Record::parsed(Value::String(account.model.clone()))))
+                // No account-level model anymore; return empty until defaults are added (Task 2)
+                Ok(None)
             }
 
             "max_tokens" => {
                 if let Some(n) = self.config_integer("gate/max_tokens") {
                     return Ok(Some(Record::parsed(Value::Integer(n))));
                 }
-                let account = self
-                    .accounts
-                    .get(&self.bootstrap)
-                    .ok_or_else(|| StoreError::store("gate", "read", "no bootstrap account"))?;
-                Ok(Some(Record::parsed(Value::Integer(
-                    account.max_tokens as i64,
-                ))))
+                // No account-level max_tokens anymore; return empty until defaults are added (Task 2)
+                Ok(None)
             }
 
             "providers" => {
@@ -383,10 +354,6 @@ impl Reader for GateStore {
                 match field {
                     "key" => Ok(Some(Record::parsed(Value::String(config.key.clone())))),
                     "provider" => Ok(Some(Record::parsed(Value::String(config.provider.clone())))),
-                    "model" => Ok(Some(Record::parsed(Value::String(config.model.clone())))),
-                    "max_tokens" => Ok(Some(Record::parsed(Value::Integer(
-                        config.max_tokens as i64,
-                    )))),
                     _ => Ok(None),
                 }
             }
@@ -445,35 +412,7 @@ impl Writer for GateStore {
                 )),
             },
 
-            "model" => match data {
-                Record::Parsed(Value::String(s)) => {
-                    let account = self.accounts.get_mut(&self.bootstrap).ok_or_else(|| {
-                        StoreError::store("gate", "write", "no bootstrap account")
-                    })?;
-                    account.model = s;
-                    Ok(to.clone())
-                }
-                _ => Err(StoreError::store(
-                    "gate",
-                    "write",
-                    "expected string for model",
-                )),
-            },
-
-            "max_tokens" => match data {
-                Record::Parsed(Value::Integer(n)) => {
-                    let account = self.accounts.get_mut(&self.bootstrap).ok_or_else(|| {
-                        StoreError::store("gate", "write", "no bootstrap account")
-                    })?;
-                    account.max_tokens = n as u32;
-                    Ok(to.clone())
-                }
-                _ => Err(StoreError::store(
-                    "gate",
-                    "write",
-                    "expected integer for max_tokens",
-                )),
-            },
+            // "model" and "max_tokens" convenience writes will be handled by Defaults (Task 2)
 
             "providers" => {
                 if to.components.len() < 2 {
@@ -597,44 +536,6 @@ impl Writer for GateStore {
                             "expected string for provider",
                         )),
                     },
-                    "model" => match data {
-                        Record::Parsed(Value::String(s)) => {
-                            if let Some(account) = self.accounts.get_mut(&name) {
-                                account.model = s;
-                            } else {
-                                return Err(StoreError::store(
-                                    "gate",
-                                    "write",
-                                    format!("no account named '{name}'"),
-                                ));
-                            }
-                            Ok(to.clone())
-                        }
-                        _ => Err(StoreError::store(
-                            "gate",
-                            "write",
-                            "expected string for model",
-                        )),
-                    },
-                    "max_tokens" => match data {
-                        Record::Parsed(Value::Integer(n)) => {
-                            if let Some(account) = self.accounts.get_mut(&name) {
-                                account.max_tokens = n as u32;
-                            } else {
-                                return Err(StoreError::store(
-                                    "gate",
-                                    "write",
-                                    format!("no account named '{name}'"),
-                                ));
-                            }
-                            Ok(to.clone())
-                        }
-                        _ => Err(StoreError::store(
-                            "gate",
-                            "write",
-                            "expected integer for max_tokens",
-                        )),
-                    },
                     _ => Err(StoreError::store(
                         "gate",
                         "write",
@@ -728,8 +629,6 @@ mod tests {
         let config = AccountConfig {
             provider: "anthropic".to_string(),
             key: "sk-new".to_string(),
-            model: "claude-haiku".to_string(),
-            max_tokens: 4096,
         };
         let value = to_value(&config).unwrap();
         gate.write(&path!("accounts/custom"), Record::parsed(value))
@@ -742,12 +641,6 @@ mod tests {
             .unwrap();
         match record {
             Record::Parsed(Value::String(s)) => assert_eq!(s, "anthropic"),
-            _ => panic!("expected string"),
-        }
-
-        let record = gate.read(&path!("accounts/custom/model")).unwrap().unwrap();
-        match record {
-            Record::Parsed(Value::String(s)) => assert_eq!(s, "claude-haiku"),
             _ => panic!("expected string"),
         }
     }
@@ -973,7 +866,6 @@ mod tests {
             },
             "accounts": {
                 "openai": {
-                    "model": "gpt-4o",
                     "provider": "openai"
                 }
             }
@@ -1002,72 +894,6 @@ mod tests {
         }
     }
 
-    // -- Convenience path tests --
-
-    #[test]
-    fn read_convenience_model_returns_bootstrap_account_model() {
-        let mut gate = GateStore::new();
-        let record = gate.read(&path!("model")).unwrap().unwrap();
-        match record {
-            Record::Parsed(Value::String(s)) => assert_eq!(s, "claude-sonnet-4-20250514"),
-            _ => panic!("expected string"),
-        }
-    }
-
-    #[test]
-    fn read_convenience_max_tokens_returns_bootstrap_account_max_tokens() {
-        let mut gate = GateStore::new();
-        let record = gate.read(&path!("max_tokens")).unwrap().unwrap();
-        match record {
-            Record::Parsed(Value::Integer(n)) => assert_eq!(n, 4096),
-            _ => panic!("expected integer"),
-        }
-    }
-
-    #[test]
-    fn write_convenience_model_updates_bootstrap_account() {
-        let mut gate = GateStore::new();
-        gate.write(
-            &path!("model"),
-            Record::parsed(Value::String("gpt-4o".into())),
-        )
-        .unwrap();
-        let record = gate
-            .read(&path!("accounts/anthropic/model"))
-            .unwrap()
-            .unwrap();
-        match record {
-            Record::Parsed(Value::String(s)) => assert_eq!(s, "gpt-4o"),
-            _ => panic!("expected string"),
-        }
-    }
-
-    #[test]
-    fn write_convenience_max_tokens_updates_bootstrap_account() {
-        let mut gate = GateStore::new();
-        gate.write(&path!("max_tokens"), Record::parsed(Value::Integer(8192)))
-            .unwrap();
-        let record = gate
-            .read(&path!("accounts/anthropic/max_tokens"))
-            .unwrap()
-            .unwrap();
-        match record {
-            Record::Parsed(Value::Integer(n)) => assert_eq!(n, 8192),
-            _ => panic!("expected integer"),
-        }
-    }
-
-    #[test]
-    fn snapshot_includes_max_tokens() {
-        let mut gate = GateStore::new();
-        gate.write(&path!("max_tokens"), Record::parsed(Value::Integer(8192)))
-            .unwrap();
-        let val = unwrap_value(gate.read(&path!("snapshot/state")).unwrap().unwrap());
-        let json = value_to_json(val);
-        let anthropic_acct = &json["accounts"]["anthropic"];
-        assert_eq!(anthropic_acct["max_tokens"], 8192);
-    }
-
     #[test]
     fn snapshot_write_via_state_path() {
         let mut gate = GateStore::new();
@@ -1082,7 +908,6 @@ mod tests {
             },
             "accounts": {
                 "openai": {
-                    "model": "gpt-4o",
                     "provider": "openai"
                 }
             }
@@ -1143,13 +968,10 @@ mod tests {
     }
 
     #[test]
-    fn gate_config_handle_falls_back_to_local() {
+    fn gate_model_returns_none_without_config() {
         let mut gate = GateStore::new();
-        let record = gate.read(&path!("model")).unwrap().unwrap();
-        match record {
-            Record::Parsed(Value::String(s)) => assert_eq!(s, "claude-sonnet-4-20250514"),
-            _ => panic!("expected string"),
-        }
+        // Without config handle and without account-level model, returns None
+        assert!(gate.read(&path!("model")).unwrap().is_none());
     }
 
     #[test]
