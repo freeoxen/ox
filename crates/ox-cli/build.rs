@@ -14,6 +14,12 @@ fn main() {
             "-p",
             "ox-wasm",
         ])
+        // Strip coverage instrumentation flags — wasm32 target doesn't
+        // have profiler_builtins, so llvm-cov flags would fail the build.
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env_remove("CARGO_INCREMENTAL")
+        .env_remove("RUSTFLAGS")
+        .env_remove("LLVM_PROFILE_FILE")
         .status();
 
     match status {

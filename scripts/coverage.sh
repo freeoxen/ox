@@ -42,6 +42,7 @@ Options:
     -h, --help          Show this help message
     -t, --threshold N   Coverage threshold percentage (default: $DEFAULT_THRESHOLD)
     -n, --top N         Show top N files (default: 10 for summary, all for gaps)
+    --gate              Exit non-zero if coverage is below threshold
     --no-open           Don't open browser for HTML report
     --clean             Clean coverage data before running
     --skip-tests        Use cached coverage data (skip running tests)
@@ -183,6 +184,8 @@ show_summary() {
     local threshold="$1"
     local top_n="$2"
     local skip_tests="$3"
+    local gate="$4"
+    local failed=0
 
     ensure_coverage_data "$skip_tests"
 
@@ -203,6 +206,11 @@ show_summary() {
             echo ""
             echo -e "${BOLD}Top Rust Coverage Gaps:${NC}"
             show_rust_gaps_internal "$threshold" "$top_n" "true"
+
+            if [[ "$gate" == "true" ]] && (( $(echo "$region_pct < $threshold" | bc -l) )); then
+                echo -e "${RED}FAIL: Rust coverage ${region_pct}% is below ${threshold}% threshold${NC}"
+                failed=1
+            fi
         fi
     fi
 
@@ -219,8 +227,15 @@ show_summary() {
             echo ""
             echo -e "${BOLD}Top TypeScript Coverage Gaps:${NC}"
             show_ts_gaps_internal "$threshold" "$top_n" "true"
+
+            if [[ "$gate" == "true" ]] && (( $(echo "$ts_pct < $threshold" | bc -l) )); then
+                echo -e "${RED}FAIL: TypeScript coverage ${ts_pct}% is below ${threshold}% threshold${NC}"
+                failed=1
+            fi
         fi
     fi
+
+    return "$failed"
 }
 
 # ─── Display: gaps ────────────────────────────────────────────────────────────
@@ -540,6 +555,7 @@ main() {
     local open_browser="true"
     local do_clean="false"
     local skip_tests="false"
+    local gate="false"
     local file_arg=""
 
     # Parse arguments
@@ -567,6 +583,10 @@ main() {
                 ;;
             --skip-tests)
                 skip_tests="true"
+                shift
+                ;;
+            --gate)
+                gate="true"
                 shift
                 ;;
             gaps|html|lcov|json)
@@ -609,7 +629,7 @@ main() {
 
     case "$command" in
         ""|summary)
-            show_summary "$threshold" "$top_n" "$skip_tests"
+            show_summary "$threshold" "$top_n" "$skip_tests" "$gate"
             ;;
         gaps)
             show_gaps "$threshold" "$top_n" "$skip_tests"
