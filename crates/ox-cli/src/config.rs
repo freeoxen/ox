@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
 use structfs_core_store::Value;
 
 #[derive(Debug, Deserialize, Serialize, Default, Clone)]
@@ -104,6 +105,18 @@ impl OxConfig {
         );
         map
     }
+
+    /// Produce the flat config map with resolved keys injected.
+    pub fn to_flat_map_with_keys(&self, keys: &BTreeMap<String, String>) -> BTreeMap<String, Value> {
+        let mut map = self.to_flat_map();
+        for (name, key) in keys {
+            map.insert(
+                format!("gate/accounts/{name}/key"),
+                Value::String(key.clone()),
+            );
+        }
+        map
+    }
 }
 
 pub fn resolve_config(config_dir: &std::path::Path, overrides: &CliOverrides) -> OxConfig {
@@ -119,6 +132,65 @@ pub fn resolve_config(config_dir: &std::path::Path, overrides: &CliOverrides) ->
     let mut config: OxConfig = figment.extract().unwrap_or_default();
     config.apply_overrides(overrides);
     config
+}
+
+/// Resolve API keys from key files and env vars.
+///
+/// For each account in config, checks:
+/// 1. Env var `OX_GATE__ACCOUNTS__{NAME}__KEY` (highest priority)
+/// 2. Key file `{keys_dir}/{name}.key`
+pub fn resolve_keys(keys_dir: &Path, config: &OxConfig) -> BTreeMap<String, String> {
+    let mut keys = BTreeMap::new();
+    for name in config.gate.accounts.keys() {
+        let env_var = format!("OX_GATE__ACCOUNTS__{}__KEY", name.to_uppercase());
+        if let Ok(k) = std::env::var(&env_var) {
+            if !k.is_empty() {
+                keys.insert(name.clone(), k);
+                continue;
+            }
+        }
+        if let Ok(contents) = std::fs::read_to_string(keys_dir.join(format!("{name}.key"))) {
+            let trimmed = contents.trim().to_string();
+            if !trimmed.is_empty() {
+                keys.insert(name.clone(), trimmed);
+            }
+        }
+    }
+    keys
+}
+
+/// Write an API key to a key file, creating the keys directory if needed.
+pub fn write_key_file(keys_dir: &Path, name: &str, key: &str) -> std::io::Result<()> {
+    if !keys_dir.exists() {
+        std::fs::create_dir_all(keys_dir)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(keys_dir, std::fs::Permissions::from_mode(0o700))?;
+        }
+    }
+    std::fs::write(keys_dir.join(format!("{name}.key")), key)
+}
+
+/// Read an API key from a key file.
+pub fn read_key_file(keys_dir: &Path, name: &str) -> Option<String> {
+    let contents = std::fs::read_to_string(keys_dir.join(format!("{name}.key"))).ok()?;
+    let trimmed = contents.trim().to_string();
+    if trimmed.is_empty() { None } else { Some(trimmed) }
+}
+
+/// Delete a key file.
+pub fn delete_key_file(keys_dir: &Path, name: &str) -> std::io::Result<()> {
+    let path = keys_dir.join(format!("{name}.key"));
+    if path.exists() {
+        std::fs::remove_file(path)?;
+    }
+    Ok(())
+}
+
+/// Check if any account has a usable key (from key files or env vars).
+pub fn has_any_key(keys_dir: &Path, config: &OxConfig) -> bool {
+    !resolve_keys(keys_dir, config).is_empty()
 }
 
 #[cfg(test)]
@@ -240,5 +312,79 @@ max_tokens = 8192
         };
         let config = resolve_config(dir.path(), &overrides);
         assert_eq!(config.gate.defaults.model, "from-cli");
+    }
+
+    #[test]
+    fn resolve_keys_from_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys_dir = dir.path().join("keys");
+        std::fs::create_dir_all(&keys_dir).unwrap();
+        std::fs::write(keys_dir.join("anthropic.key"), "sk-test-key\n").unwrap();
+
+        let mut config = OxConfig::default();
+        config.gate.accounts.insert(
+            "anthropic".into(),
+            AccountEntry { provider: "anthropic".into(), endpoint: None },
+        );
+
+        let keys = resolve_keys(&keys_dir, &config);
+        assert_eq!(keys.get("anthropic").unwrap(), "sk-test-key");
+    }
+
+    #[test]
+    fn resolve_keys_env_beats_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys_dir = dir.path().join("keys");
+        std::fs::create_dir_all(&keys_dir).unwrap();
+        std::fs::write(keys_dir.join("testacct2.key"), "from-file").unwrap();
+
+        let mut config = OxConfig::default();
+        config.gate.accounts.insert(
+            "testacct2".into(),
+            AccountEntry { provider: "anthropic".into(), endpoint: None },
+        );
+
+        unsafe { std::env::set_var("OX_GATE__ACCOUNTS__TESTACCT2__KEY", "from-env"); }
+        let keys = resolve_keys(&keys_dir, &config);
+        assert_eq!(keys.get("testacct2").unwrap(), "from-env");
+        unsafe { std::env::remove_var("OX_GATE__ACCOUNTS__TESTACCT2__KEY"); }
+    }
+
+    #[test]
+    fn write_and_read_key_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys_dir = dir.path().join("keys");
+        write_key_file(&keys_dir, "test", "sk-12345").unwrap();
+        assert_eq!(read_key_file(&keys_dir, "test").unwrap(), "sk-12345");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::metadata(&keys_dir).unwrap().permissions();
+            assert_eq!(perms.mode() & 0o777, 0o700);
+        }
+    }
+
+    #[test]
+    fn has_any_key_false_when_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = OxConfig::default();
+        assert!(!has_any_key(&dir.path().join("keys"), &config));
+    }
+
+    #[test]
+    fn to_flat_map_with_keys_injects_keys() {
+        let mut config = OxConfig::default();
+        config.gate.accounts.insert(
+            "anthropic".into(),
+            AccountEntry { provider: "anthropic".into(), endpoint: None },
+        );
+        let mut keys = BTreeMap::new();
+        keys.insert("anthropic".into(), "sk-injected".into());
+        let flat = config.to_flat_map_with_keys(&keys);
+        assert_eq!(
+            flat.get("gate/accounts/anthropic/key").unwrap(),
+            &Value::String("sk-injected".into())
+        );
     }
 }

@@ -72,10 +72,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let resolved = config::resolve_config(&inbox_root, &overrides);
 
-    // TODO(Task 2): Wire up resolve_keys to check key files + env vars
-    let _needs_setup = false;
+    let keys_dir = inbox_root.join("keys");
+    let resolved_keys = config::resolve_keys(&keys_dir, &resolved);
+    let _needs_setup = resolved_keys.is_empty();
 
-    let flat_config = resolved.to_flat_map();
+    let flat_config = resolved.to_flat_map_with_keys(&resolved_keys);
 
     let theme = theme::Theme::default();
 
