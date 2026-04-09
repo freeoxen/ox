@@ -134,6 +134,14 @@ pub fn resolve_config(config_dir: &std::path::Path, overrides: &CliOverrides) ->
 
     let mut config: OxConfig = figment.extract().unwrap_or_default();
     config.apply_overrides(overrides);
+    tracing::debug!(
+        accounts = config.gate.accounts.len(),
+        account_names = ?config.gate.accounts.keys().collect::<Vec<_>>(),
+        default_account = %config.gate.defaults.account,
+        model = %config.gate.defaults.model,
+        max_tokens = config.gate.defaults.max_tokens,
+        "config resolved from figment"
+    );
     config
 }
 
@@ -164,6 +172,7 @@ pub fn resolve_keys(keys_dir: &Path, config: &OxConfig) -> BTreeMap<String, Stri
 
 /// Write an API key to a key file, creating the keys directory if needed.
 pub fn write_key_file(keys_dir: &Path, name: &str, key: &str) -> std::io::Result<()> {
+    tracing::info!(name, keys_dir = %keys_dir.display(), "writing key file");
     if !keys_dir.exists() {
         std::fs::create_dir_all(keys_dir)?;
         #[cfg(unix)]
@@ -193,42 +202,6 @@ pub fn delete_key_file(keys_dir: &Path, name: &str) -> std::io::Result<()> {
         std::fs::remove_file(path)?;
     }
     Ok(())
-}
-
-/// Write an account entry to config.toml (creates file if needed).
-pub fn write_account(config_dir: &Path, name: &str, entry: &AccountEntry) -> std::io::Result<()> {
-    let toml_path = config_dir.join("config.toml");
-    let mut config = if toml_path.exists() {
-        let content = std::fs::read_to_string(&toml_path)?;
-        toml::from_str::<OxConfig>(&content).unwrap_or_default()
-    } else {
-        OxConfig::default()
-    };
-    config.gate.accounts.insert(name.to_string(), entry.clone());
-    let content = toml::to_string_pretty(&config).map_err(std::io::Error::other)?;
-    std::fs::write(&toml_path, content)
-}
-
-/// Delete an account from config.toml.
-pub fn delete_account(config_dir: &Path, name: &str) -> std::io::Result<()> {
-    let toml_path = config_dir.join("config.toml");
-    if !toml_path.exists() {
-        return Ok(());
-    }
-    let content = std::fs::read_to_string(&toml_path)?;
-    let mut config: OxConfig = toml::from_str(&content).unwrap_or_default();
-    config.gate.accounts.remove(name);
-    if config.gate.defaults.account == name {
-        config.gate.defaults.account = config
-            .gate
-            .accounts
-            .keys()
-            .next()
-            .cloned()
-            .unwrap_or_default();
-    }
-    let content = toml::to_string_pretty(&config).map_err(std::io::Error::other)?;
-    std::fs::write(&toml_path, content)
 }
 
 /// Check if any account has a usable key (from key files or env vars).

@@ -53,17 +53,30 @@ impl ConfigStore {
         self.backing = Some(backing);
     }
 
-    /// Persist the runtime layer to backing. API keys excluded.
+    /// Persist effective config (base + runtime) to backing.
+    /// API keys and null-deleted entries are excluded.
     pub fn save_runtime(&self) -> Result<(), StoreError> {
         let Some(ref backing) = self.backing else {
             return Ok(());
         };
-        let filtered: BTreeMap<String, Value> = self
-            .runtime
-            .iter()
-            .filter(|(k, _)| !k.ends_with("/key"))
-            .map(|(k, v)| (k.clone(), v.clone()))
+        // Merge base with runtime overrides
+        let mut effective = self.base.clone();
+        for (k, v) in &self.runtime {
+            match v {
+                Value::Null => {
+                    effective.remove(k);
+                }
+                _ => {
+                    effective.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        // Remove entries with Null values and API keys
+        let filtered: BTreeMap<String, Value> = effective
+            .into_iter()
+            .filter(|(k, v)| !k.ends_with("/key") && *v != Value::Null)
             .collect();
+        tracing::info!(key_count = filtered.len(), "saving runtime config");
         backing.save(&Value::Map(filtered))
     }
 }
@@ -74,6 +87,7 @@ impl Reader for ConfigStore {
 
         // Root read: return all effective values as a map
         if key.is_empty() {
+            tracing::debug!("config root read");
             let mut map = BTreeMap::new();
             for (k, v) in &self.base {
                 map.insert(k.clone(), v.clone());
@@ -84,8 +98,11 @@ impl Reader for ConfigStore {
             return Ok(Some(Record::parsed(Value::Map(map))));
         }
 
-        // Cascade: runtime → base
+        // Cascade: runtime → base (Null in runtime = deleted)
         if let Some(v) = self.runtime.get(&key) {
+            if *v == Value::Null {
+                return Ok(None);
+            }
             return Ok(Some(Record::parsed(v.clone())));
         }
         if let Some(v) = self.base.get(&key) {
@@ -105,6 +122,10 @@ impl Writer for ConfigStore {
         // "save" command: persist runtime to backing
         if key == "save" {
             return self.save_runtime().map(|()| to.clone());
+        }
+
+        if !key.ends_with("/key") {
+            tracing::debug!(key = %key, "config write");
         }
 
         let value = data

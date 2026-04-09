@@ -263,7 +263,12 @@ pub async fn run_async(
                             enum EditAction {
                                 None,
                                 Cancel,
-                                Save,
+                                Save {
+                                    name: String,
+                                    provider: String,
+                                    endpoint: Option<String>,
+                                    key: String,
+                                },
                                 Handled,
                             }
 
@@ -274,36 +279,26 @@ pub async fn run_async(
                                         EditAction::Handled
                                     }
                                     "Shift+Tab" | "Up" => {
-                                        editing.focus =
-                                            if editing.focus == 0 { 3 } else { editing.focus - 1 };
+                                        editing.focus = if editing.focus == 0 {
+                                            3
+                                        } else {
+                                            editing.focus - 1
+                                        };
                                         EditAction::Handled
                                     }
                                     "Esc" => EditAction::Cancel,
                                     "Enter" => {
                                         if !editing.name.is_empty() {
-                                            let entry = crate::config::AccountEntry {
+                                            EditAction::Save {
+                                                name: editing.name.clone(),
                                                 provider: DIALECTS[editing.dialect].to_string(),
                                                 endpoint: if editing.endpoint.is_empty() {
                                                     None
                                                 } else {
                                                     Some(editing.endpoint.clone())
                                                 },
-                                            };
-                                            crate::config::write_account(
-                                                &inbox_root,
-                                                &editing.name,
-                                                &entry,
-                                            )
-                                            .ok();
-                                            if !editing.key.is_empty() {
-                                                crate::config::write_key_file(
-                                                    &keys_dir,
-                                                    &editing.name,
-                                                    &editing.key,
-                                                )
-                                                .ok();
+                                                key: editing.key.clone(),
                                             }
-                                            EditAction::Save
                                         } else {
                                             EditAction::Handled
                                         }
@@ -371,7 +366,104 @@ pub async fn run_async(
                                     settings.test_status = TestStatus::Idle;
                                     continue;
                                 }
-                                EditAction::Save => {
+                                EditAction::Save {
+                                    name,
+                                    provider,
+                                    endpoint,
+                                    key,
+                                } => {
+                                    use structfs_core_store::{Record, Value};
+                                    tracing::info!(
+                                        name = %name,
+                                        provider = %provider,
+                                        has_endpoint = endpoint.is_some(),
+                                        has_key = !key.is_empty(),
+                                        "saving account via ConfigStore"
+                                    );
+
+                                    // Write account through ConfigStore (not direct file)
+                                    let provider_path = structfs_core_store::Path::parse(&format!(
+                                        "config/gate/accounts/{name}/provider"
+                                    ))
+                                    .unwrap();
+                                    client
+                                        .write(
+                                            &provider_path,
+                                            Record::parsed(Value::String(provider)),
+                                        )
+                                        .await
+                                        .ok();
+                                    if let Some(ep) = endpoint {
+                                        let ep_path = structfs_core_store::Path::parse(&format!(
+                                            "config/gate/accounts/{name}/endpoint"
+                                        ))
+                                        .unwrap();
+                                        client
+                                            .write(&ep_path, Record::parsed(Value::String(ep)))
+                                            .await
+                                            .ok();
+                                    }
+
+                                    // Write key to ConfigStore (in-memory for session)
+                                    // AND to key file (for persistence across sessions)
+                                    if !key.is_empty() {
+                                        let key_path = structfs_core_store::Path::parse(&format!(
+                                            "config/gate/accounts/{name}/key"
+                                        ))
+                                        .unwrap();
+                                        client
+                                            .write(
+                                                &key_path,
+                                                Record::parsed(Value::String(key.clone())),
+                                            )
+                                            .await
+                                            .ok();
+                                        crate::config::write_key_file(&keys_dir, &name, &key).ok();
+                                    }
+
+                                    // If default account doesn't exist, set it to this one
+                                    let current_default = client
+                                        .read(&path!("config/gate/defaults/account"))
+                                        .await
+                                        .ok()
+                                        .flatten()
+                                        .and_then(|r| match r.as_value() {
+                                            Some(Value::String(s)) => Some(s.clone()),
+                                            _ => None,
+                                        })
+                                        .unwrap_or_default();
+                                    let default_exists = client
+                                        .read(
+                                            &structfs_core_store::Path::parse(&format!(
+                                                "config/gate/accounts/{current_default}/provider"
+                                            ))
+                                            .unwrap(),
+                                        )
+                                        .await
+                                        .ok()
+                                        .flatten()
+                                        .is_some();
+                                    if !default_exists {
+                                        tracing::info!(
+                                            old_default = %current_default,
+                                            new_default = %name,
+                                            "auto-setting default account"
+                                        );
+                                        client
+                                            .write(
+                                                &path!("config/gate/defaults/account"),
+                                                Record::parsed(Value::String(name.clone())),
+                                            )
+                                            .await
+                                            .ok();
+                                    }
+
+                                    // Persist config to disk
+                                    client
+                                        .write(&path!("config/save"), Record::parsed(Value::Null))
+                                        .await
+                                        .ok();
+
                                     settings.editing = None;
                                     settings.test_status = TestStatus::Idle;
                                     let config = crate::config::resolve_config(
@@ -446,6 +538,82 @@ pub async fn run_async(
                         // Settings screen navigation (before broker dispatch)
                         if screen == "settings" && mode == "normal" && settings.editing.is_none() {
                             use crate::settings_state::SettingsFocus;
+
+                            // Delete confirmation — absorb all keys until y/n
+                            if settings.delete_confirming {
+                                if key_str == "y" {
+                                    if let Some(acct) =
+                                        settings.accounts.get(settings.selected_account)
+                                    {
+                                        use structfs_core_store::{Record, Value};
+                                        let name = acct.name.clone();
+                                        let inbox_root = app.pool.inbox_root().to_path_buf();
+                                        let keys_dir = inbox_root.join("keys");
+
+                                        // Delete account through ConfigStore (Null = delete)
+                                        let provider_path = structfs_core_store::Path::parse(
+                                            &format!("config/gate/accounts/{name}/provider"),
+                                        )
+                                        .unwrap();
+                                        client
+                                            .write(&provider_path, Record::parsed(Value::Null))
+                                            .await
+                                            .ok();
+                                        let ep_path = structfs_core_store::Path::parse(&format!(
+                                            "config/gate/accounts/{name}/endpoint"
+                                        ))
+                                        .unwrap();
+                                        client
+                                            .write(&ep_path, Record::parsed(Value::Null))
+                                            .await
+                                            .ok();
+                                        let key_path = structfs_core_store::Path::parse(&format!(
+                                            "config/gate/accounts/{name}/key"
+                                        ))
+                                        .unwrap();
+                                        client
+                                            .write(&key_path, Record::parsed(Value::Null))
+                                            .await
+                                            .ok();
+
+                                        // Update default if deleted account was default
+                                        if acct.is_default {
+                                            let alt = settings
+                                                .accounts
+                                                .iter()
+                                                .find(|a| a.name != name)
+                                                .map(|a| a.name.clone())
+                                                .unwrap_or_default();
+                                            client
+                                                .write(
+                                                    &path!("config/gate/defaults/account"),
+                                                    Record::parsed(Value::String(alt)),
+                                                )
+                                                .await
+                                                .ok();
+                                        }
+
+                                        // Persist and delete key file
+                                        client
+                                            .write(
+                                                &path!("config/save"),
+                                                Record::parsed(Value::Null),
+                                            )
+                                            .await
+                                            .ok();
+                                        crate::config::delete_key_file(&keys_dir, &name).ok();
+
+                                        let config = crate::config::resolve_config(
+                                            &inbox_root,
+                                            &crate::config::CliOverrides::default(),
+                                        );
+                                        settings.refresh_accounts(&config, &keys_dir);
+                                    }
+                                }
+                                settings.delete_confirming = false;
+                                continue;
+                            }
+
                             let handled = match key_str.as_str() {
                                 "j" | "Down" => {
                                     if settings.focus == SettingsFocus::Accounts
@@ -654,6 +822,12 @@ pub async fn run_async(
                                         .await
                                         .ok();
 
+                                    // Flash "Saved" confirmation
+                                    settings.save_flash_until = Some(
+                                        std::time::Instant::now()
+                                            + std::time::Duration::from_secs(2),
+                                    );
+
                                     // Advance wizard if active
                                     if let Some(ref mut step) = settings.wizard {
                                         if *step == crate::settings_state::WizardStep::SetDefaults {
@@ -675,20 +849,43 @@ pub async fn run_async(
                                     true
                                 }
                                 "d" => {
+                                    if settings.focus == SettingsFocus::Accounts
+                                        && !settings.accounts.is_empty()
+                                    {
+                                        settings.delete_confirming = true;
+                                    }
+                                    true
+                                }
+                                "*" => {
                                     if settings.focus == SettingsFocus::Accounts {
                                         if let Some(acct) =
                                             settings.accounts.get(settings.selected_account)
                                         {
                                             let name = acct.name.clone();
+                                            use structfs_core_store::{Record, Value};
+                                            client
+                                                .write(
+                                                    &path!("config/gate/defaults/account"),
+                                                    Record::parsed(Value::String(name)),
+                                                )
+                                                .await
+                                                .ok();
+                                            client
+                                                .write(
+                                                    &path!("config/save"),
+                                                    Record::parsed(Value::Null),
+                                                )
+                                                .await
+                                                .ok();
                                             let inbox_root = app.pool.inbox_root().to_path_buf();
-                                            let keys_dir = inbox_root.join("keys");
-                                            crate::config::delete_account(&inbox_root, &name).ok();
-                                            crate::config::delete_key_file(&keys_dir, &name).ok();
                                             let config = crate::config::resolve_config(
                                                 &inbox_root,
                                                 &crate::config::CliOverrides::default(),
                                             );
-                                            settings.refresh_accounts(&config, &keys_dir);
+                                            settings.refresh_accounts(
+                                                &config,
+                                                &inbox_root.join("keys"),
+                                            );
                                         }
                                     }
                                     true
