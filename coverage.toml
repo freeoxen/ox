@@ -1,0 +1,33 @@
+# Per-crate coverage thresholds.
+#
+# Crates not listed here use the global threshold (--gate -t N).
+# Set to 0 to exclude a crate from threshold enforcement.
+#
+# Format: crate-prefix = threshold-percentage
+# The prefix matches against the file path in coverage output
+# (e.g. "ox-cli/" matches all files under crates/ox-cli/).
+
+[thresholds]
+# Library crates — hold to high standard
+ox-store-util = 90
+ox-ui = 80
+ox-broker = 80
+ox-inbox = 75
+ox-gate = 75
+ox-history = 75
+ox-context = 70
+ox-kernel = 20
+ox-runtime = 65
+
+# CLI — mostly TUI rendering, hard to unit test
+ox-cli = 30
+
+# Cross-compiled / untestable via llvm-cov
+ox-wasm = 0
+ox-web = 0
+ox-core = 0
+ox-dev-server = 0
+ox-emscripten = 0
+
+# Proc macro — runs at compile time, not during tests
+ox-path = 0

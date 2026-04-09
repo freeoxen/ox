@@ -208,8 +208,15 @@ show_summary() {
             show_rust_gaps_internal "$threshold" "$top_n" "true"
 
             if [[ "$gate" == "true" ]] && (( $(echo "$region_pct < $threshold" | bc -l) )); then
-                echo -e "${RED}FAIL: Rust coverage ${region_pct}% is below ${threshold}% threshold${NC}"
+                echo -e "${RED}FAIL: Rust overall ${region_pct}% below ${threshold}% threshold${NC}"
                 failed=1
+            fi
+
+            # Per-crate threshold checks
+            if [[ "$gate" == "true" ]]; then
+                if ! check_rust_per_crate_thresholds "$threshold"; then
+                    failed=1
+                fi
             fi
         fi
     fi
@@ -229,13 +236,106 @@ show_summary() {
             show_ts_gaps_internal "$threshold" "$top_n" "true"
 
             if [[ "$gate" == "true" ]] && (( $(echo "$ts_pct < $threshold" | bc -l) )); then
-                echo -e "${RED}FAIL: TypeScript coverage ${ts_pct}% is below ${threshold}% threshold${NC}"
+                echo -e "${RED}FAIL: TypeScript overall ${ts_pct}% below ${threshold}% threshold${NC}"
                 failed=1
             fi
         fi
     fi
 
     return "$failed"
+}
+
+# ─── Per-crate threshold enforcement ─────────────────────────────────────────
+
+COVERAGE_CONFIG="$PROJECT_ROOT/coverage.toml"
+
+# Parse a crate's threshold from coverage.toml.
+# Returns the threshold, or empty string if not configured.
+get_crate_threshold() {
+    local crate="$1"
+    [[ -f "$COVERAGE_CONFIG" ]] || return 0
+    awk -F'=' -v crate="$crate" '
+        /^\[thresholds\]/ { in_section = 1; next }
+        /^\[/ { in_section = 0 }
+        in_section && /^[^#]/ {
+            gsub(/[[:space:]]/, "", $1)
+            gsub(/[[:space:]]/, "", $2)
+            if ($1 == crate) { print $2; exit }
+        }
+    ' "$COVERAGE_CONFIG"
+}
+
+# Check each Rust crate against its per-crate threshold.
+# Falls back to the global threshold for unconfigured crates.
+# Returns 0 if all pass, 1 if any fail.
+check_rust_per_crate_thresholds() {
+    local global_threshold="$1"
+    local failed=0
+
+    # Aggregate per-file coverage into per-crate coverage
+    # by summing regions and missed regions per crate prefix.
+    local crate_data
+    crate_data=$(get_rust_summary | \
+        grep -E "^[a-zA-Z0-9_-]+/" | \
+        grep -v "^-" | \
+        awk '{
+            # file path is like ox-cli/src/main.rs
+            split($1, parts, "/")
+            crate = parts[1]
+            regions = $2
+            missed = $3
+            crate_regions[crate] += regions
+            crate_missed[crate] += missed
+        }
+        END {
+            for (c in crate_regions) {
+                total = crate_regions[c]
+                missed = crate_missed[c]
+                if (total > 0) {
+                    pct = ((total - missed) / total) * 100
+                } else {
+                    pct = 100
+                }
+                printf "%s\t%.2f\n", c, pct
+            }
+        }')
+
+    echo ""
+    echo -e "${BOLD}Per-Crate Coverage:${NC}"
+
+    echo "$crate_data" | sort | while IFS=$'\t' read -r crate pct; do
+        local crate_thresh
+        crate_thresh=$(get_crate_threshold "$crate")
+        if [[ -z "$crate_thresh" ]]; then
+            crate_thresh="$global_threshold"
+        fi
+
+        # Skip excluded crates (threshold = 0)
+        if [[ "$crate_thresh" == "0" ]]; then
+            printf "  ${DIM}%5.1f%%  %-20s (excluded)${NC}\n" "$pct" "$crate"
+            continue
+        fi
+
+        local pct_color
+        pct_color=$(color_pct "$pct" "$crate_thresh")
+
+        if (( $(echo "$pct < $crate_thresh" | bc -l) )); then
+            printf "  ${RED}%5.1f%%  %-20s FAIL (threshold: %s%%)${NC}\n" "$pct" "$crate" "$crate_thresh"
+            # Signal failure to parent via temp file (subshell can't set parent vars)
+            echo "1" > "$COVERAGE_DIR/.crate_gate_failed"
+        else
+            printf "  ${pct_color}%5.1f%%  %-20s (threshold: %s%%)${NC}\n" "$pct" "$crate" "$crate_thresh"
+        fi
+    done
+
+    # Check if any crate failed (pipe subshell workaround)
+    if [[ -f "$COVERAGE_DIR/.crate_gate_failed" ]]; then
+        rm -f "$COVERAGE_DIR/.crate_gate_failed"
+        echo ""
+        echo -e "${RED}Per-crate coverage thresholds failed. See coverage.toml${NC}"
+        return 1
+    fi
+    return 0
 }
 
 # ─── Display: gaps ────────────────────────────────────────────────────────────
