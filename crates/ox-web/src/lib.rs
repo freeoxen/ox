@@ -110,11 +110,11 @@ impl OxAgent {
         context.mount("gate", Box::new(gate));
 
         context
-            .write(&path!("gate/model"), Record::parsed(Value::String(model)))
+            .write(&path!("gate/defaults/model"), Record::parsed(Value::String(model)))
             .ok();
         context
             .write(
-                &path!("gate/max_tokens"),
+                &path!("gate/defaults/max_tokens"),
                 Record::parsed(Value::Integer(max_tokens as i64)),
             )
             .ok();
@@ -200,7 +200,7 @@ impl OxAgent {
         self.context
             .borrow_mut()
             .write(
-                &path!("gate/bootstrap"),
+                &path!("gate/defaults/account"),
                 Record::parsed(Value::String(provider.to_string())),
             )
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
@@ -214,7 +214,7 @@ impl OxAgent {
     pub fn get_provider(&self) -> String {
         let mut ctx = self.context.borrow_mut();
         // Read bootstrap account name, then read that account's provider
-        let bootstrap = match ctx.read(&path!("gate/bootstrap")) {
+        let bootstrap = match ctx.read(&path!("gate/defaults/account")) {
             Ok(Some(Record::Parsed(Value::String(s)))) => s,
             _ => return "anthropic".to_string(),
         };
@@ -287,12 +287,12 @@ impl OxAgent {
             .flatten()
             .map(record_to_json);
         let model_id = ctx
-            .read(&path!("gate/model"))
+            .read(&path!("gate/defaults/model"))
             .ok()
             .flatten()
             .map(record_to_json);
         let model_max_tokens = ctx
-            .read(&path!("gate/max_tokens"))
+            .read(&path!("gate/defaults/max_tokens"))
             .ok()
             .flatten()
             .map(record_to_json);
@@ -313,7 +313,7 @@ impl OxAgent {
             .map(record_to_json);
 
         let gate_bootstrap = ctx
-            .read(&path!("gate/bootstrap"))
+            .read(&path!("gate/defaults/account"))
             .ok()
             .flatten()
             .map(record_to_json);
@@ -354,7 +354,7 @@ impl OxAgent {
         let record = Record::parsed(Value::String(model_id.to_string()));
         self.context
             .borrow_mut()
-            .write(&path!("gate/model"), record)
+            .write(&path!("gate/defaults/model"), record)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         if let Some(ref cb) = self.event_callback {
             emit_js(Some(cb), "context_changed", "");
@@ -366,7 +366,7 @@ impl OxAgent {
     /// Returns a JSON array of `{id, display_name}` objects.
     pub fn list_models(&self) -> String {
         let mut ctx = self.context.borrow_mut();
-        let provider = match ctx.read(&path!("gate/bootstrap")) {
+        let provider = match ctx.read(&path!("gate/defaults/account")) {
             Ok(Some(Record::Parsed(Value::String(s)))) => s,
             _ => "anthropic".to_string(),
         };
@@ -780,7 +780,7 @@ async fn run_agentic_loop(
     // Read bootstrap account → provider config from gate
     let bootstrap = {
         let mut ctx = context_ref.borrow_mut();
-        match ctx.read(&path!("gate/bootstrap")) {
+        match ctx.read(&path!("gate/defaults/account")) {
             Ok(Some(Record::Parsed(Value::String(s)))) => s,
             _ => "anthropic".to_string(),
         }
@@ -809,7 +809,7 @@ async fn run_agentic_loop(
     let model_id = {
         let record = context_ref
             .borrow_mut()
-            .read(&path!("gate/model"))
+            .read(&path!("gate/defaults/model"))
             .map_err(|e| e.to_string())?;
         match record {
             Some(Record::Parsed(Value::String(s))) => s,
