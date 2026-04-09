@@ -61,7 +61,7 @@ impl ConfigStore {
         let filtered: BTreeMap<String, Value> = self
             .runtime
             .iter()
-            .filter(|(k, _)| !k.contains("api_key"))
+            .filter(|(k, _)| !k.contains("/key"))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         backing.save(&Value::Map(filtered))
@@ -199,13 +199,13 @@ mod tests {
         let mut store = store_with_defaults();
         store
             .write(
-                &path!("gate/api_key"),
+                &path!("gate/accounts/anthropic/key"),
                 Record::parsed(Value::String("sk-secret".into())),
             )
             .unwrap();
         // ConfigStore no longer masks — masking is the consumer's job
         assert_eq!(
-            read_val(&mut store, "gate/api_key"),
+            read_val(&mut store, "gate/accounts/anthropic/key"),
             Some(Value::String("sk-secret".into()))
         );
     }
@@ -277,7 +277,7 @@ mod tests {
         config.set_backing(Box::new(backing));
         config
             .write(
-                &path!("gate/api_key"),
+                &path!("gate/accounts/anthropic/key"),
                 Record::parsed(Value::String("sk-secret".into())),
             )
             .unwrap();
@@ -291,7 +291,7 @@ mod tests {
         let saved_val = saved.lock().unwrap().clone().unwrap();
         match saved_val {
             Value::Map(m) => {
-                assert!(!m.contains_key("gate/api_key"));
+                assert!(!m.contains_key("gate/accounts/anthropic/key"));
                 assert!(m.contains_key("gate/model"));
             }
             _ => panic!("expected map"),
