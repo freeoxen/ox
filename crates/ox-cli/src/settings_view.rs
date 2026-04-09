@@ -25,6 +25,10 @@ pub(crate) fn draw_settings(
 
     draw_accounts_section(frame, state, theme, chunks[0]);
     draw_defaults_section(frame, state, theme, chunks[1]);
+
+    if let Some(ref editing) = state.editing {
+        draw_account_edit_dialog(frame, editing, &state.test_status, theme);
+    }
 }
 
 fn draw_accounts_section(
@@ -109,4 +113,100 @@ fn draw_defaults_section(
         Line::from(format!("  Max tokens: {}", state.default_max_tokens)),
     ];
     frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// Draw the account add/edit dialog as a centered overlay.
+pub(crate) fn draw_account_edit_dialog(
+    frame: &mut Frame,
+    editing: &crate::settings_state::AccountEditFields,
+    test_status: &crate::settings_state::TestStatus,
+    theme: &Theme,
+) {
+    use crate::settings_state::{DIALECTS, TestStatus};
+    use ratatui::widgets::Clear;
+
+    let area = centered_rect(60, 10, frame.area());
+    frame.render_widget(Clear, area);
+
+    let title = if editing.is_new {
+        " Add Account "
+    } else {
+        " Edit Account "
+    };
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(theme.title_badge);
+
+    let dialect_str = DIALECTS.get(editing.dialect).unwrap_or(&"anthropic");
+    let key_display = if editing.key.is_empty() {
+        "(empty)".to_string()
+    } else {
+        let len = editing.key.len();
+        if len > 4 {
+            format!(
+                "{}...{}",
+                "\u{25cf}".repeat((len - 4).min(10)),
+                &editing.key[len - 4..]
+            )
+        } else {
+            "\u{25cf}".repeat(len)
+        }
+    };
+
+    let test_display = match test_status {
+        TestStatus::Idle => String::new(),
+        TestStatus::Testing => "  \u{23f3} Testing...".to_string(),
+        TestStatus::Success(msg) => format!("  \u{2713} {msg}"),
+        TestStatus::Failed(msg) => format!("  \u{2717} {msg}"),
+    };
+
+    let focus = editing.focus;
+    let cursor = "\u{25b8} ";
+    let no_cursor = "  ";
+
+    let lines = vec![
+        Line::from(format!(
+            "  Name:     {}{}",
+            if focus == 0 { cursor } else { no_cursor },
+            editing.name
+        )),
+        Line::from(format!(
+            "  Dialect:  {}{} (\u{2190}/\u{2192} to change)",
+            if focus == 1 { cursor } else { no_cursor },
+            dialect_str
+        )),
+        Line::from(format!(
+            "  Endpoint: {}{}",
+            if focus == 2 { cursor } else { no_cursor },
+            if editing.endpoint.is_empty() {
+                "(default for dialect)".to_string()
+            } else {
+                editing.endpoint.clone()
+            }
+        )),
+        Line::from(format!(
+            "  API Key:  {}{}",
+            if focus == 3 { cursor } else { no_cursor },
+            key_display
+        )),
+        Line::from(""),
+        Line::from(format!(
+            "  Tab next | t test | Enter save | Esc cancel{test_display}"
+        )),
+    ];
+
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn centered_rect(percent_x: u16, height: u16, r: Rect) -> Rect {
+    let popup_width = r.width * percent_x / 100;
+    let x = (r.width.saturating_sub(popup_width)) / 2;
+    let y = (r.height.saturating_sub(height)) / 2;
+    Rect::new(
+        r.x + x,
+        r.y + y,
+        popup_width.min(r.width),
+        height.min(r.height),
+    )
 }

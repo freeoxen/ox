@@ -206,6 +206,135 @@ pub async fn run_async(
                         let mode = mode_owned.as_str();
                         let screen = screen_owned.as_str();
 
+                        // Settings screen — edit dialog key handling
+                        if screen == "settings" && mode == "normal" && settings.editing.is_some()
+                        {
+                            use crate::settings_state::{DIALECTS, TestStatus};
+                            let inbox_root = app.pool.inbox_root().to_path_buf();
+                            let keys_dir = inbox_root.join("keys");
+
+                            // Use an enum to signal post-match actions that
+                            // require dropping the &mut borrow first.
+                            enum EditAction {
+                                None,
+                                Cancel,
+                                Save,
+                                Handled,
+                            }
+
+                            let action = if let Some(ref mut editing) = settings.editing {
+                                match key_str.as_str() {
+                                    "Tab" => {
+                                        editing.focus = (editing.focus + 1) % 4;
+                                        EditAction::Handled
+                                    }
+                                    "Esc" => EditAction::Cancel,
+                                    "Enter" => {
+                                        if !editing.name.is_empty() {
+                                            let entry = crate::config::AccountEntry {
+                                                provider: DIALECTS[editing.dialect].to_string(),
+                                                endpoint: if editing.endpoint.is_empty() {
+                                                    None
+                                                } else {
+                                                    Some(editing.endpoint.clone())
+                                                },
+                                            };
+                                            crate::config::write_account(
+                                                &inbox_root,
+                                                &editing.name,
+                                                &entry,
+                                            )
+                                            .ok();
+                                            if !editing.key.is_empty() {
+                                                crate::config::write_key_file(
+                                                    &keys_dir,
+                                                    &editing.name,
+                                                    &editing.key,
+                                                )
+                                                .ok();
+                                            }
+                                            EditAction::Save
+                                        } else {
+                                            EditAction::Handled
+                                        }
+                                    }
+                                    "Left" if editing.focus == 1 => {
+                                        editing.dialect = if editing.dialect == 0 {
+                                            DIALECTS.len() - 1
+                                        } else {
+                                            editing.dialect - 1
+                                        };
+                                        EditAction::Handled
+                                    }
+                                    "Right" if editing.focus == 1 => {
+                                        editing.dialect = if editing.dialect >= DIALECTS.len() - 1 {
+                                            0
+                                        } else {
+                                            editing.dialect + 1
+                                        };
+                                        EditAction::Handled
+                                    }
+                                    "Backspace" => {
+                                        match editing.focus {
+                                            0 => {
+                                                editing.name.pop();
+                                            }
+                                            2 => {
+                                                editing.endpoint.pop();
+                                            }
+                                            3 => {
+                                                editing.key.pop();
+                                            }
+                                            _ => {}
+                                        }
+                                        EditAction::Handled
+                                    }
+                                    other => {
+                                        if other.len() == 1
+                                            && !other.chars().next().unwrap().is_control()
+                                        {
+                                            let ch = other.chars().next().unwrap();
+                                            match editing.focus {
+                                                0 => editing.name.push(ch),
+                                                2 => editing.endpoint.push(ch),
+                                                3 => editing.key.push(ch),
+                                                _ => {}
+                                            }
+                                            EditAction::Handled
+                                        } else {
+                                            EditAction::None
+                                        }
+                                    }
+                                }
+                            } else {
+                                EditAction::None
+                            };
+
+                            // Now the &mut borrow on editing is dropped —
+                            // safe to mutate settings.editing itself.
+                            match action {
+                                EditAction::Cancel => {
+                                    settings.editing = None;
+                                    settings.test_status = TestStatus::Idle;
+                                    continue;
+                                }
+                                EditAction::Save => {
+                                    settings.editing = None;
+                                    settings.test_status = TestStatus::Idle;
+                                    let config = crate::config::resolve_config(
+                                        &inbox_root,
+                                        &crate::config::CliOverrides::default(),
+                                    );
+                                    settings.refresh_accounts(&config, &keys_dir);
+                                    continue;
+                                }
+                                EditAction::Handled => {
+                                    continue;
+                                }
+                                EditAction::None => {}
+                            }
+                        }
+
                         // Settings screen navigation (before broker dispatch)
                         if screen == "settings"
                             && mode == "normal"
@@ -240,6 +369,88 @@ pub async fn run_async(
                                         SettingsFocus::Accounts => SettingsFocus::Defaults,
                                         SettingsFocus::Defaults => SettingsFocus::Accounts,
                                     };
+                                    true
+                                }
+                                "a" => {
+                                    if settings.focus == SettingsFocus::Accounts {
+                                        settings.editing = Some(
+                                            crate::settings_state::AccountEditFields {
+                                                name: String::new(),
+                                                dialect: 0,
+                                                endpoint: String::new(),
+                                                key: String::new(),
+                                                focus: 0,
+                                                is_new: true,
+                                            },
+                                        );
+                                        settings.test_status =
+                                            crate::settings_state::TestStatus::Idle;
+                                    }
+                                    true
+                                }
+                                "e" => {
+                                    if settings.focus == SettingsFocus::Accounts {
+                                        if let Some(acct) =
+                                            settings.accounts.get(settings.selected_account)
+                                        {
+                                            use crate::settings_state::DIALECTS;
+                                            let dialect_idx = DIALECTS
+                                                .iter()
+                                                .position(|d| *d == acct.dialect)
+                                                .unwrap_or(0);
+                                            let inbox_root =
+                                                app.pool.inbox_root().to_path_buf();
+                                            let keys_dir = inbox_root.join("keys");
+                                            let key_val = crate::config::read_key_file(
+                                                &keys_dir, &acct.name,
+                                            )
+                                            .unwrap_or_default();
+                                            let config = crate::config::resolve_config(
+                                                &inbox_root,
+                                                &crate::config::CliOverrides::default(),
+                                            );
+                                            let endpoint = config
+                                                .gate
+                                                .accounts
+                                                .get(&acct.name)
+                                                .and_then(|e| e.endpoint.clone())
+                                                .unwrap_or_default();
+                                            settings.editing = Some(
+                                                crate::settings_state::AccountEditFields {
+                                                    name: acct.name.clone(),
+                                                    dialect: dialect_idx,
+                                                    endpoint,
+                                                    key: key_val,
+                                                    focus: 0,
+                                                    is_new: false,
+                                                },
+                                            );
+                                            settings.test_status =
+                                                crate::settings_state::TestStatus::Idle;
+                                        }
+                                    }
+                                    true
+                                }
+                                "d" => {
+                                    if settings.focus == SettingsFocus::Accounts {
+                                        if let Some(acct) =
+                                            settings.accounts.get(settings.selected_account)
+                                        {
+                                            let name = acct.name.clone();
+                                            let inbox_root =
+                                                app.pool.inbox_root().to_path_buf();
+                                            let keys_dir = inbox_root.join("keys");
+                                            crate::config::delete_account(&inbox_root, &name)
+                                                .ok();
+                                            crate::config::delete_key_file(&keys_dir, &name)
+                                                .ok();
+                                            let config = crate::config::resolve_config(
+                                                &inbox_root,
+                                                &crate::config::CliOverrides::default(),
+                                            );
+                                            settings.refresh_accounts(&config, &keys_dir);
+                                        }
+                                    }
                                     true
                                 }
                                 _ => false,

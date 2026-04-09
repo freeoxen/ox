@@ -188,6 +188,44 @@ pub fn delete_key_file(keys_dir: &Path, name: &str) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Write an account entry to config.toml (creates file if needed).
+pub fn write_account(config_dir: &Path, name: &str, entry: &AccountEntry) -> std::io::Result<()> {
+    let toml_path = config_dir.join("config.toml");
+    let mut config = if toml_path.exists() {
+        let content = std::fs::read_to_string(&toml_path)?;
+        toml::from_str::<OxConfig>(&content).unwrap_or_default()
+    } else {
+        OxConfig::default()
+    };
+    config.gate.accounts.insert(name.to_string(), entry.clone());
+    let content = toml::to_string_pretty(&config)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    std::fs::write(&toml_path, content)
+}
+
+/// Delete an account from config.toml.
+pub fn delete_account(config_dir: &Path, name: &str) -> std::io::Result<()> {
+    let toml_path = config_dir.join("config.toml");
+    if !toml_path.exists() {
+        return Ok(());
+    }
+    let content = std::fs::read_to_string(&toml_path)?;
+    let mut config: OxConfig = toml::from_str(&content).unwrap_or_default();
+    config.gate.accounts.remove(name);
+    if config.gate.defaults.account == name {
+        config.gate.defaults.account = config
+            .gate
+            .accounts
+            .keys()
+            .next()
+            .cloned()
+            .unwrap_or_default();
+    }
+    let content = toml::to_string_pretty(&config)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    std::fs::write(&toml_path, content)
+}
+
 /// Check if any account has a usable key (from key files or env vars).
 pub fn has_any_key(keys_dir: &Path, config: &OxConfig) -> bool {
     !resolve_keys(keys_dir, config).is_empty()
