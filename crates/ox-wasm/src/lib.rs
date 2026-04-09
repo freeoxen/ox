@@ -8,6 +8,8 @@
 use ox_kernel::{AgentEvent, Kernel, StreamEvent, ToolResult};
 use structfs_core_store::{Error, Path, Reader, Record, Value, Writer, path};
 
+mod wasm_subscriber;
+
 // ---------------------------------------------------------------------------
 // Host function imports (from the "ox" Wasm import module)
 // ---------------------------------------------------------------------------
@@ -180,9 +182,19 @@ fn deserialize_events(record: Record) -> Result<Vec<StreamEvent>, String> {
 /// Guest entry point. Returns 0 on success, nonzero on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn run() -> i32 {
+    // Install the wasm subscriber so tracing calls from ox-kernel etc.
+    // route through the host bridge.
+    let _ = tracing::subscriber::set_global_default(wasm_subscriber::WasmSubscriber);
+
     match agent_main() {
         Ok(()) => 0,
-        Err(_) => 1,
+        Err(e) => {
+            // Stash the error message where the host can read it back.
+            // Must be valid JSON since host_write parses data as JSON.
+            let json = serde_json::to_string(&e).unwrap_or_else(|_| "\"unknown error\"".into());
+            let _ = host_write("tool_results/__error", &json);
+            1
+        }
     }
 }
 

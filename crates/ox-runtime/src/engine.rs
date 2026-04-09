@@ -278,16 +278,43 @@ impl AgentModule {
             }
         };
 
+        tracing::info!("wasm module starting");
         let call_result = run_func.call(&mut store, ());
         let state = store.into_data();
 
         match call_result {
-            Ok(0) => (state.host_store, Ok(())),
-            Ok(code) => (
-                state.host_store,
-                Err(format!("guest run() returned error code {code}")),
-            ),
-            Err(e) => (state.host_store, Err(e.to_string())),
+            Ok(0) => {
+                tracing::info!(exit_code = 0, "wasm module finished");
+                (state.host_store, Ok(()))
+            }
+            Ok(code) => {
+                // Try to read the error message the guest stashed before returning.
+                let mut hs = state.host_store;
+                let detail = hs
+                    .handle_read(&structfs_core_store::path!("tool_results/__error"))
+                    .ok()
+                    .flatten()
+                    .and_then(|r| match r.as_value() {
+                        Some(structfs_core_store::Value::String(s)) => Some(s.clone()),
+                        _ => None,
+                    });
+                let msg = match detail {
+                    Some(d) => {
+                        tracing::info!(exit_code = code, error = %d, "wasm module finished with error");
+                        d
+                    }
+                    None => {
+                        let m = format!("guest run() returned error code {code}");
+                        tracing::info!(exit_code = code, "wasm module finished with error");
+                        m
+                    }
+                };
+                (hs, Err(msg))
+            }
+            Err(e) => {
+                tracing::info!(error = %e, "wasm module finished with trap");
+                (state.host_store, Err(e.to_string()))
+            }
         }
     }
 }
