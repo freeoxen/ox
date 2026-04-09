@@ -5,15 +5,13 @@
 # The key matches against the file path prefix in coverage output.
 
 [global]
-rust = 60
+rust = 70
 typescript = 80
 
 [rust]
 # Core — pure store logic, fully testable
-# target: 100 (current: 52, needs kernel three-phase API tests)
-ox-kernel = 50
+ox-kernel = 95
 ox-store-util = 90
-# target: 90 (current: 86, needs synthesize_prompt error path tests)
 ox-context = 85
 ox-ui = 80
 ox-broker = 80
