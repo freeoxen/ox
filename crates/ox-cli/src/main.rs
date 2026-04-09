@@ -31,25 +31,21 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(name = "ox", about = "Agentic coding CLI")]
 struct Cli {
-    /// LLM provider (anthropic or openai)
-    #[arg(long, default_value = "anthropic")]
-    provider: String,
+    /// Named account from config (overrides gate.defaults.account)
+    #[arg(long)]
+    account: Option<String>,
 
     /// Model identifier
     #[arg(long, short)]
     model: Option<String>,
-
-    /// API key (or set ANTHROPIC_API_KEY / OPENAI_API_KEY env var)
-    #[arg(long)]
-    api_key: Option<String>,
 
     /// Workspace root directory
     #[arg(long, default_value = ".")]
     workspace: String,
 
     /// Max tokens per completion
-    #[arg(long, default_value = "4096")]
-    max_tokens: u32,
+    #[arg(long)]
+    max_tokens: Option<u32>,
 
     /// Disable policy enforcement (allow all tool calls)
     #[arg(long)]
@@ -70,25 +66,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Resolve config: defaults → ~/.ox/config.toml → OX_* env vars → CLI flags
     let overrides = config::CliOverrides {
-        provider: if cli.provider != "anthropic" {
-            Some(cli.provider.clone())
-        } else {
-            None
-        },
+        account: cli.account.clone(),
         model: cli.model.clone(),
-        api_key: cli.api_key.clone(),
-        max_tokens: if cli.max_tokens != 4096 {
-            Some(cli.max_tokens as i64)
-        } else {
-            None
-        },
+        max_tokens: cli.max_tokens.map(|t| t as i64),
     };
     let resolved = config::resolve_config(&inbox_root, &overrides);
 
-    if resolved.gate.api_key.is_none() {
-        eprintln!("error: no API key provided");
+    // Verify the default account has a key (from config file or env vars)
+    let default_account = &resolved.gate.defaults.account;
+    let has_key = resolved
+        .gate
+        .accounts
+        .get(default_account)
+        .map(|a| !a.key.is_empty())
+        .unwrap_or(false);
+    if !has_key {
+        eprintln!("error: no API key for account '{default_account}'");
         eprintln!(
-            "  pass --api-key, set OX_GATE_API_KEY, or set ANTHROPIC_API_KEY / OPENAI_API_KEY"
+            "  configure in ~/.ox/config.toml under [gate.accounts.{default_account}]"
+        );
+        eprintln!(
+            "  or set OX_GATE__ACCOUNTS__{}_KEY",
+            default_account.to_uppercase()
         );
         std::process::exit(1);
     }
