@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use ox_kernel::{CompletionRequest, FnTool, StreamEvent, ToolSchema};
 
-use crate::account::AccountConfig;
 use crate::provider::ProviderConfig;
 
 /// A synchronous send function shared across completion tools.
@@ -33,13 +32,11 @@ pub fn completion_tool_schema(account_name: &str, provider: &ProviderConfig) -> 
 /// Returns a [`FnTool`] that delegates sub-completions through `send`.
 pub fn completion_tool(
     account_name: String,
-    account: &AccountConfig,
     provider: &ProviderConfig,
+    default_model: String,
+    default_max_tokens: u32,
     send: Arc<SendFn>,
 ) -> FnTool {
-    // TODO(task-9): accept model as a parameter instead of hardcoding
-    let _ = account;
-    let model = "claude-sonnet-4-20250514".to_string();
     let description = format!(
         "Send a completion to the {} account ({} dialect)",
         account_name, provider.dialect,
@@ -54,7 +51,16 @@ pub fn completion_tool(
                 .and_then(|v| v.as_str())
                 .ok_or("missing required 'prompt' field")?;
             let system = input.get("system").and_then(|v| v.as_str()).unwrap_or("");
-            complete_via_gate(&*send, &model, prompt, system)
+            let model = input
+                .get("model")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&default_model);
+            let max_tokens = input
+                .get("max_tokens")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as u32)
+                .unwrap_or(default_max_tokens);
+            complete_via_gate(&*send, model, max_tokens, prompt, system)
         },
     )
 }
@@ -70,6 +76,14 @@ fn completion_params_schema() -> serde_json::Value {
             "system": {
                 "type": "string",
                 "description": "Optional system prompt"
+            },
+            "model": {
+                "type": "string",
+                "description": "Model ID to use (overrides default)"
+            },
+            "max_tokens": {
+                "type": "integer",
+                "description": "Max tokens for completion (overrides default)"
             }
         },
         "required": ["prompt"]
@@ -82,12 +96,13 @@ fn completion_params_schema() -> serde_json::Value {
 pub fn complete_via_gate(
     send: &dyn Fn(&CompletionRequest) -> Result<Vec<StreamEvent>, String>,
     model: &str,
+    max_tokens: u32,
     prompt: &str,
     system: &str,
 ) -> Result<String, String> {
     let request = CompletionRequest {
         model: model.to_string(),
-        max_tokens: 4096,
+        max_tokens,
         system: system.to_string(),
         messages: vec![serde_json::json!({"role": "user", "content": prompt})],
         tools: vec![],
@@ -128,7 +143,7 @@ mod tests {
 
     #[test]
     fn complete_via_gate_basic() {
-        let result = complete_via_gate(&mock_send, "test-model", "Hello", "").unwrap();
+        let result = complete_via_gate(&mock_send, "test-model", 4096, "Hello", "").unwrap();
         assert_eq!(result, "Response to: Hello");
     }
 
@@ -141,20 +156,35 @@ mod tests {
                 StreamEvent::MessageStop,
             ])
         };
-        let result = complete_via_gate(&send, "test-model", "Hi", "Be brief").unwrap();
+        let result = complete_via_gate(&send, "test-model", 4096, "Hi", "Be brief").unwrap();
+        assert_eq!(result, "OK");
+    }
+
+    #[test]
+    fn complete_via_gate_uses_max_tokens() {
+        let send = |req: &CompletionRequest| -> Result<Vec<StreamEvent>, String> {
+            assert_eq!(req.max_tokens, 8192);
+            Ok(vec![
+                StreamEvent::TextDelta("OK".to_string()),
+                StreamEvent::MessageStop,
+            ])
+        };
+        let result = complete_via_gate(&send, "test-model", 8192, "Hi", "").unwrap();
         assert_eq!(result, "OK");
     }
 
     #[test]
     fn completion_tool_execute() {
-        let account = AccountConfig {
-            provider: "test".to_string(),
-            key: "sk-test".to_string(),
-        };
         let provider = ProviderConfig::anthropic();
         let send: Arc<SendFn> = Arc::new(mock_send);
 
-        let tool = completion_tool("test".to_string(), &account, &provider, send);
+        let tool = completion_tool(
+            "test".to_string(),
+            &provider,
+            "test-model".to_string(),
+            4096,
+            send,
+        );
         let result = tool
             .execute(serde_json::json!({"prompt": "Hello"}))
             .unwrap();
@@ -162,15 +192,40 @@ mod tests {
     }
 
     #[test]
+    fn completion_tool_model_override() {
+        let send: Arc<SendFn> = Arc::new(|req| {
+            assert_eq!(req.model, "custom-model");
+            Ok(vec![
+                StreamEvent::TextDelta("OK".to_string()),
+                StreamEvent::MessageStop,
+            ])
+        });
+        let provider = ProviderConfig::anthropic();
+        let tool = completion_tool(
+            "test".to_string(),
+            &provider,
+            "default-model".to_string(),
+            4096,
+            send,
+        );
+        let result = tool
+            .execute(serde_json::json!({"prompt": "Hello", "model": "custom-model"}))
+            .unwrap();
+        assert_eq!(result, "OK");
+    }
+
+    #[test]
     fn completion_tool_missing_prompt() {
-        let account = AccountConfig {
-            provider: "test".to_string(),
-            key: "sk-test".to_string(),
-        };
         let provider = ProviderConfig::anthropic();
         let send: Arc<SendFn> = Arc::new(mock_send);
 
-        let tool = completion_tool("test".to_string(), &account, &provider, send);
+        let tool = completion_tool(
+            "test".to_string(),
+            &provider,
+            "test-model".to_string(),
+            4096,
+            send,
+        );
         let result = tool.execute(serde_json::json!({}));
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("prompt"));

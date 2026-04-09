@@ -157,6 +157,14 @@ impl GateStore {
     /// `send` is a synchronous function that sends a [`ox_kernel::CompletionRequest`]
     /// and returns parsed [`ox_kernel::StreamEvent`]s.
     pub fn create_completion_tools(&mut self, send: Arc<tools::SendFn>) -> Vec<Box<dyn Tool>> {
+        let default_model = self
+            .config_string("gate/defaults/model")
+            .unwrap_or_else(|| self.defaults.model.clone());
+        let default_max_tokens = self
+            .config_integer("gate/defaults/max_tokens")
+            .map(|n| n as u32)
+            .unwrap_or(self.defaults.max_tokens);
+
         let names: Vec<String> = self.accounts.keys().cloned().collect();
         names
             .iter()
@@ -181,8 +189,9 @@ impl GateStore {
                 let provider = self.providers.get(&account.provider)?;
                 Some(Box::new(tools::completion_tool(
                     name.clone(),
-                    account,
                     provider,
+                    default_model.clone(),
+                    default_max_tokens,
                     send.clone(),
                 )) as Box<dyn Tool>)
             })
