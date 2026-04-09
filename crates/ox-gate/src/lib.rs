@@ -263,12 +263,7 @@ impl GateStore {
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();
-                        new_accounts.insert(
-                            name.clone(),
-                            AccountConfig {
-                                provider,
-                            },
-                        );
+                        new_accounts.insert(name.clone(), AccountConfig { provider });
                     }
                 }
                 _ => return Err(StoreError::store("gate", "write", "accounts must be a map")),

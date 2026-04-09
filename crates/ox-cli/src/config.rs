@@ -107,7 +107,10 @@ impl OxConfig {
     }
 
     /// Produce the flat config map with resolved keys injected.
-    pub fn to_flat_map_with_keys(&self, keys: &BTreeMap<String, String>) -> BTreeMap<String, Value> {
+    pub fn to_flat_map_with_keys(
+        &self,
+        keys: &BTreeMap<String, String>,
+    ) -> BTreeMap<String, Value> {
         let mut map = self.to_flat_map();
         for (name, key) in keys {
             map.insert(
@@ -176,7 +179,11 @@ pub fn write_key_file(keys_dir: &Path, name: &str, key: &str) -> std::io::Result
 pub fn read_key_file(keys_dir: &Path, name: &str) -> Option<String> {
     let contents = std::fs::read_to_string(keys_dir.join(format!("{name}.key"))).ok()?;
     let trimmed = contents.trim().to_string();
-    if trimmed.is_empty() { None } else { Some(trimmed) }
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
 }
 
 /// Delete a key file.
@@ -198,8 +205,7 @@ pub fn write_account(config_dir: &Path, name: &str, entry: &AccountEntry) -> std
         OxConfig::default()
     };
     config.gate.accounts.insert(name.to_string(), entry.clone());
-    let content = toml::to_string_pretty(&config)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let content = toml::to_string_pretty(&config).map_err(std::io::Error::other)?;
     std::fs::write(&toml_path, content)
 }
 
@@ -221,8 +227,7 @@ pub fn delete_account(config_dir: &Path, name: &str) -> std::io::Result<()> {
             .cloned()
             .unwrap_or_default();
     }
-    let content = toml::to_string_pretty(&config)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let content = toml::to_string_pretty(&config).map_err(std::io::Error::other)?;
     std::fs::write(&toml_path, content)
 }
 
@@ -362,7 +367,10 @@ max_tokens = 8192
         let mut config = OxConfig::default();
         config.gate.accounts.insert(
             "anthropic".into(),
-            AccountEntry { provider: "anthropic".into(), endpoint: None },
+            AccountEntry {
+                provider: "anthropic".into(),
+                endpoint: None,
+            },
         );
 
         let keys = resolve_keys(&keys_dir, &config);
@@ -379,13 +387,20 @@ max_tokens = 8192
         let mut config = OxConfig::default();
         config.gate.accounts.insert(
             "testacct2".into(),
-            AccountEntry { provider: "anthropic".into(), endpoint: None },
+            AccountEntry {
+                provider: "anthropic".into(),
+                endpoint: None,
+            },
         );
 
-        unsafe { std::env::set_var("OX_GATE__ACCOUNTS__TESTACCT2__KEY", "from-env"); }
+        unsafe {
+            std::env::set_var("OX_GATE__ACCOUNTS__TESTACCT2__KEY", "from-env");
+        }
         let keys = resolve_keys(&keys_dir, &config);
         assert_eq!(keys.get("testacct2").unwrap(), "from-env");
-        unsafe { std::env::remove_var("OX_GATE__ACCOUNTS__TESTACCT2__KEY"); }
+        unsafe {
+            std::env::remove_var("OX_GATE__ACCOUNTS__TESTACCT2__KEY");
+        }
     }
 
     #[test]
@@ -415,7 +430,10 @@ max_tokens = 8192
         let mut config = OxConfig::default();
         config.gate.accounts.insert(
             "anthropic".into(),
-            AccountEntry { provider: "anthropic".into(), endpoint: None },
+            AccountEntry {
+                provider: "anthropic".into(),
+                endpoint: None,
+            },
         );
         let mut keys = BTreeMap::new();
         keys.insert("anthropic".into(), "sk-injected".into());

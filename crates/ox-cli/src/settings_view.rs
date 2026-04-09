@@ -9,12 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 /// Draw the settings screen content area.
-pub(crate) fn draw_settings(
-    frame: &mut Frame,
-    state: &SettingsState,
-    theme: &Theme,
-    area: Rect,
-) {
+pub(crate) fn draw_settings(frame: &mut Frame, state: &SettingsState, theme: &Theme, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(if state.wizard.is_some() {
@@ -55,12 +50,7 @@ pub(crate) fn draw_settings(
     }
 }
 
-fn draw_accounts_section(
-    frame: &mut Frame,
-    state: &SettingsState,
-    theme: &Theme,
-    area: Rect,
-) {
+fn draw_accounts_section(frame: &mut Frame, state: &SettingsState, theme: &Theme, area: Rect) {
     let focused = state.focus == SettingsFocus::Accounts && state.editing.is_none();
     let block = Block::default()
         .title(" Accounts ")
@@ -72,8 +62,7 @@ fn draw_accounts_section(
         });
 
     if state.accounts.is_empty() {
-        let empty = Paragraph::new("  No accounts configured. Press 'a' to add one.")
-            .block(block);
+        let empty = Paragraph::new("  No accounts configured. Press 'a' to add one.").block(block);
         frame.render_widget(empty, area);
         return;
     }
@@ -132,12 +121,7 @@ fn draw_accounts_section(
     }
 }
 
-fn draw_defaults_section(
-    frame: &mut Frame,
-    state: &SettingsState,
-    theme: &Theme,
-    area: Rect,
-) {
+fn draw_defaults_section(frame: &mut Frame, state: &SettingsState, theme: &Theme, area: Rect) {
     let focused = state.focus == SettingsFocus::Defaults && state.editing.is_none();
     let block = Block::default()
         .title(" Defaults ")
@@ -170,17 +154,29 @@ fn draw_defaults_section(
     let lines = vec![
         Line::from(format!(
             "  Account:    {}{} (\u{2190}/\u{2192})",
-            if focused && state.defaults_focus == 0 { cursor } else { no_cursor },
+            if focused && state.defaults_focus == 0 {
+                cursor
+            } else {
+                no_cursor
+            },
             acct_name
         )),
         Line::from(format!(
             "  Model:      {}{}",
-            if focused && state.defaults_focus == 1 { cursor } else { no_cursor },
+            if focused && state.defaults_focus == 1 {
+                cursor
+            } else {
+                no_cursor
+            },
             model_hint
         )),
         Line::from(format!(
             "  Max tokens: {}{}",
-            if focused && state.defaults_focus == 2 { cursor } else { no_cursor },
+            if focused && state.defaults_focus == 2 {
+                cursor
+            } else {
+                no_cursor
+            },
             state.default_max_tokens
         )),
     ];

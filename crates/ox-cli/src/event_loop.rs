@@ -378,13 +378,10 @@ pub async fn run_async(
                                     // Advance wizard after first account save
                                     if let Some(ref mut step) = settings.wizard {
                                         use crate::settings_state::WizardStep;
-                                        match step {
-                                            WizardStep::AddAccount => {
-                                                *step = WizardStep::SetDefaults;
-                                                settings.focus =
-                                                    crate::settings_state::SettingsFocus::Defaults;
-                                            }
-                                            _ => {}
+                                        if *step == WizardStep::AddAccount {
+                                            *step = WizardStep::SetDefaults;
+                                            settings.focus =
+                                                crate::settings_state::SettingsFocus::Defaults;
                                         }
                                     }
                                     continue;

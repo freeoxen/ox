@@ -398,16 +398,28 @@ mod tests {
 
     #[test]
     fn context_json_excludes_api_keys() {
+        use ox_store_util::LocalConfig;
+        use structfs_core_store::Value;
+
         let dir = tempfile::tempdir().unwrap();
         let thread_dir = dir.path().join("t_keys");
-        let mut ns = build_namespace();
 
-        // Set an API key on the gate store
-        ns.write(
-            &path!("gate/accounts/anthropic/key"),
-            Record::parsed(structfs_core_store::Value::String("sk-secret".to_string())),
-        )
-        .unwrap();
+        // Inject an API key via the config handle (keys no longer live on AccountEntry)
+        let mut config = LocalConfig::new();
+        config.set(
+            "gate/accounts/anthropic/key",
+            Value::String("sk-secret".into()),
+        );
+        let gate = ox_gate::GateStore::new().with_config(Box::new(config));
+
+        let mut ns = Namespace::new();
+        ns.mount(
+            "system",
+            Box::new(SystemProvider::new("You are helpful.".to_string())),
+        );
+        ns.mount("tools", Box::new(ToolsProvider::new(vec![])));
+        ns.mount("history", Box::new(HistoryProvider::new()));
+        ns.mount("gate", Box::new(gate));
 
         save(
             &mut ns,
