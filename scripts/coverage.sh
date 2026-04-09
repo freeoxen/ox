@@ -239,6 +239,13 @@ show_summary() {
                 echo -e "${RED}FAIL: TypeScript overall ${ts_pct}% below ${threshold}% threshold${NC}"
                 failed=1
             fi
+
+            # Per-file threshold checks
+            if [[ "$gate" == "true" ]]; then
+                if ! check_ts_per_file_thresholds "$threshold"; then
+                    failed=1
+                fi
+            fi
         fi
     fi
 
@@ -255,7 +262,7 @@ get_crate_threshold() {
     local crate="$1"
     [[ -f "$COVERAGE_CONFIG" ]] || return 0
     awk -F'=' -v crate="$crate" '
-        /^\[thresholds\]/ { in_section = 1; next }
+        /^\[rust\]/ { in_section = 1; next }
         /^\[/ { in_section = 0 }
         in_section && /^[^#]/ {
             gsub(/[[:space:]]/, "", $1)
@@ -333,6 +340,84 @@ check_rust_per_crate_thresholds() {
         rm -f "$COVERAGE_DIR/.crate_gate_failed"
         echo ""
         echo -e "${RED}Per-crate coverage thresholds failed. See coverage.toml${NC}"
+        return 1
+    fi
+    return 0
+}
+
+# Parse a TypeScript path's threshold from coverage.toml [typescript] section.
+# Matches the longest prefix. Returns empty string if not configured.
+get_ts_threshold() {
+    local file="$1"
+    [[ -f "$COVERAGE_CONFIG" ]] || return 0
+    # Find the longest matching prefix
+    awk -F'=' -v file="$file" '
+        /^\[typescript\]/ { in_section = 1; next }
+        /^\[/ { in_section = 0 }
+        in_section && /^[^#]/ {
+            gsub(/[[:space:]]/, "", $1)
+            gsub(/[[:space:]]/, "", $2)
+            prefix = $1
+            if (index(file, prefix) == 1 && length(prefix) > best_len) {
+                best_len = length(prefix)
+                best_val = $2
+            }
+        }
+        END { if (best_len > 0) print best_val }
+    ' "$COVERAGE_CONFIG"
+}
+
+# Check each TypeScript file against its per-path threshold.
+check_ts_per_file_thresholds() {
+    local global_threshold="$1"
+    local failed=0
+
+    local file_data
+    file_data=$(get_ts_summary | awk -F'|' '
+        /^[[:space:]]*-/ { next }
+        /File/ { next }
+        /All files/ { next }
+        /\.ts[[:space:]]*\|/ {
+            file = $1
+            pct = $3
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", file)
+            gsub(/[[:space:]%]/, "", pct)
+            if (file != "") printf "%s\t%s\n", file, pct
+        }
+    ')
+
+    [[ -z "$file_data" ]] && return 0
+
+    echo ""
+    echo -e "${BOLD}Per-File TypeScript Coverage:${NC}"
+
+    echo "$file_data" | sort | while IFS=$'\t' read -r file pct; do
+        local file_thresh
+        file_thresh=$(get_ts_threshold "$file")
+        if [[ -z "$file_thresh" ]]; then
+            file_thresh="$global_threshold"
+        fi
+
+        if [[ "$file_thresh" == "0" ]]; then
+            printf "  ${DIM}%5.1f%%  %-40s (excluded)${NC}\n" "$pct" "$file"
+            continue
+        fi
+
+        local pct_color
+        pct_color=$(color_pct "$pct" "$file_thresh")
+
+        if (( $(echo "$pct < $file_thresh" | bc -l) )); then
+            printf "  ${RED}%5.1f%%  %-40s FAIL (threshold: %s%%)${NC}\n" "$pct" "$file" "$file_thresh"
+            echo "1" > "$COVERAGE_DIR/.ts_gate_failed"
+        else
+            printf "  ${pct_color}%5.1f%%  %-40s (threshold: %s%%)${NC}\n" "$pct" "$file" "$file_thresh"
+        fi
+    done
+
+    if [[ -f "$COVERAGE_DIR/.ts_gate_failed" ]]; then
+        rm -f "$COVERAGE_DIR/.ts_gate_failed"
+        echo ""
+        echo -e "${RED}Per-file TypeScript thresholds failed. See coverage.toml${NC}"
         return 1
     fi
     return 0

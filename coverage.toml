@@ -1,22 +1,24 @@
-# Per-crate coverage thresholds.
+# Per-module coverage thresholds for Rust crates and TypeScript packages.
 #
-# Crates not listed here use the global threshold (--gate -t N).
-# Set to 0 to exclude a crate from threshold enforcement.
+# Modules not listed here use the global threshold (--gate -t N).
+# Set to 0 to exclude a module from threshold enforcement.
 #
-# Format: crate-prefix = threshold-percentage
-# The prefix matches against the file path in coverage output
-# (e.g. "ox-cli/" matches all files under crates/ox-cli/).
+# The key matches against the file path prefix in coverage output.
 
-[thresholds]
-# Library crates — hold to high standard
+[rust]
+# Core — pure store logic, fully testable
+# target: 100 (current: 52, needs kernel three-phase API tests)
+ox-kernel = 50
 ox-store-util = 90
+# target: 90 (current: 86, needs synthesize_prompt error path tests)
+ox-context = 85
 ox-ui = 80
 ox-broker = 80
+# target: 80 (current: 91)
+ox-gate = 80
+# target: 80 (current: 84)
+ox-history = 80
 ox-inbox = 75
-ox-gate = 75
-ox-history = 75
-ox-context = 70
-ox-kernel = 20
 ox-runtime = 65
 
 # CLI — mostly TUI rendering, hard to unit test
@@ -31,3 +33,8 @@ ox-emscripten = 0
 
 # Proc macro — runs at compile time, not during tests
 ox-path = 0
+
+[typescript]
+# UI components
+# Prefix matches against bun coverage file paths
+# (e.g. "src/lib/stores" matches src/lib/stores/*.ts)
