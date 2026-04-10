@@ -81,6 +81,13 @@ impl ToolStore {
         self.native_tools.insert(schema.wire_name, tool);
     }
 
+    /// Unregister a native tool by wire name.
+    /// Removes from both native_tools and name_map.
+    pub fn unregister_native(&mut self, wire_name: &str) {
+        self.native_tools.remove(wire_name);
+        self.name_map.unregister(wire_name);
+    }
+
     /// Aggregate tool schemas from all modules.
     pub fn all_schemas(&self) -> Vec<ToolSchemaEntry> {
         let mut schemas = self.fs.schemas();

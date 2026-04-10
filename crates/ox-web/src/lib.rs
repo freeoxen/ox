@@ -13,32 +13,40 @@
 //! ```
 
 use ox_context::{Namespace, SystemProvider};
-use ox_core::{AgentEvent, CompletionRequest, ContentBlock, ToolSchema, serialize_tool_results};
+use ox_core::{AgentEvent, CompletionRequest, ContentBlock, serialize_tool_results};
 use ox_gate::codec::{anthropic as anthropic_codec, openai as openai_codec};
 use ox_gate::{AccountConfig, GateStore, ProviderConfig};
 use ox_history::HistoryProvider;
 use ox_kernel::ModelInfo;
 use ox_kernel::{Reader, Record, ToolResult, Value, Writer, oxpath, path};
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 use structfs_serde_store::{json_to_value, to_value, value_to_json};
 use wasm_bindgen::prelude::*;
 
 // ---------------------------------------------------------------------------
-// JS tool wrapper — allows tools defined in browser JS
+// JS tool wrapper — registers JS callbacks as native tools in ToolStore
 // ---------------------------------------------------------------------------
 
-struct JsTool {
+/// Wraps a JS callback as a [`NativeTool`](ox_tools::native::NativeTool).
+///
+/// `js_sys::Function` is `!Send + !Sync`, but wasm32-unknown-unknown is
+/// single-threaded, so the unsafe impls are sound. (Same pattern as
+/// `HostBridge` in ox-wasm.)
+struct SendJsTool {
     name: String,
     description: String,
     parameters_schema: serde_json::Value,
     callback: js_sys::Function,
 }
 
-impl JsTool {
-    fn execute(&self, input: &serde_json::Value) -> Result<String, String> {
-        let input_str = serde_json::to_string(input).map_err(|e| e.to_string())?;
+// SAFETY: wasm32-unknown-unknown is single-threaded.
+unsafe impl Send for SendJsTool {}
+unsafe impl Sync for SendJsTool {}
+
+impl ox_tools::native::NativeTool for SendJsTool {
+    fn execute(&self, input: serde_json::Value) -> Result<serde_json::Value, String> {
+        let input_str = serde_json::to_string(&input).map_err(|e| e.to_string())?;
         let result = self
             .callback
             .call1(&JsValue::NULL, &JsValue::from_str(&input_str))
@@ -49,14 +57,16 @@ impl JsTool {
                     .unwrap_or_else(|| format!("{e:?}"));
                 format!("tool threw: {msg}")
             })?;
-        result
+        let result_str = result
             .as_string()
-            .ok_or_else(|| "tool callback must return a string".to_string())
+            .ok_or_else(|| "tool callback must return a string".to_string())?;
+        Ok(serde_json::Value::String(result_str))
     }
 
-    fn schema(&self) -> ToolSchema {
-        ToolSchema {
-            name: self.name.clone(),
+    fn schema(&self) -> ox_tools::ToolSchemaEntry {
+        ox_tools::ToolSchemaEntry {
+            wire_name: self.name.clone(),
+            internal_path: format!("js/{}", self.name),
             description: self.description.clone(),
             input_schema: self.parameters_schema.clone(),
         }
@@ -78,7 +88,6 @@ pub struct OxAgent {
     context: Rc<RefCell<Namespace>>,
     event_callback: Option<js_sys::Function>,
     tool_store: Rc<RefCell<ox_tools::ToolStore>>,
-    js_tools: Rc<RefCell<HashMap<String, JsTool>>>,
 }
 
 #[wasm_bindgen]
@@ -113,7 +122,7 @@ impl OxAgent {
 
         // Mount a separate ToolStore at "tools" for schema serving via prompt
         // synthesis. The primary tool_store is kept in an Rc<RefCell> for
-        // direct execution. Cut 5 will unify these.
+        // direct execution (including JS tools registered as native tools).
         let mut context = Namespace::new();
         context.mount(
             "system",
@@ -140,7 +149,6 @@ impl OxAgent {
             context: Rc::new(RefCell::new(context)),
             event_callback: None,
             tool_store: Rc::new(RefCell::new(tool_store)),
-            js_tools: Rc::new(RefCell::new(HashMap::new())),
         }
     }
 
@@ -224,8 +232,7 @@ impl OxAgent {
 
     /// Unregister a JS tool by name.
     pub fn unregister_tool(&self, name: &str) {
-        self.js_tools.borrow_mut().remove(name);
-        // JS tool schemas are not yet served via ToolStore (Cut 5).
+        self.tool_store.borrow_mut().unregister_native(name);
         if let Some(ref cb) = self.event_callback {
             emit_js(Some(cb), "context_changed", "");
         }
@@ -245,17 +252,13 @@ impl OxAgent {
         let schema: serde_json::Value = serde_json::from_str(parameters_schema_json)
             .map_err(|e| JsValue::from_str(&format!("invalid parameters_schema JSON: {e}")))?;
 
-        self.js_tools.borrow_mut().insert(
-            name.to_string(),
-            JsTool {
-                name: name.to_string(),
-                description: description.to_string(),
-                parameters_schema: schema,
-                callback,
-            },
-        );
-
-        // JS tool schemas are not yet served via ToolStore (Cut 5).
+        let tool = SendJsTool {
+            name: name.to_string(),
+            description: description.to_string(),
+            parameters_schema: schema,
+            callback,
+        };
+        self.tool_store.borrow_mut().register_native(Box::new(tool));
 
         if let Some(ref cb) = self.event_callback {
             emit_js(Some(cb), "context_changed", "");
@@ -400,10 +403,8 @@ impl OxAgent {
         let callback = self.event_callback.clone();
         let context = self.context.clone();
         let tool_store = self.tool_store.clone();
-        let js_tools = self.js_tools.clone();
         wasm_bindgen_futures::future_to_promise(async move {
-            let result =
-                run_agentic_loop(&input, &context, &tool_store, &js_tools, callback.as_ref()).await;
+            let result = run_agentic_loop(&input, &context, &tool_store, callback.as_ref()).await;
 
             match result {
                 Ok(text) => Ok(JsValue::from_str(&text)),
@@ -412,7 +413,6 @@ impl OxAgent {
         })
     }
 }
-
 
 /// Read the API key for the given account from the gate store.
 fn read_api_key(context: &Rc<RefCell<Namespace>>, account: &str) -> String {
@@ -685,62 +685,35 @@ async fn fetch_model_catalog(
     Ok(all_models)
 }
 
-/// Execute a tool call against the ToolStore first, then JS tools.
+/// Execute a tool call against the ToolStore (single dispatch path).
 fn execute_tool(
     tool_store: &Rc<RefCell<ox_tools::ToolStore>>,
-    js_tools: &Rc<RefCell<HashMap<String, JsTool>>>,
     name: &str,
     input: &serde_json::Value,
 ) -> String {
-    // Try ToolStore first (native tools + module tools)
-    {
-        let mut store = tool_store.borrow_mut();
-        let tool_path = match structfs_core_store::Path::parse(name) {
-            Ok(p) => p,
-            Err(_) => {
-                // Invalid path — skip to JS tools
-                drop(store);
-                return try_js_tools(js_tools, name, input);
-            }
-        };
-        let input_value = structfs_serde_store::json_to_value(input.clone());
-        match store.write(&tool_path, structfs_core_store::Record::parsed(input_value)) {
-            Ok(_) => {
-                let result_str = format!("{name}/result");
-                if let Ok(rp) = structfs_core_store::Path::parse(&result_str) {
-                    if let Ok(Some(record)) = store.read(&rp) {
-                        let val = record
-                            .as_value()
-                            .cloned()
-                            .unwrap_or(structfs_core_store::Value::Null);
-                        let json = structfs_serde_store::value_to_json(val);
-                        return serde_json::to_string(&json).unwrap_or_default();
-                    }
+    let mut store = tool_store.borrow_mut();
+    let tool_path = match structfs_core_store::Path::parse(name) {
+        Ok(p) => p,
+        Err(_) => return format!("error: invalid tool path '{name}'"),
+    };
+    let input_value = structfs_serde_store::json_to_value(input.clone());
+    match store.write(&tool_path, structfs_core_store::Record::parsed(input_value)) {
+        Ok(_) => {
+            let result_str = format!("{name}/result");
+            if let Ok(rp) = structfs_core_store::Path::parse(&result_str) {
+                if let Ok(Some(record)) = store.read(&rp) {
+                    let val = record
+                        .as_value()
+                        .cloned()
+                        .unwrap_or(structfs_core_store::Value::Null);
+                    let json = structfs_serde_store::value_to_json(val);
+                    return serde_json::to_string(&json).unwrap_or_default();
                 }
-                "error: no result from tool".to_string()
             }
-            Err(_) => {
-                // ToolStore couldn't handle it — try JS tools
-                drop(store);
-                try_js_tools(js_tools, name, input)
-            }
+            "error: no result from tool".to_string()
         }
+        Err(e) => format!("error: {e}"),
     }
-}
-
-fn try_js_tools(
-    js_tools: &Rc<RefCell<HashMap<String, JsTool>>>,
-    name: &str,
-    input: &serde_json::Value,
-) -> String {
-    let js = js_tools.borrow();
-    if let Some(jt) = js.get(name) {
-        return match jt.execute(input) {
-            Ok(r) => r,
-            Err(e) => format!("error: {e}"),
-        };
-    }
-    format!("error: unknown tool '{name}'")
 }
 
 /// Run the full agentic loop: prompt -> stream -> tool call -> result -> loop.
@@ -748,7 +721,6 @@ async fn run_agentic_loop(
     user_input: &str,
     context_ref: &Rc<RefCell<Namespace>>,
     tool_store: &Rc<RefCell<ox_tools::ToolStore>>,
-    js_tools: &Rc<RefCell<HashMap<String, JsTool>>>,
     callback: Option<&js_sys::Function>,
 ) -> Result<String, String> {
     // Write user message to the namespace
@@ -871,7 +843,7 @@ async fn run_agentic_loop(
         let mut results = Vec::new();
         for tc in &tool_calls {
             emit_js(callback, "tool_call_start", &tc.name);
-            let result_str = execute_tool(tool_store, js_tools, &tc.name, &tc.input);
+            let result_str = execute_tool(tool_store, &tc.name, &tc.input);
             emit_js(
                 callback,
                 "tool_call_result",

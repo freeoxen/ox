@@ -517,5 +517,4 @@ mod tests {
         let val = unwrap_value(ns.read(&path!("gate/defaults/model")).unwrap().unwrap());
         assert_eq!(val, Value::String("claude-sonnet-4-20250514".to_string()));
     }
-
 }

@@ -25,6 +25,12 @@ impl NameMap {
             .insert(internal_path.to_string(), wire_name.to_string());
     }
 
+    pub fn unregister(&mut self, wire_name: &str) {
+        if let Some(internal) = self.wire_to_internal.remove(wire_name) {
+            self.internal_to_wire.remove(&internal);
+        }
+    }
+
     pub fn to_internal(&self, wire_name: &str) -> Option<&str> {
         self.wire_to_internal.get(wire_name).map(String::as_str)
     }
