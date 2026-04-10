@@ -126,9 +126,10 @@ impl PolicyCheck for CliPolicyCheck {
             return PolicyDecision::Allow;
         }
 
-        // Skip policy checks for non-tool paths (schemas, completions internals)
+        // Skip policy checks for internal plumbing paths — these are not
+        // user-facing tool invocations.
         match tool_name.as_str() {
-            "schemas" | "completions" => return PolicyDecision::Allow,
+            "schemas" | "completions" | "turn" => return PolicyDecision::Allow,
             _ => {}
         }
 
