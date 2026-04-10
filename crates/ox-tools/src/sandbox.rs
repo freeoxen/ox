@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::process::Command;
 
 /// Declares the kind of access a tool operation needs.
 ///
@@ -18,19 +17,39 @@ pub enum AccessIntent {
 ///
 /// Implementations receive an `AccessIntent` plus a pre-built `Command`
 /// and may wrap, modify, or reject it.
+///
+/// On wasm32 targets this trait exists for type-checking purposes only;
+/// `sandboxed_exec` is not available and subprocess execution is unsupported.
+#[cfg(not(target_arch = "wasm32"))]
 pub trait SandboxPolicy: Send + Sync {
-    fn apply(&self, intent: &AccessIntent, cmd: Command) -> Result<Command, String>;
+    fn apply(
+        &self,
+        intent: &AccessIntent,
+        cmd: std::process::Command,
+    ) -> Result<std::process::Command, String>;
 }
+
+/// Wasm stub: SandboxPolicy with no `apply` — subprocess execution unavailable.
+#[cfg(target_arch = "wasm32")]
+pub trait SandboxPolicy: Send + Sync {}
 
 /// A no-op policy that passes every command through unchanged.
 /// Useful for tests and trusted environments.
 pub struct PermissivePolicy;
 
+#[cfg(not(target_arch = "wasm32"))]
 impl SandboxPolicy for PermissivePolicy {
-    fn apply(&self, _intent: &AccessIntent, cmd: Command) -> Result<Command, String> {
+    fn apply(
+        &self,
+        _intent: &AccessIntent,
+        cmd: std::process::Command,
+    ) -> Result<std::process::Command, String> {
         Ok(cmd)
     }
 }
+
+#[cfg(target_arch = "wasm32")]
+impl SandboxPolicy for PermissivePolicy {}
 
 /// JSON-serializable command sent to the executor binary via stdin.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -48,12 +67,17 @@ pub struct ExecResult {
 
 /// Build a `Command` targeting the executor binary, apply the sandbox policy,
 /// pipe `ExecCommand` as JSON on stdin, and parse `ExecResult` from stdout.
+///
+/// Not available on wasm32 targets — subprocess execution requires a native OS.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn sandboxed_exec(
     intent: &AccessIntent,
     exec_cmd: &ExecCommand,
     executor_bin: &std::path::Path,
     policy: &dyn SandboxPolicy,
 ) -> Result<serde_json::Value, String> {
+    use std::process::Command;
+
     let base = Command::new(executor_bin);
     let mut cmd = policy.apply(intent, base)?;
 
@@ -106,8 +130,11 @@ pub fn sandboxed_exec(
 mod tests {
     use super::*;
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn permissive_policy_passes_command_through() {
+        use std::process::Command;
+
         let policy = PermissivePolicy;
         let intent = AccessIntent::ReadFile(PathBuf::from("/tmp/test.txt"));
         let cmd = Command::new("echo");

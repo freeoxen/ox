@@ -3,7 +3,9 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::sandbox::{sandboxed_exec, AccessIntent, ExecCommand, SandboxPolicy};
+use crate::sandbox::{AccessIntent, ExecCommand, SandboxPolicy};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::sandbox::sandboxed_exec;
 use crate::ToolSchemaEntry;
 
 /// OS tool module: shell command execution within a workspace.
@@ -30,7 +32,17 @@ impl OsModule {
     }
 
     /// Execute an os operation by name.
+    ///
+    /// On wasm32 targets this always returns an error — subprocess execution
+    /// is not available in the browser.
     pub fn execute(&self, op: &str, input: &Value) -> Result<Value, String> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (op, input);
+            return Err("os operations are not available on wasm32 targets".to_string());
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
         match op {
             "shell" => self.run_shell(input),
             _ => Err(format!("unknown os operation: {op}")),
@@ -56,6 +68,7 @@ impl OsModule {
         }]
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn run_shell(&self, input: &Value) -> Result<Value, String> {
         input
             .get("command")

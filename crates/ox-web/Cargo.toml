@@ -21,6 +21,7 @@ ox-context = { path = "../ox-context" }
 ox-gate = { path = "../ox-gate" }
 ox-history = { path = "../ox-history" }
 ox-kernel = { path = "../ox-kernel" }
+ox-tools = { path = "../ox-tools" }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = [

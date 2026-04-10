@@ -3,7 +3,9 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::sandbox::{sandboxed_exec, AccessIntent, ExecCommand, SandboxPolicy};
+use crate::sandbox::{AccessIntent, ExecCommand, SandboxPolicy};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::sandbox::sandboxed_exec;
 use crate::ToolSchemaEntry;
 
 /// File-system tool module: read, write, and edit files within a workspace.
@@ -42,33 +44,48 @@ impl FsModule {
     }
 
     /// Execute an fs operation by name.
+    ///
+    /// On wasm32 targets this always returns an error — subprocess execution
+    /// is not available in the browser.
     pub fn execute(&self, op: &str, input: &Value) -> Result<Value, String> {
-        let path_str = input
-            .get("path")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| "missing 'path' field".to_string())?;
-
-        let resolved = self.resolve_path(path_str)?;
-
-        let (intent, full_op) = match op {
-            "read" => (AccessIntent::ReadFile(resolved.clone()), "fs/read"),
-            "write" => (AccessIntent::WriteFile(resolved.clone()), "fs/write"),
-            "edit" => (AccessIntent::ReadWriteFile(resolved.clone()), "fs/edit"),
-            _ => return Err(format!("unknown fs operation: {op}")),
-        };
-
-        // Build args with the resolved absolute path
-        let mut args = input.clone();
-        if let Some(obj) = args.as_object_mut() {
-            obj.insert("path".to_string(), Value::String(resolved.to_string_lossy().into()));
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (op, input);
+            return Err("fs operations are not available on wasm32 targets".to_string());
         }
 
-        let exec_cmd = ExecCommand {
-            op: full_op.to_string(),
-            args,
-        };
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let path_str = input
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "missing 'path' field".to_string())?;
 
-        sandboxed_exec(&intent, &exec_cmd, &self.executor_bin, self.policy.as_ref())
+            let resolved = self.resolve_path(path_str)?;
+
+            let (intent, full_op) = match op {
+                "read" => (AccessIntent::ReadFile(resolved.clone()), "fs/read"),
+                "write" => (AccessIntent::WriteFile(resolved.clone()), "fs/write"),
+                "edit" => (AccessIntent::ReadWriteFile(resolved.clone()), "fs/edit"),
+                _ => return Err(format!("unknown fs operation: {op}")),
+            };
+
+            // Build args with the resolved absolute path
+            let mut args = input.clone();
+            if let Some(obj) = args.as_object_mut() {
+                obj.insert(
+                    "path".to_string(),
+                    Value::String(resolved.to_string_lossy().into()),
+                );
+            }
+
+            let exec_cmd = ExecCommand {
+                op: full_op.to_string(),
+                args,
+            };
+
+            sandboxed_exec(&intent, &exec_cmd, &self.executor_bin, self.policy.as_ref())
+        }
     }
 
     /// Return tool schemas for the three fs operations.
