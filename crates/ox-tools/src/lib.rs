@@ -2,6 +2,7 @@ pub mod fs;
 pub mod name_map;
 pub mod os;
 pub mod sandbox;
+pub mod turn;
 
 /// Describes a single tool's schema for registration with the agent framework.
 #[derive(Debug, Clone)]
