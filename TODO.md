@@ -1,46 +1,50 @@
 # TODO
 
-## Namespace-as-complete-state (observability, resumability, portability)
+## Agent as pico-process, namespace as context
 
-The namespace should be the agent's complete state. The agent's execution
-position should be derivable from reading the namespace, not from the Wasm
-call stack or Rust struct fields.
+The agent is a long-running process (pico-process in Wasm). The host provides
+the namespace — a structured filesystem. Tool calls are syscalls. The host
+never drives the agent; the agent drives itself.
 
-**Observability:** Read the namespace to see what the agent is doing. History
-shows what happened. Pending handles show what's in flight. The kernel's phase
-is derivable from the last message (assistant with tool_use blocks but no tool
-results = tools pending).
+The namespace IS the agent's context — not just history, but the full structured
+state: system prompt, conversation history, tool configuration, model config,
+in-flight execution handles. Context is what gets serialized, shipped, restored.
+History is one store in the context, not the context itself.
 
-**Resumability:** Restore namespace from disk, call `step()`. The kernel reads
-history, sees where things stand, picks up. No Wasm stack to reconstruct.
-Currently, mid-turn crashes lose partial results — each completed handle should
-persist its result immediately.
+**Observability:** Read the namespace. The agent's writes ARE the observable
+state. No polling, no status queries — read the filesystem.
 
-**Portability:** Serialize the namespace (all stores are Readers). That's the
-bundle. Ship to remote, deserialize, `step()`. Pull back, same. The Wasm module
-is the same everywhere.
+**Resumability:** Serialize the context (full namespace). Spawn a new agent
+instance with that context. The agent reads its context, sees where things
+stand, picks up. Mid-turn state (pending tool calls, partial results) must
+be in the namespace, not in local variables or the Wasm call stack.
+
+**Portability:** The context is the bundle. Serialize, ship to remote host,
+deserialize, spawn agent. Pull back local, same thing. The Wasm module is
+the same everywhere. The context is the only variable.
 
 **What's blocking:**
-1. Kernel state is in Rust fields, not StructFS. Should be derivable from or
-   stored in the namespace.
-2. Execution position is in the Wasm call stack. The three-phase loop should
-   become a pure `step()` function.
-3. Tool results aren't persisted until the full batch completes — partial
-   progress lost on crash.
-4. The Wasm agent IS the loop. The host should drive the loop; the Wasm module
-   should be a pure step function.
+1. Kernel state is in Rust fields, not the namespace. Should be derivable
+   from or stored in the context.
+2. Tool results aren't persisted until the full batch completes — partial
+   progress lost on crash. Each completed handle should write its result
+   to the namespace immediately.
+3. The snapshot system covers system/history/gate but not tool execution
+   state. Extend to cover the full namespace.
 
 ## Async tool execution via StructFS handles
 
 Tool execution should follow the native StructFS async pattern: writes return
-handles, reads resolve them, no hidden state accumulation.
+handles, reads resolve them. No hidden state accumulation. Tool calls are
+syscalls — the agent writes a request, the host handles it, the agent reads
+the result.
 
 **Design:**
 
 ```
-h1 = write("tools/read_file", input)   // returns handle "exec/001" immediately
-h2 = write("tools/shell", input)       // returns handle "exec/002" immediately
-batch = write("tools/await", [h1, h2]) // returns batch handle "await/003"
+h1 = write("tools/read_file", input)   // syscall: returns handle immediately
+h2 = write("tools/shell", input)       // syscall: returns handle immediately
+batch = write("tools/await", [h1, h2]) // syscall: returns batch handle
 results = read(batch)                  // blocks until all resolve
 ```
 
@@ -55,8 +59,7 @@ handles it cares about to `tools/await`, gets a batch handle back, reads that.
 3. `tools/await` accepts a set of handles, returns a composite handle. Reading
    the composite blocks until all constituent handles resolve.
 4. TurnStore as a stateful queue goes away. The handles ARE the state.
-5. Wasm agent loop simplifies: fire writes, collect handles, write to await,
-   read batch result, write to history.
+5. Completed handles write results to the namespace immediately (crash safety).
 
 **Current state:** TurnStore exists as a queue but adds no value — the Wasm
 agent manages execution directly and TurnStore is write-only bookkeeping.
@@ -85,25 +88,3 @@ checks belong here.
 are dead code — nothing reads that path anymore. Tool schemas are served by
 `ToolStore` at `tools/schemas`. Remove `completion_tool_schemas()` and the
 `"tools"` arm in `GateStore::read()`.
-
-## Kernel step() method
-
-A pure `Kernel::step(namespace) -> Vec<Effect>` that derives the next action
-from the namespace state. With handle-based async execution, step() returns
-intents, the host fires writes to get handles, awaits them, and persists
-results. The host drives the loop; the kernel is a pure function. This is the
-convergence point of observability, resumability, and portability — the loop
-becomes:
-
-```
-loop {
-    effects = step(namespace)
-    if effects.is_empty() { break }
-    handles = fire(effects)
-    batch = await(handles)
-    namespace.write(batch.results)
-    // crash-safe: namespace has results, step() picks up
-    // portable: serialize namespace, ship, deserialize, step()
-    // observable: read namespace, everything is there
-}
-```
