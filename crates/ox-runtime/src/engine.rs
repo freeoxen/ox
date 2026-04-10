@@ -369,7 +369,7 @@ mod tests {
     use ox_context::{Namespace, SystemProvider, ToolsProvider};
     use ox_gate::GateStore;
     use ox_history::HistoryProvider;
-    use ox_kernel::{AgentEvent, CompletionRequest, StreamEvent, ToolCall};
+    use ox_kernel::{AgentEvent, CompletionRequest, StreamEvent};
     use ox_tools::completion::CompletionTransport;
     use structfs_core_store::{Record, Value, Writer, path};
 
@@ -408,24 +408,6 @@ mod tests {
     }
 
     impl HostEffects for MockEffects {
-        fn complete(
-            &mut self,
-            _request: &CompletionRequest,
-        ) -> Result<(Vec<StreamEvent>, u32, u32), String> {
-            Ok((
-                vec![
-                    StreamEvent::TextDelta("Hello from the agent!".to_string()),
-                    StreamEvent::MessageStop,
-                ],
-                10,
-                5,
-            ))
-        }
-
-        fn execute_tool(&mut self, _call: &ToolCall) -> Result<String, String> {
-            Ok("mock result".to_string())
-        }
-
         fn emit_event(&mut self, event: AgentEvent) {
             self.events.push(format!("{:?}", event));
         }

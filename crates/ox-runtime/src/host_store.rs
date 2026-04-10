@@ -1,92 +1,41 @@
-//! HostStore middleware — wraps a Namespace with effect interception.
+//! HostStore middleware — wraps a backend with effect interception.
 //!
-//! The HostStore sits between the Wasm agent and the StructFS namespace,
-//! intercepting effectful paths (LLM completion, tool execution, event
-//! emission) and delegating them to a [`HostEffects`] implementation
-//! provided by the host (e.g. ox-cli).
+//! The HostStore sits between the Wasm agent and the StructFS backend,
+//! intercepting effectful paths (event emission) and routing tool
+//! operations to a [`ToolStore`] when present. LLM completion and tool
+//! execution are handled by the ToolStore — the host only provides
+//! event emission via [`HostEffects`].
 
-use ox_kernel::{AgentEvent, CompletionRequest, StreamEvent, ToolCall};
-use std::collections::BTreeMap;
+use ox_kernel::AgentEvent;
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer, path};
 
 /// Callback trait for operations requiring host-side effects.
 ///
-/// The host (ox-cli) implements this to provide LLM transport,
-/// tool execution, and event emission.
+/// The host (ox-cli) implements this to provide event emission to
+/// the TUI or other observer.
 pub trait HostEffects: Send {
-    /// Perform LLM completion.
-    /// Returns (stream_events, input_tokens, output_tokens).
-    fn complete(
-        &mut self,
-        request: &CompletionRequest,
-    ) -> Result<(Vec<StreamEvent>, u32, u32), String>;
-
-    /// Execute a tool call. The host handles policy enforcement.
-    fn execute_tool(&mut self, call: &ToolCall) -> Result<String, String>;
-
     /// Emit an agent event to the TUI or other observer.
     fn emit_event(&mut self, event: AgentEvent);
 }
 
-/// A minimal in-memory key-value store for internal use.
+/// StructFS middleware wrapping a backend with effect interception.
 ///
-/// Used by HostStore to store tool results at `tool_results/{id}`.
-struct SimpleStore {
-    data: BTreeMap<String, Value>,
-}
-
-impl SimpleStore {
-    fn new() -> Self {
-        Self {
-            data: BTreeMap::new(),
-        }
-    }
-}
-
-impl Reader for SimpleStore {
-    fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
-        let key = from.to_string();
-        Ok(self.data.get(&key).map(|v| Record::parsed(v.clone())))
-    }
-}
-
-impl Writer for SimpleStore {
-    fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
-        let value = match data {
-            Record::Parsed(v) => v,
-            _ => {
-                return Err(StoreError::store(
-                    "simple_store",
-                    "write",
-                    "expected parsed record",
-                ));
-            }
-        };
-        self.data.insert(to.to_string(), value);
-        Ok(to.clone())
-    }
-}
-
-/// StructFS middleware wrapping Namespace with effect interception.
+/// Reads and writes to certain paths are intercepted and routed:
 ///
-/// Reads and writes to certain paths are intercepted and routed to
-/// the [`HostEffects`] handler instead of the underlying namespace:
-///
-/// - **`gate/complete`** (write) — triggers LLM completion (legacy, no ToolStore)
-/// - **`gate/response`** (read) — returns pending stream events (legacy, no ToolStore)
 /// - **`tools/*`** (read/write) — routes to ToolStore when present
 /// - **`events/emit`** (write) — emits an agent event
+/// - **`prompt`** (read) — synthesizes a CompletionRequest from backend stores
+/// - everything else — delegates to the backend
 pub struct HostStore<B: Reader + Writer + Send, E: HostEffects> {
     /// The underlying backend for non-effectful operations.
     pub backend: B,
-    /// In-memory store for tool results (previously mounted in Namespace).
-    tool_results: SimpleStore,
     /// The effects handler.
     pub effects: E,
-    /// Pending stream events from the most recent completion.
-    pending_events: Option<Vec<StreamEvent>>,
     /// Optional ToolStore for unified tool dispatch (new path).
     tool_store: Option<ox_tools::ToolStore>,
+    /// Error stash — the guest writes here before returning a non-zero exit code
+    /// so the host can read the error message back.
+    error_stash: Option<String>,
 }
 
 impl<B: Reader + Writer + Send, E: HostEffects> HostStore<B, E> {
@@ -94,10 +43,9 @@ impl<B: Reader + Writer + Send, E: HostEffects> HostStore<B, E> {
     pub fn new(backend: B, effects: E) -> Self {
         Self {
             backend,
-            tool_results: SimpleStore::new(),
             effects,
-            pending_events: None,
             tool_store: None,
+            error_stash: None,
         }
     }
 
@@ -114,11 +62,6 @@ impl<B: Reader + Writer + Send, E: HostEffects> HostStore<B, E> {
             return ox_context::synthesize_prompt(&mut self.backend);
         }
 
-        if path == &path!("gate/response") {
-            tracing::debug!(path = %path, "effectful read: gate response");
-            return self.read_gate_response();
-        }
-
         // Route tools/* reads to ToolStore (if present).
         if !path.is_empty() && path.components[0] == "tools" {
             if let Some(ref mut ts) = self.tool_store {
@@ -127,10 +70,12 @@ impl<B: Reader + Writer + Send, E: HostEffects> HostStore<B, E> {
             }
         }
 
-        // Intercept tool_results reads — route to owned SimpleStore.
-        if !path.is_empty() && path.components[0] == "tool_results" {
-            let sub = Path::from_components(path.components[1..].to_vec());
-            return self.tool_results.read(&sub);
+        // Error stash — guest writes tool_results/__error before returning non-zero.
+        if path == &path!("tool_results/__error") {
+            return Ok(self
+                .error_stash
+                .as_ref()
+                .map(|s| Record::parsed(Value::String(s.clone()))));
         }
 
         // Delegate everything else to the backend.
@@ -145,99 +90,36 @@ impl<B: Reader + Writer + Send, E: HostEffects> HostStore<B, E> {
             path.components[0].as_str()
         };
 
-        // Route tools/* writes to ToolStore (if present).
-        if prefix == "tools" {
-            if let Some(ref mut ts) = self.tool_store {
-                let sub = Path::from_components(path.components[1..].to_vec());
-                return ts.write(&sub, data);
-            }
-        }
-
         match prefix {
-            "gate" if path == &path!("gate/complete") => {
-                tracing::debug!(path = %path, "effectful write: gate/complete");
-                self.write_gate_complete(data)
-            }
-            "tools" if path == &path!("tools/execute") => {
-                tracing::debug!(path = %path, "effectful write: tools/execute");
-                self.write_tools_execute(data)
+            "tools" => {
+                if let Some(ref mut ts) = self.tool_store {
+                    let sub = Path::from_components(path.components[1..].to_vec());
+                    return ts.write(&sub, data);
+                }
+                self.backend.write(path, data)
             }
             "events" if path == &path!("events/emit") => {
                 tracing::debug!(path = %path, "effectful write: events/emit");
                 self.write_events_emit(data)
             }
             "events" if path == &path!("events/log") => {
-                // Wasm guest tracing — extract the log line and forward to host tracing
                 if let Some(Value::String(line)) = data.as_value() {
                     tracing::info!(target: "ox_wasm", "{line}");
                 }
                 Ok(path.clone())
             }
-            "tool_results" => {
-                let sub = Path::from_components(path.components[1..].to_vec());
-                self.tool_results.write(&sub, data)
+            "tool_results" if path == &path!("tool_results/__error") => {
+                // Error stash from guest
+                if let Some(Value::String(s)) = data.as_value() {
+                    self.error_stash = Some(s.clone());
+                }
+                Ok(path.clone())
             }
             _ => self.backend.write(path, data),
         }
     }
 
     // -- Effectful path handlers -----------------------------------------------
-
-    fn read_gate_response(&mut self) -> Result<Option<Record>, StoreError> {
-        let events = match self.pending_events.take() {
-            Some(events) => events,
-            None => return Ok(None),
-        };
-
-        let json_events: Vec<serde_json::Value> = events.iter().map(stream_event_to_json).collect();
-        let json_value = serde_json::Value::Array(json_events);
-        let value = structfs_serde_store::json_to_value(json_value);
-        Ok(Some(Record::parsed(value)))
-    }
-
-    fn write_gate_complete(&mut self, data: Record) -> Result<Path, StoreError> {
-        let request: CompletionRequest = record_to_typed(data, "gate", "complete")?;
-
-        tracing::debug!("completion request dispatched");
-        let (events, _input_tokens, _output_tokens) =
-            self.effects.complete(&request).map_err(|e| {
-                tracing::error!(error = %e, "completion request failed");
-                StoreError::store("gate", "complete", e)
-            })?;
-
-        self.effects.emit_event(AgentEvent::TurnStart);
-        self.pending_events = Some(events);
-
-        Ok(path!("gate/response"))
-    }
-
-    fn write_tools_execute(&mut self, data: Record) -> Result<Path, StoreError> {
-        let call: ToolCall = record_to_typed(data, "tools", "execute")?;
-
-        tracing::debug!(tool = %call.name, "executing tool");
-
-        self.effects.emit_event(AgentEvent::ToolCallStart {
-            name: call.name.clone(),
-        });
-
-        let result = self.effects.execute_tool(&call).map_err(|e| {
-            tracing::error!(tool = %call.name, error = %e, "tool execution failed");
-            StoreError::store("tools", "execute", e)
-        })?;
-
-        self.effects.emit_event(AgentEvent::ToolCallResult {
-            name: call.name.clone(),
-            result: result.clone(),
-        });
-
-        // Write the result into tool_results at {call.id}
-        let result_path = ox_path::oxpath!("tool_results", call.id);
-        let sub = Path::from_components(result_path.components[1..].to_vec());
-        let result_record = Record::parsed(Value::String(result));
-        self.tool_results.write(&sub, result_record)?;
-
-        Ok(result_path)
-    }
 
     fn write_events_emit(&mut self, data: Record) -> Result<Path, StoreError> {
         let value = data
@@ -250,47 +132,6 @@ impl<B: Reader + Writer + Send, E: HostEffects> HostStore<B, E> {
 
         self.effects.emit_event(event);
         Ok(path!("events/emit"))
-    }
-}
-
-// -- Helper: deserialize a Record into a typed value --------------------------
-
-fn record_to_typed<T: serde::de::DeserializeOwned>(
-    data: Record,
-    store: &'static str,
-    op: &'static str,
-) -> Result<T, StoreError> {
-    let value = match data {
-        Record::Parsed(v) => v,
-        _ => return Err(StoreError::store(store, op, "expected parsed record")),
-    };
-    structfs_serde_store::from_value(value).map_err(|e| StoreError::store(store, op, e.to_string()))
-}
-
-// -- Manual StreamEvent <-> JSON (no serde derives on StreamEvent) ------------
-
-fn stream_event_to_json(event: &StreamEvent) -> serde_json::Value {
-    match event {
-        StreamEvent::TextDelta(text) => serde_json::json!({
-            "type": "text_delta",
-            "text": text,
-        }),
-        StreamEvent::ToolUseStart { id, name } => serde_json::json!({
-            "type": "tool_use_start",
-            "id": id,
-            "name": name,
-        }),
-        StreamEvent::ToolUseInputDelta(delta) => serde_json::json!({
-            "type": "tool_use_input_delta",
-            "delta": delta,
-        }),
-        StreamEvent::MessageStop => serde_json::json!({
-            "type": "message_stop",
-        }),
-        StreamEvent::Error(msg) => serde_json::json!({
-            "type": "error",
-            "message": msg,
-        }),
     }
 }
 
@@ -355,43 +196,18 @@ mod tests {
     use ox_context::{Namespace, SystemProvider, ToolsProvider};
     use ox_gate::GateStore;
     use ox_history::HistoryProvider;
+
     struct MockEffects {
-        complete_calls: usize,
-        tool_calls: Vec<String>,
         events: Vec<String>,
     }
 
     impl MockEffects {
         fn new() -> Self {
-            Self {
-                complete_calls: 0,
-                tool_calls: vec![],
-                events: vec![],
-            }
+            Self { events: vec![] }
         }
     }
 
     impl HostEffects for MockEffects {
-        fn complete(
-            &mut self,
-            _request: &CompletionRequest,
-        ) -> Result<(Vec<StreamEvent>, u32, u32), String> {
-            self.complete_calls += 1;
-            Ok((
-                vec![
-                    StreamEvent::TextDelta("Hello!".into()),
-                    StreamEvent::MessageStop,
-                ],
-                10,
-                5,
-            ))
-        }
-
-        fn execute_tool(&mut self, call: &ToolCall) -> Result<String, String> {
-            self.tool_calls.push(call.name.clone());
-            Ok(format!("result for {}", call.name))
-        }
-
         fn emit_event(&mut self, event: AgentEvent) {
             self.events.push(format!("{:?}", event));
         }
@@ -424,104 +240,10 @@ mod tests {
         let ns = make_namespace();
         let mut store = HostStore::new(ns, MockEffects::new());
 
-        // Reading system prompt should delegate to namespace
         let result = store.handle_read(&path!("system")).unwrap();
         assert!(result.is_some());
         let value = result.unwrap().as_value().cloned().unwrap();
         assert_eq!(value, Value::String("You are a test agent.".into()));
-    }
-
-    #[test]
-    fn write_gate_complete_calls_effects() {
-        let ns = make_namespace();
-        let mut store = HostStore::new(ns, MockEffects::new());
-
-        let request = CompletionRequest {
-            model: "test".into(),
-            max_tokens: 100,
-            system: "test".into(),
-            messages: vec![],
-            tools: vec![],
-            stream: false,
-        };
-        let value = structfs_serde_store::to_value(&request).unwrap();
-        let record = Record::parsed(value);
-
-        let result_path = store.handle_write(&path!("gate/complete"), record).unwrap();
-        assert_eq!(result_path.to_string(), "gate/response");
-        assert_eq!(store.effects.complete_calls, 1);
-        // Should have emitted TurnStart
-        assert!(store.effects.events.iter().any(|e| e.contains("TurnStart")));
-    }
-
-    #[test]
-    fn read_gate_response_returns_pending_events() {
-        let ns = make_namespace();
-        let mut store = HostStore::new(ns, MockEffects::new());
-
-        // First, trigger a completion to populate pending_events
-        let request = CompletionRequest {
-            model: "test".into(),
-            max_tokens: 100,
-            system: "test".into(),
-            messages: vec![],
-            tools: vec![],
-            stream: false,
-        };
-        let value = structfs_serde_store::to_value(&request).unwrap();
-        store
-            .handle_write(&path!("gate/complete"), Record::parsed(value))
-            .unwrap();
-
-        // Now read the response
-        let result = store.handle_read(&path!("gate/response")).unwrap();
-        assert!(result.is_some());
-
-        // Second read should return None (events consumed)
-        let result2 = store.handle_read(&path!("gate/response")).unwrap();
-        assert!(result2.is_none());
-    }
-
-    #[test]
-    fn write_tools_execute_calls_effects() {
-        let ns = make_namespace();
-        let mut store = HostStore::new(ns, MockEffects::new());
-
-        let call = ToolCall {
-            id: "call_001".into(),
-            name: "echo".into(),
-            input: serde_json::json!({"text": "hello"}),
-        };
-        let value = structfs_serde_store::to_value(&call).unwrap();
-        let record = Record::parsed(value);
-
-        let result_path = store.handle_write(&path!("tools/execute"), record).unwrap();
-
-        // Should have called the tool
-        assert_eq!(store.effects.tool_calls, vec!["echo"]);
-        // Should have emitted ToolCallStart + ToolCallResult
-        assert!(
-            store
-                .effects
-                .events
-                .iter()
-                .any(|e| e.contains("ToolCallStart"))
-        );
-        assert!(
-            store
-                .effects
-                .events
-                .iter()
-                .any(|e| e.contains("ToolCallResult"))
-        );
-
-        // Result should be written to namespace
-        let stored = store.handle_read(&result_path).unwrap();
-        assert!(stored.is_some());
-        assert_eq!(
-            stored.unwrap().as_value(),
-            Some(&Value::String("result for echo".into()))
-        );
     }
 
     #[test]
@@ -546,7 +268,6 @@ mod tests {
         let ns = make_namespace();
         let mut store = HostStore::new(ns, MockEffects::new());
 
-        // Writing to history/append should delegate to backend
         let msg = serde_json::json!({
             "role": "user",
             "content": "hello",
@@ -581,42 +302,15 @@ mod tests {
         let tool_store = make_tool_store();
         let mut store = HostStore::new(ns, MockEffects::new()).with_tool_store(tool_store);
 
-        // Reading tools/schemas should route to ToolStore and return schema entries.
         let result = store.handle_read(&path!("tools/schemas")).unwrap();
         assert!(result.is_some(), "expected schemas from ToolStore");
     }
 
     #[test]
-    fn tools_execute_routes_to_tool_store_when_present() {
-        let ns = make_namespace();
-        let tool_store = make_tool_store();
-        let mut store = HostStore::new(ns, MockEffects::new()).with_tool_store(tool_store);
-
-        // With a ToolStore attached, tools/execute routes to the ToolStore
-        // (no longer special-cased to the legacy HostEffects path).
-        let input = serde_json::json!({"text": "hello"});
-        let value = structfs_serde_store::json_to_value(input);
-        let record = Record::parsed(value);
-
-        // ToolStore has no "execute" module, so write should error.
-        let result = store.handle_write(&path!("tools/execute"), record);
-        assert!(
-            result.is_err(),
-            "expected error from ToolStore for unknown module 'execute'"
-        );
-        // Legacy effects should NOT have been called.
-        assert!(store.effects.tool_calls.is_empty());
-    }
-
-    #[test]
     fn tools_path_without_tool_store_falls_through() {
         let ns = make_namespace();
-        // No tool_store attached — tools/* (non-execute) should fall through to backend.
         let mut store = HostStore::new(ns, MockEffects::new());
 
-        // Reading tools/schemas without a ToolStore should delegate to the backend.
-        // The backend has a ToolsProvider mounted at "tools", which won't have "schemas",
-        // but the point is it doesn't panic.
         let result = store.handle_read(&path!("tools/schemas"));
         assert!(result.is_ok());
     }
@@ -626,14 +320,12 @@ mod tests {
         let ns = make_namespace();
         let mut store = HostStore::new(ns, MockEffects::new());
 
-        // Write a user message so synthesis has content
         let msg = serde_json::json!({"role": "user", "content": "hello"});
         let value = structfs_serde_store::json_to_value(msg);
         store
             .handle_write(&path!("history/append"), Record::parsed(value))
             .unwrap();
 
-        // Read prompt should synthesize a CompletionRequest
         let result = store.handle_read(&path!("prompt")).unwrap();
         assert!(result.is_some());
         let json =
@@ -642,5 +334,27 @@ mod tests {
         assert_eq!(request.model, "test-model");
         assert_eq!(request.system, "You are a test agent.");
         assert_eq!(request.messages.len(), 1);
+    }
+
+    #[test]
+    fn error_stash_roundtrips() {
+        let ns = make_namespace();
+        let mut store = HostStore::new(ns, MockEffects::new());
+
+        // Write error
+        let record = Record::parsed(Value::String("something broke".into()));
+        store
+            .handle_write(&path!("tool_results/__error"), record)
+            .unwrap();
+
+        // Read it back
+        let result = store
+            .handle_read(&path!("tool_results/__error"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            result.as_value(),
+            Some(&Value::String("something broke".into()))
+        );
     }
 }

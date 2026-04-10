@@ -1,7 +1,5 @@
 use ox_gate::{GateStore, ProviderConfig};
-use ox_kernel::{
-    AgentEvent, CompletionRequest, Record, StreamEvent, ToolCall, Value, Writer, path,
-};
+use ox_kernel::{AgentEvent, CompletionRequest, Record, StreamEvent, Value, Writer, path};
 use ox_runtime::{AgentModule, AgentRuntime, HostEffects, HostStore};
 use ox_tools::completion::CompletionTransport;
 use std::collections::{BTreeMap, HashMap};
@@ -307,13 +305,12 @@ fn agent_worker(
     // Ownership ping-pong state
     let mut tool_store = tool_store;
     let mut policy = policy;
-    let mut client = reqwest::blocking::Client::new();
 
     // Inject the CLI completion transport into the CompletionModule.
     // This gives CompletionModule the ability to execute LLM completions
     // end-to-end via StructFS write/read, independent of HostEffects.
     let cli_transport = CliCompletionTransport {
-        client: client.clone(),
+        client: reqwest::blocking::Client::new(),
         config: provider_config.clone(),
         api_key: api_key_for_transport.clone(),
         scoped_client: scoped_client.clone(),
@@ -346,9 +343,6 @@ fn agent_worker(
 
         let effects = CliEffects {
             thread_id: thread_id.clone(),
-            client,
-            config: provider_config.clone(),
-            api_key: api_key_for_transport.clone(),
             tool_store,
             policy,
             scoped_client: scoped_client.clone(),
@@ -361,7 +355,6 @@ fn agent_worker(
         let (returned_store, result) = module.run(host_store);
 
         adapter = returned_store.backend;
-        client = returned_store.effects.client;
         tool_store = returned_store.effects.tool_store;
         policy = returned_store.effects.policy;
 
@@ -461,13 +454,11 @@ fn save_thread_state(
 pub(crate) struct CliEffects {
     #[allow(dead_code)]
     pub(crate) thread_id: String,
-    pub(crate) client: reqwest::blocking::Client,
-    config: ProviderConfig,
-    api_key: String,
     pub(crate) tool_store: ox_tools::ToolStore,
     pub(crate) policy: crate::policy::PolicyGuard,
     scoped_client: ox_broker::ClientHandle,
     rt_handle: tokio::runtime::Handle,
+    #[allow(dead_code)]
     pub(crate) stats: PolicyStats,
 }
 
@@ -481,122 +472,6 @@ impl CliEffects {
 }
 
 impl HostEffects for CliEffects {
-    fn complete(
-        &mut self,
-        request: &CompletionRequest,
-    ) -> Result<(Vec<StreamEvent>, u32, u32), String> {
-        let scoped = self.scoped_client.clone();
-        let handle = self.rt_handle.clone();
-        let (events, usage) = crate::transport::streaming_fetch(
-            &self.client,
-            &self.config,
-            &self.api_key,
-            request,
-            &|event| {
-                if let StreamEvent::TextDelta(text) = event {
-                    handle
-                        .block_on(scoped.write(
-                            &path!("history/turn/streaming"),
-                            Record::parsed(Value::String(text.clone())),
-                        ))
-                        .ok();
-                }
-            },
-        )?;
-        if usage.input_tokens > 0 || usage.output_tokens > 0 {
-            let mut tmap = BTreeMap::new();
-            tmap.insert("in".to_string(), Value::Integer(usage.input_tokens as i64));
-            tmap.insert(
-                "out".to_string(),
-                Value::Integer(usage.output_tokens as i64),
-            );
-            self.broker_write(&path!("history/turn/tokens"), Value::Map(tmap));
-        }
-        Ok((events, usage.input_tokens, usage.output_tokens))
-    }
-
-    fn execute_tool(&mut self, call: &ToolCall) -> Result<String, String> {
-        tracing::debug!(tool = %call.name, id = %call.id, "execute_tool");
-        let decision = self.policy.check(&call.name, &call.input);
-        match decision {
-            crate::policy::CheckResult::Allow => {
-                self.stats.allowed += 1;
-                self.execute_tool_inner(call)
-            }
-            crate::policy::CheckResult::Deny(reason) => {
-                self.stats.denied += 1;
-                Err(format!("denied: {reason}"))
-            }
-            crate::policy::CheckResult::Ask {
-                tool,
-                input_preview,
-                ..
-            } => {
-                self.stats.asked += 1;
-
-                // Write approval request through broker — blocks until TUI responds.
-                // No timeout: approval waits for human input indefinitely.
-                let approval_client = self.scoped_client.with_timeout(std::time::Duration::MAX);
-                let mut req = BTreeMap::new();
-                req.insert("tool_name".to_string(), Value::String(tool));
-                req.insert("input_preview".to_string(), Value::String(input_preview));
-                let result = self.rt_handle.block_on(
-                    approval_client
-                        .write(&path!("approval/request"), Record::parsed(Value::Map(req))),
-                );
-
-                if result.is_ok() {
-                    // Read the response
-                    let resp = self
-                        .rt_handle
-                        .block_on(self.scoped_client.read(&path!("approval/response")))
-                        .ok()
-                        .flatten()
-                        .and_then(|r| match r.as_value() {
-                            Some(Value::String(s)) => Some(s.clone()),
-                            _ => None,
-                        })
-                        .unwrap_or_else(|| "deny_once".to_string());
-
-                    match resp.as_str() {
-                        "allow_once" => {
-                            self.stats.allowed += 1;
-                            self.execute_tool_inner(call)
-                        }
-                        "allow_session" => {
-                            self.policy.session_allow(&call.name, &call.input);
-                            self.stats.allowed += 1;
-                            self.execute_tool_inner(call)
-                        }
-                        "allow_always" => {
-                            self.policy.persist_allow(&call.name, &call.input);
-                            self.stats.allowed += 1;
-                            self.execute_tool_inner(call)
-                        }
-                        "deny_session" => {
-                            self.policy.session_deny(&call.name, &call.input);
-                            self.stats.denied += 1;
-                            Err("denied by user".into())
-                        }
-                        "deny_always" => {
-                            self.policy.persist_deny(&call.name, &call.input);
-                            self.stats.denied += 1;
-                            Err("denied by user".into())
-                        }
-                        _ => {
-                            // "deny_once" or unknown
-                            self.stats.denied += 1;
-                            Err("denied by user".into())
-                        }
-                    }
-                } else {
-                    self.stats.denied += 1;
-                    Err("denied: approval timeout".into())
-                }
-            }
-        }
-    }
-
     fn emit_event(&mut self, event: AgentEvent) {
         match event {
             AgentEvent::TurnStart => {
@@ -626,34 +501,3 @@ impl HostEffects for CliEffects {
     }
 }
 
-impl CliEffects {
-    fn execute_tool_inner(&mut self, call: &ToolCall) -> Result<String, String> {
-        use structfs_core_store::{Path, Reader, Writer};
-
-        // The tool name from the model is a wire name (e.g. "read_file")
-        // ToolStore resolves it to internal path (e.g. "fs/read") via NameMap
-        let tool_path = Path::parse(&call.name).map_err(|e| e.to_string())?;
-        let input_value = structfs_serde_store::json_to_value(call.input.clone());
-
-        self.tool_store
-            .write(&tool_path, Record::parsed(input_value))
-            .map_err(|e| format!("tool execution failed: {e}"))?;
-
-        // Read the result
-        let result_path_str = format!("{}/result", call.name);
-        let result_path = Path::parse(&result_path_str).map_err(|e| e.to_string())?;
-
-        match self.tool_store.read(&result_path) {
-            Ok(Some(record)) => {
-                let value = record
-                    .as_value()
-                    .cloned()
-                    .unwrap_or(structfs_core_store::Value::Null);
-                let json = structfs_serde_store::value_to_json(value);
-                Ok(serde_json::to_string(&json).unwrap_or_default())
-            }
-            Ok(None) => Err("no result from tool".into()),
-            Err(e) => Err(format!("result read failed: {e}")),
-        }
-    }
-}

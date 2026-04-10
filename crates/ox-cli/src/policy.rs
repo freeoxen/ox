@@ -3,6 +3,10 @@
 //! Evaluates tool invocations against a clash policy manifest (match-tree IR).
 //! Policies are authored in Starlark or JSON, stored in `.clash/policy.json`.
 
+// Policy methods are temporarily unused — they were called from HostEffects::execute_tool
+// which has been removed. They will be re-wired when policy enforcement moves to ToolStore.
+#![allow(dead_code)]
+
 use clash::policy::Effect;
 use clash::policy::manifest_edit;
 use clash::policy::match_tree::{
