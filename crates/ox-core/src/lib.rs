@@ -38,6 +38,7 @@ pub use ox_kernel::{
 /// It owns the full state of one agent session. Callers drive the kernel
 /// directly or use the Wasm runtime / custom loops — there is no built-in
 /// `prompt()` method.
+#[allow(dead_code)] // Fields used when kernel loop is driven through ToolStore
 pub struct Agent {
     kernel: Kernel,
     context: Namespace,
