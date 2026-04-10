@@ -536,26 +536,17 @@ pub async fn run_async(
                                         let keys_dir = inbox_root.join("keys");
 
                                         // Delete account through ConfigStore (Null = delete)
-                                        let provider_path = structfs_core_store::Path::parse(
-                                            &format!("config/gate/accounts/{name}/provider"),
-                                        )
-                                        .unwrap();
+                                        let provider_path = ox_kernel::oxpath!("config", "gate", "accounts", name, "provider");
                                         client
                                             .write(&provider_path, Record::parsed(Value::Null))
                                             .await
                                             .ok();
-                                        let ep_path = structfs_core_store::Path::parse(&format!(
-                                            "config/gate/accounts/{name}/endpoint"
-                                        ))
-                                        .unwrap();
+                                        let ep_path = ox_kernel::oxpath!("config", "gate", "accounts", name, "endpoint");
                                         client
                                             .write(&ep_path, Record::parsed(Value::Null))
                                             .await
                                             .ok();
-                                        let key_path = structfs_core_store::Path::parse(&format!(
-                                            "config/gate/accounts/{name}/key"
-                                        ))
-                                        .unwrap();
+                                        let key_path = ox_kernel::oxpath!("config", "gate", "accounts", name, "key");
                                         client
                                             .write(&key_path, Record::parsed(Value::Null))
                                             .await
