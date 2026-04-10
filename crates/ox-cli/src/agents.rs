@@ -176,6 +176,32 @@ fn agent_worker(
         tools.register(tool);
     }
 
+    // NEW: also build a ToolStore (additive — not yet wired into execution flow)
+    let executor = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("ox"));
+    let sandbox_policy: Arc<dyn ox_tools::sandbox::SandboxPolicy> = if no_policy {
+        Arc::new(ox_tools::sandbox::PermissivePolicy)
+    } else {
+        // For now, use permissive — real Clash SandboxPolicy comes later
+        Arc::new(ox_tools::sandbox::PermissivePolicy)
+    };
+    let fs_module = ox_tools::fs::FsModule::new(
+        workspace.clone(),
+        executor.clone(),
+        sandbox_policy.clone(),
+    );
+    let os_module = ox_tools::os::OsModule::new(
+        workspace.clone(),
+        executor,
+        sandbox_policy,
+    );
+    let gate = GateStore::new();
+    let completion_module = ox_tools::completion::CompletionModule::new(gate);
+    let _tool_store = ox_tools::ToolStore::new(fs_module, os_module, completion_module);
+    tracing::debug!(
+        "ToolStore constructed with {} schemas",
+        _tool_store.all_schemas().len()
+    );
+
     let policy = if no_policy {
         crate::policy::PolicyGuard::permissive()
     } else {

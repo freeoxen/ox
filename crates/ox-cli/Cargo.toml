@@ -25,6 +25,7 @@ ox-inbox = { path = "../ox-inbox" }
 ox-broker = { path = "../ox-broker" }
 ox-ui = { path = "../ox-ui" }
 ox-store-util = { path = "../ox-store-util" }
+ox-tools = { path = "../ox-tools" }
 tokio = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.28"
