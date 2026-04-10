@@ -182,17 +182,92 @@ the context ARE the observable state:
 
 No polling. No status queries. Read the namespace.
 
+## Context Is a View, Not a Bag of Data
+
+Context is not "the stuff that goes in the prompt." Context is a pluggable
+system of providers that synthesize prompt content on demand. History is one
+provider. But context also includes:
+
+- **File spans** — regions of source files, lazily loaded, included when
+  relevant. Not the whole file, not a summary — the exact span.
+- **Command output** — results of executed commands, captured and mounted
+  as context providers.
+- **Lazy computation** — values computed on read, not stored. A provider
+  that reads the filesystem, queries a database, or calls an API when
+  the kernel reads `prompt`.
+- **Structured references** — pointers to external resources (URLs,
+  database rows, API endpoints) that resolve on demand.
+
+Even history is not literally "in context." The prompt synthesis reads
+`history/messages`, but what it gets back is a *view* over history —
+potentially truncated, summarized, filtered, or windowed by the history
+provider. The provider decides what history looks like in the prompt.
+Different providers produce different views of the same underlying data.
+
+### Context as Tool Surface
+
+Context providers are surfaced to the kernel as tools. The kernel can
+manipulate its own context within the loop:
+
+- **Pin a file span** — `write("context/pin", {path, start, end})` adds
+  a span that stays in the prompt across turns.
+- **Drop a reference** — `write("context/drop", {ref_id})` removes a
+  context entry that's no longer needed.
+- **Summarize** — `write("context/summarize", {ref_id})` replaces a
+  verbose entry with a compressed form.
+- **Window history** — `write("context/history/window", {last_n})` adjusts
+  how much history appears in the prompt.
+
+The kernel is an active participant in context management, not a passive
+consumer. It reads its context, decides what's relevant, reshapes it for
+the next completion. This is loop resolution — the kernel tunes its own
+prompt within the agentic loop.
+
+### Fork: Context-to-Context Transform
+
+When the kernel spawns a sub-agent (fork), it produces a *transform* from
+its context to the sub-agent's context. The sub-agent inherits pieces of
+the parent's context cheaply — file spans, tool schemas, system prompt
+fragments — without re-synthesizing them through an LLM.
+
+```
+parent_context ──transform──> child_context
+     │                            │
+     │ file spans: inherited      │ file spans: same refs
+     │ history: filtered/none     │ history: empty or subset
+     │ tools: subset              │ tools: scoped subset
+     │ system: parent + task      │ system: derived prompt
+     │ gate: parent accounts      │ gate: subset of accounts
+```
+
+The transform is a function `context -> context` that:
+- Selects which providers to inherit (shallow copy, not re-synthesis)
+- Filters or scopes inherited providers (e.g., subset of tools)
+- Adds task-specific overrides (system prompt addendum, scoped history)
+- Constrains resources (model allowlist, token budget)
+
+The child runs with its own kernel. Its context evolves independently.
+Results flow back to the parent via a handle — the parent wrote a fork
+request, got a handle, reads the handle for the child's output. Same
+handle pattern as everything else.
+
 ## Context as Portable Bundle
 
-The context bundle is the agent's complete identity and state. To move an
-agent between hosts:
+The context bundle is the agent's complete identity and state. Because
+context is a system of providers (not a bag of data), serialization
+captures the provider state, not the synthesized prompt.
 
-1. **Serialize:** Read the full namespace (every mount's `snapshot/state`).
-   This produces a self-contained bundle — JSON, CBOR, or any format.
-2. **Ship:** Transfer the bundle to the target host (file, network, etc.).
+To move an agent between hosts:
+
+1. **Serialize:** Read each mount's `snapshot/state`. Providers serialize
+   their own state — history serializes messages, file-span providers
+   serialize their span references, lazy providers serialize their
+   configuration (not their computed values).
+2. **Ship:** Transfer the bundle to the target host.
 3. **Restore:** Write each mount's `snapshot/state` into a fresh namespace.
-4. **Execute:** Start a kernel with that namespace. It reads context,
-   determines position, picks up.
+   Providers reconstruct themselves from serialized state. Lazy providers
+   re-attach to local resources on the target host.
+4. **Execute:** Start a kernel with that namespace.
 
 The kernel binary is the same everywhere. The context is what varies.
 A context serialized from a local CLI session can be resumed on a remote
@@ -204,7 +279,8 @@ in, same behavior out.
 | Mount | Contents | Portable? |
 |-------|----------|-----------|
 | `system/` | System prompt | Yes |
-| `history/` | Conversation messages | Yes |
+| `history/` | Conversation messages (provider state, not the view) | Yes |
+| `context/*` | Provider configurations, span refs, pinned entries | Yes (refs may need re-resolution on target) |
 | `gate/` | Model config, account names | Yes (keys excluded) |
 | `tools/schemas` | Available tool definitions | Yes |
 | `tools/exec/*` | Completed handle results | Yes |
@@ -213,6 +289,11 @@ in, same behavior out.
 API keys are never serialized. The target host provides its own keys via
 its gate configuration. Account names are portable (the agent refers to
 "anthropic" or "openai"); key resolution happens at the host level.
+
+Span references (file paths, line ranges) are portable as data but may
+need re-resolution on the target host if the filesystem differs. The
+provider handles this — if a referenced file doesn't exist at the target,
+the span resolves to an empty value or an error, not a crash.
 
 ## Policy Enforcement
 
