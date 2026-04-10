@@ -225,6 +225,7 @@ pub struct ModelInfo {
 ///     |input| Ok(input["text"].as_str().unwrap_or("").to_string()),
 /// );
 /// ```
+#[deprecated(since = "0.2.0", note = "Use ox-tools ToolStore instead")]
 pub trait Tool: Send + Sync {
     /// A unique name for this tool (e.g. `"get_weather"`).
     fn name(&self) -> &str;
@@ -240,6 +241,7 @@ pub trait Tool: Send + Sync {
 ///
 /// This is the canonical way to create tools. All tools — standard distribution,
 /// completion delegates, Wasm components — are instances of `FnTool`.
+#[deprecated(since = "0.2.0", note = "Use ox-tools ToolStore instead")]
 pub struct FnTool {
     name: String,
     description: String,
@@ -247,6 +249,7 @@ pub struct FnTool {
     run: Box<dyn Fn(serde_json::Value) -> Result<String, String> + Send + Sync>,
 }
 
+#[allow(deprecated)]
 impl FnTool {
     /// Create a new tool from a closure.
     pub fn new(
@@ -264,6 +267,7 @@ impl FnTool {
     }
 }
 
+#[allow(deprecated)]
 impl Tool for FnTool {
     fn name(&self) -> &str {
         &self.name
@@ -286,10 +290,13 @@ impl Tool for FnTool {
 ///
 /// Tools are registered by name and looked up during the agentic loop
 /// when the model emits a [`ToolCall`].
+#[deprecated(since = "0.2.0", note = "Use ox-tools ToolStore instead")]
+#[allow(deprecated)]
 pub struct ToolRegistry {
     tools: HashMap<String, Box<dyn Tool>>,
 }
 
+#[allow(deprecated)]
 impl ToolRegistry {
     /// Create an empty registry.
     pub fn new() -> Self {
@@ -321,6 +328,7 @@ impl ToolRegistry {
     }
 }
 
+#[allow(deprecated)]
 impl Default for ToolRegistry {
     fn default() -> Self {
         Self::new()
@@ -481,6 +489,11 @@ impl Kernel {
     /// `send` is a synchronous function that takes a [`CompletionRequest`] and
     /// returns parsed [`StreamEvent`]s. For async callers (e.g. wasm), use the
     /// three-phase methods directly instead.
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use the three-phase methods with ox-tools TurnStore instead"
+    )]
+    #[allow(deprecated)]
     pub fn run_turn(
         &mut self,
         context: &mut dyn Store,
@@ -669,6 +682,7 @@ pub fn serialize_tool_results(results: &[ToolResult]) -> serde_json::Value {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
