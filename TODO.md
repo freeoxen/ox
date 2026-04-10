@@ -3,7 +3,8 @@
 ## Agent as pico-process, namespace as context
 
 The agent is a long-running process (pico-process in Wasm). The host provides
-the namespace — a structured filesystem. Tool calls are syscalls. The host
+the namespace — a structured filesystem. All effects are syscalls: the agent
+writes a request, gets a handle back, reads the handle for the result. The host
 never drives the agent; the agent drives itself.
 
 The namespace IS the agent's context — not just history, but the full structured
@@ -23,48 +24,49 @@ be in the namespace, not in local variables or the Wasm call stack.
 deserialize, spawn agent. Pull back local, same thing. The Wasm module is
 the same everywhere. The context is the only variable.
 
-**What's blocking:**
-1. Kernel state is in Rust fields, not the namespace. Should be derivable
-   from or stored in the context.
-2. Tool results aren't persisted until the full batch completes — partial
-   progress lost on crash. Each completed handle should write its result
-   to the namespace immediately.
-3. The snapshot system covers system/history/gate but not tool execution
-   state. Extend to cover the full namespace.
+## Kernel speaks handles natively
 
-## Async tool execution via StructFS handles
+The Kernel IS the agent loop — it runs inside the Wasm pico-process. But its
+current three-phase API (`initiate_completion`, `consume_events`,
+`complete_turn`) assumes one completion per turn. Multi-completion turns
+(N completions to different models/accounts in parallel) need a handle-native
+API where completions and tools are both handles.
 
-Tool execution should follow the native StructFS async pattern: writes return
-handles, reads resolve them. No hidden state accumulation. Tool calls are
-syscalls — the agent writes a request, the host handles it, the agent reads
-the result.
+The Kernel stays. The three-phase ceremony gets replaced with handle-aware
+methods that can fire multiple completions and tool calls per turn.
+
+## Uniform handle model for all effects
+
+Everything is a handle. Completions, tools, native tools — all the same
+pattern. The agent writes a request, gets a handle, reads the handle for
+the result. The host provides handle resolution.
 
 **Design:**
-
 ```
-h1 = write("tools/read_file", input)   // syscall: returns handle immediately
-h2 = write("tools/shell", input)       // syscall: returns handle immediately
-batch = write("tools/await", [h1, h2]) // syscall: returns batch handle
-results = read(batch)                  // blocks until all resolve
-```
+// Multi-completion turn:
+c1 = write("tools/completions/complete/anthropic", prompt_1)
+c2 = write("tools/completions/complete/openai", prompt_2)
+batch = write("tools/await", [c1, c2])
+responses = read(batch)
 
-The agent holds handles as values. When it wants results, it writes the set of
-handles it cares about to `tools/await`, gets a batch handle back, reads that.
+// Process responses, extract tool calls from each
+t1 = write("tools/shell", ...)
+t2 = write("tools/read_file", ...)
+tool_batch = write("tools/await", [t1, t2])
+results = read(tool_batch)
+
+write("history/append", all_results)
+```
 
 **What needs to change:**
-
-1. `sandboxed_exec` splits into `sandboxed_spawn` (returns JoinHandle) and
-   `sandboxed_await` (blocks on JoinHandle). ToolStore needs a runtime handle.
-2. ToolStore write returns an execution handle path instead of blocking.
-3. `tools/await` accepts a set of handles, returns a composite handle. Reading
-   the composite blocks until all constituent handles resolve.
-4. TurnStore as a stateful queue goes away. The handles ARE the state.
-5. Completed handles write results to the namespace immediately (crash safety).
-
-**Current state:** TurnStore exists as a queue but adds no value — the Wasm
-agent manages execution directly and TurnStore is write-only bookkeeping.
-Remove current TurnStore usage from the agent loop as a first step, then
-implement the handle-based async model.
+1. CompletionModule write returns a handle immediately. Completion executes
+   on a background thread (or tokio task). Reading the handle blocks until
+   the streaming response completes.
+2. `sandboxed_exec` splits into spawn + await. Tool writes return handles.
+3. Native tools execute in-process but still return handles (instant resolve).
+4. `tools/await` accepts a set of handles, returns a composite handle.
+5. TurnStore goes away. Handles ARE the state.
+6. Completed handles persist to namespace immediately (crash safety).
 
 ## Per-thread model allowlists
 
