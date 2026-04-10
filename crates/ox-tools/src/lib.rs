@@ -286,7 +286,11 @@ impl Writer for ToolStore {
                     .unwrap()
                     .execute(input_json)
                     .map_err(|e| {
-                        StoreError::store("ToolStore", "native_execute", format!("{wire_name}: {e}"))
+                        StoreError::store(
+                            "ToolStore",
+                            "native_execute",
+                            format!("{wire_name}: {e}"),
+                        )
                     })?;
                 let val = structfs_serde_store::json_to_value(result);
                 self.last_result.insert(internal, val);

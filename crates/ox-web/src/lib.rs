@@ -96,11 +96,8 @@ impl OxAgent {
             executor.clone(),
             policy.clone(),
         );
-        let os_module = ox_tools::os::OsModule::new(
-            std::path::PathBuf::from("."),
-            executor,
-            policy,
-        );
+        let os_module =
+            ox_tools::os::OsModule::new(std::path::PathBuf::from("."), executor, policy);
         let completion_gate = GateStore::new();
         let completion_module = ox_tools::completion::CompletionModule::new(completion_gate);
         let tool_store = ox_tools::ToolStore::new(fs_module, os_module, completion_module);

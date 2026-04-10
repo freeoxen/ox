@@ -28,9 +28,9 @@ pub use ox_tools;
 
 // --- Re-exports from ox-kernel (core types, traits, state machine) ---
 pub use ox_kernel::{
-    AgentEvent, CompletionRequest, ContentBlock, Kernel, Message, Path, Reader, Record,
-    Store, StoreError, StreamEvent, ToolCall, ToolResult, ToolSchema, Value,
-    Writer, path, serialize_assistant_message, serialize_tool_results,
+    AgentEvent, CompletionRequest, ContentBlock, Kernel, Message, Path, Reader, Record, Store,
+    StoreError, StreamEvent, ToolCall, ToolResult, ToolSchema, Value, Writer, path,
+    serialize_assistant_message, serialize_tool_results,
 };
 
 /// The Agent composes a Kernel, Namespace (with stores), and a ToolStore.

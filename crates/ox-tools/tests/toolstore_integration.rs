@@ -270,6 +270,9 @@ fn native_tool_registered_in_name_map() {
     );
     store.register_native(Box::new(tool));
 
-    assert_eq!(store.name_map().to_internal("my_tool"), Some("custom/my_tool"));
+    assert_eq!(
+        store.name_map().to_internal("my_tool"),
+        Some("custom/my_tool")
+    );
     assert_eq!(store.name_map().to_wire("custom/my_tool"), Some("my_tool"));
 }

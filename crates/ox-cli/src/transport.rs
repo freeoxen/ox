@@ -1,5 +1,7 @@
 use ox_gate::ProviderConfig;
-use ox_gate::codec::{UsageInfo, anthropic as anthropic_codec, openai as openai_codec};
+#[cfg(test)]
+use ox_gate::codec::anthropic as anthropic_codec;
+use ox_gate::codec::{UsageInfo, openai as openai_codec};
 use ox_kernel::{CompletionRequest, StreamEvent};
 use std::collections::HashSet;
 use std::io::BufRead;
@@ -41,40 +43,14 @@ pub fn build_request(
 }
 
 /// Parse an SSE response body using the appropriate dialect codec.
-pub fn parse_response(dialect: &str, body: &str) -> Vec<StreamEvent> {
+#[cfg(test)]
+fn parse_response(dialect: &str, body: &str) -> Vec<StreamEvent> {
     match dialect {
         "openai" => {
             let (events, _usage) = openai_codec::parse_sse_events(body);
             events
         }
         _ => anthropic_codec::parse_sse_events(body),
-    }
-}
-
-/// Create a non-streaming send function. Used by CompletionTool for sub-completions.
-pub fn make_send_fn(
-    config: ProviderConfig,
-    api_key: String,
-) -> impl Fn(&CompletionRequest) -> Result<Vec<StreamEvent>, String> + Send + Sync {
-    let client = reqwest::blocking::Client::new();
-    move |request: &CompletionRequest| {
-        let (url, headers, body) = build_request(&config, &api_key, request)?;
-        let mut req = client.post(&url).body(body);
-        for (key, value) in &headers {
-            req = req.header(key, value);
-        }
-        let resp = req
-            .send()
-            .map_err(|e| format!("HTTP request failed: {e}"))?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().unwrap_or_default();
-            return Err(format!("HTTP {status}: {text}"));
-        }
-        let text = resp
-            .text()
-            .map_err(|e| format!("failed to read response: {e}"))?;
-        Ok(parse_response(&config.dialect, &text))
     }
 }
 
