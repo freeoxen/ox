@@ -370,7 +370,8 @@ mod tests {
     use ox_gate::GateStore;
     use ox_history::HistoryProvider;
     use ox_kernel::{AgentEvent, CompletionRequest, StreamEvent, ToolCall};
-    use structfs_core_store::{Record, Writer, path};
+    use ox_tools::completion::CompletionTransport;
+    use structfs_core_store::{Record, Value, Writer, path};
 
     #[test]
     fn runtime_creates_engine() {
@@ -430,6 +431,44 @@ mod tests {
         }
     }
 
+    struct MockTransport;
+
+    impl CompletionTransport for MockTransport {
+        fn send(
+            &self,
+            _request: &CompletionRequest,
+            _on_event: &dyn Fn(&StreamEvent),
+        ) -> Result<(Vec<StreamEvent>, u32, u32), String> {
+            Ok((
+                vec![
+                    StreamEvent::TextDelta("Hello from the agent!".to_string()),
+                    StreamEvent::MessageStop,
+                ],
+                10,
+                5,
+            ))
+        }
+    }
+
+    fn make_tool_store() -> ox_tools::ToolStore {
+        use ox_tools::completion::CompletionModule;
+        use ox_tools::fs::FsModule;
+        use ox_tools::os::OsModule;
+        use ox_tools::sandbox::PermissivePolicy;
+        use std::sync::Arc;
+
+        let policy = Arc::new(PermissivePolicy);
+        let workspace = std::path::PathBuf::from("/tmp/test-workspace");
+        let executor = std::path::PathBuf::from("/nonexistent/ox-tool-exec");
+
+        let fs = FsModule::new(workspace.clone(), executor.clone(), policy.clone());
+        let os = OsModule::new(workspace, executor, policy);
+        let completions =
+            CompletionModule::new(GateStore::new()).with_transport(Box::new(MockTransport));
+
+        ox_tools::ToolStore::new(fs, os, completions)
+    }
+
     #[test]
     fn load_and_run_agent_wasm() {
         let wasm_path =
@@ -453,19 +492,26 @@ mod tests {
         ns.mount("tools", Box::new(ToolsProvider::new(vec![])));
         ns.mount("gate", Box::new(GateStore::new()));
 
+        // Write default account so the agent knows which completion path to use.
+        ns.write(
+            &path!("gate/defaults/account"),
+            Record::parsed(Value::String("anthropic".into())),
+        )
+        .expect("failed to write default account");
+
         // Write a user message so prompt synthesis has something to work with.
         let user_msg = serde_json::json!({ "role": "user", "content": "Say hello." });
         let user_value = structfs_serde_store::json_to_value(user_msg);
         ns.write(&path!("history/append"), Record::parsed(user_value))
             .expect("failed to write user message");
 
-        // Load and run.
+        // Load and run with ToolStore attached for tools/* routing.
         let runtime = AgentRuntime::new().expect("runtime creation failed");
         let module = runtime
             .load_module_from_file(&wasm_path)
             .expect("failed to load agent.wasm");
 
-        let host_store = HostStore::new(ns, MockEffects::new());
+        let host_store = HostStore::new(ns, MockEffects::new()).with_tool_store(make_tool_store());
         let (_returned_store, result) = module.run(host_store);
 
         match &result {

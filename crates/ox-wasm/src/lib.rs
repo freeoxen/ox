@@ -210,22 +210,37 @@ fn agent_main() -> Result<(), String> {
         _ => "unknown".to_string(),
     };
 
+    // Read default account for completion routing.
+    let default_account = match bridge.read(&path!("gate/defaults/account")) {
+        Ok(Some(record)) => match record.as_value() {
+            Some(Value::String(s)) => s.clone(),
+            _ => "anthropic".to_string(),
+        },
+        _ => "anthropic".to_string(),
+    };
+
     let mut kernel = Kernel::new(model);
 
     loop {
         // Phase 1: Kernel reads prompt and prepares CompletionRequest.
         let request = kernel.initiate_completion(&mut bridge)?;
 
-        // Serialize request and write to gate/complete (host performs HTTP).
+        // Serialize request and write to tools/completions/complete/{account}.
         let request_json = serde_json::to_value(&request).map_err(|e| e.to_string())?;
         let request_value = structfs_serde_store::json_to_value(request_json);
+        let complete_path = Path::parse(&format!("tools/completions/complete/{default_account}"))
+            .map_err(|e| e.to_string())?;
         bridge
-            .write(&path!("gate/complete"), Record::parsed(request_value))
+            .write(&complete_path, Record::parsed(request_value))
             .map_err(|e| e.to_string())?;
 
-        // Read response events from gate/response.
+        // Read response events from tools/completions/complete/{account}/response.
+        let response_path = Path::parse(&format!(
+            "tools/completions/complete/{default_account}/response"
+        ))
+        .map_err(|e| e.to_string())?;
         let response = bridge
-            .read(&path!("gate/response"))
+            .read(&response_path)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "no completion response".to_string())?;
 
@@ -242,30 +257,49 @@ fn agent_main() -> Result<(), String> {
             return Ok(());
         }
 
-        // Execute tools via host. Denied tools produce an error result,
-        // not a fatal abort — the conversation must continue.
+        // Execute tools via ToolStore paths. Denied tools produce an error
+        // result, not a fatal abort — the conversation must continue.
         let mut results = Vec::new();
         for tc in &tool_calls {
-            let tc_json = serde_json::to_value(tc).map_err(|e| e.to_string())?;
-            let tc_value = structfs_serde_store::json_to_value(tc_json);
+            // Emit tool_call_start event.
+            let start_event = serde_json::json!({"type": "tool_call_start", "name": tc.name});
+            let start_value = structfs_serde_store::json_to_value(start_event);
+            bridge
+                .write(&path!("events/emit"), Record::parsed(start_value))
+                .ok();
 
-            let result_str = match bridge.write(&path!("tools/execute"), Record::parsed(tc_value)) {
-                Ok(result_path) => {
-                    // Tool executed — read the result
+            // Write tool input to tools/{wire_name}.
+            let input_value = structfs_serde_store::json_to_value(tc.input.clone());
+            let tool_path =
+                Path::parse(&format!("tools/{}", tc.name)).map_err(|e| e.to_string())?;
+
+            let result_str = match bridge.write(&tool_path, Record::parsed(input_value)) {
+                Ok(_) => {
+                    // Read result from tools/{wire_name}/result.
+                    let result_path = Path::parse(&format!("tools/{}/result", tc.name))
+                        .map_err(|e| e.to_string())?;
                     match bridge.read(&result_path) {
-                        Ok(Some(record)) => match record.as_value() {
-                            Some(Value::String(s)) => s.clone(),
-                            _ => "error: unexpected result format".to_string(),
-                        },
+                        Ok(Some(record)) => {
+                            let val = record.as_value().cloned().unwrap_or(Value::Null);
+                            let json = structfs_serde_store::value_to_json(val);
+                            serde_json::to_string(&json).unwrap_or_default()
+                        }
                         Ok(None) => format!("error: no result for tool {}", tc.name),
                         Err(e) => format!("error: {e}"),
                     }
                 }
                 Err(e) => {
-                    // Tool denied or failed — use the error as the result
+                    // Tool denied or failed — use the error as the result.
                     e.to_string()
                 }
             };
+
+            // Emit tool_call_result event.
+            let end_event = serde_json::json!({"type": "tool_call_result", "name": tc.name, "result": &result_str});
+            let end_value = structfs_serde_store::json_to_value(end_event);
+            bridge
+                .write(&path!("events/emit"), Record::parsed(end_value))
+                .ok();
 
             results.push(ToolResult {
                 tool_use_id: tc.id.clone(),

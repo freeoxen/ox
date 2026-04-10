@@ -151,30 +151,34 @@ impl CompletionModule {
 /// delegates everything else to GateStore.
 impl Reader for CompletionModule {
     fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
-        // complete/{account}/response → return stored completion result
+        // complete/{account}/response → return stored stream events as JSON array
         if from.len() >= 2 && from.components[0] == "complete" {
             let account = from.components[1].as_str();
             if from.len() >= 3 && from.components[2] == "response" {
                 return Ok(self.results.get(account).map(|r| {
-                    let mut map = BTreeMap::new();
-                    map.insert(
-                        "input_tokens".to_string(),
-                        Value::Integer(r.input_tokens as i64),
-                    );
-                    map.insert(
-                        "output_tokens".to_string(),
-                        Value::Integer(r.output_tokens as i64),
-                    );
-                    map.insert(
-                        "event_count".to_string(),
-                        Value::Integer(r.events.len() as i64),
-                    );
-                    Record::parsed(Value::Map(map))
+                    let json_events: Vec<serde_json::Value> =
+                        r.events.iter().map(stream_event_to_json).collect();
+                    let json_value = serde_json::Value::Array(json_events);
+                    let value = structfs_serde_store::json_to_value(json_value);
+                    Record::parsed(value)
                 }));
             }
-            // complete/{account} — return whether a result exists
-            return Ok(self.results.get(account).map(|_| {
-                Record::parsed(Value::Bool(true))
+            // complete/{account} — return metadata about the result
+            return Ok(self.results.get(account).map(|r| {
+                let mut map = BTreeMap::new();
+                map.insert(
+                    "input_tokens".to_string(),
+                    Value::Integer(r.input_tokens as i64),
+                );
+                map.insert(
+                    "output_tokens".to_string(),
+                    Value::Integer(r.output_tokens as i64),
+                );
+                map.insert(
+                    "event_count".to_string(),
+                    Value::Integer(r.events.len() as i64),
+                );
+                Record::parsed(Value::Map(map))
             }));
         }
         self.gate.read(from)
@@ -198,22 +202,47 @@ impl Writer for CompletionModule {
                 )
             })?;
             let json = structfs_serde_store::value_to_json(value.clone());
-            let request: CompletionRequest =
-                serde_json::from_value(json).map_err(|e| {
-                    StoreError::store(
-                        "CompletionModule",
-                        "write",
-                        format!("invalid CompletionRequest: {e}"),
-                    )
-                })?;
-
-            self.execute(&account, &request, &|_| {}).map_err(|e| {
-                StoreError::store("CompletionModule", "write", e)
+            let request: CompletionRequest = serde_json::from_value(json).map_err(|e| {
+                StoreError::store(
+                    "CompletionModule",
+                    "write",
+                    format!("invalid CompletionRequest: {e}"),
+                )
             })?;
+
+            self.execute(&account, &request, &|_| {})
+                .map_err(|e| StoreError::store("CompletionModule", "write", e))?;
 
             return Ok(to.clone());
         }
         self.gate.write(to, data)
+    }
+}
+
+// -- Manual StreamEvent -> JSON (no serde derives on StreamEvent) -------------
+
+fn stream_event_to_json(event: &StreamEvent) -> serde_json::Value {
+    match event {
+        StreamEvent::TextDelta(text) => serde_json::json!({
+            "type": "text_delta",
+            "text": text,
+        }),
+        StreamEvent::ToolUseStart { id, name } => serde_json::json!({
+            "type": "tool_use_start",
+            "id": id,
+            "name": name,
+        }),
+        StreamEvent::ToolUseInputDelta(delta) => serde_json::json!({
+            "type": "tool_use_input_delta",
+            "delta": delta,
+        }),
+        StreamEvent::MessageStop => serde_json::json!({
+            "type": "message_stop",
+        }),
+        StreamEvent::Error(msg) => serde_json::json!({
+            "type": "error",
+            "message": msg,
+        }),
     }
 }
 
@@ -346,7 +375,9 @@ mod tests {
             CompletionModule::new(GateStore::new()).with_transport(Box::new(transport));
 
         assert!(module.result("anthropic").is_none());
-        module.execute("anthropic", &sample_request(), &|_| {}).unwrap();
+        module
+            .execute("anthropic", &sample_request(), &|_| {})
+            .unwrap();
         let r = module.result("anthropic").unwrap();
         assert_eq!(r.input_tokens, 42);
         assert_eq!(r.output_tokens, 17);
@@ -402,26 +433,42 @@ mod tests {
             CompletionModule::new(GateStore::new()).with_transport(Box::new(transport));
 
         // Execute a completion first
-        module.execute("myaccount", &sample_request(), &|_| {}).unwrap();
+        module
+            .execute("myaccount", &sample_request(), &|_| {})
+            .unwrap();
 
-        // Read the response
+        // Read the response — should return serialized stream events array
         let path = structfs_core_store::path!("complete/myaccount/response");
+        let record = module.read(&path).unwrap().unwrap();
+        let value = record.as_value().unwrap();
+        let json = structfs_serde_store::value_to_json(value.clone());
+        let arr = json.as_array().expect("expected JSON array of events");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["type"], "text_delta");
+        assert_eq!(arr[0]["text"], "x");
+    }
+
+    #[test]
+    fn reader_returns_metadata_for_complete_account_path() {
+        let events = vec![StreamEvent::TextDelta("x".into())];
+        let transport = MockTransport::new(events, 20, 10);
+        let mut module =
+            CompletionModule::new(GateStore::new()).with_transport(Box::new(transport));
+
+        // Execute a completion first
+        module
+            .execute("myaccount", &sample_request(), &|_| {})
+            .unwrap();
+
+        // Read complete/{account} (without /response) — returns metadata
+        let path = structfs_core_store::path!("complete/myaccount");
         let record = module.read(&path).unwrap().unwrap();
         let value = record.as_value().unwrap();
         match value {
             Value::Map(map) => {
-                assert_eq!(
-                    map.get("input_tokens"),
-                    Some(&Value::Integer(20))
-                );
-                assert_eq!(
-                    map.get("output_tokens"),
-                    Some(&Value::Integer(10))
-                );
-                assert_eq!(
-                    map.get("event_count"),
-                    Some(&Value::Integer(1))
-                );
+                assert_eq!(map.get("input_tokens"), Some(&Value::Integer(20)));
+                assert_eq!(map.get("output_tokens"), Some(&Value::Integer(10)));
+                assert_eq!(map.get("event_count"), Some(&Value::Integer(1)));
             }
             other => panic!("expected Map, got {:?}", other),
         }

@@ -72,10 +72,9 @@ impl Writer for SimpleStore {
 /// Reads and writes to certain paths are intercepted and routed to
 /// the [`HostEffects`] handler instead of the underlying namespace:
 ///
-/// - **`gate/complete`** (write) — triggers LLM completion
-/// - **`gate/response`** (read) — returns pending stream events
-/// - **`tools/execute`** (write) — executes a tool call (legacy path)
-/// - **`tools/{module}/{op}`** (read/write) — routes to ToolStore when present
+/// - **`gate/complete`** (write) — triggers LLM completion (legacy, no ToolStore)
+/// - **`gate/response`** (read) — returns pending stream events (legacy, no ToolStore)
+/// - **`tools/*`** (read/write) — routes to ToolStore when present
 /// - **`events/emit`** (write) — emits an agent event
 pub struct HostStore<B: Reader + Writer + Send, E: HostEffects> {
     /// The underlying backend for non-effectful operations.
@@ -120,8 +119,8 @@ impl<B: Reader + Writer + Send, E: HostEffects> HostStore<B, E> {
             return self.read_gate_response();
         }
 
-        // Route tools/* reads to ToolStore (if present), except legacy tools/execute.
-        if !path.is_empty() && path.components[0] == "tools" && path != &path!("tools/execute") {
+        // Route tools/* reads to ToolStore (if present).
+        if !path.is_empty() && path.components[0] == "tools" {
             if let Some(ref mut ts) = self.tool_store {
                 let sub = Path::from_components(path.components[1..].to_vec());
                 return ts.read(&sub);
@@ -146,8 +145,8 @@ impl<B: Reader + Writer + Send, E: HostEffects> HostStore<B, E> {
             path.components[0].as_str()
         };
 
-        // Route tools/* writes to ToolStore (if present), except legacy tools/execute.
-        if prefix == "tools" && path != &path!("tools/execute") {
+        // Route tools/* writes to ToolStore (if present).
+        if prefix == "tools" {
             if let Some(ref mut ts) = self.tool_store {
                 let sub = Path::from_components(path.components[1..].to_vec());
                 return ts.write(&sub, data);
@@ -588,24 +587,25 @@ mod tests {
     }
 
     #[test]
-    fn tools_execute_still_routes_to_legacy_path() {
+    fn tools_execute_routes_to_tool_store_when_present() {
         let ns = make_namespace();
         let tool_store = make_tool_store();
         let mut store = HostStore::new(ns, MockEffects::new()).with_tool_store(tool_store);
 
-        // Writing to tools/execute should still use the legacy HostEffects path.
-        let call = ToolCall {
-            id: "call_legacy".into(),
-            name: "echo".into(),
-            input: serde_json::json!({"text": "hello"}),
-        };
-        let value = structfs_serde_store::to_value(&call).unwrap();
+        // With a ToolStore attached, tools/execute routes to the ToolStore
+        // (no longer special-cased to the legacy HostEffects path).
+        let input = serde_json::json!({"text": "hello"});
+        let value = structfs_serde_store::json_to_value(input);
         let record = Record::parsed(value);
 
-        let result_path = store.handle_write(&path!("tools/execute"), record).unwrap();
-        // Legacy path writes to tool_results
-        assert!(result_path.to_string().starts_with("tool_results/"));
-        assert_eq!(store.effects.tool_calls, vec!["echo"]);
+        // ToolStore has no "execute" module, so write should error.
+        let result = store.handle_write(&path!("tools/execute"), record);
+        assert!(
+            result.is_err(),
+            "expected error from ToolStore for unknown module 'execute'"
+        );
+        // Legacy effects should NOT have been called.
+        assert!(store.effects.tool_calls.is_empty());
     }
 
     #[test]
