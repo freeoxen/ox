@@ -3,6 +3,7 @@ use ox_kernel::{
     AgentEvent, CompletionRequest, Record, StreamEvent, ToolCall, Value, Writer, path,
 };
 use ox_runtime::{AgentModule, AgentRuntime, HostEffects, HostStore};
+use ox_tools::completion::CompletionTransport;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
@@ -11,6 +12,66 @@ use structfs_core_store::Reader as _;
 use structfs_serde_store::json_to_value;
 
 use crate::policy::PolicyStats;
+
+// ---------------------------------------------------------------------------
+// CliCompletionTransport — reqwest-based CompletionTransport for the CLI
+// ---------------------------------------------------------------------------
+
+/// Native HTTP transport that wraps [`crate::transport::streaming_fetch`].
+///
+/// Holds the reqwest client, provider config, and API key. Also holds a broker
+/// handle so streaming text deltas and token usage can be written to the TUI
+/// in real time.
+struct CliCompletionTransport {
+    client: reqwest::blocking::Client,
+    config: ProviderConfig,
+    api_key: String,
+    scoped_client: ox_broker::ClientHandle,
+    rt_handle: tokio::runtime::Handle,
+}
+
+impl CompletionTransport for CliCompletionTransport {
+    fn send(
+        &self,
+        request: &CompletionRequest,
+        on_event: &dyn Fn(&StreamEvent),
+    ) -> Result<(Vec<StreamEvent>, u32, u32), String> {
+        let scoped = self.scoped_client.clone();
+        let handle = self.rt_handle.clone();
+        let (events, usage) = crate::transport::streaming_fetch(
+            &self.client,
+            &self.config,
+            &self.api_key,
+            request,
+            &|event| {
+                on_event(event);
+                if let StreamEvent::TextDelta(text) = event {
+                    handle
+                        .block_on(scoped.write(
+                            &path!("history/turn/streaming"),
+                            Record::parsed(Value::String(text.clone())),
+                        ))
+                        .ok();
+                }
+            },
+        )?;
+        if usage.input_tokens > 0 || usage.output_tokens > 0 {
+            let mut tmap = BTreeMap::new();
+            tmap.insert("in".to_string(), Value::Integer(usage.input_tokens as i64));
+            tmap.insert(
+                "out".to_string(),
+                Value::Integer(usage.output_tokens as i64),
+            );
+            self.rt_handle
+                .block_on(self.scoped_client.write(
+                    &path!("history/turn/tokens"),
+                    Record::parsed(Value::Map(tmap)),
+                ))
+                .ok();
+        }
+        Ok((events, usage.input_tokens, usage.output_tokens))
+    }
+}
 
 pub(crate) const SYSTEM_PROMPT: &str = "\
 You are an expert software engineer working in a coding CLI. \
@@ -247,6 +308,20 @@ fn agent_worker(
     let mut tool_store = tool_store;
     let mut policy = policy;
     let mut client = reqwest::blocking::Client::new();
+
+    // Inject the CLI completion transport into the CompletionModule.
+    // This gives CompletionModule the ability to execute LLM completions
+    // end-to-end via StructFS write/read, independent of HostEffects.
+    let cli_transport = CliCompletionTransport {
+        client: client.clone(),
+        config: provider_config.clone(),
+        api_key: api_key_for_transport.clone(),
+        scoped_client: scoped_client.clone(),
+        rt_handle: rt_handle.clone(),
+    };
+    tool_store
+        .completions_mut()
+        .set_transport(Box::new(cli_transport));
 
     tracing::info!(
         thread_id = %thread_id,

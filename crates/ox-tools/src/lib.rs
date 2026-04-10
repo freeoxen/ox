@@ -109,6 +109,11 @@ impl ToolStore {
         &self.name_map
     }
 
+    /// Mutable access to the completions module (e.g. to inject a transport).
+    pub fn completions_mut(&mut self) -> &mut CompletionModule {
+        &mut self.completions
+    }
+
     /// Resolve the first path component, potentially via wire-name lookup.
     ///
     /// Returns `(module_prefix, op, tail)` where module_prefix is "fs", "os",
