@@ -1,0 +1,27 @@
+[package]
+name = "ox-tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Sandboxed tool execution and file-system module for the ox agent framework"
+
+[[bin]]
+name = "ox-tool-exec"
+path = "src/bin/ox-tool-exec.rs"
+
+[dependencies]
+ox-kernel = { path = "../ox-kernel" }
+ox-gate = { path = "../ox-gate" }
+ox-path = { path = "../ox-path" }
+structfs-core-store = { workspace = true }
+structfs-serde-store = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
