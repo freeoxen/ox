@@ -1,4 +1,5 @@
 pub mod fs;
+pub mod name_map;
 pub mod os;
 pub mod sandbox;
 
