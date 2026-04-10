@@ -118,17 +118,18 @@ impl AsyncWriter for ApprovalStore {
                 let (tx, rx) = tokio::sync::oneshot::channel::<String>();
                 self.deferred_tx = Some(tx);
 
-                let path = to.clone();
                 Box::pin(async move {
-                    // Block until the response arrives via the oneshot channel
-                    let _decision = rx.await.map_err(|_| {
+                    // Block until the response arrives via the oneshot channel.
+                    // The decision string is encoded in the returned path so the
+                    // caller can parse it (e.g. "request/allow_once").
+                    let decision = rx.await.map_err(|_| {
                         StoreError::store(
                             "approval",
                             "request",
                             "response channel dropped without a response",
                         )
                     })?;
-                    Ok(path)
+                    Ok(Path::from_components(vec!["request".to_string(), decision]))
                 })
             }
             "response" => {

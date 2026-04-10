@@ -3,10 +3,6 @@
 //! Evaluates tool invocations against a clash policy manifest (match-tree IR).
 //! Policies are authored in Starlark or JSON, stored in `.clash/policy.json`.
 
-// Policy methods are temporarily unused — they were called from HostEffects::execute_tool
-// which has been removed. They will be re-wired when policy enforcement moves to ToolStore.
-#![allow(dead_code)]
-
 use clash::policy::Effect;
 use clash::policy::manifest_edit;
 use clash::policy::match_tree::{
@@ -30,6 +26,7 @@ pub enum CheckResult {
 
 /// Counters for policy decisions (displayed in status bar).
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)] // fields will be read when wired to TUI status display
 pub struct PolicyStats {
     pub allowed: u32,
     pub denied: u32,
@@ -129,6 +126,7 @@ impl PolicyGuard {
     }
 
     /// Add a persistent deny rule and save to disk.
+    #[allow(dead_code)] // available for future UI deny-always action
     pub fn persist_deny(&mut self, tool_name: &str, input: &serde_json::Value) {
         let node = build_deny_node(tool_name, input);
         manifest_edit::upsert_rule(&mut self.manifest, node);

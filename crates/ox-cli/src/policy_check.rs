@@ -1,0 +1,151 @@
+//! CliPolicyCheck — wraps PolicyGuard + broker approval flow.
+//!
+//! Implements [`ox_tools::policy_store::PolicyCheck`] for use in the CLI agent
+//! worker. Evaluates tool calls against the Clash policy, blocking for TUI
+//! approval when the policy returns Ask.
+
+use std::collections::BTreeMap;
+
+use ox_tools::policy_store::{PolicyCheck, PolicyDecision};
+use structfs_core_store::{Path, Record, Value};
+
+use crate::policy::{CheckResult, PolicyGuard};
+
+/// Policy check implementation for the CLI agent worker.
+///
+/// On `Ask` decisions, writes an approval request through the broker's
+/// `approval/request` path and blocks until the TUI responds via
+/// `approval/response`. The decision is encoded in the returned path.
+pub(crate) struct CliPolicyCheck {
+    pub guard: PolicyGuard,
+    scoped_client: ox_broker::ClientHandle,
+    rt_handle: tokio::runtime::Handle,
+}
+
+impl CliPolicyCheck {
+    pub fn new(
+        guard: PolicyGuard,
+        scoped_client: ox_broker::ClientHandle,
+        rt_handle: tokio::runtime::Handle,
+    ) -> Self {
+        Self {
+            guard,
+            scoped_client,
+            rt_handle,
+        }
+    }
+
+    /// Extract the tool wire name from a ToolStore path.
+    ///
+    /// Paths arrive as either wire names (`read_file`) or internal paths
+    /// (`fs/read`). The first component is the tool name or module prefix.
+    fn path_to_tool_name(path: &Path) -> String {
+        if path.is_empty() {
+            return String::new();
+        }
+        // Wire names are the first component. For internal paths like
+        // "fs/read", the ToolStore resolves wire→internal before dispatching,
+        // but PolicyStore sits in front, so we see the raw path which uses
+        // wire names (e.g. "read_file", "shell").
+        path.components[0].clone()
+    }
+
+    /// Convert a StructFS Record to a serde_json::Value for PolicyGuard.
+    fn record_to_json(data: &Record) -> serde_json::Value {
+        match data.as_value() {
+            Some(v) => structfs_serde_store::value_to_json(v.clone()),
+            None => serde_json::Value::Null,
+        }
+    }
+
+    /// Handle the Ask flow: write approval request to broker, block for response.
+    fn handle_ask(&mut self, tool: &str, input_preview: &str) -> PolicyDecision {
+        let mut request = BTreeMap::new();
+        request.insert("tool_name".to_string(), Value::String(tool.to_string()));
+        request.insert(
+            "input_preview".to_string(),
+            Value::String(input_preview.to_string()),
+        );
+
+        // Write to approval/request — this blocks until the TUI responds.
+        // Use Duration::MAX so deliberation time is never capped by the
+        // broker's default 30-second timeout.
+        let approval_client = self.scoped_client.with_timeout(std::time::Duration::MAX);
+        let result = self.rt_handle.block_on(approval_client.write(
+            &structfs_core_store::path!("approval/request"),
+            Record::parsed(Value::Map(request)),
+        ));
+
+        let decision_str = match result {
+            Ok(returned_path) => {
+                // Decision encoded in path: "request/{decision}"
+                if returned_path.components.len() >= 2 {
+                    returned_path.components[1].clone()
+                } else {
+                    "deny".to_string()
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "approval request failed, defaulting to deny");
+                return PolicyDecision::Deny(format!("approval error: {e}"));
+            }
+        };
+
+        match decision_str.as_str() {
+            "allow_once" => PolicyDecision::Allow,
+            "allow_session" => {
+                // Add session-level allow rule so future calls don't ask again
+                let input = serde_json::json!({});
+                self.guard.session_allow(tool, &input);
+                PolicyDecision::Allow
+            }
+            "allow_always" => {
+                // Persist allow rule to disk
+                let input = serde_json::json!({});
+                self.guard.persist_allow(tool, &input);
+                PolicyDecision::Allow
+            }
+            "deny" | "deny_once" => PolicyDecision::Deny(format!("denied by user: {tool}")),
+            "deny_session" => {
+                let input = serde_json::json!({});
+                self.guard.session_deny(tool, &input);
+                PolicyDecision::Deny(format!("denied by user (session): {tool}"))
+            }
+            other => {
+                tracing::warn!(decision = other, "unknown approval decision, denying");
+                PolicyDecision::Deny(format!("unknown decision: {other}"))
+            }
+        }
+    }
+}
+
+impl PolicyCheck for CliPolicyCheck {
+    fn check(&mut self, path: &Path, data: &Record) -> PolicyDecision {
+        let tool_name = Self::path_to_tool_name(path);
+        if tool_name.is_empty() {
+            return PolicyDecision::Allow;
+        }
+
+        // Skip policy checks for non-tool paths (schemas, completions internals)
+        match tool_name.as_str() {
+            "schemas" | "completions" => return PolicyDecision::Allow,
+            _ => {}
+        }
+
+        let input = Self::record_to_json(data);
+
+        match self.guard.check(&tool_name, &input) {
+            CheckResult::Allow => PolicyDecision::Allow,
+            CheckResult::Deny(reason) => PolicyDecision::Deny(reason),
+            CheckResult::Ask {
+                tool,
+                input_preview,
+                ..
+            } => self.handle_ask(&tool, &input_preview),
+        }
+    }
+}
+
+// Safety: PolicyGuard contains no interior mutability across threads.
+// ClientHandle and Handle are documented as Send+Sync.
+unsafe impl Sync for CliPolicyCheck {}

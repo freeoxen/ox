@@ -2,27 +2,32 @@
 //!
 //! The HostStore sits between the Wasm agent and the StructFS backend,
 //! intercepting effectful paths (event emission) and routing tool
-//! operations to a [`ToolStore`] when present. LLM completion and tool
-//! execution are handled by the ToolStore — the host only provides
-//! event emission via [`HostEffects`].
+//! operations through [`HostEffects::tool_store()`]. LLM completion and
+//! tool execution are handled by the ToolStore — the host provides
+//! event emission and tool dispatch via [`HostEffects`].
 
 use ox_kernel::AgentEvent;
-use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer, path};
+use structfs_core_store::{Error as StoreError, Path, Reader, Record, Store, Value, Writer, path};
 
 /// Callback trait for operations requiring host-side effects.
 ///
 /// The host (ox-cli) implements this to provide event emission to
-/// the TUI or other observer.
+/// the TUI or other observer, and to route tool operations through
+/// a single [`ox_tools::ToolStore`].
 pub trait HostEffects: Send {
     /// Emit an agent event to the TUI or other observer.
     fn emit_event(&mut self, event: AgentEvent);
+
+    /// Access the tool store for tool dispatch. Returns a `dyn Store` so the
+    /// concrete type can be a bare `ToolStore` or a `PolicyStore<ToolStore, _>`.
+    fn tool_store(&mut self) -> &mut dyn Store;
 }
 
 /// StructFS middleware wrapping a backend with effect interception.
 ///
 /// Reads and writes to certain paths are intercepted and routed:
 ///
-/// - **`tools/*`** (read/write) — routes to ToolStore when present
+/// - **`tools/*`** (read/write) — routes to ToolStore via effects
 /// - **`events/emit`** (write) — emits an agent event
 /// - **`prompt`** (read) — synthesizes a CompletionRequest from backend stores
 /// - everything else — delegates to the backend
@@ -31,8 +36,6 @@ pub struct HostStore<B: Reader + Writer + Send, E: HostEffects> {
     pub backend: B,
     /// The effects handler.
     pub effects: E,
-    /// Optional ToolStore for unified tool dispatch (new path).
-    tool_store: Option<ox_tools::ToolStore>,
     /// Error stash — the guest writes here before returning a non-zero exit code
     /// so the host can read the error message back.
     error_stash: Option<String>,
@@ -44,15 +47,8 @@ impl<B: Reader + Writer + Send, E: HostEffects> HostStore<B, E> {
         Self {
             backend,
             effects,
-            tool_store: None,
             error_stash: None,
         }
-    }
-
-    /// Attach a ToolStore for unified tool dispatch via `tools/{module}/{op}`.
-    pub fn with_tool_store(mut self, tool_store: ox_tools::ToolStore) -> Self {
-        self.tool_store = Some(tool_store);
-        self
     }
 
     /// Handle a read operation, intercepting effectful paths.
@@ -62,12 +58,10 @@ impl<B: Reader + Writer + Send, E: HostEffects> HostStore<B, E> {
             return ox_context::synthesize_prompt(&mut self.backend);
         }
 
-        // Route tools/* reads to ToolStore (if present).
+        // Route tools/* reads to ToolStore via effects.
         if !path.is_empty() && path.components[0] == "tools" {
-            if let Some(ref mut ts) = self.tool_store {
-                let sub = Path::from_components(path.components[1..].to_vec());
-                return ts.read(&sub);
-            }
+            let sub = Path::from_components(path.components[1..].to_vec());
+            return self.effects.tool_store().read(&sub);
         }
 
         // Error stash — guest writes tool_results/__error before returning non-zero.
@@ -92,11 +86,8 @@ impl<B: Reader + Writer + Send, E: HostEffects> HostStore<B, E> {
 
         match prefix {
             "tools" => {
-                if let Some(ref mut ts) = self.tool_store {
-                    let sub = Path::from_components(path.components[1..].to_vec());
-                    return ts.write(&sub, data);
-                }
-                self.backend.write(path, data)
+                let sub = Path::from_components(path.components[1..].to_vec());
+                self.effects.tool_store().write(&sub, data)
             }
             "events" if path == &path!("events/emit") => {
                 tracing::debug!(path = %path, "effectful write: events/emit");
@@ -199,17 +190,25 @@ mod tests {
 
     struct MockEffects {
         events: Vec<String>,
+        tool_store: ox_tools::ToolStore,
     }
 
     impl MockEffects {
         fn new() -> Self {
-            Self { events: vec![] }
+            Self {
+                events: vec![],
+                tool_store: ox_tools::ToolStore::empty(),
+            }
         }
     }
 
     impl HostEffects for MockEffects {
         fn emit_event(&mut self, event: AgentEvent) {
             self.events.push(format!("{:?}", event));
+        }
+
+        fn tool_store(&mut self) -> &mut dyn structfs_core_store::Store {
+            &mut self.tool_store
         }
     }
 
@@ -299,18 +298,20 @@ mod tests {
     #[test]
     fn tools_path_routes_to_tool_store_read() {
         let ns = make_namespace();
-        let tool_store = make_tool_store();
-        let mut store = HostStore::new(ns, MockEffects::new()).with_tool_store(tool_store);
+        let mut effects = MockEffects::new();
+        effects.tool_store = make_tool_store();
+        let mut store = HostStore::new(ns, effects);
 
         let result = store.handle_read(&path!("tools/schemas")).unwrap();
         assert!(result.is_some(), "expected schemas from ToolStore");
     }
 
     #[test]
-    fn tools_path_without_tool_store_falls_through() {
+    fn tools_path_routes_to_effects_tool_store() {
         let ns = make_namespace();
         let mut store = HostStore::new(ns, MockEffects::new());
 
+        // Empty ToolStore still returns schemas (just empty list tools)
         let result = store.handle_read(&path!("tools/schemas"));
         assert!(result.is_ok());
     }

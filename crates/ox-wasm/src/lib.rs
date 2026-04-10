@@ -257,49 +257,75 @@ fn agent_main() -> Result<(), String> {
             return Ok(());
         }
 
-        // Execute tools via ToolStore paths. Denied tools produce an error
-        // result, not a fatal abort — the conversation must continue.
+        // Enqueue tool calls into TurnStore for lifecycle tracking.
+        let enqueue_json: Vec<serde_json::Value> = tool_calls
+            .iter()
+            .map(|tc| {
+                serde_json::json!({
+                    "id": tc.id,
+                    "name": tc.name,
+                    "input": tc.input,
+                })
+            })
+            .collect();
+        let enqueue_value =
+            structfs_serde_store::json_to_value(serde_json::Value::Array(enqueue_json));
+        bridge
+            .write(&path!("tools/turn/enqueue"), Record::parsed(enqueue_value))
+            .map_err(|e| e.to_string())?;
+
+        // Execute each tool through the normal namespace path (tools/{wire_name}).
+        // This routes through PolicyStore for permission checks, then to the
+        // module. Results are collected and submitted back to TurnStore.
+        let mut outcomes = Vec::new();
         let mut results = Vec::new();
         for tc in &tool_calls {
-            // Emit tool_call_start event.
+            // Emit tool_call_start event for TUI.
             let start_event = serde_json::json!({"type": "tool_call_start", "name": tc.name});
-            let start_value = structfs_serde_store::json_to_value(start_event);
             bridge
-                .write(&path!("events/emit"), Record::parsed(start_value))
+                .write(
+                    &path!("events/emit"),
+                    Record::parsed(structfs_serde_store::json_to_value(start_event)),
+                )
                 .ok();
 
-            // Write tool input to tools/{wire_name}.
+            // Execute via normal path — routes through HostStore → PolicyStore → ToolStore.
             let input_value = structfs_serde_store::json_to_value(tc.input.clone());
             let tool_path =
                 Path::parse(&format!("tools/{}", tc.name)).map_err(|e| e.to_string())?;
 
-            let result_str = match bridge.write(&tool_path, Record::parsed(input_value)) {
+            let (result_str, is_error) = match bridge.write(&tool_path, Record::parsed(input_value))
+            {
                 Ok(_) => {
-                    // Read result from tools/{wire_name}/result.
                     let result_path = Path::parse(&format!("tools/{}/result", tc.name))
                         .map_err(|e| e.to_string())?;
                     match bridge.read(&result_path) {
                         Ok(Some(record)) => {
                             let val = record.as_value().cloned().unwrap_or(Value::Null);
                             let json = structfs_serde_store::value_to_json(val);
-                            serde_json::to_string(&json).unwrap_or_default()
+                            (serde_json::to_string(&json).unwrap_or_default(), false)
                         }
-                        Ok(None) => format!("error: no result for tool {}", tc.name),
-                        Err(e) => format!("error: {e}"),
+                        Ok(None) => (format!("error: no result for tool {}", tc.name), true),
+                        Err(e) => (format!("error: {e}"), true),
                     }
                 }
-                Err(e) => {
-                    // Tool denied or failed — use the error as the result.
-                    e.to_string()
-                }
+                Err(e) => (e.to_string(), true),
             };
 
-            // Emit tool_call_result event.
+            // Emit tool_call_result event for TUI.
             let end_event = serde_json::json!({"type": "tool_call_result", "name": tc.name, "result": &result_str});
-            let end_value = structfs_serde_store::json_to_value(end_event);
             bridge
-                .write(&path!("events/emit"), Record::parsed(end_value))
+                .write(
+                    &path!("events/emit"),
+                    Record::parsed(structfs_serde_store::json_to_value(end_event)),
+                )
                 .ok();
+
+            outcomes.push(serde_json::json!({
+                "call_id": tc.id,
+                "result": &result_str,
+                "error": is_error,
+            }));
 
             results.push(ToolResult {
                 tool_use_id: tc.id.clone(),
@@ -307,11 +333,18 @@ fn agent_main() -> Result<(), String> {
             });
         }
 
-        // Write tool results to history so the next turn sees them.
-        let results_json = ox_kernel::serialize_tool_results(&results);
-        let results_value = structfs_serde_store::json_to_value(results_json);
+        // Submit outcomes to TurnStore (clears pending queue).
+        let outcomes_value =
+            structfs_serde_store::json_to_value(serde_json::Value::Array(outcomes));
         bridge
-            .write(&path!("history/append"), Record::parsed(results_value))
+            .write(&path!("tools/turn/results"), Record::parsed(outcomes_value))
+            .ok();
+
+        // Write tool results to history so the next turn sees them.
+        let history_json = ox_kernel::serialize_tool_results(&results);
+        let history_value = structfs_serde_store::json_to_value(history_json);
+        bridge
+            .write(&path!("history/append"), Record::parsed(history_value))
             .map_err(|e| e.to_string())?;
     }
 }

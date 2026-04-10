@@ -233,8 +233,9 @@ fn agent_worker(
     let sandbox_policy: Arc<dyn ox_tools::sandbox::SandboxPolicy> = if no_policy {
         Arc::new(ox_tools::sandbox::PermissivePolicy)
     } else {
-        // For now, use permissive — real Clash SandboxPolicy comes later
-        Arc::new(ox_tools::sandbox::PermissivePolicy)
+        Arc::new(crate::clash_sandbox::ClashSandboxPolicy::new(
+            workspace.clone(),
+        ))
     };
     let fs_module =
         ox_tools::fs::FsModule::new(workspace.clone(), executor.clone(), sandbox_policy.clone());
@@ -302,10 +303,6 @@ fn agent_worker(
         _ => ProviderConfig::anthropic(),
     };
 
-    // Ownership ping-pong state
-    let mut tool_store = tool_store;
-    let mut policy = policy;
-
     // Inject the CLI completion transport into the CompletionModule.
     // This gives CompletionModule the ability to execute LLM completions
     // end-to-end via StructFS write/read, independent of HostEffects.
@@ -316,9 +313,15 @@ fn agent_worker(
         scoped_client: scoped_client.clone(),
         rt_handle: rt_handle.clone(),
     };
+    let mut tool_store = tool_store;
     tool_store
         .completions_mut()
         .set_transport(Box::new(cli_transport));
+
+    // Wrap ToolStore in PolicyStore with CliPolicyCheck for permission enforcement.
+    let policy_check =
+        crate::policy_check::CliPolicyCheck::new(policy, scoped_client.clone(), rt_handle.clone());
+    let mut gated_store = ox_tools::policy_store::PolicyStore::new(tool_store, policy_check);
 
     tracing::info!(
         thread_id = %thread_id,
@@ -343,8 +346,7 @@ fn agent_worker(
 
         let effects = CliEffects {
             thread_id: thread_id.clone(),
-            tool_store,
-            policy,
+            gated_store,
             scoped_client: scoped_client.clone(),
             rt_handle: rt_handle.clone(),
             stats: PolicyStats::default(),
@@ -355,8 +357,7 @@ fn agent_worker(
         let (returned_store, result) = module.run(host_store);
 
         adapter = returned_store.backend;
-        tool_store = returned_store.effects.tool_store;
-        policy = returned_store.effects.policy;
+        gated_store = returned_store.effects.gated_store;
 
         match &result {
             Ok(()) => tracing::debug!(thread_id = %thread_id, "agent run complete"),
@@ -454,8 +455,10 @@ fn save_thread_state(
 pub(crate) struct CliEffects {
     #[allow(dead_code)]
     pub(crate) thread_id: String,
-    pub(crate) tool_store: ox_tools::ToolStore,
-    pub(crate) policy: crate::policy::PolicyGuard,
+    pub(crate) gated_store: ox_tools::policy_store::PolicyStore<
+        ox_tools::ToolStore,
+        crate::policy_check::CliPolicyCheck,
+    >,
     scoped_client: ox_broker::ClientHandle,
     rt_handle: tokio::runtime::Handle,
     #[allow(dead_code)]
@@ -472,6 +475,10 @@ impl CliEffects {
 }
 
 impl HostEffects for CliEffects {
+    fn tool_store(&mut self) -> &mut dyn structfs_core_store::Store {
+        &mut self.gated_store
+    }
+
     fn emit_event(&mut self, event: AgentEvent) {
         match event {
             AgentEvent::TurnStart => {

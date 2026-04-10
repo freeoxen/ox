@@ -1,53 +1,47 @@
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Writer};
 
-/// The decision returned by a policy function for a given write.
+/// The decision returned by a policy check for a given write.
 pub enum PolicyDecision {
     Allow,
     Deny(String),
-    // Ask variant will be added when integrating with TUI approval flow.
+}
+
+/// Trait for checking whether a tool write should proceed.
+///
+/// Implementations may block for user approval (the Ask flow) — this is
+/// intentional. The CLI implementation writes an approval request to the
+/// broker and blocks until the TUI responds.
+pub trait PolicyCheck: Send + Sync {
+    /// Check whether a write to `path` with `data` should be allowed.
+    /// May block for user approval.
+    fn check(&mut self, path: &Path, data: &Record) -> PolicyDecision;
 }
 
 /// A generic store wrapper that intercepts writes for policy enforcement.
 ///
 /// Reads always pass through to the inner store unchanged. Writes are checked
-/// against the policy function before being forwarded; a `Deny` decision
-/// returns a `StoreError` without touching the inner store.
-pub struct PolicyStore<S, F>
-where
-    S: Reader + Writer,
-    F: FnMut(&Path, &Record) -> PolicyDecision + Send + Sync,
-{
+/// against the [`PolicyCheck`] implementation before being forwarded; a `Deny`
+/// decision returns a `StoreError` without touching the inner store.
+pub struct PolicyStore<S: Reader + Writer, P: PolicyCheck> {
     pub inner: S,
-    policy: F,
+    policy: P,
 }
 
-impl<S, F> PolicyStore<S, F>
-where
-    S: Reader + Writer,
-    F: FnMut(&Path, &Record) -> PolicyDecision + Send + Sync,
-{
-    pub fn new(inner: S, policy: F) -> Self {
+impl<S: Reader + Writer, P: PolicyCheck> PolicyStore<S, P> {
+    pub fn new(inner: S, policy: P) -> Self {
         Self { inner, policy }
     }
 }
 
-impl<S, F> Reader for PolicyStore<S, F>
-where
-    S: Reader + Writer,
-    F: FnMut(&Path, &Record) -> PolicyDecision + Send + Sync,
-{
+impl<S: Reader + Writer, P: PolicyCheck> Reader for PolicyStore<S, P> {
     fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
         self.inner.read(from)
     }
 }
 
-impl<S, F> Writer for PolicyStore<S, F>
-where
-    S: Reader + Writer,
-    F: FnMut(&Path, &Record) -> PolicyDecision + Send + Sync,
-{
+impl<S: Reader + Writer, P: PolicyCheck> Writer for PolicyStore<S, P> {
     fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
-        match (self.policy)(to, &data) {
+        match self.policy.check(to, &data) {
             PolicyDecision::Allow => self.inner.write(to, data),
             PolicyDecision::Deny(reason) => Err(StoreError::store("policy", "write", reason)),
         }
@@ -82,10 +76,24 @@ mod tests {
         }
     }
 
+    struct AllowAll;
+    impl PolicyCheck for AllowAll {
+        fn check(&mut self, _path: &Path, _data: &Record) -> PolicyDecision {
+            PolicyDecision::Allow
+        }
+    }
+
+    struct DenyAll(String);
+    impl PolicyCheck for DenyAll {
+        fn check(&mut self, _path: &Path, _data: &Record) -> PolicyDecision {
+            PolicyDecision::Deny(self.0.clone())
+        }
+    }
+
     #[test]
     fn allow_policy_passes_through() {
         let mock = MockStore::new();
-        let mut store = PolicyStore::new(mock, |_path, _record| PolicyDecision::Allow);
+        let mut store = PolicyStore::new(mock, AllowAll);
 
         let path = Path::parse("some/path").unwrap();
         let record = Record::parsed(Value::String("data".to_string()));
@@ -98,9 +106,7 @@ mod tests {
     #[test]
     fn deny_policy_blocks_write() {
         let mock = MockStore::new();
-        let mut store = PolicyStore::new(mock, |_path, _record| {
-            PolicyDecision::Deny("not allowed".to_string())
-        });
+        let mut store = PolicyStore::new(mock, DenyAll("not allowed".into()));
 
         let path = Path::parse("some/path").unwrap();
         let record = Record::parsed(Value::String("data".to_string()));
@@ -113,9 +119,7 @@ mod tests {
     #[test]
     fn reads_pass_through_ungated() {
         let mock = MockStore::new();
-        let mut store = PolicyStore::new(mock, |_path, _record| {
-            PolicyDecision::Deny("deny everything".to_string())
-        });
+        let mut store = PolicyStore::new(mock, DenyAll("deny everything".into()));
 
         let path = Path::parse("some/path").unwrap();
         let result = store.read(&path);

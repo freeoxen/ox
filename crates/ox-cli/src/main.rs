@@ -4,6 +4,7 @@ mod agents;
 mod app;
 mod bindings;
 mod broker_setup;
+mod clash_sandbox;
 mod config;
 mod dialogs;
 mod event_loop;
@@ -12,6 +13,7 @@ mod key_encode;
 mod key_handlers;
 mod parse;
 mod policy;
+mod policy_check;
 #[allow(dead_code)]
 mod session;
 mod settings_state;

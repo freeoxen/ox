@@ -399,17 +399,25 @@ mod tests {
 
     struct MockEffects {
         events: Vec<String>,
+        tool_store: ox_tools::ToolStore,
     }
 
     impl MockEffects {
         fn new() -> Self {
-            Self { events: vec![] }
+            Self {
+                events: vec![],
+                tool_store: ox_tools::ToolStore::empty(),
+            }
         }
     }
 
     impl HostEffects for MockEffects {
         fn emit_event(&mut self, event: AgentEvent) {
             self.events.push(format!("{:?}", event));
+        }
+
+        fn tool_store(&mut self) -> &mut dyn structfs_core_store::Store {
+            &mut self.tool_store
         }
     }
 
@@ -493,7 +501,9 @@ mod tests {
             .load_module_from_file(&wasm_path)
             .expect("failed to load agent.wasm");
 
-        let host_store = HostStore::new(ns, MockEffects::new()).with_tool_store(make_tool_store());
+        let mut effects = MockEffects::new();
+        effects.tool_store = make_tool_store();
+        let host_store = HostStore::new(ns, effects);
         let (_returned_store, result) = module.run(host_store);
 
         match &result {
