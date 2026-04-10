@@ -1,8 +1,6 @@
-#![allow(deprecated)] // ToolRegistry/Tool::execute pending migration to ToolStore
-
 use ox_gate::{GateStore, ProviderConfig};
 use ox_kernel::{
-    AgentEvent, CompletionRequest, Record, StreamEvent, ToolCall, ToolRegistry, Value, Writer, path,
+    AgentEvent, CompletionRequest, Record, StreamEvent, ToolCall, Value, Writer, path,
 };
 use ox_runtime::{AgentModule, AgentRuntime, HostEffects, HostStore};
 use std::collections::{BTreeMap, HashMap};
@@ -171,14 +169,7 @@ fn agent_worker(
     broker: ox_broker::BrokerStore,
     rt_handle: tokio::runtime::Handle,
 ) {
-    // Build tool registry
-    let extra_tools = crate::tools::standard_tools(workspace.clone());
-    let mut tools = ToolRegistry::new();
-    for tool in extra_tools {
-        tools.register(tool);
-    }
-
-    // NEW: also build a ToolStore (additive — not yet wired into execution flow)
+    // Build ToolStore — primary tool execution backend
     let executor = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("ox"));
     let sandbox_policy: Arc<dyn ox_tools::sandbox::SandboxPolicy> = if no_policy {
         Arc::new(ox_tools::sandbox::PermissivePolicy)
@@ -191,11 +182,7 @@ fn agent_worker(
     let os_module = ox_tools::os::OsModule::new(workspace.clone(), executor, sandbox_policy);
     let gate = GateStore::new();
     let completion_module = ox_tools::completion::CompletionModule::new(gate);
-    let _tool_store = ox_tools::ToolStore::new(fs_module, os_module, completion_module);
-    tracing::debug!(
-        "ToolStore constructed with {} schemas",
-        _tool_store.all_schemas().len()
-    );
+    let tool_store = ox_tools::ToolStore::new(fs_module, os_module, completion_module);
 
     let policy = if no_policy {
         crate::policy::PolicyGuard::permissive()
@@ -213,7 +200,7 @@ fn agent_worker(
     let broker_client = broker.client();
 
     // Write tool schemas via adapter (triggers ThreadRegistry lazy-mount from disk)
-    if let Ok(val) = structfs_serde_store::to_value(&tools.schemas()) {
+    if let Ok(val) = structfs_serde_store::to_value(&tool_store.tool_schemas_for_model()) {
         adapter
             .write(&path!("tools/schemas"), Record::parsed(val))
             .ok();
@@ -256,24 +243,8 @@ fn agent_worker(
         _ => ProviderConfig::anthropic(),
     };
 
-    // Register completion tools using a temporary GateStore with the resolved key
-    let mut gate_for_tools = GateStore::new();
-    gate_for_tools
-        .write(
-            &ox_path::oxpath!("accounts", default_account, "key"),
-            Record::parsed(Value::String(api_key_for_transport.clone())),
-        )
-        .ok();
-    let send = Arc::new(crate::transport::make_send_fn(
-        provider_config.clone(),
-        api_key_for_transport.clone(),
-    ));
-    for tool in gate_for_tools.create_completion_tools(send) {
-        tools.register(tool);
-    }
-
     // Ownership ping-pong state
-    let mut tools = tools;
+    let mut tool_store = tool_store;
     let mut policy = policy;
     let mut client = reqwest::blocking::Client::new();
 
@@ -303,7 +274,7 @@ fn agent_worker(
             client,
             config: provider_config.clone(),
             api_key: api_key_for_transport.clone(),
-            tools,
+            tool_store,
             policy,
             scoped_client: scoped_client.clone(),
             rt_handle: rt_handle.clone(),
@@ -316,7 +287,7 @@ fn agent_worker(
 
         adapter = returned_store.backend;
         client = returned_store.effects.client;
-        tools = returned_store.effects.tools;
+        tool_store = returned_store.effects.tool_store;
         policy = returned_store.effects.policy;
 
         match &result {
@@ -418,7 +389,7 @@ pub(crate) struct CliEffects {
     pub(crate) client: reqwest::blocking::Client,
     config: ProviderConfig,
     api_key: String,
-    pub(crate) tools: ToolRegistry,
+    pub(crate) tool_store: ox_tools::ToolStore,
     pub(crate) policy: crate::policy::PolicyGuard,
     scoped_client: ox_broker::ClientHandle,
     rt_handle: tokio::runtime::Handle,
@@ -581,12 +552,33 @@ impl HostEffects for CliEffects {
 }
 
 impl CliEffects {
-    fn execute_tool_inner(&self, call: &ToolCall) -> Result<String, String> {
-        match self.tools.get(&call.name) {
-            Some(tool) => tool
-                .execute(call.input.clone())
-                .map_err(|e| format!("error: {e}")),
-            None => Err(format!("unknown tool '{}'", call.name)),
+    fn execute_tool_inner(&mut self, call: &ToolCall) -> Result<String, String> {
+        use structfs_core_store::{Path, Reader, Writer};
+
+        // The tool name from the model is a wire name (e.g. "read_file")
+        // ToolStore resolves it to internal path (e.g. "fs/read") via NameMap
+        let tool_path = Path::parse(&call.name).map_err(|e| e.to_string())?;
+        let input_value = structfs_serde_store::json_to_value(call.input.clone());
+
+        self.tool_store
+            .write(&tool_path, Record::parsed(input_value))
+            .map_err(|e| format!("tool execution failed: {e}"))?;
+
+        // Read the result
+        let result_path_str = format!("{}/result", call.name);
+        let result_path = Path::parse(&result_path_str).map_err(|e| e.to_string())?;
+
+        match self.tool_store.read(&result_path) {
+            Ok(Some(record)) => {
+                let value = record
+                    .as_value()
+                    .cloned()
+                    .unwrap_or(structfs_core_store::Value::Null);
+                let json = structfs_serde_store::value_to_json(value);
+                Ok(serde_json::to_string(&json).unwrap_or_default())
+            }
+            Ok(None) => Err("no result from tool".into()),
+            Err(e) => Err(format!("result read failed: {e}")),
         }
     }
 }

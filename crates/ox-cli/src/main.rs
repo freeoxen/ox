@@ -21,7 +21,6 @@ mod theme;
 pub(crate) mod thread_registry;
 mod thread_view;
 mod toml_backing;
-mod tools;
 mod transport;
 mod tui;
 mod types;
