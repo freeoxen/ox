@@ -6,6 +6,7 @@ use ox_path::oxpath;
 use ox_tools::ToolStore;
 use ox_tools::completion::CompletionModule;
 use ox_tools::fs::FsModule;
+use ox_tools::native::FnTool;
 use ox_tools::os::OsModule;
 use ox_tools::sandbox::PermissivePolicy;
 use structfs_core_store::{Reader, Record, Value, Writer};
@@ -173,4 +174,102 @@ fn name_map_has_all_registrations() {
     assert_eq!(nm.to_internal("shell"), Some("os/shell"));
     assert_eq!(nm.to_wire("fs/read"), Some("fs_read"));
     assert_eq!(nm.to_wire("os/shell"), Some("shell"));
+}
+
+#[test]
+fn native_tool_executes_in_process() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut store = make_tool_store(tmp.path());
+
+    let tool = FnTool::new(
+        "reverse",
+        "custom/reverse",
+        "Reverse a string",
+        serde_json::json!({
+            "type": "object",
+            "properties": { "text": { "type": "string" } },
+            "required": ["text"]
+        }),
+        |input| {
+            let text = input.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            let reversed: String = text.chars().rev().collect();
+            Ok(serde_json::json!({ "result": reversed }))
+        },
+    );
+    store.register_native(Box::new(tool));
+
+    // Execute via wire name
+    let path = oxpath!("reverse");
+    let input = structfs_serde_store::json_to_value(serde_json::json!({"text": "hello"}));
+    store.write(&path, Record::parsed(input)).unwrap();
+
+    // Read result via wire name
+    let record = store.read(&oxpath!("reverse")).unwrap();
+    assert!(record.is_some(), "expected Some result for native tool");
+    let value = record.unwrap().as_value().unwrap().clone();
+    let json = structfs_serde_store::value_to_json(value);
+    let result_str = json
+        .get("result")
+        .and_then(|v| v.as_str())
+        .expect("expected 'result' field");
+    assert_eq!(result_str, "olleh");
+}
+
+#[test]
+fn native_tool_appears_in_schemas() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut store = make_tool_store(tmp.path());
+
+    let tool = FnTool::new(
+        "echo",
+        "custom/echo",
+        "Echo input",
+        serde_json::json!({"type": "object"}),
+        |input| Ok(input),
+    );
+    store.register_native(Box::new(tool));
+
+    let schemas = store.all_schemas();
+    assert!(
+        schemas.iter().any(|s| s.wire_name == "echo"),
+        "expected echo in schemas"
+    );
+}
+
+#[test]
+fn native_tool_error_returns_store_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut store = make_tool_store(tmp.path());
+
+    let tool = FnTool::new(
+        "fail_tool",
+        "custom/fail",
+        "Always fails",
+        serde_json::json!({}),
+        |_| Err("something went wrong".to_string()),
+    );
+    store.register_native(Box::new(tool));
+
+    let path = oxpath!("fail_tool");
+    let input = structfs_serde_store::json_to_value(serde_json::json!({}));
+    let result = store.write(&path, Record::parsed(input));
+    assert!(result.is_err(), "expected error from failing native tool");
+}
+
+#[test]
+fn native_tool_registered_in_name_map() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut store = make_tool_store(tmp.path());
+
+    let tool = FnTool::new(
+        "my_tool",
+        "custom/my_tool",
+        "A tool",
+        serde_json::json!({}),
+        |input| Ok(input),
+    );
+    store.register_native(Box::new(tool));
+
+    assert_eq!(store.name_map().to_internal("my_tool"), Some("custom/my_tool"));
+    assert_eq!(store.name_map().to_wire("custom/my_tool"), Some("my_tool"));
 }

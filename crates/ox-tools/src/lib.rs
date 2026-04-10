@@ -1,18 +1,20 @@
 pub mod completion;
 pub mod fs;
 pub mod name_map;
+pub mod native;
 pub mod os;
 pub mod policy_store;
 pub mod sandbox;
 pub mod turn;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer};
 
 use crate::completion::CompletionModule;
 use crate::fs::FsModule;
 use crate::name_map::NameMap;
+use crate::native::NativeTool;
 use crate::os::OsModule;
 
 /// Describes a single tool's schema for registration with the agent framework.
@@ -41,6 +43,7 @@ pub struct ToolStore {
     os: OsModule,
     completions: CompletionModule,
     name_map: NameMap,
+    native_tools: HashMap<String, Box<dyn NativeTool>>,
     last_result: BTreeMap<String, Value>,
 }
 
@@ -64,8 +67,18 @@ impl ToolStore {
             os,
             completions,
             name_map,
+            native_tools: HashMap::new(),
             last_result: BTreeMap::new(),
         }
+    }
+
+    /// Register a native (in-process) tool.
+    /// Adds to name_map and native_tools.
+    pub fn register_native(&mut self, tool: Box<dyn NativeTool>) {
+        let schema = tool.schema();
+        self.name_map
+            .register(&schema.wire_name, &schema.internal_path);
+        self.native_tools.insert(schema.wire_name, tool);
     }
 
     /// Aggregate tool schemas from all modules.
@@ -73,6 +86,9 @@ impl ToolStore {
         let mut schemas = self.fs.schemas();
         schemas.extend(self.os.schemas());
         schemas.extend(self.completions.schemas());
+        for tool in self.native_tools.values() {
+            schemas.push(tool.schema());
+        }
         schemas
     }
 
@@ -169,6 +185,22 @@ impl<'a> ResolvedPath<'a> {
 
 impl Reader for ToolStore {
     fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
+        // Check native tools first (keyed by wire name)
+        if !from.is_empty() {
+            let first = from.components[0].as_str();
+            if self.native_tools.contains_key(first) {
+                let internal = self
+                    .name_map
+                    .to_internal(first)
+                    .unwrap_or(first)
+                    .to_string();
+                return Ok(self
+                    .last_result
+                    .get(&internal)
+                    .map(|v| Record::parsed(v.clone())));
+            }
+        }
+
         let resolved = match self.resolve_path(from) {
             Some(r) => r,
             None => return Ok(None),
@@ -228,6 +260,40 @@ impl Reader for ToolStore {
 
 impl Writer for ToolStore {
     fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
+        // Check native tools first (before resolve_path), keyed by wire name
+        if !to.is_empty() {
+            let wire_name = to.components[0].as_str().to_string();
+            if self.native_tools.contains_key(&wire_name) {
+                let value = data
+                    .as_value()
+                    .ok_or_else(|| {
+                        StoreError::store(
+                            "ToolStore",
+                            "native_write",
+                            format!("{wire_name}: expected parsed record"),
+                        )
+                    })?
+                    .clone();
+                let input_json = structfs_serde_store::value_to_json(value);
+                let internal = self
+                    .name_map
+                    .to_internal(&wire_name)
+                    .unwrap_or(&wire_name)
+                    .to_string();
+                let result = self
+                    .native_tools
+                    .get(&wire_name)
+                    .unwrap()
+                    .execute(input_json)
+                    .map_err(|e| {
+                        StoreError::store("ToolStore", "native_execute", format!("{wire_name}: {e}"))
+                    })?;
+                let val = structfs_serde_store::json_to_value(result);
+                self.last_result.insert(internal, val);
+                return Ok(to.clone());
+            }
+        }
+
         let resolved = match self.resolve_path(to) {
             Some(r) => r,
             None => {
@@ -287,3 +353,4 @@ impl Writer for ToolStore {
 // - FsModule/OsModule contain PathBuf + Arc<dyn SandboxPolicy>
 // - CompletionModule wraps GateStore (HashMap + Box<dyn Store + Send + Sync>)
 // - BTreeMap<String, Value> and NameMap are plain data
+// - HashMap<String, Box<dyn NativeTool>> — NativeTool: Send + Sync
