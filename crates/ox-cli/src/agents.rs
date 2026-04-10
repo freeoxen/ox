@@ -1,3 +1,5 @@
+#![allow(deprecated)] // ToolRegistry/Tool::execute pending migration to ToolStore
+
 use ox_gate::{GateStore, ProviderConfig};
 use ox_kernel::{
     AgentEvent, CompletionRequest, Record, StreamEvent, ToolCall, ToolRegistry, Value, Writer, path,

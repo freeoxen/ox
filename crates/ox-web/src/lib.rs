@@ -1,3 +1,5 @@
+#![allow(deprecated)] // ToolRegistry/Tool::execute pending migration to ToolStore
+
 //! Browser Wasm shell for the ox agent framework.
 //!
 //! `ox-web` compiles to a `cdylib` Wasm module via `wasm-pack` and exposes

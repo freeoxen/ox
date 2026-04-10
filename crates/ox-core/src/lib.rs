@@ -31,6 +31,7 @@ pub use ox_history::HistoryProvider;
 pub use ox_tools;
 
 // --- Re-exports from ox-kernel (core types, traits, state machine) ---
+#[allow(deprecated)] // FnTool/Tool/ToolRegistry pending migration to ToolStore
 pub use ox_kernel::{
     AgentEvent, CompletionRequest, ContentBlock, FnTool, Kernel, Message, Path, Reader, Record,
     Store, StoreError, StreamEvent, Tool, ToolCall, ToolRegistry, ToolResult, ToolSchema, Value,
@@ -48,6 +49,7 @@ pub type SendFn = dyn Fn(&CompletionRequest) -> Result<Vec<StreamEvent>, String>
 /// It owns the full state of one agent session and exposes a simple
 /// `prompt()` method that drives the agentic loop. Completion tools from
 /// the [`GateStore`] are automatically registered when accounts have keys set.
+#[allow(deprecated)] // ToolRegistry pending migration to ToolStore
 pub struct Agent {
     kernel: Kernel,
     context: Namespace,
@@ -56,6 +58,7 @@ pub struct Agent {
     subscribers: Vec<Box<dyn FnMut(AgentEvent)>>,
 }
 
+#[allow(deprecated)] // ToolRegistry/run_turn pending migration to ToolStore
 impl Agent {
     /// Create a new agent with the given configuration.
     ///

@@ -15,6 +15,7 @@ pub use codec::UsageInfo;
 pub use provider::ProviderConfig;
 pub use tools::completion_tool;
 
+#[allow(deprecated)] // Tool pending migration to ToolStore
 use ox_kernel::{ModelInfo, Tool, ToolSchema};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -154,6 +155,7 @@ impl GateStore {
     ///
     /// `send` is a synchronous function that sends a [`ox_kernel::CompletionRequest`]
     /// and returns parsed [`ox_kernel::StreamEvent`]s.
+    #[allow(deprecated)] // Tool/FnTool pending migration to ToolStore
     pub fn create_completion_tools(&mut self, send: Arc<tools::SendFn>) -> Vec<Box<dyn Tool>> {
         let default_model = self
             .config_string("gate/defaults/model")

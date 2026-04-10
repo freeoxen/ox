@@ -1,3 +1,5 @@
+#![allow(deprecated)] // FnTool/Tool pending migration to ToolStore
+
 use std::path::{Component, Path, PathBuf};
 
 use ox_kernel::{FnTool, Tool};

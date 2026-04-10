@@ -1,5 +1,7 @@
 //! Completion tools — delegate sub-completions to named accounts.
 
+#![allow(deprecated)] // FnTool/Tool pending migration to ToolStore
+
 use std::sync::Arc;
 
 use ox_kernel::{CompletionRequest, FnTool, StreamEvent, ToolSchema};
