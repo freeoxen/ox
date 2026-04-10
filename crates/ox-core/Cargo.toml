@@ -17,5 +17,6 @@ ox-kernel = { path = "../ox-kernel" }
 ox-context = { path = "../ox-context" }
 ox-gate = { path = "../ox-gate" }
 ox-history = { path = "../ox-history" }
+ox-tools = { path = "../ox-tools" }
 serde_json = "1"
 structfs-serde-store = { workspace = true }

@@ -27,6 +27,9 @@ pub use ox_gate::{AccountConfig, GateStore, ProviderConfig, completion_tool};
 // --- Re-exports from ox-history ---
 pub use ox_history::HistoryProvider;
 
+// --- Re-exports from ox-tools ---
+pub use ox_tools;
+
 // --- Re-exports from ox-kernel (core types, traits, state machine) ---
 pub use ox_kernel::{
     AgentEvent, CompletionRequest, ContentBlock, FnTool, Kernel, Message, Path, Reader, Record,
@@ -105,6 +108,33 @@ impl Agent {
             context,
             tools,
             send,
+            subscribers: Vec::new(),
+        }
+    }
+
+    /// Create an agent using the unified [`ox_tools::ToolStore`].
+    ///
+    /// This is the preferred constructor for new code. The `ToolStore` is
+    /// mounted directly into the namespace at `"tools"`, providing both
+    /// schema reads (via `tools/schemas`) and tool execution (via writes).
+    ///
+    /// The legacy `tools` (ToolRegistry) and `send` fields are set to no-op
+    /// values — use the ToolStore's completions module for LLM calls.
+    #[allow(deprecated)]
+    pub fn with_tool_store(
+        system_prompt: String,
+        tool_store: ox_tools::ToolStore,
+    ) -> Self {
+        let mut context = Namespace::new();
+        context.mount("system", Box::new(SystemProvider::new(system_prompt)));
+        context.mount("history", Box::new(HistoryProvider::new()));
+        context.mount("tools", Box::new(tool_store));
+
+        Self {
+            kernel: Kernel::new("default".into()),
+            context,
+            tools: ToolRegistry::new(),
+            send: Arc::new(|_| Err("use ToolStore completions".into())),
             subscribers: Vec::new(),
         }
     }
