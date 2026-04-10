@@ -193,7 +193,7 @@ fn json_to_agent_event(json: serde_json::Value) -> Result<AgentEvent, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ox_context::{Namespace, SystemProvider, ToolsProvider};
+    use ox_context::{Namespace, SystemProvider};
     use ox_gate::GateStore;
     use ox_history::HistoryProvider;
 
@@ -220,7 +220,7 @@ mod tests {
             Box::new(SystemProvider::new("You are a test agent.".into())),
         );
         ns.mount("history", Box::new(HistoryProvider::new()));
-        ns.mount("tools", Box::new(ToolsProvider::new(vec![])));
+        ns.mount("tools", Box::new(ox_tools::ToolStore::empty()));
         ns.mount("gate", Box::new(GateStore::new()));
         ns.write(
             &structfs_core_store::path!("gate/defaults/model"),

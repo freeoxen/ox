@@ -24,3 +24,4 @@ structfs-serde-store = { workspace = true }
 [dev-dependencies]
 ox-gate = { path = "../ox-gate" }
 ox-history = { path = "../ox-history" }
+ox-tools = { path = "../ox-tools" }

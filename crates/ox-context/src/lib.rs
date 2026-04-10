@@ -4,10 +4,9 @@
 //! and writes to mounted [`Store`] implementations by path prefix — similar to
 //! how a Unix VFS mounts devices at path prefixes.
 //!
-//! Two concrete providers are included:
+//! One concrete provider is included:
 //!
 //! - [`SystemProvider`] — holds the system prompt string
-//! - [`ToolsProvider`] — read-only snapshot of tool schemas
 //!
 //! Reading `path!("prompt")` from the namespace synthesizes a complete
 //! [`CompletionRequest`] by collecting state from all mounted providers.
@@ -341,70 +340,6 @@ impl Writer for SystemProvider {
     }
 }
 
-/// Provides tool schemas (read-only snapshot).
-pub struct ToolsProvider {
-    schemas: Vec<ox_kernel::ToolSchema>,
-}
-
-impl ToolsProvider {
-    /// Create a new provider with the given tool schemas.
-    pub fn new(schemas: Vec<ox_kernel::ToolSchema>) -> Self {
-        Self { schemas }
-    }
-}
-
-impl Reader for ToolsProvider {
-    fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
-        let key = if from.is_empty() {
-            ""
-        } else {
-            from.components[0].as_str()
-        };
-        match key {
-            "" | "schemas" => {
-                let value = to_value(&self.schemas)
-                    .map_err(|e| StoreError::store("tools", "read", e.to_string()))?;
-                Ok(Some(Record::parsed(value)))
-            }
-            _ => Ok(None),
-        }
-    }
-}
-
-impl Writer for ToolsProvider {
-    fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
-        let key = if to.is_empty() {
-            ""
-        } else {
-            to.components[0].as_str()
-        };
-        match key {
-            "" | "schemas" => {
-                let value = match data {
-                    Record::Parsed(v) => v,
-                    _ => {
-                        return Err(StoreError::store(
-                            "tools",
-                            "write",
-                            "expected parsed record",
-                        ));
-                    }
-                };
-                let schemas: Vec<ox_kernel::ToolSchema> =
-                    structfs_serde_store::from_value(value)
-                        .map_err(|e| StoreError::store("tools", "write", e.to_string()))?;
-                self.schemas = schemas;
-                Ok(to.clone())
-            }
-            _ => Err(StoreError::store(
-                "tools",
-                "write",
-                format!("unknown write path: {to}"),
-            )),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -494,22 +429,6 @@ mod tests {
         assert_ne!(h1, h2);
     }
 
-    // -- ToolsProvider snapshot tests --
-
-    #[test]
-    fn tools_snapshot_returns_none() {
-        let mut tp = ToolsProvider::new(vec![]);
-        let result = tp.read(&path!("snapshot")).unwrap();
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn tools_snapshot_hash_returns_none() {
-        let mut tp = ToolsProvider::new(vec![]);
-        let result = tp.read(&path!("snapshot/hash")).unwrap();
-        assert!(result.is_none());
-    }
-
     // -- Integration: coordinator discovery via Namespace --
     // These tests mount all five store types to exercise the full RFC
     // discovery pattern through the Namespace router.
@@ -520,7 +439,7 @@ mod tests {
             "system",
             Box::new(SystemProvider::new("You are helpful.".to_string())),
         );
-        ns.mount("tools", Box::new(ToolsProvider::new(vec![])));
+        ns.mount("tools", Box::new(ox_tools::ToolStore::empty()));
         ns.mount("history", Box::new(ox_history::HistoryProvider::new()));
         ns.mount("gate", Box::new(ox_gate::GateStore::new()));
         ns
@@ -534,9 +453,6 @@ mod tests {
         assert!(ns.read(&path!("system/snapshot")).unwrap().is_some());
         assert!(ns.read(&path!("history/snapshot")).unwrap().is_some());
         assert!(ns.read(&path!("gate/snapshot")).unwrap().is_some());
-
-        // Non-participating store returns None
-        assert!(ns.read(&path!("tools/snapshot")).unwrap().is_none());
     }
 
     #[test]
@@ -602,30 +518,4 @@ mod tests {
         assert_eq!(val, Value::String("claude-sonnet-4-20250514".to_string()));
     }
 
-    #[test]
-    fn tools_provider_accepts_schema_write() {
-        let mut tp = ToolsProvider::new(vec![]);
-
-        // Initially empty
-        let record = tp.read(&path!("schemas")).unwrap().unwrap();
-        match unwrap_value(record) {
-            Value::Array(a) => assert!(a.is_empty()),
-            _ => panic!("expected array"),
-        }
-
-        // Write schemas
-        let schemas_json = serde_json::json!([
-            {"name": "test_tool", "description": "A test", "input_schema": {"type": "object"}}
-        ]);
-        let schemas_value = structfs_serde_store::json_to_value(schemas_json);
-        tp.write(&path!("schemas"), Record::parsed(schemas_value))
-            .unwrap();
-
-        // Read back — should have 1 schema
-        let record = tp.read(&path!("schemas")).unwrap().unwrap();
-        match unwrap_value(record) {
-            Value::Array(a) => assert_eq!(a.len(), 1),
-            _ => panic!("expected array"),
-        }
-    }
 }

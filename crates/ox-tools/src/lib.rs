@@ -104,6 +104,27 @@ impl ToolStore {
             .collect()
     }
 
+    /// Create a ToolStore with stub modules and no registered tools.
+    ///
+    /// Used as a schema placeholder where tool execution isn't needed
+    /// (e.g. thread namespaces that receive schemas via broker writes,
+    /// or tests that only need a mountable `Store` at "tools").
+    pub fn empty() -> Self {
+        use std::sync::Arc;
+
+        let policy: Arc<dyn crate::sandbox::SandboxPolicy> =
+            Arc::new(crate::sandbox::PermissivePolicy);
+        let workspace = std::path::PathBuf::from(".");
+        let executor = std::path::PathBuf::from("ox-tool-exec");
+
+        let fs = crate::fs::FsModule::new(workspace.clone(), executor.clone(), policy.clone());
+        let os = crate::os::OsModule::new(workspace, executor, policy);
+        let gate = ox_gate::GateStore::new();
+        let completions = crate::completion::CompletionModule::new(gate);
+
+        Self::new(fs, os, completions)
+    }
+
     /// Access the name map for wire-name / internal-path translation.
     pub fn name_map(&self) -> &NameMap {
         &self.name_map

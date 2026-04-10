@@ -15,7 +15,7 @@
 //! ```
 
 // --- Re-exports from ox-context ---
-pub use ox_context::{Namespace, SystemProvider, ToolsProvider};
+pub use ox_context::{Namespace, SystemProvider};
 
 // --- Re-exports from ox-gate ---
 pub use ox_gate::{AccountConfig, GateStore, ProviderConfig};

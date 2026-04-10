@@ -153,7 +153,7 @@ pub fn restore(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ox_context::{Namespace, SystemProvider, ToolsProvider};
+    use ox_context::{Namespace, SystemProvider};
     use ox_gate::GateStore;
     use ox_history::HistoryProvider;
     use structfs_core_store::{Reader, Writer, path};
@@ -164,7 +164,7 @@ mod tests {
             "system",
             Box::new(SystemProvider::new("You are helpful.".to_string())),
         );
-        ns.mount("tools", Box::new(ToolsProvider::new(vec![])));
+        ns.mount("tools", Box::new(ox_tools::ToolStore::empty()));
         ns.mount("history", Box::new(HistoryProvider::new()));
         ns.mount("gate", Box::new(GateStore::new()));
         ns
@@ -423,7 +423,7 @@ mod tests {
             "system",
             Box::new(SystemProvider::new("You are helpful.".to_string())),
         );
-        ns.mount("tools", Box::new(ToolsProvider::new(vec![])));
+        ns.mount("tools", Box::new(ox_tools::ToolStore::empty()));
         ns.mount("history", Box::new(HistoryProvider::new()));
         ns.mount("gate", Box::new(gate));
 

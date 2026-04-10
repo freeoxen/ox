@@ -24,3 +24,4 @@ ox-context = { path = "../ox-context" }
 ox-gate = { path = "../ox-gate" }
 ox-history = { path = "../ox-history" }
 ox-store-util = { path = "../ox-store-util" }
+ox-tools = { path = "../ox-tools" }

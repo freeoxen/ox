@@ -12,7 +12,7 @@
 //! const reply = await agent.prompt("Hello");
 //! ```
 
-use ox_context::{Namespace, SystemProvider, ToolsProvider};
+use ox_context::{Namespace, SystemProvider};
 use ox_core::{AgentEvent, CompletionRequest, ContentBlock, ToolSchema, serialize_tool_results};
 use ox_gate::codec::{anthropic as anthropic_codec, openai as openai_codec};
 use ox_gate::{AccountConfig, GateStore, ProviderConfig};
@@ -101,7 +101,6 @@ impl OxAgent {
         let completion_gate = GateStore::new();
         let completion_module = ox_tools::completion::CompletionModule::new(completion_gate);
         let tool_store = ox_tools::ToolStore::new(fs_module, os_module, completion_module);
-        let schemas = tool_store.tool_schemas_for_model();
 
         let mut gate = GateStore::new();
         if !api_key.is_empty() {
@@ -112,13 +111,16 @@ impl OxAgent {
             .ok();
         }
 
+        // Mount a separate ToolStore at "tools" for schema serving via prompt
+        // synthesis. The primary tool_store is kept in an Rc<RefCell> for
+        // direct execution. Cut 5 will unify these.
         let mut context = Namespace::new();
         context.mount(
             "system",
             Box::new(SystemProvider::new(system_prompt.to_string())),
         );
         context.mount("history", Box::new(HistoryProvider::new()));
-        context.mount("tools", Box::new(ToolsProvider::new(schemas)));
+        context.mount("tools", Box::new(ox_tools::ToolStore::empty()));
         context.mount("gate", Box::new(gate));
 
         context
@@ -223,7 +225,7 @@ impl OxAgent {
     /// Unregister a JS tool by name.
     pub fn unregister_tool(&self, name: &str) {
         self.js_tools.borrow_mut().remove(name);
-        self.rebuild_tools_provider();
+        // JS tool schemas are not yet served via ToolStore (Cut 5).
         if let Some(ref cb) = self.event_callback {
             emit_js(Some(cb), "context_changed", "");
         }
@@ -253,7 +255,7 @@ impl OxAgent {
             },
         );
 
-        self.rebuild_tools_provider();
+        // JS tool schemas are not yet served via ToolStore (Cut 5).
 
         if let Some(ref cb) = self.event_callback {
             emit_js(Some(cb), "context_changed", "");
@@ -411,18 +413,6 @@ impl OxAgent {
     }
 }
 
-impl OxAgent {
-    /// Rebuild the ToolsProvider in the namespace from both ToolStore and JS tools.
-    fn rebuild_tools_provider(&self) {
-        let mut schemas: Vec<ToolSchema> = self.tool_store.borrow().tool_schemas_for_model();
-        for jt in self.js_tools.borrow().values() {
-            schemas.push(jt.schema());
-        }
-        self.context
-            .borrow_mut()
-            .mount("tools", Box::new(ToolsProvider::new(schemas)));
-    }
-}
 
 /// Read the API key for the given account from the gate store.
 fn read_api_key(context: &Rc<RefCell<Namespace>>, account: &str) -> String {

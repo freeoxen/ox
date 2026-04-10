@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use ox_broker::async_store::{AsyncReader, AsyncWriter, BoxFuture};
-use ox_context::{SystemProvider, ToolsProvider};
+use ox_context::SystemProvider;
 use ox_gate::GateStore;
 use ox_history::HistoryProvider;
 use ox_ui::ApprovalStore;
@@ -23,7 +23,7 @@ use crate::agents::SYSTEM_PROMPT;
 pub struct ThreadNamespace {
     system: SystemProvider,
     history: HistoryProvider,
-    tools: ToolsProvider,
+    tools: ox_tools::ToolStore,
     pub gate: GateStore,
     pub approval: ApprovalStore,
 }
@@ -34,7 +34,7 @@ impl ThreadNamespace {
         Self {
             system: SystemProvider::new(SYSTEM_PROMPT.to_string()),
             history: HistoryProvider::new(),
-            tools: ToolsProvider::new(vec![]),
+            tools: ox_tools::ToolStore::empty(),
             gate: GateStore::new(),
             approval: ApprovalStore::new(),
         }

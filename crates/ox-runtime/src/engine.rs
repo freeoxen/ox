@@ -366,7 +366,7 @@ fn set_pending<B: Reader + Writer + Send, E: HostEffects>(
 mod tests {
     use super::*;
     use crate::host_store::{HostEffects, HostStore};
-    use ox_context::{Namespace, SystemProvider, ToolsProvider};
+    use ox_context::{Namespace, SystemProvider};
     use ox_gate::GateStore;
     use ox_history::HistoryProvider;
     use ox_kernel::{AgentEvent, CompletionRequest, StreamEvent};
@@ -471,7 +471,7 @@ mod tests {
             Box::new(SystemProvider::new("You are a test agent.".into())),
         );
         ns.mount("history", Box::new(HistoryProvider::new()));
-        ns.mount("tools", Box::new(ToolsProvider::new(vec![])));
+        ns.mount("tools", Box::new(ox_tools::ToolStore::empty()));
         ns.mount("gate", Box::new(GateStore::new()));
 
         // Write default account so the agent knows which completion path to use.
