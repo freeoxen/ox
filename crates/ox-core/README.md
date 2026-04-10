@@ -4,36 +4,22 @@ Agent composition for the [ox](https://github.com/freeoxen/ox) framework — the
 
 ## What's in the box
 
-- **`Agent<T>`** — composes a `Kernel`, `Namespace`, and `ToolRegistry` into a single struct with a `prompt()` method
-- **Re-exports** — everything from `ox-kernel`, `ox-context`, and `ox-history` so you only need one dependency
+- **`Agent`** — composes a `Kernel`, `Namespace`, and `ToolStore` into a single struct
+- **Re-exports** — everything from `ox-kernel`, `ox-context`, `ox-gate`, `ox-history`, and `ox-tools` so you only need one dependency
 
 ## Quick start
 
 ```rust
-use ox_core::{Agent, Transport, ToolRegistry};
+use ox_core::Agent;
+use ox_tools::ToolStore;
 
-// Implement Transport for your LLM backend
-let transport = MyTransport::new();
-let tools = ToolRegistry::new();
-
-let mut agent = Agent::new(
-    "You are helpful.".into(),
-    "claude-sonnet-4-20250514".into(),
-    4096,
-    transport,
-    tools,
-);
-
-agent.subscribe(Box::new(|event| {
-    println!("{event:?}");
-}));
-
-let reply = agent.prompt("What is 2 + 2?")?;
+let tool_store = ToolStore::new();
+let mut agent = Agent::new("You are helpful.".into(), tool_store);
 ```
 
 ## Architecture
 
-`ox-core` doesn't include any concrete `Transport` or `Tool` implementations — those are provided by the shell layer (`ox-web` for the browser, or your own native harness). This keeps the core portable and dependency-light.
+`ox-core` doesn't include any concrete tool implementations — those are provided by the shell layer (`ox-web` for the browser, `ox-cli` for native, or your own harness). This keeps the core portable and dependency-light.
 
 ## License
 

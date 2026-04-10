@@ -4,7 +4,6 @@
 //!
 //! - **Message types** — [`Message`], [`ContentBlock`], [`ToolCall`], [`ToolResult`]
 //! - **Completion protocol** — [`CompletionRequest`], [`StreamEvent`], [`EventStream`]
-//! - **Tool abstraction** — [`Tool`] trait, [`FnTool`], and [`ToolRegistry`]
 //! - **State machine** — [`Kernel`] drives the agentic loop via three composable
 //!   phases: [`initiate_completion`](Kernel::initiate_completion),
 //!   [`consume_events`](Kernel::consume_events), and
@@ -17,7 +16,6 @@
 //! kernel portable across native, Wasm, and WASI targets.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
 // StructFS re-exports
@@ -167,7 +165,7 @@ pub enum StreamEvent {
 /// High-level agent lifecycle events for observability subscribers.
 ///
 /// Subscribe to these via `Agent::subscribe` (in `ox-core`) or the `emit`
-/// callback on [`Kernel::run_turn`].
+/// callback on [`Kernel::consume_events`].
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
     /// A new completion round is starting.
@@ -206,136 +204,6 @@ pub struct ModelInfo {
 }
 
 // ---------------------------------------------------------------------------
-// Tool trait and registry
-// ---------------------------------------------------------------------------
-
-/// A tool the agent can invoke. Implement this trait to expose capabilities.
-///
-/// Most tools can be created directly with [`FnTool::new`]:
-///
-/// ```ignore
-/// let echo = FnTool::new(
-///     "echo",
-///     "Echoes the input back",
-///     serde_json::json!({
-///         "type": "object",
-///         "properties": { "text": { "type": "string" } },
-///         "required": ["text"]
-///     }),
-///     |input| Ok(input["text"].as_str().unwrap_or("").to_string()),
-/// );
-/// ```
-#[deprecated(since = "0.2.0", note = "Use ox-tools ToolStore instead")]
-pub trait Tool: Send + Sync {
-    /// A unique name for this tool (e.g. `"get_weather"`).
-    fn name(&self) -> &str;
-    /// A human-readable description of what the tool does.
-    fn description(&self) -> &str;
-    /// A JSON Schema object describing the tool's input parameters.
-    fn parameters_schema(&self) -> serde_json::Value;
-    /// Execute the tool with the given JSON input, returning a string result.
-    fn execute(&self, input: serde_json::Value) -> Result<String, String>;
-}
-
-/// A closure-backed [`Tool`] implementation.
-///
-/// This is the canonical way to create tools. All tools — standard distribution,
-/// completion delegates, Wasm components — are instances of `FnTool`.
-#[deprecated(since = "0.2.0", note = "Use ox-tools ToolStore instead")]
-pub struct FnTool {
-    name: String,
-    description: String,
-    schema: serde_json::Value,
-    run: Box<dyn Fn(serde_json::Value) -> Result<String, String> + Send + Sync>,
-}
-
-#[allow(deprecated)]
-impl FnTool {
-    /// Create a new tool from a closure.
-    pub fn new(
-        name: impl Into<String>,
-        description: impl Into<String>,
-        schema: serde_json::Value,
-        run: impl Fn(serde_json::Value) -> Result<String, String> + Send + Sync + 'static,
-    ) -> Self {
-        Self {
-            name: name.into(),
-            description: description.into(),
-            schema,
-            run: Box::new(run),
-        }
-    }
-}
-
-#[allow(deprecated)]
-impl Tool for FnTool {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn description(&self) -> &str {
-        &self.description
-    }
-
-    fn parameters_schema(&self) -> serde_json::Value {
-        self.schema.clone()
-    }
-
-    fn execute(&self, input: serde_json::Value) -> Result<String, String> {
-        (self.run)(input)
-    }
-}
-
-/// Registry of named tools available to the agent.
-///
-/// Tools are registered by name and looked up during the agentic loop
-/// when the model emits a [`ToolCall`].
-#[deprecated(since = "0.2.0", note = "Use ox-tools ToolStore instead")]
-#[allow(deprecated)]
-pub struct ToolRegistry {
-    tools: HashMap<String, Box<dyn Tool>>,
-}
-
-#[allow(deprecated)]
-impl ToolRegistry {
-    /// Create an empty registry.
-    pub fn new() -> Self {
-        Self {
-            tools: HashMap::new(),
-        }
-    }
-
-    /// Register a tool. Replaces any existing tool with the same name.
-    pub fn register(&mut self, tool: Box<dyn Tool>) {
-        self.tools.insert(tool.name().to_string(), tool);
-    }
-
-    /// Look up a tool by name.
-    pub fn get(&self, name: &str) -> Option<&dyn Tool> {
-        self.tools.get(name).map(|t| t.as_ref())
-    }
-
-    /// Collect [`ToolSchema`]s for all registered tools.
-    pub fn schemas(&self) -> Vec<ToolSchema> {
-        self.tools
-            .values()
-            .map(|t| ToolSchema {
-                name: t.name().to_string(),
-                description: t.description().to_string(),
-                input_schema: t.parameters_schema(),
-            })
-            .collect()
-    }
-}
-
-#[allow(deprecated)]
-impl Default for ToolRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Kernel state machine
 // ---------------------------------------------------------------------------
 
@@ -356,8 +224,6 @@ pub enum KernelState {
 /// [`consume_events`](Kernel::consume_events), and [`complete_turn`](Kernel::complete_turn) —
 /// so the caller controls the transport (sync fetch, async fetch, mock, etc.).
 ///
-/// [`run_turn`](Kernel::run_turn) composes all three in a loop for callers that
-/// can provide a synchronous send function.
 pub struct Kernel {
     state: KernelState,
     model: String,
@@ -477,75 +343,6 @@ impl Kernel {
         }
 
         Ok(tool_calls)
-    }
-
-    // -----------------------------------------------------------------------
-    // Composed loop (for callers with a synchronous send function)
-    // -----------------------------------------------------------------------
-
-    /// Run the full agentic loop: read prompt, send, accumulate, execute
-    /// tools, write results, repeat until no tool calls remain.
-    ///
-    /// `send` is a synchronous function that takes a [`CompletionRequest`] and
-    /// returns parsed [`StreamEvent`]s. For async callers (e.g. wasm), use the
-    /// three-phase methods directly instead.
-    #[deprecated(
-        since = "0.2.0",
-        note = "Use the three-phase methods with ox-tools TurnStore instead"
-    )]
-    #[allow(deprecated)]
-    pub fn run_turn(
-        &mut self,
-        context: &mut dyn Store,
-        send: &dyn Fn(&CompletionRequest) -> Result<Vec<StreamEvent>, String>,
-        tools: &ToolRegistry,
-        emit: &mut dyn FnMut(AgentEvent),
-    ) -> Result<Vec<ContentBlock>, String> {
-        loop {
-            let request = self.initiate_completion(context)?;
-            let events = send(&request)?;
-            let content = self.consume_events(events, emit)?;
-            let tool_calls = self.complete_turn(context, &content)?;
-
-            if tool_calls.is_empty() {
-                emit(AgentEvent::TurnEnd);
-                return Ok(content);
-            }
-
-            // Execute tools
-            self.state = KernelState::Executing;
-            let mut results = Vec::new();
-            for tc in &tool_calls {
-                emit(AgentEvent::ToolCallStart {
-                    name: tc.name.clone(),
-                });
-                let result = match tools.get(&tc.name) {
-                    Some(tool) => tool.execute(tc.input.clone()),
-                    None => Err(format!("unknown tool: {}", tc.name)),
-                };
-                let result_str = match result {
-                    Ok(r) => r,
-                    Err(e) => format!("error: {e}"),
-                };
-                emit(AgentEvent::ToolCallResult {
-                    name: tc.name.clone(),
-                    result: result_str.clone(),
-                });
-                results.push(ToolResult {
-                    tool_use_id: tc.id.clone(),
-                    content: serde_json::Value::String(result_str),
-                });
-            }
-
-            // Write tool results to history
-            let results_json = serialize_tool_results(&results);
-            let record = Record::parsed(structfs_serde_store::json_to_value(results_json));
-            context
-                .write(&path!("history/append"), record)
-                .map_err(|e| e.to_string())?;
-
-            self.state = KernelState::Idle;
-        }
     }
 
     /// Accumulate stream events into content blocks.
@@ -686,7 +483,6 @@ pub fn serialize_tool_results(results: &[ToolResult]) -> serde_json::Value {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[allow(deprecated)]
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
@@ -792,83 +588,6 @@ mod tests {
             }],
             stream: true,
         }
-    }
-
-    // -----------------------------------------------------------------------
-    // Tool / Registry tests (existing)
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn fn_tool_executes_closure() {
-        let tool = FnTool::new(
-            "echo",
-            "Echoes the input",
-            serde_json::json!({
-                "type": "object",
-                "properties": { "text": { "type": "string" } },
-                "required": ["text"]
-            }),
-            |input| Ok(input["text"].as_str().unwrap_or("").to_string()),
-        );
-
-        assert_eq!(tool.name(), "echo");
-        assert_eq!(tool.description(), "Echoes the input");
-        assert_eq!(
-            tool.execute(serde_json::json!({"text": "hello"})).unwrap(),
-            "hello"
-        );
-    }
-
-    #[test]
-    fn fn_tool_in_registry() {
-        let mut registry = ToolRegistry::new();
-        registry.register(Box::new(FnTool::new(
-            "noop",
-            "Does nothing",
-            serde_json::json!({"type": "object"}),
-            |_| Ok("ok".into()),
-        )));
-
-        assert!(registry.get("noop").is_some());
-        assert_eq!(registry.schemas().len(), 1);
-        assert_eq!(registry.schemas()[0].name, "noop");
-    }
-
-    #[test]
-    fn registry_replaces_tool_with_same_name() {
-        let mut registry = ToolRegistry::new();
-        registry.register(Box::new(FnTool::new(
-            "echo",
-            "v1",
-            serde_json::json!({"type": "object"}),
-            |_| Ok("v1".into()),
-        )));
-        registry.register(Box::new(FnTool::new(
-            "echo",
-            "v2",
-            serde_json::json!({"type": "object"}),
-            |_| Ok("v2".into()),
-        )));
-        assert_eq!(registry.schemas().len(), 1);
-        assert_eq!(registry.get("echo").unwrap().description(), "v2");
-    }
-
-    #[test]
-    fn registry_get_missing_returns_none() {
-        let registry = ToolRegistry::new();
-        assert!(registry.get("nonexistent").is_none());
-    }
-
-    #[test]
-    fn fn_tool_execute_error() {
-        let tool = FnTool::new(
-            "fail",
-            "Always fails",
-            serde_json::json!({"type": "object"}),
-            |_| Err("broken".into()),
-        );
-        let result = tool.execute(serde_json::json!({}));
-        assert_eq!(result.unwrap_err(), "broken");
     }
 
     // -----------------------------------------------------------------------
@@ -1492,7 +1211,7 @@ mod tests {
         let tool_calls = kernel.complete_turn(&mut store, &content).unwrap();
         assert_eq!(tool_calls.len(), 1);
 
-        // Write tool results (simulating what run_turn does)
+        // Write tool results (simulating what the caller loop does)
         let results = vec![ToolResult {
             tool_use_id: "toolu_01".into(),
             content: serde_json::Value::String("Sunny, 72F".into()),
@@ -1513,171 +1232,6 @@ mod tests {
 
         // 3 appends: assistant (tool call), tool results, assistant (final)
         assert_eq!(store.appended.len(), 3);
-    }
-
-    // -----------------------------------------------------------------------
-    // run_turn (composed loop)
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn run_turn_text_only_response() {
-        let mut kernel = Kernel::new("test-model".into());
-        let request = make_request();
-        let mut store = MockStore::with_prompt(&request);
-        let registry = ToolRegistry::new();
-        let mut agent_events = Vec::new();
-
-        let send = |_req: &CompletionRequest| -> Result<Vec<StreamEvent>, String> {
-            Ok(vec![
-                StreamEvent::TextDelta("Hello!".into()),
-                StreamEvent::MessageStop,
-            ])
-        };
-
-        let content = kernel
-            .run_turn(&mut store, &send, &registry, &mut |e| agent_events.push(e))
-            .unwrap();
-
-        assert_eq!(content.len(), 1);
-        match &content[0] {
-            ContentBlock::Text { text } => assert_eq!(text, "Hello!"),
-            _ => panic!("expected text"),
-        }
-        // Should have TurnStart, TextDelta, TurnEnd
-        assert!(matches!(agent_events.first(), Some(AgentEvent::TurnStart)));
-        assert!(matches!(agent_events.last(), Some(AgentEvent::TurnEnd)));
-    }
-
-    #[test]
-    fn run_turn_with_tool_execution() {
-        let mut kernel = Kernel::new("test-model".into());
-        let request = make_request_with_tools();
-        let mut store = MockStore::with_prompt(&request);
-
-        let mut registry = ToolRegistry::new();
-        registry.register(Box::new(FnTool::new(
-            "get_weather",
-            "Gets the weather",
-            serde_json::json!({
-                "type": "object",
-                "properties": { "city": { "type": "string" } },
-                "required": ["city"]
-            }),
-            |input| {
-                let city = input["city"].as_str().unwrap_or("unknown");
-                Ok(format!("Sunny in {city}"))
-            },
-        )));
-
-        let call_count = std::cell::Cell::new(0);
-        let send = |_req: &CompletionRequest| -> Result<Vec<StreamEvent>, String> {
-            let n = call_count.get();
-            call_count.set(n + 1);
-            if n == 0 {
-                // First call: model wants to use a tool
-                Ok(vec![
-                    StreamEvent::ToolUseStart {
-                        id: "toolu_01".into(),
-                        name: "get_weather".into(),
-                    },
-                    StreamEvent::ToolUseInputDelta(r#"{"city":"NYC"}"#.into()),
-                    StreamEvent::MessageStop,
-                ])
-            } else {
-                // Second call: model gives final answer
-                Ok(vec![
-                    StreamEvent::TextDelta("It's sunny in NYC!".into()),
-                    StreamEvent::MessageStop,
-                ])
-            }
-        };
-
-        let mut agent_events = Vec::new();
-        let content = kernel
-            .run_turn(&mut store, &send, &registry, &mut |e| agent_events.push(e))
-            .unwrap();
-
-        // Final content should be text
-        assert_eq!(content.len(), 1);
-        match &content[0] {
-            ContentBlock::Text { text } => assert_eq!(text, "It's sunny in NYC!"),
-            _ => panic!("expected text"),
-        }
-
-        // Check agent events include tool call lifecycle
-        assert!(
-            agent_events
-                .iter()
-                .any(|e| matches!(e, AgentEvent::ToolCallStart { name } if name == "get_weather"))
-        );
-        assert!(
-            agent_events
-                .iter()
-                .any(|e| matches!(e, AgentEvent::ToolCallResult { name, result }
-                if name == "get_weather" && result.contains("Sunny")))
-        );
-    }
-
-    #[test]
-    fn run_turn_unknown_tool_returns_error_string() {
-        let mut kernel = Kernel::new("test-model".into());
-        let request = make_request();
-        let mut store = MockStore::with_prompt(&request);
-        let registry = ToolRegistry::new(); // empty, no tools registered
-
-        let call_count = std::cell::Cell::new(0);
-        let send = |_req: &CompletionRequest| -> Result<Vec<StreamEvent>, String> {
-            let n = call_count.get();
-            call_count.set(n + 1);
-            if n == 0 {
-                Ok(vec![
-                    StreamEvent::ToolUseStart {
-                        id: "toolu_01".into(),
-                        name: "nonexistent".into(),
-                    },
-                    StreamEvent::ToolUseInputDelta(r#"{}"#.into()),
-                    StreamEvent::MessageStop,
-                ])
-            } else {
-                Ok(vec![
-                    StreamEvent::TextDelta("ok".into()),
-                    StreamEvent::MessageStop,
-                ])
-            }
-        };
-
-        let mut agent_events = Vec::new();
-        let _content = kernel
-            .run_turn(&mut store, &send, &registry, &mut |e| agent_events.push(e))
-            .unwrap();
-
-        // The tool result should contain an error message about unknown tool
-        // Check appended history for the tool result message
-        assert!(store.appended.len() >= 2);
-        let tool_result_json = structfs_serde_store::value_to_json(store.appended[1].clone());
-        let content_arr = tool_result_json["content"].as_array().unwrap();
-        let result_content = content_arr[0]["content"].as_str().unwrap();
-        assert!(
-            result_content.contains("unknown tool"),
-            "expected 'unknown tool' error, got: {result_content}"
-        );
-    }
-
-    #[test]
-    fn run_turn_send_error_propagates() {
-        let mut kernel = Kernel::new("test-model".into());
-        let request = make_request();
-        let mut store = MockStore::with_prompt(&request);
-        let registry = ToolRegistry::new();
-
-        let send = |_req: &CompletionRequest| -> Result<Vec<StreamEvent>, String> {
-            Err("network error".into())
-        };
-
-        let mut noop = |_: AgentEvent| {};
-        let result = kernel.run_turn(&mut store, &send, &registry, &mut noop);
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "network error");
     }
 
     // -----------------------------------------------------------------------

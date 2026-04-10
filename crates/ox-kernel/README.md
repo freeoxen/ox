@@ -6,8 +6,6 @@ Core types, state machine, and agentic loop for the [ox](https://github.com/free
 
 - **Message types** — `Message`, `ContentBlock`, `ToolCall`, `ToolResult`
 - **Completion protocol** — `CompletionRequest`, `StreamEvent`, `EventStream`
-- **Tool abstraction** — `Tool` trait and `ToolRegistry`
-- **Transport abstraction** — `Transport` trait for pluggable LLM backends
 - **Kernel** — the agentic loop state machine, reads prompts from a `Store` and writes results back
 - **StructFS re-exports** — `Reader`, `Writer`, `Store`, `Path`, `Value`, `Record`, `path!`
 

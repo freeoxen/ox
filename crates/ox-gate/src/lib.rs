@@ -8,17 +8,13 @@
 pub mod account;
 pub mod codec;
 pub mod provider;
-pub mod tools;
 
 pub use account::AccountConfig;
 pub use codec::UsageInfo;
 pub use provider::ProviderConfig;
-pub use tools::completion_tool;
 
-#[allow(deprecated)] // Tool pending migration to ToolStore
-use ox_kernel::{ModelInfo, Tool, ToolSchema};
+use ox_kernel::{ModelInfo, ToolSchema};
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Arc;
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Store, Value, Writer};
 use structfs_serde_store::{from_value, to_value};
 
@@ -146,44 +142,35 @@ impl GateStore {
                 }
                 let account = self.accounts.get(name)?;
                 let provider = self.providers.get(&account.provider)?;
-                Some(tools::completion_tool_schema(name, provider))
-            })
-            .collect()
-    }
-
-    /// Create completion tool instances for all accounts with API keys set.
-    ///
-    /// `send` is a synchronous function that sends a [`ox_kernel::CompletionRequest`]
-    /// and returns parsed [`ox_kernel::StreamEvent`]s.
-    #[allow(deprecated)] // Tool/FnTool pending migration to ToolStore
-    pub fn create_completion_tools(&mut self, send: Arc<tools::SendFn>) -> Vec<Box<dyn Tool>> {
-        let default_model = self
-            .config_string("gate/defaults/model")
-            .unwrap_or_else(|| self.defaults.model.clone());
-        let default_max_tokens = self
-            .config_integer("gate/defaults/max_tokens")
-            .map(|n| n as u32)
-            .unwrap_or(self.defaults.max_tokens);
-
-        let names: Vec<String> = self.accounts.keys().cloned().collect();
-        names
-            .iter()
-            .filter_map(|name| {
-                let has_key = self
-                    .config_string(&format!("gate/accounts/{name}/key"))
-                    .is_some();
-                if !has_key {
-                    return None;
-                }
-                let account = self.accounts.get(name)?;
-                let provider = self.providers.get(&account.provider)?;
-                Some(Box::new(tools::completion_tool(
-                    name.clone(),
-                    provider,
-                    default_model.clone(),
-                    default_max_tokens,
-                    send.clone(),
-                )) as Box<dyn Tool>)
+                Some(ToolSchema {
+                    name: format!("complete_{name}"),
+                    description: format!(
+                        "Send a completion to the {} account ({} dialect)",
+                        name, provider.dialect,
+                    ),
+                    input_schema: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "prompt": {
+                                "type": "string",
+                                "description": "The user prompt to send"
+                            },
+                            "system": {
+                                "type": "string",
+                                "description": "Optional system prompt"
+                            },
+                            "model": {
+                                "type": "string",
+                                "description": "Model ID to use (overrides default)"
+                            },
+                            "max_tokens": {
+                                "type": "integer",
+                                "description": "Max tokens for completion (overrides default)"
+                            }
+                        },
+                        "required": ["prompt"]
+                    }),
+                })
             })
             .collect()
     }
@@ -850,22 +837,6 @@ mod tests {
         let arr = json.as_array().unwrap();
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["name"], "complete_anthropic");
-    }
-
-    #[test]
-    fn test_create_completion_tools() {
-        use ox_store_util::LocalConfig;
-        let mut config = LocalConfig::new();
-        config.set(
-            "gate/accounts/openai/key",
-            Value::String("sk-openai".into()),
-        );
-        let mut gate = GateStore::new().with_config(Box::new(config));
-
-        let send: Arc<tools::SendFn> = Arc::new(|_| Ok(vec![]));
-        let tools = gate.create_completion_tools(send);
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].name(), "complete_openai");
     }
 
     // -- Snapshot tests --
