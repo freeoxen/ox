@@ -7,6 +7,7 @@ license = "Apache-2.0"
 description = "StructFS-backed inbox store for ox agent thread management"
 
 [dependencies]
+ox-path = { path = "../ox-path" }
 tracing = { workspace = true }
 ox-kernel = { path = "../ox-kernel" }
 structfs-core-store = { workspace = true }

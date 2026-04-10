@@ -13,6 +13,7 @@
 
 use std::collections::BTreeMap;
 
+use ox_path::oxpath;
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer};
 
 // ---------------------------------------------------------------------------
@@ -156,7 +157,7 @@ impl InputStore {
                 dispatcher(target, Record::parsed(Value::Map(cmd)))
             }
             Action::Macro(steps) => {
-                let mut last_result = Path::from_components(vec![]);
+                let mut last_result = oxpath!();
                 for step in steps {
                     last_result = self.execute_action(step, event_context)?;
                 }

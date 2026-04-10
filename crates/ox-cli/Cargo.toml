@@ -15,6 +15,7 @@ name = "ox"
 path = "src/main.rs"
 
 [dependencies]
+ox-path = { path = "../ox-path" }
 ox-kernel = { path = "../ox-kernel" }
 ox-context = { path = "../ox-context" }
 ox-gate = { path = "../ox-gate" }

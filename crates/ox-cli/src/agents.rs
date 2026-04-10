@@ -119,7 +119,7 @@ impl AgentPool {
 
     fn read_thread_title(&mut self, thread_id: &str) -> Option<String> {
         let tid = thread_id.to_string();
-        let path = ox_kernel::oxpath!("threads", tid);
+        let path = ox_path::oxpath!("threads", tid);
         let record = self.inbox.read(&path).ok()??;
         let value = record.as_value()?;
         match value {
@@ -206,7 +206,7 @@ fn agent_worker(
         },
         _ => "anthropic".to_string(),
     };
-    let provider = match adapter.read(&ox_kernel::oxpath!("gate", "accounts", default_account, "provider")) {
+    let provider = match adapter.read(&ox_path::oxpath!("gate", "accounts", default_account, "provider")) {
         Ok(Some(r)) => match r.as_value() {
             Some(Value::String(s)) => s.clone(),
             _ => "anthropic".to_string(),
@@ -214,7 +214,7 @@ fn agent_worker(
         _ => "anthropic".to_string(),
     };
     let api_key_for_transport =
-        match adapter.read(&ox_kernel::oxpath!("gate", "accounts", default_account, "key")) {
+        match adapter.read(&ox_path::oxpath!("gate", "accounts", default_account, "key")) {
             Ok(Some(r)) => match r.as_value() {
                 Some(Value::String(s)) => s.clone(),
                 _ => String::new(),
@@ -230,7 +230,7 @@ fn agent_worker(
     let mut gate_for_tools = GateStore::new();
     gate_for_tools
         .write(
-            &ox_kernel::oxpath!("accounts", default_account, "key"),
+            &ox_path::oxpath!("accounts", default_account, "key"),
             Record::parsed(Value::String(api_key_for_transport.clone())),
         )
         .ok();
@@ -340,7 +340,7 @@ fn agent_worker(
             update.insert("updated_at".to_string(), Value::Integer(now));
             rt_handle
                 .block_on(broker_client.write(
-                    &ox_kernel::oxpath!("inbox", "threads"),
+                    &ox_path::oxpath!("inbox", "threads"),
                     Record::parsed(Value::Map(update)),
                 ))
                 .ok();

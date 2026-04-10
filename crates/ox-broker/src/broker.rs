@@ -8,6 +8,7 @@
 //! conversion in the hot path. Servers are sorted by prefix length
 //! descending so the first `has_prefix` hit is the longest match.
 
+use ox_path::oxpath;
 use structfs_core_store::{Error as StoreError, Path, Record};
 use tokio::sync::{mpsc, oneshot};
 
@@ -67,7 +68,7 @@ impl BrokerInner {
                     path.clone()
                 } else {
                     path.strip_prefix(&entry.prefix)
-                        .unwrap_or_else(|| Path::from_components(vec![]))
+                        .unwrap_or_else(|| oxpath!())
                 };
                 return Some((entry.tx.clone(), sub_path));
             }

@@ -2,6 +2,7 @@
 
 use crate::ledger;
 use crate::thread_dir::{self, ContextFile};
+use ox_path::oxpath;
 use std::collections::BTreeMap;
 use std::path::Path;
 use structfs_core_store::Record;
@@ -39,8 +40,8 @@ pub fn save(
     // 1. Read snapshot states from participating mounts
     let mut stores = BTreeMap::new();
     for &mount in mounts {
-        let path = structfs_core_store::Path::parse(&format!("{mount}/snapshot/state"))
-            .map_err(|e| e.to_string())?;
+        let mount_str = mount.to_string();
+        let path = oxpath!(mount_str, "snapshot", "state");
         if let Ok(Some(record)) = namespace.read(&path) {
             if let Some(value) = record.as_value() {
                 stores.insert(mount.to_string(), value_to_json(value.clone()));
@@ -122,8 +123,8 @@ pub fn restore(
 
     for &mount in mounts {
         if let Some(state_json) = ctx.stores.get(mount) {
-            let path = structfs_core_store::Path::parse(&format!("{mount}/snapshot/state"))
-                .map_err(|e| e.to_string())?;
+            let mount_str = mount.to_string();
+            let path = oxpath!(mount_str, "snapshot", "state");
             let value = json_to_value(state_json.clone());
             namespace
                 .write(&path, Record::parsed(value))

@@ -12,6 +12,7 @@ description = "UI stores for ox — state machines driven by StructFS command pr
 [dependencies]
 tracing = { workspace = true }
 ox-broker = { path = "../ox-broker" }
+ox-path = { path = "../ox-path" }
 ox-store-util = { path = "../ox-store-util" }
 structfs-core-store = { workspace = true }
 structfs-serde-store = { workspace = true }

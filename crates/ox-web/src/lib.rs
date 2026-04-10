@@ -18,7 +18,7 @@ use ox_gate::codec::{anthropic as anthropic_codec, openai as openai_codec};
 use ox_gate::{AccountConfig, GateStore, ProviderConfig};
 use ox_history::HistoryProvider;
 use ox_kernel::ModelInfo;
-use ox_kernel::{Path, Reader, Record, ToolRegistry, ToolResult, Value, Writer, path};
+use ox_kernel::{Reader, Record, ToolRegistry, ToolResult, Value, Writer, oxpath, path};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -135,32 +135,18 @@ impl OxAgent {
         let mut ctx = self.context.borrow_mut();
 
         // If no account for this provider exists, create one
-        let key_path = Path::from_components(vec![
-            "gate".to_string(),
-            "accounts".to_string(),
-            provider.to_string(),
-            "key".to_string(),
-        ]);
+        let key_path = oxpath!("gate", "accounts", provider, "key");
         let has_account = ctx.read(&key_path).ok().flatten().is_some();
         if !has_account {
             let config = AccountConfig {
                 provider: provider.to_string(),
             };
             let value = to_value(&config).map_err(|e| JsValue::from_str(&e.to_string()))?;
-            let account_path = Path::from_components(vec![
-                "gate".to_string(),
-                "accounts".to_string(),
-                provider.to_string(),
-            ]);
+            let account_path = oxpath!("gate", "accounts", provider);
             ctx.write(&account_path, Record::parsed(value))
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
         } else {
-            let key_path = Path::from_components(vec![
-                "gate".to_string(),
-                "accounts".to_string(),
-                provider.to_string(),
-                "key".to_string(),
-            ]);
+            let key_path = oxpath!("gate", "accounts", provider, "key");
             ctx.write(&key_path, Record::parsed(Value::String(key.to_string())))
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
         }
@@ -169,12 +155,7 @@ impl OxAgent {
 
     /// Remove the API key for the given provider.
     pub fn remove_api_key(&self, provider: &str) -> Result<(), JsValue> {
-        let key_path = Path::from_components(vec![
-            "gate".to_string(),
-            "accounts".to_string(),
-            provider.to_string(),
-            "key".to_string(),
-        ]);
+        let key_path = oxpath!("gate", "accounts", provider, "key");
         self.context
             .borrow_mut()
             .write(&key_path, Record::parsed(Value::String(String::new())))
@@ -184,12 +165,7 @@ impl OxAgent {
 
     /// Check whether an API key is set for the given provider.
     pub fn has_api_key(&self, provider: &str) -> bool {
-        let key_path = Path::from_components(vec![
-            "gate".to_string(),
-            "accounts".to_string(),
-            provider.to_string(),
-            "key".to_string(),
-        ]);
+        let key_path = oxpath!("gate", "accounts", provider, "key");
         let mut ctx = self.context.borrow_mut();
         match ctx.read(&key_path) {
             Ok(Some(Record::Parsed(Value::String(s)))) => !s.is_empty(),
@@ -220,12 +196,7 @@ impl OxAgent {
             Ok(Some(Record::Parsed(Value::String(s)))) => s,
             _ => return "anthropic".to_string(),
         };
-        let provider_path = Path::from_components(vec![
-            "gate".to_string(),
-            "accounts".to_string(),
-            default_account,
-            "provider".to_string(),
-        ]);
+        let provider_path = oxpath!("gate", "accounts", default_account, "provider");
         match ctx.read(&provider_path) {
             Ok(Some(Record::Parsed(Value::String(s)))) => s,
             _ => "anthropic".to_string(),
@@ -372,12 +343,7 @@ impl OxAgent {
             Ok(Some(Record::Parsed(Value::String(s)))) => s,
             _ => "anthropic".to_string(),
         };
-        let models_path = Path::from_components(vec![
-            "gate".to_string(),
-            "providers".to_string(),
-            provider,
-            "models".to_string(),
-        ]);
+        let models_path = oxpath!("gate", "providers", provider, "models");
         let catalog = ctx
             .read(&models_path)
             .ok()
@@ -399,12 +365,7 @@ impl OxAgent {
             let models = fetch_model_catalog(&config, &api_key).await?;
             let value = structfs_serde_store::to_value(&models)
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
-            let models_path = Path::from_components(vec![
-                "gate".to_string(),
-                "providers".to_string(),
-                provider,
-                "models".to_string(),
-            ]);
+            let models_path = oxpath!("gate", "providers", provider, "models");
             context
                 .borrow_mut()
                 .write(&models_path, Record::parsed(value))
@@ -453,12 +414,7 @@ impl OxAgent {
 
 /// Read the API key for the given account from the gate store.
 fn read_api_key(context: &Rc<RefCell<Namespace>>, account: &str) -> String {
-    let key_path = Path::from_components(vec![
-        "gate".to_string(),
-        "accounts".to_string(),
-        account.to_string(),
-        "key".to_string(),
-    ]);
+    let key_path = oxpath!("gate", "accounts", account, "key");
     let mut ctx = context.borrow_mut();
     match ctx.read(&key_path) {
         Ok(Some(Record::Parsed(Value::String(s)))) => s,
@@ -468,11 +424,7 @@ fn read_api_key(context: &Rc<RefCell<Namespace>>, account: &str) -> String {
 
 /// Read the ProviderConfig for the given provider name from the gate store.
 fn read_provider_config(context: &Rc<RefCell<Namespace>>, provider: &str) -> ProviderConfig {
-    let provider_path = Path::from_components(vec![
-        "gate".to_string(),
-        "providers".to_string(),
-        provider.to_string(),
-    ]);
+    let provider_path = oxpath!("gate", "providers", provider);
     let mut ctx = context.borrow_mut();
     match ctx.read(&provider_path) {
         Ok(Some(Record::Parsed(v))) => {
@@ -788,12 +740,7 @@ async fn run_agentic_loop(
         }
     };
     let provider = {
-        let provider_path = Path::from_components(vec![
-            "gate".to_string(),
-            "accounts".to_string(),
-            default_account.clone(),
-            "provider".to_string(),
-        ]);
+        let provider_path = oxpath!("gate", "accounts", default_account, "provider");
         let mut ctx = context_ref.borrow_mut();
         match ctx.read(&provider_path) {
             Ok(Some(Record::Parsed(Value::String(s)))) => s,

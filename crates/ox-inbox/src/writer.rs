@@ -1,5 +1,5 @@
 use crate::model::{InboxState, ThreadState};
-use ox_kernel::oxpath;
+use ox_path::oxpath;
 use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::path::Path as FsPath;

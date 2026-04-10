@@ -13,6 +13,7 @@
 //! [`CompletionRequest`] by collecting state from all mounted providers.
 
 use ox_kernel::CompletionRequest;
+use ox_path::oxpath;
 use std::collections::BTreeMap;
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Store, Value, Writer, path};
 use structfs_serde_store::{to_value, value_to_json};
@@ -235,7 +236,7 @@ impl Writer for Namespace {
 /// Split a path into the first component (prefix) and the remaining sub-path.
 fn split_path(path: &Path) -> (&str, Path) {
     if path.is_empty() {
-        return ("", Path::from_components(vec![]));
+        return ("", oxpath!());
     }
     let prefix = path.components[0].as_str();
     let sub = Path::from_components(path.components[1..].to_vec());
@@ -328,7 +329,7 @@ impl Writer for SystemProvider {
             _ => match data {
                 Record::Parsed(Value::String(s)) => {
                     self.prompt = s;
-                    Ok(Path::from_components(vec![]))
+                    Ok(oxpath!())
                 }
                 _ => Err(StoreError::store(
                     "system",

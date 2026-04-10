@@ -14,6 +14,7 @@ categories = ["data-structures", "asynchronous"]
 
 [dependencies]
 tracing = { workspace = true }
+ox-path = { path = "../ox-path" }
 structfs-core-store = { workspace = true }
 tokio = { workspace = true }
 

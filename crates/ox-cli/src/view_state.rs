@@ -186,7 +186,7 @@ pub async fn fetch_view_state<'a>(
     } else if screen == "thread" {
         if let Some(tid) = &active_thread {
             // Read committed messages
-            let msg_path = ox_kernel::oxpath!("threads", tid, "history", "messages");
+            let msg_path = ox_path::oxpath!("threads", tid, "history", "messages");
             if let Ok(Some(record)) = client.read(&msg_path).await {
                 if let Some(Value::Array(arr)) = record.as_value() {
                     messages = parse_chat_messages(arr);
@@ -195,7 +195,7 @@ pub async fn fetch_view_state<'a>(
 
             // Read turn/thinking
             let thinking_path =
-                ox_kernel::oxpath!("threads", tid, "history", "turn", "thinking");
+                ox_path::oxpath!("threads", tid, "history", "turn", "thinking");
             if let Ok(Some(record)) = client.read(&thinking_path).await {
                 if let Some(Value::Bool(b)) = record.as_value() {
                     thinking = *b;
@@ -204,7 +204,7 @@ pub async fn fetch_view_state<'a>(
 
             // Read turn/tool
             let tool_path =
-                ox_kernel::oxpath!("threads", tid, "history", "turn", "tool");
+                ox_path::oxpath!("threads", tid, "history", "turn", "tool");
             if let Ok(Some(record)) = client.read(&tool_path).await {
                 if let Some(Value::Map(m)) = record.as_value() {
                     let name = m
@@ -227,7 +227,7 @@ pub async fn fetch_view_state<'a>(
 
             // Read turn/tokens
             let tokens_path =
-                ox_kernel::oxpath!("threads", tid, "history", "turn", "tokens");
+                ox_path::oxpath!("threads", tid, "history", "turn", "tokens");
             if let Ok(Some(record)) = client.read(&tokens_path).await {
                 if let Some(Value::Map(m)) = record.as_value() {
                     let in_t = m
@@ -250,7 +250,7 @@ pub async fn fetch_view_state<'a>(
 
             // Read approval/pending
             let approval_path =
-                ox_kernel::oxpath!("threads", tid, "approval", "pending");
+                ox_path::oxpath!("threads", tid, "approval", "pending");
             if let Ok(Some(record)) = client.read(&approval_path).await {
                 if let Some(Value::Map(m)) = record.as_value() {
                     let tool_name = m.get("tool_name").and_then(|v| match v {
