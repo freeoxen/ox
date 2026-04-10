@@ -2,6 +2,7 @@ pub mod completion;
 pub mod fs;
 pub mod name_map;
 pub mod os;
+pub mod policy_store;
 pub mod sandbox;
 pub mod turn;
 
