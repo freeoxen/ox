@@ -168,7 +168,7 @@ pub fn parse_wire_message(wire: &serde_json::Value) -> Result<Message, String> {
                     .iter()
                     .filter_map(|item| {
                         let tool_use_id = item.get("tool_use_id")?.as_str()?.to_string();
-                        let content = item.get("content")?.as_str()?.to_string();
+                        let content = item.get("content").cloned().unwrap_or(serde_json::Value::Null);
                         Some(ToolResult {
                             tool_use_id,
                             content,
@@ -661,7 +661,7 @@ mod tests {
             Message::ToolResult { results } => {
                 assert_eq!(results.len(), 2);
                 assert_eq!(results[0].tool_use_id, "tu_1");
-                assert_eq!(results[1].content, "result 2");
+                assert_eq!(results[1].content, serde_json::Value::String("result 2".into()));
             }
             _ => panic!("expected tool result"),
         }
@@ -669,7 +669,8 @@ mod tests {
 
     #[test]
     fn parse_wire_message_tool_result_missing_fields() {
-        // Items with missing tool_use_id or content should be filtered out
+        // Items with missing tool_use_id should be filtered out;
+        // missing content is allowed (becomes Value::Null).
         let wire = serde_json::json!({
             "role": "user",
             "content": [
@@ -681,8 +682,11 @@ mod tests {
         let msg = parse_wire_message(&wire).unwrap();
         match msg {
             Message::ToolResult { results } => {
-                assert_eq!(results.len(), 1);
-                assert_eq!(results[0].tool_use_id, "tu_3");
+                assert_eq!(results.len(), 2);
+                assert_eq!(results[0].tool_use_id, "tu_1");
+                assert_eq!(results[0].content, serde_json::Value::Null);
+                assert_eq!(results[1].tool_use_id, "tu_3");
+                assert_eq!(results[1].content, serde_json::Value::String("ok".into()));
             }
             _ => panic!("expected tool result"),
         }

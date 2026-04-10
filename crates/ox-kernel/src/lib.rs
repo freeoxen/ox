@@ -73,7 +73,7 @@ pub struct ToolResult {
     /// The [`ToolCall::id`] this result corresponds to.
     pub tool_use_id: String,
     /// The tool's output (or error message).
-    pub content: String,
+    pub content: serde_json::Value,
 }
 
 /// A conversation message — user text, assistant response, or tool results.
@@ -533,7 +533,7 @@ impl Kernel {
                 });
                 results.push(ToolResult {
                     tool_use_id: tc.id.clone(),
-                    content: result_str,
+                    content: serde_json::Value::String(result_str),
                 });
             }
 
@@ -663,10 +663,14 @@ pub fn serialize_tool_results(results: &[ToolResult]) -> serde_json::Value {
     let content: Vec<serde_json::Value> = results
         .iter()
         .map(|r| {
+            let content_str = match &r.content {
+                serde_json::Value::String(s) => s.clone(),
+                other => serde_json::to_string(other).unwrap_or_default(),
+            };
             serde_json::json!({
                 "type": "tool_result",
                 "tool_use_id": r.tool_use_id,
-                "content": r.content,
+                "content": content_str,
             })
         })
         .collect();
@@ -1491,7 +1495,7 @@ mod tests {
         // Write tool results (simulating what run_turn does)
         let results = vec![ToolResult {
             tool_use_id: "toolu_01".into(),
-            content: "Sunny, 72F".into(),
+            content: serde_json::Value::String("Sunny, 72F".into()),
         }];
         let results_json = serialize_tool_results(&results);
         let record = Record::parsed(structfs_serde_store::json_to_value(results_json));
@@ -1737,7 +1741,7 @@ mod tests {
     fn serialize_tool_results_single() {
         let results = vec![ToolResult {
             tool_use_id: "call_1".into(),
-            content: "result text".into(),
+            content: serde_json::Value::String("result text".into()),
         }];
         let json = serialize_tool_results(&results);
         assert_eq!(json["role"], "user");
@@ -1751,11 +1755,11 @@ mod tests {
         let results = vec![
             ToolResult {
                 tool_use_id: "c1".into(),
-                content: "r1".into(),
+                content: serde_json::Value::String("r1".into()),
             },
             ToolResult {
                 tool_use_id: "c2".into(),
-                content: "r2".into(),
+                content: serde_json::Value::String("r2".into()),
             },
         ];
         let json = serialize_tool_results(&results);

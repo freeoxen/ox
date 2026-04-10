@@ -847,7 +847,7 @@ async fn run_agentic_loop(
             );
             results.push(ToolResult {
                 tool_use_id: tc.id.clone(),
-                content: result_str,
+                content: serde_json::Value::String(result_str),
             });
         }
 
