@@ -1,5 +1,3 @@
-#![allow(deprecated)] // ToolRegistry/Tool::execute pending migration to ToolStore
-
 //! Browser Wasm shell for the ox agent framework.
 //!
 //! `ox-web` compiles to a `cdylib` Wasm module via `wasm-pack` and exposes
@@ -20,7 +18,7 @@ use ox_gate::codec::{anthropic as anthropic_codec, openai as openai_codec};
 use ox_gate::{AccountConfig, GateStore, ProviderConfig};
 use ox_history::HistoryProvider;
 use ox_kernel::ModelInfo;
-use ox_kernel::{Reader, Record, ToolRegistry, ToolResult, Value, Writer, oxpath, path};
+use ox_kernel::{Reader, Record, ToolResult, Value, Writer, oxpath, path};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -79,7 +77,7 @@ impl JsTool {
 pub struct OxAgent {
     context: Rc<RefCell<Namespace>>,
     event_callback: Option<js_sys::Function>,
-    rust_tools: Rc<RefCell<ToolRegistry>>,
+    tool_store: Rc<RefCell<ox_tools::ToolStore>>,
     js_tools: Rc<RefCell<HashMap<String, JsTool>>>,
 }
 
@@ -90,8 +88,23 @@ impl OxAgent {
         let model = "claude-sonnet-4-20250514".to_string();
         let max_tokens = 4096;
 
-        let tool_registry = ToolRegistry::new();
-        let schemas = tool_registry.schemas();
+        let executor = std::path::PathBuf::from("ox-tool-exec"); // stub on wasm
+        let policy: std::sync::Arc<dyn ox_tools::sandbox::SandboxPolicy> =
+            std::sync::Arc::new(ox_tools::sandbox::PermissivePolicy);
+        let fs_module = ox_tools::fs::FsModule::new(
+            std::path::PathBuf::from("."),
+            executor.clone(),
+            policy.clone(),
+        );
+        let os_module = ox_tools::os::OsModule::new(
+            std::path::PathBuf::from("."),
+            executor,
+            policy,
+        );
+        let completion_gate = GateStore::new();
+        let completion_module = ox_tools::completion::CompletionModule::new(completion_gate);
+        let tool_store = ox_tools::ToolStore::new(fs_module, os_module, completion_module);
+        let schemas = tool_store.tool_schemas_for_model();
 
         let mut gate = GateStore::new();
         if !api_key.is_empty() {
@@ -127,7 +140,7 @@ impl OxAgent {
         Self {
             context: Rc::new(RefCell::new(context)),
             event_callback: None,
-            rust_tools: Rc::new(RefCell::new(tool_registry)),
+            tool_store: Rc::new(RefCell::new(tool_store)),
             js_tools: Rc::new(RefCell::new(HashMap::new())),
         }
     }
@@ -387,11 +400,11 @@ impl OxAgent {
         let input = input.to_string();
         let callback = self.event_callback.clone();
         let context = self.context.clone();
-        let rust_tools = self.rust_tools.clone();
+        let tool_store = self.tool_store.clone();
         let js_tools = self.js_tools.clone();
         wasm_bindgen_futures::future_to_promise(async move {
             let result =
-                run_agentic_loop(&input, &context, &rust_tools, &js_tools, callback.as_ref()).await;
+                run_agentic_loop(&input, &context, &tool_store, &js_tools, callback.as_ref()).await;
 
             match result {
                 Ok(text) => Ok(JsValue::from_str(&text)),
@@ -402,9 +415,9 @@ impl OxAgent {
 }
 
 impl OxAgent {
-    /// Rebuild the ToolsProvider in the namespace from both Rust and JS tools.
+    /// Rebuild the ToolsProvider in the namespace from both ToolStore and JS tools.
     fn rebuild_tools_provider(&self) {
-        let mut schemas = self.rust_tools.borrow().schemas();
+        let mut schemas: Vec<ToolSchema> = self.tool_store.borrow().tool_schemas_for_model();
         for jt in self.js_tools.borrow().values() {
             schemas.push(jt.schema());
         }
@@ -685,30 +698,60 @@ async fn fetch_model_catalog(
     Ok(all_models)
 }
 
-/// Execute a tool call against the Rust registry first, then JS tools.
+/// Execute a tool call against the ToolStore first, then JS tools.
 fn execute_tool(
-    rust_tools: &Rc<RefCell<ToolRegistry>>,
+    tool_store: &Rc<RefCell<ox_tools::ToolStore>>,
     js_tools: &Rc<RefCell<HashMap<String, JsTool>>>,
     name: &str,
     input: &serde_json::Value,
 ) -> String {
+    // Try ToolStore first (native tools + module tools)
     {
-        let registry = rust_tools.borrow();
-        if let Some(tool) = registry.get(name) {
-            return match tool.execute(input.clone()) {
-                Ok(r) => r,
-                Err(e) => format!("error: {e}"),
-            };
+        let mut store = tool_store.borrow_mut();
+        let tool_path = match structfs_core_store::Path::parse(name) {
+            Ok(p) => p,
+            Err(_) => {
+                // Invalid path — skip to JS tools
+                drop(store);
+                return try_js_tools(js_tools, name, input);
+            }
+        };
+        let input_value = structfs_serde_store::json_to_value(input.clone());
+        match store.write(&tool_path, structfs_core_store::Record::parsed(input_value)) {
+            Ok(_) => {
+                let result_str = format!("{name}/result");
+                if let Ok(rp) = structfs_core_store::Path::parse(&result_str) {
+                    if let Ok(Some(record)) = store.read(&rp) {
+                        let val = record
+                            .as_value()
+                            .cloned()
+                            .unwrap_or(structfs_core_store::Value::Null);
+                        let json = structfs_serde_store::value_to_json(val);
+                        return serde_json::to_string(&json).unwrap_or_default();
+                    }
+                }
+                "error: no result from tool".to_string()
+            }
+            Err(_) => {
+                // ToolStore couldn't handle it — try JS tools
+                drop(store);
+                try_js_tools(js_tools, name, input)
+            }
         }
     }
-    {
-        let js = js_tools.borrow();
-        if let Some(jt) = js.get(name) {
-            return match jt.execute(input) {
-                Ok(r) => r,
-                Err(e) => format!("error: {e}"),
-            };
-        }
+}
+
+fn try_js_tools(
+    js_tools: &Rc<RefCell<HashMap<String, JsTool>>>,
+    name: &str,
+    input: &serde_json::Value,
+) -> String {
+    let js = js_tools.borrow();
+    if let Some(jt) = js.get(name) {
+        return match jt.execute(input) {
+            Ok(r) => r,
+            Err(e) => format!("error: {e}"),
+        };
     }
     format!("error: unknown tool '{name}'")
 }
@@ -717,7 +760,7 @@ fn execute_tool(
 async fn run_agentic_loop(
     user_input: &str,
     context_ref: &Rc<RefCell<Namespace>>,
-    rust_tools: &Rc<RefCell<ToolRegistry>>,
+    tool_store: &Rc<RefCell<ox_tools::ToolStore>>,
     js_tools: &Rc<RefCell<HashMap<String, JsTool>>>,
     callback: Option<&js_sys::Function>,
 ) -> Result<String, String> {
@@ -841,7 +884,7 @@ async fn run_agentic_loop(
         let mut results = Vec::new();
         for tc in &tool_calls {
             emit_js(callback, "tool_call_start", &tc.name);
-            let result_str = execute_tool(rust_tools, js_tools, &tc.name, &tc.input);
+            let result_str = execute_tool(tool_store, js_tools, &tc.name, &tc.input);
             emit_js(
                 callback,
                 "tool_call_result",
