@@ -379,7 +379,9 @@ pub async fn run_async(
                                     );
 
                                     // Write account through ConfigStore (not direct file)
-                                    let provider_path = ox_path::oxpath!("config", "gate", "accounts", name, "provider");
+                                    let provider_path = ox_path::oxpath!(
+                                        "config", "gate", "accounts", name, "provider"
+                                    );
                                     client
                                         .write(
                                             &provider_path,
@@ -388,7 +390,9 @@ pub async fn run_async(
                                         .await
                                         .ok();
                                     if let Some(ep) = endpoint {
-                                        let ep_path = ox_path::oxpath!("config", "gate", "accounts", name, "endpoint");
+                                        let ep_path = ox_path::oxpath!(
+                                            "config", "gate", "accounts", name, "endpoint"
+                                        );
                                         client
                                             .write(&ep_path, Record::parsed(Value::String(ep)))
                                             .await
@@ -398,7 +402,9 @@ pub async fn run_async(
                                     // Write key to ConfigStore (in-memory for session)
                                     // AND to key file (for persistence across sessions)
                                     if !key.is_empty() {
-                                        let key_path = ox_path::oxpath!("config", "gate", "accounts", name, "key");
+                                        let key_path = ox_path::oxpath!(
+                                            "config", "gate", "accounts", name, "key"
+                                        );
                                         client
                                             .write(
                                                 &key_path,
@@ -421,9 +427,13 @@ pub async fn run_async(
                                         })
                                         .unwrap_or_default();
                                     let default_exists = client
-                                        .read(
-                                            &ox_path::oxpath!("config", "gate", "accounts", current_default, "provider"),
-                                        )
+                                        .read(&ox_path::oxpath!(
+                                            "config",
+                                            "gate",
+                                            "accounts",
+                                            current_default,
+                                            "provider"
+                                        ))
                                         .await
                                         .ok()
                                         .flatten()
@@ -536,17 +546,23 @@ pub async fn run_async(
                                         let keys_dir = inbox_root.join("keys");
 
                                         // Delete account through ConfigStore (Null = delete)
-                                        let provider_path = ox_path::oxpath!("config", "gate", "accounts", name, "provider");
+                                        let provider_path = ox_path::oxpath!(
+                                            "config", "gate", "accounts", name, "provider"
+                                        );
                                         client
                                             .write(&provider_path, Record::parsed(Value::Null))
                                             .await
                                             .ok();
-                                        let ep_path = ox_path::oxpath!("config", "gate", "accounts", name, "endpoint");
+                                        let ep_path = ox_path::oxpath!(
+                                            "config", "gate", "accounts", name, "endpoint"
+                                        );
                                         client
                                             .write(&ep_path, Record::parsed(Value::Null))
                                             .await
                                             .ok();
-                                        let key_path = ox_path::oxpath!("config", "gate", "accounts", name, "key");
+                                        let key_path = ox_path::oxpath!(
+                                            "config", "gate", "accounts", name, "key"
+                                        );
                                         client
                                             .write(&key_path, Record::parsed(Value::Null))
                                             .await

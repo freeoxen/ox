@@ -1,17 +1,20 @@
-use std::path::{Path, PathBuf};
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::sandbox::{AccessIntent, ExecCommand, SandboxPolicy};
-#[cfg(not(target_arch = "wasm32"))]
-use crate::sandbox::sandboxed_exec;
 use crate::ToolSchemaEntry;
+use crate::sandbox::SandboxPolicy;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::sandbox::{AccessIntent, ExecCommand, sandboxed_exec};
 
 /// File-system tool module: read, write, and edit files within a workspace.
 ///
 /// All operations are delegated to an external executor binary through
 /// `sandboxed_exec`, allowing a `SandboxPolicy` to wrap every invocation.
+#[allow(dead_code)] // Fields used on native, not on wasm32
 pub struct FsModule {
     workspace: PathBuf,
     executor_bin: PathBuf,
@@ -19,11 +22,7 @@ pub struct FsModule {
 }
 
 impl FsModule {
-    pub fn new(
-        workspace: PathBuf,
-        executor_bin: PathBuf,
-        policy: Arc<dyn SandboxPolicy>,
-    ) -> Self {
+    pub fn new(workspace: PathBuf, executor_bin: PathBuf, policy: Arc<dyn SandboxPolicy>) -> Self {
         Self {
             workspace,
             executor_bin,
@@ -32,6 +31,7 @@ impl FsModule {
     }
 
     /// Resolve a relative path against the workspace root, rejecting escapes.
+    #[cfg(not(target_arch = "wasm32"))]
     fn resolve_path(&self, rel: &str) -> Result<PathBuf, String> {
         // Normalize by joining and canonicalizing what we can
         let candidate = self.workspace.join(rel);
@@ -51,7 +51,7 @@ impl FsModule {
         #[cfg(target_arch = "wasm32")]
         {
             let _ = (op, input);
-            return Err("fs operations are not available on wasm32 targets".to_string());
+            Err("fs operations are not available on wasm32 targets".to_string())
         }
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -160,6 +160,7 @@ impl FsModule {
 /// Resolve `candidate` ensuring it stays within `workspace`.
 /// Works even if the file doesn't exist yet by canonicalizing the
 /// longest existing ancestor.
+#[cfg(not(target_arch = "wasm32"))]
 fn resolve_within(workspace: &Path, candidate: &Path) -> Result<PathBuf, String> {
     // Canonicalize the workspace (must exist)
     let canon_ws = workspace

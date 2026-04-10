@@ -89,7 +89,9 @@ pub fn sandboxed_exec(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
-    let mut child = cmd.spawn().map_err(|e| format!("failed to spawn executor: {e}"))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("failed to spawn executor: {e}"))?;
 
     // Write JSON to stdin
     {
@@ -118,11 +120,7 @@ pub fn sandboxed_exec(
     if result.ok {
         Ok(result.value)
     } else {
-        Err(result
-            .value
-            .as_str()
-            .unwrap_or("unknown error")
-            .to_string())
+        Err(result.value.as_str().unwrap_or("unknown error").to_string())
     }
 }
 

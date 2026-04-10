@@ -124,10 +124,7 @@ impl Agent {
     /// The legacy `tools` (ToolRegistry) and `send` fields are set to no-op
     /// values — use the ToolStore's completions module for LLM calls.
     #[allow(deprecated)]
-    pub fn with_tool_store(
-        system_prompt: String,
-        tool_store: ox_tools::ToolStore,
-    ) -> Self {
+    pub fn with_tool_store(system_prompt: String, tool_store: ox_tools::ToolStore) -> Self {
         let mut context = Namespace::new();
         context.mount("system", Box::new(SystemProvider::new(system_prompt)));
         context.mount("history", Box::new(HistoryProvider::new()));

@@ -40,12 +40,7 @@ impl TurnStore {
     }
 
     /// Append a tool-call effect to the pending queue.
-    pub fn enqueue_tool_call(
-        &mut self,
-        call_id: &str,
-        wire_name: &str,
-        input: serde_json::Value,
-    ) {
+    pub fn enqueue_tool_call(&mut self, call_id: &str, wire_name: &str, input: serde_json::Value) {
         self.pending.push(PendingEffect {
             call_id: call_id.to_owned(),
             wire_name: wire_name.to_owned(),

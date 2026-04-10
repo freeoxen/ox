@@ -3,11 +3,11 @@ use std::sync::Arc;
 
 use ox_gate::GateStore;
 use ox_path::oxpath;
+use ox_tools::ToolStore;
 use ox_tools::completion::CompletionModule;
 use ox_tools::fs::FsModule;
 use ox_tools::os::OsModule;
 use ox_tools::sandbox::PermissivePolicy;
-use ox_tools::ToolStore;
 use structfs_core_store::{Reader, Record, Value, Writer};
 
 fn make_tool_store(dir: &Path) -> ToolStore {
@@ -54,7 +54,10 @@ fn routes_completions_defaults() {
     let result = store
         .read(&oxpath!("completions", "defaults", "account"))
         .unwrap();
-    assert!(result.is_some(), "expected Some for completions/defaults/account");
+    assert!(
+        result.is_some(),
+        "expected Some for completions/defaults/account"
+    );
 }
 
 #[test]

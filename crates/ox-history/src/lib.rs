@@ -168,7 +168,10 @@ pub fn parse_wire_message(wire: &serde_json::Value) -> Result<Message, String> {
                     .iter()
                     .filter_map(|item| {
                         let tool_use_id = item.get("tool_use_id")?.as_str()?.to_string();
-                        let content = item.get("content").cloned().unwrap_or(serde_json::Value::Null);
+                        let content = item
+                            .get("content")
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null);
                         Some(ToolResult {
                             tool_use_id,
                             content,
@@ -661,7 +664,10 @@ mod tests {
             Message::ToolResult { results } => {
                 assert_eq!(results.len(), 2);
                 assert_eq!(results[0].tool_use_id, "tu_1");
-                assert_eq!(results[1].content, serde_json::Value::String("result 2".into()));
+                assert_eq!(
+                    results[1].content,
+                    serde_json::Value::String("result 2".into())
+                );
             }
             _ => panic!("expected tool result"),
         }

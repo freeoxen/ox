@@ -106,9 +106,7 @@ impl ToolStore {
         let first = path.components[0].as_str();
 
         match first {
-            "fs" | "os" | "completions" | "schemas" => {
-                Some(ResolvedPath::Direct(path))
-            }
+            "fs" | "os" | "completions" | "schemas" => Some(ResolvedPath::Direct(path)),
             _ => {
                 // Try wire-name resolution
                 if let Some(internal) = self.name_map.to_internal(first) {
@@ -116,9 +114,7 @@ impl ToolStore {
                     let parsed = Path::parse(internal).ok()?;
                     let mut components = parsed.components;
                     components.extend(path.components[1..].iter().cloned());
-                    Some(ResolvedPath::Resolved(
-                        Path::from_components(components),
-                    ))
+                    Some(ResolvedPath::Resolved(Path::from_components(components)))
                 } else {
                     None
                 }
@@ -266,10 +262,10 @@ impl Writer for ToolStore {
                     .as_value()
                     .ok_or_else(|| {
                         StoreError::store(
-                        "ToolStore",
-                        "write",
-                        "expected Parsed record for tool execution",
-                    )
+                            "ToolStore",
+                            "write",
+                            "expected Parsed record for tool execution",
+                        )
                     })?
                     .clone();
                 let json_input = structfs_serde_store::value_to_json(value);

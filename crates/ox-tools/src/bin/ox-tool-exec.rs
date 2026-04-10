@@ -66,7 +66,7 @@ fn op_read(args: &serde_json::Value) -> ExecResult {
             return ExecResult {
                 ok: false,
                 value: serde_json::Value::String("missing 'path'".into()),
-            }
+            };
         }
     };
 
@@ -89,7 +89,7 @@ fn op_write(args: &serde_json::Value) -> ExecResult {
             return ExecResult {
                 ok: false,
                 value: serde_json::Value::String("missing 'path'".into()),
-            }
+            };
         }
     };
     let content = match args.get("content").and_then(|v| v.as_str()) {
@@ -98,7 +98,7 @@ fn op_write(args: &serde_json::Value) -> ExecResult {
             return ExecResult {
                 ok: false,
                 value: serde_json::Value::String("missing 'content'".into()),
-            }
+            };
         }
     };
 
@@ -133,7 +133,7 @@ fn op_edit(args: &serde_json::Value) -> ExecResult {
             return ExecResult {
                 ok: false,
                 value: serde_json::Value::String("missing 'path'".into()),
-            }
+            };
         }
     };
     let old_string = match args.get("old_string").and_then(|v| v.as_str()) {
@@ -142,7 +142,7 @@ fn op_edit(args: &serde_json::Value) -> ExecResult {
             return ExecResult {
                 ok: false,
                 value: serde_json::Value::String("missing 'old_string'".into()),
-            }
+            };
         }
     };
     let new_string = match args.get("new_string").and_then(|v| v.as_str()) {
@@ -151,7 +151,7 @@ fn op_edit(args: &serde_json::Value) -> ExecResult {
             return ExecResult {
                 ok: false,
                 value: serde_json::Value::String("missing 'new_string'".into()),
-            }
+            };
         }
     };
     let line_start = args.get("line_start").and_then(|v| v.as_u64());
@@ -163,7 +163,7 @@ fn op_edit(args: &serde_json::Value) -> ExecResult {
             return ExecResult {
                 ok: false,
                 value: serde_json::Value::String(format!("read error: {e}")),
-            }
+            };
         }
     };
 
@@ -176,10 +176,7 @@ fn op_edit(args: &serde_json::Value) -> ExecResult {
     if matches.is_empty() {
         return ExecResult {
             ok: false,
-            value: serde_json::Value::String(format!(
-                "'old_string' not found in {}",
-                path
-            )),
+            value: serde_json::Value::String(format!("'old_string' not found in {}", path)),
         };
     }
 
@@ -207,7 +204,7 @@ fn op_edit(args: &serde_json::Value) -> ExecResult {
                         matches.len(),
                         hint
                     )),
-                }
+                };
             }
         }
     } else {
@@ -245,7 +242,7 @@ fn op_shell(args: &serde_json::Value) -> ExecResult {
             return ExecResult {
                 ok: false,
                 value: serde_json::Value::String("missing 'command'".into()),
-            }
+            };
         }
     };
 
@@ -267,7 +264,7 @@ fn op_shell(args: &serde_json::Value) -> ExecResult {
             return ExecResult {
                 ok: false,
                 value: serde_json::Value::String(format!("spawn error: {e}")),
-            }
+            };
         }
     };
 

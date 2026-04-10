@@ -55,8 +55,7 @@ pub(crate) async fn handle_approval_key(
         KeyCode::Char('c') | KeyCode::Char('C') => {
             // Read tool and input_preview from the pending approval in broker
             if let Some(tid) = active_thread_id {
-                let pending_path =
-                    ox_path::oxpath!("threads", tid, "approval", "pending");
+                let pending_path = ox_path::oxpath!("threads", tid, "approval", "pending");
                 if let Ok(Some(record)) = client.read(&pending_path).await {
                     if let Some(structfs_core_store::Value::Map(m)) = record.as_value() {
                         let tool = m

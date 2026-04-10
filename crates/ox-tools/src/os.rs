@@ -3,15 +3,16 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::sandbox::{AccessIntent, ExecCommand, SandboxPolicy};
-#[cfg(not(target_arch = "wasm32"))]
-use crate::sandbox::sandboxed_exec;
 use crate::ToolSchemaEntry;
+use crate::sandbox::SandboxPolicy;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::sandbox::{AccessIntent, ExecCommand, sandboxed_exec};
 
 /// OS tool module: shell command execution within a workspace.
 ///
 /// All commands are delegated to an external executor binary through
 /// `sandboxed_exec`, allowing a `SandboxPolicy` to wrap every invocation.
+#[allow(dead_code)] // Fields used on native, not on wasm32
 pub struct OsModule {
     workspace: PathBuf,
     executor_bin: PathBuf,
@@ -19,11 +20,7 @@ pub struct OsModule {
 }
 
 impl OsModule {
-    pub fn new(
-        workspace: PathBuf,
-        executor_bin: PathBuf,
-        policy: Arc<dyn SandboxPolicy>,
-    ) -> Self {
+    pub fn new(workspace: PathBuf, executor_bin: PathBuf, policy: Arc<dyn SandboxPolicy>) -> Self {
         Self {
             workspace,
             executor_bin,
@@ -39,7 +36,7 @@ impl OsModule {
         #[cfg(target_arch = "wasm32")]
         {
             let _ = (op, input);
-            return Err("os operations are not available on wasm32 targets".to_string());
+            Err("os operations are not available on wasm32 targets".to_string())
         }
 
         #[cfg(not(target_arch = "wasm32"))]

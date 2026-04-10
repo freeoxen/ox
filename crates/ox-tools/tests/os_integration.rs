@@ -17,7 +17,10 @@ fn shell_returns_structured_output() {
         .execute("shell", &serde_json::json!({"command": "echo hello"}))
         .unwrap();
 
-    assert_eq!(result.get("stdout").and_then(|v| v.as_str()), Some("hello\n"));
+    assert_eq!(
+        result.get("stdout").and_then(|v| v.as_str()),
+        Some("hello\n")
+    );
     assert_eq!(result.get("exit_code").and_then(|v| v.as_i64()), Some(0));
 }
 

@@ -186,16 +186,9 @@ fn agent_worker(
         // For now, use permissive — real Clash SandboxPolicy comes later
         Arc::new(ox_tools::sandbox::PermissivePolicy)
     };
-    let fs_module = ox_tools::fs::FsModule::new(
-        workspace.clone(),
-        executor.clone(),
-        sandbox_policy.clone(),
-    );
-    let os_module = ox_tools::os::OsModule::new(
-        workspace.clone(),
-        executor,
-        sandbox_policy,
-    );
+    let fs_module =
+        ox_tools::fs::FsModule::new(workspace.clone(), executor.clone(), sandbox_policy.clone());
+    let os_module = ox_tools::os::OsModule::new(workspace.clone(), executor, sandbox_policy);
     let gate = GateStore::new();
     let completion_module = ox_tools::completion::CompletionModule::new(gate);
     let _tool_store = ox_tools::ToolStore::new(fs_module, os_module, completion_module);
@@ -234,21 +227,30 @@ fn agent_worker(
         },
         _ => "anthropic".to_string(),
     };
-    let provider = match adapter.read(&ox_path::oxpath!("gate", "accounts", default_account, "provider")) {
+    let provider = match adapter.read(&ox_path::oxpath!(
+        "gate",
+        "accounts",
+        default_account,
+        "provider"
+    )) {
         Ok(Some(r)) => match r.as_value() {
             Some(Value::String(s)) => s.clone(),
             _ => "anthropic".to_string(),
         },
         _ => "anthropic".to_string(),
     };
-    let api_key_for_transport =
-        match adapter.read(&ox_path::oxpath!("gate", "accounts", default_account, "key")) {
-            Ok(Some(r)) => match r.as_value() {
-                Some(Value::String(s)) => s.clone(),
-                _ => String::new(),
-            },
+    let api_key_for_transport = match adapter.read(&ox_path::oxpath!(
+        "gate",
+        "accounts",
+        default_account,
+        "key"
+    )) {
+        Ok(Some(r)) => match r.as_value() {
+            Some(Value::String(s)) => s.clone(),
             _ => String::new(),
-        };
+        },
+        _ => String::new(),
+    };
     let provider_config = match provider.as_str() {
         "openai" => ProviderConfig::openai(),
         _ => ProviderConfig::anthropic(),
