@@ -1,3 +1,4 @@
+pub mod completion;
 pub mod fs;
 pub mod name_map;
 pub mod os;
