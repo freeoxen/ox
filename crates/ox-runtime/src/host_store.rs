@@ -74,7 +74,8 @@ impl Writer for SimpleStore {
 ///
 /// - **`gate/complete`** (write) — triggers LLM completion
 /// - **`gate/response`** (read) — returns pending stream events
-/// - **`tools/execute`** (write) — executes a tool call
+/// - **`tools/execute`** (write) — executes a tool call (legacy path)
+/// - **`tools/{module}/{op}`** (read/write) — routes to ToolStore when present
 /// - **`events/emit`** (write) — emits an agent event
 pub struct HostStore<B: Reader + Writer + Send, E: HostEffects> {
     /// The underlying backend for non-effectful operations.
@@ -85,6 +86,8 @@ pub struct HostStore<B: Reader + Writer + Send, E: HostEffects> {
     pub effects: E,
     /// Pending stream events from the most recent completion.
     pending_events: Option<Vec<StreamEvent>>,
+    /// Optional ToolStore for unified tool dispatch (new path).
+    tool_store: Option<ox_tools::ToolStore>,
 }
 
 impl<B: Reader + Writer + Send, E: HostEffects> HostStore<B, E> {
@@ -95,7 +98,14 @@ impl<B: Reader + Writer + Send, E: HostEffects> HostStore<B, E> {
             tool_results: SimpleStore::new(),
             effects,
             pending_events: None,
+            tool_store: None,
         }
+    }
+
+    /// Attach a ToolStore for unified tool dispatch via `tools/{module}/{op}`.
+    pub fn with_tool_store(mut self, tool_store: ox_tools::ToolStore) -> Self {
+        self.tool_store = Some(tool_store);
+        self
     }
 
     /// Handle a read operation, intercepting effectful paths.
@@ -108,6 +118,14 @@ impl<B: Reader + Writer + Send, E: HostEffects> HostStore<B, E> {
         if path == &path!("gate/response") {
             tracing::debug!(path = %path, "effectful read: gate response");
             return self.read_gate_response();
+        }
+
+        // Route tools/* reads to ToolStore (if present), except legacy tools/execute.
+        if !path.is_empty() && path.components[0] == "tools" && path != &path!("tools/execute") {
+            if let Some(ref mut ts) = self.tool_store {
+                let sub = Path::from_components(path.components[1..].to_vec());
+                return ts.read(&sub);
+            }
         }
 
         // Intercept tool_results reads — route to owned SimpleStore.
@@ -127,6 +145,14 @@ impl<B: Reader + Writer + Send, E: HostEffects> HostStore<B, E> {
         } else {
             path.components[0].as_str()
         };
+
+        // Route tools/* writes to ToolStore (if present), except legacy tools/execute.
+        if prefix == "tools" && path != &path!("tools/execute") {
+            if let Some(ref mut ts) = self.tool_store {
+                let sub = Path::from_components(path.components[1..].to_vec());
+                return ts.write(&sub, data);
+            }
+        }
 
         match prefix {
             "gate" if path == &path!("gate/complete") => {
@@ -529,6 +555,69 @@ mod tests {
         let value = structfs_serde_store::json_to_value(msg);
         let record = Record::parsed(value);
         let result = store.handle_write(&path!("history/append"), record);
+        assert!(result.is_ok());
+    }
+
+    fn make_tool_store() -> ox_tools::ToolStore {
+        use ox_tools::completion::CompletionModule;
+        use ox_tools::fs::FsModule;
+        use ox_tools::os::OsModule;
+        use ox_tools::sandbox::PermissivePolicy;
+        use std::sync::Arc;
+
+        let policy = Arc::new(PermissivePolicy);
+        let workspace = std::path::PathBuf::from("/tmp/test-workspace");
+        let executor = std::path::PathBuf::from("/nonexistent/ox-tool-exec");
+
+        let fs = FsModule::new(workspace.clone(), executor.clone(), policy.clone());
+        let os = OsModule::new(workspace, executor, policy);
+        let completions = CompletionModule::new(ox_gate::GateStore::new());
+
+        ox_tools::ToolStore::new(fs, os, completions)
+    }
+
+    #[test]
+    fn tools_path_routes_to_tool_store_read() {
+        let ns = make_namespace();
+        let tool_store = make_tool_store();
+        let mut store = HostStore::new(ns, MockEffects::new()).with_tool_store(tool_store);
+
+        // Reading tools/schemas should route to ToolStore and return schema entries.
+        let result = store.handle_read(&path!("tools/schemas")).unwrap();
+        assert!(result.is_some(), "expected schemas from ToolStore");
+    }
+
+    #[test]
+    fn tools_execute_still_routes_to_legacy_path() {
+        let ns = make_namespace();
+        let tool_store = make_tool_store();
+        let mut store = HostStore::new(ns, MockEffects::new()).with_tool_store(tool_store);
+
+        // Writing to tools/execute should still use the legacy HostEffects path.
+        let call = ToolCall {
+            id: "call_legacy".into(),
+            name: "echo".into(),
+            input: serde_json::json!({"text": "hello"}),
+        };
+        let value = structfs_serde_store::to_value(&call).unwrap();
+        let record = Record::parsed(value);
+
+        let result_path = store.handle_write(&path!("tools/execute"), record).unwrap();
+        // Legacy path writes to tool_results
+        assert!(result_path.to_string().starts_with("tool_results/"));
+        assert_eq!(store.effects.tool_calls, vec!["echo"]);
+    }
+
+    #[test]
+    fn tools_path_without_tool_store_falls_through() {
+        let ns = make_namespace();
+        // No tool_store attached — tools/* (non-execute) should fall through to backend.
+        let mut store = HostStore::new(ns, MockEffects::new());
+
+        // Reading tools/schemas without a ToolStore should delegate to the backend.
+        // The backend has a ToolsProvider mounted at "tools", which won't have "schemas",
+        // but the point is it doesn't panic.
+        let result = store.handle_read(&path!("tools/schemas"));
         assert!(result.is_ok());
     }
 

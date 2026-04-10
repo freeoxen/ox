@@ -13,6 +13,7 @@ ox-path = { path = "../ox-path" }
 ox-context = { path = "../ox-context" }
 ox-history = { path = "../ox-history" }
 ox-gate = { path = "../ox-gate" }
+ox-tools = { path = "../ox-tools" }
 structfs-core-store = { workspace = true }
 structfs-serde-store = { workspace = true }
 serde = "1"
