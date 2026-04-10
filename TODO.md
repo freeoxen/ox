@@ -25,6 +25,13 @@ with TurnStore dispatching through the namespace. Blocked on a clean way for
 TurnStore to write through the namespace without store-calling-store gymnastics
 (needs a broker handle or similar indirection).
 
+## Dead code in GateStore
+
+`GateStore::completion_tool_schemas()` and the `gate/tools/schemas` read path
+are dead code — nothing reads that path anymore. Tool schemas are served by
+`ToolStore` at `tools/schemas`. Remove `completion_tool_schemas()` and the
+`"tools"` arm in `GateStore::read()`.
+
 ## Kernel step() method
 
 A `Kernel::step(context, outcomes) -> Vec<ToolEffect>` that makes the kernel a
