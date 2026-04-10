@@ -75,45 +75,43 @@ The kernel derives its position entirely from context. There is no saved
 instruction pointer, no phase enum, no "where was I" state. The context
 IS the state. Startup and recovery are the same code.
 
-## 4. The Loop: Single-Completion Turn
-
-The simplest case: one completion, one model, standard prompt assembly.
+## 4. The Loop
 
 ```
 loop {
-    // Read the assembled prompt — a Value, not a typed struct
+    // Read context: what accounts are available, what's the current state
+    let accounts = read("gate/accounts")
     let prompt = read("prompt")
 
-    // Write to the completion path — returns a handle immediately
-    let h = write("tools/completions/complete/anthropic", prompt)
+    // The kernel decides what completions to fire.
+    // One model? Three for consensus? A cheap model for planning
+    // and an expensive one for synthesis? That's the agent's intelligence.
+    let handles = decide_and_fire_completions(accounts, prompt)
 
-    // Read the handle — blocks until the completion finishes
-    let response = read(h)
+    // Await all completions
+    let batch = write("tools/await", handles)
+    let responses = read(batch)
 
-    // Process the response into content blocks (text, tool_use)
-    let content = accumulate_response(response)
-
-    // Write the assistant message to history
-    write("history/append", assistant_message(content))
-
-    // Extract tool calls from the response
-    let tool_calls = extract_tool_calls(content)
+    // Process responses, write assistant message(s) to history
+    let tool_calls = process_and_record(responses)
 
     if tool_calls.is_empty() {
-        return  // Model responded with text only. Turn is done.
+        return  // No tools requested. Turn is done.
     }
 
     // Fire tool calls, await results, record to history
     execute_and_record(tool_calls)
 
     // Loop: tool results are now in history, so the next read("prompt")
-    // includes them, and the model sees the results.
+    // includes them, and the models see the results.
 }
 ```
 
-Each iteration is: read context, fire completion, process response, maybe
-fire tools, record everything, loop. The context grows with each
-iteration. The model sees the full conversation on each completion.
+The kernel reads its context and decides what to do. It might fire one
+completion or ten. It might use one model or five. That decision is the
+kernel's reasoning about the task — not a framework choice. The loop
+is the same regardless: read context, fire completions, process
+responses, maybe fire tools, record everything, loop.
 
 ## 5. Streaming: Real-Time Text Delivery
 
@@ -139,17 +137,15 @@ are tagged with their handle ID so the TUI can attribute text to the
 right source.
 
 ```
-// Kernel perspective: fire and wait
-let h1 = write("tools/completions/complete/anthropic", prompt)
-let h2 = write("tools/completions/complete/openai", prompt)
-let batch = write("tools/await", [h1, h2])
-let responses = read(batch)  // blocks until both complete
+// Kernel perspective: fire N completions and wait
+let handles = [h1, h2, h3]  // however many the kernel decided to fire
+let batch = write("tools/await", handles)
+let responses = read(batch)  // blocks until all complete
 
 // Host perspective: while the kernel blocks, the host is:
-// - streaming h1's text deltas to events/emit
-// - streaming h2's text deltas to events/emit
-// - accumulating both into their respective handle buffers
-// - when both finish, unblocking the kernel's read
+// - streaming each handle's text deltas to events/emit
+// - accumulating events into each handle's result buffer
+// - when all finish, unblocking the kernel's read
 ```
 
 The kernel never sees individual stream events. It gets the complete
@@ -227,48 +223,48 @@ The single-completion turn is the degenerate case. The general case: the
 kernel reads its context, decides it needs input from multiple models,
 constructs multiple prompt Values, and fires them all.
 
-### Example: Consensus Review
+### Example: Consensus
 
-The kernel wants three models to review a code change:
+The kernel reads available accounts and decides to fan out for review:
 
 ```
+let accounts = read("gate/accounts")
 let system = read("system")
 let history = read("history/messages")
 
 let review_prompt = {
-    system: system + "\nYou are reviewing code for correctness.",
+    system: system + "\nReview this code for correctness.",
     messages: history,
-    tools: [],  // no tools for review
-    max_tokens: 4096,
+    tools: [],
 }
 
-let c1 = write("tools/completions/complete/anthropic",
-               review_prompt.with(model: "claude-sonnet-4-20250514"))
-let c2 = write("tools/completions/complete/openai",
-               review_prompt.with(model: "gpt-4o"))
-let c3 = write("tools/completions/complete/anthropic",
-               review_prompt.with(model: "claude-haiku-4-5-20251001"))
+// The kernel picks which accounts to use based on what's available,
+// what the task needs, what the budget allows
+let handles = accounts.iter()
+    .filter(|a| useful_for_review(a))
+    .map(|a| write(&format!("tools/completions/complete/{}", a.name), review_prompt))
+    .collect()
 
-let batch = write("tools/await", [c1, c2, c3])
+let batch = write("tools/await", handles)
 let responses = read(batch)
-
 let consensus = analyze_responses(responses)
 ```
 
-### Example: Parallel Sub-Tasks
+### Example: Decomposition
 
-The kernel decomposes a task and farms pieces to different completions:
+The kernel splits a task across multiple completions:
 
 ```
-let c1 = write("tools/completions/complete/anthropic", {
+let accounts = read("gate/accounts")
+let fast = pick_account(accounts, "fast")
+
+let c1 = write(&format!("tools/completions/complete/{fast}"), {
     system: "Write unit tests for auth.rs",
     messages: [file_span("src/auth.rs")],
-    ...
 })
-let c2 = write("tools/completions/complete/anthropic", {
+let c2 = write(&format!("tools/completions/complete/{fast}"), {
     system: "Write integration tests for auth.rs",
     messages: [file_span("src/auth.rs"), file_span("tests/helpers.rs")],
-    ...
 })
 
 let batch = write("tools/await", [c1, c2])
