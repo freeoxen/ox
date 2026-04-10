@@ -10,8 +10,7 @@ pub(crate) async fn send_approval_response(
     use structfs_core_store::{Record, Value};
 
     if let Some(tid) = active_thread_id {
-        let path =
-            structfs_core_store::Path::parse(&format!("threads/{tid}/approval/response")).unwrap();
+        let path = ox_kernel::oxpath!("threads", tid, "approval", "response");
         let _ = client
             .write(&path, Record::parsed(Value::String(response.to_string())))
             .await;
@@ -57,8 +56,7 @@ pub(crate) async fn handle_approval_key(
             // Read tool and input_preview from the pending approval in broker
             if let Some(tid) = active_thread_id {
                 let pending_path =
-                    structfs_core_store::Path::parse(&format!("threads/{tid}/approval/pending"))
-                        .unwrap();
+                    ox_kernel::oxpath!("threads", tid, "approval", "pending");
                 if let Ok(Some(record)) = client.read(&pending_path).await {
                     if let Some(structfs_core_store::Value::Map(m)) = record.as_value() {
                         let tool = m

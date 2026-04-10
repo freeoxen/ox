@@ -186,10 +186,7 @@ pub async fn run_async(
                 }
                 "archive_selected" => {
                     if let Some(id) = &selected_thread_id {
-                        let update_path = ox_kernel::Path::from_components(vec![
-                            "threads".to_string(),
-                            id.clone(),
-                        ]);
+                        let update_path = ox_kernel::oxpath!("threads", id);
                         app.pool
                             .inbox()
                             .write(&update_path, cmd!("inbox_state" => "done"))
@@ -382,10 +379,7 @@ pub async fn run_async(
                                     );
 
                                     // Write account through ConfigStore (not direct file)
-                                    let provider_path = structfs_core_store::Path::parse(&format!(
-                                        "config/gate/accounts/{name}/provider"
-                                    ))
-                                    .unwrap();
+                                    let provider_path = ox_kernel::oxpath!("config", "gate", "accounts", name, "provider");
                                     client
                                         .write(
                                             &provider_path,
@@ -394,10 +388,7 @@ pub async fn run_async(
                                         .await
                                         .ok();
                                     if let Some(ep) = endpoint {
-                                        let ep_path = structfs_core_store::Path::parse(&format!(
-                                            "config/gate/accounts/{name}/endpoint"
-                                        ))
-                                        .unwrap();
+                                        let ep_path = ox_kernel::oxpath!("config", "gate", "accounts", name, "endpoint");
                                         client
                                             .write(&ep_path, Record::parsed(Value::String(ep)))
                                             .await
@@ -407,10 +398,7 @@ pub async fn run_async(
                                     // Write key to ConfigStore (in-memory for session)
                                     // AND to key file (for persistence across sessions)
                                     if !key.is_empty() {
-                                        let key_path = structfs_core_store::Path::parse(&format!(
-                                            "config/gate/accounts/{name}/key"
-                                        ))
-                                        .unwrap();
+                                        let key_path = ox_kernel::oxpath!("config", "gate", "accounts", name, "key");
                                         client
                                             .write(
                                                 &key_path,
@@ -434,10 +422,7 @@ pub async fn run_async(
                                         .unwrap_or_default();
                                     let default_exists = client
                                         .read(
-                                            &structfs_core_store::Path::parse(&format!(
-                                                "config/gate/accounts/{current_default}/provider"
-                                            ))
-                                            .unwrap(),
+                                            &ox_kernel::oxpath!("config", "gate", "accounts", current_default, "provider"),
                                         )
                                         .await
                                         .ok()

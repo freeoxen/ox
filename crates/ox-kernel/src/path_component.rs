@@ -39,6 +39,12 @@ impl PathComponent {
     }
 }
 
+impl AsRef<str> for PathComponent {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
 impl std::fmt::Display for PathComponent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)

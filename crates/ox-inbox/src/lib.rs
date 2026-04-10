@@ -804,10 +804,7 @@ mod tests {
         let mut update = std::collections::BTreeMap::new();
         update.insert("token_count".to_string(), Value::Integer(999));
         update.insert("last_seq".to_string(), Value::Integer(42));
-        update.insert(
-            "last_hash".to_string(),
-            Value::String("abc123".to_string()),
-        );
+        update.insert("last_hash".to_string(), Value::String("abc123".to_string()));
         let update_path = Path::parse(&format!("threads/{}", id)).unwrap();
         store
             .write(&update_path, Record::parsed(Value::Map(update)))
@@ -841,10 +838,7 @@ mod tests {
 
         // First set a hash
         let mut update = std::collections::BTreeMap::new();
-        update.insert(
-            "last_hash".to_string(),
-            Value::String("abc123".to_string()),
-        );
+        update.insert("last_hash".to_string(), Value::String("abc123".to_string()));
         let update_path = Path::parse(&format!("threads/{}", id)).unwrap();
         store
             .write(&update_path, Record::parsed(Value::Map(update)))
@@ -952,8 +946,7 @@ mod tests {
         let task_id = task_path.iter().nth(3).unwrap().clone();
 
         // Try to update with non-map
-        let update_path =
-            Path::parse(&format!("threads/{}/tasks/{}", thread_id, task_id)).unwrap();
+        let update_path = Path::parse(&format!("threads/{}/tasks/{}", thread_id, task_id)).unwrap();
         let result = store.write(
             &update_path,
             Record::parsed(Value::String("not a map".to_string())),
@@ -995,8 +988,7 @@ mod tests {
         let task_id = task_path.iter().nth(3).unwrap().clone();
 
         // Try to update task using thread B's path
-        let wrong_path =
-            Path::parse(&format!("threads/{}/tasks/{}", thread_b, task_id)).unwrap();
+        let wrong_path = Path::parse(&format!("threads/{}/tasks/{}", thread_b, task_id)).unwrap();
         let mut update = std::collections::BTreeMap::new();
         update.insert("title".to_string(), Value::String("Changed".to_string()));
         let result = store.write(&wrong_path, Record::parsed(Value::Map(update)));
@@ -1008,9 +1000,7 @@ mod tests {
     #[test]
     fn read_unrecognized_path_returns_none() {
         let (mut store, _dir) = test_store();
-        let result = store
-            .read(&structfs_core_store::path!("bogus"))
-            .unwrap();
+        let result = store.read(&structfs_core_store::path!("bogus")).unwrap();
         assert!(result.is_none());
     }
 
@@ -1234,8 +1224,7 @@ mod tests {
         let task_id = task_path.iter().nth(3).unwrap().clone();
 
         // Update title
-        let update_path =
-            Path::parse(&format!("threads/{}/tasks/{}", thread_id, task_id)).unwrap();
+        let update_path = Path::parse(&format!("threads/{}/tasks/{}", thread_id, task_id)).unwrap();
         let mut update = std::collections::BTreeMap::new();
         update.insert("title".to_string(), Value::String("New title".to_string()));
         store
@@ -1273,7 +1262,10 @@ mod tests {
         let (mut store, _dir) = test_store();
         // Create and archive a thread with a label
         let mut map = std::collections::BTreeMap::new();
-        map.insert("title".to_string(), Value::String("Done thread".to_string()));
+        map.insert(
+            "title".to_string(),
+            Value::String("Done thread".to_string()),
+        );
         map.insert(
             "labels".to_string(),
             Value::Array(vec![Value::String("my_label".to_string())]),

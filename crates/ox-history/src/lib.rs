@@ -783,10 +783,7 @@ mod tests {
     #[test]
     fn write_unknown_path_error() {
         let mut hp = HistoryProvider::new();
-        let result = hp.write(
-            &path!("nonexistent"),
-            Record::parsed(Value::Null),
-        );
+        let result = hp.write(&path!("nonexistent"), Record::parsed(Value::Null));
         assert!(result.is_err());
     }
 
@@ -864,7 +861,8 @@ mod tests {
         let mut hp = HistoryProvider::new();
         let json = serde_json::json!({"role": "user", "content": "hello"});
         let value = json_to_value(json);
-        hp.write(&Path::from_components(vec![]), Record::parsed(value)).unwrap();
+        hp.write(&Path::from_components(vec![]), Record::parsed(value))
+            .unwrap();
         assert_eq!(hp.messages().len(), 1);
     }
 

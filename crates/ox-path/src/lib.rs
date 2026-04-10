@@ -68,9 +68,11 @@ pub fn oxpath(input: TokenStream) -> TokenStream {
                 }
             },
             other => {
-                // Runtime expression — must be PathComponent.
-                // Call .as_str() to get the validated inner string.
-                component_exprs.push(quote! { ::std::string::String::from(#other.as_str()) });
+                // Runtime expression — accepts String, &String, &str, or PathComponent.
+                // AsRef<str> covers all of these.
+                component_exprs.push(quote! {
+                    ::std::string::String::from(::std::convert::AsRef::<str>::as_ref(&#other))
+                });
             }
         }
     }

@@ -128,8 +128,8 @@ impl App {
 
     /// Update a thread's state in ox-inbox.
     pub fn update_thread_state(&mut self, thread_id: &str, state: &str) {
-        let update_path =
-            ox_kernel::Path::from_components(vec!["threads".to_string(), thread_id.to_string()]);
+        let tid = thread_id.to_string();
+        let update_path = ox_kernel::oxpath!("threads", tid);
         let mut map = std::collections::BTreeMap::new();
         map.insert(
             "thread_state".to_string(),

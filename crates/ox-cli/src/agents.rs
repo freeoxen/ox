@@ -118,8 +118,8 @@ impl AgentPool {
     }
 
     fn read_thread_title(&mut self, thread_id: &str) -> Option<String> {
-        let path =
-            ox_kernel::Path::from_components(vec!["threads".to_string(), thread_id.to_string()]);
+        let tid = thread_id.to_string();
+        let path = ox_kernel::oxpath!("threads", tid);
         let record = self.inbox.read(&path).ok()??;
         let value = record.as_value()?;
         match value {
@@ -206,12 +206,7 @@ fn agent_worker(
         },
         _ => "anthropic".to_string(),
     };
-    let provider = match adapter.read(&structfs_core_store::Path::from_components(vec![
-        "gate".into(),
-        "accounts".into(),
-        default_account.clone(),
-        "provider".into(),
-    ])) {
+    let provider = match adapter.read(&ox_kernel::oxpath!("gate", "accounts", default_account, "provider")) {
         Ok(Some(r)) => match r.as_value() {
             Some(Value::String(s)) => s.clone(),
             _ => "anthropic".to_string(),
@@ -219,12 +214,7 @@ fn agent_worker(
         _ => "anthropic".to_string(),
     };
     let api_key_for_transport =
-        match adapter.read(&structfs_core_store::Path::from_components(vec![
-            "gate".into(),
-            "accounts".into(),
-            default_account.clone(),
-            "key".into(),
-        ])) {
+        match adapter.read(&ox_kernel::oxpath!("gate", "accounts", default_account, "key")) {
             Ok(Some(r)) => match r.as_value() {
                 Some(Value::String(s)) => s.clone(),
                 _ => String::new(),
@@ -240,11 +230,7 @@ fn agent_worker(
     let mut gate_for_tools = GateStore::new();
     gate_for_tools
         .write(
-            &ox_kernel::Path::from_components(vec![
-                "accounts".to_string(),
-                default_account.clone(),
-                "key".to_string(),
-            ]),
+            &ox_kernel::oxpath!("accounts", default_account, "key"),
             Record::parsed(Value::String(api_key_for_transport.clone())),
         )
         .ok();
@@ -354,10 +340,7 @@ fn agent_worker(
             update.insert("updated_at".to_string(), Value::Integer(now));
             rt_handle
                 .block_on(broker_client.write(
-                    &ox_kernel::Path::from_components(vec![
-                        "inbox".to_string(),
-                        "threads".to_string(),
-                    ]),
+                    &ox_kernel::oxpath!("inbox", "threads"),
                     Record::parsed(Value::Map(update)),
                 ))
                 .ok();

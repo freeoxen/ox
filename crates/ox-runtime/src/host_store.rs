@@ -206,8 +206,7 @@ impl<B: Reader + Writer + Send, E: HostEffects> HostStore<B, E> {
         });
 
         // Write the result into tool_results at {call.id}
-        let result_path = Path::parse(&format!("tool_results/{}", call.id))
-            .map_err(|e| StoreError::store("tools", "execute", e.to_string()))?;
+        let result_path = ox_path::oxpath!("tool_results", call.id);
         let sub = Path::from_components(result_path.components[1..].to_vec());
         let result_record = Record::parsed(Value::String(result));
         self.tool_results.write(&sub, result_record)?;

@@ -68,7 +68,7 @@ impl ThreadNamespace {
                                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
                                     let value = structfs_serde_store::json_to_value(json);
                                     let append_path =
-                                        Path::parse("history/append").expect("valid path");
+                                        ox_kernel::oxpath!("history", "append");
                                     ns.write(&append_path, Record::parsed(value)).ok();
                                 }
                             }

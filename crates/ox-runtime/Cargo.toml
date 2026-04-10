@@ -9,6 +9,7 @@ description = "Wasmtime-based agent runtime for ox"
 [dependencies]
 tracing = { workspace = true }
 ox-kernel = { path = "../ox-kernel" }
+ox-path = { path = "../ox-path" }
 ox-context = { path = "../ox-context" }
 ox-history = { path = "../ox-history" }
 ox-gate = { path = "../ox-gate" }

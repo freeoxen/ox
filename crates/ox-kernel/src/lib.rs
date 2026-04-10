@@ -728,11 +728,7 @@ mod tests {
             let value = match data {
                 Record::Parsed(v) => v,
                 _ => {
-                    return Err(StoreError::store(
-                        "mock",
-                        "write",
-                        "expected parsed record",
-                    ));
+                    return Err(StoreError::store("mock", "write", "expected parsed record"));
                 }
             };
             self.data.insert(to.to_string(), value);
@@ -779,7 +775,6 @@ mod tests {
             stream: true,
         }
     }
-
 
     // -----------------------------------------------------------------------
     // Tool / Registry tests (existing)
@@ -912,7 +907,6 @@ mod tests {
             "error should mention prompt: {err}"
         );
     }
-
 
     // -----------------------------------------------------------------------
     // Phase 2: consume_events
@@ -1118,9 +1112,11 @@ mod tests {
         let _ = kernel.consume_events(events, &mut |e| agent_events.push(e));
 
         // Should have TurnStart then Error
-        assert!(agent_events.iter().any(
-            |e| matches!(e, AgentEvent::Error(msg) if msg == "boom")
-        ));
+        assert!(
+            agent_events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::Error(msg) if msg == "boom"))
+        );
     }
 
     #[test]
@@ -1415,9 +1411,7 @@ mod tests {
 
         // Verify agent events
         assert!(matches!(agent_events[0], AgentEvent::TurnStart));
-        assert!(
-            matches!(&agent_events[1], AgentEvent::TextDelta(t) if t == "I'm doing great!")
-        );
+        assert!(matches!(&agent_events[1], AgentEvent::TextDelta(t) if t == "I'm doing great!"));
     }
 
     #[test]
@@ -1523,9 +1517,7 @@ mod tests {
         };
 
         let content = kernel
-            .run_turn(&mut store, &send, &registry, &mut |e| {
-                agent_events.push(e)
-            })
+            .run_turn(&mut store, &send, &registry, &mut |e| agent_events.push(e))
             .unwrap();
 
         assert_eq!(content.len(), 1);
@@ -1584,9 +1576,7 @@ mod tests {
 
         let mut agent_events = Vec::new();
         let content = kernel
-            .run_turn(&mut store, &send, &registry, &mut |e| {
-                agent_events.push(e)
-            })
+            .run_turn(&mut store, &send, &registry, &mut |e| agent_events.push(e))
             .unwrap();
 
         // Final content should be text
@@ -1597,13 +1587,17 @@ mod tests {
         }
 
         // Check agent events include tool call lifecycle
-        assert!(agent_events.iter().any(
-            |e| matches!(e, AgentEvent::ToolCallStart { name } if name == "get_weather")
-        ));
-        assert!(agent_events.iter().any(
-            |e| matches!(e, AgentEvent::ToolCallResult { name, result }
-                if name == "get_weather" && result.contains("Sunny"))
-        ));
+        assert!(
+            agent_events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::ToolCallStart { name } if name == "get_weather"))
+        );
+        assert!(
+            agent_events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::ToolCallResult { name, result }
+                if name == "get_weather" && result.contains("Sunny")))
+        );
     }
 
     #[test]
@@ -1636,16 +1630,13 @@ mod tests {
 
         let mut agent_events = Vec::new();
         let _content = kernel
-            .run_turn(&mut store, &send, &registry, &mut |e| {
-                agent_events.push(e)
-            })
+            .run_turn(&mut store, &send, &registry, &mut |e| agent_events.push(e))
             .unwrap();
 
         // The tool result should contain an error message about unknown tool
         // Check appended history for the tool result message
         assert!(store.appended.len() >= 2);
-        let tool_result_json =
-            structfs_serde_store::value_to_json(store.appended[1].clone());
+        let tool_result_json = structfs_serde_store::value_to_json(store.appended[1].clone());
         let content_arr = tool_result_json["content"].as_array().unwrap();
         let result_content = content_arr[0]["content"].as_str().unwrap();
         assert!(
