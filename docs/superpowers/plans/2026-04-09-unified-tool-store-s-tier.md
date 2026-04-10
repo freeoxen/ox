@@ -178,6 +178,80 @@ Steps:
 
 ---
 
+## Feature 0: Clash Sandbox Enforcement
+
+### Current State
+
+Every FsModule and OsModule is constructed with `Arc::new(PermissivePolicy)` — no OS-level sandboxing. The `SandboxPolicy` trait exists (`apply(&self, intent: &AccessIntent, cmd: Command) -> Result<Command, String>`) but only `PermissivePolicy` (no-op) is implemented.
+
+Clash is supposed to provide the real `SandboxPolicy` implementation that wraps subprocess commands with OS-level restrictions. On macOS, this means `sandbox-exec` profiles. Each fs/os operation gets an ephemeral per-call sandbox — `fs/read` of `src/lib.rs` spawns a subprocess that can only read that file.
+
+### Two Clash Integration Points
+
+**Point 1: PolicyCheck (Task 2 above)** — "Should this tool call run?"
+- Clash evaluates policy rules against the tool name and input
+- Returns Allow/Deny/Ask
+- This is the approval gate before execution
+
+**Point 2: SandboxPolicy (this task)** — "If it runs, what can it access?"
+- Clash wraps the subprocess `Command` with OS-level sandbox restrictions
+- `AccessIntent::ReadFile(path)` → subprocess can only read that path
+- `AccessIntent::ShellInWorkspace(workspace)` → subprocess has workspace access
+- This is defense-in-depth: even if a tool is approved, the OS limits what it can do
+
+### Task 2b: Implement Clash SandboxPolicy
+
+**Files:**
+- Create or modify: clash integration crate or ox-cli (wherever Clash lives)
+- Modify: `crates/ox-cli/src/agents.rs` — use real Clash policy instead of PermissivePolicy
+
+The Clash SandboxPolicy implementation translates `AccessIntent` into platform-specific sandbox profiles:
+
+```rust
+struct ClashSandboxPolicy {
+    // Clash configuration / policy handle
+}
+
+impl SandboxPolicy for ClashSandboxPolicy {
+    fn apply(&self, intent: &AccessIntent, mut cmd: Command) -> Result<Command, String> {
+        match intent {
+            AccessIntent::ReadFile(path) => {
+                // On macOS: wrap with sandbox-exec profile that allows reading only this path
+                // On Linux: apply landlock restrictions
+                // On unsupported: log warning, return cmd unchanged
+            }
+            AccessIntent::WriteFile(path) => { /* write-only sandbox */ }
+            AccessIntent::ReadWriteFile(path) => { /* read+write sandbox */ }
+            AccessIntent::ShellInWorkspace(workspace) => { /* broader workspace sandbox */ }
+        }
+    }
+}
+```
+
+Steps:
+- [ ] Determine where the Clash SandboxPolicy impl lives (in clash crate? in ox-cli?)
+- [ ] Implement SandboxPolicy for macOS using `sandbox-exec` — generate per-call .sb profiles from AccessIntent
+- [ ] In agent_worker, replace `Arc::new(PermissivePolicy)` with `Arc::new(ClashSandboxPolicy::new(...))`
+- [ ] When `--no-policy` flag: keep PermissivePolicy
+- [ ] Test: verify sandbox-exec is invoked for fs operations on macOS
+- [ ] Test: verify fallback to unsandboxed on platforms without sandbox-exec
+- [ ] Commit
+
+**Note:** This task depends on understanding where Clash lives in the project and what API it exposes. If Clash provides a crate that ox-cli can depend on, the SandboxPolicy impl goes there. If Clash is an external binary, the impl wraps Clash CLI calls. The `SandboxPolicy` trait is designed to be agnostic — Clash owns the implementation details.
+
+### Task Order Update
+
+```
+Task 1 (fix CLI crash)              — CRITICAL, do first
+Task 3 (fix synthesize paths)       — CRITICAL, do second
+Task 2 (wire PolicyStore/PolicyCheck) — HIGH, do third (approval gate)
+Task 2b (Clash SandboxPolicy)       — HIGH, do fourth (OS enforcement)
+Task 4 (TurnStore integration)      — MEDIUM, do fifth
+Task 5 (Kernel step)                — LOW, evaluate after Task 4
+```
+
+---
+
 ## Feature 1: TurnStore Drives the Kernel Loop
 
 ### Current State
@@ -278,11 +352,13 @@ Task 4 is the architectural vision — the kernel loop driven by TurnStore.
 
 ## Verification Criteria for S-Tier
 
-- [ ] CLI works: user can type a prompt, get a response, tool calls execute with permission checks
+- [ ] CLI works: user can type a prompt, get a response, tool calls execute
 - [ ] 15/15 quality gates pass
-- [ ] No `#![allow(dead_code)]` on policy.rs — PolicyGuard is actively used
-- [ ] No `tool_store: Option<ToolStore>` on HostStore — single ToolStore, single owner
+- [ ] **PolicyStore wired:** tool writes go through PolicyCheck before execution — Allow/Deny/Ask all work
+- [ ] **Clash SandboxPolicy wired:** fs/os subprocess execution uses OS-level sandboxing via Clash (not PermissivePolicy) — each call gets ephemeral per-path sandbox
+- [ ] **No `#![allow(dead_code)]` on policy.rs** — PolicyGuard is actively used via CliPolicyCheck
+- [ ] **No `tool_store: Option<ToolStore>` on HostStore** — single ToolStore, single owner
+- [ ] **Approval flow works:** Ask decisions block for TUI response with correct timeout (Duration::MAX on both request and response)
+- [ ] **synthesize_prompt reads from ToolStore paths**, not stale gate/ paths
 - [ ] TurnStore drives the kernel loop (or conscious decision to defer with documented rationale)
-- [ ] synthesize_prompt reads from ToolStore paths, not stale gate/ paths
-- [ ] Approval flow works: Ask decisions block for TUI response with correct timeout
-- [ ] Zero references to: ToolRegistry, gate/complete, tools/execute, ToolsProvider, SimpleStore, pending_events
+- [ ] Zero references to: ToolRegistry, gate/complete, tools/execute, ToolsProvider, SimpleStore, pending_events, PermissivePolicy in production code (PermissivePolicy only in tests and --no-policy mode)
