@@ -13,7 +13,7 @@
 //! ```
 
 use ox_context::{Namespace, SystemProvider};
-use ox_core::{AgentEvent, CompletionRequest, ContentBlock, serialize_tool_results};
+use ox_core::{AgentEvent, CompletionRequest, ContentBlock};
 use ox_gate::codec::{anthropic as anthropic_codec, openai as openai_codec};
 use ox_gate::{AccountConfig, GateStore, ProviderConfig};
 use ox_history::HistoryProvider;
@@ -759,18 +759,6 @@ async fn run_agentic_loop(
         return Err(format!("No API key set for provider '{provider}'"));
     }
 
-    let model_id = {
-        let record = context_ref
-            .borrow_mut()
-            .read(&path!("gate/defaults/model"))
-            .map_err(|e| e.to_string())?;
-        match record {
-            Some(Record::Parsed(Value::String(s))) => s,
-            _ => String::new(),
-        }
-    };
-    let mut kernel = ox_kernel::Kernel::new(model_id);
-
     let mut emit = |event: AgentEvent| match &event {
         AgentEvent::TextDelta(text) => emit_js(callback, "text_delta", text),
         AgentEvent::ToolCallStart { name } => emit_js(callback, "tool_call_start", name),
@@ -784,8 +772,7 @@ async fn run_agentic_loop(
 
     loop {
         // Phase 1: read prompt from namespace
-        let request = kernel
-            .initiate_completion(&mut *context_ref.borrow_mut())
+        let request = ox_kernel::synthesize(&mut *context_ref.borrow_mut())
             .map_err(|e| e.to_string())?;
 
         let request_json = serde_json::to_string(&request).map_err(|e| e.to_string())?;
@@ -816,10 +803,10 @@ async fn run_agentic_loop(
         }
 
         // Phase 2: accumulate events into content blocks
-        let content = kernel.consume_events(events, &mut emit)?;
+        let content = ox_kernel::accumulate_response(events, &mut emit)?;
 
         // Phase 3: write assistant message, extract tool calls
-        let tool_calls = kernel.complete_turn(&mut *context_ref.borrow_mut(), &content)?;
+        let tool_calls = ox_kernel::record_turn(&mut *context_ref.borrow_mut(), &content)?;
         emit_js(callback, "context_changed", "");
 
         if tool_calls.is_empty() {
@@ -856,12 +843,7 @@ async fn run_agentic_loop(
         }
 
         // Write tool results to history
-        let results_json = serialize_tool_results(&results);
-        let record = Record::parsed(json_to_value(results_json));
-        context_ref
-            .borrow_mut()
-            .write(&path!("history/append"), record)
-            .map_err(|e| e.to_string())?;
+        ox_kernel::record_tool_results(&mut *context_ref.borrow_mut(), &results)?;
         emit_js(callback, "context_changed", "");
     }
 }
