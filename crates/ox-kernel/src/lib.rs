@@ -37,6 +37,13 @@ pub use backing::StoreBacking;
 
 pub mod log;
 
+pub mod run;
+pub use run::{
+    accumulate_response, agent_event_to_json, deserialize_events, execute_tools,
+    json_to_stream_event, record_tool_results, record_turn, run_turn, stream_event_to_json,
+    synthesize,
+};
+
 // ---------------------------------------------------------------------------
 // Message types
 // ---------------------------------------------------------------------------
