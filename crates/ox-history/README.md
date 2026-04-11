@@ -4,8 +4,8 @@ Conversation history as a StructFS store for the [ox](https://github.com/freeoxe
 
 ## What's in the box
 
-- **`HistoryProvider`** — a `Vec<Message>` exposed via the `Reader`/`Writer` interface
-- **`parse_wire_message`** — converts Anthropic Messages API JSON into typed `Message` values
+- **`HistoryView`** — projects conversation history from a `SharedLog` into wire-format messages
+- **`TurnState`** — ephemeral per-turn UI state (streaming text, thinking status, tool status)
 
 ## Store paths
 
@@ -13,10 +13,11 @@ Conversation history as a StructFS store for the [ox](https://github.com/freeoxe
 |------|------|-------|
 | `""` / `"messages"` | Wire-format JSON array | — |
 | `"count"` | Message count (integer) | — |
-| `""` / `"append"` | — | Parse and append a message |
-| `"clear"` | — | Clear all messages |
+| `"append"` | — | Convert wire message to LogEntry, append to SharedLog |
+| `"turn/{streaming,thinking,tool,tokens}"` | Ephemeral turn state | Update turn state |
+| `"commit"` | — | Finalize streaming text into committed assistant message |
 
-The kernel writes assistant messages and tool results by writing to `path!("history/append")`.
+The log is the source of truth. History is a derived view — the kernel writes to `log/append`, and `HistoryView` projects log entries into wire-format messages for prompt synthesis.
 
 ## License
 

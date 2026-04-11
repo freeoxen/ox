@@ -22,7 +22,7 @@ pub use ox_context::{Namespace, SystemProvider};
 pub use ox_gate::{AccountConfig, GateStore, ProviderConfig};
 
 // --- Re-exports from ox-history ---
-pub use ox_history::{HistoryProvider, HistoryView};
+pub use ox_history::HistoryView;
 
 // --- Re-exports from ox-tools ---
 pub use ox_tools;

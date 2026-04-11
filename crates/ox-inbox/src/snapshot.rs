@@ -155,17 +155,19 @@ mod tests {
     use super::*;
     use ox_context::{Namespace, SystemProvider};
     use ox_gate::GateStore;
-    use ox_history::HistoryProvider;
+    use ox_history::HistoryView;
+    use ox_kernel::log::SharedLog;
     use structfs_core_store::{Reader, Writer, path};
 
     fn build_namespace() -> Namespace {
+        let shared_log = SharedLog::new();
         let mut ns = Namespace::new();
         ns.mount(
             "system",
             Box::new(SystemProvider::new("You are helpful.".to_string())),
         );
         ns.mount("tools", Box::new(ox_tools::ToolStore::empty()));
-        ns.mount("history", Box::new(HistoryProvider::new()));
+        ns.mount("history", Box::new(HistoryView::new(shared_log)));
         ns.mount("gate", Box::new(GateStore::new()));
         ns
     }
@@ -424,7 +426,7 @@ mod tests {
             Box::new(SystemProvider::new("You are helpful.".to_string())),
         );
         ns.mount("tools", Box::new(ox_tools::ToolStore::empty()));
-        ns.mount("history", Box::new(HistoryProvider::new()));
+        ns.mount("history", Box::new(HistoryView::new(SharedLog::new())));
         ns.mount("gate", Box::new(gate));
 
         save(
