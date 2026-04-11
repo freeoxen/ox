@@ -29,10 +29,11 @@ pub use ox_tools;
 
 // --- Re-exports from ox-kernel (core types, traits, free functions) ---
 pub use ox_kernel::{
-    AgentEvent, CompletionRequest, ContentBlock, Message, Path, Reader, Record, Store, StoreError,
-    StreamEvent, ToolCall, ToolResult, ToolSchema, Value, Writer, accumulate_response,
-    execute_tools, path, record_tool_results, record_turn, run_turn, serialize_assistant_message,
-    serialize_tool_results, synthesize,
+    AgentEvent, CompletionRequest, ContentBlock, ContextRef, Message, Path, Reader, Record,
+    ResolvedContext, Store, StoreError, StreamEvent, ToolCall, ToolResult, ToolSchema, Value,
+    Writer, accumulate_response, complete, default_refs, execute_tools, path, record_tool_results,
+    record_turn, resolve_refs, run_turn, serialize_assistant_message, serialize_tool_results,
+    synthesize,
 };
 
 /// The Agent composes a Namespace (with stores) and subscribers.
@@ -286,5 +287,75 @@ mod tests {
             hist_count, 4,
             "expected 4 history messages (user + assistant(tool_call) + tool_result + assistant)"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 3: LLM calls the complete tool (sub-completion)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn run_turn_llm_calls_complete_tool() {
+        // Simulate: LLM calls "complete" as a tool in its first response.
+        // The kernel special-cases it, fires a sub-completion, returns the text.
+        // Then the LLM gets the tool result and produces a final response.
+        let transport = SequentialTransport::new(vec![
+            // Outer completion #1: LLM calls the complete tool
+            (
+                vec![
+                    StreamEvent::ToolUseStart {
+                        id: "tc1".into(),
+                        name: "complete".into(),
+                    },
+                    StreamEvent::ToolUseInputDelta(
+                        serde_json::json!({
+                            "account": "anthropic",
+                            "refs": [
+                                {"type": "system", "path": "system"},
+                                {"type": "raw", "content": "Summarize briefly."}
+                            ]
+                        })
+                        .to_string(),
+                    ),
+                    StreamEvent::MessageStop,
+                ],
+                10,
+                5,
+            ),
+            // Inner completion (fired by execute_complete_tool via complete())
+            (
+                vec![
+                    StreamEvent::TextDelta("Brief summary.".into()),
+                    StreamEvent::MessageStop,
+                ],
+                10,
+                5,
+            ),
+            // Outer completion #2: LLM produces final response using tool result
+            (
+                vec![
+                    StreamEvent::TextDelta("Here is the summary: Brief summary.".into()),
+                    StreamEvent::MessageStop,
+                ],
+                10,
+                5,
+            ),
+        ]);
+
+        let mut ns = make_namespace(transport);
+        seed_user_message(&mut ns, "summarize the project");
+
+        let mut events = vec![];
+        run_turn(&mut ns, &mut |e| events.push(format!("{e:?}"))).unwrap();
+
+        // 2 TurnStarts: outer completion #1 + outer completion #2
+        let turn_starts = events.iter().filter(|e| e.contains("TurnStart")).count();
+        assert_eq!(turn_starts, 2);
+
+        // The complete tool call should be visible
+        assert!(events.iter().any(|e| e.contains("ToolCallStart")));
+        assert!(events.iter().any(|e| e.contains("ToolCallResult")));
+
+        // Final response
+        assert!(events.iter().any(|e| e.contains("Here is the summary")));
     }
 }

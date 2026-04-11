@@ -12,7 +12,8 @@ use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writ
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogSource {
     pub account: String,
-    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 /// A single entry in the structured log.
