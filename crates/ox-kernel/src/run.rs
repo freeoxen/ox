@@ -7,7 +7,122 @@ use crate::{
     AgentEvent, CompletionRequest, ContentBlock, StreamEvent, ToolCall, ToolResult, ToolSchema,
     serialize_assistant_message, serialize_tool_results,
 };
+use serde::{Deserialize, Serialize};
 use structfs_core_store::{Path, Reader, Record, Store, Value, Writer, path};
+
+// ---------------------------------------------------------------------------
+// ContextRef types
+// ---------------------------------------------------------------------------
+
+/// A typed reference to context that should be included in a completion.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ContextRef {
+    #[serde(rename = "system")]
+    System { path: String },
+
+    #[serde(rename = "history")]
+    History {
+        path: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        last: Option<usize>,
+    },
+
+    #[serde(rename = "tools")]
+    Tools {
+        path: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        only: Option<Vec<String>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        except: Option<Vec<String>>,
+    },
+
+    #[serde(rename = "raw")]
+    Raw { content: String },
+}
+
+/// The result of resolving a set of context references.
+#[derive(Debug, Clone, Default)]
+pub struct ResolvedContext {
+    pub system: String,
+    pub messages: Vec<serde_json::Value>,
+    pub tools: Vec<ToolSchema>,
+    pub extra_content: Vec<String>,
+}
+
+/// Resolve context references by reading from the namespace.
+pub fn resolve_refs(
+    context: &mut dyn Reader,
+    refs: &[ContextRef],
+) -> Result<ResolvedContext, String> {
+    let mut resolved = ResolvedContext::default();
+
+    for r in refs {
+        match r {
+            ContextRef::System { path } => {
+                let p = Path::parse(path).map_err(|e| e.to_string())?;
+                match context.read(&p).map_err(|e| e.to_string())? {
+                    Some(Record::Parsed(Value::String(s))) => resolved.system = s,
+                    Some(_) => return Err(format!("expected string at {path}")),
+                    None => return Err(format!("nothing at {path}")),
+                }
+            }
+            ContextRef::History { path, last } => {
+                let p = Path::parse(path).map_err(|e| e.to_string())?;
+                let json = match context.read(&p).map_err(|e| e.to_string())? {
+                    Some(Record::Parsed(v)) => structfs_serde_store::value_to_json(v),
+                    _ => return Err(format!("expected parsed record at {path}")),
+                };
+                let mut messages: Vec<serde_json::Value> =
+                    serde_json::from_value(json).map_err(|e| e.to_string())?;
+                if let Some(n) = last {
+                    let start = messages.len().saturating_sub(*n);
+                    messages = messages[start..].to_vec();
+                }
+                resolved.messages = messages;
+            }
+            ContextRef::Tools { path, only, except } => {
+                let p = Path::parse(path).map_err(|e| e.to_string())?;
+                let json = match context.read(&p).map_err(|e| e.to_string())? {
+                    Some(Record::Parsed(v)) => structfs_serde_store::value_to_json(v),
+                    _ => return Err(format!("expected parsed record at {path}")),
+                };
+                let mut tools: Vec<ToolSchema> =
+                    serde_json::from_value(json).map_err(|e| e.to_string())?;
+                if let Some(only) = only {
+                    tools.retain(|t| only.contains(&t.name));
+                }
+                if let Some(except) = except {
+                    tools.retain(|t| !except.contains(&t.name));
+                }
+                resolved.tools = tools;
+            }
+            ContextRef::Raw { content } => {
+                resolved.extra_content.push(content.clone());
+            }
+        }
+    }
+
+    Ok(resolved)
+}
+
+/// The default bootstrap refs: system prompt, full history, all tools.
+pub fn default_refs() -> Vec<ContextRef> {
+    vec![
+        ContextRef::System {
+            path: "system".into(),
+        },
+        ContextRef::History {
+            path: "history/messages".into(),
+            last: None,
+        },
+        ContextRef::Tools {
+            path: "tools/schemas".into(),
+            only: None,
+            except: None,
+        },
+    ]
+}
 
 // ---------------------------------------------------------------------------
 // Stream event codec
@@ -1035,5 +1150,128 @@ mod tests {
             events.iter().any(|e| e.contains("TurnEnd")),
             "expected TurnEnd event"
         );
+    }
+
+    #[test]
+    fn resolve_system_ref() {
+        let mut store = MockStore::new();
+        store.set("system", Value::String("You are helpful.".into()));
+        let refs = vec![ContextRef::System { path: "system".into() }];
+        let resolved = resolve_refs(&mut store, &refs).unwrap();
+        assert_eq!(resolved.system, "You are helpful.");
+    }
+
+    #[test]
+    fn resolve_history_ref_with_window() {
+        let mut store = MockStore::new();
+        store.set(
+            "history/messages",
+            structfs_serde_store::json_to_value(serde_json::json!([
+                {"role": "user", "content": "a"},
+                {"role": "assistant", "content": [{"type": "text", "text": "b"}]},
+                {"role": "user", "content": "c"},
+            ])),
+        );
+        let refs = vec![ContextRef::History { path: "history/messages".into(), last: Some(2) }];
+        let resolved = resolve_refs(&mut store, &refs).unwrap();
+        assert_eq!(resolved.messages.len(), 2);
+    }
+
+    #[test]
+    fn resolve_history_ref_no_window() {
+        let mut store = MockStore::new();
+        store.set(
+            "history/messages",
+            structfs_serde_store::json_to_value(serde_json::json!([{"role": "user", "content": "a"}])),
+        );
+        let refs = vec![ContextRef::History { path: "history/messages".into(), last: None }];
+        let resolved = resolve_refs(&mut store, &refs).unwrap();
+        assert_eq!(resolved.messages.len(), 1);
+    }
+
+    #[test]
+    fn resolve_tools_ref_with_only() {
+        let mut store = MockStore::new();
+        store.set(
+            "tools/schemas",
+            structfs_serde_store::json_to_value(serde_json::json!([
+                {"name": "read_file", "description": "read", "input_schema": {}},
+                {"name": "shell", "description": "run", "input_schema": {}},
+                {"name": "write_file", "description": "write", "input_schema": {}},
+            ])),
+        );
+        let refs = vec![ContextRef::Tools {
+            path: "tools/schemas".into(),
+            only: Some(vec!["read_file".into(), "shell".into()]),
+            except: None,
+        }];
+        let resolved = resolve_refs(&mut store, &refs).unwrap();
+        assert_eq!(resolved.tools.len(), 2);
+    }
+
+    #[test]
+    fn resolve_tools_ref_with_except() {
+        let mut store = MockStore::new();
+        store.set(
+            "tools/schemas",
+            structfs_serde_store::json_to_value(serde_json::json!([
+                {"name": "read_file", "description": "read", "input_schema": {}},
+                {"name": "shell", "description": "run", "input_schema": {}},
+            ])),
+        );
+        let refs = vec![ContextRef::Tools {
+            path: "tools/schemas".into(),
+            only: None,
+            except: Some(vec!["shell".into()]),
+        }];
+        let resolved = resolve_refs(&mut store, &refs).unwrap();
+        assert_eq!(resolved.tools.len(), 1);
+        assert_eq!(resolved.tools[0].name, "read_file");
+    }
+
+    #[test]
+    fn resolve_raw_ref() {
+        let mut store = MockStore::new();
+        let refs = vec![ContextRef::Raw { content: "Extra instructions.".into() }];
+        let resolved = resolve_refs(&mut store, &refs).unwrap();
+        assert_eq!(resolved.extra_content, vec!["Extra instructions."]);
+    }
+
+    #[test]
+    fn resolve_multiple_refs() {
+        let mut store = MockStore::new();
+        store.set("system", Value::String("sys".into()));
+        store.set("history/messages", structfs_serde_store::json_to_value(serde_json::json!([])));
+        store.set("tools/schemas", structfs_serde_store::json_to_value(serde_json::json!([])));
+        let refs = vec![
+            ContextRef::System { path: "system".into() },
+            ContextRef::History { path: "history/messages".into(), last: None },
+            ContextRef::Tools { path: "tools/schemas".into(), only: None, except: None },
+            ContextRef::Raw { content: "bonus".into() },
+        ];
+        let resolved = resolve_refs(&mut store, &refs).unwrap();
+        assert_eq!(resolved.system, "sys");
+        assert!(resolved.messages.is_empty());
+        assert!(resolved.tools.is_empty());
+        assert_eq!(resolved.extra_content, vec!["bonus"]);
+    }
+
+    #[test]
+    fn context_ref_serde_roundtrip() {
+        let refs = vec![
+            ContextRef::System { path: "system".into() },
+            ContextRef::History { path: "history/messages".into(), last: Some(20) },
+            ContextRef::Tools { path: "tools/schemas".into(), only: Some(vec!["read_file".into()]), except: None },
+            ContextRef::Raw { content: "hello".into() },
+        ];
+        let json = serde_json::to_value(&refs).unwrap();
+        let roundtripped: Vec<ContextRef> = serde_json::from_value(json).unwrap();
+        assert_eq!(roundtripped.len(), 4);
+    }
+
+    #[test]
+    fn default_refs_has_three_entries() {
+        let refs = default_refs();
+        assert_eq!(refs.len(), 3);
     }
 }
