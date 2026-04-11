@@ -86,68 +86,59 @@ Reads block until the handle resolves. `tools/await` accepts any set of
 handles and returns a composite handle. `tools/await_any` returns the first
 to complete. `tools/await_each` yields results in completion order.
 
-## Separation of Concerns: Synthesis vs Transport
+## Synthesis: The Open Problem
 
-**The kernel owns prompt synthesis.** The kernel reads context components
-(system prompt, history, tool schemas, model config), decides what to
-include, and constructs a structured prompt Value. This is the kernel's
-intelligence — deciding what context matters for this completion.
+The kernel reads rich structured context — file spans, pinned references,
+lazy computation, windowed history views — and must produce something an
+LLM API can consume. That API wants flat fields: a system prompt string,
+a list of messages, a list of tool schemas, a model name, a token limit.
 
-**The completion tool owns transport.** It receives a fully-formed prompt
-Value from the kernel and handles wire formatting (Anthropic JSON, OpenAI
-JSON, etc.) and HTTP transport. It does not read context. It does not
-decide what goes in the prompt. It sends what it's given and returns the
-response.
+**This collapse from structured context to flat prompt is the hardest
+design problem in the system and it is not yet solved.**
 
-```
-// The kernel reads context and constructs the prompt
-let system = read("system")
-let messages = read("history/messages")
-let tools = read("tools/schemas")
-let config = read("gate/defaults")
+What we know:
 
-// The kernel writes a complete prompt Value to the completion tool
-let h = write("tools/complete", {
-    system: system,
-    messages: messages,
-    tools: tools,
-    model: config.model,
-    max_tokens: config.max_tokens,
-})
+- **The kernel should not contain provider-specific types.** No
+  `CompletionRequest` struct with Anthropic-shaped fields crossing the
+  kernel boundary.
+- **The completion tool should be dumb transport.** It receives a Value
+  and sends it. It does wire formatting for its provider (Anthropic JSON,
+  OpenAI JSON) and HTTP. It should not be reading context or deciding
+  what goes in the prompt.
+- **Context providers should render themselves.** Each provider knows how
+  to contribute to a prompt — history renders a message list, file-span
+  providers render their spans into message content, the system provider
+  renders its prompt string. But the assembly of these pieces into a
+  coherent whole is where the design gap lives.
+- **The kernel decides what context to include.** Which tools, how much
+  history, which pinned spans. That's the kernel's intelligence. But HOW
+  the kernel expresses that decision — what Value it constructs and what
+  shape that Value takes — needs design work.
 
-// The completion tool does wire formatting + HTTP, returns response
-let response = read(h)
-```
+What exists today:
 
-There is no magic `read("prompt")` path. There is no hidden synthesis
-step. There is no `CompletionRequest` type at the kernel boundary. The
-kernel reads Values, constructs a Value, writes it to a tool. The tool
-does transport. Clean separation.
+- `synthesize_prompt()` in ox-context reads four hardcoded paths and
+  returns a `CompletionRequest`. This is the magic path we want to
+  eliminate.
+- `tools/completions/complete/{account}` in CompletionModule receives a
+  serialized `CompletionRequest` Value and does HTTP transport. This is
+  the real completion path.
+- The kernel calls `read("prompt")` to get a pre-assembled request, then
+  writes it to the completion path. Two-step, with synthesis hidden in
+  the first step.
 
-This makes multi-completion natural. The kernel constructs different
-prompt Values for different completions — different history windows,
-different tool subsets, different system prompts — and writes each to
-the completion tool. Each write returns a handle. The kernel decides
-what each completion sees.
+What S-tier looks like:
 
-## Completion Tool Pluggability
-
-The completion tool is a mounted store. Mount a different one, get
-different transport:
-
-```
-// Simple: direct HTTP to one provider
-tools.mount("complete", AnthropicTransport::new(client, api_key))
-
-// Multi-provider: routes by account name in the prompt Value
-tools.mount("complete", MultiTransport::new(providers))
-
-// Cached: checks a cache before hitting the API
-tools.mount("complete", CachedTransport::new(cache, inner_transport))
-```
-
-The kernel calls `write("tools/complete", prompt_value)` in all cases.
-It doesn't know which transport is mounted. The host controls that.
+- No magic `read("prompt")` path.
+- The kernel reads context components, shapes them (via context
+  management tools), and writes a structured Value to the completion
+  tool.
+- The structured Value is not `CompletionRequest` — it's whatever the
+  kernel's context produces. The completion tool translates it to the
+  provider's wire format.
+- The design of that intermediate Value — what it contains, how context
+  providers contribute to it, how the kernel controls what's included —
+  is the open design problem.
 
 ## Life of an Agent
 
