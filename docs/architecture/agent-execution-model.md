@@ -86,59 +86,42 @@ Reads block until the handle resolves. `tools/await` accepts any set of
 handles and returns a composite handle. `tools/await_any` returns the first
 to complete. `tools/await_each` yields results in completion order.
 
-## Synthesis: The Open Problem
+## The `complete` Tool
 
-The kernel reads rich structured context — file spans, pinned references,
-lazy computation, windowed history views — and must produce something an
-LLM API can consume. That API wants flat fields: a system prompt string,
-a list of messages, a list of tool schemas, a model name, a token limit.
+`complete` is an LLM-facing tool. It appears in `tools/schemas` — the
+LLM can call it, and the kernel uses it for bootstrap. One tool, two
+callers.
 
-**This collapse from structured context to flat prompt is the hardest
-design problem in the system and it is not yet solved.**
+The caller writes an account name and an array of typed context
+references. The tool resolves the refs (via its own reader handle),
+assembles an API-ready payload for the target provider, sends it, and
+runs any resulting tool calls to resolution. The final response comes
+back through the handle.
 
-What we know:
+```
+let h = write("tools/complete", {
+    account: "default",
+    refs: [
+        {type: "system", path: "system"},
+        {type: "history", path: "history/messages", last: 20},
+        {type: "tools", path: "tools/schemas"},
+        {type: "span", file: "src/auth.rs", lines: [3, 45]},
+    ]
+})
+let response = read(h)
+```
 
-- **The kernel should not contain provider-specific types.** No
-  `CompletionRequest` struct with Anthropic-shaped fields crossing the
-  kernel boundary.
-- **The completion tool should be dumb transport.** It receives a Value
-  and sends it. It does wire formatting for its provider (Anthropic JSON,
-  OpenAI JSON) and HTTP. It should not be reading context or deciding
-  what goes in the prompt.
-- **Context providers should render themselves.** Each provider knows how
-  to contribute to a prompt — history renders a message list, file-span
-  providers render their spans into message content, the system provider
-  renders its prompt string. But the assembly of these pieces into a
-  coherent whole is where the design gap lives.
-- **The kernel decides what context to include.** Which tools, how much
-  history, which pinned spans. That's the kernel's intelligence. But HOW
-  the kernel expresses that decision — what Value it constructs and what
-  shape that Value takes — needs design work.
+The caller doesn't assemble prompts. The caller doesn't know wire
+formats. It writes structured context references and gets a response.
+The `complete` tool owns both synthesis (ref resolution + API
+formatting) and transport (HTTP).
 
-What exists today:
+Multi-completion: the LLM calls `complete` multiple times in one
+response with different refs and different accounts. The kernel
+executes them as handles, concurrently via `tools/await`.
 
-- `synthesize_prompt()` in ox-context reads four hardcoded paths and
-  returns a `CompletionRequest`. This is the magic path we want to
-  eliminate.
-- `tools/completions/complete/{account}` in CompletionModule receives a
-  serialized `CompletionRequest` Value and does HTTP transport. This is
-  the real completion path.
-- The kernel calls `read("prompt")` to get a pre-assembled request, then
-  writes it to the completion path. Two-step, with synthesis hidden in
-  the first step.
-
-What S-tier looks like:
-
-- No magic `read("prompt")` path.
-- The kernel reads context components, shapes them (via context
-  management tools), and writes a structured Value to the completion
-  tool.
-- The structured Value is not `CompletionRequest` — it's whatever the
-  kernel's context produces. The completion tool translates it to the
-  provider's wire format.
-- The design of that intermediate Value — what it contains, how context
-  providers contribute to it, how the kernel controls what's included —
-  is the open design problem.
+See [Synthesis and Complete Tool Design](../superpowers/specs/2026-04-10-synthesis-and-complete-tool-design.md)
+for the full specification.
 
 ## Life of an Agent
 
