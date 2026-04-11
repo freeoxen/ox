@@ -12,7 +12,7 @@
 //! Write paths:
 //! - `"append"` → convert wire-format message to LogEntry, append to SharedLog
 //! - `"turn/{streaming,thinking,tool,tokens}"` → update ephemeral turn state
-//! - `"commit"` → finalize streaming text into a committed assistant message
+//! - `"turn/clear"` → reset all ephemeral turn state
 
 mod turn;
 pub use turn::TurnState;
@@ -212,32 +212,34 @@ impl Writer for HistoryView {
             "turn" => {
                 if to.components.len() >= 2 {
                     let sub = to.components[1].as_str();
-                    let value = data.as_value().ok_or_else(|| {
-                        StoreError::store(
-                            "HistoryView",
-                            "write",
-                            "expected parsed record for turn write",
-                        )
-                    })?;
-                    if self.turn.write(sub, value) {
-                        Ok(to.clone())
-                    } else {
-                        Err(StoreError::store("HistoryView", "write", "invalid turn write"))
+                    match sub {
+                        "clear" => {
+                            // Reset all ephemeral turn state for the next turn.
+                            self.turn.clear();
+                            Ok(to.clone())
+                        }
+                        _ => {
+                            let value = data.as_value().ok_or_else(|| {
+                                StoreError::store(
+                                    "HistoryView",
+                                    "write",
+                                    "expected parsed record for turn write",
+                                )
+                            })?;
+                            if self.turn.write(sub, value) {
+                                Ok(to.clone())
+                            } else {
+                                Err(StoreError::store("HistoryView", "write", "invalid turn write"))
+                            }
+                        }
                     }
                 } else {
                     Err(StoreError::store(
                         "HistoryView",
                         "write",
-                        "turn write requires sub-path (e.g. turn/streaming)",
+                        "turn write requires sub-path (e.g. turn/streaming, turn/clear)",
                     ))
                 }
-            }
-            "commit" => {
-                // Clear turn state. The kernel already committed the assistant
-                // message to log/append via record_turn — we just need to reset
-                // the ephemeral streaming/thinking state for the next turn.
-                self.turn.clear();
-                Ok(to.clone())
             }
             _ => Err(StoreError::store(
                 "HistoryView",
@@ -457,7 +459,7 @@ mod tests {
     }
 
     #[test]
-    fn history_view_commit_clears_turn_state() {
+    fn history_view_turn_clear_resets_all() {
         let shared = SharedLog::new();
         let mut hv = HistoryView::new(shared.clone());
         hv.write(
@@ -470,20 +472,19 @@ mod tests {
             Record::parsed(Value::Bool(true)),
         )
         .unwrap();
-        hv.write(&path!("commit"), Record::parsed(Value::Null))
+        hv.write(&path!("turn/clear"), Record::parsed(Value::Null))
             .unwrap();
-        // Turn state should be cleared
         assert!(!hv.turn.is_active());
         assert!(hv.turn.streaming.is_empty());
-        // Commit does NOT write to the log — the kernel already did via log/append
+        // turn/clear does NOT write to the log — the kernel owns persistence
         assert!(shared.is_empty());
     }
 
     #[test]
-    fn history_view_commit_empty_is_noop() {
+    fn history_view_turn_clear_when_empty_is_noop() {
         let shared = SharedLog::new();
         let mut hv = HistoryView::new(shared.clone());
-        hv.write(&path!("commit"), Record::parsed(Value::Null))
+        hv.write(&path!("turn/clear"), Record::parsed(Value::Null))
             .unwrap();
         assert!(shared.is_empty());
     }

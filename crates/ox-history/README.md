@@ -15,7 +15,7 @@ Conversation history as a StructFS store for the [ox](https://github.com/freeoxe
 | `"count"` | Message count (integer) | — |
 | `"append"` | — | Convert wire message to LogEntry, append to SharedLog |
 | `"turn/{streaming,thinking,tool,tokens}"` | Ephemeral turn state | Update turn state |
-| `"commit"` | — | Finalize streaming text into committed assistant message |
+| `"turn/clear"` | — | Reset all ephemeral turn state |
 
 The log is the source of truth. History is a derived view — the kernel writes to `log/append`, and `HistoryView` projects log entries into wire-format messages for prompt synthesis.
 

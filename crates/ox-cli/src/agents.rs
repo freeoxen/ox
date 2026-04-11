@@ -375,18 +375,10 @@ fn agent_worker(
                 .ok();
         }
 
-        // Clear ephemeral turn state (streaming text, thinking, tool status).
-        // The kernel already committed the assistant message to log/append.
+        // Clear all ephemeral turn state (streaming text, thinking, tool status).
+        // The kernel already wrote the assistant message to log/append.
         adapter
-            .write(&path!("history/commit"), Record::parsed(Value::Null))
-            .ok();
-
-        // Clear turn state (thinking = false)
-        rt_handle
-            .block_on(scoped_client.write(
-                &path!("history/turn/thinking"),
-                Record::parsed(Value::Bool(false)),
-            ))
+            .write(&path!("history/turn/clear"), Record::parsed(Value::Null))
             .ok();
 
         // Persist conversation state for restart recovery
