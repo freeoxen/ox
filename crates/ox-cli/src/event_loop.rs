@@ -1147,10 +1147,17 @@ pub async fn run_async(
                                         input_session.clear();
                                     }
                                     (_, KeyCode::Up) => {
-                                        if let Some((text, cursor)) =
+                                        use crate::text_input_view::{wrap_lines, cursor_in_lines, byte_offset_at};
+                                        let width = terminal.get_frame().area().width;
+                                        let lines = wrap_lines(&input_session.content, width);
+                                        let (cur_line, cur_col) = cursor_in_lines(&input_session.content, input_session.cursor, &lines);
+                                        if cur_line > 0 {
+                                            // Move cursor up one visual line
+                                            input_session.cursor = byte_offset_at(&input_session.content, &lines, cur_line - 1, cur_col);
+                                        } else if let Some((text, cursor)) =
                                             app.history_up(&input_session.content)
                                         {
-                                            // Flush current edits, then replace
+                                            // At top line — navigate history
                                             flush_pending_edits(&mut input_session, client).await;
                                             let _ = client
                                                 .write(
@@ -1162,7 +1169,15 @@ pub async fn run_async(
                                         }
                                     }
                                     (_, KeyCode::Down) => {
-                                        if let Some((text, cursor)) = app.history_down() {
+                                        use crate::text_input_view::{wrap_lines, cursor_in_lines, byte_offset_at};
+                                        let width = terminal.get_frame().area().width;
+                                        let lines = wrap_lines(&input_session.content, width);
+                                        let (cur_line, cur_col) = cursor_in_lines(&input_session.content, input_session.cursor, &lines);
+                                        if cur_line + 1 < lines.len() {
+                                            // Move cursor down one visual line
+                                            input_session.cursor = byte_offset_at(&input_session.content, &lines, cur_line + 1, cur_col);
+                                        } else if let Some((text, cursor)) = app.history_down() {
+                                            // At bottom line — navigate history
                                             flush_pending_edits(&mut input_session, client).await;
                                             let _ = client
                                                 .write(
@@ -1206,6 +1221,14 @@ pub async fn run_async(
                     }
                 }
                 Event::Mouse(mouse) => {
+                    // Click in input area — move cursor
+                    if let MouseEventKind::Down(_) = mouse.kind {
+                        if mode_owned == "insert" {
+                            if let Some(byte_pos) = text_input_view.click_to_byte_offset(mouse.column, mouse.row) {
+                                input_session.cursor = byte_pos;
+                            }
+                        }
+                    }
                     // Click on settings edit dialog
                     if let MouseEventKind::Down(_) = mouse.kind {
                         if screen_owned == "settings" && settings.editing.is_some() {

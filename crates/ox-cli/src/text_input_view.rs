@@ -12,17 +12,19 @@ pub struct TextInputView {
     content: String,
     cursor: usize,
     scroll_top: usize,
+    /// The inner area (inside border) from the last render, for mouse hit testing.
+    last_inner: Option<Rect>,
 }
 
-/// A wrapped display line: the byte range it covers and its display width.
-struct WrapLine {
-    start: usize,
-    end: usize,
+/// A wrapped display line: the byte range it covers.
+pub struct WrapLine {
+    pub start: usize,
+    pub end: usize,
 }
 
 /// Wrap content into display lines at the given width using unicode display widths.
 /// This is the single source of truth for where line breaks occur.
-fn wrap_lines(content: &str, width: u16) -> Vec<WrapLine> {
+pub fn wrap_lines(content: &str, width: u16) -> Vec<WrapLine> {
     if width == 0 {
         return vec![WrapLine { start: 0, end: content.len() }];
     }
@@ -53,7 +55,7 @@ fn wrap_lines(content: &str, width: u16) -> Vec<WrapLine> {
 }
 
 /// Find the (line_index, column) for a byte offset within wrapped lines.
-fn cursor_in_lines(content: &str, cursor_byte: usize, lines: &[WrapLine]) -> (usize, u16) {
+pub fn cursor_in_lines(content: &str, cursor_byte: usize, lines: &[WrapLine]) -> (usize, u16) {
     for (i, wl) in lines.iter().enumerate() {
         if cursor_byte >= wl.start && cursor_byte <= wl.end {
             // Cursor is on this line. Compute display column.
@@ -84,6 +86,23 @@ fn cursor_in_lines(content: &str, cursor_byte: usize, lines: &[WrapLine]) -> (us
     (last, col as u16)
 }
 
+/// Convert a (line_index, display_column) to a byte offset in the content.
+/// Clamps to valid positions. Used for Up/Down arrows and mouse click.
+pub fn byte_offset_at(content: &str, lines: &[WrapLine], target_line: usize, target_col: u16) -> usize {
+    let line_idx = target_line.min(lines.len().saturating_sub(1));
+    let wl = &lines[line_idx];
+    let line_str = &content[wl.start..wl.end];
+    let mut col = 0u16;
+    for (byte_offset, ch) in line_str.char_indices() {
+        if col >= target_col {
+            return wl.start + byte_offset;
+        }
+        col += ch.width().unwrap_or(0) as u16;
+    }
+    // Past end of line — clamp to end
+    wl.end
+}
+
 /// Desired input area height based on content, clamped to MAX_INPUT_LINES.
 /// Includes 1 line for the top border.
 pub fn desired_input_height(content: &str, width: u16) -> u16 {
@@ -99,6 +118,7 @@ impl TextInputView {
             content: String::new(),
             cursor: 0,
             scroll_top: 0,
+            last_inner: None,
         }
     }
 
@@ -142,6 +162,8 @@ impl TextInputView {
             .map(|wl| Line::from(Span::raw(&self.content[wl.start..wl.end])))
             .collect();
 
+        self.last_inner = Some(inner);
+
         let paragraph = Paragraph::new(display_lines).block(block);
         frame.render_widget(paragraph, area);
 
@@ -161,6 +183,21 @@ impl TextInputView {
                 inner.y + visible_cursor_y as u16,
             ));
         }
+    }
+
+    /// Handle a mouse click at terminal (column, row). Returns the byte offset
+    /// to move the cursor to, or None if the click is outside the input area.
+    pub fn click_to_byte_offset(&self, col: u16, row: u16) -> Option<usize> {
+        let inner = self.last_inner?;
+        if col < inner.x || col >= inner.x + inner.width
+            || row < inner.y || row >= inner.y + inner.height
+        {
+            return None;
+        }
+        let click_col = col - inner.x;
+        let click_row = (row - inner.y) as usize + self.scroll_top;
+        let lines = wrap_lines(&self.content, inner.width);
+        Some(byte_offset_at(&self.content, &lines, click_row, click_col))
     }
 
     fn ensure_cursor_visible(&mut self, viewport_height: usize, cursor_line: usize) {
