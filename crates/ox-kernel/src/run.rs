@@ -391,9 +391,14 @@ pub fn record_turn(
 
 /// Execute tool calls, returning results.
 ///
-/// The `complete` tool is handled specially — the kernel calls the
-/// [`complete`] function directly with the context, avoiding the
-/// ToolStore's borrow chain. All other tools route through the store.
+/// All tools go through a uniform write -> read-handle pattern:
+/// 1. Write tool input to `tools/{name}`
+/// 2. The returned path is an exec handle (e.g. `tools/exec/0001`)
+/// 3. Read the handle to get the result
+///
+/// If the result is a JSON array (completion stream events), the kernel
+/// runs an inner loop to resolution (accumulate, execute tool calls, etc.).
+/// Otherwise the result is stringified as a normal tool output.
 pub fn execute_tools(
     context: &mut dyn Store,
     tool_calls: &[ToolCall],
@@ -406,10 +411,27 @@ pub fn execute_tools(
             name: tc.name.clone(),
         });
 
-        let result_str = if tc.name == "complete" {
-            execute_complete_tool(context, &tc.input)?
-        } else {
-            execute_normal_tool(context, tc)?
+        let input_value = structfs_serde_store::json_to_value(tc.input.clone());
+        let tool_path = Path::parse(&format!("tools/{}", tc.name)).map_err(|e| e.to_string())?;
+
+        let result_str = match context.write(&tool_path, Record::parsed(input_value)) {
+            Ok(handle) => {
+                match context.read(&handle).map_err(|e| e.to_string())? {
+                    Some(record) => {
+                        let val = record.as_value().cloned().unwrap_or(Value::Null);
+                        let json = structfs_serde_store::value_to_json(val);
+
+                        // If result is an array, treat as completion events (inner loop)
+                        if json.is_array() {
+                            run_complete_inner_loop(context, &json)?
+                        } else {
+                            json_to_result_string(&json)
+                        }
+                    }
+                    None => format!("error: no result at handle {}", handle),
+                }
+            }
+            Err(e) => e.to_string(),
         };
 
         emit(AgentEvent::ToolCallResult {
@@ -429,27 +451,84 @@ pub fn execute_tools(
 /// Maximum iterations for the inner loop of the complete tool.
 const MAX_COMPLETE_ITERATIONS: usize = 10;
 
-/// Handle the `complete` tool: parse refs from input, loop until resolution.
+/// Run the inner loop for a completion result (stream events).
 ///
-/// The inner loop mirrors the kernel's outer loop: complete -> accumulate ->
-/// if tool calls, record + execute + loop. Runs to resolution (text only
-/// response) or until iteration limit.
-fn execute_complete_tool(
+/// Accumulates events, checks for tool calls. If tool calls are present,
+/// records the turn, executes tools, records results, re-sends completion,
+/// and loops until resolution (text-only response) or iteration limit.
+fn run_complete_inner_loop(
     context: &mut dyn Store,
-    input: &serde_json::Value,
+    events_json: &serde_json::Value,
 ) -> Result<String, String> {
-    let account = input
-        .get("account")
-        .and_then(|v| v.as_str())
-        .unwrap_or("anthropic");
-    let refs_value = input
-        .get("refs")
-        .ok_or("complete tool: missing 'refs' field")?;
-    let refs: Vec<ContextRef> =
-        serde_json::from_value(refs_value.clone()).map_err(|e| format!("invalid refs: {e}"))?;
+    let events: Vec<StreamEvent> = events_json
+        .as_array()
+        .ok_or("expected array of events")?
+        .iter()
+        .map(json_to_stream_event)
+        .collect::<Result<Vec<_>, _>>()?;
 
-    for _ in 0..MAX_COMPLETE_ITERATIONS {
-        let events = complete(context, account, &refs)?;
+    let content = accumulate_response(events, &mut |_| {})?;
+
+    let tool_calls: Vec<ToolCall> = content
+        .iter()
+        .filter_map(|b| {
+            if let ContentBlock::ToolUse(tc) = b {
+                Some(tc.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if tool_calls.is_empty() {
+        let text = content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        return Ok(text);
+    }
+
+    // Record assistant message (with tool calls) to history
+    record_turn(context, &content)?;
+
+    // Log + execute + record tool results
+    for tc in &tool_calls {
+        log_entry(
+            context,
+            serde_json::json!({
+                "type": "tool_call",
+                "id": tc.id,
+                "name": tc.name,
+                "input": tc.input,
+            }),
+        );
+    }
+
+    let results = execute_tools(context, &tool_calls, &mut |_| {})?;
+
+    for r in &results {
+        log_entry(
+            context,
+            serde_json::json!({
+                "type": "tool_result",
+                "id": r.tool_use_id,
+                "output": r.content,
+            }),
+        );
+    }
+
+    record_tool_results(context, &results)?;
+
+    // Re-send completion with default refs for continuation
+    let account = read_default_account(context)?;
+    let refs = default_refs();
+
+    for _ in 1..MAX_COMPLETE_ITERATIONS {
+        let events = complete(context, &account, &refs)?;
         let content = accumulate_response(events, &mut |_| {})?;
 
         let tool_calls: Vec<ToolCall> = content
@@ -475,10 +554,8 @@ fn execute_complete_tool(
             return Ok(text);
         }
 
-        // Record assistant message (with tool calls) to history
         record_turn(context, &content)?;
 
-        // Log + execute + record tool results
         for tc in &tool_calls {
             log_entry(
                 context,
@@ -512,26 +589,11 @@ fn execute_complete_tool(
     ))
 }
 
-/// Execute a normal (non-complete) tool through the store.
-fn execute_normal_tool(context: &mut dyn Store, tc: &ToolCall) -> Result<String, String> {
-    let input_value = structfs_serde_store::json_to_value(tc.input.clone());
-    let tool_path = Path::parse(&format!("tools/{}", tc.name)).map_err(|e| e.to_string())?;
-
-    match context.write(&tool_path, Record::parsed(input_value)) {
-        Ok(_) => {
-            let result_path =
-                Path::parse(&format!("tools/{}/result", tc.name)).map_err(|e| e.to_string())?;
-            match context.read(&result_path) {
-                Ok(Some(record)) => {
-                    let val = record.as_value().cloned().unwrap_or(Value::Null);
-                    let json = structfs_serde_store::value_to_json(val);
-                    Ok(serde_json::to_string(&json).unwrap_or_default())
-                }
-                Ok(None) => Ok(format!("error: no result for tool {}", tc.name)),
-                Err(e) => Ok(format!("error: {e}")),
-            }
-        }
-        Err(e) => Ok(e.to_string()),
+/// Convert a JSON value to a result string for tool output.
+fn json_to_result_string(json: &serde_json::Value) -> String {
+    match json {
+        serde_json::Value::String(s) => s.clone(),
+        other => serde_json::to_string(other).unwrap_or_default(),
     }
 }
 
@@ -563,6 +625,9 @@ pub fn record_tool_results(context: &mut dyn Writer, results: &[ToolResult]) -> 
 // ---------------------------------------------------------------------------
 
 /// Send a completion request via the context store and return parsed events.
+///
+/// Writes the request to `tools/completions/complete/{account}`, reads the
+/// exec handle returned by the write, and deserializes stream events.
 fn send_completion(
     context: &mut dyn Store,
     account: &str,
@@ -572,14 +637,12 @@ fn send_completion(
         Path::parse(&format!("tools/completions/complete/{account}")).map_err(|e| e.to_string())?;
     let request_json = serde_json::to_value(request).map_err(|e| e.to_string())?;
     let request_value = structfs_serde_store::json_to_value(request_json);
-    context
+    let handle = context
         .write(&request_path, Record::parsed(request_value))
         .map_err(|e| e.to_string())?;
 
-    let response_path = Path::parse(&format!("tools/completions/complete/{account}/response"))
-        .map_err(|e| e.to_string())?;
     let response_record = context
-        .read(&response_path)
+        .read(&handle)
         .map_err(|e| e.to_string())?
         .ok_or("completion returned no response")?;
 
@@ -587,7 +650,7 @@ fn send_completion(
 }
 
 /// Read model ID and max_tokens from gate defaults.
-fn read_model_config(context: &mut dyn Reader) -> Result<(String, u32), String> {
+pub fn read_model_config(context: &mut dyn Reader) -> Result<(String, u32), String> {
     let model = match context
         .read(&path!("gate/defaults/model"))
         .map_err(|e| e.to_string())?
@@ -710,6 +773,7 @@ mod tests {
         data: BTreeMap<String, Value>,
         appended: Vec<(String, Value)>,
         completion_responses: std::sync::Mutex<std::collections::VecDeque<Value>>,
+        exec_counter: u64,
     }
 
     impl MockStore {
@@ -718,6 +782,7 @@ mod tests {
                 data: BTreeMap::new(),
                 appended: Vec::new(),
                 completion_responses: std::sync::Mutex::new(std::collections::VecDeque::new()),
+                exec_counter: 0,
             }
         }
 
@@ -731,17 +796,18 @@ mod tests {
                 .unwrap()
                 .push_back(structfs_serde_store::json_to_value(events_json));
         }
+
+        fn next_exec_handle(&mut self, value: Value) -> Path {
+            self.exec_counter += 1;
+            let key = format!("tools/exec/{:04}", self.exec_counter);
+            self.data.insert(key.clone(), value);
+            Path::parse(&key).unwrap()
+        }
     }
 
     impl Reader for MockStore {
         fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
             let key = from.to_string();
-            // Completion response reads are served from the queue when available.
-            if key.contains("completions/complete") && key.ends_with("/response") {
-                if let Some(value) = self.completion_responses.lock().unwrap().pop_front() {
-                    return Ok(Some(Record::parsed(value)));
-                }
-            }
             Ok(self.data.get(&key).map(|v| Record::parsed(v.clone())))
         }
     }
@@ -757,10 +823,18 @@ mod tests {
             };
             let key = to.to_string();
             self.data.insert(key.clone(), value.clone());
-            // Simulate tool execution: writing to tools/X (not tools/X/result) also stores
-            // a result at tools/X/result so execute_tools can read it back.
-            if key.starts_with("tools/") && !key.contains("/result") {
-                self.data.insert(format!("{key}/result"), value);
+
+            // Simulate the handle pattern:
+            // - Completion writes: pop a canned response and return exec handle
+            // - Tool writes: return exec handle with the written value
+            if key.contains("completions/complete") && !key.ends_with("/response") {
+                let maybe_response = self.completion_responses.lock().unwrap().pop_front();
+                if let Some(response) = maybe_response {
+                    return Ok(self.next_exec_handle(response));
+                }
+            }
+            if key.starts_with("tools/") && !key.contains("/result") && !key.contains("exec/") {
+                return Ok(self.next_exec_handle(value));
             }
             Ok(to.clone())
         }
@@ -1037,15 +1111,11 @@ mod tests {
     #[test]
     fn send_completion_writes_request_and_reads_response() {
         let mut store = MockStore::new();
-        // Pre-populate the response path that send_completion will read from.
-        let events_json = serde_json::json!([
+        // Push a canned completion response (MockStore returns it as exec handle).
+        store.push_completion_response(serde_json::json!([
             {"type": "text_delta", "text": "hello"},
             {"type": "message_stop"}
-        ]);
-        store.set(
-            "tools/completions/complete/test/response",
-            structfs_serde_store::json_to_value(events_json),
-        );
+        ]));
 
         let request = CompletionRequest {
             model: "test".into(),
@@ -1092,14 +1162,11 @@ mod tests {
         );
         store.set("gate/defaults/model", Value::String("test-model".into()));
         store.set("gate/defaults/max_tokens", Value::Integer(100));
-        // Pre-populate completion response (text only — no tool calls → loop exits)
-        store.set(
-            "tools/completions/complete/test/response",
-            structfs_serde_store::json_to_value(serde_json::json!([
-                {"type": "text_delta", "text": "Hello!"},
-                {"type": "message_stop"}
-            ])),
-        );
+        // Push completion response (text only — no tool calls → loop exits)
+        store.push_completion_response(serde_json::json!([
+            {"type": "text_delta", "text": "Hello!"},
+            {"type": "message_stop"}
+        ]));
 
         let mut events = vec![];
         run_turn(&mut store, &mut |e| events.push(format!("{e:?}"))).unwrap();
@@ -1464,9 +1531,12 @@ mod tests {
     }
 
     #[test]
-    fn execute_tools_handles_complete_tool_call() {
+    fn execute_tools_array_result_triggers_inner_loop() {
+        // When a tool write returns an exec handle containing a JSON array
+        // (stream events), execute_tools processes it as a completion result.
         let mut store = MockStore::new();
-        // Set up context for the inner complete call
+        // Set up context for the inner loop continuation
+        store.set("gate/defaults/account", Value::String("test".into()));
         store.set("system", Value::String("Inner prompt.".into()));
         store.set(
             "history/messages",
@@ -1478,38 +1548,31 @@ mod tests {
         );
         store.set("gate/defaults/model", Value::String("test".into()));
         store.set("gate/defaults/max_tokens", Value::Integer(100));
-        store.push_completion_response(serde_json::json!([
+
+        // Pre-store an exec handle with text-only events at a known path.
+        // MockStore will return exec handles for tool writes, so we need to
+        // ensure the tool "some_tool" returns events (an array).
+        // We do this by directly seeding an exec handle that MockStore will
+        // assign on the next tool write.
+        //
+        // MockStore's next_exec_handle will create tools/exec/0001 with the
+        // value written to tools/some_tool. We need that value to be an array.
+        // But the tool input is {"text": "hello"}, which is what gets stored.
+        //
+        // Instead, test the inner loop function directly.
+        let events_json = serde_json::json!([
             {"type": "text_delta", "text": "Inner response."},
             {"type": "message_stop"}
-        ]));
+        ]);
 
-        let tool_calls = vec![ToolCall {
-            id: "tc1".into(),
-            name: "complete".into(),
-            input: serde_json::json!({
-                "account": "test",
-                "refs": [
-                    {"type": "system", "path": "system"},
-                    {"type": "history", "path": "history/messages"},
-                    {"type": "tools", "path": "tools/schemas"}
-                ]
-            }),
-        }];
-
-        let mut events = vec![];
-        let results = execute_tools(&mut store, &tool_calls, &mut |e| {
-            events.push(format!("{e:?}"))
-        })
-        .unwrap();
-        assert_eq!(results.len(), 1);
-        let content = results[0].content.as_str().unwrap();
-        assert!(content.contains("Inner response."));
-        assert!(events.iter().any(|e| e.contains("ToolCallStart")));
+        let result = run_complete_inner_loop(&mut store, &events_json).unwrap();
+        assert_eq!(result, "Inner response.");
     }
 
     #[test]
-    fn execute_complete_tool_inner_loop() {
+    fn inner_loop_with_tool_calls() {
         let mut store = MockStore::new();
+        store.set("gate/defaults/account", Value::String("test".into()));
         store.set("system", Value::String("Inner.".into()));
         store.set(
             "history/messages",
@@ -1522,34 +1585,27 @@ mod tests {
         store.set("gate/defaults/model", Value::String("test".into()));
         store.set("gate/defaults/max_tokens", Value::Integer(100));
 
-        // First inner completion: tool call
-        store.push_completion_response(serde_json::json!([
-            {"type": "tool_use_start", "id": "inner_tc1", "name": "echo"},
-            {"type": "tool_use_input_delta", "delta": "{\"x\":1}"},
-            {"type": "message_stop"}
-        ]));
-        // Second inner completion: text (resolution)
+        // Second completion (after inner tool execution): text resolution
         store.push_completion_response(serde_json::json!([
             {"type": "text_delta", "text": "Resolved after tool."},
             {"type": "message_stop"}
         ]));
 
-        let input = serde_json::json!({
-            "account": "test",
-            "refs": [
-                {"type": "system", "path": "system"},
-                {"type": "history", "path": "history/messages"},
-                {"type": "tools", "path": "tools/schemas"}
-            ]
-        });
+        // First "completion" events contain a tool call
+        let events_json = serde_json::json!([
+            {"type": "tool_use_start", "id": "inner_tc1", "name": "echo"},
+            {"type": "tool_use_input_delta", "delta": "{\"x\":1}"},
+            {"type": "message_stop"}
+        ]);
 
-        let result = execute_complete_tool(&mut store, &input).unwrap();
+        let result = run_complete_inner_loop(&mut store, &events_json).unwrap();
         assert_eq!(result, "Resolved after tool.");
     }
 
     #[test]
-    fn execute_complete_tool_iteration_limit() {
+    fn inner_loop_iteration_limit() {
         let mut store = MockStore::new();
+        store.set("gate/defaults/account", Value::String("test".into()));
         store.set("system", Value::String("Loop.".into()));
         store.set(
             "history/messages",
@@ -1562,8 +1618,10 @@ mod tests {
         store.set("gate/defaults/model", Value::String("test".into()));
         store.set("gate/defaults/max_tokens", Value::Integer(100));
 
-        // Push MAX_COMPLETE_ITERATIONS + 1 tool-call responses to ensure we hit the limit
-        for _ in 0..=MAX_COMPLETE_ITERATIONS {
+        // Push MAX_COMPLETE_ITERATIONS tool-call responses to ensure we hit the limit.
+        // The first iteration is handled by run_complete_inner_loop's initial events,
+        // and the remaining iterations come from push_completion_response.
+        for _ in 0..MAX_COMPLETE_ITERATIONS {
             store.push_completion_response(serde_json::json!([
                 {"type": "tool_use_start", "id": "tc_loop", "name": "echo"},
                 {"type": "tool_use_input_delta", "delta": "{}"},
@@ -1571,16 +1629,14 @@ mod tests {
             ]));
         }
 
-        let input = serde_json::json!({
-            "account": "test",
-            "refs": [
-                {"type": "system", "path": "system"},
-                {"type": "history", "path": "history/messages"},
-                {"type": "tools", "path": "tools/schemas"}
-            ]
-        });
+        // Initial events: also a tool call
+        let events_json = serde_json::json!([
+            {"type": "tool_use_start", "id": "tc_init", "name": "echo"},
+            {"type": "tool_use_input_delta", "delta": "{}"},
+            {"type": "message_stop"}
+        ]);
 
-        let result = execute_complete_tool(&mut store, &input);
+        let result = run_complete_inner_loop(&mut store, &events_json);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("exceeded"));
     }

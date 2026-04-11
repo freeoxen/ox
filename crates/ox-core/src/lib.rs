@@ -31,9 +31,9 @@ pub use ox_tools;
 pub use ox_kernel::{
     AgentEvent, CompletionRequest, ContentBlock, ContextRef, Message, Path, Reader, Record,
     ResolvedContext, Store, StoreError, StreamEvent, ToolCall, ToolResult, ToolSchema, Value,
-    Writer, accumulate_response, complete, default_refs, execute_tools, path, record_tool_results,
-    record_turn, resolve_refs, run_turn, serialize_assistant_message, serialize_tool_results,
-    synthesize,
+    Writer, accumulate_response, complete, default_refs, execute_tools, path, read_model_config,
+    record_tool_results, record_turn, resolve_refs, run_turn, serialize_assistant_message,
+    serialize_tool_results, synthesize,
 };
 
 /// The Agent composes a Namespace (with stores) and subscribers.
@@ -53,8 +53,22 @@ impl Agent {
     /// Sets up the internal [`Namespace`] with providers for the system
     /// prompt, history, tools, gate, and log. Use [`ox_tools::ToolStore`]
     /// to provide both tool schemas and execution.
-    pub fn new(system_prompt: String, tool_store: ox_tools::ToolStore) -> Self {
+    pub fn new(system_prompt: String, mut tool_store: ox_tools::ToolStore) -> Self {
         let shared_log = ox_kernel::log::SharedLog::new();
+
+        // Wire context handle for the complete tool's ref resolution.
+        // This is an independent namespace that shares the same conversation
+        // log, providing read access to system, history, tool schemas, and gate.
+        let mut context_handle = Namespace::new();
+        context_handle.mount(
+            "system",
+            Box::new(SystemProvider::new(system_prompt.clone())),
+        );
+        context_handle.mount("history", Box::new(HistoryView::new(shared_log.clone())));
+        context_handle.mount("tools", Box::new(ox_tools::ToolStore::empty()));
+        context_handle.mount("gate", Box::new(ox_gate::GateStore::new()));
+        tool_store.set_context_handle(Box::new(context_handle));
+
         let mut context = Namespace::new();
         context.mount("system", Box::new(SystemProvider::new(system_prompt)));
         context.mount("history", Box::new(HistoryView::new(shared_log.clone())));
@@ -130,6 +144,18 @@ mod tests {
         tool_store
             .completions_mut()
             .set_transport(Box::new(transport));
+
+        // Wire context handle so the complete tool can resolve refs
+        let mut context_handle = Namespace::new();
+        context_handle.mount(
+            "system",
+            Box::new(SystemProvider::new("You are a test bot.".into())),
+        );
+        context_handle.mount("history", Box::new(HistoryView::new(shared_log.clone())));
+        context_handle.mount("tools", Box::new(ox_tools::ToolStore::empty()));
+        context_handle.mount("gate", Box::new(ox_gate::GateStore::new()));
+        tool_store.set_context_handle(Box::new(context_handle));
+
         let mut ns = Namespace::new();
         ns.mount(
             "system",

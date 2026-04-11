@@ -39,8 +39,8 @@ pub mod log;
 pub mod run;
 pub use run::{
     ContextRef, ResolvedContext, accumulate_response, agent_event_to_json, complete, default_refs,
-    deserialize_events, execute_tools, json_to_stream_event, record_tool_results, record_turn,
-    resolve_refs, run_turn, stream_event_to_json, synthesize,
+    deserialize_events, execute_tools, json_to_stream_event, read_model_config,
+    record_tool_results, record_turn, resolve_refs, run_turn, stream_event_to_json, synthesize,
 };
 
 // ---------------------------------------------------------------------------

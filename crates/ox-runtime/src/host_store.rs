@@ -91,7 +91,11 @@ impl<B: Reader + Writer + Send, E: HostEffects> HostStore<B, E> {
         match prefix {
             "tools" => {
                 let sub = Path::from_components(path.components[1..].to_vec());
-                self.effects.tool_store().write(&sub, data)
+                let sub_path = self.effects.tool_store().write(&sub, data)?;
+                // Prepend "tools/" so the returned handle is readable through this store
+                let mut components = vec!["tools".to_string()];
+                components.extend(sub_path.components);
+                Ok(Path::from_components(components))
             }
             "events" if path == &path!("events/emit") => {
                 tracing::debug!(path = %path, "effectful write: events/emit");

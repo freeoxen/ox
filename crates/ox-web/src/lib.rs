@@ -689,6 +689,8 @@ async fn fetch_model_catalog(
 }
 
 /// Execute a tool call against the ToolStore (single dispatch path).
+///
+/// Uses the handle pattern: write input, read the returned exec handle.
 fn execute_tool(
     tool_store: &Rc<RefCell<ox_tools::ToolStore>>,
     name: &str,
@@ -701,20 +703,18 @@ fn execute_tool(
     };
     let input_value = structfs_serde_store::json_to_value(input.clone());
     match store.write(&tool_path, structfs_core_store::Record::parsed(input_value)) {
-        Ok(_) => {
-            let result_str = format!("{name}/result");
-            if let Ok(rp) = structfs_core_store::Path::parse(&result_str) {
-                if let Ok(Some(record)) = store.read(&rp) {
-                    let val = record
-                        .as_value()
-                        .cloned()
-                        .unwrap_or(structfs_core_store::Value::Null);
-                    let json = structfs_serde_store::value_to_json(val);
-                    return serde_json::to_string(&json).unwrap_or_default();
-                }
+        Ok(handle) => match store.read(&handle) {
+            Ok(Some(record)) => {
+                let val = record
+                    .as_value()
+                    .cloned()
+                    .unwrap_or(structfs_core_store::Value::Null);
+                let json = structfs_serde_store::value_to_json(val);
+                serde_json::to_string(&json).unwrap_or_default()
             }
-            "error: no result from tool".to_string()
-        }
+            Ok(None) => format!("error: no result at handle {}", handle),
+            Err(e) => format!("error: {e}"),
+        },
         Err(e) => format!("error: {e}"),
     }
 }

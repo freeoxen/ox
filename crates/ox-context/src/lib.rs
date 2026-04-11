@@ -65,7 +65,12 @@ impl Writer for Namespace {
     fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
         let (prefix, sub) = split_path(to);
         match self.mounts.get_mut(prefix) {
-            Some(store) => store.write(&sub, data),
+            Some(store) => {
+                let sub_path = store.write(&sub, data)?;
+                let mut components = vec![prefix.to_string()];
+                components.extend(sub_path.components);
+                Ok(Path::from_components(components))
+            }
             None => Err(StoreError::NoRoute { path: to.clone() }),
         }
     }
