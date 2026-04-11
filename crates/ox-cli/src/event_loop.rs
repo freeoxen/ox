@@ -47,18 +47,21 @@ impl InputSession {
     /// Delete one char before cursor (backspace), push an Edit.
     fn backspace(&mut self) {
         if self.cursor > 0 {
-            let at = self.cursor - 1;
-            let end = at + 1;
-            if end <= self.content.len() {
-                self.content.drain(at..end);
-                self.cursor = at;
-                self.pending_edits.push(Edit {
-                    op: EditOp::Delete { len: 1 },
-                    at,
-                    source: EditSource::Key,
-                    ts_ms: now_ms(),
-                });
-            }
+            // Find previous char boundary
+            let before = &self.content[..self.cursor];
+            let prev_char_start = before.char_indices()
+                .next_back()
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            let len = self.cursor - prev_char_start;
+            self.content.drain(prev_char_start..self.cursor);
+            self.cursor = prev_char_start;
+            self.pending_edits.push(Edit {
+                op: EditOp::Delete { len },
+                at: prev_char_start,
+                source: EditSource::Key,
+                ts_ms: now_ms(),
+            });
         }
     }
 
@@ -1171,12 +1174,20 @@ pub async fn run_async(
                                         }
                                     }
                                     (_, KeyCode::Left) => {
-                                        input_session.cursor =
-                                            input_session.cursor.saturating_sub(1);
+                                        // Move to previous char boundary
+                                        let s = &input_session.content[..input_session.cursor];
+                                        input_session.cursor = s.char_indices()
+                                            .next_back()
+                                            .map(|(i, _)| i)
+                                            .unwrap_or(0);
                                     }
                                     (_, KeyCode::Right) => {
-                                        input_session.cursor = (input_session.cursor + 1)
-                                            .min(input_session.content.len());
+                                        // Move to next char boundary
+                                        let s = &input_session.content[input_session.cursor..];
+                                        input_session.cursor += s.chars()
+                                            .next()
+                                            .map(|c| c.len_utf8())
+                                            .unwrap_or(0);
                                     }
                                     (_, KeyCode::Backspace) => {
                                         input_session.backspace();

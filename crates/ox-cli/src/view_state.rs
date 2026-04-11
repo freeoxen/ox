@@ -131,13 +131,19 @@ pub async fn fetch_view_state<'a>(
         Some(Value::Integer(n)) => *n as u16,
         _ => 0,
     };
-    let input = match ui_state.get("input") {
-        Some(Value::String(s)) => s.clone(),
-        _ => String::new(),
-    };
-    let cursor = match ui_state.get("cursor") {
-        Some(Value::Integer(n)) => *n as usize,
-        _ => 0,
+    let (input, cursor) = match ui_state.get("input") {
+        Some(Value::Map(m)) => {
+            let content = match m.get("content") {
+                Some(Value::String(s)) => s.clone(),
+                _ => String::new(),
+            };
+            let cur = match m.get("cursor") {
+                Some(Value::Integer(n)) => *n as usize,
+                _ => 0,
+            };
+            (content, cur)
+        }
+        _ => (String::new(), 0),
     };
     let pending_action = match ui_state.get("pending_action") {
         Some(Value::String(s)) => Some(s.clone()),
