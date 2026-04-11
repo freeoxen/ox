@@ -420,7 +420,14 @@ pub fn execute_tools(
     Ok(results)
 }
 
-/// Handle the `complete` tool: parse refs from input, call [`complete`], return text.
+/// Maximum iterations for the inner loop of the complete tool.
+const MAX_COMPLETE_ITERATIONS: usize = 10;
+
+/// Handle the `complete` tool: parse refs from input, loop until resolution.
+///
+/// The inner loop mirrors the kernel's outer loop: complete -> accumulate ->
+/// if tool calls, record + execute + loop. Runs to resolution (text only
+/// response) or until iteration limit.
 fn execute_complete_tool(
     context: &mut dyn Store,
     input: &serde_json::Value,
@@ -435,19 +442,68 @@ fn execute_complete_tool(
     let refs: Vec<ContextRef> =
         serde_json::from_value(refs_value.clone()).map_err(|e| format!("invalid refs: {e}"))?;
 
-    let events = complete(context, account, &refs)?;
-    let content = accumulate_response(events, &mut |_| {})?;
+    for _ in 0..MAX_COMPLETE_ITERATIONS {
+        let events = complete(context, account, &refs)?;
+        let content = accumulate_response(events, &mut |_| {})?;
 
-    let text = content
-        .iter()
-        .filter_map(|b| match b {
-            ContentBlock::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("");
+        let tool_calls: Vec<ToolCall> = content
+            .iter()
+            .filter_map(|b| {
+                if let ContentBlock::ToolUse(tc) = b {
+                    Some(tc.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
 
-    Ok(text)
+        if tool_calls.is_empty() {
+            let text = content
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("");
+            return Ok(text);
+        }
+
+        // Record assistant message (with tool calls) to history
+        record_turn(context, &content)?;
+
+        // Log + execute + record tool results
+        for tc in &tool_calls {
+            log_entry(
+                context,
+                serde_json::json!({
+                    "type": "tool_call",
+                    "id": tc.id,
+                    "name": tc.name,
+                    "input": tc.input,
+                }),
+            );
+        }
+
+        let results = execute_tools(context, &tool_calls, &mut |_| {})?;
+
+        for r in &results {
+            log_entry(
+                context,
+                serde_json::json!({
+                    "type": "tool_result",
+                    "id": r.tool_use_id,
+                    "output": r.content,
+                }),
+            );
+        }
+
+        record_tool_results(context, &results)?;
+    }
+
+    Err(format!(
+        "complete tool: exceeded {MAX_COMPLETE_ITERATIONS} iterations"
+    ))
 }
 
 /// Execute a normal (non-complete) tool through the store.
@@ -1186,7 +1242,9 @@ mod tests {
     fn resolve_system_ref() {
         let mut store = MockStore::new();
         store.set("system", Value::String("You are helpful.".into()));
-        let refs = vec![ContextRef::System { path: "system".into() }];
+        let refs = vec![ContextRef::System {
+            path: "system".into(),
+        }];
         let resolved = resolve_refs(&mut store, &refs).unwrap();
         assert_eq!(resolved.system, "You are helpful.");
     }
@@ -1202,7 +1260,10 @@ mod tests {
                 {"role": "user", "content": "c"},
             ])),
         );
-        let refs = vec![ContextRef::History { path: "history/messages".into(), last: Some(2) }];
+        let refs = vec![ContextRef::History {
+            path: "history/messages".into(),
+            last: Some(2),
+        }];
         let resolved = resolve_refs(&mut store, &refs).unwrap();
         assert_eq!(resolved.messages.len(), 2);
     }
@@ -1212,9 +1273,14 @@ mod tests {
         let mut store = MockStore::new();
         store.set(
             "history/messages",
-            structfs_serde_store::json_to_value(serde_json::json!([{"role": "user", "content": "a"}])),
+            structfs_serde_store::json_to_value(
+                serde_json::json!([{"role": "user", "content": "a"}]),
+            ),
         );
-        let refs = vec![ContextRef::History { path: "history/messages".into(), last: None }];
+        let refs = vec![ContextRef::History {
+            path: "history/messages".into(),
+            last: None,
+        }];
         let resolved = resolve_refs(&mut store, &refs).unwrap();
         assert_eq!(resolved.messages.len(), 1);
     }
@@ -1262,7 +1328,9 @@ mod tests {
     #[test]
     fn resolve_raw_ref() {
         let mut store = MockStore::new();
-        let refs = vec![ContextRef::Raw { content: "Extra instructions.".into() }];
+        let refs = vec![ContextRef::Raw {
+            content: "Extra instructions.".into(),
+        }];
         let resolved = resolve_refs(&mut store, &refs).unwrap();
         assert_eq!(resolved.extra_content, vec!["Extra instructions."]);
     }
@@ -1271,13 +1339,30 @@ mod tests {
     fn resolve_multiple_refs() {
         let mut store = MockStore::new();
         store.set("system", Value::String("sys".into()));
-        store.set("history/messages", structfs_serde_store::json_to_value(serde_json::json!([])));
-        store.set("tools/schemas", structfs_serde_store::json_to_value(serde_json::json!([])));
+        store.set(
+            "history/messages",
+            structfs_serde_store::json_to_value(serde_json::json!([])),
+        );
+        store.set(
+            "tools/schemas",
+            structfs_serde_store::json_to_value(serde_json::json!([])),
+        );
         let refs = vec![
-            ContextRef::System { path: "system".into() },
-            ContextRef::History { path: "history/messages".into(), last: None },
-            ContextRef::Tools { path: "tools/schemas".into(), only: None, except: None },
-            ContextRef::Raw { content: "bonus".into() },
+            ContextRef::System {
+                path: "system".into(),
+            },
+            ContextRef::History {
+                path: "history/messages".into(),
+                last: None,
+            },
+            ContextRef::Tools {
+                path: "tools/schemas".into(),
+                only: None,
+                except: None,
+            },
+            ContextRef::Raw {
+                content: "bonus".into(),
+            },
         ];
         let resolved = resolve_refs(&mut store, &refs).unwrap();
         assert_eq!(resolved.system, "sys");
@@ -1289,10 +1374,21 @@ mod tests {
     #[test]
     fn context_ref_serde_roundtrip() {
         let refs = vec![
-            ContextRef::System { path: "system".into() },
-            ContextRef::History { path: "history/messages".into(), last: Some(20) },
-            ContextRef::Tools { path: "tools/schemas".into(), only: Some(vec!["read_file".into()]), except: None },
-            ContextRef::Raw { content: "hello".into() },
+            ContextRef::System {
+                path: "system".into(),
+            },
+            ContextRef::History {
+                path: "history/messages".into(),
+                last: Some(20),
+            },
+            ContextRef::Tools {
+                path: "tools/schemas".into(),
+                only: Some(vec!["read_file".into()]),
+                except: None,
+            },
+            ContextRef::Raw {
+                content: "hello".into(),
+            },
         ];
         let json = serde_json::to_value(&refs).unwrap();
         let roundtripped: Vec<ContextRef> = serde_json::from_value(json).unwrap();
@@ -1417,12 +1513,91 @@ mod tests {
         }];
 
         let mut events = vec![];
-        let results =
-            execute_tools(&mut store, &tool_calls, &mut |e| events.push(format!("{e:?}")))
-                .unwrap();
+        let results = execute_tools(&mut store, &tool_calls, &mut |e| {
+            events.push(format!("{e:?}"))
+        })
+        .unwrap();
         assert_eq!(results.len(), 1);
         let content = results[0].content.as_str().unwrap();
         assert!(content.contains("Inner response."));
         assert!(events.iter().any(|e| e.contains("ToolCallStart")));
+    }
+
+    #[test]
+    fn execute_complete_tool_inner_loop() {
+        let mut store = MockStore::new();
+        store.set("system", Value::String("Inner.".into()));
+        store.set(
+            "history/messages",
+            structfs_serde_store::json_to_value(serde_json::json!([])),
+        );
+        store.set(
+            "tools/schemas",
+            structfs_serde_store::json_to_value(serde_json::json!([])),
+        );
+        store.set("gate/defaults/model", Value::String("test".into()));
+        store.set("gate/defaults/max_tokens", Value::Integer(100));
+
+        // First inner completion: tool call
+        store.push_completion_response(serde_json::json!([
+            {"type": "tool_use_start", "id": "inner_tc1", "name": "echo"},
+            {"type": "tool_use_input_delta", "delta": "{\"x\":1}"},
+            {"type": "message_stop"}
+        ]));
+        // Second inner completion: text (resolution)
+        store.push_completion_response(serde_json::json!([
+            {"type": "text_delta", "text": "Resolved after tool."},
+            {"type": "message_stop"}
+        ]));
+
+        let input = serde_json::json!({
+            "account": "test",
+            "refs": [
+                {"type": "system", "path": "system"},
+                {"type": "history", "path": "history/messages"},
+                {"type": "tools", "path": "tools/schemas"}
+            ]
+        });
+
+        let result = execute_complete_tool(&mut store, &input).unwrap();
+        assert_eq!(result, "Resolved after tool.");
+    }
+
+    #[test]
+    fn execute_complete_tool_iteration_limit() {
+        let mut store = MockStore::new();
+        store.set("system", Value::String("Loop.".into()));
+        store.set(
+            "history/messages",
+            structfs_serde_store::json_to_value(serde_json::json!([])),
+        );
+        store.set(
+            "tools/schemas",
+            structfs_serde_store::json_to_value(serde_json::json!([])),
+        );
+        store.set("gate/defaults/model", Value::String("test".into()));
+        store.set("gate/defaults/max_tokens", Value::Integer(100));
+
+        // Push MAX_COMPLETE_ITERATIONS + 1 tool-call responses to ensure we hit the limit
+        for _ in 0..=MAX_COMPLETE_ITERATIONS {
+            store.push_completion_response(serde_json::json!([
+                {"type": "tool_use_start", "id": "tc_loop", "name": "echo"},
+                {"type": "tool_use_input_delta", "delta": "{}"},
+                {"type": "message_stop"}
+            ]));
+        }
+
+        let input = serde_json::json!({
+            "account": "test",
+            "refs": [
+                {"type": "system", "path": "system"},
+                {"type": "history", "path": "history/messages"},
+                {"type": "tools", "path": "tools/schemas"}
+            ]
+        });
+
+        let result = execute_complete_tool(&mut store, &input);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("exceeded"));
     }
 }
