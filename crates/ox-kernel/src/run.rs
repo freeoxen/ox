@@ -383,11 +383,11 @@ pub fn record_turn(
     Ok(tool_calls)
 }
 
-/// Execute tool calls via the context store.
+/// Execute tool calls, returning results.
 ///
-/// For each tool call: emits `ToolCallStart`, writes the input to
-/// `tools/{wire_name}`, reads the result from `tools/{wire_name}/result`,
-/// and emits `ToolCallResult`.
+/// The `complete` tool is handled specially — the kernel calls the
+/// [`complete`] function directly with the context, avoiding the
+/// ToolStore's borrow chain. All other tools route through the store.
 pub fn execute_tools(
     context: &mut dyn Store,
     tool_calls: &[ToolCall],
@@ -400,43 +400,77 @@ pub fn execute_tools(
             name: tc.name.clone(),
         });
 
-        // Write tool input
-        let tool_path = Path::parse(&format!("tools/{}", tc.name)).map_err(|e| e.to_string())?;
-        let input_value = structfs_serde_store::json_to_value(tc.input.clone());
-        context
-            .write(&tool_path, Record::parsed(input_value))
-            .map_err(|e| e.to_string())?;
-
-        // Read tool result
-        let result_path =
-            Path::parse(&format!("tools/{}/result", tc.name)).map_err(|e| e.to_string())?;
-        let result_record = context
-            .read(&result_path)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("tool '{}' returned no result", tc.name))?;
-
-        let result_value = match result_record {
-            Record::Parsed(v) => structfs_serde_store::value_to_json(v),
-            _ => return Err(format!("expected parsed result from tool '{}'", tc.name)),
-        };
-
-        let result_str = match &result_value {
-            serde_json::Value::String(s) => s.clone(),
-            other => serde_json::to_string(other).unwrap_or_default(),
+        let result_str = if tc.name == "complete" {
+            execute_complete_tool(context, &tc.input)?
+        } else {
+            execute_normal_tool(context, tc)?
         };
 
         emit(AgentEvent::ToolCallResult {
             name: tc.name.clone(),
-            result: result_str,
+            result: result_str.clone(),
         });
 
         results.push(ToolResult {
             tool_use_id: tc.id.clone(),
-            content: result_value,
+            content: serde_json::Value::String(result_str),
         });
     }
 
     Ok(results)
+}
+
+/// Handle the `complete` tool: parse refs from input, call [`complete`], return text.
+fn execute_complete_tool(
+    context: &mut dyn Store,
+    input: &serde_json::Value,
+) -> Result<String, String> {
+    let account = input
+        .get("account")
+        .and_then(|v| v.as_str())
+        .unwrap_or("anthropic");
+    let refs_value = input
+        .get("refs")
+        .ok_or("complete tool: missing 'refs' field")?;
+    let refs: Vec<ContextRef> =
+        serde_json::from_value(refs_value.clone()).map_err(|e| format!("invalid refs: {e}"))?;
+
+    let events = complete(context, account, &refs)?;
+    let content = accumulate_response(events, &mut |_| {})?;
+
+    let text = content
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("");
+
+    Ok(text)
+}
+
+/// Execute a normal (non-complete) tool through the store.
+fn execute_normal_tool(context: &mut dyn Store, tc: &ToolCall) -> Result<String, String> {
+    let input_value = structfs_serde_store::json_to_value(tc.input.clone());
+    let tool_path = Path::parse(&format!("tools/{}", tc.name)).map_err(|e| e.to_string())?;
+
+    match context.write(&tool_path, Record::parsed(input_value)) {
+        Ok(_) => {
+            let result_path =
+                Path::parse(&format!("tools/{}/result", tc.name)).map_err(|e| e.to_string())?;
+            match context.read(&result_path) {
+                Ok(Some(record)) => {
+                    let val = record.as_value().cloned().unwrap_or(Value::Null);
+                    let json = structfs_serde_store::value_to_json(val);
+                    Ok(serde_json::to_string(&json).unwrap_or_default())
+                }
+                Ok(None) => Ok(format!("error: no result for tool {}", tc.name)),
+                Err(e) => Ok(format!("error: {e}")),
+            }
+        }
+        Err(e) => Ok(e.to_string()),
+    }
 }
 
 /// Write tool results to history.
@@ -1347,5 +1381,48 @@ mod tests {
         let system = request_json.get("system").and_then(|v| v.as_str()).unwrap();
         assert!(system.contains("Base prompt."));
         assert!(system.contains("Extra instruction."));
+    }
+
+    #[test]
+    fn execute_tools_handles_complete_tool_call() {
+        let mut store = MockStore::new();
+        // Set up context for the inner complete call
+        store.set("system", Value::String("Inner prompt.".into()));
+        store.set(
+            "history/messages",
+            structfs_serde_store::json_to_value(serde_json::json!([])),
+        );
+        store.set(
+            "tools/schemas",
+            structfs_serde_store::json_to_value(serde_json::json!([])),
+        );
+        store.set("gate/defaults/model", Value::String("test".into()));
+        store.set("gate/defaults/max_tokens", Value::Integer(100));
+        store.push_completion_response(serde_json::json!([
+            {"type": "text_delta", "text": "Inner response."},
+            {"type": "message_stop"}
+        ]));
+
+        let tool_calls = vec![ToolCall {
+            id: "tc1".into(),
+            name: "complete".into(),
+            input: serde_json::json!({
+                "account": "test",
+                "refs": [
+                    {"type": "system", "path": "system"},
+                    {"type": "history", "path": "history/messages"},
+                    {"type": "tools", "path": "tools/schemas"}
+                ]
+            }),
+        }];
+
+        let mut events = vec![];
+        let results =
+            execute_tools(&mut store, &tool_calls, &mut |e| events.push(format!("{e:?}")))
+                .unwrap();
+        assert_eq!(results.len(), 1);
+        let content = results[0].content.as_str().unwrap();
+        assert!(content.contains("Inner response."));
+        assert!(events.iter().any(|e| e.contains("ToolCallStart")));
     }
 }
