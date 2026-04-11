@@ -244,85 +244,62 @@ pub fn deserialize_events(record: Record) -> Result<Vec<StreamEvent>, String> {
 // Building blocks
 // ---------------------------------------------------------------------------
 
-/// Read prompt components from the context and assemble a [`CompletionRequest`].
+/// Fire a completion with resolved context references.
 ///
-/// Reads the following paths:
-/// - `system` — system prompt string
-/// - `history/messages` — conversation messages array
-/// - `tools/schemas` — tool schema array
-/// - `gate/defaults/model` — model identifier string
-/// - `gate/defaults/max_tokens` — token limit integer
+/// 1. Resolves refs by reading from the namespace
+/// 2. Reads model config from `gate/defaults/`
+/// 3. Assembles a CompletionRequest (internal detail)
+/// 4. Sends via `tools/completions/complete/{account}`
+/// 5. Returns stream events
+///
+/// This is the kernel's completion primitive. `run_turn` calls it with
+/// bootstrap refs. The LLM can call it as a tool (with custom refs).
+pub fn complete(
+    context: &mut dyn Store,
+    account: &str,
+    refs: &[ContextRef],
+) -> Result<Vec<StreamEvent>, String> {
+    let resolved = resolve_refs(context, refs)?;
+    let (model, max_tokens) = read_model_config(context)?;
+
+    let system = if resolved.extra_content.is_empty() {
+        resolved.system
+    } else {
+        format!(
+            "{}\n\n{}",
+            resolved.system,
+            resolved.extra_content.join("\n\n")
+        )
+    };
+
+    let request = CompletionRequest {
+        model,
+        max_tokens,
+        system,
+        messages: resolved.messages,
+        tools: resolved.tools,
+        stream: true,
+    };
+
+    send_completion(context, account, &request)
+}
+
+/// Read prompt components from context and assemble a [`CompletionRequest`].
+///
+/// Convenience wrapper for async consumers (like ox-web) that need the
+/// request for their own transport. Sync consumers should prefer
+/// [`complete`] which handles transport internally.
 pub fn synthesize(context: &mut dyn Reader) -> Result<CompletionRequest, String> {
-    // System prompt
-    let system_str = {
-        let record = context
-            .read(&path!("system"))
-            .map_err(|e| e.to_string())?
-            .ok_or("system store returned None")?;
-        match record {
-            Record::Parsed(Value::String(s)) => s,
-            _ => return Err("expected string from system store".into()),
-        }
-    };
-
-    // History messages
-    let messages_json = {
-        let record = context
-            .read(&path!("history/messages"))
-            .map_err(|e| e.to_string())?
-            .ok_or("history store returned None")?;
-        match record {
-            Record::Parsed(v) => structfs_serde_store::value_to_json(v),
-            _ => return Err("expected parsed record from history".into()),
-        }
-    };
-
-    // Tool schemas
-    let tools_json = {
-        let record = context
-            .read(&path!("tools/schemas"))
-            .map_err(|e| e.to_string())?
-            .ok_or("tools store returned None")?;
-        match record {
-            Record::Parsed(v) => structfs_serde_store::value_to_json(v),
-            _ => return Err("expected parsed record from tools".into()),
-        }
-    };
-
-    // Model ID
-    let model_id = {
-        let record = context
-            .read(&path!("gate/defaults/model"))
-            .map_err(|e| e.to_string())?
-            .ok_or("gate store returned None for defaults/model")?;
-        match record {
-            Record::Parsed(Value::String(s)) => s,
-            _ => return Err("expected string from gate store for defaults/model".into()),
-        }
-    };
-
-    // Max tokens
-    let max_tokens = {
-        let record = context
-            .read(&path!("gate/defaults/max_tokens"))
-            .map_err(|e| e.to_string())?
-            .ok_or("gate store returned None for defaults/max_tokens")?;
-        match record {
-            Record::Parsed(Value::Integer(n)) => n as u32,
-            _ => return Err("expected integer from gate store for defaults/max_tokens".into()),
-        }
-    };
-
-    let messages: Vec<serde_json::Value> =
-        serde_json::from_value(messages_json).map_err(|e| e.to_string())?;
-    let tools: Vec<ToolSchema> = serde_json::from_value(tools_json).map_err(|e| e.to_string())?;
+    let refs = default_refs();
+    let resolved = resolve_refs(context, &refs)?;
+    let (model, max_tokens) = read_model_config(context)?;
 
     Ok(CompletionRequest {
-        model: model_id,
+        model,
         max_tokens,
-        system: system_str,
-        messages,
-        tools,
+        system: resolved.system,
+        messages: resolved.messages,
+        tools: resolved.tools,
         stream: true,
     })
 }
@@ -500,6 +477,25 @@ fn send_completion(
     deserialize_events(response_record)
 }
 
+/// Read model ID and max_tokens from gate defaults.
+fn read_model_config(context: &mut dyn Reader) -> Result<(String, u32), String> {
+    let model = match context
+        .read(&path!("gate/defaults/model"))
+        .map_err(|e| e.to_string())?
+    {
+        Some(Record::Parsed(Value::String(s))) => s,
+        _ => return Err("expected string from gate/defaults/model".into()),
+    };
+    let max_tokens = match context
+        .read(&path!("gate/defaults/max_tokens"))
+        .map_err(|e| e.to_string())?
+    {
+        Some(Record::Parsed(Value::Integer(n))) => n as u32,
+        _ => return Err("expected integer from gate/defaults/max_tokens".into()),
+    };
+    Ok((model, max_tokens))
+}
+
 /// Read the default account from the context, defaulting to `"anthropic"`.
 fn read_default_account(context: &mut dyn Reader) -> Result<String, String> {
     let record = context
@@ -531,12 +527,12 @@ fn log_entry(context: &mut dyn Writer, entry: serde_json::Value) {
 ///    → log tool calls → execute_tools → log tool results → record_tool_results → loop
 pub fn run_turn(context: &mut dyn Store, emit: &mut dyn FnMut(AgentEvent)) -> Result<(), String> {
     let account = read_default_account(context)?;
+    let refs = default_refs();
 
     loop {
         emit(AgentEvent::TurnStart);
 
-        let request = synthesize(context)?;
-        let events = send_completion(context, &account, &request)?;
+        let events = complete(context, &account, &refs)?;
         let content = accumulate_response(events, emit)?;
 
         // Log assistant entry
@@ -545,7 +541,7 @@ pub fn run_turn(context: &mut dyn Store, emit: &mut dyn FnMut(AgentEvent)) -> Re
             serde_json::json!({
                 "type": "assistant",
                 "content": serde_json::to_value(&content).unwrap_or(serde_json::Value::Null),
-                "source": { "account": &account, "model": &request.model }
+                "source": { "account": &account }
             }),
         );
 
@@ -1273,5 +1269,83 @@ mod tests {
     fn default_refs_has_three_entries() {
         let refs = default_refs();
         assert_eq!(refs.len(), 3);
+    }
+
+    #[test]
+    fn complete_resolves_refs_and_sends() {
+        let mut store = MockStore::new();
+        store.set("system", Value::String("You are helpful.".into()));
+        store.set(
+            "history/messages",
+            structfs_serde_store::json_to_value(serde_json::json!([
+                {"role": "user", "content": "hi"}
+            ])),
+        );
+        store.set(
+            "tools/schemas",
+            structfs_serde_store::json_to_value(serde_json::json!([])),
+        );
+        store.set("gate/defaults/model", Value::String("test-model".into()));
+        store.set("gate/defaults/max_tokens", Value::Integer(100));
+        store.push_completion_response(serde_json::json!([
+            {"type": "text_delta", "text": "Hello!"},
+            {"type": "message_stop"}
+        ]));
+
+        let refs = default_refs();
+        let events = complete(&mut store, "test", &refs).unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], StreamEvent::TextDelta(t) if t == "Hello!"));
+    }
+
+    #[test]
+    fn complete_with_raw_ref_appends_to_system() {
+        let mut store = MockStore::new();
+        store.set("system", Value::String("Base prompt.".into()));
+        store.set(
+            "history/messages",
+            structfs_serde_store::json_to_value(serde_json::json!([])),
+        );
+        store.set(
+            "tools/schemas",
+            structfs_serde_store::json_to_value(serde_json::json!([])),
+        );
+        store.set("gate/defaults/model", Value::String("test".into()));
+        store.set("gate/defaults/max_tokens", Value::Integer(100));
+        store.push_completion_response(serde_json::json!([
+            {"type": "text_delta", "text": "ok"},
+            {"type": "message_stop"}
+        ]));
+
+        let refs = vec![
+            ContextRef::System {
+                path: "system".into(),
+            },
+            ContextRef::History {
+                path: "history/messages".into(),
+                last: None,
+            },
+            ContextRef::Tools {
+                path: "tools/schemas".into(),
+                only: None,
+                except: None,
+            },
+            ContextRef::Raw {
+                content: "Extra instruction.".into(),
+            },
+        ];
+        let events = complete(&mut store, "test", &refs).unwrap();
+        assert!(!events.is_empty());
+
+        // Verify the written request included extra content in system
+        let written = store
+            .appended
+            .iter()
+            .find(|(p, _)| p.contains("completions/complete"));
+        assert!(written.is_some());
+        let request_json = structfs_serde_store::value_to_json(written.unwrap().1.clone());
+        let system = request_json.get("system").and_then(|v| v.as_str()).unwrap();
+        assert!(system.contains("Base prompt."));
+        assert!(system.contains("Extra instruction."));
     }
 }
