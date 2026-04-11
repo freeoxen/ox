@@ -79,39 +79,53 @@ IS the state. Startup and recovery are the same code.
 
 ```
 loop {
-    // Read context: what accounts are available, what's the current state
-    let accounts = read("gate/accounts")
-    let prompt = read("prompt")
+    // 1. Read context components
+    let system = read("system")
+    let messages = read("history/messages")
+    let tools = read("tools/schemas")
+    let config = read("gate/defaults")
 
-    // The kernel decides what completions to fire.
-    // One model? Three for consensus? A cheap model for planning
-    // and an expensive one for synthesis? That's the agent's intelligence.
-    let handles = decide_and_fire_completions(accounts, prompt)
+    // 2. The kernel constructs prompt Value(s) and fires completion(s).
+    //    One model? Three for consensus? Different context for each?
+    //    That's the kernel's intelligence — it decides what to send.
+    let h = write("tools/complete", {
+        system: system,
+        messages: messages,
+        tools: tools,
+        model: config.model,
+        max_tokens: config.max_tokens,
+    })
 
-    // Await all completions
-    let batch = write("tools/await", handles)
-    let responses = read(batch)
+    // 3. Read the handle — blocks until completion finishes
+    let response = read(h)
 
-    // Process responses, write assistant message(s) to history
-    let tool_calls = process_and_record(responses)
+    // 4. Process response, write assistant message to history
+    let content = accumulate_response(response)
+    write("history/append", assistant_message(content))
 
+    // 5. Extract tool calls
+    let tool_calls = extract_tool_calls(content)
     if tool_calls.is_empty() {
         return  // No tools requested. Turn is done.
     }
 
-    // Fire tool calls, await results, record to history
+    // 6. Fire tool calls, await results, record to history
     execute_and_record(tool_calls)
 
-    // Loop: tool results are now in history, so the next read("prompt")
-    // includes them, and the models see the results.
+    // Loop: tool results are now in history, so the next iteration's
+    // read("history/messages") includes them.
 }
 ```
 
-The kernel reads its context and decides what to do. It might fire one
-completion or ten. It might use one model or five. That decision is the
-kernel's reasoning about the task — not a framework choice. The loop
-is the same regardless: read context, fire completions, process
-responses, maybe fire tools, record everything, loop.
+The kernel reads its context, constructs a prompt Value, and writes it
+to the completion tool. The completion tool does wire formatting and
+HTTP — it receives a fully-formed Value and sends it. No magic prompt
+path. No hidden synthesis. The kernel explicitly reads what it needs and
+explicitly constructs what it sends.
+
+The loop is the same for one completion or ten. For multi-completion,
+the kernel constructs multiple Values and fires multiple writes (see
+section 7).
 
 ## 5. Streaming: Real-Time Text Delivery
 
@@ -225,24 +239,27 @@ constructs multiple prompt Values, and fires them all.
 
 ### Example: Consensus
 
-The kernel reads available accounts and decides to fan out for review:
+The kernel reads context and fires the same prompt to multiple accounts:
 
 ```
-let accounts = read("gate/accounts")
 let system = read("system")
-let history = read("history/messages")
+let messages = read("history/messages")
+let accounts = read("gate/accounts")
 
 let review_prompt = {
     system: system + "\nReview this code for correctness.",
-    messages: history,
+    messages: messages,
     tools: [],
 }
 
-// The kernel picks which accounts to use based on what's available,
-// what the task needs, what the budget allows
+// The kernel constructs a prompt Value per account, varying the model
 let handles = accounts.iter()
     .filter(|a| useful_for_review(a))
-    .map(|a| write(&format!("tools/completions/complete/{}", a.name), review_prompt))
+    .map(|a| write("tools/complete", {
+        ...review_prompt,
+        account: a.name,
+        model: a.default_model,
+    }))
     .collect()
 
 let batch = write("tools/await", handles)
@@ -252,19 +269,25 @@ let consensus = analyze_responses(responses)
 
 ### Example: Decomposition
 
-The kernel splits a task across multiple completions:
+The kernel constructs different prompt Values for different sub-tasks:
 
 ```
-let accounts = read("gate/accounts")
-let fast = pick_account(accounts, "fast")
+let system = read("system")
+let config = read("gate/defaults")
 
-let c1 = write(&format!("tools/completions/complete/{fast}"), {
+let c1 = write("tools/complete", {
     system: "Write unit tests for auth.rs",
     messages: [file_span("src/auth.rs")],
+    tools: [],
+    account: config.account,
+    model: config.model,
 })
-let c2 = write(&format!("tools/completions/complete/{fast}"), {
+let c2 = write("tools/complete", {
     system: "Write integration tests for auth.rs",
     messages: [file_span("src/auth.rs"), file_span("tests/helpers.rs")],
+    tools: [],
+    account: config.account,
+    model: config.model,
 })
 
 let batch = write("tools/await", [c1, c2])

@@ -64,14 +64,19 @@ no state of its own — all state lives in the context it's executing.
 
 Every effect the kernel produces is a StructFS write that returns a handle.
 Every result the kernel consumes is a StructFS read that resolves a handle.
-This is uniform across all effect types.
+This is uniform across all effect types — completions and tools are both
+just writes that return handles.
 
 ```
-c1 = write("tools/completions/complete/anthropic", prompt_value_1)
-c2 = write("tools/completions/complete/openai", prompt_value_2)
+// Completions — the kernel assembles the prompt Value and writes it
+c1 = write("tools/complete", prompt_value_1)
+c2 = write("tools/complete", prompt_value_2)
+
+// Tool calls — same pattern
 t1 = write("tools/read_file", {path: "src/lib.rs"})
 t2 = write("tools/shell", {command: "cargo test"})
 
+// Await any set of handles — completions and tools mixed freely
 batch = write("tools/await", [c1, c2, t1, t2])
 results = read(batch)
 ```
@@ -81,17 +86,68 @@ Reads block until the handle resolves. `tools/await` accepts any set of
 handles and returns a composite handle. `tools/await_any` returns the first
 to complete. `tools/await_each` yields results in completion order.
 
-### The Prompt Is a Value
+## Separation of Concerns: Synthesis vs Transport
 
-There is no `CompletionRequest` type at the kernel boundary. The kernel
-deals in `Value` — StructFS's native data type. `read("prompt")` is a
-convenience provider that assembles a completion-ready Value. The kernel
-can also read context components directly and construct its own Values
-for multi-completion turns.
+**The kernel owns prompt synthesis.** The kernel reads context components
+(system prompt, history, tool schemas, model config), decides what to
+include, and constructs a structured prompt Value. This is the kernel's
+intelligence — deciding what context matters for this completion.
 
-The `prompt` path is sugar, not architecture. The architecture is: read
-Values from context, write Values to effect paths, read handles for
-results.
+**The completion tool owns transport.** It receives a fully-formed prompt
+Value from the kernel and handles wire formatting (Anthropic JSON, OpenAI
+JSON, etc.) and HTTP transport. It does not read context. It does not
+decide what goes in the prompt. It sends what it's given and returns the
+response.
+
+```
+// The kernel reads context and constructs the prompt
+let system = read("system")
+let messages = read("history/messages")
+let tools = read("tools/schemas")
+let config = read("gate/defaults")
+
+// The kernel writes a complete prompt Value to the completion tool
+let h = write("tools/complete", {
+    system: system,
+    messages: messages,
+    tools: tools,
+    model: config.model,
+    max_tokens: config.max_tokens,
+})
+
+// The completion tool does wire formatting + HTTP, returns response
+let response = read(h)
+```
+
+There is no magic `read("prompt")` path. There is no hidden synthesis
+step. There is no `CompletionRequest` type at the kernel boundary. The
+kernel reads Values, constructs a Value, writes it to a tool. The tool
+does transport. Clean separation.
+
+This makes multi-completion natural. The kernel constructs different
+prompt Values for different completions — different history windows,
+different tool subsets, different system prompts — and writes each to
+the completion tool. Each write returns a handle. The kernel decides
+what each completion sees.
+
+## Completion Tool Pluggability
+
+The completion tool is a mounted store. Mount a different one, get
+different transport:
+
+```
+// Simple: direct HTTP to one provider
+tools.mount("complete", AnthropicTransport::new(client, api_key))
+
+// Multi-provider: routes by account name in the prompt Value
+tools.mount("complete", MultiTransport::new(providers))
+
+// Cached: checks a cache before hitting the API
+tools.mount("complete", CachedTransport::new(cache, inner_transport))
+```
+
+The kernel calls `write("tools/complete", prompt_value)` in all cases.
+It doesn't know which transport is mounted. The host controls that.
 
 ## Life of an Agent
 
@@ -112,15 +168,15 @@ provider. But context also includes:
   as context providers.
 - **Lazy computation** — values computed on read, not stored. A provider
   that reads the filesystem, queries a database, or calls an API when
-  the kernel reads `prompt`.
+  the kernel reads from it.
 - **Structured references** — pointers to external resources (URLs,
   database rows, API endpoints) that resolve on demand.
 
-Even history is not literally "in context." The prompt synthesis reads
-`history/messages`, but what it gets back is a *view* over history —
-potentially truncated, summarized, filtered, or windowed by the history
-provider. The provider decides what history looks like in the prompt.
-Different providers produce different views of the same underlying data.
+Even history is not literally "in context." `read("history/messages")`
+returns a *view* over history — potentially truncated, summarized,
+filtered, or windowed by the history provider. The provider decides what
+history looks like. Different providers produce different views of the
+same underlying data.
 
 ### Context as Tool Surface
 
@@ -133,8 +189,8 @@ manipulate its own context within the loop:
 - **Window history** — `write("context/history/window", {last_n})`
 
 The kernel is an active participant in context management, not a passive
-consumer. This is loop resolution — the kernel tunes its own prompt as
-part of its reasoning process.
+consumer. This is loop resolution — the kernel tunes its own context as
+part of its reasoning process, then constructs prompts from the result.
 
 ### Fork: Context-to-Context Transform
 
@@ -158,7 +214,7 @@ The child runs with its own kernel. Results flow back via a handle.
 ## Context as Portable Bundle
 
 Because context is a system of providers (not a bag of data),
-serialization captures provider state, not the synthesized prompt.
+serialization captures provider state, not a synthesized prompt.
 
 1. **Serialize:** Read each mount's `snapshot/state`.
 2. **Ship:** Transfer the bundle.
