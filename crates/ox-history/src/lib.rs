@@ -11,7 +11,8 @@
 mod turn;
 pub use turn::TurnState;
 
-use ox_kernel::{ContentBlock, Message, ToolResult};
+use ox_kernel::log::{LogEntry, SharedLog};
+use ox_kernel::{ContentBlock, Message, ToolResult, serialize_assistant_message};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer};
@@ -368,6 +369,178 @@ impl Writer for HistoryProvider {
                 "history",
                 "write",
                 format!("unknown write path: {to}"),
+            )),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// HistoryView — read-only projection over the structured log
+// ---------------------------------------------------------------------------
+
+/// History as a projection over the structured log.
+///
+/// Replaces `HistoryProvider` for the standard path. Reads messages by
+/// projecting log entries into wire-format messages. Writes to "append"
+/// convert wire-format messages into log entries.
+pub struct HistoryView {
+    shared: SharedLog,
+}
+
+impl HistoryView {
+    pub fn new(shared: SharedLog) -> Self {
+        Self { shared }
+    }
+
+    /// Project log entries into wire-format messages.
+    fn project_messages(&self) -> Vec<serde_json::Value> {
+        let entries = self.shared.entries();
+        let mut messages = Vec::new();
+        let mut i = 0;
+        while i < entries.len() {
+            match &entries[i] {
+                LogEntry::User { content } => {
+                    messages.push(serde_json::json!({"role": "user", "content": content}));
+                    i += 1;
+                }
+                LogEntry::Assistant { content, .. } => {
+                    messages.push(serialize_assistant_message(content));
+                    i += 1;
+                }
+                LogEntry::ToolResult { .. } => {
+                    // Group consecutive tool results into one user message
+                    let mut result_blocks = Vec::new();
+                    while i < entries.len() {
+                        if let LogEntry::ToolResult { id, output, .. } = &entries[i] {
+                            let content_str = match output {
+                                serde_json::Value::String(s) => s.clone(),
+                                other => serde_json::to_string(other).unwrap_or_default(),
+                            };
+                            result_blocks.push(serde_json::json!({
+                                "type": "tool_result",
+                                "tool_use_id": id,
+                                "content": content_str,
+                            }));
+                            i += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    messages.push(serde_json::json!({"role": "user", "content": result_blocks}));
+                }
+                LogEntry::ToolCall { .. } | LogEntry::Meta { .. } => {
+                    // Skip: tool calls are embedded in assistant content,
+                    // meta entries are not conversation messages
+                    i += 1;
+                }
+            }
+        }
+        messages
+    }
+}
+
+impl Reader for HistoryView {
+    fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
+        let key = if from.is_empty() {
+            "messages"
+        } else {
+            from.components[0].as_str()
+        };
+        match key {
+            "messages" | "" => {
+                let messages = self.project_messages();
+                let json = serde_json::Value::Array(messages);
+                let value = json_to_value(json);
+                Ok(Some(Record::parsed(value)))
+            }
+            "count" => {
+                let count = self.project_messages().len();
+                Ok(Some(Record::parsed(Value::Integer(count as i64))))
+            }
+            _ => Ok(None),
+        }
+    }
+}
+
+impl Writer for HistoryView {
+    fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
+        let key = if to.is_empty() {
+            "append"
+        } else {
+            to.components[0].as_str()
+        };
+        match key {
+            "append" => {
+                let value = data.as_value().ok_or_else(|| {
+                    StoreError::store("HistoryView", "write", "expected Parsed record")
+                })?;
+                let json = value_to_json(value.clone());
+                // Parse wire-format message and convert to LogEntry
+                let role = json.get("role").and_then(|v| v.as_str()).unwrap_or("");
+                match role {
+                    "user" => {
+                        let content_val = json.get("content").cloned().unwrap_or_default();
+                        // Check if it's a tool_result message
+                        if let Some(arr) = content_val.as_array() {
+                            if arr
+                                .first()
+                                .and_then(|v| v.get("type"))
+                                .and_then(|v| v.as_str())
+                                == Some("tool_result")
+                            {
+                                // Tool results
+                                for item in arr {
+                                    let id = item
+                                        .get("tool_use_id")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let output = item
+                                        .get("content")
+                                        .cloned()
+                                        .unwrap_or(serde_json::Value::Null);
+                                    self.shared.append(LogEntry::ToolResult {
+                                        id,
+                                        output,
+                                        is_error: false,
+                                    });
+                                }
+                                return Ok(to.clone());
+                            }
+                        }
+                        // Regular user message
+                        let content = match content_val {
+                            serde_json::Value::String(s) => s,
+                            other => serde_json::to_string(&other).unwrap_or_default(),
+                        };
+                        self.shared.append(LogEntry::User { content });
+                    }
+                    "assistant" => {
+                        let content_json = json
+                            .get("content")
+                            .cloned()
+                            .unwrap_or(serde_json::json!([]));
+                        let content: Vec<ContentBlock> =
+                            serde_json::from_value(content_json).unwrap_or_default();
+                        self.shared.append(LogEntry::Assistant {
+                            content,
+                            source: None,
+                        });
+                    }
+                    _ => {
+                        return Err(StoreError::store(
+                            "HistoryView",
+                            "write",
+                            format!("unknown role: {role}"),
+                        ));
+                    }
+                }
+                Ok(to.clone())
+            }
+            _ => Err(StoreError::store(
+                "HistoryView",
+                "write",
+                format!("unknown path: {key}"),
             )),
         }
     }
@@ -963,5 +1136,174 @@ mod tests {
         assert!(result.is_err());
         let err_msg = format!("{}", result.unwrap_err());
         assert!(err_msg.contains("snapshot write not supported"));
+    }
+
+    // ---- HistoryView tests ----
+
+    #[test]
+    fn history_view_empty() {
+        let shared = SharedLog::new();
+        let mut hv = HistoryView::new(shared);
+        let messages = hv.read(&path!("messages")).unwrap().unwrap();
+        let val = unwrap_value(messages);
+        match &val {
+            Value::Array(arr) => assert!(arr.is_empty()),
+            _ => panic!("expected array"),
+        }
+    }
+
+    #[test]
+    fn history_view_projects_user_and_assistant() {
+        let shared = SharedLog::new();
+        shared.append(LogEntry::User {
+            content: "hello".into(),
+        });
+        shared.append(LogEntry::Assistant {
+            content: vec![ox_kernel::ContentBlock::Text {
+                text: "hi there".into(),
+            }],
+            source: None,
+        });
+        let mut hv = HistoryView::new(shared);
+        let messages = hv.read(&path!("messages")).unwrap().unwrap();
+        let json = value_to_json(unwrap_value(messages));
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["role"], "user");
+        assert_eq!(arr[0]["content"], "hello");
+        assert_eq!(arr[1]["role"], "assistant");
+    }
+
+    #[test]
+    fn history_view_groups_tool_results() {
+        let shared = SharedLog::new();
+        shared.append(LogEntry::ToolResult {
+            id: "tc1".into(),
+            output: serde_json::Value::String("result1".into()),
+            is_error: false,
+        });
+        shared.append(LogEntry::ToolResult {
+            id: "tc2".into(),
+            output: serde_json::Value::String("result2".into()),
+            is_error: false,
+        });
+        let mut hv = HistoryView::new(shared);
+        let messages = hv.read(&path!("messages")).unwrap().unwrap();
+        let json = value_to_json(unwrap_value(messages));
+        let arr = json.as_array().unwrap();
+        // Two tool results should be grouped into one user message
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["role"], "user");
+        let content = arr[0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["tool_use_id"], "tc1");
+        assert_eq!(content[1]["tool_use_id"], "tc2");
+    }
+
+    #[test]
+    fn history_view_skips_tool_call_and_meta() {
+        let shared = SharedLog::new();
+        shared.append(LogEntry::User {
+            content: "hello".into(),
+        });
+        shared.append(LogEntry::ToolCall {
+            id: "tc1".into(),
+            name: "echo".into(),
+            input: serde_json::json!({}),
+        });
+        shared.append(LogEntry::Meta {
+            data: serde_json::json!({"info": "test"}),
+        });
+        let mut hv = HistoryView::new(shared);
+        let messages = hv.read(&path!("messages")).unwrap().unwrap();
+        let json = value_to_json(unwrap_value(messages));
+        let arr = json.as_array().unwrap();
+        // Only the user message should appear
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["role"], "user");
+    }
+
+    #[test]
+    fn history_view_count() {
+        let shared = SharedLog::new();
+        shared.append(LogEntry::User {
+            content: "hello".into(),
+        });
+        shared.append(LogEntry::Assistant {
+            content: vec![ox_kernel::ContentBlock::Text { text: "hi".into() }],
+            source: None,
+        });
+        let mut hv = HistoryView::new(shared);
+        let count = hv.read(&path!("count")).unwrap().unwrap();
+        assert_eq!(unwrap_value(count), Value::Integer(2));
+    }
+
+    #[test]
+    fn history_view_write_user_message() {
+        let shared = SharedLog::new();
+        let mut hv = HistoryView::new(shared.clone());
+        let json = serde_json::json!({"role": "user", "content": "hello"});
+        hv.write(&path!("append"), Record::parsed(json_to_value(json)))
+            .unwrap();
+        let entries = shared.entries();
+        assert_eq!(entries.len(), 1);
+        assert!(matches!(&entries[0], LogEntry::User { content } if content == "hello"));
+    }
+
+    #[test]
+    fn history_view_write_assistant_message() {
+        let shared = SharedLog::new();
+        let mut hv = HistoryView::new(shared.clone());
+        let json = serde_json::json!({
+            "role": "assistant",
+            "content": [{"type": "text", "text": "hi there"}]
+        });
+        hv.write(&path!("append"), Record::parsed(json_to_value(json)))
+            .unwrap();
+        let entries = shared.entries();
+        assert_eq!(entries.len(), 1);
+        assert!(matches!(&entries[0], LogEntry::Assistant { .. }));
+    }
+
+    #[test]
+    fn history_view_write_tool_result_message() {
+        let shared = SharedLog::new();
+        let mut hv = HistoryView::new(shared.clone());
+        let json = serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "tc1", "content": "output"}
+            ]
+        });
+        hv.write(&path!("append"), Record::parsed(json_to_value(json)))
+            .unwrap();
+        let entries = shared.entries();
+        assert_eq!(entries.len(), 1);
+        assert!(matches!(&entries[0], LogEntry::ToolResult { id, .. } if id == "tc1"));
+    }
+
+    #[test]
+    fn history_view_write_unknown_role_error() {
+        let shared = SharedLog::new();
+        let mut hv = HistoryView::new(shared);
+        let json = serde_json::json!({"role": "system", "content": "nope"});
+        let result = hv.write(&path!("append"), Record::parsed(json_to_value(json)));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn history_view_write_unknown_path_error() {
+        let shared = SharedLog::new();
+        let mut hv = HistoryView::new(shared);
+        let result = hv.write(&path!("nonexistent"), Record::parsed(Value::Null));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn history_view_read_unknown_path_returns_none() {
+        let shared = SharedLog::new();
+        let mut hv = HistoryView::new(shared);
+        let result = hv.read(&path!("nonexistent")).unwrap();
+        assert!(result.is_none());
     }
 }

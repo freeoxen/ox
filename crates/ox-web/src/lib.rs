@@ -16,8 +16,9 @@ use ox_context::{Namespace, SystemProvider};
 use ox_core::{AgentEvent, CompletionRequest, ContentBlock};
 use ox_gate::codec::{anthropic as anthropic_codec, openai as openai_codec};
 use ox_gate::{AccountConfig, GateStore, ProviderConfig};
-use ox_history::HistoryProvider;
+use ox_history::HistoryView;
 use ox_kernel::ModelInfo;
+use ox_kernel::log::{LogStore, SharedLog};
 use ox_kernel::{Reader, Record, ToolResult, Value, Writer, oxpath, path};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -123,14 +124,16 @@ impl OxAgent {
         // Mount a separate ToolStore at "tools" for schema serving via prompt
         // synthesis. The primary tool_store is kept in an Rc<RefCell> for
         // direct execution (including JS tools registered as native tools).
+        let shared_log = SharedLog::new();
         let mut context = Namespace::new();
         context.mount(
             "system",
             Box::new(SystemProvider::new(system_prompt.to_string())),
         );
-        context.mount("history", Box::new(HistoryProvider::new()));
+        context.mount("history", Box::new(HistoryView::new(shared_log.clone())));
         context.mount("tools", Box::new(ox_tools::ToolStore::empty()));
         context.mount("gate", Box::new(gate));
+        context.mount("log", Box::new(LogStore::from_shared(shared_log)));
 
         context
             .write(

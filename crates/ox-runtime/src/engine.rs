@@ -368,7 +368,8 @@ mod tests {
     use crate::host_store::{HostEffects, HostStore};
     use ox_context::{Namespace, SystemProvider};
     use ox_gate::GateStore;
-    use ox_history::HistoryProvider;
+    use ox_history::HistoryView;
+    use ox_kernel::log::{LogStore, SharedLog};
     use ox_kernel::{AgentEvent, CompletionRequest, StreamEvent};
     use ox_tools::completion::CompletionTransport;
     use structfs_core_store::{Record, Value, Writer, path};
@@ -473,14 +474,16 @@ mod tests {
         }
 
         // Set up namespace with all required providers.
+        let shared_log = SharedLog::new();
         let mut ns = Namespace::new();
         ns.mount(
             "system",
             Box::new(SystemProvider::new("You are a test agent.".into())),
         );
-        ns.mount("history", Box::new(HistoryProvider::new()));
+        ns.mount("history", Box::new(HistoryView::new(shared_log.clone())));
         ns.mount("tools", Box::new(ox_tools::ToolStore::empty()));
         ns.mount("gate", Box::new(GateStore::new()));
+        ns.mount("log", Box::new(LogStore::from_shared(shared_log)));
 
         // Write default account so the agent knows which completion path to use.
         ns.write(

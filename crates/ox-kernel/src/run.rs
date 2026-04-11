@@ -5,7 +5,6 @@
 
 use crate::{
     AgentEvent, CompletionRequest, ContentBlock, StreamEvent, ToolCall, ToolResult, ToolSchema,
-    serialize_assistant_message, serialize_tool_results,
 };
 use serde::{Deserialize, Serialize};
 use structfs_core_store::{Path, Reader, Record, Store, Value, Writer, path};
@@ -355,18 +354,25 @@ pub fn accumulate_response(
     Ok(blocks)
 }
 
-/// Write the assistant message to history and extract tool calls.
+/// Write the assistant message to the log and extract tool calls.
 ///
-/// Writes the serialized assistant message to `history/append` and returns
+/// Writes a `LogEntry::Assistant` to `log/append` and returns
 /// the tool calls the model requested. If empty, the turn is done.
+/// History is a projection over the log, so HistoryView sees this
+/// entry automatically.
 pub fn record_turn(
     context: &mut dyn Writer,
     content: &[ContentBlock],
 ) -> Result<Vec<ToolCall>, String> {
-    let assistant_json = serialize_assistant_message(content);
-    let record = Record::parsed(structfs_serde_store::json_to_value(assistant_json));
+    let entry = serde_json::json!({
+        "type": "assistant",
+        "content": serde_json::to_value(content).unwrap_or_default(),
+    });
     context
-        .write(&path!("history/append"), record)
+        .write(
+            &path!("log/append"),
+            Record::parsed(structfs_serde_store::json_to_value(entry)),
+        )
         .map_err(|e| e.to_string())?;
 
     let tool_calls: Vec<ToolCall> = content
@@ -529,13 +535,26 @@ fn execute_normal_tool(context: &mut dyn Store, tc: &ToolCall) -> Result<String,
     }
 }
 
-/// Write tool results to history.
+/// Write tool results to the log.
+///
+/// Writes individual `LogEntry::ToolResult` entries to `log/append`.
+/// History is a projection over the log, so HistoryView sees these
+/// entries automatically (grouped into tool-result user messages).
 pub fn record_tool_results(context: &mut dyn Writer, results: &[ToolResult]) -> Result<(), String> {
-    let results_json = serialize_tool_results(results);
-    let record = Record::parsed(structfs_serde_store::json_to_value(results_json));
-    context
-        .write(&path!("history/append"), record)
-        .map_err(|e| e.to_string())?;
+    for r in results {
+        let entry = serde_json::json!({
+            "type": "tool_result",
+            "id": r.tool_use_id,
+            "output": r.content,
+            "is_error": false,
+        });
+        context
+            .write(
+                &path!("log/append"),
+                Record::parsed(structfs_serde_store::json_to_value(entry)),
+            )
+            .map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
@@ -612,9 +631,9 @@ fn log_entry(context: &mut dyn Writer, entry: serde_json::Value) {
 /// Run a complete agentic turn loop.
 ///
 /// 1. Read default account
-/// 2. Loop: emit TurnStart → synthesize → send_completion → accumulate_response
-///    → log assistant entry → record_turn → if no tools: emit TurnEnd, return
-///    → log tool calls → execute_tools → log tool results → record_tool_results → loop
+/// 2. Loop: emit TurnStart → complete → accumulate_response
+///    → record_turn (writes assistant to log) → if no tools: emit TurnEnd, return
+///    → log tool call metadata → execute_tools → record_tool_results (writes to log) → loop
 pub fn run_turn(context: &mut dyn Store, emit: &mut dyn FnMut(AgentEvent)) -> Result<(), String> {
     let account = read_default_account(context)?;
     let refs = default_refs();
@@ -625,16 +644,7 @@ pub fn run_turn(context: &mut dyn Store, emit: &mut dyn FnMut(AgentEvent)) -> Re
         let events = complete(context, &account, &refs)?;
         let content = accumulate_response(events, emit)?;
 
-        // Log assistant entry
-        log_entry(
-            context,
-            serde_json::json!({
-                "type": "assistant",
-                "content": serde_json::to_value(&content).unwrap_or(serde_json::Value::Null),
-                "source": { "account": &account }
-            }),
-        );
-
+        // record_turn writes the assistant entry to log/append
         let tool_calls = record_turn(context, &content)?;
 
         if tool_calls.is_empty() {
@@ -642,7 +652,7 @@ pub fn run_turn(context: &mut dyn Store, emit: &mut dyn FnMut(AgentEvent)) -> Re
             return Ok(());
         }
 
-        // Log tool calls
+        // Log individual tool calls (metadata entries, separate from assistant content)
         for tc in &tool_calls {
             log_entry(
                 context,
@@ -657,18 +667,7 @@ pub fn run_turn(context: &mut dyn Store, emit: &mut dyn FnMut(AgentEvent)) -> Re
 
         let results = execute_tools(context, &tool_calls, emit)?;
 
-        // Log tool results
-        for r in &results {
-            log_entry(
-                context,
-                serde_json::json!({
-                    "type": "tool_result",
-                    "id": r.tool_use_id,
-                    "output": r.content,
-                }),
-            );
-        }
-
+        // record_tool_results writes individual tool result entries to log/append
         record_tool_results(context, &results)?;
     }
 }
@@ -928,13 +927,8 @@ mod tests {
 
         assert_eq!(tool_calls.len(), 1);
         assert_eq!(tool_calls[0].name, "get_weather");
-        // Verify history/append was written
-        assert!(
-            store
-                .appended
-                .iter()
-                .any(|(path, _)| path == "history/append")
-        );
+        // Verify log/append was written (record_turn writes to log, not history)
+        assert!(store.appended.iter().any(|(path, _)| path == "log/append"));
     }
 
     #[test]
@@ -947,16 +941,11 @@ mod tests {
         let tool_calls = record_turn(&mut store, &content).unwrap();
 
         assert!(tool_calls.is_empty());
-        assert!(
-            store
-                .appended
-                .iter()
-                .any(|(path, _)| path == "history/append")
-        );
+        assert!(store.appended.iter().any(|(path, _)| path == "log/append"));
     }
 
     #[test]
-    fn record_tool_results_writes_history() {
+    fn record_tool_results_writes_log() {
         let results = vec![ToolResult {
             tool_use_id: "t1".into(),
             content: serde_json::json!("sunny, 72F"),
@@ -965,12 +954,7 @@ mod tests {
         let mut store = MockStore::new();
         record_tool_results(&mut store, &results).unwrap();
 
-        assert!(
-            store
-                .appended
-                .iter()
-                .any(|(path, _)| path == "history/append")
-        );
+        assert!(store.appended.iter().any(|(path, _)| path == "log/append"));
     }
 
     #[test]

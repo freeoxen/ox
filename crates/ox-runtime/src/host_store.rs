@@ -190,7 +190,8 @@ mod tests {
     use super::*;
     use ox_context::{Namespace, SystemProvider};
     use ox_gate::GateStore;
-    use ox_history::HistoryProvider;
+    use ox_history::HistoryView;
+    use ox_kernel::log::{LogStore, SharedLog};
 
     struct MockEffects {
         events: Vec<String>,
@@ -217,14 +218,16 @@ mod tests {
     }
 
     fn make_namespace() -> Namespace {
+        let shared_log = SharedLog::new();
         let mut ns = Namespace::new();
         ns.mount(
             "system",
             Box::new(SystemProvider::new("You are a test agent.".into())),
         );
-        ns.mount("history", Box::new(HistoryProvider::new()));
+        ns.mount("history", Box::new(HistoryView::new(shared_log.clone())));
         ns.mount("tools", Box::new(ox_tools::ToolStore::empty()));
         ns.mount("gate", Box::new(GateStore::new()));
+        ns.mount("log", Box::new(LogStore::from_shared(shared_log)));
         ns.write(
             &structfs_core_store::path!("gate/defaults/model"),
             Record::parsed(Value::String("test-model".into())),

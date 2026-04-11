@@ -6,6 +6,7 @@
 
 use crate::ContentBlock;
 use serde::{Deserialize, Serialize};
+use std::sync::{Arc, Mutex};
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer};
 
 /// Source metadata for an assistant response.
@@ -49,6 +50,45 @@ pub enum LogEntry {
     Meta { data: serde_json::Value },
 }
 
+/// Shared append-only log backing. Both LogStore and HistoryView read
+/// from and write to the same underlying `Vec<LogEntry>`.
+#[derive(Clone)]
+pub struct SharedLog(Arc<Mutex<Vec<LogEntry>>>);
+
+impl SharedLog {
+    pub fn new() -> Self {
+        Self(Arc::new(Mutex::new(Vec::new())))
+    }
+
+    pub fn append(&self, entry: LogEntry) {
+        self.0.lock().unwrap().push(entry);
+    }
+
+    pub fn entries(&self) -> Vec<LogEntry> {
+        self.0.lock().unwrap().clone()
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.lock().unwrap().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn last_n(&self, n: usize) -> Vec<LogEntry> {
+        let entries = self.0.lock().unwrap();
+        let start = entries.len().saturating_sub(n);
+        entries[start..].to_vec()
+    }
+}
+
+impl Default for SharedLog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Append-only structured log implementing StructFS Reader/Writer.
 ///
 /// Read paths:
@@ -59,18 +99,22 @@ pub enum LogEntry {
 /// Write paths:
 /// - `""` or `"append"` → deserialize Value as LogEntry, append
 pub struct LogStore {
-    entries: Vec<LogEntry>,
+    shared: SharedLog,
 }
 
 impl LogStore {
     pub fn new() -> Self {
         Self {
-            entries: Vec::new(),
+            shared: SharedLog::new(),
         }
     }
 
-    pub fn entries(&self) -> &[LogEntry] {
-        &self.entries
+    pub fn from_shared(shared: SharedLog) -> Self {
+        Self { shared }
+    }
+
+    pub fn shared(&self) -> &SharedLog {
+        &self.shared
     }
 }
 
@@ -90,14 +134,15 @@ impl Reader for LogStore {
 
         match key {
             "entries" => {
-                let json = serde_json::to_value(&self.entries)
+                let entries = self.shared.entries();
+                let json = serde_json::to_value(&entries)
                     .map_err(|e| StoreError::store("LogStore", "read", e.to_string()))?;
                 Ok(Some(Record::parsed(structfs_serde_store::json_to_value(
                     json,
                 ))))
             }
             "count" => Ok(Some(Record::parsed(Value::Integer(
-                self.entries.len() as i64
+                self.shared.len() as i64
             )))),
             "last" => {
                 if from.len() < 2 {
@@ -113,8 +158,8 @@ impl Reader for LogStore {
                         .map_err(|e: std::num::ParseIntError| {
                             StoreError::store("LogStore", "read", e.to_string())
                         })?;
-                let start = self.entries.len().saturating_sub(n);
-                let json = serde_json::to_value(&self.entries[start..])
+                let entries = self.shared.last_n(n);
+                let json = serde_json::to_value(&entries)
                     .map_err(|e| StoreError::store("LogStore", "read", e.to_string()))?;
                 Ok(Some(Record::parsed(structfs_serde_store::json_to_value(
                     json,
@@ -142,7 +187,7 @@ impl Writer for LogStore {
                 let entry: LogEntry = serde_json::from_value(json).map_err(|e| {
                     StoreError::store("LogStore", "write", format!("invalid LogEntry: {e}"))
                 })?;
-                self.entries.push(entry);
+                self.shared.append(entry);
                 Ok(to.clone())
             }
             _ => Err(StoreError::store(

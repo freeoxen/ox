@@ -22,7 +22,7 @@ pub use ox_context::{Namespace, SystemProvider};
 pub use ox_gate::{AccountConfig, GateStore, ProviderConfig};
 
 // --- Re-exports from ox-history ---
-pub use ox_history::HistoryProvider;
+pub use ox_history::{HistoryProvider, HistoryView};
 
 // --- Re-exports from ox-tools ---
 pub use ox_tools;
@@ -54,12 +54,16 @@ impl Agent {
     /// prompt, history, tools, gate, and log. Use [`ox_tools::ToolStore`]
     /// to provide both tool schemas and execution.
     pub fn new(system_prompt: String, tool_store: ox_tools::ToolStore) -> Self {
+        let shared_log = ox_kernel::log::SharedLog::new();
         let mut context = Namespace::new();
         context.mount("system", Box::new(SystemProvider::new(system_prompt)));
-        context.mount("history", Box::new(HistoryProvider::new()));
+        context.mount("history", Box::new(HistoryView::new(shared_log.clone())));
         context.mount("tools", Box::new(tool_store));
         context.mount("gate", Box::new(ox_gate::GateStore::new()));
-        context.mount("log", Box::new(ox_kernel::log::LogStore::new()));
+        context.mount(
+            "log",
+            Box::new(ox_kernel::log::LogStore::from_shared(shared_log)),
+        );
 
         Self {
             context,
@@ -121,6 +125,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn make_namespace(transport: SequentialTransport) -> Namespace {
+        let shared_log = ox_kernel::log::SharedLog::new();
         let mut tool_store = ox_tools::ToolStore::empty();
         tool_store
             .completions_mut()
@@ -130,10 +135,13 @@ mod tests {
             "system",
             Box::new(SystemProvider::new("You are a test bot.".into())),
         );
-        ns.mount("history", Box::new(HistoryProvider::new()));
+        ns.mount("history", Box::new(HistoryView::new(shared_log.clone())));
         ns.mount("tools", Box::new(tool_store));
         ns.mount("gate", Box::new(ox_gate::GateStore::new()));
-        ns.mount("log", Box::new(ox_kernel::log::LogStore::new()));
+        ns.mount(
+            "log",
+            Box::new(ox_kernel::log::LogStore::from_shared(shared_log)),
+        );
         ns
     }
 
@@ -195,9 +203,9 @@ mod tests {
             "expected 2 history messages (user + assistant)"
         );
 
-        // log/count == 1: one assistant entry
+        // log/count == 2: user entry (via HistoryView) + assistant entry (via record_turn)
         let log_count = read_count(&mut ns, "log/count");
-        assert_eq!(log_count, 1, "expected 1 log entry (assistant)");
+        assert_eq!(log_count, 2, "expected 2 log entries (user + assistant)");
     }
 
     // -----------------------------------------------------------------------
@@ -245,15 +253,19 @@ mod tests {
             |input| Ok(input),
         )));
 
+        let shared_log = ox_kernel::log::SharedLog::new();
         let mut ns = Namespace::new();
         ns.mount(
             "system",
             Box::new(SystemProvider::new("You are a test bot.".into())),
         );
-        ns.mount("history", Box::new(HistoryProvider::new()));
+        ns.mount("history", Box::new(HistoryView::new(shared_log.clone())));
         ns.mount("tools", Box::new(tool_store));
         ns.mount("gate", Box::new(ox_gate::GateStore::new()));
-        ns.mount("log", Box::new(ox_kernel::log::LogStore::new()));
+        ns.mount(
+            "log",
+            Box::new(ox_kernel::log::LogStore::from_shared(shared_log)),
+        );
 
         seed_user_message(&mut ns, "echo ping");
 
