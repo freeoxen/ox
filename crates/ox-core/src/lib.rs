@@ -53,21 +53,8 @@ impl Agent {
     /// Sets up the internal [`Namespace`] with providers for the system
     /// prompt, history, tools, gate, and log. Use [`ox_tools::ToolStore`]
     /// to provide both tool schemas and execution.
-    pub fn new(system_prompt: String, mut tool_store: ox_tools::ToolStore) -> Self {
+    pub fn new(system_prompt: String, tool_store: ox_tools::ToolStore) -> Self {
         let shared_log = ox_kernel::log::SharedLog::new();
-
-        // Wire context handle for the complete tool's ref resolution.
-        // This is an independent namespace that shares the same conversation
-        // log, providing read access to system, history, tool schemas, and gate.
-        let mut context_handle = Namespace::new();
-        context_handle.mount(
-            "system",
-            Box::new(SystemProvider::new(system_prompt.clone())),
-        );
-        context_handle.mount("history", Box::new(HistoryView::new(shared_log.clone())));
-        context_handle.mount("tools", Box::new(ox_tools::ToolStore::empty()));
-        context_handle.mount("gate", Box::new(ox_gate::GateStore::new()));
-        tool_store.set_context_handle(Box::new(context_handle));
 
         let mut context = Namespace::new();
         context.mount("system", Box::new(SystemProvider::new(system_prompt)));
@@ -144,17 +131,6 @@ mod tests {
         tool_store
             .completions_mut()
             .set_transport(Box::new(transport));
-
-        // Wire context handle so the complete tool can resolve refs
-        let mut context_handle = Namespace::new();
-        context_handle.mount(
-            "system",
-            Box::new(SystemProvider::new("You are a test bot.".into())),
-        );
-        context_handle.mount("history", Box::new(HistoryView::new(shared_log.clone())));
-        context_handle.mount("tools", Box::new(ox_tools::ToolStore::empty()));
-        context_handle.mount("gate", Box::new(ox_gate::GateStore::new()));
-        tool_store.set_context_handle(Box::new(context_handle));
 
         let mut ns = Namespace::new();
         ns.mount(
@@ -328,14 +304,15 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 3: LLM calls the complete tool (sub-completion)
+    // Test 3: LLM calls the complete tool (sub-completion via stack)
     // -----------------------------------------------------------------------
 
     #[test]
     fn run_turn_llm_calls_complete_tool() {
         // Simulate: LLM calls "complete" as a tool in its first response.
-        // The kernel special-cases it, fires a sub-completion, returns the text.
-        // Then the LLM gets the tool result and produces a final response.
+        // The kernel pushes a new completion frame, fires the inner completion,
+        // pops when it resolves to text, delivers the text as a tool result,
+        // then the outer LLM produces a final response.
         let transport = SequentialTransport::new(vec![
             // Outer completion #1: LLM calls the complete tool
             (
@@ -359,7 +336,7 @@ mod tests {
                 10,
                 5,
             ),
-            // Inner completion (fired by execute_complete_tool via complete())
+            // Inner completion (fired by the kernel's stack reactor)
             (
                 vec![
                     StreamEvent::TextDelta("Brief summary.".into()),
@@ -385,9 +362,9 @@ mod tests {
         let mut events = vec![];
         run_turn(&mut ns, &mut |e| events.push(format!("{e:?}"))).unwrap();
 
-        // 2 TurnStarts: outer completion #1 + outer completion #2
+        // 3 TurnStarts: outer #1 + inner + outer #2
         let turn_starts = events.iter().filter(|e| e.contains("TurnStart")).count();
-        assert_eq!(turn_starts, 2);
+        assert_eq!(turn_starts, 3);
 
         // The complete tool call should be visible
         assert!(events.iter().any(|e| e.contains("ToolCallStart")));

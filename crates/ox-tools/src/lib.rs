@@ -46,7 +46,6 @@ pub struct ToolStore {
     last_result: BTreeMap<String, Value>,
     exec_counter: u64,
     exec_results: BTreeMap<String, Value>,
-    context_handle: Option<Box<dyn structfs_core_store::Store + Send + Sync>>,
 }
 
 impl ToolStore {
@@ -73,7 +72,6 @@ impl ToolStore {
             last_result: BTreeMap::new(),
             exec_counter: 0,
             exec_results: BTreeMap::new(),
-            context_handle: None,
         }
     }
 
@@ -147,19 +145,6 @@ impl ToolStore {
         &mut self.completions
     }
 
-    /// Set the context handle for ref resolution (used by the `complete` tool).
-    ///
-    /// The context handle is an independent namespace that shares the same
-    /// conversation log. It provides read access to system prompt, history,
-    /// tool schemas, and gate config — everything needed to assemble a
-    /// CompletionRequest from context refs.
-    pub fn set_context_handle(
-        &mut self,
-        handle: Box<dyn structfs_core_store::Store + Send + Sync>,
-    ) {
-        self.context_handle = Some(handle);
-    }
-
     fn next_exec_id(&mut self) -> String {
         self.exec_counter += 1;
         format!("exec/{:04}", self.exec_counter)
@@ -169,86 +154,6 @@ impl ToolStore {
         let id = self.next_exec_id();
         self.exec_results.insert(id.clone(), value);
         Path::parse(&id).unwrap()
-    }
-
-    /// If the data is a `complete` tool input with `refs`, resolve refs via
-    /// the context handle and assemble a CompletionRequest. Returns the
-    /// (potentially modified) sub-path and record.
-    ///
-    /// When refs are present, the account is extracted from the input and
-    /// appended to the sub-path (e.g. `complete` -> `complete/anthropic`).
-    fn maybe_resolve_complete_refs(
-        &mut self,
-        data: Record,
-        sub: &Path,
-    ) -> Result<(Path, Record), StoreError> {
-        // Only apply to complete paths (sub starts with "complete")
-        if sub.is_empty() || sub.components[0] != "complete" {
-            return Ok((sub.clone(), data));
-        }
-        let value = data
-            .as_value()
-            .ok_or_else(|| StoreError::store("ToolStore", "complete", "expected Parsed"))?
-            .clone();
-        let json = structfs_serde_store::value_to_json(value);
-
-        // If input has "refs", it's the tool format — resolve to CompletionRequest
-        if json.get("refs").is_none() {
-            return Ok((sub.clone(), data)); // Already a CompletionRequest
-        }
-
-        let account = json
-            .get("account")
-            .and_then(|v| v.as_str())
-            .unwrap_or("anthropic")
-            .to_string();
-
-        let reader = self.context_handle.as_mut().ok_or_else(|| {
-            StoreError::store(
-                "ToolStore",
-                "complete",
-                "no context handle for ref resolution",
-            )
-        })?;
-
-        let refs: Vec<ox_kernel::ContextRef> =
-            serde_json::from_value(json.get("refs").cloned().unwrap_or_default())
-                .map_err(|e| StoreError::store("ToolStore", "complete", e.to_string()))?;
-
-        let resolved = ox_kernel::resolve_refs(reader, &refs)
-            .map_err(|e| StoreError::store("ToolStore", "complete", e))?;
-        let (model, max_tokens) = ox_kernel::read_model_config(reader)
-            .map_err(|e| StoreError::store("ToolStore", "complete", e))?;
-
-        let system = if resolved.extra_content.is_empty() {
-            resolved.system
-        } else {
-            format!(
-                "{}\n\n{}",
-                resolved.system,
-                resolved.extra_content.join("\n\n")
-            )
-        };
-
-        let request = ox_kernel::CompletionRequest {
-            model,
-            max_tokens,
-            system,
-            messages: resolved.messages,
-            tools: resolved.tools,
-            stream: true,
-        };
-
-        let request_json = serde_json::to_value(&request)
-            .map_err(|e| StoreError::store("ToolStore", "complete", e.to_string()))?;
-
-        // Build the complete/{account} sub-path for CompletionModule
-        let actual_sub = Path::from_components(vec!["complete".to_string(), account]);
-
-        Ok((
-            actual_sub,
-            Record::parsed(structfs_serde_store::json_to_value(request_json)),
-        ))
     }
 
     /// Resolve the first path component, potentially via wire-name lookup.
@@ -466,12 +371,11 @@ impl Writer for ToolStore {
         match first {
             "completions" => {
                 let sub = Path::from_components(path.components[1..].to_vec());
-                let (actual_sub, data) = self.maybe_resolve_complete_refs(data, &sub)?;
-                self.completions.write(&actual_sub, data)?;
+                self.completions.write(&sub, data)?;
 
                 // For complete paths, read the response and store as exec handle
-                if !actual_sub.is_empty() && actual_sub.components[0] == "complete" {
-                    let mut response_components = actual_sub.components.clone();
+                if !sub.is_empty() && sub.components[0] == "complete" {
+                    let mut response_components = sub.components.clone();
                     response_components.push("response".to_string());
                     let response_path = Path::from_components(response_components);
                     if let Some(response) = self.completions.read(&response_path)? {
@@ -519,6 +423,6 @@ impl Writer for ToolStore {
 
 // Send+Sync: All fields are naturally Send+Sync:
 // - FsModule/OsModule contain PathBuf + Arc<dyn SandboxPolicy>
-// - CompletionModule wraps GateStore (HashMap + Box<dyn Store + Send + Sync>)
+// - CompletionModule wraps GateStore (HashMap)
 // - BTreeMap<String, Value> and NameMap are plain data
 // - HashMap<String, Box<dyn NativeTool>> — NativeTool: Send + Sync

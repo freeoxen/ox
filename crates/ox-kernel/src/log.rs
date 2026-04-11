@@ -22,13 +22,19 @@ pub struct LogSource {
 #[serde(tag = "type")]
 pub enum LogEntry {
     #[serde(rename = "user")]
-    User { content: String },
+    User {
+        content: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<String>,
+    },
 
     #[serde(rename = "assistant")]
     Assistant {
         content: Vec<ContentBlock>,
         #[serde(skip_serializing_if = "Option::is_none")]
         source: Option<LogSource>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<String>,
     },
 
     #[serde(rename = "tool_call")]
@@ -36,6 +42,8 @@ pub enum LogEntry {
         id: String,
         name: String,
         input: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<String>,
     },
 
     #[serde(rename = "tool_result")]
@@ -44,6 +52,8 @@ pub enum LogEntry {
         output: serde_json::Value,
         #[serde(default)]
         is_error: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<String>,
     },
 
     #[serde(rename = "meta")]
