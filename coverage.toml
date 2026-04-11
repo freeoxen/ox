@@ -10,7 +10,8 @@ typescript = 80
 
 [rust]
 # Core — pure store logic, fully testable
-ox-kernel = 95
+# Lowered from 95: run_turn/execute_tools best tested cross-crate (ox-core)
+ox-kernel = 92
 ox-store-util = 90
 ox-context = 85
 ox-ui = 80
