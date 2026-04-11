@@ -30,6 +30,7 @@ tokio = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.28"
 ratatui = "0.29"
+unicode-width = "0.2"
 reqwest = { version = "0.12", features = ["blocking"] }
 clash = "0.6"
 toml = "0.8"

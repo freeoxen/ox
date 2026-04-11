@@ -4,6 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
+use crate::text_input_view::desired_input_height;
 
 // ---------------------------------------------------------------------------
 // Draw — composed view
@@ -28,9 +29,13 @@ pub(crate) fn draw(
         constraints.push(Constraint::Length(1)); // filter bar
     }
     constraints.push(Constraint::Min(1)); // content
-    if in_insert {
-        constraints.push(Constraint::Length(3)); // input box
-    }
+    let _input_height = if in_insert {
+        let h = desired_input_height(text_input_view.content(), frame.area().width);
+        constraints.push(Constraint::Length(h));
+        h
+    } else {
+        0
+    };
     constraints.push(Constraint::Length(1)); // status bar
 
     let chunks = Layout::default()
