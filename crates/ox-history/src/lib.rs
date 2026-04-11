@@ -233,16 +233,9 @@ impl Writer for HistoryView {
                 }
             }
             "commit" => {
-                // Finalize in-progress turn: streaming text becomes a committed message
-                if !self.turn.streaming.is_empty() {
-                    self.shared.append(LogEntry::Assistant {
-                        content: vec![ContentBlock::Text {
-                            text: self.turn.streaming.clone(),
-                        }],
-                        source: None,
-                        scope: None,
-                    });
-                }
+                // Clear turn state. The kernel already committed the assistant
+                // message to log/append via record_turn — we just need to reset
+                // the ephemeral streaming/thinking state for the next turn.
                 self.turn.clear();
                 Ok(to.clone())
             }
@@ -464,7 +457,7 @@ mod tests {
     }
 
     #[test]
-    fn history_view_commit_streaming() {
+    fn history_view_commit_clears_turn_state() {
         let shared = SharedLog::new();
         let mut hv = HistoryView::new(shared.clone());
         hv.write(
@@ -472,16 +465,18 @@ mod tests {
             Record::parsed(Value::String("streamed text".into())),
         )
         .unwrap();
+        hv.write(
+            &path!("turn/thinking"),
+            Record::parsed(Value::Bool(true)),
+        )
+        .unwrap();
         hv.write(&path!("commit"), Record::parsed(Value::Null))
             .unwrap();
         // Turn state should be cleared
         assert!(!hv.turn.is_active());
-        // The streamed text should be committed as an assistant message in the log
-        let entries = shared.entries();
-        assert_eq!(entries.len(), 1);
-        assert!(matches!(&entries[0], LogEntry::Assistant { content, .. }
-            if matches!(&content[0], ContentBlock::Text { text } if text == "streamed text")
-        ));
+        assert!(hv.turn.streaming.is_empty());
+        // Commit does NOT write to the log — the kernel already did via log/append
+        assert!(shared.is_empty());
     }
 
     #[test]

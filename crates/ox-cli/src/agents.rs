@@ -375,9 +375,8 @@ fn agent_worker(
                 .ok();
         }
 
-        // Commit the turn — finalizes streaming text into permanent messages.
-        // Must happen BEFORE save so the ledger gets committed messages, not
-        // duplicated streaming partials.
+        // Clear ephemeral turn state (streaming text, thinking, tool status).
+        // The kernel already committed the assistant message to log/append.
         adapter
             .write(&path!("history/commit"), Record::parsed(Value::Null))
             .ok();
