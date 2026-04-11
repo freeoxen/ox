@@ -91,12 +91,12 @@ impl Reader for LogStore {
             "entries" => {
                 let json = serde_json::to_value(&self.entries)
                     .map_err(|e| StoreError::store("LogStore", "read", e.to_string()))?;
-                Ok(Some(Record::parsed(
-                    structfs_serde_store::json_to_value(json),
-                )))
+                Ok(Some(Record::parsed(structfs_serde_store::json_to_value(
+                    json,
+                ))))
             }
             "count" => Ok(Some(Record::parsed(Value::Integer(
-                self.entries.len() as i64,
+                self.entries.len() as i64
             )))),
             "last" => {
                 if from.len() < 2 {
@@ -106,17 +106,18 @@ impl Reader for LogStore {
                         "last requires a count: last/{n}",
                     ));
                 }
-                let n: usize = from.components[1]
-                    .parse()
-                    .map_err(|e: std::num::ParseIntError| {
-                        StoreError::store("LogStore", "read", e.to_string())
-                    })?;
+                let n: usize =
+                    from.components[1]
+                        .parse()
+                        .map_err(|e: std::num::ParseIntError| {
+                            StoreError::store("LogStore", "read", e.to_string())
+                        })?;
                 let start = self.entries.len().saturating_sub(n);
                 let json = serde_json::to_value(&self.entries[start..])
                     .map_err(|e| StoreError::store("LogStore", "read", e.to_string()))?;
-                Ok(Some(Record::parsed(
-                    structfs_serde_store::json_to_value(json),
-                )))
+                Ok(Some(Record::parsed(structfs_serde_store::json_to_value(
+                    json,
+                ))))
             }
             _ => Ok(None),
         }
@@ -155,7 +156,7 @@ impl Writer for LogStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use structfs_core_store::{path, Path, Reader, Record, Writer};
+    use structfs_core_store::{Path, Reader, Record, Writer, path};
 
     #[test]
     fn append_and_read_all() {
@@ -206,10 +207,7 @@ mod tests {
             )
             .unwrap();
         }
-        let record = log
-            .read(&Path::parse("last/2").unwrap())
-            .unwrap()
-            .unwrap();
+        let record = log.read(&Path::parse("last/2").unwrap()).unwrap().unwrap();
         let json = structfs_serde_store::value_to_json(record.as_value().unwrap().clone());
         let arr = json.as_array().unwrap();
         assert_eq!(arr.len(), 2);

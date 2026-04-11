@@ -261,4 +261,3 @@ pub fn serialize_tool_results(results: &[ToolResult]) -> serde_json::Value {
         "content": content,
     })
 }
-

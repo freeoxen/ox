@@ -29,10 +29,10 @@ pub use ox_tools;
 
 // --- Re-exports from ox-kernel (core types, traits, free functions) ---
 pub use ox_kernel::{
-    AgentEvent, CompletionRequest, ContentBlock, Message, Path, Reader, Record, Store,
-    StoreError, StreamEvent, ToolCall, ToolResult, ToolSchema, Value, Writer, path,
-    serialize_assistant_message, serialize_tool_results,
-    run_turn, synthesize, accumulate_response, record_turn, execute_tools, record_tool_results,
+    AgentEvent, CompletionRequest, ContentBlock, Message, Path, Reader, Record, Store, StoreError,
+    StreamEvent, ToolCall, ToolResult, ToolSchema, Value, Writer, accumulate_response,
+    execute_tools, path, record_tool_results, record_turn, run_turn, serialize_assistant_message,
+    serialize_tool_results, synthesize,
 };
 
 /// The Agent composes a Namespace (with stores) and subscribers.
@@ -189,7 +189,10 @@ mod tests {
 
         // history/count == 2: user + assistant
         let hist_count = read_count(&mut ns, "history/count");
-        assert_eq!(hist_count, 2, "expected 2 history messages (user + assistant)");
+        assert_eq!(
+            hist_count, 2,
+            "expected 2 history messages (user + assistant)"
+        );
 
         // log/count == 1: one assistant entry
         let log_count = read_count(&mut ns, "log/count");

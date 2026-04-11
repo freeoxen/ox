@@ -200,8 +200,7 @@ pub fn synthesize(context: &mut dyn Reader) -> Result<CompletionRequest, String>
 
     let messages: Vec<serde_json::Value> =
         serde_json::from_value(messages_json).map_err(|e| e.to_string())?;
-    let tools: Vec<ToolSchema> =
-        serde_json::from_value(tools_json).map_err(|e| e.to_string())?;
+    let tools: Vec<ToolSchema> = serde_json::from_value(tools_json).map_err(|e| e.to_string())?;
 
     Ok(CompletionRequest {
         model: model_id,
@@ -349,10 +348,7 @@ pub fn execute_tools(
 }
 
 /// Write tool results to history.
-pub fn record_tool_results(
-    context: &mut dyn Writer,
-    results: &[ToolResult],
-) -> Result<(), String> {
+pub fn record_tool_results(context: &mut dyn Writer, results: &[ToolResult]) -> Result<(), String> {
     let results_json = serialize_tool_results(results);
     let record = Record::parsed(structfs_serde_store::json_to_value(results_json));
     context
@@ -379,9 +375,8 @@ fn send_completion(
         .write(&request_path, Record::parsed(request_value))
         .map_err(|e| e.to_string())?;
 
-    let response_path =
-        Path::parse(&format!("tools/completions/complete/{account}/response"))
-            .map_err(|e| e.to_string())?;
+    let response_path = Path::parse(&format!("tools/completions/complete/{account}/response"))
+        .map_err(|e| e.to_string())?;
     let response_record = context
         .read(&response_path)
         .map_err(|e| e.to_string())?
@@ -419,10 +414,7 @@ fn log_entry(context: &mut dyn Writer, entry: serde_json::Value) {
 /// 2. Loop: emit TurnStart → synthesize → send_completion → accumulate_response
 ///    → log assistant entry → record_turn → if no tools: emit TurnEnd, return
 ///    → log tool calls → execute_tools → log tool results → record_tool_results → loop
-pub fn run_turn(
-    context: &mut dyn Store,
-    emit: &mut dyn FnMut(AgentEvent),
-) -> Result<(), String> {
+pub fn run_turn(context: &mut dyn Store, emit: &mut dyn FnMut(AgentEvent)) -> Result<(), String> {
     let account = read_default_account(context)?;
 
     loop {
@@ -582,10 +574,7 @@ mod tests {
                 }
             ])),
         );
-        store.set(
-            "gate/defaults/model",
-            Value::String("claude-test".into()),
-        );
+        store.set("gate/defaults/model", Value::String("claude-test".into()));
         store.set("gate/defaults/max_tokens", Value::Integer(2048));
         store
     }
@@ -773,14 +762,22 @@ mod tests {
         let events = vec![
             AgentEvent::TurnStart,
             AgentEvent::TextDelta("hi".into()),
-            AgentEvent::ToolCallStart { name: "read_file".into() },
-            AgentEvent::ToolCallResult { name: "read_file".into(), result: "ok".into() },
+            AgentEvent::ToolCallStart {
+                name: "read_file".into(),
+            },
+            AgentEvent::ToolCallResult {
+                name: "read_file".into(),
+                result: "ok".into(),
+            },
             AgentEvent::TurnEnd,
             AgentEvent::Error("oops".into()),
         ];
         for event in &events {
             let json = agent_event_to_json(event);
-            assert!(json.get("type").is_some(), "missing 'type' field in {json:?}");
+            assert!(
+                json.get("type").is_some(),
+                "missing 'type' field in {json:?}"
+            );
         }
     }
 
@@ -821,9 +818,10 @@ mod tests {
             input: serde_json::json!({"text": "hello"}),
         }];
         let mut events = vec![];
-        let results =
-            execute_tools(&mut store, &tool_calls, &mut |e| events.push(format!("{e:?}")))
-                .unwrap();
+        let results = execute_tools(&mut store, &tool_calls, &mut |e| {
+            events.push(format!("{e:?}"))
+        })
+        .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].tool_use_id, "tc1");
         assert!(
@@ -866,7 +864,10 @@ mod tests {
     #[test]
     fn log_entry_writes_to_log_append() {
         let mut store = MockStore::new();
-        log_entry(&mut store, serde_json::json!({"type": "meta", "data": "test"}));
+        log_entry(
+            &mut store,
+            serde_json::json!({"type": "meta", "data": "test"}),
+        );
         assert!(
             store.appended.iter().any(|(p, _)| p == "log/append"),
             "expected log/append write"
@@ -902,8 +903,17 @@ mod tests {
 
         let mut events = vec![];
         run_turn(&mut store, &mut |e| events.push(format!("{e:?}"))).unwrap();
-        assert!(events.iter().any(|e| e.contains("TurnStart")), "expected TurnStart");
-        assert!(events.iter().any(|e| e.contains("TurnEnd")), "expected TurnEnd");
-        assert!(events.iter().any(|e| e.contains("TextDelta")), "expected TextDelta");
+        assert!(
+            events.iter().any(|e| e.contains("TurnStart")),
+            "expected TurnStart"
+        );
+        assert!(
+            events.iter().any(|e| e.contains("TurnEnd")),
+            "expected TurnEnd"
+        );
+        assert!(
+            events.iter().any(|e| e.contains("TextDelta")),
+            "expected TextDelta"
+        );
     }
 }

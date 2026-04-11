@@ -772,8 +772,8 @@ async fn run_agentic_loop(
 
     loop {
         // Phase 1: read prompt from namespace
-        let request = ox_kernel::synthesize(&mut *context_ref.borrow_mut())
-            .map_err(|e| e.to_string())?;
+        let request =
+            ox_kernel::synthesize(&mut *context_ref.borrow_mut()).map_err(|e| e.to_string())?;
 
         let request_json = serde_json::to_string(&request).map_err(|e| e.to_string())?;
         emit_js(callback, "request_sent", &request_json);
