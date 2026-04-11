@@ -128,12 +128,65 @@ impl CompletionModule {
         Ok(())
     }
 
-    /// Tool schemas for completion accounts with API keys.
+    /// Tool schemas for the completion module.
     ///
-    /// For now returns an empty vec — will be refined when context-based
-    /// synthesis lands.
+    /// Returns a schema for the `complete` tool — an LLM-callable tool that
+    /// fires a completion with context references.
     pub fn schemas(&self) -> Vec<ToolSchemaEntry> {
-        vec![]
+        vec![ToolSchemaEntry {
+            wire_name: "complete".to_string(),
+            internal_path: "completions/complete".to_string(),
+            description: "Fire an LLM completion with specified context references. \
+                Use this to delegate sub-tasks to a model with custom context."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "account": {
+                        "type": "string",
+                        "description": "Account name for the completion (e.g. 'anthropic', 'openai')"
+                    },
+                    "refs": {
+                        "type": "array",
+                        "description": "Context references to include in the prompt",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "type": {
+                                    "type": "string",
+                                    "enum": ["system", "history", "tools", "raw"],
+                                    "description": "Reference type"
+                                },
+                                "path": {
+                                    "type": "string",
+                                    "description": "Namespace path to read from (for system, history, tools)"
+                                },
+                                "last": {
+                                    "type": "integer",
+                                    "description": "For history: only include the last N messages"
+                                },
+                                "only": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "For tools: only include these tool names"
+                                },
+                                "except": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "For tools: exclude these tool names"
+                                },
+                                "content": {
+                                    "type": "string",
+                                    "description": "For raw: literal content to include"
+                                }
+                            },
+                            "required": ["type"]
+                        }
+                    }
+                },
+                "required": ["account", "refs"]
+            }),
+        }]
     }
 
     /// Mutable access to the inner GateStore.
@@ -298,10 +351,26 @@ mod tests {
     }
 
     #[test]
-    fn schemas_returns_empty_without_keys() {
+    fn schemas_returns_complete_tool() {
         let gate = GateStore::new();
         let module = CompletionModule::new(gate);
-        assert!(module.schemas().is_empty());
+        let schemas = module.schemas();
+        assert_eq!(schemas.len(), 1);
+        assert_eq!(schemas[0].wire_name, "complete");
+    }
+
+    #[test]
+    fn complete_schema_has_account_and_refs() {
+        let gate = GateStore::new();
+        let module = CompletionModule::new(gate);
+        let schemas = module.schemas();
+        let input = &schemas[0].input_schema;
+        let props = input.get("properties").unwrap();
+        assert!(props.get("account").is_some());
+        assert!(props.get("refs").is_some());
+        let required = input.get("required").unwrap().as_array().unwrap();
+        assert!(required.contains(&serde_json::json!("account")));
+        assert!(required.contains(&serde_json::json!("refs")));
     }
 
     #[test]
