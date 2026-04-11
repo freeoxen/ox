@@ -385,11 +385,15 @@ impl Writer for HistoryProvider {
 /// convert wire-format messages into log entries.
 pub struct HistoryView {
     shared: SharedLog,
+    pub turn: TurnState,
 }
 
 impl HistoryView {
     pub fn new(shared: SharedLog) -> Self {
-        Self { shared }
+        Self {
+            shared,
+            turn: TurnState::new(),
+        }
     }
 
     /// Project log entries into wire-format messages.
@@ -399,7 +403,7 @@ impl HistoryView {
         let mut i = 0;
         while i < entries.len() {
             match &entries[i] {
-                LogEntry::User { content } => {
+                LogEntry::User { content, .. } => {
                     messages.push(serde_json::json!({"role": "user", "content": content}));
                     i += 1;
                 }
@@ -448,7 +452,14 @@ impl Reader for HistoryView {
         };
         match key {
             "messages" | "" => {
-                let messages = self.project_messages();
+                let mut messages = self.project_messages();
+                // Append in-progress turn as a partial assistant message
+                if self.turn.is_active() && !self.turn.streaming.is_empty() {
+                    messages.push(serde_json::json!({
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": self.turn.streaming}]
+                    }));
+                }
                 let json = serde_json::Value::Array(messages);
                 let value = json_to_value(json);
                 Ok(Some(Record::parsed(value)))
@@ -456,6 +467,14 @@ impl Reader for HistoryView {
             "count" => {
                 let count = self.project_messages().len();
                 Ok(Some(Record::parsed(Value::Integer(count as i64))))
+            }
+            "turn" => {
+                if from.components.len() >= 2 {
+                    let sub = from.components[1].as_str();
+                    Ok(self.turn.read(sub).map(Record::parsed))
+                } else {
+                    Ok(None)
+                }
             }
             _ => Ok(None),
         }
@@ -503,6 +522,7 @@ impl Writer for HistoryView {
                                         id,
                                         output,
                                         is_error: false,
+                                        scope: None,
                                     });
                                 }
                                 return Ok(to.clone());
@@ -513,7 +533,10 @@ impl Writer for HistoryView {
                             serde_json::Value::String(s) => s,
                             other => serde_json::to_string(&other).unwrap_or_default(),
                         };
-                        self.shared.append(LogEntry::User { content });
+                        self.shared.append(LogEntry::User {
+                            content,
+                            scope: None,
+                        });
                     }
                     "assistant" => {
                         let content_json = json
@@ -525,6 +548,7 @@ impl Writer for HistoryView {
                         self.shared.append(LogEntry::Assistant {
                             content,
                             source: None,
+                            scope: None,
                         });
                     }
                     _ => {
@@ -535,6 +559,43 @@ impl Writer for HistoryView {
                         ));
                     }
                 }
+                Ok(to.clone())
+            }
+            "turn" => {
+                if to.components.len() >= 2 {
+                    let sub = to.components[1].as_str();
+                    let value = data.as_value().ok_or_else(|| {
+                        StoreError::store(
+                            "HistoryView",
+                            "write",
+                            "expected parsed record for turn write",
+                        )
+                    })?;
+                    if self.turn.write(sub, value) {
+                        Ok(to.clone())
+                    } else {
+                        Err(StoreError::store("HistoryView", "write", "invalid turn write"))
+                    }
+                } else {
+                    Err(StoreError::store(
+                        "HistoryView",
+                        "write",
+                        "turn write requires sub-path (e.g. turn/streaming)",
+                    ))
+                }
+            }
+            "commit" => {
+                // Finalize in-progress turn: streaming text becomes a committed message
+                if !self.turn.streaming.is_empty() {
+                    self.shared.append(LogEntry::Assistant {
+                        content: vec![ContentBlock::Text {
+                            text: self.turn.streaming.clone(),
+                        }],
+                        source: None,
+                        scope: None,
+                    });
+                }
+                self.turn.clear();
                 Ok(to.clone())
             }
             _ => Err(StoreError::store(
@@ -1157,12 +1218,14 @@ mod tests {
         let shared = SharedLog::new();
         shared.append(LogEntry::User {
             content: "hello".into(),
+            scope: None,
         });
         shared.append(LogEntry::Assistant {
             content: vec![ox_kernel::ContentBlock::Text {
                 text: "hi there".into(),
             }],
             source: None,
+            scope: None,
         });
         let mut hv = HistoryView::new(shared);
         let messages = hv.read(&path!("messages")).unwrap().unwrap();
@@ -1181,11 +1244,13 @@ mod tests {
             id: "tc1".into(),
             output: serde_json::Value::String("result1".into()),
             is_error: false,
+            scope: None,
         });
         shared.append(LogEntry::ToolResult {
             id: "tc2".into(),
             output: serde_json::Value::String("result2".into()),
             is_error: false,
+            scope: None,
         });
         let mut hv = HistoryView::new(shared);
         let messages = hv.read(&path!("messages")).unwrap().unwrap();
@@ -1205,11 +1270,13 @@ mod tests {
         let shared = SharedLog::new();
         shared.append(LogEntry::User {
             content: "hello".into(),
+            scope: None,
         });
         shared.append(LogEntry::ToolCall {
             id: "tc1".into(),
             name: "echo".into(),
             input: serde_json::json!({}),
+            scope: None,
         });
         shared.append(LogEntry::Meta {
             data: serde_json::json!({"info": "test"}),
@@ -1228,10 +1295,12 @@ mod tests {
         let shared = SharedLog::new();
         shared.append(LogEntry::User {
             content: "hello".into(),
+            scope: None,
         });
         shared.append(LogEntry::Assistant {
             content: vec![ox_kernel::ContentBlock::Text { text: "hi".into() }],
             source: None,
+            scope: None,
         });
         let mut hv = HistoryView::new(shared);
         let count = hv.read(&path!("count")).unwrap().unwrap();
@@ -1247,7 +1316,7 @@ mod tests {
             .unwrap();
         let entries = shared.entries();
         assert_eq!(entries.len(), 1);
-        assert!(matches!(&entries[0], LogEntry::User { content } if content == "hello"));
+        assert!(matches!(&entries[0], LogEntry::User { content, .. } if content == "hello"));
     }
 
     #[test]

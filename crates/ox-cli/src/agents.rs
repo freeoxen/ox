@@ -229,7 +229,10 @@ fn agent_worker(
     rt_handle: tokio::runtime::Handle,
 ) {
     // Build ToolStore — primary tool execution backend
-    let executor = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("ox"));
+    let executor = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|dir| dir.join("ox-tool-exec")))
+        .unwrap_or_else(|| PathBuf::from("ox-tool-exec"));
     let sandbox_policy: Arc<dyn ox_tools::sandbox::SandboxPolicy> = if no_policy {
         Arc::new(ox_tools::sandbox::PermissivePolicy)
     } else {

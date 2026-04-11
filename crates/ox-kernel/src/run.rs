@@ -364,9 +364,22 @@ pub fn record_turn(
     context: &mut dyn Writer,
     content: &[ContentBlock],
 ) -> Result<Vec<ToolCall>, String> {
+    record_turn_scoped(context, content, "root")
+}
+
+/// Write the assistant message to the log with a scope ID.
+///
+/// Like [`record_turn`] but attaches a scope identifier for bookkeeping
+/// inner completions vs. the root completion.
+fn record_turn_scoped(
+    context: &mut dyn Writer,
+    content: &[ContentBlock],
+    scope: &str,
+) -> Result<Vec<ToolCall>, String> {
     let entry = serde_json::json!({
         "type": "assistant",
         "content": serde_json::to_value(content).unwrap_or_default(),
+        "scope": scope,
     });
     context
         .write(
@@ -396,9 +409,8 @@ pub fn record_turn(
 /// 2. The returned path is an exec handle (e.g. `tools/exec/0001`)
 /// 3. Read the handle to get the result
 ///
-/// If the result is a JSON array (completion stream events), the kernel
-/// runs an inner loop to resolution (accumulate, execute tool calls, etc.).
-/// Otherwise the result is stringified as a normal tool output.
+/// The `complete` tool is NOT handled here — the kernel loop intercepts
+/// it and pushes a new completion frame onto its stack instead.
 pub fn execute_tools(
     context: &mut dyn Store,
     tool_calls: &[ToolCall],
@@ -415,22 +427,14 @@ pub fn execute_tools(
         let tool_path = Path::parse(&format!("tools/{}", tc.name)).map_err(|e| e.to_string())?;
 
         let result_str = match context.write(&tool_path, Record::parsed(input_value)) {
-            Ok(handle) => {
-                match context.read(&handle).map_err(|e| e.to_string())? {
-                    Some(record) => {
-                        let val = record.as_value().cloned().unwrap_or(Value::Null);
-                        let json = structfs_serde_store::value_to_json(val);
-
-                        // If result is an array, treat as completion events (inner loop)
-                        if json.is_array() {
-                            run_complete_inner_loop(context, &json)?
-                        } else {
-                            json_to_result_string(&json)
-                        }
-                    }
-                    None => format!("error: no result at handle {}", handle),
+            Ok(handle) => match context.read(&handle).map_err(|e| e.to_string())? {
+                Some(record) => {
+                    let val = record.as_value().cloned().unwrap_or(Value::Null);
+                    let json = structfs_serde_store::value_to_json(val);
+                    json_to_result_string(&json)
                 }
-            }
+                None => format!("error: no result at handle {}", handle),
+            },
             Err(e) => e.to_string(),
         };
 
@@ -446,147 +450,6 @@ pub fn execute_tools(
     }
 
     Ok(results)
-}
-
-/// Maximum iterations for the inner loop of the complete tool.
-const MAX_COMPLETE_ITERATIONS: usize = 10;
-
-/// Run the inner loop for a completion result (stream events).
-///
-/// Accumulates events, checks for tool calls. If tool calls are present,
-/// records the turn, executes tools, records results, re-sends completion,
-/// and loops until resolution (text-only response) or iteration limit.
-fn run_complete_inner_loop(
-    context: &mut dyn Store,
-    events_json: &serde_json::Value,
-) -> Result<String, String> {
-    let events: Vec<StreamEvent> = events_json
-        .as_array()
-        .ok_or("expected array of events")?
-        .iter()
-        .map(json_to_stream_event)
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let content = accumulate_response(events, &mut |_| {})?;
-
-    let tool_calls: Vec<ToolCall> = content
-        .iter()
-        .filter_map(|b| {
-            if let ContentBlock::ToolUse(tc) = b {
-                Some(tc.clone())
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    if tool_calls.is_empty() {
-        let text = content
-            .iter()
-            .filter_map(|b| match b {
-                ContentBlock::Text { text } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("");
-        return Ok(text);
-    }
-
-    // Record assistant message (with tool calls) to history
-    record_turn(context, &content)?;
-
-    // Log + execute + record tool results
-    for tc in &tool_calls {
-        log_entry(
-            context,
-            serde_json::json!({
-                "type": "tool_call",
-                "id": tc.id,
-                "name": tc.name,
-                "input": tc.input,
-            }),
-        );
-    }
-
-    let results = execute_tools(context, &tool_calls, &mut |_| {})?;
-
-    for r in &results {
-        log_entry(
-            context,
-            serde_json::json!({
-                "type": "tool_result",
-                "id": r.tool_use_id,
-                "output": r.content,
-            }),
-        );
-    }
-
-    record_tool_results(context, &results)?;
-
-    // Re-send completion with default refs for continuation
-    let account = read_default_account(context)?;
-    let refs = default_refs();
-
-    for _ in 1..MAX_COMPLETE_ITERATIONS {
-        let events = complete(context, &account, &refs)?;
-        let content = accumulate_response(events, &mut |_| {})?;
-
-        let tool_calls: Vec<ToolCall> = content
-            .iter()
-            .filter_map(|b| {
-                if let ContentBlock::ToolUse(tc) = b {
-                    Some(tc.clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        if tool_calls.is_empty() {
-            let text = content
-                .iter()
-                .filter_map(|b| match b {
-                    ContentBlock::Text { text } => Some(text.as_str()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("");
-            return Ok(text);
-        }
-
-        record_turn(context, &content)?;
-
-        for tc in &tool_calls {
-            log_entry(
-                context,
-                serde_json::json!({
-                    "type": "tool_call",
-                    "id": tc.id,
-                    "name": tc.name,
-                    "input": tc.input,
-                }),
-            );
-        }
-
-        let results = execute_tools(context, &tool_calls, &mut |_| {})?;
-
-        for r in &results {
-            log_entry(
-                context,
-                serde_json::json!({
-                    "type": "tool_result",
-                    "id": r.tool_use_id,
-                    "output": r.content,
-                }),
-            );
-        }
-
-        record_tool_results(context, &results)?;
-    }
-
-    Err(format!(
-        "complete tool: exceeded {MAX_COMPLETE_ITERATIONS} iterations"
-    ))
 }
 
 /// Convert a JSON value to a result string for tool output.
@@ -688,34 +551,135 @@ fn log_entry(context: &mut dyn Writer, entry: serde_json::Value) {
 }
 
 // ---------------------------------------------------------------------------
-// Full agentic loop
+// Completion stack frame
+// ---------------------------------------------------------------------------
+
+/// A frame on the completion stack, representing one active completion context.
+///
+/// The kernel loop maintains a stack of these. When a tool call is `complete`,
+/// a new frame is pushed. When a completion returns text only, the frame is
+/// popped and the text becomes the tool result for the parent frame.
+#[derive(Debug, Clone)]
+struct CompletionFrame {
+    /// Account for this completion (e.g. "anthropic", "openai").
+    account: String,
+    /// Context references for assembling the prompt.
+    refs: Vec<ContextRef>,
+    /// Scope identifier for log bookkeeping (e.g. "root", "complete-1").
+    scope: String,
+    /// If this frame was pushed by a `complete` tool call, this is the
+    /// tool_use_id that should receive the final text as its result.
+    pending_tool_use_id: Option<String>,
+}
+
+/// Maximum total iterations across all frames to prevent runaway loops.
+const MAX_TOTAL_ITERATIONS: usize = 50;
+
+// ---------------------------------------------------------------------------
+// Full agentic loop (stack-based reactor)
 // ---------------------------------------------------------------------------
 
 /// Run a complete agentic turn loop.
 ///
-/// 1. Read default account
-/// 2. Loop: emit TurnStart → complete → accumulate_response
-///    → record_turn (writes assistant to log) → if no tools: emit TurnEnd, return
-///    → log tool call metadata → execute_tools → record_tool_results (writes to log) → loop
+/// The kernel loop is the ONLY tool reactor. It maintains a stack of
+/// completion frames. When the LLM calls `complete` as a tool, a new
+/// frame is pushed. When a completion returns text only, the frame is
+/// popped and its text becomes the tool result for the parent frame.
+///
+/// All tool calls — including those from inner completions — flow through
+/// the same `execute_tools` path, ensuring uniform policy enforcement.
 pub fn run_turn(context: &mut dyn Store, emit: &mut dyn FnMut(AgentEvent)) -> Result<(), String> {
     let account = read_default_account(context)?;
     let refs = default_refs();
 
+    let mut stack: Vec<CompletionFrame> = vec![CompletionFrame {
+        account,
+        refs,
+        scope: "root".into(),
+        pending_tool_use_id: None,
+    }];
+    let mut scope_counter: u64 = 0;
+    // Partial tool results collected for the current frame when a `complete`
+    // tool call is interleaved with normal tool calls.
+    let mut deferred_results: Vec<ToolResult> = Vec::new();
+    let mut total_iterations: usize = 0;
+
     loop {
-        emit(AgentEvent::TurnStart);
-
-        let events = complete(context, &account, &refs)?;
-        let content = accumulate_response(events, emit)?;
-
-        // record_turn writes the assistant entry to log/append
-        let tool_calls = record_turn(context, &content)?;
-
-        if tool_calls.is_empty() {
-            emit(AgentEvent::TurnEnd);
-            return Ok(());
+        total_iterations += 1;
+        if total_iterations > MAX_TOTAL_ITERATIONS {
+            return Err(format!(
+                "exceeded {MAX_TOTAL_ITERATIONS} total iterations across all completion frames"
+            ));
         }
 
-        // Log individual tool calls (metadata entries, separate from assistant content)
+        let frame = match stack.last() {
+            Some(f) => f.clone(),
+            None => return Ok(()), // stack empty — should not happen, but safe
+        };
+
+        emit(AgentEvent::TurnStart);
+
+        let events = complete(context, &frame.account, &frame.refs)?;
+        let content = accumulate_response(events, emit)?;
+
+        // Record assistant message to log with scope
+        record_turn_scoped(context, &content, &frame.scope)?;
+
+        let tool_calls: Vec<ToolCall> = content
+            .iter()
+            .filter_map(|b| {
+                if let ContentBlock::ToolUse(tc) = b {
+                    Some(tc.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if tool_calls.is_empty() {
+            // No tool calls — this completion resolved to text.
+            let text = content
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("");
+
+            // Pop the current frame
+            let popped = stack.pop().unwrap();
+
+            if stack.is_empty() {
+                // Root completion done
+                emit(AgentEvent::TurnEnd);
+                return Ok(());
+            }
+
+            // Inner completion resolved — deliver text as tool result to parent
+            if let Some(tool_use_id) = popped.pending_tool_use_id {
+                emit(AgentEvent::ToolCallResult {
+                    name: "complete".into(),
+                    result: text.clone(),
+                });
+
+                deferred_results.push(ToolResult {
+                    tool_use_id: tool_use_id.clone(),
+                    content: serde_json::Value::String(text),
+                });
+            }
+
+            // Record all deferred results and continue with the parent frame
+            record_tool_results(context, &deferred_results)?;
+            deferred_results.clear();
+            continue;
+        }
+
+        // Has tool calls — separate `complete` calls from normal tools
+        let (complete_calls, normal_calls): (Vec<&ToolCall>, Vec<&ToolCall>) =
+            tool_calls.iter().partition(|tc| tc.name == "complete");
+
+        // Log all tool calls with scope
         for tc in &tool_calls {
             log_entry(
                 context,
@@ -724,14 +688,68 @@ pub fn run_turn(context: &mut dyn Store, emit: &mut dyn FnMut(AgentEvent)) -> Re
                     "id": tc.id,
                     "name": tc.name,
                     "input": tc.input,
+                    "scope": frame.scope,
                 }),
             );
         }
 
-        let results = execute_tools(context, &tool_calls, emit)?;
+        // Execute normal (non-complete) tool calls
+        let normal_tc_vec: Vec<ToolCall> = normal_calls.iter().map(|tc| (*tc).clone()).collect();
+        if !normal_tc_vec.is_empty() {
+            let results = execute_tools(context, &normal_tc_vec, emit)?;
 
-        // record_tool_results writes individual tool result entries to log/append
-        record_tool_results(context, &results)?;
+            if complete_calls.is_empty() {
+                // All tools are normal — record and continue the current frame
+                record_tool_results(context, &results)?;
+            } else {
+                // Mix of normal and complete calls — defer normal results
+                deferred_results.extend(results);
+            }
+        }
+
+        // Handle `complete` tool calls by pushing frames
+        if !complete_calls.is_empty() {
+            // For V1: support at most one `complete` call per response.
+            // If multiple, only the first is pushed; the rest get error results.
+            let tc = complete_calls[0];
+            scope_counter += 1;
+            let inner_scope = format!("complete-{}", scope_counter);
+
+            let inner_account = tc
+                .input
+                .get("account")
+                .and_then(|v| v.as_str())
+                .unwrap_or("anthropic")
+                .to_string();
+            let inner_refs: Vec<ContextRef> =
+                serde_json::from_value(tc.input.get("refs").cloned().unwrap_or_default())
+                    .unwrap_or_default();
+
+            emit(AgentEvent::ToolCallStart {
+                name: "complete".into(),
+            });
+
+            stack.push(CompletionFrame {
+                account: inner_account,
+                refs: inner_refs,
+                scope: inner_scope,
+                pending_tool_use_id: Some(tc.id.clone()),
+            });
+
+            // If there are additional complete calls, return errors for them
+            for extra_tc in &complete_calls[1..] {
+                deferred_results.push(ToolResult {
+                    tool_use_id: extra_tc.id.clone(),
+                    content: serde_json::Value::String(
+                        "error: only one complete call per response is supported".into(),
+                    ),
+                });
+            }
+
+            // The loop will now process the inner completion frame.
+            // Deferred results will be recorded when the inner frame resolves.
+            continue;
+        }
     }
 }
 
@@ -1531,16 +1549,18 @@ mod tests {
     }
 
     #[test]
-    fn execute_tools_array_result_triggers_inner_loop() {
-        // When a tool write returns an exec handle containing a JSON array
-        // (stream events), execute_tools processes it as a completion result.
+    fn run_turn_complete_tool_pushes_frame() {
+        // When the LLM calls "complete" as a tool, the kernel pushes a new
+        // frame and fires a sub-completion. When the inner completion resolves,
+        // the text is delivered as the tool result for the parent.
         let mut store = MockStore::new();
-        // Set up context for the inner loop continuation
         store.set("gate/defaults/account", Value::String("test".into()));
-        store.set("system", Value::String("Inner prompt.".into()));
+        store.set("system", Value::String("You are helpful.".into()));
         store.set(
             "history/messages",
-            structfs_serde_store::json_to_value(serde_json::json!([])),
+            structfs_serde_store::json_to_value(
+                serde_json::json!([{"role": "user", "content": "hi"}]),
+            ),
         );
         store.set(
             "tools/schemas",
@@ -1549,61 +1569,40 @@ mod tests {
         store.set("gate/defaults/model", Value::String("test".into()));
         store.set("gate/defaults/max_tokens", Value::Integer(100));
 
-        // Pre-store an exec handle with text-only events at a known path.
-        // MockStore will return exec handles for tool writes, so we need to
-        // ensure the tool "some_tool" returns events (an array).
-        // We do this by directly seeding an exec handle that MockStore will
-        // assign on the next tool write.
-        //
-        // MockStore's next_exec_handle will create tools/exec/0001 with the
-        // value written to tools/some_tool. We need that value to be an array.
-        // But the tool input is {"text": "hello"}, which is what gets stored.
-        //
-        // Instead, test the inner loop function directly.
-        let events_json = serde_json::json!([
-            {"type": "text_delta", "text": "Inner response."},
-            {"type": "message_stop"}
-        ]);
-
-        let result = run_complete_inner_loop(&mut store, &events_json).unwrap();
-        assert_eq!(result, "Inner response.");
-    }
-
-    #[test]
-    fn inner_loop_with_tool_calls() {
-        let mut store = MockStore::new();
-        store.set("gate/defaults/account", Value::String("test".into()));
-        store.set("system", Value::String("Inner.".into()));
-        store.set(
-            "history/messages",
-            structfs_serde_store::json_to_value(serde_json::json!([])),
-        );
-        store.set(
-            "tools/schemas",
-            structfs_serde_store::json_to_value(serde_json::json!([])),
-        );
-        store.set("gate/defaults/model", Value::String("test".into()));
-        store.set("gate/defaults/max_tokens", Value::Integer(100));
-
-        // Second completion (after inner tool execution): text resolution
+        // Outer completion #1: LLM calls complete
         store.push_completion_response(serde_json::json!([
-            {"type": "text_delta", "text": "Resolved after tool."},
+            {"type": "tool_use_start", "id": "tc1", "name": "complete"},
+            {"type": "tool_use_input_delta", "delta": "{\"account\":\"test\",\"refs\":[{\"type\":\"system\",\"path\":\"system\"},{\"type\":\"raw\",\"content\":\"Summarize.\"}]}"},
+            {"type": "message_stop"}
+        ]));
+        // Inner completion: resolves to text
+        store.push_completion_response(serde_json::json!([
+            {"type": "text_delta", "text": "Inner result."},
+            {"type": "message_stop"}
+        ]));
+        // Outer completion #2: LLM produces final text
+        store.push_completion_response(serde_json::json!([
+            {"type": "text_delta", "text": "Final answer."},
             {"type": "message_stop"}
         ]));
 
-        // First "completion" events contain a tool call
-        let events_json = serde_json::json!([
-            {"type": "tool_use_start", "id": "inner_tc1", "name": "echo"},
-            {"type": "tool_use_input_delta", "delta": "{\"x\":1}"},
-            {"type": "message_stop"}
-        ]);
+        let mut events = vec![];
+        run_turn(&mut store, &mut |e| events.push(format!("{e:?}"))).unwrap();
 
-        let result = run_complete_inner_loop(&mut store, &events_json).unwrap();
-        assert_eq!(result, "Resolved after tool.");
+        // 3 TurnStarts: outer #1 + inner + outer #2
+        let turn_starts = events.iter().filter(|e| e.contains("TurnStart")).count();
+        assert_eq!(
+            turn_starts, 3,
+            "expected 3 TurnStart events (outer + inner + outer)"
+        );
+
+        assert!(events.iter().any(|e| e.contains("ToolCallStart")));
+        assert!(events.iter().any(|e| e.contains("ToolCallResult")));
+        assert!(events.iter().any(|e| e.contains("TurnEnd")));
     }
 
     #[test]
-    fn inner_loop_iteration_limit() {
+    fn run_turn_iteration_limit() {
         let mut store = MockStore::new();
         store.set("gate/defaults/account", Value::String("test".into()));
         store.set("system", Value::String("Loop.".into()));
@@ -1618,10 +1617,8 @@ mod tests {
         store.set("gate/defaults/model", Value::String("test".into()));
         store.set("gate/defaults/max_tokens", Value::Integer(100));
 
-        // Push MAX_COMPLETE_ITERATIONS tool-call responses to ensure we hit the limit.
-        // The first iteration is handled by run_complete_inner_loop's initial events,
-        // and the remaining iterations come from push_completion_response.
-        for _ in 0..MAX_COMPLETE_ITERATIONS {
+        // Push enough tool-call responses to exceed MAX_TOTAL_ITERATIONS
+        for _ in 0..(MAX_TOTAL_ITERATIONS + 1) {
             store.push_completion_response(serde_json::json!([
                 {"type": "tool_use_start", "id": "tc_loop", "name": "echo"},
                 {"type": "tool_use_input_delta", "delta": "{}"},
@@ -1629,14 +1626,7 @@ mod tests {
             ]));
         }
 
-        // Initial events: also a tool call
-        let events_json = serde_json::json!([
-            {"type": "tool_use_start", "id": "tc_init", "name": "echo"},
-            {"type": "tool_use_input_delta", "delta": "{}"},
-            {"type": "message_stop"}
-        ]);
-
-        let result = run_complete_inner_loop(&mut store, &events_json);
+        let result = run_turn(&mut store, &mut |_| {});
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("exceeded"));
     }

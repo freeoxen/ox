@@ -9,7 +9,8 @@ use std::path::PathBuf;
 use ox_broker::async_store::{AsyncReader, AsyncWriter, BoxFuture};
 use ox_context::SystemProvider;
 use ox_gate::GateStore;
-use ox_history::HistoryProvider;
+use ox_history::HistoryView;
+use ox_kernel::log::{LogStore, SharedLog};
 use ox_ui::ApprovalStore;
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Store, Writer};
 
@@ -22,7 +23,8 @@ use crate::agents::SYSTEM_PROMPT;
 /// Per-thread store collection holding 5 sync stores and 1 async store.
 pub struct ThreadNamespace {
     system: SystemProvider,
-    history: HistoryProvider,
+    history: HistoryView,
+    log: LogStore,
     tools: ox_tools::ToolStore,
     pub gate: GateStore,
     pub approval: ApprovalStore,
@@ -31,9 +33,11 @@ pub struct ThreadNamespace {
 impl ThreadNamespace {
     /// Fresh stores with default values.
     pub fn new_default() -> Self {
+        let shared_log = SharedLog::new();
         Self {
             system: SystemProvider::new(SYSTEM_PROMPT.to_string()),
-            history: HistoryProvider::new(),
+            history: HistoryView::new(shared_log.clone()),
+            log: LogStore::from_shared(shared_log),
             tools: ox_tools::ToolStore::empty(),
             gate: GateStore::new(),
             approval: ApprovalStore::new(),
@@ -91,6 +95,7 @@ impl ThreadNamespace {
         match prefix {
             "system" => Some((&mut self.system as &mut dyn Store, sub)),
             "history" => Some((&mut self.history as &mut dyn Store, sub)),
+            "log" => Some((&mut self.log as &mut dyn Store, sub)),
             "tools" => Some((&mut self.tools as &mut dyn Store, sub)),
             "gate" => Some((&mut self.gate as &mut dyn Store, sub)),
             _ => None,
