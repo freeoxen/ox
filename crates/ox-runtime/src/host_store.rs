@@ -55,7 +55,11 @@ impl<B: Reader + Writer + Send, E: HostEffects> HostStore<B, E> {
     pub fn handle_read(&mut self, path: &Path) -> Result<Option<Record>, StoreError> {
         if path == &path!("prompt") {
             tracing::debug!(path = %path, "effectful read: prompt synthesis");
-            return ox_context::synthesize_prompt(&mut self.backend);
+            let request = ox_kernel::synthesize(&mut self.backend)
+                .map_err(|e| StoreError::store("host_store", "read", e))?;
+            let value = structfs_serde_store::to_value(&request)
+                .map_err(|e| StoreError::store("host_store", "read", e.to_string()))?;
+            return Ok(Some(Record::parsed(value)));
         }
 
         // Route tools/* reads to ToolStore via effects.

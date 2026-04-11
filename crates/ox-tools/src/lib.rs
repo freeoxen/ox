@@ -5,8 +5,6 @@ pub mod native;
 pub mod os;
 pub mod policy_store;
 pub mod sandbox;
-pub mod turn;
-
 use std::collections::{BTreeMap, HashMap};
 
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer};
@@ -16,7 +14,6 @@ use crate::fs::FsModule;
 use crate::name_map::NameMap;
 use crate::native::NativeTool;
 use crate::os::OsModule;
-use crate::turn::{EffectOutcome, TurnStore};
 
 /// Describes a single tool's schema for registration with the agent framework.
 #[derive(Debug, Clone)]
@@ -46,7 +43,6 @@ pub struct ToolStore {
     name_map: NameMap,
     native_tools: HashMap<String, Box<dyn NativeTool>>,
     last_result: BTreeMap<String, Value>,
-    turn: TurnStore,
 }
 
 impl ToolStore {
@@ -71,7 +67,6 @@ impl ToolStore {
             name_map,
             native_tools: HashMap::new(),
             last_result: BTreeMap::new(),
-            turn: TurnStore::new(),
         }
     }
 
@@ -158,7 +153,7 @@ impl ToolStore {
         let first = path.components[0].as_str();
 
         match first {
-            "fs" | "os" | "completions" | "schemas" | "turn" => Some(ResolvedPath::Direct(path)),
+            "fs" | "os" | "completions" | "schemas" => Some(ResolvedPath::Direct(path)),
             _ => {
                 // Try wire-name resolution
                 if let Some(internal) = self.name_map.to_internal(first) {
@@ -266,54 +261,6 @@ impl Reader for ToolStore {
                 let sub = Path::from_components(path.components[1..].to_vec());
                 self.completions.read(&sub)
             }
-            "turn" => {
-                if path.len() < 2 {
-                    return Ok(None);
-                }
-                let action = path.components[1].as_str();
-                match action {
-                    "pending" => match self.turn.pending() {
-                        Some(effects) => {
-                            let arr: Vec<serde_json::Value> = effects
-                                .iter()
-                                .map(|e| {
-                                    serde_json::json!({
-                                        "id": e.call_id,
-                                        "name": e.wire_name,
-                                        "input": e.input,
-                                    })
-                                })
-                                .collect();
-                            let value =
-                                structfs_serde_store::json_to_value(serde_json::Value::Array(arr));
-                            Ok(Some(Record::parsed(value)))
-                        }
-                        None => Ok(Some(Record::parsed(Value::Null))),
-                    },
-                    "results" => {
-                        let outcomes = self.turn.take_results();
-                        let arr: Vec<serde_json::Value> = outcomes
-                            .iter()
-                            .map(|o| {
-                                let content = match &o.result {
-                                    Ok(v) => structfs_serde_store::value_to_json(v.clone()),
-                                    Err(v) => {
-                                        serde_json::json!({"error": structfs_serde_store::value_to_json(v.clone())})
-                                    }
-                                };
-                                serde_json::json!({
-                                    "tool_use_id": o.call_id,
-                                    "content": content,
-                                })
-                            })
-                            .collect();
-                        let value =
-                            structfs_serde_store::json_to_value(serde_json::Value::Array(arr));
-                        Ok(Some(Record::parsed(value)))
-                    }
-                    _ => Ok(None),
-                }
-            }
             "fs" | "os" => {
                 // Read pattern: module/{op}/result
                 if path.len() < 2 {
@@ -400,86 +347,6 @@ impl Writer for ToolStore {
             "completions" => {
                 let sub = Path::from_components(path.components[1..].to_vec());
                 self.completions.write(&sub, data)
-            }
-            "turn" => {
-                if path.len() < 2 {
-                    return Err(StoreError::store("ToolStore", "turn", "missing action"));
-                }
-                let action = path.components[1].as_str();
-                match action {
-                    "enqueue" => {
-                        // data is a JSON array of {id, name, input} objects
-                        let value = data
-                            .as_value()
-                            .ok_or_else(|| {
-                                StoreError::store(
-                                    "ToolStore",
-                                    "turn/enqueue",
-                                    "expected parsed record",
-                                )
-                            })?
-                            .clone();
-                        let json = structfs_serde_store::value_to_json(value);
-                        let calls: Vec<serde_json::Value> = match json {
-                            serde_json::Value::Array(arr) => arr,
-                            single => vec![single],
-                        };
-                        for call in calls {
-                            let id = call.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                            let name = call.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                            let input = call
-                                .get("input")
-                                .cloned()
-                                .unwrap_or(serde_json::Value::Null);
-                            self.turn.enqueue_tool_call(id, name, input);
-                        }
-                        Ok(path.clone())
-                    }
-                    "results" => {
-                        // Submit execution outcomes, clearing the pending queue.
-                        let value = data
-                            .as_value()
-                            .ok_or_else(|| {
-                                StoreError::store(
-                                    "ToolStore",
-                                    "turn/results",
-                                    "expected parsed record",
-                                )
-                            })?
-                            .clone();
-                        let json = structfs_serde_store::value_to_json(value);
-                        let arr = json.as_array().cloned().unwrap_or_default();
-                        let outcomes: Vec<EffectOutcome> = arr
-                            .into_iter()
-                            .map(|r| {
-                                let call_id = r
-                                    .get("call_id")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                let result_val = r.get("result").cloned().unwrap_or_default();
-                                let is_error =
-                                    r.get("error").and_then(|v| v.as_bool()).unwrap_or(false);
-                                let sv = structfs_serde_store::json_to_value(result_val);
-                                EffectOutcome {
-                                    call_id,
-                                    result: if is_error { Err(sv) } else { Ok(sv) },
-                                }
-                            })
-                            .collect();
-                        self.turn.submit_results(outcomes);
-                        Ok(path.clone())
-                    }
-                    "clear" => {
-                        self.turn.clear();
-                        Ok(path.clone())
-                    }
-                    _ => Err(StoreError::store(
-                        "ToolStore",
-                        "turn",
-                        format!("unknown turn action: {action}"),
-                    )),
-                }
             }
             "fs" | "os" => {
                 if path.len() < 2 {

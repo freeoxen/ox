@@ -7,15 +7,10 @@
 //! One concrete provider is included:
 //!
 //! - [`SystemProvider`] — holds the system prompt string
-//!
-//! Reading `path!("prompt")` from the namespace synthesizes a complete
-//! [`CompletionRequest`] by collecting state from all mounted providers.
 
-use ox_kernel::CompletionRequest;
 use ox_path::oxpath;
 use std::collections::BTreeMap;
-use structfs_core_store::{Error as StoreError, Path, Reader, Record, Store, Value, Writer, path};
-use structfs_serde_store::{to_value, value_to_json};
+use structfs_core_store::{Error as StoreError, Path, Reader, Record, Store, Value, Writer};
 
 // ---------------------------------------------------------------------------
 // Namespace — routes reads/writes to mounted stores by path prefix
@@ -25,9 +20,6 @@ use structfs_serde_store::{to_value, value_to_json};
 ///
 /// Paths are split on the first component: `path!("history/messages")` routes
 /// to the store mounted at `"history"` with sub-path `path!("messages")`.
-///
-/// The special path `"prompt"` is synthetic — it assembles a CompletionRequest
-/// by reading from sibling stores (system, history, tools, gate).
 pub struct Namespace {
     mounts: BTreeMap<String, Box<dyn Store>>,
 }
@@ -48,155 +40,6 @@ impl Namespace {
     pub fn mount(&mut self, prefix: &str, store: Box<dyn Store>) {
         self.mounts.insert(prefix.to_string(), store);
     }
-
-    fn synthesize_prompt(&mut self) -> Result<Option<Record>, StoreError> {
-        synthesize_prompt(self)
-    }
-}
-
-/// Synthesize a [`CompletionRequest`] by reading prompt components from `reader`.
-///
-/// Reads the following paths:
-/// - `system` → system prompt string
-/// - `history/messages` → conversation messages array
-/// - `tools/schemas` → tool schema array
-/// - `gate/defaults/model` → model identifier string
-/// - `gate/defaults/max_tokens` → token limit integer
-///
-/// When `reader` is a [`Namespace`], each path routes to the appropriate mounted
-/// store. This function exists as a standalone so it can be called with any
-/// [`Reader`] — for example a broker-backed adapter in the agent worker bridge.
-pub fn synthesize_prompt(reader: &mut dyn Reader) -> Result<Option<Record>, StoreError> {
-    tracing::debug!("synthesizing prompt");
-
-    // Read system prompt
-    let system_str = {
-        let record = reader.read(&path!("system"))?.ok_or_else(|| {
-            StoreError::store("synthesize_prompt", "read", "system store returned None")
-        })?;
-        match record {
-            Record::Parsed(Value::String(s)) => {
-                tracing::debug!(system_prompt_len = s.len(), "read system prompt");
-                s
-            }
-            _ => {
-                tracing::error!("expected string from system store");
-                return Err(StoreError::store(
-                    "synthesize_prompt",
-                    "read",
-                    "expected string from system store",
-                ));
-            }
-        }
-    };
-
-    // Read history messages
-    let messages_json = {
-        let record = reader.read(&path!("history/messages"))?.ok_or_else(|| {
-            StoreError::store("synthesize_prompt", "read", "history store returned None")
-        })?;
-        match record {
-            Record::Parsed(v) => value_to_json(v),
-            _ => {
-                return Err(StoreError::store(
-                    "synthesize_prompt",
-                    "read",
-                    "expected parsed record from history",
-                ));
-            }
-        }
-    };
-
-    // Read tool schemas
-    let tools_json = {
-        let record = reader.read(&path!("tools/schemas"))?.ok_or_else(|| {
-            StoreError::store("synthesize_prompt", "read", "tools store returned None")
-        })?;
-        match record {
-            Record::Parsed(v) => value_to_json(v),
-            _ => {
-                return Err(StoreError::store(
-                    "synthesize_prompt",
-                    "read",
-                    "expected parsed record from tools",
-                ));
-            }
-        }
-    };
-
-    // Read model ID
-    let model_id = {
-        let record = reader.read(&path!("gate/defaults/model"))?.ok_or_else(|| {
-            StoreError::store(
-                "synthesize_prompt",
-                "read",
-                "gate store returned None for defaults/model",
-            )
-        })?;
-        match record {
-            Record::Parsed(Value::String(s)) => s,
-            _ => {
-                return Err(StoreError::store(
-                    "synthesize_prompt",
-                    "read",
-                    "expected string from gate store for defaults/model",
-                ));
-            }
-        }
-    };
-
-    // Read max_tokens
-    let max_tokens = {
-        let record = reader
-            .read(&path!("gate/defaults/max_tokens"))?
-            .ok_or_else(|| {
-                StoreError::store(
-                    "synthesize_prompt",
-                    "read",
-                    "gate store returned None for defaults/max_tokens",
-                )
-            })?;
-        match record {
-            Record::Parsed(Value::Integer(n)) => n as u32,
-            _ => {
-                return Err(StoreError::store(
-                    "synthesize_prompt",
-                    "read",
-                    "expected integer from gate store for defaults/max_tokens",
-                ));
-            }
-        }
-    };
-
-    let messages: Vec<serde_json::Value> = serde_json::from_value(messages_json).map_err(|e| {
-        tracing::error!(error = %e, "failed to parse messages");
-        StoreError::store("synthesize_prompt", "read", e.to_string())
-    })?;
-    let tools: Vec<ox_kernel::ToolSchema> = serde_json::from_value(tools_json).map_err(|e| {
-        tracing::error!(error = %e, "failed to parse tool schemas");
-        StoreError::store("synthesize_prompt", "read", e.to_string())
-    })?;
-
-    tracing::debug!(
-        message_count = messages.len(),
-        tool_count = tools.len(),
-        model = %model_id,
-        max_tokens,
-        "prompt components assembled"
-    );
-
-    let request = CompletionRequest {
-        model: model_id,
-        max_tokens,
-        system: system_str,
-        messages,
-        tools,
-        stream: true,
-    };
-
-    let value = to_value(&request)
-        .map_err(|e| StoreError::store("synthesize_prompt", "read", e.to_string()))?;
-    Ok(Some(Record::parsed(value)))
 }
 
 impl Default for Namespace {
@@ -207,10 +50,6 @@ impl Default for Namespace {
 
 impl Reader for Namespace {
     fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
-        if from == &path!("prompt") {
-            return self.synthesize_prompt();
-        }
-
         let (prefix, sub) = split_path(from);
         if prefix.is_empty() {
             return Ok(None);
@@ -462,26 +301,6 @@ mod tests {
         // History snapshot is read-only — write must fail through the namespace
         let result = ns.write(&path!("history/snapshot"), Record::parsed(Value::Null));
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn synthesize_prompt_standalone() {
-        let mut ns = build_full_namespace();
-        let user_msg = serde_json::json!({"role": "user", "content": "hello"});
-        ns.write(
-            &path!("history/append"),
-            Record::parsed(structfs_serde_store::json_to_value(user_msg)),
-        )
-        .unwrap();
-
-        let result = synthesize_prompt(&mut ns).unwrap().unwrap();
-        let value = result.as_value().unwrap().clone();
-        let json = structfs_serde_store::value_to_json(value);
-        let request: CompletionRequest = serde_json::from_value(json).unwrap();
-        assert_eq!(request.model, "claude-sonnet-4-20250514");
-        assert_eq!(request.system, "You are helpful.");
-        assert_eq!(request.messages.len(), 1);
-        assert!(request.stream);
     }
 
     #[test]

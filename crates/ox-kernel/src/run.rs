@@ -1,7 +1,7 @@
 //! Stateless free functions that implement the agentic loop.
 //!
-//! These replace the [`Kernel`](crate::Kernel) struct's three-phase API with
-//! composable building blocks that operate on StructFS stores directly.
+//! These are composable building blocks that operate on StructFS stores
+//! directly — no struct, no mutable state between calls.
 
 use crate::{
     AgentEvent, CompletionRequest, ContentBlock, StreamEvent, ToolCall, ToolResult, ToolSchema,

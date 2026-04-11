@@ -1,7 +1,8 @@
 //! Agent composition for the ox framework.
 //!
-//! `ox-core` wires together [`Kernel`], [`Namespace`], and the various
-//! providers into a single [`Agent`] struct.
+//! `ox-core` wires together [`Namespace`] and the various providers into a
+//! single [`Agent`] struct. The kernel is a set of free functions
+//! ([`run_turn`], [`synthesize`], etc.) that operate on the namespace.
 //!
 //! This is the main entry point for native (non-Wasm) consumers. It
 //! re-exports all public types from `ox-kernel`, `ox-context`, `ox-gate`,
@@ -26,21 +27,21 @@ pub use ox_history::HistoryProvider;
 // --- Re-exports from ox-tools ---
 pub use ox_tools;
 
-// --- Re-exports from ox-kernel (core types, traits, state machine) ---
+// --- Re-exports from ox-kernel (core types, traits, free functions) ---
 pub use ox_kernel::{
-    AgentEvent, CompletionRequest, ContentBlock, Kernel, Message, Path, Reader, Record, Store,
+    AgentEvent, CompletionRequest, ContentBlock, Message, Path, Reader, Record, Store,
     StoreError, StreamEvent, ToolCall, ToolResult, ToolSchema, Value, Writer, path,
     serialize_assistant_message, serialize_tool_results,
+    run_turn, synthesize, accumulate_response, record_turn, execute_tools, record_tool_results,
 };
 
-/// The Agent composes a Kernel, Namespace (with stores), and a ToolStore.
+/// The Agent composes a Namespace (with stores) and subscribers.
 ///
 /// It owns the full state of one agent session. Callers drive the kernel
-/// directly or use the Wasm runtime / custom loops — there is no built-in
-/// `prompt()` method.
-#[allow(dead_code)] // Fields used when kernel loop is driven through ToolStore
+/// via free functions ([`run_turn`], [`synthesize`], etc.) or use the Wasm
+/// runtime / custom loops — there is no built-in `prompt()` method.
+#[allow(dead_code)] // Fields accessed by consumers via namespace
 pub struct Agent {
-    kernel: Kernel,
     context: Namespace,
     subscribers: Vec<Box<dyn FnMut(AgentEvent)>>,
 }
@@ -49,16 +50,17 @@ impl Agent {
     /// Create a new agent with the given system prompt and tool store.
     ///
     /// Sets up the internal [`Namespace`] with providers for the system
-    /// prompt, history, and tools. Use [`ox_tools::ToolStore`] to provide
-    /// both tool schemas and execution.
+    /// prompt, history, tools, gate, and log. Use [`ox_tools::ToolStore`]
+    /// to provide both tool schemas and execution.
     pub fn new(system_prompt: String, tool_store: ox_tools::ToolStore) -> Self {
         let mut context = Namespace::new();
         context.mount("system", Box::new(SystemProvider::new(system_prompt)));
         context.mount("history", Box::new(HistoryProvider::new()));
         context.mount("tools", Box::new(tool_store));
+        context.mount("gate", Box::new(ox_gate::GateStore::new()));
+        context.mount("log", Box::new(ox_kernel::log::LogStore::new()));
 
         Self {
-            kernel: Kernel::new("default".into()),
             context,
             subscribers: Vec::new(),
         }
