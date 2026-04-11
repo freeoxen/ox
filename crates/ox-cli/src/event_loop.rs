@@ -1221,14 +1221,44 @@ pub async fn run_async(
                     }
                 }
                 Event::Mouse(mouse) => {
-                    // Click in input area — move cursor
-                    if let MouseEventKind::Down(_) = mouse.kind {
-                        if mode_owned == "insert" {
-                            if let Some(byte_pos) = text_input_view.click_to_byte_offset(mouse.column, mouse.row) {
-                                input_session.cursor = byte_pos;
+                    // Border drag handling
+                    if mode_owned == "insert" {
+                        match mouse.kind {
+                            MouseEventKind::Down(_) if text_input_view.is_on_border(mouse.row) => {
+                                text_input_view.start_border_drag(mouse.row);
+                            }
+                            MouseEventKind::Drag(_) if text_input_view.is_dragging() => {
+                                text_input_view.update_border_drag(mouse.row);
+                            }
+                            MouseEventKind::Up(_) if text_input_view.is_dragging() => {
+                                text_input_view.end_border_drag();
+                            }
+                            // Click in input area — move cursor
+                            MouseEventKind::Down(_) => {
+                                if let Some(byte_pos) = text_input_view.click_to_byte_offset(mouse.column, mouse.row) {
+                                    input_session.cursor = byte_pos;
+                                }
+                            }
+                            // Scroll in input area
+                            MouseEventKind::ScrollUp if text_input_view.contains(mouse.column, mouse.row) => {
+                                text_input_view.scroll_by(-3);
+                            }
+                            MouseEventKind::ScrollDown if text_input_view.contains(mouse.column, mouse.row) => {
+                                text_input_view.scroll_by(3);
+                            }
+                            _ => {
+                                // Fall through to normal mouse dispatch
+                                dispatch_mouse_owned(
+                                    client,
+                                    has_active_thread,
+                                    has_approval_pending,
+                                    dialog.pending_customize.is_some(),
+                                    mouse.kind,
+                                ).await;
                             }
                         }
-                    }
+                    } else
+
                     // Click on settings edit dialog
                     if let MouseEventKind::Down(_) = mouse.kind {
                         if screen_owned == "settings" && settings.editing.is_some() {

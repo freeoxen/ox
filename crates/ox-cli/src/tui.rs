@@ -30,7 +30,7 @@ pub(crate) fn draw(
     }
     constraints.push(Constraint::Min(1)); // content
     let _input_height = if in_insert {
-        let h = desired_input_height(text_input_view.content(), frame.area().width);
+        let h = desired_input_height(text_input_view.content(), frame.area().width, text_input_view.height_override());
         constraints.push(Constraint::Length(h));
         h
     } else {
