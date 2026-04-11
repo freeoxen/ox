@@ -548,7 +548,13 @@ mod tests {
                 Record::Parsed(v) => v,
                 _ => return Err(StoreError::store("mock", "write", "expected parsed")),
             };
-            self.data.insert(to.to_string(), value);
+            let key = to.to_string();
+            self.data.insert(key.clone(), value.clone());
+            // Simulate tool execution: writing to tools/X (not tools/X/result) also stores
+            // a result at tools/X/result so execute_tools can read it back.
+            if key.starts_with("tools/") && !key.contains("/result") {
+                self.data.insert(format!("{key}/result"), value);
+            }
             Ok(to.clone())
         }
     }
@@ -760,5 +766,144 @@ mod tests {
                 .iter()
                 .any(|(path, _)| path == "history/append")
         );
+    }
+
+    #[test]
+    fn agent_event_to_json_all_variants() {
+        let events = vec![
+            AgentEvent::TurnStart,
+            AgentEvent::TextDelta("hi".into()),
+            AgentEvent::ToolCallStart { name: "read_file".into() },
+            AgentEvent::ToolCallResult { name: "read_file".into(), result: "ok".into() },
+            AgentEvent::TurnEnd,
+            AgentEvent::Error("oops".into()),
+        ];
+        for event in &events {
+            let json = agent_event_to_json(event);
+            assert!(json.get("type").is_some(), "missing 'type' field in {json:?}");
+        }
+    }
+
+    #[test]
+    fn deserialize_events_from_record() {
+        let json = serde_json::json!([
+            {"type": "text_delta", "text": "hello"},
+            {"type": "message_stop"}
+        ]);
+        let record = Record::parsed(structfs_serde_store::json_to_value(json));
+        let events = deserialize_events(record).unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], StreamEvent::TextDelta(t) if t == "hello"));
+        assert!(matches!(&events[1], StreamEvent::MessageStop));
+    }
+
+    #[test]
+    fn read_default_account_returns_stored_value() {
+        let mut store = MockStore::new();
+        store.set("gate/defaults/account", Value::String("openai".into()));
+        let account = read_default_account(&mut store).unwrap();
+        assert_eq!(account, "openai");
+    }
+
+    #[test]
+    fn read_default_account_defaults_to_anthropic() {
+        let mut store = MockStore::new();
+        let account = read_default_account(&mut store).unwrap();
+        assert_eq!(account, "anthropic");
+    }
+
+    #[test]
+    fn execute_tools_writes_and_reads_results() {
+        let mut store = MockStore::new();
+        let tool_calls = vec![ToolCall {
+            id: "tc1".into(),
+            name: "echo".into(),
+            input: serde_json::json!({"text": "hello"}),
+        }];
+        let mut events = vec![];
+        let results =
+            execute_tools(&mut store, &tool_calls, &mut |e| events.push(format!("{e:?}")))
+                .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].tool_use_id, "tc1");
+        assert!(
+            events.iter().any(|e| e.contains("ToolCallStart")),
+            "expected ToolCallStart event"
+        );
+        assert!(
+            events.iter().any(|e| e.contains("ToolCallResult")),
+            "expected ToolCallResult event"
+        );
+    }
+
+    #[test]
+    fn send_completion_writes_request_and_reads_response() {
+        let mut store = MockStore::new();
+        // Pre-populate the response path that send_completion will read from.
+        let events_json = serde_json::json!([
+            {"type": "text_delta", "text": "hello"},
+            {"type": "message_stop"}
+        ]);
+        store.set(
+            "tools/completions/complete/test/response",
+            structfs_serde_store::json_to_value(events_json),
+        );
+
+        let request = CompletionRequest {
+            model: "test".into(),
+            max_tokens: 100,
+            system: "test".into(),
+            messages: vec![],
+            tools: vec![],
+            stream: true,
+        };
+        let events = send_completion(&mut store, "test", &request).unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], StreamEvent::TextDelta(t) if t == "hello"));
+        assert!(matches!(&events[1], StreamEvent::MessageStop));
+    }
+
+    #[test]
+    fn log_entry_writes_to_log_append() {
+        let mut store = MockStore::new();
+        log_entry(&mut store, serde_json::json!({"type": "meta", "data": "test"}));
+        assert!(
+            store.appended.iter().any(|(p, _)| p == "log/append"),
+            "expected log/append write"
+        );
+    }
+
+    #[test]
+    fn run_turn_text_only() {
+        let mut store = MockStore::new();
+        // Context paths read by synthesize + read_default_account
+        store.set("gate/defaults/account", Value::String("test".into()));
+        store.set("system", Value::String("You are helpful.".into()));
+        store.set(
+            "history/messages",
+            structfs_serde_store::json_to_value(
+                serde_json::json!([{"role": "user", "content": "hi"}]),
+            ),
+        );
+        store.set(
+            "tools/schemas",
+            structfs_serde_store::json_to_value(serde_json::json!([])),
+        );
+        store.set("gate/defaults/model", Value::String("test-model".into()));
+        store.set("gate/defaults/max_tokens", Value::Integer(100));
+        // Pre-populate completion response (text only — no tool calls → loop exits)
+        store.set(
+            "tools/completions/complete/test/response",
+            structfs_serde_store::json_to_value(serde_json::json!([
+                {"type": "text_delta", "text": "Hello!"},
+                {"type": "message_stop"}
+            ])),
+        );
+
+        let mut events = vec![];
+        run_turn(&mut store, &mut |e| events.push(format!("{e:?}"))).unwrap();
+        assert!(events.iter().any(|e| e.contains("TurnStart")), "expected TurnStart");
+        assert!(events.iter().any(|e| e.contains("TurnEnd")), "expected TurnEnd");
+        assert!(events.iter().any(|e| e.contains("TextDelta")), "expected TextDelta");
     }
 }
