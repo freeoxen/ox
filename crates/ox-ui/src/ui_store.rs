@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer, path};
 
 use crate::command::{Command, TxnLog};
+use crate::text_input_store::TextInputStore;
 
 // ---------------------------------------------------------------------------
 // Enums
@@ -51,8 +52,7 @@ pub struct UiStore {
     scroll: usize,
     scroll_max: usize,
     viewport_height: usize,
-    input: String,
-    cursor: usize,
+    text_input_store: TextInputStore,
     modal: Option<Value>,
     status: Option<String>,
     /// Pending application-level action for the TUI to handle.
@@ -77,8 +77,7 @@ impl UiStore {
             scroll: 0,
             scroll_max: 0,
             viewport_height: 0,
-            input: String::new(),
-            cursor: 0,
+            text_input_store: TextInputStore::new(),
             modal: None,
             status: None,
             pending_action: None,
@@ -161,7 +160,7 @@ impl UiStore {
         !self.search_chips.is_empty() || !self.search_live_query.is_empty()
     }
 
-    fn all_fields_map(&self) -> Value {
+    fn all_fields_map(&mut self) -> Value {
         let mut map = BTreeMap::new();
         map.insert("screen".to_string(), self.screen_value());
         map.insert("active_thread".to_string(), self.active_thread_value());
@@ -184,8 +183,17 @@ impl UiStore {
             "scroll_max".to_string(),
             Value::Integer(self.scroll_max as i64),
         );
-        map.insert("input".to_string(), Value::String(self.input.clone()));
-        map.insert("cursor".to_string(), Value::Integer(self.cursor as i64));
+        // Read input snapshot from TextInputStore
+        if let Ok(Some(record)) = self.text_input_store.read(&path!("")) {
+            if let Some(Value::Map(input_map)) = record.as_value() {
+                if let Some(content) = input_map.get("content") {
+                    map.insert("input".to_string(), content.clone());
+                }
+                if let Some(cursor) = input_map.get("cursor") {
+                    map.insert("cursor".to_string(), cursor.clone());
+                }
+            }
+        }
         map.insert("modal".to_string(), self.modal_value());
         map.insert("status".to_string(), self.status_value());
         map.insert("pending_action".to_string(), self.pending_action_value());
@@ -245,8 +253,20 @@ impl Reader for UiStore {
             "scroll" => Value::Integer(self.scroll as i64),
             "scroll_max" => Value::Integer(self.scroll_max as i64),
             "viewport_height" => Value::Integer(self.viewport_height as i64),
-            "input" => Value::String(self.input.clone()),
-            "cursor" => Value::Integer(self.cursor as i64),
+            "input" => {
+                // Delegate to TextInputStore. Single-component "input" → read sub-path ""
+                // Multi-component "input/..." → read the sub-path after "input"
+                let sub = if from.components.len() > 1 {
+                    Path::parse(&from.components[1..].join("/")).unwrap_or_else(|_| path!(""))
+                } else {
+                    path!("")
+                };
+                return self.text_input_store.read(&sub);
+            }
+            "cursor" => {
+                // Legacy read path — delegate to text_input_store
+                return self.text_input_store.read(&path!("cursor"));
+            }
             "modal" => self.modal_value(),
             "status" => self.status_value(),
             "pending_action" => self.pending_action_value(),
@@ -270,6 +290,18 @@ impl Writer for UiStore {
         } else {
             to.components[0].as_str()
         };
+
+        // Delegate input/* writes to TextInputStore before Command parsing,
+        // since edit sequences use a different protocol.
+        if command == "input" {
+            let sub = if to.components.len() > 1 {
+                Path::parse(&to.components[1..].join("/")).unwrap_or_else(|_| path!(""))
+            } else {
+                path!("")
+            };
+            return self.text_input_store.write(&sub, data);
+        }
+
         let value = data
             .as_value()
             .ok_or_else(|| StoreError::store("ui", "write", "write data must contain a value"))?;
@@ -332,8 +364,10 @@ impl Writer for UiStore {
                 let ctx = Self::parse_insert_context(context_str)?;
                 self.mode = Mode::Insert;
                 self.insert_context = Some(ctx);
-                self.input.clear();
-                self.cursor = 0;
+                // Clear input via TextInputStore
+                let _ = self
+                    .text_input_store
+                    .write(&path!("clear"), Record::parsed(Value::Null));
                 Ok(path!("mode"))
             }
             "exit_insert" => {
@@ -342,23 +376,24 @@ impl Writer for UiStore {
                 Ok(path!("mode"))
             }
             "set_input" => {
-                if let Some(text) = cmd.get_str("text") {
-                    self.input = text.to_string();
-                }
-                if let Some(pos) = cmd.get_int("cursor") {
-                    let pos = pos.max(0) as usize;
-                    self.cursor = pos.min(self.input.len());
+                // Legacy: delegate to TextInputStore replace
+                let mut replace_map = BTreeMap::new();
+                let text = cmd.get_str("text").unwrap_or("").to_string();
+                replace_map.insert("content".to_string(), Value::String(text.clone()));
+                let cursor_pos = if let Some(pos) = cmd.get_int("cursor") {
+                    (pos.max(0) as usize).min(text.len())
                 } else {
-                    // Clamp existing cursor if input changed
-                    self.cursor = self.cursor.min(self.input.len());
-                }
-                Ok(path!("input"))
+                    0
+                };
+                replace_map.insert("cursor".to_string(), Value::Integer(cursor_pos as i64));
+                self.text_input_store.write(
+                    &path!("replace"),
+                    Record::parsed(Value::Map(replace_map)),
+                )
             }
-            "clear_input" => {
-                self.input.clear();
-                self.cursor = 0;
-                Ok(path!("input"))
-            }
+            "clear_input" => self
+                .text_input_store
+                .write(&path!("clear"), Record::parsed(Value::Null)),
             // Scroll commands: names match VISUAL direction.
             // scroll_up = viewport moves up = see older = scroll value increases
             // scroll_down = viewport moves down = see newer = scroll value decreases
@@ -448,26 +483,6 @@ impl Writer for UiStore {
             "set_status" => {
                 self.status = cmd.get_str("text").map(|s| s.to_string());
                 Ok(path!("status"))
-            }
-            // -- Text editing commands --
-            "insert_char" => {
-                let ch = cmd
-                    .get_str("char")
-                    .ok_or_else(|| StoreError::store("ui", "insert_char", "missing char"))?;
-                let at = cmd
-                    .get_int("at")
-                    .map(|n| (n.max(0) as usize).min(self.input.len()))
-                    .unwrap_or(self.cursor);
-                self.input.insert_str(at, ch);
-                self.cursor = at + ch.len();
-                Ok(path!("input"))
-            }
-            "delete_char" => {
-                if self.cursor > 0 {
-                    self.cursor -= 1;
-                    self.input.remove(self.cursor);
-                }
-                Ok(path!("input"))
             }
             "search_insert_char" => {
                 let ch = cmd
@@ -699,7 +714,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            read_str(&mut store, "input"),
+            read_str(&mut store, "input/content"),
             Value::String("leftover".into())
         );
 
@@ -710,7 +725,10 @@ mod tests {
                 cmd_map(&[("context", Value::String("reply".into()))]),
             )
             .unwrap();
-        assert_eq!(read_str(&mut store, "input"), Value::String("".into()));
+        assert_eq!(
+            read_str(&mut store, "input/content"),
+            Value::String("".into())
+        );
         assert_eq!(read_str(&mut store, "cursor"), Value::Integer(0));
     }
 
@@ -726,11 +744,17 @@ mod tests {
                 ]),
             )
             .unwrap();
-        assert_eq!(read_str(&mut store, "input"), Value::String("hello".into()));
+        assert_eq!(
+            read_str(&mut store, "input/content"),
+            Value::String("hello".into())
+        );
         assert_eq!(read_str(&mut store, "cursor"), Value::Integer(3));
 
         store.write(&path!("clear_input"), empty_cmd()).unwrap();
-        assert_eq!(read_str(&mut store, "input"), Value::String("".into()));
+        assert_eq!(
+            read_str(&mut store, "input/content"),
+            Value::String("".into())
+        );
         assert_eq!(read_str(&mut store, "cursor"), Value::Integer(0));
     }
 
@@ -784,70 +808,40 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // --- Text editing commands ---
+    // --- Text input delegation ---
 
     #[test]
-    fn insert_char_at_cursor() {
+    fn input_edit_via_ui_store() {
+        use crate::text_input_store::{Edit, EditOp, EditSequence, EditSource};
         let mut store = UiStore::new();
+        let seq = EditSequence {
+            edits: vec![Edit {
+                op: EditOp::Insert {
+                    text: "hello".to_string(),
+                },
+                at: 0,
+                source: EditSource::Key,
+                ts_ms: 0,
+            }],
+            generation: 0,
+        };
+        let value = structfs_serde_store::to_value(&seq).unwrap();
         store
-            .write(
-                &path!("insert_char"),
-                cmd_map(&[
-                    ("char", Value::String("h".into())),
-                    ("at", Value::Integer(0)),
-                ]),
-            )
-            .unwrap();
-        assert_eq!(read_str(&mut store, "input"), Value::String("h".into()));
-        assert_eq!(read_str(&mut store, "cursor"), Value::Integer(1));
-
-        store
-            .write(
-                &path!("insert_char"),
-                cmd_map(&[
-                    ("char", Value::String("i".into())),
-                    ("at", Value::Integer(1)),
-                ]),
-            )
-            .unwrap();
-        assert_eq!(read_str(&mut store, "input"), Value::String("hi".into()));
-        assert_eq!(read_str(&mut store, "cursor"), Value::Integer(2));
-    }
-
-    #[test]
-    fn delete_char_at_cursor() {
-        let mut store = UiStore::new();
-        store
-            .write(
-                &path!("set_input"),
-                cmd_map(&[
-                    ("text", Value::String("hello".into())),
-                    ("cursor", Value::Integer(3)),
-                ]),
-            )
+            .write(&path!("input/edit"), Record::parsed(value))
             .unwrap();
 
-        store.write(&path!("delete_char"), empty_cmd()).unwrap();
-        assert_eq!(read_str(&mut store, "input"), Value::String("helo".into()));
-        assert_eq!(read_str(&mut store, "cursor"), Value::Integer(2));
-    }
+        // Read via "input" (snapshot)
+        let snap = read_str(&mut store, "input");
+        match snap {
+            Value::Map(m) => {
+                assert_eq!(m.get("content"), Some(&Value::String("hello".to_string())));
+                assert_eq!(m.get("cursor"), Some(&Value::Integer(5)));
+            }
+            _ => panic!("expected Map from input read"),
+        }
 
-    #[test]
-    fn delete_char_at_zero_is_noop() {
-        let mut store = UiStore::new();
-        store
-            .write(
-                &path!("set_input"),
-                cmd_map(&[
-                    ("text", Value::String("hi".into())),
-                    ("cursor", Value::Integer(0)),
-                ]),
-            )
-            .unwrap();
-
-        store.write(&path!("delete_char"), empty_cmd()).unwrap();
-        assert_eq!(read_str(&mut store, "input"), Value::String("hi".into()));
-        assert_eq!(read_str(&mut store, "cursor"), Value::Integer(0));
+        // Read via legacy "cursor" path
+        assert_eq!(read_str(&mut store, "cursor"), Value::Integer(5));
     }
 
     // --- Pending action commands ---

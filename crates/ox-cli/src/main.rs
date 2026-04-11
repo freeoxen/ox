@@ -19,6 +19,7 @@ mod session;
 mod settings_state;
 mod settings_view;
 mod tab_bar;
+mod text_input_view;
 mod theme;
 pub(crate) mod thread_registry;
 mod thread_view;
@@ -177,7 +178,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
     let mut terminal = ratatui::init();
-    crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture).ok();
+    crossterm::execute!(
+        std::io::stdout(),
+        crossterm::event::EnableMouseCapture,
+        crossterm::event::EnableBracketedPaste,
+    )
+    .ok();
 
     let result = rt.block_on(event_loop::run_async(
         &mut app,
@@ -187,7 +193,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         needs_setup,
     ));
 
-    crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture).ok();
+    crossterm::execute!(
+        std::io::stdout(),
+        crossterm::event::DisableMouseCapture,
+        crossterm::event::DisableBracketedPaste,
+    )
+    .ok();
     ratatui::restore();
 
     // Persist runtime config changes to ~/.ox/config.toml

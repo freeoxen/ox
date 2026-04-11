@@ -17,6 +17,7 @@ pub(crate) fn draw(
     vs: &ViewState,
     settings: &crate::settings_state::SettingsState,
     theme: &Theme,
+    text_input_view: &mut crate::text_input_view::TextInputView,
 ) -> (Option<usize>, usize) {
     let in_insert = vs.mode == "insert";
     let show_filter = vs.active_thread.is_none() && vs.search_active;
@@ -90,19 +91,22 @@ pub(crate) fn draw(
         } else {
             ctx_label
         };
-        let input_block = Block::default()
-            .borders(Borders::TOP)
-            .border_style(theme.input_border)
-            .title(title);
-        let input = Paragraph::new(format!("> {}", vs.input)).block(input_block);
-        frame.render_widget(input, input_area);
 
-        // Cursor
-        if vs.approval_pending.is_none()
+        // Hide cursor when a modal overlay is active or in search context
+        let show_cursor = vs.approval_pending.is_none()
             && vs.pending_customize.is_none()
-            && vs.insert_context.as_deref() != Some("search")
-        {
-            frame.set_cursor_position((input_area.x + vs.cursor as u16 + 2, input_area.y + 1));
+            && vs.insert_context.as_deref() != Some("search");
+
+        if show_cursor {
+            text_input_view.render(frame, input_area, theme.input_border, title);
+        } else {
+            // Render without cursor (use a plain Paragraph like before)
+            let input_block = Block::default()
+                .borders(Borders::TOP)
+                .border_style(theme.input_border)
+                .title(title);
+            let input = Paragraph::new(vs.input.as_str()).block(input_block);
+            frame.render_widget(input, input_area);
         }
     }
 

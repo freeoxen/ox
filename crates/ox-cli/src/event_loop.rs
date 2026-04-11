@@ -4,8 +4,121 @@ use crate::theme::Theme;
 use crate::types::{APPROVAL_OPTIONS, CustomizeState};
 use crate::view_state::fetch_view_state;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
+use ox_ui::text_input_store::{Edit, EditOp, EditSequence, EditSource};
 use std::time::Duration;
 use structfs_core_store::Writer as StructWriter;
+
+// ---------------------------------------------------------------------------
+// InputSession — optimistic local input state
+// ---------------------------------------------------------------------------
+
+struct InputSession {
+    content: String,
+    cursor: usize,
+    pending_edits: Vec<Edit>,
+    generation: u64,
+}
+
+impl InputSession {
+    fn new() -> Self {
+        Self {
+            content: String::new(),
+            cursor: 0,
+            pending_edits: Vec::new(),
+            generation: 0,
+        }
+    }
+
+    /// Insert text at the current cursor position, push an Edit.
+    fn insert(&mut self, text: &str, source: EditSource) {
+        let at = self.cursor.min(self.content.len());
+        self.content.insert_str(at, text);
+        self.cursor = at + text.len();
+        self.pending_edits.push(Edit {
+            op: EditOp::Insert {
+                text: text.to_string(),
+            },
+            at,
+            source,
+            ts_ms: now_ms(),
+        });
+    }
+
+    /// Delete one char before cursor (backspace), push an Edit.
+    fn backspace(&mut self) {
+        if self.cursor > 0 {
+            let at = self.cursor - 1;
+            let end = at + 1;
+            if end <= self.content.len() {
+                self.content.drain(at..end);
+                self.cursor = at;
+                self.pending_edits.push(Edit {
+                    op: EditOp::Delete { len: 1 },
+                    at,
+                    source: EditSource::Key,
+                    ts_ms: now_ms(),
+                });
+            }
+        }
+    }
+
+    /// Clear all content, push a Delete edit for the whole content.
+    fn clear(&mut self) {
+        if !self.content.is_empty() {
+            let len = self.content.len();
+            self.pending_edits.push(Edit {
+                op: EditOp::Delete { len },
+                at: 0,
+                source: EditSource::Key,
+                ts_ms: now_ms(),
+            });
+            self.content.clear();
+            self.cursor = 0;
+        }
+    }
+
+    /// Reset session after submission (clear content + bump generation).
+    fn reset_after_submit(&mut self) {
+        self.content.clear();
+        self.cursor = 0;
+        self.pending_edits.clear();
+        self.generation += 1;
+    }
+
+    /// Initialize from broker state.
+    fn init_from(&mut self, content: String, cursor: usize) {
+        self.content = content;
+        self.cursor = cursor.min(self.content.len());
+        self.pending_edits.clear();
+    }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Flush pending edits to the broker as a single EditSequence write.
+async fn flush_pending_edits(
+    input_session: &mut InputSession,
+    client: &ox_broker::ClientHandle,
+) {
+    if !input_session.pending_edits.is_empty() {
+        let seq = EditSequence {
+            edits: std::mem::take(&mut input_session.pending_edits),
+            generation: input_session.generation,
+        };
+        let value = structfs_serde_store::to_value(&seq).unwrap();
+        let _ = client
+            .write(
+                &structfs_core_store::path!("ui/input/edit"),
+                structfs_core_store::Record::parsed(value),
+            )
+            .await;
+    }
+}
 
 /// Dialog-local state, owned by the event loop (not App, not broker).
 pub(crate) struct DialogState {
@@ -34,6 +147,9 @@ pub async fn run_async(
         approval_selected: 0,
         pending_customize: None,
     };
+    let mut input_session = InputSession::new();
+    let mut text_input_view = crate::text_input_view::TextInputView::new();
+    let mut prev_mode = String::new();
     let mut settings = if needs_setup {
         // Navigate to settings screen via broker
         client
@@ -88,7 +204,6 @@ pub async fn run_async(
         // extract the owned fields we need for pending-action handling and
         // event dispatch, then drop the borrow.
         let pending_action: Option<String>;
-        let input_text: String;
         let screen_owned: String;
         let mode_owned: String;
         let insert_context_owned: Option<String>;
@@ -97,14 +212,23 @@ pub async fn run_async(
         let selected_thread_id: Option<String>;
         let search_active: bool;
         let has_approval_pending: bool;
-        // For text editing fallback
-        let cursor_pos: usize;
-        let input_len: usize;
 
         let mut content_height: Option<usize> = None;
         let mut viewport_height: usize = 0;
         {
             let vs = fetch_view_state(client, app, &dialog).await;
+
+            // Detect mode transitions for InputSession sync
+            if vs.mode != prev_mode {
+                if vs.mode == "insert" {
+                    // Entering insert mode — initialize InputSession from broker
+                    input_session.init_from(vs.input.clone(), vs.cursor);
+                } else if prev_mode == "insert" {
+                    // Exiting insert mode — flush any pending edits
+                    flush_pending_edits(&mut input_session, client).await;
+                }
+                prev_mode = vs.mode.clone();
+            }
 
             // Set row_count in UiStore (for inbox navigation bounds)
             // Only write on inbox screen — thread screen has no row selection.
@@ -115,9 +239,13 @@ pub async fn run_async(
                     .await;
             }
 
+            // Prepare TextInputView from InputSession (optimistic local state)
+            text_input_view.set_state(&input_session.content, input_session.cursor);
+
             // Draw
             terminal.draw(|frame| {
-                let (ch, vh) = crate::tui::draw(frame, &vs, &settings, theme);
+                let (ch, vh) =
+                    crate::tui::draw(frame, &vs, &settings, theme, &mut text_input_view);
                 content_height = ch;
                 viewport_height = vh;
             })?;
@@ -142,7 +270,6 @@ pub async fn run_async(
 
             // Extract owned copies of data needed after vs is dropped
             pending_action = vs.pending_action.clone();
-            input_text = vs.input.clone();
             screen_owned = vs.screen.clone();
             mode_owned = vs.mode.clone();
             insert_context_owned = vs.insert_context.clone();
@@ -150,8 +277,6 @@ pub async fn run_async(
             active_thread_id = vs.active_thread.clone();
             selected_thread_id = vs.inbox_threads.get(vs.selected_row).map(|t| t.id.clone());
             search_active = vs.search_active;
-            cursor_pos = vs.cursor;
-            input_len = vs.input.len();
             has_approval_pending = vs.approval_pending.is_some();
         }
         // vs is now dropped — safe to mutate app
@@ -160,8 +285,11 @@ pub async fn run_async(
         if let Some(action) = &pending_action {
             match action.as_str() {
                 "send_input" => {
+                    // Flush pending edits so broker is in sync
+                    flush_pending_edits(&mut input_session, client).await;
+                    let submit_text = input_session.content.clone();
                     let new_tid = app.send_input_with_text(
-                        input_text.clone(),
+                        submit_text,
                         &mode_owned,
                         insert_context_owned.as_deref(),
                         active_thread_id.as_deref(),
@@ -169,6 +297,8 @@ pub async fn run_async(
                     // Clear input and exit insert mode through broker
                     let _ = client.write(&path!("ui/clear_input"), cmd!()).await;
                     let _ = client.write(&path!("ui/exit_insert"), cmd!()).await;
+                    // Reset local InputSession
+                    input_session.reset_after_submit();
                     // If compose created a new thread, open it in UiStore
                     if let Some(tid) = new_tid {
                         let _ = client
@@ -1003,37 +1133,62 @@ pub async fn run_async(
                             if insert_context_owned.as_deref() == Some("search") {
                                 dispatch_search_edit(client, key.modifiers, key.code).await;
                             } else {
-                                match key.code {
-                                    KeyCode::Up => {
-                                        if let Some((text, cursor)) = app.history_up(&input_text) {
+                                match (key.modifiers, key.code) {
+                                    (KeyModifiers::CONTROL, KeyCode::Char('a')) => {
+                                        input_session.cursor = 0;
+                                    }
+                                    (KeyModifiers::CONTROL, KeyCode::Char('e')) => {
+                                        input_session.cursor = input_session.content.len();
+                                    }
+                                    (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
+                                        input_session.clear();
+                                    }
+                                    (_, KeyCode::Up) => {
+                                        if let Some((text, cursor)) =
+                                            app.history_up(&input_session.content)
+                                        {
+                                            // Flush current edits, then replace
+                                            flush_pending_edits(&mut input_session, client).await;
                                             let _ = client
                                                 .write(
                                                     &path!("ui/set_input"),
-                                                    cmd!("text" => text, "cursor" => cursor as i64),
+                                                    cmd!("text" => text.clone(), "cursor" => cursor as i64),
                                                 )
                                                 .await;
+                                            input_session.init_from(text, cursor);
                                         }
                                     }
-                                    KeyCode::Down => {
+                                    (_, KeyCode::Down) => {
                                         if let Some((text, cursor)) = app.history_down() {
+                                            flush_pending_edits(&mut input_session, client).await;
                                             let _ = client
                                                 .write(
                                                     &path!("ui/set_input"),
-                                                    cmd!("text" => text, "cursor" => cursor as i64),
+                                                    cmd!("text" => text.clone(), "cursor" => cursor as i64),
                                                 )
                                                 .await;
+                                            input_session.init_from(text, cursor);
                                         }
                                     }
-                                    _ => {
-                                        dispatch_text_edit_owned(
-                                            client,
-                                            cursor_pos,
-                                            input_len,
-                                            key.modifiers,
-                                            key.code,
-                                        )
-                                        .await;
+                                    (_, KeyCode::Left) => {
+                                        input_session.cursor =
+                                            input_session.cursor.saturating_sub(1);
                                     }
+                                    (_, KeyCode::Right) => {
+                                        input_session.cursor = (input_session.cursor + 1)
+                                            .min(input_session.content.len());
+                                    }
+                                    (_, KeyCode::Backspace) => {
+                                        input_session.backspace();
+                                    }
+                                    (_, KeyCode::Enter) => {
+                                        input_session.insert("\n", EditSource::Key);
+                                    }
+                                    (_, KeyCode::Char(c)) => {
+                                        input_session
+                                            .insert(&c.to_string(), EditSource::Key);
+                                    }
+                                    _ => {}
                                 }
                             }
                         }
@@ -1094,67 +1249,19 @@ pub async fn run_async(
                         .await;
                     }
                 }
+                Event::Paste(text) => {
+                    if mode_owned == "insert"
+                        && insert_context_owned.as_deref() != Some("search")
+                    {
+                        input_session.insert(&text, EditSource::Paste);
+                    }
+                }
                 _ => {}
             }
-        }
-    }
-}
 
-/// Dispatch text editing commands through UiStore via the broker.
-/// Called when no InputStore binding matches in insert mode.
-/// Takes owned cursor/input data extracted from ViewState.
-async fn dispatch_text_edit_owned(
-    client: &ox_broker::ClientHandle,
-    cursor: usize,
-    input_len: usize,
-    modifiers: KeyModifiers,
-    code: KeyCode,
-) {
-    use structfs_core_store::path;
-
-    match (modifiers, code) {
-        (KeyModifiers::CONTROL, KeyCode::Char('a')) => {
-            let _ = client
-                .write(&path!("ui/set_input"), cmd!("cursor" => 0_i64))
-                .await;
+            // Batch flush pending edits after processing this event
+            flush_pending_edits(&mut input_session, client).await;
         }
-        (KeyModifiers::CONTROL, KeyCode::Char('e')) => {
-            let _ = client
-                .write(&path!("ui/set_input"), cmd!("cursor" => input_len as i64))
-                .await;
-        }
-        (_, KeyCode::Char(c)) => {
-            let _ = client
-                .write(
-                    &path!("ui/insert_char"),
-                    cmd!("char" => c.to_string(), "at" => cursor as i64),
-                )
-                .await;
-        }
-        (_, KeyCode::Enter) => {
-            let _ = client
-                .write(
-                    &path!("ui/insert_char"),
-                    cmd!("char" => "\n", "at" => cursor as i64),
-                )
-                .await;
-        }
-        (_, KeyCode::Backspace) => {
-            let _ = client.write(&path!("ui/delete_char"), cmd!()).await;
-        }
-        (_, KeyCode::Left) => {
-            let pos = cursor.saturating_sub(1);
-            let _ = client
-                .write(&path!("ui/set_input"), cmd!("cursor" => pos as i64))
-                .await;
-        }
-        (_, KeyCode::Right) => {
-            let pos = (cursor + 1).min(input_len);
-            let _ = client
-                .write(&path!("ui/set_input"), cmd!("cursor" => pos as i64))
-                .await;
-        }
-        _ => {}
     }
 }
 

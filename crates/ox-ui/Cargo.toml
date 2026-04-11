@@ -10,6 +10,7 @@ authors.workspace = true
 description = "UI stores for ox — state machines driven by StructFS command protocol"
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
 tracing = { workspace = true }
 ox-broker = { path = "../ox-broker" }
 ox-path = { path = "../ox-path" }
