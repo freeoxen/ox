@@ -509,6 +509,7 @@ mod tests {
     struct MockStore {
         data: BTreeMap<String, Value>,
         appended: Vec<(String, Value)>,
+        completion_responses: std::sync::Mutex<std::collections::VecDeque<Value>>,
     }
 
     impl MockStore {
@@ -516,17 +517,31 @@ mod tests {
             Self {
                 data: BTreeMap::new(),
                 appended: Vec::new(),
+                completion_responses: std::sync::Mutex::new(std::collections::VecDeque::new()),
             }
         }
 
         fn set(&mut self, path: &str, value: Value) {
             self.data.insert(path.to_string(), value);
         }
+
+        fn push_completion_response(&mut self, events_json: serde_json::Value) {
+            self.completion_responses
+                .lock()
+                .unwrap()
+                .push_back(structfs_serde_store::json_to_value(events_json));
+        }
     }
 
     impl Reader for MockStore {
         fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
             let key = from.to_string();
+            // Completion response reads are served from the queue when available.
+            if key.contains("completions/complete") && key.ends_with("/response") {
+                if let Some(value) = self.completion_responses.lock().unwrap().pop_front() {
+                    return Ok(Some(Record::parsed(value)));
+                }
+            }
             Ok(self.data.get(&key).map(|v| Record::parsed(v.clone())))
         }
     }
@@ -914,6 +929,111 @@ mod tests {
         assert!(
             events.iter().any(|e| e.contains("TextDelta")),
             "expected TextDelta"
+        );
+    }
+
+    #[test]
+    fn json_to_stream_event_unknown_type() {
+        let json = serde_json::json!({"type": "unknown_event"});
+        let result = json_to_stream_event(&json);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unknown"));
+    }
+
+    #[test]
+    fn accumulate_response_error_event() {
+        let events = vec![
+            StreamEvent::TextDelta("partial".into()),
+            StreamEvent::Error("something broke".into()),
+        ];
+        let mut emitted = vec![];
+        let result = accumulate_response(events, &mut |e| emitted.push(format!("{e:?}")));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("something broke"));
+        assert!(emitted.iter().any(|e| e.contains("Error")));
+    }
+
+    #[test]
+    fn deserialize_events_raw_record_returns_err() {
+        // Record::Raw is the non-Parsed branch — deserialize_events must reject it.
+        use structfs_core_store::{Bytes, Format};
+        let record = Record::raw(Bytes::from_static(b"not parsed"), Format::OCTET_STREAM);
+        let result = deserialize_events(record);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("parsed"));
+    }
+
+    #[test]
+    fn synthesize_wrong_type_for_system() {
+        let mut store = MockStore::new();
+        store.set("system", Value::Integer(42)); // wrong type
+        store.set(
+            "history/messages",
+            structfs_serde_store::json_to_value(serde_json::json!([])),
+        );
+        store.set(
+            "tools/schemas",
+            structfs_serde_store::json_to_value(serde_json::json!([])),
+        );
+        store.set("gate/defaults/model", Value::String("test".into()));
+        store.set("gate/defaults/max_tokens", Value::Integer(100));
+        let result = synthesize(&mut store);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("system"));
+    }
+
+    #[test]
+    fn run_turn_with_tool_calls() {
+        let mut store = MockStore::new();
+        // Context paths
+        store.set("gate/defaults/account", Value::String("test".into()));
+        store.set("system", Value::String("You are helpful.".into()));
+        store.set(
+            "history/messages",
+            structfs_serde_store::json_to_value(
+                serde_json::json!([{"role": "user", "content": "hi"}]),
+            ),
+        );
+        store.set(
+            "tools/schemas",
+            structfs_serde_store::json_to_value(serde_json::json!([])),
+        );
+        store.set("gate/defaults/model", Value::String("test".into()));
+        store.set("gate/defaults/max_tokens", Value::Integer(100));
+
+        // First completion: returns a tool call
+        store.push_completion_response(serde_json::json!([
+            {"type": "tool_use_start", "id": "tc1", "name": "echo"},
+            {"type": "tool_use_input_delta", "delta": "{\"x\":1}"},
+            {"type": "message_stop"}
+        ]));
+        // Second completion: returns plain text so the loop exits
+        store.push_completion_response(serde_json::json!([
+            {"type": "text_delta", "text": "Done!"},
+            {"type": "message_stop"}
+        ]));
+
+        let mut events = vec![];
+        run_turn(&mut store, &mut |e| events.push(format!("{e:?}"))).unwrap();
+
+        // Two loop iterations → two TurnStart events
+        let turn_starts = events.iter().filter(|e| e.contains("TurnStart")).count();
+        assert_eq!(
+            turn_starts, 2,
+            "expected two TurnStart events (one per iteration)"
+        );
+
+        assert!(
+            events.iter().any(|e| e.contains("ToolCallStart")),
+            "expected ToolCallStart event"
+        );
+        assert!(
+            events.iter().any(|e| e.contains("ToolCallResult")),
+            "expected ToolCallResult event"
+        );
+        assert!(
+            events.iter().any(|e| e.contains("TurnEnd")),
+            "expected TurnEnd event"
         );
     }
 }
