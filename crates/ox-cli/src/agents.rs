@@ -502,9 +502,10 @@ impl HostEffects for CliEffects {
             AgentEvent::TurnEnd => {
                 self.broker_write(&path!("history/turn/thinking"), Value::Bool(false));
             }
-            AgentEvent::Error(e) => {
-                let msg = serde_json::json!({"role": "assistant", "content": [{"type": "text", "text": format!("error: {e}")}]});
-                self.broker_write(&path!("history/append"), json_to_value(msg));
+            AgentEvent::Error(_) => {
+                // Don't write to history here — the outer agent_worker loop
+                // writes the error after run_turn returns Err. Writing here
+                // too would produce duplicate entries in the SharedLog.
                 self.broker_write(&path!("history/turn/thinking"), Value::Bool(false));
             }
         }

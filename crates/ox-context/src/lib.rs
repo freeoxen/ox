@@ -278,34 +278,28 @@ mod tests {
     // discovery pattern through the Namespace router.
 
     fn build_full_namespace() -> Namespace {
+        let shared_log = ox_kernel::log::SharedLog::new();
         let mut ns = Namespace::new();
         ns.mount(
             "system",
             Box::new(SystemProvider::new("You are helpful.".to_string())),
         );
         ns.mount("tools", Box::new(ox_tools::ToolStore::empty()));
-        ns.mount("history", Box::new(ox_history::HistoryProvider::new()));
+        ns.mount("history", Box::new(ox_history::HistoryView::new(shared_log)));
         ns.mount("gate", Box::new(ox_gate::GateStore::new()));
         ns
     }
 
     #[test]
-    fn namespace_snapshot_discovery_all_stores() {
+    fn namespace_snapshot_discovery_participating_stores() {
         let mut ns = build_full_namespace();
 
-        // Participating stores return Some
+        // System and gate participate in snapshots
         assert!(ns.read(&path!("system/snapshot")).unwrap().is_some());
-        assert!(ns.read(&path!("history/snapshot")).unwrap().is_some());
         assert!(ns.read(&path!("gate/snapshot")).unwrap().is_some());
-    }
 
-    #[test]
-    fn namespace_history_snapshot_write_returns_error() {
-        let mut ns = build_full_namespace();
-
-        // History snapshot is read-only — write must fail through the namespace
-        let result = ns.write(&path!("history/snapshot"), Record::parsed(Value::Null));
-        assert!(result.is_err());
+        // History is persisted through the ledger, not snapshots
+        assert!(ns.read(&path!("history/snapshot")).unwrap().is_none());
     }
 
     #[test]
