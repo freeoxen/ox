@@ -5,8 +5,7 @@
 //! host-provided StructFS functions (`store_read`, `store_write`, `store_result`)
 //! imported from the `"ox"` module namespace.
 
-use ox_kernel::{AgentEvent, Kernel, StreamEvent, ToolResult};
-use structfs_core_store::{Error, Path, Reader, Record, Value, Writer, path};
+use structfs_core_store::{Error, Path, Reader, Record, Writer};
 
 mod wasm_subscriber;
 
@@ -111,71 +110,6 @@ impl Writer for HostBridge {
 }
 
 // ---------------------------------------------------------------------------
-// StreamEvent deserialization (manual — no serde derives on StreamEvent)
-// ---------------------------------------------------------------------------
-
-fn json_to_stream_event(json: &serde_json::Value) -> Result<StreamEvent, String> {
-    let obj = json
-        .as_object()
-        .ok_or_else(|| "expected JSON object for StreamEvent".to_string())?;
-    let event_type = obj
-        .get("type")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "missing 'type' field in StreamEvent".to_string())?;
-
-    match event_type {
-        "text_delta" => {
-            let text = obj
-                .get("text")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| "missing 'text' in text_delta event".to_string())?;
-            Ok(StreamEvent::TextDelta(text.to_string()))
-        }
-        "tool_use_start" => {
-            let id = obj
-                .get("id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| "missing 'id' in tool_use_start event".to_string())?;
-            let name = obj
-                .get("name")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| "missing 'name' in tool_use_start event".to_string())?;
-            Ok(StreamEvent::ToolUseStart {
-                id: id.to_string(),
-                name: name.to_string(),
-            })
-        }
-        "tool_use_input_delta" => {
-            let delta = obj
-                .get("delta")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| "missing 'delta' in tool_use_input_delta event".to_string())?;
-            Ok(StreamEvent::ToolUseInputDelta(delta.to_string()))
-        }
-        "message_stop" => Ok(StreamEvent::MessageStop),
-        "error" => {
-            let message = obj
-                .get("message")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown error");
-            Ok(StreamEvent::Error(message.to_string()))
-        }
-        other => Err(format!("unknown StreamEvent type: {other}")),
-    }
-}
-
-fn deserialize_events(record: Record) -> Result<Vec<StreamEvent>, String> {
-    let value = record
-        .as_value()
-        .ok_or_else(|| "expected parsed record for events".to_string())?;
-    let json = structfs_serde_store::value_to_json(value.clone());
-    let arr = json
-        .as_array()
-        .ok_or_else(|| "expected JSON array of events".to_string())?;
-    arr.iter().map(json_to_stream_event).collect()
-}
-
-// ---------------------------------------------------------------------------
 // Exported entry point
 // ---------------------------------------------------------------------------
 
@@ -201,150 +135,11 @@ pub extern "C" fn run() -> i32 {
 fn agent_main() -> Result<(), String> {
     let mut bridge = HostBridge;
 
-    // Read model identifier from the namespace.
-    let model = match bridge.read(&path!("gate/defaults/model")) {
-        Ok(Some(record)) => match record.as_value() {
-            Some(Value::String(m)) => m.clone(),
-            _ => "unknown".to_string(),
-        },
-        _ => "unknown".to_string(),
+    let mut emit = |event: ox_kernel::AgentEvent| {
+        let json = ox_kernel::agent_event_to_json(&event);
+        let json_str = serde_json::to_string(&json).unwrap_or_default();
+        let _ = host_write("events/emit", &json_str);
     };
 
-    // Read default account for completion routing.
-    let default_account = match bridge.read(&path!("gate/defaults/account")) {
-        Ok(Some(record)) => match record.as_value() {
-            Some(Value::String(s)) => s.clone(),
-            _ => "anthropic".to_string(),
-        },
-        _ => "anthropic".to_string(),
-    };
-
-    let mut kernel = Kernel::new(model);
-
-    loop {
-        // Phase 1: Kernel reads prompt and prepares CompletionRequest.
-        let request = kernel.initiate_completion(&mut bridge)?;
-
-        // Serialize request and write to tools/completions/complete/{account}.
-        let request_json = serde_json::to_value(&request).map_err(|e| e.to_string())?;
-        let request_value = structfs_serde_store::json_to_value(request_json);
-        let complete_path = Path::parse(&format!("tools/completions/complete/{default_account}"))
-            .map_err(|e| e.to_string())?;
-        bridge
-            .write(&complete_path, Record::parsed(request_value))
-            .map_err(|e| e.to_string())?;
-
-        // Read response events from tools/completions/complete/{account}/response.
-        let response_path = Path::parse(&format!(
-            "tools/completions/complete/{default_account}/response"
-        ))
-        .map_err(|e| e.to_string())?;
-        let response = bridge
-            .read(&response_path)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "no completion response".to_string())?;
-
-        let events = deserialize_events(response)?;
-
-        // Phase 2: Kernel accumulates events into content blocks.
-        let mut noop_emit = |_event: AgentEvent| {};
-        let content = kernel.consume_events(events, &mut noop_emit)?;
-
-        // Phase 3: Write assistant message and extract tool calls.
-        let tool_calls = kernel.complete_turn(&mut bridge, &content)?;
-
-        if tool_calls.is_empty() {
-            return Ok(());
-        }
-
-        // Enqueue tool calls into TurnStore for lifecycle tracking.
-        let enqueue_json: Vec<serde_json::Value> = tool_calls
-            .iter()
-            .map(|tc| {
-                serde_json::json!({
-                    "id": tc.id,
-                    "name": tc.name,
-                    "input": tc.input,
-                })
-            })
-            .collect();
-        let enqueue_value =
-            structfs_serde_store::json_to_value(serde_json::Value::Array(enqueue_json));
-        bridge
-            .write(&path!("tools/turn/enqueue"), Record::parsed(enqueue_value))
-            .map_err(|e| e.to_string())?;
-
-        // Execute each tool through the normal namespace path (tools/{wire_name}).
-        // This routes through PolicyStore for permission checks, then to the
-        // module. Results are collected and submitted back to TurnStore.
-        let mut outcomes = Vec::new();
-        let mut results = Vec::new();
-        for tc in &tool_calls {
-            // Emit tool_call_start event for TUI.
-            let start_event = serde_json::json!({"type": "tool_call_start", "name": tc.name});
-            bridge
-                .write(
-                    &path!("events/emit"),
-                    Record::parsed(structfs_serde_store::json_to_value(start_event)),
-                )
-                .ok();
-
-            // Execute via normal path — routes through HostStore → PolicyStore → ToolStore.
-            let input_value = structfs_serde_store::json_to_value(tc.input.clone());
-            let tool_path =
-                Path::parse(&format!("tools/{}", tc.name)).map_err(|e| e.to_string())?;
-
-            let (result_str, is_error) = match bridge.write(&tool_path, Record::parsed(input_value))
-            {
-                Ok(_) => {
-                    let result_path = Path::parse(&format!("tools/{}/result", tc.name))
-                        .map_err(|e| e.to_string())?;
-                    match bridge.read(&result_path) {
-                        Ok(Some(record)) => {
-                            let val = record.as_value().cloned().unwrap_or(Value::Null);
-                            let json = structfs_serde_store::value_to_json(val);
-                            (serde_json::to_string(&json).unwrap_or_default(), false)
-                        }
-                        Ok(None) => (format!("error: no result for tool {}", tc.name), true),
-                        Err(e) => (format!("error: {e}"), true),
-                    }
-                }
-                Err(e) => (e.to_string(), true),
-            };
-
-            // Emit tool_call_result event for TUI.
-            let end_event = serde_json::json!({"type": "tool_call_result", "name": tc.name, "result": &result_str});
-            bridge
-                .write(
-                    &path!("events/emit"),
-                    Record::parsed(structfs_serde_store::json_to_value(end_event)),
-                )
-                .ok();
-
-            outcomes.push(serde_json::json!({
-                "call_id": tc.id,
-                "result": &result_str,
-                "error": is_error,
-            }));
-
-            results.push(ToolResult {
-                tool_use_id: tc.id.clone(),
-                content: serde_json::Value::String(result_str),
-            });
-        }
-
-        // Submit outcomes to TurnStore (clears pending queue).
-        let outcomes_value =
-            structfs_serde_store::json_to_value(serde_json::Value::Array(outcomes));
-        bridge
-            .write(&path!("tools/turn/results"), Record::parsed(outcomes_value))
-            .ok();
-
-        // Write tool results to history so the next turn sees them.
-        let history_json = ox_kernel::serialize_tool_results(&results);
-        let history_value = structfs_serde_store::json_to_value(history_json);
-        bridge
-            .write(&path!("history/append"), Record::parsed(history_value))
-            .map_err(|e| e.to_string())?;
-    }
+    ox_kernel::run_turn(&mut bridge, &mut emit)
 }
