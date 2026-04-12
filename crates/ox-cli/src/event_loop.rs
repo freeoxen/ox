@@ -12,11 +12,21 @@ use structfs_core_store::Writer as StructWriter;
 // InputSession — optimistic local input state
 // ---------------------------------------------------------------------------
 
+/// Sub-mode within the text editor (compose/reply input).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EditorMode {
+    /// Typing text — characters are inserted at cursor.
+    Insert,
+    /// Vim-style navigation — hjkl, w/b, 0/$, i/a to re-enter insert.
+    Normal,
+}
+
 struct InputSession {
     content: String,
     cursor: usize,
     pending_edits: Vec<Edit>,
     generation: u64,
+    editor_mode: EditorMode,
 }
 
 impl InputSession {
@@ -26,6 +36,7 @@ impl InputSession {
             cursor: 0,
             pending_edits: Vec::new(),
             generation: 0,
+            editor_mode: EditorMode::Insert,
         }
     }
 
@@ -87,6 +98,7 @@ impl InputSession {
         self.cursor = 0;
         self.pending_edits.clear();
         self.generation += 1;
+        self.editor_mode = EditorMode::Insert;
     }
 
     /// Initialize from broker state.
@@ -219,7 +231,7 @@ pub async fn run_async(
         let mut content_height: Option<usize> = None;
         let mut viewport_height: usize = 0;
         {
-            let vs = fetch_view_state(client, app, &dialog).await;
+            let vs = fetch_view_state(client, app, &dialog, input_session.editor_mode).await;
 
             // Detect mode transitions for InputSession sync
             if vs.mode != prev_mode {
@@ -1143,6 +1155,18 @@ pub async fn run_async(
                             continue;
                         }
 
+                        // In editor-insert mode (compose/reply), intercept ESC
+                        // to transition to editor-normal instead of exiting insert
+                        if mode == "insert"
+                            && key_str == "Esc"
+                            && input_session.editor_mode == EditorMode::Insert
+                            && insert_context_owned.as_deref() != Some("search")
+                            && insert_context_owned.as_deref() != Some("command")
+                        {
+                            input_session.editor_mode = EditorMode::Normal;
+                            continue;
+                        }
+
                         // Try InputStore dispatch
                         let result = client
                             .write(
@@ -1154,106 +1178,36 @@ pub async fn run_async(
                         if result.is_err() && mode_owned == "insert" {
                             if insert_context_owned.as_deref() == Some("search") {
                                 dispatch_search_edit(client, key.modifiers, key.code).await;
+                            } else if insert_context_owned.as_deref() == Some("command") {
+                                // Command mode uses the same text editing as editor-insert
+                                handle_editor_insert_key(
+                                    &mut input_session,
+                                    key.modifiers,
+                                    key.code,
+                                );
                             } else {
-                                match (key.modifiers, key.code) {
-                                    (KeyModifiers::CONTROL, KeyCode::Char('a')) => {
-                                        input_session.cursor = 0;
-                                    }
-                                    (KeyModifiers::CONTROL, KeyCode::Char('e')) => {
-                                        input_session.cursor = input_session.content.len();
-                                    }
-                                    (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
-                                        input_session.clear();
-                                    }
-                                    (_, KeyCode::Up) => {
-                                        use crate::text_input_view::{
-                                            byte_offset_at, cursor_in_lines, wrap_lines,
-                                        };
-                                        let width = terminal.get_frame().area().width;
-                                        let lines = wrap_lines(&input_session.content, width);
-                                        let (cur_line, cur_col) = cursor_in_lines(
-                                            &input_session.content,
-                                            input_session.cursor,
-                                            &lines,
+                                // Compose/reply: vim-style editor with sub-modes
+                                // (ESC from editor-insert → editor-normal is intercepted
+                                //  above the InputStore dispatch, so we only see non-ESC here)
+                                match input_session.editor_mode {
+                                    EditorMode::Insert => {
+                                        handle_editor_insert_key(
+                                            &mut input_session,
+                                            key.modifiers,
+                                            key.code,
                                         );
-                                        if cur_line > 0 {
-                                            // Move cursor up one visual line
-                                            input_session.cursor = byte_offset_at(
-                                                &input_session.content,
-                                                &lines,
-                                                cur_line - 1,
-                                                cur_col,
-                                            );
-                                        } else if let Some((text, cursor)) =
-                                            app.history_up(&input_session.content)
-                                        {
-                                            // At top line — navigate history
-                                            flush_pending_edits(&mut input_session, client).await;
-                                            let _ = client
-                                                .write(
-                                                    &path!("ui/set_input"),
-                                                    cmd!("text" => text.clone(), "cursor" => cursor as i64),
-                                                )
-                                                .await;
-                                            input_session.init_from(text, cursor);
-                                        }
                                     }
-                                    (_, KeyCode::Down) => {
-                                        use crate::text_input_view::{
-                                            byte_offset_at, cursor_in_lines, wrap_lines,
-                                        };
-                                        let width = terminal.get_frame().area().width;
-                                        let lines = wrap_lines(&input_session.content, width);
-                                        let (cur_line, cur_col) = cursor_in_lines(
-                                            &input_session.content,
-                                            input_session.cursor,
-                                            &lines,
-                                        );
-                                        if cur_line + 1 < lines.len() {
-                                            // Move cursor down one visual line
-                                            input_session.cursor = byte_offset_at(
-                                                &input_session.content,
-                                                &lines,
-                                                cur_line + 1,
-                                                cur_col,
-                                            );
-                                        } else if let Some((text, cursor)) = app.history_down() {
-                                            // At bottom line — navigate history
-                                            flush_pending_edits(&mut input_session, client).await;
-                                            let _ = client
-                                                .write(
-                                                    &path!("ui/set_input"),
-                                                    cmd!("text" => text.clone(), "cursor" => cursor as i64),
-                                                )
-                                                .await;
-                                            input_session.init_from(text, cursor);
-                                        }
+                                    EditorMode::Normal => {
+                                        let tw = terminal.get_frame().area().width;
+                                        handle_editor_normal_key(
+                                            &mut input_session,
+                                            app,
+                                            client,
+                                            tw,
+                                            key.code,
+                                        )
+                                        .await;
                                     }
-                                    (_, KeyCode::Left) => {
-                                        // Move to previous char boundary
-                                        let s = &input_session.content[..input_session.cursor];
-                                        input_session.cursor = s
-                                            .char_indices()
-                                            .next_back()
-                                            .map(|(i, _)| i)
-                                            .unwrap_or(0);
-                                    }
-                                    (_, KeyCode::Right) => {
-                                        // Move to next char boundary
-                                        let s = &input_session.content[input_session.cursor..];
-                                        input_session.cursor +=
-                                            s.chars().next().map(|c| c.len_utf8()).unwrap_or(0);
-                                    }
-                                    (_, KeyCode::Backspace) => {
-                                        input_session.backspace();
-                                    }
-                                    (_, KeyCode::Enter) => {
-                                        input_session.insert("\n", EditSource::Key);
-                                    }
-                                    (_, KeyCode::Char(c)) => {
-                                        input_session.insert(&c.to_string(), EditSource::Key);
-                                    }
-                                    _ => {}
                                 }
                             }
                         }
@@ -1488,6 +1442,220 @@ async fn execute_command_input(input: &str, client: &ox_broker::ClientHandle) {
         let _ = client
             .write(&path!("ui/set_status"), cmd!("text" => format!("{e}")))
             .await;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Editor sub-mode key handlers
+// ---------------------------------------------------------------------------
+
+/// Handle a key in editor-insert mode (typing text).
+fn handle_editor_insert_key(session: &mut InputSession, modifiers: KeyModifiers, code: KeyCode) {
+    match (modifiers, code) {
+        (KeyModifiers::CONTROL, KeyCode::Char('a')) => {
+            session.cursor = 0;
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('e')) => {
+            session.cursor = session.content.len();
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
+            session.clear();
+        }
+        (_, KeyCode::Left) => {
+            let s = &session.content[..session.cursor];
+            session.cursor = s.char_indices().next_back().map(|(i, _)| i).unwrap_or(0);
+        }
+        (_, KeyCode::Right) => {
+            let s = &session.content[session.cursor..];
+            session.cursor += s.chars().next().map(|c| c.len_utf8()).unwrap_or(0);
+        }
+        (_, KeyCode::Backspace) => {
+            session.backspace();
+        }
+        (_, KeyCode::Enter) => {
+            session.insert("\n", EditSource::Key);
+        }
+        (_, KeyCode::Char(c)) => {
+            session.insert(&c.to_string(), EditSource::Key);
+        }
+        _ => {}
+    }
+}
+
+/// Handle a key in editor-normal mode (vim navigation).
+async fn handle_editor_normal_key(
+    session: &mut InputSession,
+    app: &mut crate::app::App,
+    client: &ox_broker::ClientHandle,
+    term_width: u16,
+    code: KeyCode,
+) {
+    use crate::text_input_view::{byte_offset_at, cursor_in_lines, wrap_lines};
+
+    match code {
+        // -- Mode transitions --
+        KeyCode::Char('i') => {
+            session.editor_mode = EditorMode::Insert;
+        }
+        KeyCode::Char('a') => {
+            // Append: move cursor right one char, enter insert
+            let s = &session.content[session.cursor..];
+            session.cursor += s.chars().next().map(|c| c.len_utf8()).unwrap_or(0);
+            session.editor_mode = EditorMode::Insert;
+        }
+        KeyCode::Char('I') => {
+            // Insert at beginning of line
+            let lines = wrap_lines(&session.content, term_width);
+            let (cur_line, _) = cursor_in_lines(&session.content, session.cursor, &lines);
+            session.cursor = byte_offset_at(&session.content, &lines, cur_line, 0);
+            session.editor_mode = EditorMode::Insert;
+        }
+        KeyCode::Char('A') => {
+            // Append at end of line
+            let lines = wrap_lines(&session.content, term_width);
+            let (cur_line, _) = cursor_in_lines(&session.content, session.cursor, &lines);
+            if cur_line < lines.len() {
+                session.cursor = lines[cur_line].end;
+            }
+            session.editor_mode = EditorMode::Insert;
+        }
+        KeyCode::Char('o') => {
+            // Open line below
+            let lines = wrap_lines(&session.content, term_width);
+            let (cur_line, _) = cursor_in_lines(&session.content, session.cursor, &lines);
+            if cur_line < lines.len() {
+                session.cursor = lines[cur_line].end;
+            }
+            session.insert("\n", EditSource::Key);
+            session.editor_mode = EditorMode::Insert;
+        }
+        KeyCode::Char('O') => {
+            // Open line above
+            let lines = wrap_lines(&session.content, term_width);
+            let (cur_line, _) = cursor_in_lines(&session.content, session.cursor, &lines);
+            session.cursor = byte_offset_at(&session.content, &lines, cur_line, 0);
+            session.insert("\n", EditSource::Key);
+            // Cursor is now after the newline; move back to start of new blank line
+            session.cursor -= 1;
+            session.editor_mode = EditorMode::Insert;
+        }
+
+        // -- Movement --
+        KeyCode::Char('h') | KeyCode::Left => {
+            let s = &session.content[..session.cursor];
+            session.cursor = s.char_indices().next_back().map(|(i, _)| i).unwrap_or(0);
+        }
+        KeyCode::Char('l') | KeyCode::Right => {
+            let s = &session.content[session.cursor..];
+            session.cursor += s.chars().next().map(|c| c.len_utf8()).unwrap_or(0);
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            let lines = wrap_lines(&session.content, term_width);
+            let (cur_line, cur_col) = cursor_in_lines(&session.content, session.cursor, &lines);
+            if cur_line + 1 < lines.len() {
+                session.cursor = byte_offset_at(&session.content, &lines, cur_line + 1, cur_col);
+            } else if let Some((text, cursor)) = app.history_down() {
+                flush_pending_edits(session, client).await;
+                let _ = client
+                    .write(
+                        &structfs_core_store::path!("ui/set_input"),
+                        cmd!("text" => text.clone(), "cursor" => cursor as i64),
+                    )
+                    .await;
+                session.init_from(text, cursor);
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            let lines = wrap_lines(&session.content, term_width);
+            let (cur_line, cur_col) = cursor_in_lines(&session.content, session.cursor, &lines);
+            if cur_line > 0 {
+                session.cursor = byte_offset_at(&session.content, &lines, cur_line - 1, cur_col);
+            } else if let Some((text, cursor)) = app.history_up(&session.content) {
+                flush_pending_edits(session, client).await;
+                let _ = client
+                    .write(
+                        &structfs_core_store::path!("ui/set_input"),
+                        cmd!("text" => text.clone(), "cursor" => cursor as i64),
+                    )
+                    .await;
+                session.init_from(text, cursor);
+            }
+        }
+        KeyCode::Char('0') => {
+            // Beginning of line
+            let lines = wrap_lines(&session.content, term_width);
+            let (cur_line, _) = cursor_in_lines(&session.content, session.cursor, &lines);
+            session.cursor = byte_offset_at(&session.content, &lines, cur_line, 0);
+        }
+        KeyCode::Char('$') => {
+            // End of line
+            let lines = wrap_lines(&session.content, term_width);
+            let (cur_line, _) = cursor_in_lines(&session.content, session.cursor, &lines);
+            if cur_line < lines.len() {
+                session.cursor = lines[cur_line].end;
+            }
+        }
+        KeyCode::Char('w') => {
+            // Next word start
+            let rest = &session.content[session.cursor..];
+            let mut chars = rest.char_indices();
+            // Skip current word (non-whitespace)
+            let mut offset = 0;
+            for (i, c) in chars.by_ref() {
+                if c.is_whitespace() {
+                    offset = i;
+                    break;
+                }
+                offset = i + c.len_utf8();
+            }
+            // Skip whitespace
+            for (i, c) in rest[offset..].char_indices() {
+                if !c.is_whitespace() {
+                    session.cursor += offset + i;
+                    return;
+                }
+            }
+            // End of content
+            session.cursor = session.content.len();
+        }
+        KeyCode::Char('b') => {
+            // Previous word start
+            let before = &session.content[..session.cursor];
+            let trimmed = before.trim_end();
+            if trimmed.is_empty() {
+                session.cursor = 0;
+                return;
+            }
+            // Find start of previous word
+            if let Some(pos) = trimmed.rfind(|c: char| c.is_whitespace()) {
+                session.cursor = pos + 1;
+            } else {
+                session.cursor = 0;
+            }
+        }
+
+        // -- Editing --
+        KeyCode::Char('x') => {
+            // Delete char under cursor
+            let s = &session.content[session.cursor..];
+            if let Some(c) = s.chars().next() {
+                let len = c.len_utf8();
+                session.content.drain(session.cursor..session.cursor + len);
+                session.pending_edits.push(Edit {
+                    op: EditOp::Delete { len },
+                    at: session.cursor,
+                    source: EditSource::Key,
+                    ts_ms: now_ms(),
+                });
+                // Clamp cursor
+                if session.cursor > 0 && session.cursor >= session.content.len() {
+                    let s = &session.content[..session.cursor];
+                    session.cursor = s.char_indices().next_back().map(|(i, _)| i).unwrap_or(0);
+                }
+            }
+        }
+
+        _ => {}
     }
 }
 
