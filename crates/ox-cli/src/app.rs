@@ -45,18 +45,23 @@ impl App {
     pub fn send_input_with_text(
         &mut self,
         text: String,
-        mode: &str,
-        insert_context: Option<&str>,
+        mode: ox_types::Mode,
+        insert_context: Option<ox_types::InsertContext>,
         active_thread: Option<&str>,
     ) -> Option<String> {
+        use ox_types::{InsertContext, Mode};
         if text.is_empty() {
             return None;
         }
         match (mode, insert_context) {
-            ("insert", Some("compose")) | ("normal", None) if active_thread.is_none() => {
+            (Mode::Insert, Some(InsertContext::Compose)) | (Mode::Normal, None)
+                if active_thread.is_none() =>
+            {
                 self.do_compose(text)
             }
-            ("insert", Some("reply")) | ("normal", _) if active_thread.is_some() => {
+            (Mode::Insert, Some(InsertContext::Reply)) | (Mode::Normal, _)
+                if active_thread.is_some() =>
+            {
                 self.do_reply(text, active_thread.unwrap());
                 None
             }

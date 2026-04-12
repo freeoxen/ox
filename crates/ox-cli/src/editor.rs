@@ -125,37 +125,20 @@ pub(crate) async fn submit_editor_content(
     flush_pending_edits(session, client).await;
     let text = session.content.clone();
 
-    // Read context from broker
-    let ctx = client
-        .read(&oxpath!("ui", "insert_context"))
+    // Read UI snapshot from broker (typed)
+    let ui: ox_types::UiSnapshot = client
+        .read_typed(&structfs_core_store::path!("ui"))
         .await
         .ok()
         .flatten()
-        .and_then(|r| match r.as_value() {
-            Some(structfs_core_store::Value::String(s)) => Some(s.clone()),
-            _ => None,
-        });
-    let active = client
-        .read(&oxpath!("ui", "active_thread"))
-        .await
-        .ok()
-        .flatten()
-        .and_then(|r| match r.as_value() {
-            Some(structfs_core_store::Value::String(s)) => Some(s.clone()),
-            _ => None,
-        });
-    let mode = client
-        .read(&oxpath!("ui", "mode"))
-        .await
-        .ok()
-        .flatten()
-        .and_then(|r| match r.as_value() {
-            Some(structfs_core_store::Value::String(s)) => Some(s.clone()),
-            _ => None,
-        })
-        .unwrap_or_else(|| "insert".to_string());
+        .unwrap_or_default();
 
-    let new_tid = app.send_input_with_text(text, &mode, ctx.as_deref(), active.as_deref());
+    let new_tid = app.send_input_with_text(
+        text,
+        ui.mode,
+        ui.insert_context,
+        ui.active_thread.as_deref(),
+    );
 
     let _ = client.write(&oxpath!("ui", "clear_input"), cmd!()).await;
     let _ = client.write(&oxpath!("ui", "exit_insert"), cmd!()).await;

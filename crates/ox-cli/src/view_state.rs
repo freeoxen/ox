@@ -4,9 +4,8 @@
 //! borrows from App to produce a `ViewState` that draw functions consume.
 //! This decouples rendering from mutable App access and broker writes.
 
-use std::collections::BTreeMap;
-
 use ox_broker::ClientHandle;
+use ox_types::{ApprovalRequest, Mode, Screen, UiSnapshot};
 use structfs_core_store::{Value, path};
 
 use crate::app::App;
@@ -26,67 +25,29 @@ use crate::parse::{parse_chat_messages, parse_inbox_threads};
 /// is owned because it comes from async reads.
 #[allow(dead_code)]
 pub struct ViewState<'a> {
-    // -- Broker-sourced (owned) ------------------------------------------
-    /// Current screen: "inbox" or "thread".
-    pub screen: String,
-    /// UI mode from broker.
-    pub mode: String,
-    /// Active thread id (None = inbox).
-    pub active_thread: Option<String>,
-    /// Selected inbox row.
-    pub selected_row: usize,
-    /// Scroll offset.
-    pub scroll: u16,
-    /// Scroll maximum.
-    pub scroll_max: u16,
-    /// Viewport height from broker.
-    pub viewport_height: u16,
-    /// Input text.
-    pub input: String,
-    /// Cursor position.
-    pub cursor: usize,
-    /// Pending action from UiStore command dispatch.
-    pub pending_action: Option<String>,
+    // -- Broker-sourced (owned, typed) -----------------------------------
+    pub ui: UiSnapshot,
 
     /// Inbox threads (only populated on inbox screen).
     pub inbox_threads: Vec<InboxThread>,
-    /// Messages for the active thread (committed + in-progress turn).
+    /// Messages for the active thread.
     pub messages: Vec<ChatMessage>,
-    /// Whether the agent is currently thinking/streaming.
-    pub thinking: bool,
-    /// Current tool call status: (tool_name, status).
-    pub tool_status: Option<(String, String)>,
-    /// Turn token usage: (input_tokens, output_tokens).
-    pub turn_tokens: (u32, u32),
-    /// Pending approval: (tool_name, input_preview), or None.
-    pub approval_pending: Option<(String, String)>,
+    /// Turn state for the active thread.
+    pub turn: ox_history::TurnState,
+    /// Pending approval for the active thread.
+    pub approval_pending: Option<ApprovalRequest>,
 
-    // -- Broker-sourced search state --------------------------------------
-    pub search_chips: Vec<String>,
-    pub search_live_query: String,
-    pub search_active: bool,
+    // -- Config ----------------------------------------------------------
+    pub model: String,
+    pub provider: String,
 
     // -- App-borrowed (references) ---------------------------------------
-    /// Input history.
     pub input_history: &'a [String],
-    /// Model name (read from broker ConfigStore).
-    pub model: String,
-    /// Provider name (read from broker ConfigStore).
-    pub provider: String,
-    /// Approval dialog selection index.
     pub approval_selected: usize,
-    /// Pending customize dialog.
     pub pending_customize: &'a Option<CustomizeState>,
-    /// Insert context from broker (e.g. "compose", "reply", "search"), or None in normal mode.
-    pub insert_context: Option<String>,
-    /// Key hints for the status bar, derived from bindings for the current mode+screen.
-    /// Each entry is (key_label, description).
     pub key_hints: Vec<(String, String)>,
-    /// Whether the shortcuts modal is showing.
     pub show_shortcuts: bool,
-    /// Editor sub-mode within compose/reply input (insert vs normal vs command).
     pub editor_mode: crate::editor::EditorMode,
-    /// Editor command buffer (for `:` prompt within editor).
     pub editor_command_buffer: String,
 }
 
@@ -105,187 +66,62 @@ pub async fn fetch_view_state<'a>(
     editor_mode: crate::editor::EditorMode,
     editor_command_buffer: &str,
 ) -> ViewState<'a> {
-    // Read UiStore state
-    let ui_state = match client.read(&path!("ui")).await {
-        Ok(Some(record)) => match record.as_value() {
-            Some(Value::Map(m)) => m.clone(),
-            _ => BTreeMap::new(),
-        },
-        _ => BTreeMap::new(),
-    };
-
-    let screen = match ui_state.get("screen") {
-        Some(Value::String(s)) => s.clone(),
-        _ => "inbox".to_string(),
-    };
-    let mode = match ui_state.get("mode") {
-        Some(Value::String(s)) => s.clone(),
-        _ => "normal".to_string(),
-    };
-    let active_thread = match ui_state.get("active_thread") {
-        Some(Value::String(s)) => Some(s.clone()),
-        _ => None,
-    };
-    let selected_row = match ui_state.get("selected_row") {
-        Some(Value::Integer(n)) => *n as usize,
-        _ => 0,
-    };
-    let scroll = match ui_state.get("scroll") {
-        Some(Value::Integer(n)) => *n as u16,
-        _ => 0,
-    };
-    let scroll_max = match ui_state.get("scroll_max") {
-        Some(Value::Integer(n)) => *n as u16,
-        _ => 0,
-    };
-    let viewport_height = match ui_state.get("viewport_height") {
-        Some(Value::Integer(n)) => *n as u16,
-        _ => 0,
-    };
-    let (input, cursor) = match ui_state.get("input") {
-        Some(Value::Map(m)) => {
-            let content = match m.get("content") {
-                Some(Value::String(s)) => s.clone(),
-                _ => String::new(),
-            };
-            let cur = match m.get("cursor") {
-                Some(Value::Integer(n)) => *n as usize,
-                _ => 0,
-            };
-            (content, cur)
-        }
-        _ => (String::new(), 0),
-    };
-    let pending_action = match ui_state.get("pending_action") {
-        Some(Value::String(s)) => Some(s.clone()),
-        _ => None,
-    };
-
-    let insert_context = match ui_state.get("insert_context") {
-        Some(Value::String(s)) => Some(s.clone()),
-        _ => None,
-    };
-
-    let (search_chips, search_live_query, search_active) = match ui_state.get("search") {
-        Some(Value::Map(sm)) => {
-            let chips = match sm.get("chips") {
-                Some(Value::Array(arr)) => arr
-                    .iter()
-                    .filter_map(|v| match v {
-                        Value::String(s) => Some(s.clone()),
-                        _ => None,
-                    })
-                    .collect(),
-                _ => Vec::new(),
-            };
-            let live_query = match sm.get("live_query") {
-                Some(Value::String(s)) => s.clone(),
-                _ => String::new(),
-            };
-            let active = match sm.get("active") {
-                Some(Value::Bool(b)) => *b,
-                _ => false,
-            };
-            (chips, live_query, active)
-        }
-        _ => (Vec::new(), String::new(), false),
-    };
+    // Read UiSnapshot via typed deserialization
+    let ui: UiSnapshot = client
+        .read_typed::<UiSnapshot>(&path!("ui"))
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
 
     // Conditional reads based on screen
     let mut inbox_threads = Vec::new();
     let mut messages = Vec::new();
-    let mut thinking = false;
-    let mut tool_status: Option<(String, String)> = None;
-    let mut turn_tokens: (u32, u32) = (0, 0);
-    let mut approval_pending: Option<(String, String)> = None;
+    let mut turn = ox_history::TurnState::new();
+    let mut approval_pending: Option<ApprovalRequest> = None;
 
-    if screen == "inbox" {
-        // Read inbox threads
-        if let Ok(Some(record)) = client.read(&path!("inbox/threads")).await {
-            if let Some(val) = record.as_value() {
-                inbox_threads = parse_inbox_threads(val);
+    match ui.screen {
+        Screen::Inbox => {
+            // Read inbox threads
+            if let Ok(Some(record)) = client.read(&path!("inbox/threads")).await {
+                if let Some(val) = record.as_value() {
+                    inbox_threads = parse_inbox_threads(val);
+                }
             }
         }
-    } else if screen == "thread" {
-        if let Some(tid) = &active_thread {
-            // Read committed messages
-            let msg_path = ox_path::oxpath!("threads", tid, "history", "messages");
-            if let Ok(Some(record)) = client.read(&msg_path).await {
-                if let Some(Value::Array(arr)) = record.as_value() {
-                    messages = parse_chat_messages(arr);
+        Screen::Thread => {
+            if let Some(tid) = &ui.active_thread {
+                // Read committed messages
+                let msg_path = ox_path::oxpath!("threads", tid, "history", "messages");
+                if let Ok(Some(record)) = client.read(&msg_path).await {
+                    if let Some(Value::Array(arr)) = record.as_value() {
+                        messages = parse_chat_messages(arr);
+                    }
                 }
-            }
 
-            // Read turn/thinking
-            let thinking_path = ox_path::oxpath!("threads", tid, "history", "turn", "thinking");
-            if let Ok(Some(record)) = client.read(&thinking_path).await {
-                if let Some(Value::Bool(b)) = record.as_value() {
-                    thinking = *b;
+                // Read turn state (typed)
+                let turn_path = ox_path::oxpath!("threads", tid, "history", "turn");
+                if let Ok(Some(t)) = client
+                    .read_typed::<ox_history::TurnState>(&turn_path)
+                    .await
+                {
+                    turn = t;
                 }
-            }
 
-            // Read turn/tool
-            let tool_path = ox_path::oxpath!("threads", tid, "history", "turn", "tool");
-            if let Ok(Some(record)) = client.read(&tool_path).await {
-                if let Some(Value::Map(m)) = record.as_value() {
-                    let name = m
-                        .get("name")
-                        .and_then(|v| match v {
-                            Value::String(s) => Some(s.clone()),
-                            _ => None,
-                        })
-                        .unwrap_or_default();
-                    let status = m
-                        .get("status")
-                        .and_then(|v| match v {
-                            Value::String(s) => Some(s.clone()),
-                            _ => None,
-                        })
-                        .unwrap_or_default();
-                    tool_status = Some((name, status));
-                }
-            }
-
-            // Read turn/tokens
-            let tokens_path = ox_path::oxpath!("threads", tid, "history", "turn", "tokens");
-            if let Ok(Some(record)) = client.read(&tokens_path).await {
-                if let Some(Value::Map(m)) = record.as_value() {
-                    let in_t = m
-                        .get("in")
-                        .and_then(|v| match v {
-                            Value::Integer(i) => Some(*i as u32),
-                            _ => None,
-                        })
-                        .unwrap_or(0);
-                    let out_t = m
-                        .get("out")
-                        .and_then(|v| match v {
-                            Value::Integer(i) => Some(*i as u32),
-                            _ => None,
-                        })
-                        .unwrap_or(0);
-                    turn_tokens = (in_t, out_t);
-                }
-            }
-
-            // Read approval/pending
-            let approval_path = ox_path::oxpath!("threads", tid, "approval", "pending");
-            if let Ok(Some(record)) = client.read(&approval_path).await {
-                if let Some(Value::Map(m)) = record.as_value() {
-                    let tool_name = m.get("tool_name").and_then(|v| match v {
-                        Value::String(s) => Some(s.clone()),
-                        _ => None,
-                    });
-                    let input_preview = m.get("input_preview").and_then(|v| match v {
-                        Value::String(s) => Some(s.clone()),
-                        _ => None,
-                    });
-                    if let Some(tn) = tool_name {
-                        approval_pending = Some((tn, input_preview.unwrap_or_default()));
+                // Read approval/pending (typed)
+                let approval_path = ox_path::oxpath!("threads", tid, "approval", "pending");
+                if let Ok(Some(ap)) = client
+                    .read_typed::<ApprovalRequest>(&approval_path)
+                    .await
+                {
+                    // Only treat as pending if the tool_name is non-empty
+                    if !ap.tool_name.is_empty() {
+                        approval_pending = Some(ap);
                     }
                 }
             }
         }
+        Screen::Settings => {}
     }
 
     // Read model and default account from broker ConfigStore
@@ -305,34 +141,28 @@ pub async fn fetch_view_state<'a>(
     };
 
     // Read bindings for current mode+screen to build key hints
-    let key_hints = read_key_hints(client, &mode, &screen).await;
+    let mode_str = match ui.mode {
+        Mode::Normal => "normal",
+        Mode::Insert => "insert",
+    };
+    let screen_str = match ui.screen {
+        Screen::Inbox => "inbox",
+        Screen::Thread => "thread",
+        Screen::Settings => "settings",
+    };
+    let key_hints = read_key_hints(client, mode_str, screen_str).await;
 
     ViewState {
-        screen,
-        mode,
-        active_thread,
-        selected_row,
-        scroll,
-        scroll_max,
-        viewport_height,
-        input,
-        cursor,
-        pending_action,
+        ui,
         inbox_threads,
         messages,
-        thinking,
-        tool_status,
-        turn_tokens,
+        turn,
         approval_pending,
-        search_chips,
-        search_live_query,
-        search_active,
         input_history: &app.input_history,
         model,
         provider,
         approval_selected: dialog.approval_selected,
         pending_customize: &dialog.pending_customize,
-        insert_context,
         key_hints,
         show_shortcuts: dialog.show_shortcuts,
         editor_mode,

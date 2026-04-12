@@ -10,6 +10,7 @@ use crate::types::{APPROVAL_OPTIONS, CustomizeState};
 use crate::view_state::fetch_view_state;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
 use ox_path::oxpath;
+use ox_types::{InsertContext, Mode, PendingAction, Screen};
 use ox_ui::text_input_store::EditSource;
 use std::time::Duration;
 use structfs_core_store::Writer as StructWriter;
@@ -44,7 +45,7 @@ pub async fn run_async(
     };
     let mut input_session = InputSession::new();
     let mut text_input_view = crate::text_input_view::TextInputView::new();
-    let mut prev_mode = String::new();
+    let mut prev_mode = Mode::Normal;
     let mut settings = if needs_setup {
         // Navigate to settings screen via broker
         client
@@ -98,10 +99,10 @@ pub async fn run_async(
         // ViewState borrows from App so we scope it tightly: draw, then
         // extract the owned fields we need for pending-action handling and
         // event dispatch, then drop the borrow.
-        let pending_action: Option<String>;
-        let screen_owned: String;
-        let mode_owned: String;
-        let insert_context_owned: Option<String>;
+        let pending_action: Option<PendingAction>;
+        let screen_owned: Screen;
+        let mode_owned: Mode;
+        let insert_context_owned: Option<InsertContext>;
         let has_active_thread: bool;
         let active_thread_id: Option<String>;
         let selected_thread_id: Option<String>;
@@ -121,21 +122,21 @@ pub async fn run_async(
             .await;
 
             // Detect mode transitions for InputSession sync
-            if vs.mode != prev_mode {
-                if vs.mode == "insert" {
+            if vs.ui.mode != prev_mode {
+                if vs.ui.mode == Mode::Insert {
                     // Entering insert mode — initialize InputSession from broker
-                    input_session.init_from(vs.input.clone(), vs.cursor);
+                    input_session.init_from(vs.ui.input.content.clone(), vs.ui.input.cursor);
                     input_session.editor_mode = EditorMode::Insert;
-                } else if prev_mode == "insert" {
+                } else if prev_mode == Mode::Insert {
                     // Exiting insert mode — flush any pending edits
                     flush_pending_edits(&mut input_session, client).await;
                 }
-                prev_mode = vs.mode.clone();
+                prev_mode = vs.ui.mode;
             }
 
             // Set row_count in UiStore (for inbox navigation bounds)
             // Only write on inbox screen — thread screen has no row selection.
-            if vs.screen == "inbox" {
+            if vs.ui.screen == Screen::Inbox {
                 let row_count = vs.inbox_threads.len() as i64;
                 let _ = client
                     .write(&oxpath!("ui", "set_row_count"), cmd!("count" => row_count))
@@ -153,7 +154,7 @@ pub async fn run_async(
             })?;
 
             // Update scroll_max and viewport_height in broker (after draw)
-            if vs.active_thread.is_some() && viewport_height > 0 {
+            if vs.ui.active_thread.is_some() && viewport_height > 0 {
                 let scroll_max = content_height.unwrap_or(0).saturating_sub(viewport_height) as i64;
                 let _ = client
                     .write(
@@ -171,23 +172,23 @@ pub async fn run_async(
             }
 
             // Extract owned copies of data needed after vs is dropped
-            pending_action = vs.pending_action.clone();
-            screen_owned = vs.screen.clone();
-            mode_owned = vs.mode.clone();
-            insert_context_owned = vs.insert_context.clone();
-            has_active_thread = vs.active_thread.is_some();
-            active_thread_id = vs.active_thread.clone();
-            selected_thread_id = vs.inbox_threads.get(vs.selected_row).map(|t| t.id.clone());
-            search_active = vs.search_active;
+            pending_action = vs.ui.pending_action;
+            screen_owned = vs.ui.screen;
+            mode_owned = vs.ui.mode;
+            insert_context_owned = vs.ui.insert_context;
+            has_active_thread = vs.ui.active_thread.is_some();
+            active_thread_id = vs.ui.active_thread.clone();
+            selected_thread_id = vs.inbox_threads.get(vs.ui.selected_row).map(|t| t.id.clone());
+            search_active = vs.ui.search.active;
             has_approval_pending = vs.approval_pending.is_some();
         }
         // vs is now dropped — safe to mutate app
 
         // 2. Handle pending_action
         if let Some(action) = &pending_action {
-            match action.as_str() {
-                "send_input" => {
-                    if insert_context_owned.as_deref() == Some("command") {
+            match action {
+                PendingAction::SendInput => {
+                    if insert_context_owned == Some(InsertContext::Command) {
                         flush_pending_edits(&mut input_session, client).await;
                         execute_command_input(&input_session.content, client).await;
                         let _ = client.write(&oxpath!("ui", "clear_input"), cmd!()).await;
@@ -202,15 +203,15 @@ pub async fn run_async(
                         }
                     }
                 }
-                "quit" => return Ok(()),
-                "open_selected" => {
+                PendingAction::Quit => return Ok(()),
+                PendingAction::OpenSelected => {
                     if let Some(id) = &selected_thread_id {
                         let _ = client
                             .write(&oxpath!("ui", "open"), cmd!("thread_id" => id))
                             .await;
                     }
                 }
-                "archive_selected" => {
+                PendingAction::ArchiveSelected => {
                     if let Some(id) = &selected_thread_id {
                         let update_path = ox_path::oxpath!("threads", id);
                         app.pool
@@ -219,7 +220,6 @@ pub async fn run_async(
                             .ok();
                     }
                 }
-                _ => {}
             }
             // Clear the pending action
             let _ = client
@@ -228,7 +228,7 @@ pub async fn run_async(
         }
 
         // Populate settings accounts from config when on the settings screen.
-        if screen_owned == "settings" && settings.accounts.is_empty() {
+        if screen_owned == Screen::Settings && settings.accounts.is_empty() {
             let config = crate::config::resolve_config(
                 app.pool.inbox_root(),
                 &crate::config::CliOverrides::default(),
@@ -268,7 +268,7 @@ pub async fn run_async(
                         .await;
                     }
                     // Approval dialog — direct handling (reads from broker)
-                    else if has_approval_pending && mode_owned == "normal" {
+                    else if has_approval_pending && mode_owned == Mode::Normal {
                         crate::key_handlers::handle_approval_key(
                             &mut dialog,
                             client,
@@ -280,11 +280,18 @@ pub async fn run_async(
                     }
                     // Normal + Insert — dispatch through broker
                     else if let Some(key_str) = encode_key(key.modifiers, key.code) {
-                        let mode = mode_owned.as_str();
-                        let screen = screen_owned.as_str();
+                        let mode_str = match mode_owned {
+                            Mode::Normal => "normal",
+                            Mode::Insert => "insert",
+                        };
+                        let screen_str = match screen_owned {
+                            Screen::Inbox => "inbox",
+                            Screen::Thread => "thread",
+                            Screen::Settings => "settings",
+                        };
 
                         // Settings screen — edit dialog key handling
-                        if screen == "settings" && mode == "normal" && settings.editing.is_some() {
+                        if screen_owned == Screen::Settings && mode_owned == Mode::Normal && settings.editing.is_some() {
                             use crate::settings_state::{DIALECTS, TestStatus};
                             let inbox_root = app.pool.inbox_root().to_path_buf();
                             let keys_dir = inbox_root.join("keys");
@@ -568,7 +575,7 @@ pub async fn run_async(
                         }
 
                         // Settings screen navigation (before broker dispatch)
-                        if screen == "settings" && mode == "normal" && settings.editing.is_none() {
+                        if screen_owned == Screen::Settings && mode_owned == Mode::Normal && settings.editing.is_none() {
                             use crate::settings_state::SettingsFocus;
 
                             // Delete confirmation — absorb all keys until y/n
@@ -1016,7 +1023,7 @@ pub async fn run_async(
                         }
 
                         // Search chip dismissal (1-9 in normal mode, inbox, search active)
-                        if mode == "normal" && screen == "inbox" && search_active {
+                        if mode_owned == Mode::Normal && screen_owned == Screen::Inbox && search_active {
                             if let KeyCode::Char(c @ '1'..='9') = key.code {
                                 let idx = (c as u8 - b'1') as usize;
                                 let _ = client
@@ -1030,17 +1037,17 @@ pub async fn run_async(
                         }
 
                         // ? in normal mode toggles shortcuts modal
-                        if mode == "normal" && key_str == "?" {
+                        if mode_owned == Mode::Normal && key_str == "?" {
                             dialog.show_shortcuts = !dialog.show_shortcuts;
                             continue;
                         }
 
                         // In editor sub-modes (compose/reply), intercept ESC
                         // before the InputStore can fire ui/exit_insert
-                        if mode == "insert"
+                        if mode_owned == Mode::Insert
                             && key_str == "Esc"
-                            && insert_context_owned.as_deref() != Some("search")
-                            && insert_context_owned.as_deref() != Some("command")
+                            && insert_context_owned != Some(InsertContext::Search)
+                            && insert_context_owned != Some(InsertContext::Command)
                         {
                             match input_session.editor_mode {
                                 EditorMode::Insert => {
@@ -1062,14 +1069,14 @@ pub async fn run_async(
                         let result = client
                             .write(
                                 &oxpath!("input", "key"),
-                                cmd!("mode" => mode, "key" => key_str.clone(), "screen" => screen),
+                                cmd!("mode" => mode_str, "key" => key_str.clone(), "screen" => screen_str),
                             )
                             .await;
 
-                        if result.is_err() && mode_owned == "insert" {
-                            if insert_context_owned.as_deref() == Some("search") {
+                        if result.is_err() && mode_owned == Mode::Insert {
+                            if insert_context_owned == Some(InsertContext::Search) {
                                 dispatch_search_edit(client, key.modifiers, key.code).await;
-                            } else if insert_context_owned.as_deref() == Some("command") {
+                            } else if insert_context_owned == Some(InsertContext::Command) {
                                 // Command mode uses the same text editing as editor-insert
                                 handle_editor_insert_key(
                                     &mut input_session,
@@ -1115,7 +1122,7 @@ pub async fn run_async(
                 }
                 Event::Mouse(mouse) => {
                     // Border drag handling
-                    if mode_owned == "insert" {
+                    if mode_owned == Mode::Insert {
                         match mouse.kind {
                             MouseEventKind::Down(_) if text_input_view.is_on_border(mouse.row) => {
                                 text_input_view.start_border_drag(mouse.row);
@@ -1160,7 +1167,7 @@ pub async fn run_async(
                     } else
                     // Click on settings edit dialog
                     if let MouseEventKind::Down(_) = mouse.kind {
-                        if screen_owned == "settings" && settings.editing.is_some() {
+                        if screen_owned == Screen::Settings && settings.editing.is_some() {
                             let term_size = crossterm::terminal::size().unwrap_or((80, 24));
                             let dialog_h = 10u16;
                             let dialog_w = term_size.0 * 60 / 100;
@@ -1213,7 +1220,7 @@ pub async fn run_async(
                     }
                 }
                 Event::Paste(text) => {
-                    if mode_owned == "insert" && insert_context_owned.as_deref() != Some("search") {
+                    if mode_owned == Mode::Insert && insert_context_owned != Some(InsertContext::Search) {
                         input_session.insert(&text, EditSource::Paste);
                     }
                 }

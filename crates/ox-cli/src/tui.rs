@@ -1,6 +1,7 @@
 use crate::text_input_view::desired_input_height;
 use crate::theme::Theme;
 use crate::view_state::ViewState;
+use ox_types::{InsertContext, Mode, Screen};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span};
@@ -20,9 +21,10 @@ pub(crate) fn draw(
     theme: &Theme,
     text_input_view: &mut crate::text_input_view::TextInputView,
 ) -> (Option<usize>, usize) {
-    let is_command_mode = vs.mode == "insert" && vs.insert_context.as_deref() == Some("command");
-    let in_insert = vs.mode == "insert" && !is_command_mode;
-    let show_filter = vs.active_thread.is_none() && vs.search_active;
+    let is_command_mode = vs.ui.mode == Mode::Insert
+        && vs.ui.insert_context == Some(InsertContext::Command);
+    let in_insert = vs.ui.mode == Mode::Insert && !is_command_mode;
+    let show_filter = vs.ui.active_thread.is_none() && vs.ui.search.active;
 
     // Build layout constraints
     let mut constraints = vec![Constraint::Length(1)]; // tab bar
@@ -66,18 +68,18 @@ pub(crate) fn draw(
 
     let mut content_height: Option<usize> = None;
 
-    if vs.screen == "settings" {
+    if vs.ui.screen == Screen::Settings {
         crate::settings_view::draw_settings(frame, settings, theme, content_area);
-    } else if vs.active_thread.is_some() {
+    } else if vs.ui.active_thread.is_some() {
         // Build a ThreadView from broker-sourced data
         let view = crate::types::ThreadView {
             messages: vs.messages.clone(),
-            thinking: vs.thinking,
+            thinking: vs.turn.thinking,
         };
         content_height = Some(crate::thread_view::draw_thread(
             frame,
             &view,
-            vs.scroll,
+            vs.ui.scroll as u16,
             theme,
             content_area,
         ));
@@ -90,7 +92,7 @@ pub(crate) fn draw(
         let input_area = chunks[idx];
         idx += 1;
 
-        let title = if vs.thinking {
+        let title = if vs.turn.thinking {
             " streaming... "
         } else if vs.editor_mode == crate::editor::EditorMode::Normal {
             " NORMAL "
@@ -101,7 +103,7 @@ pub(crate) fn draw(
         // Hide cursor when a modal overlay is active or in search context
         let show_cursor = vs.approval_pending.is_none()
             && vs.pending_customize.is_none()
-            && vs.insert_context.as_deref() != Some("search");
+            && vs.ui.insert_context != Some(InsertContext::Search);
 
         if show_cursor {
             text_input_view.render(frame, input_area, theme.input_border, title);
@@ -111,7 +113,7 @@ pub(crate) fn draw(
                 .borders(Borders::TOP)
                 .border_style(theme.input_border)
                 .title(title);
-            let input = Paragraph::new(vs.input.as_str()).block(input_block);
+            let input = Paragraph::new(vs.ui.input.content.as_str()).block(input_block);
             frame.render_widget(input, input_area);
         }
     }
@@ -127,11 +129,26 @@ pub(crate) fn draw(
 
     // Modal overlays
     if vs.show_shortcuts {
-        crate::dialogs::draw_shortcuts_modal(frame, &vs.key_hints, &vs.mode, &vs.screen, theme);
+        let mode_str = match vs.ui.mode {
+            Mode::Normal => "normal",
+            Mode::Insert => "insert",
+        };
+        let screen_str = match vs.ui.screen {
+            Screen::Inbox => "inbox",
+            Screen::Thread => "thread",
+            Screen::Settings => "settings",
+        };
+        crate::dialogs::draw_shortcuts_modal(frame, &vs.key_hints, mode_str, screen_str, theme);
     } else if let Some(customize) = vs.pending_customize {
         crate::dialogs::draw_customize_dialog(frame, customize, theme);
-    } else if let Some((ref tool, ref preview)) = vs.approval_pending {
-        crate::dialogs::draw_approval_dialog(frame, tool, preview, vs.approval_selected, theme);
+    } else if let Some(ref ap) = vs.approval_pending {
+        crate::dialogs::draw_approval_dialog(
+            frame,
+            &ap.tool_name,
+            &ap.input_preview,
+            vs.approval_selected,
+            theme,
+        );
     }
 
     (content_height, content_area.height as usize)
@@ -150,7 +167,7 @@ fn draw_command_line(frame: &mut Frame, vs: &ViewState, _theme: &Theme, area: Re
     let text = if vs.editor_mode == crate::editor::EditorMode::Command {
         &vs.editor_command_buffer
     } else {
-        &vs.input
+        &vs.ui.input.content
     };
     let input = Span::raw(text);
     let line = Line::from(vec![prompt, input]);
@@ -173,28 +190,30 @@ fn draw_status_bar(
     theme: &Theme,
     area: Rect,
 ) {
-    let mode_badge = if vs.mode == "insert" {
-        let label = match vs.insert_context.as_deref() {
-            Some("compose") => " COMPOSE ",
-            Some("reply") => " REPLY ",
-            Some("search") => " SEARCH ",
-            Some("command") => " COMMAND ",
-            _ => " INSERT ",
+    let mode_badge = if vs.ui.mode == Mode::Insert {
+        let label = match vs.ui.insert_context {
+            Some(InsertContext::Compose) => " COMPOSE ",
+            Some(InsertContext::Reply) => " REPLY ",
+            Some(InsertContext::Search) => " SEARCH ",
+            Some(InsertContext::Command) => " COMMAND ",
+            None => " INSERT ",
         };
         Span::styled(label, theme.insert_badge)
     } else {
         Span::styled(" NORMAL ", theme.title_badge)
     };
 
-    let context_info = if vs.active_thread.is_some() {
-        let (ti, to) = vs.turn_tokens;
-        format!(" {}in/{}out", ti, to)
+    let context_info = if vs.ui.active_thread.is_some() {
+        format!(
+            " {}in/{}out",
+            vs.turn.tokens.input_tokens, vs.turn.tokens.output_tokens
+        )
     } else {
         let count = vs.inbox_threads.len();
         format!(" {} thread{}", count, if count == 1 { "" } else { "s" })
     };
 
-    let hints: String = if vs.screen == "settings" {
+    let hints: String = if vs.ui.screen == Screen::Settings {
         settings_hints(settings)
     } else if vs.key_hints.is_empty() {
         String::new()
