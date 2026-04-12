@@ -32,30 +32,13 @@ pub struct BindingContext {
 /// What a binding does when activated.
 #[derive(Debug, Clone)]
 pub enum Action {
-    /// Write a single command to a target path.
-    Command {
-        target: Path,
-        /// Additional fields to include in the dispatched command value.
-        fields: Vec<ActionField>,
-    },
     /// Command invocation through the command registry.
     Invoke {
         command: String,
         args: std::collections::BTreeMap<String, serde_json::Value>,
     },
-    /// Execute a sequence of command actions in order.
+    /// Execute a sequence of actions in order.
     Macro(Vec<Action>),
-}
-
-/// A field to include in a dispatched command.
-#[derive(Debug, Clone)]
-pub enum ActionField {
-    /// Include a static value.
-    Static { key: String, value: Value },
-    /// Include a value extracted from the key event's context data.
-    /// `source` names the field in the event context; `key` names it
-    /// in the dispatched command.
-    FromContext { key: String, source: String },
 }
 
 /// A complete binding: activation context + action + description.
@@ -84,7 +67,6 @@ pub type CommandDispatcher =
 pub struct InputStore {
     bindings: Vec<Binding>,
     dispatcher: Option<CommandDispatcher>,
-    txn_counter: u64,
 }
 
 impl InputStore {
@@ -92,18 +74,12 @@ impl InputStore {
         InputStore {
             bindings,
             dispatcher: None,
-            txn_counter: 0,
         }
     }
 
     /// Set the command dispatcher.
     pub fn set_dispatcher(&mut self, dispatcher: CommandDispatcher) {
         self.dispatcher = Some(dispatcher);
-    }
-
-    fn next_txn(&mut self) -> String {
-        self.txn_counter += 1;
-        format!("input_{}", self.txn_counter)
     }
 
     // -- Binding resolution --
@@ -141,26 +117,6 @@ impl InputStore {
         event_context: &BTreeMap<String, Value>,
     ) -> Result<Path, StoreError> {
         match action {
-            Action::Command { target, fields } => {
-                let mut cmd = BTreeMap::new();
-                cmd.insert("txn".to_string(), Value::String(self.next_txn()));
-                for field in fields {
-                    match field {
-                        ActionField::Static { key, value } => {
-                            cmd.insert(key.clone(), value.clone());
-                        }
-                        ActionField::FromContext { key, source } => {
-                            if let Some(val) = event_context.get(source) {
-                                cmd.insert(key.clone(), val.clone());
-                            }
-                        }
-                    }
-                }
-                let dispatcher = self.dispatcher.as_mut().ok_or_else(|| {
-                    StoreError::store("input", "dispatch", "no dispatcher configured")
-                })?;
-                dispatcher(target, Record::parsed(Value::Map(cmd)))
-            }
             Action::Invoke { command, args } => {
                 // Build a CommandInvocation as a StructFS value and dispatch to command/invoke
                 let inv = crate::command_def::CommandInvocation {
@@ -204,10 +160,6 @@ impl InputStore {
             Value::String(b.description.clone()),
         );
         match &b.action {
-            Action::Command { target, .. } => {
-                map.insert("target".to_string(), Value::String(target.to_string()));
-                map.insert("type".to_string(), Value::String("command".to_string()));
-            }
             Action::Invoke { command, .. } => {
                 map.insert("command".to_string(), Value::String(command.clone()));
                 map.insert("type".to_string(), Value::String("invoke".to_string()));
@@ -244,10 +196,9 @@ impl InputStore {
             .ok_or_else(|| StoreError::store("input", "bind", "missing mode"))?;
         let key = extract_str(map, "key")
             .ok_or_else(|| StoreError::store("input", "bind", "missing key"))?;
-        let target_str = extract_str(map, "target")
-            .ok_or_else(|| StoreError::store("input", "bind", "missing target"))?;
-        let target = Path::parse(&target_str)
-            .map_err(|e| StoreError::store("input", "bind", e.to_string()))?;
+        let command = extract_str(map, "command")
+            .or_else(|| extract_str(map, "target")) // backwards compat
+            .ok_or_else(|| StoreError::store("input", "bind", "missing command"))?;
         let description = extract_str(map, "description").unwrap_or_default();
         let screen = extract_str(map, "screen");
 
@@ -260,12 +211,18 @@ impl InputStore {
         // Remove existing binding with same context
         self.bindings.retain(|b| b.context != ctx);
 
-        // Parse fields if present
-        let fields = parse_fields(map.get("fields"));
+        // Parse args if present
+        let args = match map.get("args") {
+            Some(Value::Map(m)) => m
+                .iter()
+                .map(|(k, v)| (k.clone(), structfs_serde_store::value_to_json(v.clone())))
+                .collect(),
+            _ => BTreeMap::new(),
+        };
 
         self.bindings.push(Binding {
             context: ctx,
-            action: Action::Command { target, fields },
+            action: Action::Invoke { command, args },
             description,
         });
         Ok(Path::parse("bindings").unwrap())
@@ -324,12 +281,17 @@ impl InputStore {
                     ));
                 }
             };
-            let target_str = extract_str(step_map, "target")
-                .ok_or_else(|| StoreError::store("input", "macro", "step missing target"))?;
-            let target = Path::parse(&target_str)
-                .map_err(|e| StoreError::store("input", "macro", e.to_string()))?;
-            let fields = parse_fields(step_map.get("fields"));
-            steps.push(Action::Command { target, fields });
+            let command = extract_str(step_map, "command")
+                .or_else(|| extract_str(step_map, "target")) // backwards compat
+                .ok_or_else(|| StoreError::store("input", "macro", "step missing command"))?;
+            let args = match step_map.get("args") {
+                Some(Value::Map(m)) => m
+                    .iter()
+                    .map(|(k, v)| (k.clone(), structfs_serde_store::value_to_json(v.clone())))
+                    .collect(),
+                _ => BTreeMap::new(),
+            };
+            steps.push(Action::Invoke { command, args });
         }
 
         let ctx = BindingContext {
@@ -356,29 +318,6 @@ fn extract_str(map: &BTreeMap<String, Value>, key: &str) -> Option<String> {
         Value::String(s) => Some(s.clone()),
         _ => None,
     })
-}
-
-fn parse_fields(value: Option<&Value>) -> Vec<ActionField> {
-    let arr = match value {
-        Some(Value::Array(a)) => a,
-        _ => return Vec::new(),
-    };
-    arr.iter()
-        .filter_map(|item| {
-            let m = match item {
-                Value::Map(m) => m,
-                _ => return None,
-            };
-            let key = extract_str(m, "key")?;
-            if let Some(source) = extract_str(m, "source") {
-                Some(ActionField::FromContext { key, source })
-            } else {
-                m.get("value")
-                    .cloned()
-                    .map(|value| ActionField::Static { key, value })
-            }
-        })
-        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -463,31 +402,31 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use structfs_core_store::path;
 
-    fn simple_binding(mode: &str, key: &str, target: &str, desc: &str) -> Binding {
+    fn simple_binding(mode: &str, key: &str, command: &str, desc: &str) -> Binding {
         Binding {
             context: BindingContext {
                 mode: mode.to_string(),
                 key: key.to_string(),
                 screen: None,
             },
-            action: Action::Command {
-                target: Path::parse(target).unwrap(),
-                fields: vec![],
+            action: Action::Invoke {
+                command: command.to_string(),
+                args: BTreeMap::new(),
             },
             description: desc.to_string(),
         }
     }
 
-    fn screen_binding(mode: &str, key: &str, screen: &str, target: &str, desc: &str) -> Binding {
+    fn screen_binding(mode: &str, key: &str, screen: &str, command: &str, desc: &str) -> Binding {
         Binding {
             context: BindingContext {
                 mode: mode.to_string(),
                 key: key.to_string(),
                 screen: Some(screen.to_string()),
             },
-            action: Action::Command {
-                target: Path::parse(target).unwrap(),
-                fields: vec![],
+            action: Action::Invoke {
+                command: command.to_string(),
+                args: BTreeMap::new(),
             },
             description: desc.to_string(),
         }
@@ -554,7 +493,7 @@ mod tests {
 
     #[test]
     fn dispatch_simple_command() {
-        let bindings = vec![simple_binding("normal", "j", "ui/select_next", "down")];
+        let bindings = vec![simple_binding("normal", "j", "select_next", "down")];
         let mut store = InputStore::new(bindings);
         let (dispatcher, log) = mock_dispatcher();
         store.set_dispatcher(dispatcher);
@@ -565,15 +504,15 @@ mod tests {
 
         let log = log.lock().unwrap();
         assert_eq!(log.len(), 1);
-        assert_eq!(log[0].0, "ui/select_next");
-        assert!(log[0].1.contains_key("txn"));
+        assert_eq!(log[0].0, "command/invoke");
+        assert!(log[0].1.contains_key("command"));
     }
 
     #[test]
     fn dispatch_screen_specific() {
         let bindings = vec![
-            screen_binding("normal", "j", "inbox", "ui/select_next", "down"),
-            screen_binding("normal", "j", "thread", "ui/scroll_down", "scroll"),
+            screen_binding("normal", "j", "inbox", "select_next", "down"),
+            screen_binding("normal", "j", "thread", "scroll_down", "scroll"),
         ];
         let mut store = InputStore::new(bindings);
         let (dispatcher, log) = mock_dispatcher();
@@ -587,42 +526,8 @@ mod tests {
             .unwrap();
 
         let log = log.lock().unwrap();
-        assert_eq!(log[0].0, "ui/select_next");
-        assert_eq!(log[1].0, "ui/scroll_down");
-    }
-
-    #[test]
-    fn dispatch_with_context_field() {
-        let bindings = vec![Binding {
-            context: BindingContext {
-                mode: "normal".to_string(),
-                key: "j".to_string(),
-                screen: None,
-            },
-            action: Action::Command {
-                target: Path::parse("ui/select_next").unwrap(),
-                fields: vec![ActionField::FromContext {
-                    key: "from".to_string(),
-                    source: "selected_row".to_string(),
-                }],
-            },
-            description: "down".to_string(),
-        }];
-        let mut store = InputStore::new(bindings);
-        let (dispatcher, log) = mock_dispatcher();
-        store.set_dispatcher(dispatcher);
-
-        let mut event = BTreeMap::new();
-        event.insert("mode".to_string(), Value::String("normal".to_string()));
-        event.insert("key".to_string(), Value::String("j".to_string()));
-        event.insert("screen".to_string(), Value::String("inbox".to_string()));
-        event.insert("selected_row".to_string(), Value::Integer(3));
-        store
-            .write(&path!("key"), Record::parsed(Value::Map(event)))
-            .unwrap();
-
-        let log = log.lock().unwrap();
-        assert_eq!(log[0].1.get("from"), Some(&Value::Integer(3)));
+        assert_eq!(log[0].0, "command/invoke");
+        assert_eq!(log[1].0, "command/invoke");
     }
 
     #[test]
@@ -646,16 +551,13 @@ mod tests {
                 screen: None,
             },
             action: Action::Macro(vec![
-                Action::Command {
-                    target: Path::parse("ui/close").unwrap(),
-                    fields: vec![],
+                Action::Invoke {
+                    command: "close".to_string(),
+                    args: BTreeMap::new(),
                 },
-                Action::Command {
-                    target: Path::parse("ui/set_status").unwrap(),
-                    fields: vec![ActionField::Static {
-                        key: "text".to_string(),
-                        value: Value::String("Returned to inbox".to_string()),
-                    }],
+                Action::Invoke {
+                    command: "scroll_to_bottom".to_string(),
+                    args: BTreeMap::new(),
                 },
             ]),
             description: "go home".to_string(),
@@ -670,12 +572,8 @@ mod tests {
 
         let log = log.lock().unwrap();
         assert_eq!(log.len(), 2);
-        assert_eq!(log[0].0, "ui/close");
-        assert_eq!(log[1].0, "ui/set_status");
-        assert_eq!(
-            log[1].1.get("text"),
-            Some(&Value::String("Returned to inbox".to_string()))
-        );
+        assert_eq!(log[0].0, "command/invoke");
+        assert_eq!(log[1].0, "command/invoke");
     }
 
     // -- Read tests --
@@ -742,7 +640,7 @@ mod tests {
         let mut bind_val = BTreeMap::new();
         bind_val.insert("mode".to_string(), Value::String("normal".to_string()));
         bind_val.insert("key".to_string(), Value::String("x".to_string()));
-        bind_val.insert("target".to_string(), Value::String("ui/close".to_string()));
+        bind_val.insert("command".to_string(), Value::String("close".to_string()));
         bind_val.insert(
             "description".to_string(),
             Value::String("close".to_string()),
@@ -751,40 +649,41 @@ mod tests {
             .write(&path!("bind"), Record::parsed(Value::Map(bind_val)))
             .unwrap();
 
-        // Verify it works
+        // Verify it dispatches through command/invoke
         store
             .write(&path!("key"), key_event("normal", "x", "inbox"))
             .unwrap();
 
         let log = log.lock().unwrap();
-        assert_eq!(log[0].0, "ui/close");
+        assert_eq!(log[0].0, "command/invoke");
+        assert!(log[0].1.contains_key("command"));
     }
 
     #[test]
     fn bind_replaces_existing() {
-        let bindings = vec![simple_binding("normal", "j", "ui/select_next", "old")];
+        let bindings = vec![simple_binding("normal", "j", "select_next", "old")];
         let mut store = InputStore::new(bindings);
-        let (dispatcher, log) = mock_dispatcher();
+        let (dispatcher, _log) = mock_dispatcher();
         store.set_dispatcher(dispatcher);
 
         let mut bind_val = BTreeMap::new();
         bind_val.insert("mode".to_string(), Value::String("normal".to_string()));
         bind_val.insert("key".to_string(), Value::String("j".to_string()));
         bind_val.insert(
-            "target".to_string(),
-            Value::String("ui/scroll_down".to_string()),
+            "command".to_string(),
+            Value::String("scroll_down".to_string()),
         );
         bind_val.insert("description".to_string(), Value::String("new".to_string()));
         store
             .write(&path!("bind"), Record::parsed(Value::Map(bind_val)))
             .unwrap();
 
-        store
-            .write(&path!("key"), key_event("normal", "j", "inbox"))
-            .unwrap();
-
-        let log = log.lock().unwrap();
-        assert_eq!(log[0].0, "ui/scroll_down");
+        // Verify the new binding replaced the old one
+        assert_eq!(store.bindings.len(), 1);
+        match &store.bindings[0].action {
+            Action::Invoke { command, .. } => assert_eq!(command, "scroll_down"),
+            _ => panic!("expected Invoke"),
+        }
     }
 
     #[test]
@@ -820,14 +719,14 @@ mod tests {
             Value::Array(vec![
                 Value::Map({
                     let mut s = BTreeMap::new();
-                    s.insert("target".to_string(), Value::String("ui/close".to_string()));
+                    s.insert("command".to_string(), Value::String("close".to_string()));
                     s
                 }),
                 Value::Map({
                     let mut s = BTreeMap::new();
                     s.insert(
-                        "target".to_string(),
-                        Value::String("ui/set_status".to_string()),
+                        "command".to_string(),
+                        Value::String("scroll_to_bottom".to_string()),
                     );
                     s
                 }),
@@ -843,8 +742,8 @@ mod tests {
 
         let log = log.lock().unwrap();
         assert_eq!(log.len(), 2);
-        assert_eq!(log[0].0, "ui/close");
-        assert_eq!(log[1].0, "ui/set_status");
+        assert_eq!(log[0].0, "command/invoke");
+        assert_eq!(log[1].0, "command/invoke");
     }
 
     // -- Error cases --

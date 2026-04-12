@@ -25,7 +25,7 @@ pub use command_def::{
 pub use command_registry::CommandRegistry;
 pub use command_store::CommandStore;
 pub use config_store::ConfigStore;
-pub use input_store::{Action, ActionField, Binding, BindingContext, InputStore};
+pub use input_store::{Action, Binding, BindingContext, InputStore};
 pub use text_input_store::TextInputStore;
 pub use ui_store::UiStore;
 
@@ -35,14 +35,13 @@ mod integration_tests {
     use std::collections::BTreeMap;
     use structfs_core_store::{Record, Value, Writer, path};
 
-    /// End-to-end: key event → InputStore → BrokerStore → UiStore state change.
+    /// End-to-end: key event → InputStore → CommandStore → UiStore state change.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn key_event_through_broker_changes_ui_state() {
         let broker = ox_broker::BrokerStore::default();
 
-        // Mount UiStore
+        // Mount UiStore with rows so selection can advance
         let mut ui = UiStore::new();
-        // Pre-set row_count so selection can advance
         ui.write(
             &path!("set_row_count"),
             Record::parsed(Value::Map({
@@ -54,8 +53,18 @@ mod integration_tests {
         .unwrap();
         broker.mount(path!("ui"), ui).await;
 
-        // Mount InputStore with broker-based dispatcher
-        let client_for_dispatch = broker.client();
+        // Mount CommandStore with dispatcher that forwards to broker
+        let cmd_client = broker.client();
+        let mut cmd_store = CommandStore::from_builtins();
+        cmd_store.set_dispatcher(Box::new(move |target, data| {
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(cmd_client.write(target, data))
+            })
+        }));
+        broker.mount(path!("command"), cmd_store).await;
+
+        // Mount InputStore with Action::Invoke binding
+        let input_client = broker.client();
         let bindings = vec![
             Binding {
                 context: BindingContext {
@@ -63,9 +72,9 @@ mod integration_tests {
                     key: "j".to_string(),
                     screen: Some("inbox".to_string()),
                 },
-                action: Action::Command {
-                    target: path!("ui/select_next"),
-                    fields: vec![],
+                action: Action::Invoke {
+                    command: "select_next".to_string(),
+                    args: BTreeMap::new(),
                 },
                 description: "Move down".to_string(),
             },
@@ -75,9 +84,9 @@ mod integration_tests {
                     key: "j".to_string(),
                     screen: Some("thread".to_string()),
                 },
-                action: Action::Command {
-                    target: path!("ui/scroll_down"),
-                    fields: vec![],
+                action: Action::Invoke {
+                    command: "scroll_down".to_string(),
+                    args: BTreeMap::new(),
                 },
                 description: "Scroll down".to_string(),
             },
@@ -85,7 +94,7 @@ mod integration_tests {
         let mut input = InputStore::new(bindings);
         input.set_dispatcher(Box::new(move |target, data| {
             tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(client_for_dispatch.write(target, data))
+                tokio::runtime::Handle::current().block_on(input_client.write(target, data))
             })
         }));
         broker.mount(path!("input"), input).await;
@@ -100,7 +109,7 @@ mod integration_tests {
             .unwrap();
         assert_eq!(row.as_value().unwrap(), &Value::Integer(0));
 
-        // Dispatch "j" on inbox screen → should select_next
+        // Dispatch "j" on inbox screen → InputStore → CommandStore → UiStore
         let mut event = BTreeMap::new();
         event.insert("mode".to_string(), Value::String("normal".to_string()));
         event.insert("key".to_string(), Value::String("j".to_string()));

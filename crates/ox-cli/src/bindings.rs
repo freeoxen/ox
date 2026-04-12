@@ -3,8 +3,9 @@
 //! Encodes the current handle_normal_key / handle_insert_key /
 //! handle_approval_key logic as declarative Binding structs.
 
-use ox_ui::{Action, ActionField, Binding, BindingContext};
-use structfs_core_store::{Path, Value};
+use std::collections::BTreeMap;
+
+use ox_ui::{Action, Binding, BindingContext};
 
 /// Build the default binding table.
 pub fn default_bindings() -> Vec<Binding> {
@@ -15,28 +16,21 @@ pub fn default_bindings() -> Vec<Binding> {
     b
 }
 
-fn p(s: &str) -> Path {
-    Path::parse(s).expect("binding target must be valid path")
-}
-
-fn cmd(target: &str) -> Action {
-    Action::Command {
-        target: p(target),
-        fields: vec![],
+fn invoke(command: &str) -> Action {
+    Action::Invoke {
+        command: command.to_string(),
+        args: BTreeMap::new(),
     }
 }
 
-fn cmd_with(target: &str, fields: Vec<ActionField>) -> Action {
-    Action::Command {
-        target: p(target),
-        fields,
+fn invoke_with(command: &str, args: &[(&str, &str)]) -> Action {
+    let mut map = BTreeMap::new();
+    for (k, v) in args {
+        map.insert(k.to_string(), serde_json::Value::String(v.to_string()));
     }
-}
-
-fn static_field(key: &str, val: &str) -> ActionField {
-    ActionField::Static {
-        key: key.to_string(),
-        value: Value::String(val.to_string()),
+    Action::Invoke {
+        command: command.to_string(),
+        args: map,
     }
 }
 
@@ -74,28 +68,28 @@ fn normal_mode(out: &mut Vec<Binding>) {
         "normal",
         "j",
         "inbox",
-        cmd("ui/select_next"),
+        invoke("select_next"),
         "Move selection down",
     ));
     out.push(bind_screen(
         "normal",
         "Down",
         "inbox",
-        cmd("ui/select_next"),
+        invoke("select_next"),
         "Move selection down",
     ));
     out.push(bind_screen(
         "normal",
         "k",
         "inbox",
-        cmd("ui/select_prev"),
+        invoke("select_prev"),
         "Move selection up",
     ));
     out.push(bind_screen(
         "normal",
         "Up",
         "inbox",
-        cmd("ui/select_prev"),
+        invoke("select_prev"),
         "Move selection up",
     ));
 
@@ -103,28 +97,28 @@ fn normal_mode(out: &mut Vec<Binding>) {
         "normal",
         "j",
         "thread",
-        cmd("ui/scroll_down"),
+        invoke("scroll_down"),
         "Scroll down",
     ));
     out.push(bind_screen(
         "normal",
         "Down",
         "thread",
-        cmd("ui/scroll_down"),
+        invoke("scroll_down"),
         "Scroll down",
     ));
     out.push(bind_screen(
         "normal",
         "k",
         "thread",
-        cmd("ui/scroll_up"),
+        invoke("scroll_up"),
         "Scroll up",
     ));
     out.push(bind_screen(
         "normal",
         "Up",
         "thread",
-        cmd("ui/scroll_up"),
+        invoke("scroll_up"),
         "Scroll up",
     ));
 
@@ -133,53 +127,53 @@ fn normal_mode(out: &mut Vec<Binding>) {
         "normal",
         "Ctrl+c",
         "thread",
-        cmd("ui/close"),
+        invoke("close"),
         "Back to inbox",
     ));
     out.push(bind_screen(
         "normal",
         "Ctrl+c",
         "inbox",
-        cmd("ui/quit"),
+        invoke("quit"),
         "Quit",
     ));
     out.push(bind_screen(
         "normal",
         "Esc",
         "thread",
-        cmd("ui/close"),
+        invoke("close"),
         "Back to inbox",
     ));
     out.push(bind_screen(
         "normal",
         "q",
         "thread",
-        cmd("ui/close"),
+        invoke("close"),
         "Back to inbox",
     ));
-    out.push(bind_screen("normal", "q", "inbox", cmd("ui/quit"), "Quit"));
-    out.push(bind("normal", "Ctrl+t", cmd("ui/close"), "Back to inbox"));
+    out.push(bind_screen("normal", "q", "inbox", invoke("quit"), "Quit"));
+    out.push(bind("normal", "Ctrl+t", invoke("close"), "Back to inbox"));
 
     // Enter insert mode — screen determines context
     out.push(bind_screen(
         "normal",
         "c",
         "inbox",
-        cmd_with("ui/enter_insert", vec![static_field("context", "compose")]),
+        invoke("compose"),
         "Compose new thread",
     ));
     out.push(bind_screen(
         "normal",
         "c",
         "thread",
-        cmd_with("ui/enter_insert", vec![static_field("context", "reply")]),
+        invoke("reply"),
         "Reply in thread",
     ));
     out.push(bind_screen(
         "normal",
         "/",
         "inbox",
-        cmd_with("ui/enter_insert", vec![static_field("context", "search")]),
+        invoke("search"),
         "Search",
     ));
 
@@ -187,13 +181,13 @@ fn normal_mode(out: &mut Vec<Binding>) {
     out.push(bind(
         "normal",
         ":",
-        cmd_with("ui/enter_insert", vec![static_field("context", "command")]),
+        invoke("enter_command"),
         "Command",
     ));
     out.push(bind(
         "normal",
         ";",
-        cmd_with("ui/enter_insert", vec![static_field("context", "command")]),
+        invoke("enter_command"),
         "Command",
     ));
 
@@ -203,28 +197,28 @@ fn normal_mode(out: &mut Vec<Binding>) {
         "normal",
         "g",
         "inbox",
-        cmd("ui/select_first"),
+        invoke("select_first"),
         "Go to first",
     ));
     out.push(bind_screen(
         "normal",
         "G",
         "inbox",
-        cmd("ui/select_last"),
+        invoke("select_last"),
         "Go to last",
     ));
     out.push(bind_screen(
         "normal",
         "g",
         "thread",
-        cmd("ui/scroll_to_top"),
+        invoke("scroll_to_top"),
         "Go to top",
     ));
     out.push(bind_screen(
         "normal",
         "G",
         "thread",
-        cmd("ui/scroll_to_bottom"),
+        invoke("scroll_to_bottom"),
         "Go to bottom",
     ));
 
@@ -233,14 +227,14 @@ fn normal_mode(out: &mut Vec<Binding>) {
         "normal",
         "Ctrl+d",
         "thread",
-        cmd("ui/scroll_half_page_down"),
+        invoke("scroll_half_page_down"),
         "Half page down",
     ));
     out.push(bind_screen(
         "normal",
         "Ctrl+u",
         "thread",
-        cmd("ui/scroll_half_page_up"),
+        invoke("scroll_half_page_up"),
         "Half page up",
     ));
 
@@ -249,14 +243,14 @@ fn normal_mode(out: &mut Vec<Binding>) {
         "normal",
         "Ctrl+f",
         "thread",
-        cmd("ui/scroll_page_down"),
+        invoke("scroll_page_down"),
         "Page down",
     ));
     out.push(bind_screen(
         "normal",
         "Ctrl+b",
         "thread",
-        cmd("ui/scroll_page_up"),
+        invoke("scroll_page_up"),
         "Page up",
     ));
 
@@ -265,28 +259,28 @@ fn normal_mode(out: &mut Vec<Binding>) {
         "normal",
         "s",
         "inbox",
-        cmd("ui/go_to_settings"),
+        invoke("settings"),
         "Open settings",
     ));
     out.push(bind_screen(
         "normal",
         "Esc",
         "settings",
-        cmd("ui/go_to_inbox"),
+        invoke("inbox"),
         "Back to inbox",
     ));
     out.push(bind_screen(
         "normal",
         "q",
         "settings",
-        cmd("ui/go_to_inbox"),
+        invoke("inbox"),
         "Back to inbox",
     ));
     out.push(bind_screen(
         "normal",
         "Ctrl+c",
         "settings",
-        cmd("ui/quit"),
+        invoke("quit"),
         "Quit",
     ));
 
@@ -295,14 +289,14 @@ fn normal_mode(out: &mut Vec<Binding>) {
         "normal",
         "Enter",
         "inbox",
-        cmd("ui/open_selected"),
+        invoke("open_selected"),
         "Open thread",
     ));
     out.push(bind_screen(
         "normal",
         "d",
         "inbox",
-        cmd("ui/archive_selected"),
+        invoke("archive_selected"),
         "Archive thread",
     ));
 
@@ -311,40 +305,28 @@ fn normal_mode(out: &mut Vec<Binding>) {
         "normal",
         "y",
         "thread",
-        cmd_with(
-            "approval/response",
-            vec![static_field("decision", "allow_once")],
-        ),
+        invoke_with("approve", &[("decision", "allow_once")]),
         "Allow once",
     ));
     out.push(bind_screen(
         "normal",
         "n",
         "thread",
-        cmd_with(
-            "approval/response",
-            vec![static_field("decision", "deny_once")],
-        ),
+        invoke_with("approve", &[("decision", "deny_once")]),
         "Deny once",
     ));
     out.push(bind_screen(
         "normal",
         "s",
         "thread",
-        cmd_with(
-            "approval/response",
-            vec![static_field("decision", "allow_session")],
-        ),
+        invoke_with("approve", &[("decision", "allow_session")]),
         "Allow for session",
     ));
     out.push(bind_screen(
         "normal",
         "a",
         "thread",
-        cmd_with(
-            "approval/response",
-            vec![static_field("decision", "allow_always")],
-        ),
+        invoke_with("approve", &[("decision", "allow_always")]),
         "Allow always",
     ));
 }
@@ -354,13 +336,13 @@ fn normal_mode(out: &mut Vec<Binding>) {
 // ---------------------------------------------------------------------------
 
 fn insert_mode(out: &mut Vec<Binding>) {
-    out.push(bind("insert", "Ctrl+s", cmd("ui/send_input"), "Send"));
-    out.push(bind("insert", "Ctrl+Enter", cmd("ui/send_input"), "Send"));
-    out.push(bind("insert", "Esc", cmd("ui/exit_insert"), "Normal mode"));
+    out.push(bind("insert", "Ctrl+s", invoke("send_input"), "Send"));
+    out.push(bind("insert", "Ctrl+Enter", invoke("send_input"), "Send"));
+    out.push(bind("insert", "Esc", invoke("exit_insert"), "Normal mode"));
     out.push(bind(
         "insert",
         "Ctrl+q",
-        cmd("ui/exit_insert"),
+        invoke("exit_insert"),
         "Normal mode",
     ));
     // Ctrl+u: screen-specific because search mode handles its own clear
@@ -368,14 +350,14 @@ fn insert_mode(out: &mut Vec<Binding>) {
         "insert",
         "Ctrl+u",
         "inbox",
-        cmd("ui/clear_input"),
+        invoke("clear_input"),
         "Clear line",
     ));
     out.push(bind_screen(
         "insert",
         "Ctrl+u",
         "thread",
-        cmd("ui/clear_input"),
+        invoke("clear_input"),
         "Clear line",
     ));
 }
@@ -385,69 +367,54 @@ fn insert_mode(out: &mut Vec<Binding>) {
 // ---------------------------------------------------------------------------
 
 fn approval_mode(out: &mut Vec<Binding>) {
-    out.push(bind("approval", "j", cmd("ui/select_next"), "Next option"));
+    out.push(bind("approval", "j", invoke("select_next"), "Next option"));
     out.push(bind(
         "approval",
         "Down",
-        cmd("ui/select_next"),
+        invoke("select_next"),
         "Next option",
     ));
     out.push(bind(
         "approval",
         "k",
-        cmd("ui/select_prev"),
+        invoke("select_prev"),
         "Previous option",
     ));
     out.push(bind(
         "approval",
         "Up",
-        cmd("ui/select_prev"),
+        invoke("select_prev"),
         "Previous option",
     ));
 
     out.push(bind(
         "approval",
         "y",
-        cmd_with(
-            "approval/response",
-            vec![static_field("decision", "allow_once")],
-        ),
+        invoke_with("approve", &[("decision", "allow_once")]),
         "Allow once",
     ));
     out.push(bind(
         "approval",
         "n",
-        cmd_with(
-            "approval/response",
-            vec![static_field("decision", "deny_once")],
-        ),
+        invoke_with("approve", &[("decision", "deny_once")]),
         "Deny once",
     ));
     out.push(bind(
         "approval",
         "s",
-        cmd_with(
-            "approval/response",
-            vec![static_field("decision", "allow_session")],
-        ),
+        invoke_with("approve", &[("decision", "allow_session")]),
         "Allow for session",
     ));
     out.push(bind(
         "approval",
         "a",
-        cmd_with(
-            "approval/response",
-            vec![static_field("decision", "allow_always")],
-        ),
+        invoke_with("approve", &[("decision", "allow_always")]),
         "Allow always",
     ));
     out.push(bind(
         "approval",
         "d",
-        cmd_with(
-            "approval/response",
-            vec![static_field("decision", "deny_always")],
-        ),
+        invoke_with("approve", &[("decision", "deny_always")]),
         "Deny always",
     ));
 }
