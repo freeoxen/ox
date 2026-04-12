@@ -118,4 +118,75 @@ mod integration_tests {
             .unwrap();
         assert_eq!(row.as_value().unwrap(), &Value::Integer(1));
     }
+
+    /// End-to-end: Action::Invoke → CommandStore → UiStore state change.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn invoke_action_through_command_store() {
+        let broker = ox_broker::BrokerStore::default();
+
+        // Mount UiStore with rows so selection can advance
+        let mut ui = UiStore::new();
+        ui.write(
+            &path!("set_row_count"),
+            Record::parsed(Value::Map({
+                let mut m = BTreeMap::new();
+                m.insert("count".to_string(), Value::Integer(10));
+                m
+            })),
+        )
+        .unwrap();
+        broker.mount(path!("ui"), ui).await;
+
+        // Mount CommandStore with dispatcher that forwards to broker
+        let cmd_client = broker.client();
+        let mut cmd_store = CommandStore::from_builtins();
+        cmd_store.set_dispatcher(Box::new(move |target, data| {
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(cmd_client.write(target, data))
+            })
+        }));
+        broker.mount(path!("command"), cmd_store).await;
+
+        // Mount InputStore with Action::Invoke binding
+        let input_client = broker.client();
+        let bindings = vec![Binding {
+            context: BindingContext {
+                mode: "normal".to_string(),
+                key: "j".to_string(),
+                screen: None,
+            },
+            action: Action::Invoke {
+                command: "select_next".to_string(),
+                args: BTreeMap::new(),
+            },
+            description: "Move down".to_string(),
+        }];
+        let mut input = InputStore::new(bindings);
+        input.set_dispatcher(Box::new(move |target, data| {
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(input_client.write(target, data))
+            })
+        }));
+        broker.mount(path!("input"), input).await;
+
+        let client = broker.client();
+
+        // Verify initial state
+        let row = client.read(&path!("ui/selected_row")).await.unwrap().unwrap();
+        assert_eq!(row.as_value().unwrap(), &Value::Integer(0));
+
+        // Dispatch "j" → InputStore → CommandStore → UiStore
+        let mut event = BTreeMap::new();
+        event.insert("mode".to_string(), Value::String("normal".to_string()));
+        event.insert("key".to_string(), Value::String("j".to_string()));
+        event.insert("screen".to_string(), Value::String("inbox".to_string()));
+        client
+            .write(&path!("input/key"), Record::parsed(Value::Map(event)))
+            .await
+            .unwrap();
+
+        // Verify state changed
+        let row = client.read(&path!("ui/selected_row")).await.unwrap().unwrap();
+        assert_eq!(row.as_value().unwrap(), &Value::Integer(1));
+    }
 }
