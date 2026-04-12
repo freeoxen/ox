@@ -39,7 +39,7 @@ impl AsyncReader for ApprovalStore {
             "pending" => match &self.pending {
                 Some(req) => match structfs_serde_store::to_value(req) {
                     Ok(v) => Ok(Some(Record::parsed(v))),
-                    Err(e) => Err(StoreError::store("approval", "pending", &e.to_string())),
+                    Err(e) => Err(StoreError::store("approval", "pending", e.to_string())),
                 },
                 None => Ok(Some(Record::parsed(Value::Null))),
             },
@@ -75,7 +75,7 @@ impl AsyncWriter for ApprovalStore {
                         return Box::pin(std::future::ready(Err(StoreError::store(
                             "approval",
                             "request",
-                            &e.to_string(),
+                            e.to_string(),
                         ))));
                     }
                 };

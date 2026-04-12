@@ -108,7 +108,7 @@ impl ClientHandle {
         value: &T,
     ) -> Result<Path, StoreError> {
         let v = structfs_serde_store::to_value(value)
-            .map_err(|e| StoreError::store("broker", "write_typed", &e.to_string()))?;
+            .map_err(|e| StoreError::store("broker", "write_typed", e.to_string()))?;
         self.write(to, Record::parsed(v)).await
     }
 
@@ -123,7 +123,7 @@ impl ClientHandle {
             Some(record) => match record.as_value() {
                 Some(value) => {
                     let typed = structfs_serde_store::from_value(value.clone())
-                        .map_err(|e| StoreError::store("broker", "read_typed", &e.to_string()))?;
+                        .map_err(|e| StoreError::store("broker", "read_typed", e.to_string()))?;
                     Ok(Some(typed))
                 }
                 None => Ok(None),

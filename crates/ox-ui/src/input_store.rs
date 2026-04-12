@@ -111,6 +111,7 @@ impl InputStore {
 
     // -- Action execution --
 
+    #[allow(clippy::only_used_in_recursion)]
     fn execute_action(
         &mut self,
         action: &Action,

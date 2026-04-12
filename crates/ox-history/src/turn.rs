@@ -44,7 +44,9 @@ impl TurnState {
             "streaming" => Some(Value::String(self.streaming.clone())),
             "thinking" => Some(Value::Bool(self.thinking)),
             "tool" => Some(match &self.tool {
-                Some(tool_status) => structfs_serde_store::to_value(tool_status).unwrap_or(Value::Null),
+                Some(tool_status) => {
+                    structfs_serde_store::to_value(tool_status).unwrap_or(Value::Null)
+                }
                 None => Value::Null,
             }),
             "tokens" => Some(structfs_serde_store::to_value(&self.tokens).unwrap_or(Value::Null)),
@@ -304,10 +306,7 @@ mod tests {
         let mut turn = TurnState::new();
         let mut map = BTreeMap::new();
         map.insert("input_tokens".to_string(), Value::String("100".to_string()));
-        map.insert(
-            "output_tokens".to_string(),
-            Value::String("50".to_string()),
-        );
+        map.insert("output_tokens".to_string(), Value::String("50".to_string()));
         assert!(!turn.write("tokens", &Value::Map(map)));
     }
 
