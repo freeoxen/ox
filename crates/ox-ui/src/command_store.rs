@@ -2,6 +2,7 @@
 //!
 //! Reads discover commands. Writes invoke or register them.
 
+use ox_path::oxpath;
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer};
 
 use crate::command_def::{CommandDef, CommandInvocation};
@@ -111,7 +112,7 @@ impl Writer for CommandStore {
                 self.registry
                     .register(def)
                     .map_err(|e| StoreError::store("command", "register", e.to_string()))?;
-                Ok(Path::parse("commands").unwrap())
+                Ok(oxpath!("commands"))
             }
             "unregister" => {
                 let name = match value {
@@ -126,7 +127,7 @@ impl Writer for CommandStore {
                 self.registry
                     .unregister(&name)
                     .map_err(|e| StoreError::store("command", "unregister", e.to_string()))?;
-                Ok(Path::parse("commands").unwrap())
+                Ok(oxpath!("commands"))
             }
             _ => Err(StoreError::store(
                 "command",

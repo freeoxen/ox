@@ -1,4 +1,5 @@
 use crossterm::event::{KeyCode, KeyModifiers};
+use ox_path::oxpath;
 use ox_ui::text_input_store::{Edit, EditOp, EditSequence, EditSource};
 
 // ---------------------------------------------------------------------------
@@ -126,7 +127,7 @@ pub(crate) async fn submit_editor_content(
 
     // Read context from broker
     let ctx = client
-        .read(&structfs_core_store::path!("ui/insert_context"))
+        .read(&oxpath!("ui", "insert_context"))
         .await
         .ok()
         .flatten()
@@ -135,7 +136,7 @@ pub(crate) async fn submit_editor_content(
             _ => None,
         });
     let active = client
-        .read(&structfs_core_store::path!("ui/active_thread"))
+        .read(&oxpath!("ui", "active_thread"))
         .await
         .ok()
         .flatten()
@@ -144,7 +145,7 @@ pub(crate) async fn submit_editor_content(
             _ => None,
         });
     let mode = client
-        .read(&structfs_core_store::path!("ui/mode"))
+        .read(&oxpath!("ui", "mode"))
         .await
         .ok()
         .flatten()
@@ -157,10 +158,10 @@ pub(crate) async fn submit_editor_content(
     let new_tid = app.send_input_with_text(text, &mode, ctx.as_deref(), active.as_deref());
 
     let _ = client
-        .write(&structfs_core_store::path!("ui/clear_input"), cmd!())
+        .write(&oxpath!("ui", "clear_input"), cmd!())
         .await;
     let _ = client
-        .write(&structfs_core_store::path!("ui/exit_insert"), cmd!())
+        .write(&oxpath!("ui", "exit_insert"), cmd!())
         .await;
     session.reset_after_submit();
 
@@ -180,7 +181,7 @@ pub(crate) async fn flush_pending_edits(
         let value = structfs_serde_store::to_value(&seq).unwrap();
         let _ = client
             .write(
-                &structfs_core_store::path!("ui/input/edit"),
+                &oxpath!("ui", "input", "edit"),
                 structfs_core_store::Record::parsed(value),
             )
             .await;
@@ -196,8 +197,6 @@ pub(crate) async fn flush_pending_edits(
 /// Syntax: `command_name` or `command_name key=value key=value`
 /// For commands with a single required param, positional: `command_name value`
 pub(crate) async fn execute_command_input(input: &str, client: &ox_broker::ClientHandle) {
-    use structfs_core_store::path;
-
     let input = input.trim();
     if input.is_empty() {
         return;
@@ -223,7 +222,7 @@ pub(crate) async fn execute_command_input(input: &str, client: &ox_broker::Clien
         if !has_kv {
             let cmd_path =
                 structfs_core_store::Path::parse(&format!("command/commands/{command_name}"))
-                    .unwrap_or_else(|_| path!("command/commands"));
+                    .unwrap_or_else(|_| oxpath!("command", "commands"));
             if let Ok(Some(record)) = client.read(&cmd_path).await {
                 if let Some(structfs_core_store::Value::Map(def_map)) = record.as_value() {
                     if let Some(structfs_core_store::Value::Array(params)) = def_map.get("params") {
@@ -261,13 +260,13 @@ pub(crate) async fn execute_command_input(input: &str, client: &ox_broker::Clien
     let inv_value = structfs_serde_store::json_to_value(inv);
     let result = client
         .write(
-            &path!("command/invoke"),
+            &oxpath!("command", "invoke"),
             structfs_core_store::Record::parsed(inv_value),
         )
         .await;
     if let Err(e) = result {
         let _ = client
-            .write(&path!("ui/set_status"), cmd!("text" => format!("{e}")))
+            .write(&oxpath!("ui", "set_status"), cmd!("text" => format!("{e}")))
             .await;
     }
 }
@@ -389,7 +388,7 @@ pub(crate) async fn handle_editor_normal_key(
                 flush_pending_edits(session, client).await;
                 let _ = client
                     .write(
-                        &structfs_core_store::path!("ui/set_input"),
+                        &oxpath!("ui", "set_input"),
                         cmd!("text" => text.clone(), "cursor" => cursor as i64),
                     )
                     .await;
@@ -405,7 +404,7 @@ pub(crate) async fn handle_editor_normal_key(
                 flush_pending_edits(session, client).await;
                 let _ = client
                     .write(
-                        &structfs_core_store::path!("ui/set_input"),
+                        &oxpath!("ui", "set_input"),
                         cmd!("text" => text.clone(), "cursor" => cursor as i64),
                     )
                     .await;
@@ -517,10 +516,10 @@ pub(crate) async fn handle_editor_command_key(
                 "q" | "quit" => {
                     // Exit the editor (back to app normal mode)
                     let _ = client
-                        .write(&structfs_core_store::path!("ui/clear_input"), cmd!())
+                        .write(&oxpath!("ui", "clear_input"), cmd!())
                         .await;
                     let _ = client
-                        .write(&structfs_core_store::path!("ui/exit_insert"), cmd!())
+                        .write(&oxpath!("ui", "exit_insert"), cmd!())
                         .await;
                     session.reset_after_submit();
                 }
@@ -529,7 +528,7 @@ pub(crate) async fn handle_editor_command_key(
                     if let Some(tid) = new_tid {
                         let _ = client
                             .write(
-                                &structfs_core_store::path!("ui/open"),
+                                &oxpath!("ui", "open"),
                                 cmd!("thread_id" => tid),
                             )
                             .await;

@@ -130,7 +130,7 @@ impl InputStore {
                         format!("failed to serialize invocation: {e}"),
                     )
                 })?;
-                let target = Path::parse("command/invoke").unwrap();
+                let target = oxpath!("command", "invoke");
                 let dispatcher = self.dispatcher.as_mut().ok_or_else(|| {
                     StoreError::store("input", "dispatch", "no dispatcher configured")
                 })?;
@@ -225,7 +225,7 @@ impl InputStore {
             action: Action::Invoke { command, args },
             description,
         });
-        Ok(Path::parse("bindings").unwrap())
+        Ok(oxpath!("bindings"))
     }
 
     fn handle_unbind(&mut self, value: &Value) -> Result<Path, StoreError> {
@@ -246,7 +246,7 @@ impl InputStore {
         if self.bindings.len() == before {
             return Err(StoreError::store("input", "unbind", "binding not found"));
         }
-        Ok(Path::parse("bindings").unwrap())
+        Ok(oxpath!("bindings"))
     }
 
     fn handle_macro_bind(&mut self, value: &Value) -> Result<Path, StoreError> {
@@ -305,7 +305,7 @@ impl InputStore {
             action: Action::Macro(steps),
             description,
         });
-        Ok(Path::parse("bindings").unwrap())
+        Ok(oxpath!("bindings"))
     }
 }
 

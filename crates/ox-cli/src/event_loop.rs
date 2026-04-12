@@ -9,6 +9,7 @@ use crate::theme::Theme;
 use crate::types::{APPROVAL_OPTIONS, CustomizeState};
 use crate::view_state::fetch_view_state;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
+use ox_path::oxpath;
 use ox_ui::text_input_store::EditSource;
 use std::time::Duration;
 use structfs_core_store::Writer as StructWriter;
@@ -35,7 +36,6 @@ pub async fn run_async(
     needs_setup: bool,
 ) -> std::io::Result<()> {
     use crate::key_encode::encode_key;
-    use structfs_core_store::path;
 
     let mut dialog = DialogState {
         approval_selected: 0,
@@ -48,7 +48,7 @@ pub async fn run_async(
     let mut settings = if needs_setup {
         // Navigate to settings screen via broker
         client
-            .write(&structfs_core_store::path!("ui/go_to_settings"), cmd!())
+            .write(&oxpath!("ui", "go_to_settings"), cmd!())
             .await
             .ok();
         SettingsState::new_wizard()
@@ -138,7 +138,7 @@ pub async fn run_async(
             if vs.screen == "inbox" {
                 let row_count = vs.inbox_threads.len() as i64;
                 let _ = client
-                    .write(&path!("ui/set_row_count"), cmd!("count" => row_count))
+                    .write(&oxpath!("ui", "set_row_count"), cmd!("count" => row_count))
                     .await;
             }
 
@@ -157,14 +157,14 @@ pub async fn run_async(
                 let scroll_max = content_height.unwrap_or(0).saturating_sub(viewport_height) as i64;
                 let _ = client
                     .write(
-                        &path!("ui/set_scroll_max"),
+                        &oxpath!("ui", "set_scroll_max"),
                         cmd!("max" => scroll_max.max(0)),
                     )
                     .await;
 
                 let _ = client
                     .write(
-                        &path!("ui/set_viewport_height"),
+                        &oxpath!("ui", "set_viewport_height"),
                         cmd!("height" => viewport_height as i64),
                     )
                     .await;
@@ -190,14 +190,14 @@ pub async fn run_async(
                     if insert_context_owned.as_deref() == Some("command") {
                         flush_pending_edits(&mut input_session, client).await;
                         execute_command_input(&input_session.content, client).await;
-                        let _ = client.write(&path!("ui/clear_input"), cmd!()).await;
-                        let _ = client.write(&path!("ui/exit_insert"), cmd!()).await;
+                        let _ = client.write(&oxpath!("ui", "clear_input"), cmd!()).await;
+                        let _ = client.write(&oxpath!("ui", "exit_insert"), cmd!()).await;
                         input_session.reset_after_submit();
                     } else {
                         let new_tid = submit_editor_content(&mut input_session, app, client).await;
                         if let Some(tid) = new_tid {
                             let _ = client
-                                .write(&path!("ui/open"), cmd!("thread_id" => tid))
+                                .write(&oxpath!("ui", "open"), cmd!("thread_id" => tid))
                                 .await;
                         }
                     }
@@ -206,7 +206,7 @@ pub async fn run_async(
                 "open_selected" => {
                     if let Some(id) = &selected_thread_id {
                         let _ = client
-                            .write(&path!("ui/open"), cmd!("thread_id" => id))
+                            .write(&oxpath!("ui", "open"), cmd!("thread_id" => id))
                             .await;
                     }
                 }
@@ -223,7 +223,7 @@ pub async fn run_async(
             }
             // Clear the pending action
             let _ = client
-                .write(&path!("ui/clear_pending_action"), cmd!())
+                .write(&oxpath!("ui", "clear_pending_action"), cmd!())
                 .await;
         }
 
@@ -451,7 +451,7 @@ pub async fn run_async(
 
                                     // If default account doesn't exist, set it to this one
                                     let current_default = client
-                                        .read(&path!("config/gate/defaults/account"))
+                                        .read(&oxpath!("config", "gate", "defaults", "account"))
                                         .await
                                         .ok()
                                         .flatten()
@@ -480,7 +480,7 @@ pub async fn run_async(
                                         );
                                         client
                                             .write(
-                                                &path!("config/gate/defaults/account"),
+                                                &oxpath!("config", "gate", "defaults", "account"),
                                                 Record::parsed(Value::String(name.clone())),
                                             )
                                             .await
@@ -489,7 +489,7 @@ pub async fn run_async(
 
                                     // Persist config to disk
                                     client
-                                        .write(&path!("config/save"), Record::parsed(Value::Null))
+                                        .write(&oxpath!("config", "save"), Record::parsed(Value::Null))
                                         .await
                                         .ok();
 
@@ -612,7 +612,7 @@ pub async fn run_async(
                                                 .unwrap_or_default();
                                             client
                                                 .write(
-                                                    &path!("config/gate/defaults/account"),
+                                                    &oxpath!("config", "gate", "defaults", "account"),
                                                     Record::parsed(Value::String(alt)),
                                                 )
                                                 .await
@@ -622,7 +622,7 @@ pub async fn run_async(
                                         // Persist and delete key file
                                         client
                                             .write(
-                                                &path!("config/save"),
+                                                &oxpath!("config", "save"),
                                                 Record::parsed(Value::Null),
                                             )
                                             .await
@@ -734,7 +734,7 @@ pub async fn run_async(
                                     // Navigate back to inbox
                                     client
                                         .write(
-                                            &structfs_core_store::path!("ui/go_to_inbox"),
+                                            &oxpath!("ui", "go_to_inbox"),
                                             cmd!(),
                                         )
                                         .await
@@ -823,28 +823,28 @@ pub async fn run_async(
                                     use structfs_core_store::{Record, Value};
                                     client
                                         .write(
-                                            &path!("config/gate/defaults/account"),
+                                            &oxpath!("config", "gate", "defaults", "account"),
                                             Record::parsed(Value::String(acct_name)),
                                         )
                                         .await
                                         .ok();
                                     client
                                         .write(
-                                            &path!("config/gate/defaults/model"),
+                                            &oxpath!("config", "gate", "defaults", "model"),
                                             Record::parsed(Value::String(model.to_string())),
                                         )
                                         .await
                                         .ok();
                                     client
                                         .write(
-                                            &path!("config/gate/defaults/max_tokens"),
+                                            &oxpath!("config", "gate", "defaults", "max_tokens"),
                                             Record::parsed(Value::Integer(max_tokens)),
                                         )
                                         .await
                                         .ok();
                                     // Persist to disk
                                     client
-                                        .write(&path!("config/save"), Record::parsed(Value::Null))
+                                        .write(&oxpath!("config", "save"), Record::parsed(Value::Null))
                                         .await
                                         .ok();
 
@@ -867,7 +867,7 @@ pub async fn run_async(
                                     settings.wizard = None;
                                     client
                                         .write(
-                                            &structfs_core_store::path!("ui/go_to_inbox"),
+                                            &oxpath!("ui", "go_to_inbox"),
                                             cmd!(),
                                         )
                                         .await
@@ -891,14 +891,14 @@ pub async fn run_async(
                                             use structfs_core_store::{Record, Value};
                                             client
                                                 .write(
-                                                    &path!("config/gate/defaults/account"),
+                                                    &oxpath!("config", "gate", "defaults", "account"),
                                                     Record::parsed(Value::String(name)),
                                                 )
                                                 .await
                                                 .ok();
                                             client
                                                 .write(
-                                                    &path!("config/save"),
+                                                    &oxpath!("config", "save"),
                                                     Record::parsed(Value::Null),
                                                 )
                                                 .await
@@ -1017,7 +1017,7 @@ pub async fn run_async(
                                 let idx = (c as u8 - b'1') as usize;
                                 let _ = client
                                     .write(
-                                        &path!("ui/search_dismiss_chip"),
+                                        &oxpath!("ui", "search_dismiss_chip"),
                                         cmd!("index" => idx as i64),
                                     )
                                     .await;
@@ -1057,7 +1057,7 @@ pub async fn run_async(
                         // Try InputStore dispatch
                         let result = client
                             .write(
-                                &path!("input/key"),
+                                &oxpath!("input", "key"),
                                 cmd!("mode" => mode, "key" => key_str.clone(), "screen" => screen),
                             )
                             .await;
@@ -1231,8 +1231,6 @@ async fn dispatch_mouse_owned(
     has_pending_customize: bool,
     kind: MouseEventKind,
 ) {
-    use structfs_core_store::path;
-
     if has_pending_approval || has_pending_customize {
         return;
     }
@@ -1240,16 +1238,16 @@ async fn dispatch_mouse_owned(
     match kind {
         MouseEventKind::ScrollUp => {
             if has_active_thread {
-                let _ = client.write(&path!("ui/scroll_up"), cmd!()).await;
+                let _ = client.write(&oxpath!("ui", "scroll_up"), cmd!()).await;
             } else {
-                let _ = client.write(&path!("ui/select_prev"), cmd!()).await;
+                let _ = client.write(&oxpath!("ui", "select_prev"), cmd!()).await;
             }
         }
         MouseEventKind::ScrollDown => {
             if has_active_thread {
-                let _ = client.write(&path!("ui/scroll_down"), cmd!()).await;
+                let _ = client.write(&oxpath!("ui", "scroll_down"), cmd!()).await;
             } else {
-                let _ = client.write(&path!("ui/select_next"), cmd!()).await;
+                let _ = client.write(&oxpath!("ui", "select_next"), cmd!()).await;
             }
         }
         _ => {}
@@ -1266,22 +1264,20 @@ async fn dispatch_search_edit(
     modifiers: KeyModifiers,
     code: KeyCode,
 ) {
-    use structfs_core_store::path;
-
     match (modifiers, code) {
         (_, KeyCode::Enter) => {
-            let _ = client.write(&path!("ui/search_save_chip"), cmd!()).await;
+            let _ = client.write(&oxpath!("ui", "search_save_chip"), cmd!()).await;
         }
         (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
-            let _ = client.write(&path!("ui/search_clear"), cmd!()).await;
+            let _ = client.write(&oxpath!("ui", "search_clear"), cmd!()).await;
         }
         (_, KeyCode::Backspace) => {
-            let _ = client.write(&path!("ui/search_delete_char"), cmd!()).await;
+            let _ = client.write(&oxpath!("ui", "search_delete_char"), cmd!()).await;
         }
         (_, KeyCode::Char(c)) => {
             let _ = client
                 .write(
-                    &path!("ui/search_insert_char"),
+                    &oxpath!("ui", "search_insert_char"),
                     cmd!("char" => c.to_string()),
                 )
                 .await;
