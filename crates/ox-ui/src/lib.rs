@@ -1,8 +1,8 @@
-//! UI stores for ox — state machines driven by StructFS command protocol.
+//! UI stores for ox — state machines driven by typed StructFS command protocol.
 //!
 //! Stores are synchronous Reader/Writer implementations. Reads return
-//! current state. Writes are commands validated by the command protocol
-//! (preconditions + txn deduplication).
+//! current state as typed snapshots. Writes accept typed UiCommand enums
+//! that transition state atomically with screen-scoped guards.
 
 pub mod approval_store;
 pub mod builtin_commands;
@@ -17,7 +17,7 @@ pub mod ui_store;
 
 pub use approval_store::ApprovalStore;
 pub use builtin_commands::builtin_commands;
-pub use command::{Command, TxnLog};
+// Legacy Command/TxnLog removed — UiStore uses typed UiCommand protocol.
 pub use command_def::{
     CommandDef, CommandError, CommandInvocation, ParamDef, ParamKind, StaticCommandDef,
     StaticParamDef, StaticParamKind,
@@ -34,72 +34,26 @@ pub use ui_store::UiStore;
 #[cfg(test)]
 mod integration_tests {
     use super::*;
-    use std::collections::BTreeMap;
-    use structfs_core_store::{Record, Value, Writer, path};
+    use ox_types::{GlobalCommand, InboxCommand, UiCommand};
+    use structfs_core_store::{Reader, Record, Value, Writer, path};
 
-    /// End-to-end: key event → InputStore → CommandStore → UiStore state change.
+    fn typed_cmd(cmd: &UiCommand) -> Record {
+        Record::parsed(structfs_serde_store::to_value(cmd).unwrap())
+    }
+
+    /// Direct typed-command writes through the broker.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn key_event_through_broker_changes_ui_state() {
+    async fn typed_command_through_broker_changes_ui_state() {
         let broker = ox_broker::BrokerStore::default();
 
-        // Mount UiStore with rows so selection can advance
+        // Mount UiStore, set up row count via typed command
         let mut ui = UiStore::new();
         ui.write(
-            &path!("set_row_count"),
-            Record::parsed(Value::Map({
-                let mut m = BTreeMap::new();
-                m.insert("count".to_string(), Value::Integer(10));
-                m
-            })),
+            &path!(""),
+            typed_cmd(&UiCommand::Inbox(InboxCommand::SetRowCount { count: 10 })),
         )
         .unwrap();
         broker.mount(path!("ui"), ui).await;
-
-        // Mount CommandStore with dispatcher that forwards to broker
-        let cmd_client = broker.client();
-        let mut cmd_store = CommandStore::from_builtins();
-        cmd_store.set_dispatcher(Box::new(move |target, data| {
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(cmd_client.write(target, data))
-            })
-        }));
-        broker.mount(path!("command"), cmd_store).await;
-
-        // Mount InputStore with Action::Invoke binding
-        let input_client = broker.client();
-        let bindings = vec![
-            Binding {
-                context: BindingContext {
-                    mode: "normal".to_string(),
-                    key: "j".to_string(),
-                    screen: Some("inbox".to_string()),
-                },
-                action: Action::Invoke {
-                    command: "select_next".to_string(),
-                    args: BTreeMap::new(),
-                },
-                description: "Move down".to_string(),
-            },
-            Binding {
-                context: BindingContext {
-                    mode: "normal".to_string(),
-                    key: "j".to_string(),
-                    screen: Some("thread".to_string()),
-                },
-                action: Action::Invoke {
-                    command: "scroll_down".to_string(),
-                    args: BTreeMap::new(),
-                },
-                description: "Scroll down".to_string(),
-            },
-        ];
-        let mut input = InputStore::new(bindings);
-        input.set_dispatcher(Box::new(move |target, data| {
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(input_client.write(target, data))
-            })
-        }));
-        broker.mount(path!("input"), input).await;
 
         let client = broker.client();
 
@@ -111,13 +65,12 @@ mod integration_tests {
             .unwrap();
         assert_eq!(row.as_value().unwrap(), &Value::Integer(0));
 
-        // Dispatch "j" on inbox screen → InputStore → CommandStore → UiStore
-        let mut event = BTreeMap::new();
-        event.insert("mode".to_string(), Value::String("normal".to_string()));
-        event.insert("key".to_string(), Value::String("j".to_string()));
-        event.insert("screen".to_string(), Value::String("inbox".to_string()));
+        // Write typed SelectNext command through broker
         client
-            .write(&path!("input/key"), Record::parsed(Value::Map(event)))
+            .write(
+                &path!("ui"),
+                typed_cmd(&UiCommand::Inbox(InboxCommand::SelectNext)),
+            )
             .await
             .unwrap();
 
@@ -130,82 +83,42 @@ mod integration_tests {
         assert_eq!(row.as_value().unwrap(), &Value::Integer(1));
     }
 
-    /// End-to-end: Action::Invoke → CommandStore → UiStore state change.
+    /// Screen transitions through the broker.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn invoke_action_through_command_store() {
+    async fn screen_transition_through_broker() {
         let broker = ox_broker::BrokerStore::default();
-
-        // Mount UiStore with rows so selection can advance
-        let mut ui = UiStore::new();
-        ui.write(
-            &path!("set_row_count"),
-            Record::parsed(Value::Map({
-                let mut m = BTreeMap::new();
-                m.insert("count".to_string(), Value::Integer(10));
-                m
-            })),
-        )
-        .unwrap();
-        broker.mount(path!("ui"), ui).await;
-
-        // Mount CommandStore with dispatcher that forwards to broker
-        let cmd_client = broker.client();
-        let mut cmd_store = CommandStore::from_builtins();
-        cmd_store.set_dispatcher(Box::new(move |target, data| {
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(cmd_client.write(target, data))
-            })
-        }));
-        broker.mount(path!("command"), cmd_store).await;
-
-        // Mount InputStore with Action::Invoke binding
-        let input_client = broker.client();
-        let bindings = vec![Binding {
-            context: BindingContext {
-                mode: "normal".to_string(),
-                key: "j".to_string(),
-                screen: None,
-            },
-            action: Action::Invoke {
-                command: "select_next".to_string(),
-                args: BTreeMap::new(),
-            },
-            description: "Move down".to_string(),
-        }];
-        let mut input = InputStore::new(bindings);
-        input.set_dispatcher(Box::new(move |target, data| {
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(input_client.write(target, data))
-            })
-        }));
-        broker.mount(path!("input"), input).await;
+        broker.mount(path!("ui"), UiStore::new()).await;
 
         let client = broker.client();
 
-        // Verify initial state
-        let row = client
-            .read(&path!("ui/selected_row"))
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(row.as_value().unwrap(), &Value::Integer(0));
+        // Verify starts on inbox
+        let screen = client.read(&path!("ui/screen")).await.unwrap().unwrap();
+        assert_eq!(screen.as_value().unwrap(), &Value::String("inbox".into()));
 
-        // Dispatch "j" → InputStore → CommandStore → UiStore
-        let mut event = BTreeMap::new();
-        event.insert("mode".to_string(), Value::String("normal".to_string()));
-        event.insert("key".to_string(), Value::String("j".to_string()));
-        event.insert("screen".to_string(), Value::String("inbox".to_string()));
+        // Open thread
         client
-            .write(&path!("input/key"), Record::parsed(Value::Map(event)))
+            .write(
+                &path!("ui"),
+                typed_cmd(&UiCommand::Global(GlobalCommand::Open {
+                    thread_id: "t_001".to_string(),
+                })),
+            )
             .await
             .unwrap();
 
-        // Verify state changed
-        let row = client
-            .read(&path!("ui/selected_row"))
+        let screen = client.read(&path!("ui/screen")).await.unwrap().unwrap();
+        assert_eq!(screen.as_value().unwrap(), &Value::String("thread".into()));
+
+        // Close back to inbox
+        client
+            .write(
+                &path!("ui"),
+                typed_cmd(&UiCommand::Global(GlobalCommand::Close)),
+            )
             .await
-            .unwrap()
             .unwrap();
-        assert_eq!(row.as_value().unwrap(), &Value::Integer(1));
+
+        let screen = client.read(&path!("ui/screen")).await.unwrap().unwrap();
+        assert_eq!(screen.as_value().unwrap(), &Value::String("inbox".into()));
     }
 }
