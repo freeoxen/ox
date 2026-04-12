@@ -4,17 +4,9 @@
 //! future blocks until the TUI writes to "response" with a decision.
 //! The TUI reads "pending" to discover the current request.
 
-use std::collections::BTreeMap;
-
 use ox_broker::async_store::{AsyncReader, AsyncWriter, BoxFuture};
+use ox_types::ApprovalRequest;
 use structfs_core_store::{Error as StoreError, Path, Record, Value};
-
-/// An approval request from the agent.
-#[derive(Debug, Clone)]
-pub struct ApprovalRequest {
-    pub tool_name: String,
-    pub input_preview: String,
-}
 
 pub struct ApprovalStore {
     pending: Option<ApprovalRequest>,
@@ -44,21 +36,13 @@ impl AsyncReader for ApprovalStore {
             from.components[0].as_str()
         };
         let result = match key {
-            "pending" => Ok(Some(Record::parsed(match &self.pending {
-                Some(req) => {
-                    let mut map = BTreeMap::new();
-                    map.insert(
-                        "tool_name".to_string(),
-                        Value::String(req.tool_name.clone()),
-                    );
-                    map.insert(
-                        "input_preview".to_string(),
-                        Value::String(req.input_preview.clone()),
-                    );
-                    Value::Map(map)
-                }
-                None => Value::Null,
-            }))),
+            "pending" => match &self.pending {
+                Some(req) => match structfs_serde_store::to_value(req) {
+                    Ok(v) => Ok(Some(Record::parsed(v))),
+                    Err(e) => Err(StoreError::store("approval", "pending", &e.to_string())),
+                },
+                None => Ok(Some(Record::parsed(Value::Null))),
+            },
             _ => Ok(None),
         };
         Box::pin(std::future::ready(result))
@@ -85,35 +69,18 @@ impl AsyncWriter for ApprovalStore {
 
         match action {
             "request" => {
-                let map = match value {
-                    Value::Map(m) => m,
-                    _ => {
+                let req: ApprovalRequest = match structfs_serde_store::from_value(value) {
+                    Ok(r) => r,
+                    Err(e) => {
                         return Box::pin(std::future::ready(Err(StoreError::store(
                             "approval",
                             "request",
-                            "request must be a Map with tool_name and input_preview",
+                            &e.to_string(),
                         ))));
                     }
-                };
-                let tool_name = match map.get("tool_name") {
-                    Some(Value::String(s)) => s.clone(),
-                    _ => {
-                        return Box::pin(std::future::ready(Err(StoreError::store(
-                            "approval",
-                            "request",
-                            "missing tool_name",
-                        ))));
-                    }
-                };
-                let input_preview = match map.get("input_preview") {
-                    Some(Value::String(s)) => s.clone(),
-                    _ => String::new(),
                 };
 
-                self.pending = Some(ApprovalRequest {
-                    tool_name,
-                    input_preview,
-                });
+                self.pending = Some(req);
 
                 let (tx, rx) = tokio::sync::oneshot::channel::<String>();
                 self.deferred_tx = Some(tx);
@@ -165,6 +132,7 @@ impl AsyncWriter for ApprovalStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
     use structfs_core_store::path;
 
     #[tokio::test]

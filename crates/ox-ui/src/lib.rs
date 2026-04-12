@@ -16,6 +16,7 @@ pub mod text_input_store;
 pub mod ui_store;
 
 pub use approval_store::ApprovalStore;
+pub use ox_types::ApprovalRequest;
 pub use builtin_commands::builtin_commands;
 pub use command::{Command, TxnLog};
 pub use command_def::{
