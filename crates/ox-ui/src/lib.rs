@@ -14,7 +14,10 @@ pub mod ui_store;
 
 pub use approval_store::ApprovalStore;
 pub use command::{Command, TxnLog};
-pub use command_def::{CommandDef, CommandError, CommandInvocation, ParamDef, ParamKind};
+pub use command_def::{
+    CommandDef, CommandError, CommandInvocation, ParamDef, ParamKind, StaticCommandDef,
+    StaticParamDef, StaticParamKind,
+};
 pub use config_store::ConfigStore;
 pub use input_store::{Action, ActionField, Binding, BindingContext, InputStore};
 pub use text_input_store::TextInputStore;

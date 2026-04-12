@@ -85,6 +85,66 @@ impl std::fmt::Display for CommandError {
 
 impl std::error::Error for CommandError {}
 
+// ---------------------------------------------------------------------------
+// Static definition helpers (compile-time, zero-allocation)
+// ---------------------------------------------------------------------------
+
+pub struct StaticCommandDef {
+    pub name: &'static str,
+    pub target: &'static str,
+    pub params: &'static [StaticParamDef],
+    pub description: &'static str,
+    pub user_facing: bool,
+}
+
+pub struct StaticParamDef {
+    pub name: &'static str,
+    pub kind: StaticParamKind,
+    pub required: bool,
+    pub default: Option<&'static str>,
+}
+
+pub enum StaticParamKind {
+    String,
+    Integer,
+    Bool,
+    Enum(&'static [&'static str]),
+}
+
+impl StaticCommandDef {
+    pub fn to_command_def(&self) -> CommandDef {
+        CommandDef {
+            name: self.name.to_string(),
+            target: self.target.to_string(),
+            params: self.params.iter().map(|p| p.to_param_def()).collect(),
+            description: self.description.to_string(),
+            user_facing: self.user_facing,
+        }
+    }
+}
+
+impl StaticParamDef {
+    pub fn to_param_def(&self) -> ParamDef {
+        ParamDef {
+            name: self.name.to_string(),
+            kind: self.kind.to_param_kind(),
+            required: self.required,
+            default: self.default.map(|s| serde_json::Value::String(s.to_string())),
+        }
+    }
+}
+
+impl StaticParamKind {
+    pub fn to_param_kind(&self) -> ParamKind {
+        match self {
+            Self::String => ParamKind::String,
+            Self::Integer => ParamKind::Integer,
+            Self::Bool => ParamKind::Bool,
+            Self::Enum(values) => ParamKind::Enum(values.iter().map(|s| s.to_string()).collect()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,6 +194,47 @@ mod tests {
         match round_tripped {
             CommandError::UnknownCommand { name } => assert_eq!(name, "bogus"),
             _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn static_def_converts_to_command_def() {
+        let static_def = StaticCommandDef {
+            name: "quit",
+            target: "ui/quit",
+            params: &[],
+            description: "Quit the application",
+            user_facing: true,
+        };
+        let def = static_def.to_command_def();
+        assert_eq!(def.name, "quit");
+        assert_eq!(def.target, "ui/quit");
+        assert!(def.params.is_empty());
+        assert!(def.user_facing);
+    }
+
+    #[test]
+    fn static_def_with_enum_param_converts() {
+        let static_def = StaticCommandDef {
+            name: "compose",
+            target: "ui/enter_insert",
+            params: &[StaticParamDef {
+                name: "context",
+                kind: StaticParamKind::Enum(&["compose", "reply", "search"]),
+                required: true,
+                default: None,
+            }],
+            description: "Open compose input",
+            user_facing: true,
+        };
+        let def = static_def.to_command_def();
+        assert_eq!(def.params.len(), 1);
+        assert_eq!(def.params[0].name, "context");
+        match &def.params[0].kind {
+            ParamKind::Enum(values) => {
+                assert_eq!(values, &["compose", "reply", "search"]);
+            }
+            _ => panic!("expected Enum"),
         }
     }
 }
