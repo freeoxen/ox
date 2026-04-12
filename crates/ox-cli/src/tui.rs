@@ -93,6 +93,7 @@ pub(crate) fn draw(
             Some("compose") => " compose ",
             Some("reply") => " reply ",
             Some("search") => " search ",
+            Some("command") => " : ",
             _ => "",
         };
         let title = if vs.thinking {

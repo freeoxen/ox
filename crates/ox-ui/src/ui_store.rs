@@ -35,6 +35,7 @@ pub enum InsertContext {
     Compose,
     Reply,
     Search,
+    Command,
 }
 
 // ---------------------------------------------------------------------------
@@ -115,6 +116,7 @@ impl UiStore {
             Some(InsertContext::Compose) => Value::String("compose".to_string()),
             Some(InsertContext::Reply) => Value::String("reply".to_string()),
             Some(InsertContext::Search) => Value::String("search".to_string()),
+            Some(InsertContext::Command) => Value::String("command".to_string()),
             None => Value::Null,
         }
     }
@@ -216,6 +218,7 @@ impl UiStore {
             "compose" => Ok(InsertContext::Compose),
             "reply" => Ok(InsertContext::Reply),
             "search" => Ok(InsertContext::Search),
+            "command" => Ok(InsertContext::Command),
             _ => Err(StoreError::store(
                 "ui",
                 "enter_insert",
@@ -386,10 +389,8 @@ impl Writer for UiStore {
                     0
                 };
                 replace_map.insert("cursor".to_string(), Value::Integer(cursor_pos as i64));
-                self.text_input_store.write(
-                    &path!("replace"),
-                    Record::parsed(Value::Map(replace_map)),
-                )
+                self.text_input_store
+                    .write(&path!("replace"), Record::parsed(Value::Map(replace_map)))
             }
             "clear_input" => self
                 .text_input_store

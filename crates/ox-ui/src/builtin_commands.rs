@@ -147,7 +147,7 @@ static BUILTIN_COMMANDS: &[StaticCommandDef] = &[
         target: "ui/enter_insert",
         params: &[StaticParamDef {
             name: "context",
-            kind: StaticParamKind::Enum(&["compose", "reply", "search"]),
+            kind: StaticParamKind::Enum(&["compose", "reply", "search", "command"]),
             required: true,
             default: Some("compose"),
         }],
@@ -159,7 +159,7 @@ static BUILTIN_COMMANDS: &[StaticCommandDef] = &[
         target: "ui/enter_insert",
         params: &[StaticParamDef {
             name: "context",
-            kind: StaticParamKind::Enum(&["compose", "reply", "search"]),
+            kind: StaticParamKind::Enum(&["compose", "reply", "search", "command"]),
             required: true,
             default: Some("reply"),
         }],
@@ -171,11 +171,23 @@ static BUILTIN_COMMANDS: &[StaticCommandDef] = &[
         target: "ui/enter_insert",
         params: &[StaticParamDef {
             name: "context",
-            kind: StaticParamKind::Enum(&["compose", "reply", "search"]),
+            kind: StaticParamKind::Enum(&["compose", "reply", "search", "command"]),
             required: true,
             default: Some("search"),
         }],
         description: "Open search input",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "enter_command",
+        target: "ui/enter_insert",
+        params: &[StaticParamDef {
+            name: "context",
+            kind: StaticParamKind::Enum(&["compose", "reply", "search", "command"]),
+            required: true,
+            default: Some("command"),
+        }],
+        description: "Open command line",
         user_facing: true,
     },
     StaticCommandDef {

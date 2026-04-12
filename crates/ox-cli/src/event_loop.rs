@@ -290,23 +290,29 @@ pub async fn run_async(
                     // Flush pending edits so broker is in sync
                     flush_pending_edits(&mut input_session, client).await;
                     let submit_text = input_session.content.clone();
-                    let new_tid = app.send_input_with_text(
-                        submit_text,
-                        &mode_owned,
-                        insert_context_owned.as_deref(),
-                        active_thread_id.as_deref(),
-                    );
+
+                    if insert_context_owned.as_deref() == Some("command") {
+                        // Command mode: parse input as command invocation
+                        execute_command_input(&submit_text, client).await;
+                    } else {
+                        let new_tid = app.send_input_with_text(
+                            submit_text,
+                            &mode_owned,
+                            insert_context_owned.as_deref(),
+                            active_thread_id.as_deref(),
+                        );
+                        // If compose created a new thread, open it in UiStore
+                        if let Some(tid) = new_tid {
+                            let _ = client
+                                .write(&path!("ui/open"), cmd!("thread_id" => tid))
+                                .await;
+                        }
+                    }
                     // Clear input and exit insert mode through broker
                     let _ = client.write(&path!("ui/clear_input"), cmd!()).await;
                     let _ = client.write(&path!("ui/exit_insert"), cmd!()).await;
                     // Reset local InputSession
                     input_session.reset_after_submit();
-                    // If compose created a new thread, open it in UiStore
-                    if let Some(tid) = new_tid {
-                        let _ = client
-                            .write(&path!("ui/open"), cmd!("thread_id" => tid))
-                            .await;
-                    }
                 }
                 "quit" => return Ok(()),
                 "open_selected" => {
@@ -1397,6 +1403,91 @@ async fn dispatch_mouse_owned(
             }
         }
         _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Command input execution
+// ---------------------------------------------------------------------------
+
+/// Parse command input text and dispatch through the CommandStore.
+///
+/// Syntax: `command_name` or `command_name key=value key=value`
+/// For commands with a single required param, positional: `command_name value`
+async fn execute_command_input(input: &str, client: &ox_broker::ClientHandle) {
+    use structfs_core_store::path;
+
+    let input = input.trim();
+    if input.is_empty() {
+        return;
+    }
+
+    let mut parts = input.splitn(2, ' ');
+    let command_name = parts.next().unwrap_or("");
+    let rest = parts.next().unwrap_or("").trim();
+
+    // Build args map from remaining text
+    let mut args = serde_json::Map::new();
+    if !rest.is_empty() {
+        // Try key=value pairs first
+        let mut has_kv = false;
+        for token in rest.split_whitespace() {
+            if let Some((k, v)) = token.split_once('=') {
+                args.insert(k.to_string(), serde_json::Value::String(v.to_string()));
+                has_kv = true;
+            }
+        }
+        // If no key=value pairs found, treat as a single positional argument.
+        // Look up the command to find the first required param name.
+        if !has_kv {
+            let cmd_path =
+                structfs_core_store::Path::parse(&format!("command/commands/{command_name}"))
+                    .unwrap_or_else(|_| path!("command/commands"));
+            if let Ok(Some(record)) = client.read(&cmd_path).await {
+                if let Some(structfs_core_store::Value::Map(def_map)) = record.as_value() {
+                    if let Some(structfs_core_store::Value::Array(params)) = def_map.get("params") {
+                        // Find the first required param
+                        for param in params {
+                            if let structfs_core_store::Value::Map(p) = param {
+                                let required = matches!(
+                                    p.get("required"),
+                                    Some(structfs_core_store::Value::Bool(true))
+                                );
+                                if required {
+                                    if let Some(structfs_core_store::Value::String(name)) =
+                                        p.get("name")
+                                    {
+                                        args.insert(
+                                            name.clone(),
+                                            serde_json::Value::String(rest.to_string()),
+                                        );
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Build CommandInvocation and dispatch
+    let inv = serde_json::json!({
+        "command": command_name,
+        "args": args,
+    });
+    let inv_value = structfs_serde_store::json_to_value(inv);
+    let result = client
+        .write(
+            &path!("command/invoke"),
+            structfs_core_store::Record::parsed(inv_value),
+        )
+        .await;
+    if let Err(e) = result {
+        let _ = client
+            .write(&path!("ui/set_status"), cmd!("text" => format!("{e}")))
+            .await;
     }
 }
 

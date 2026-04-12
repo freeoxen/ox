@@ -183,6 +183,20 @@ fn normal_mode(out: &mut Vec<Binding>) {
         "Search",
     ));
 
+    // Command mode
+    out.push(bind(
+        "normal",
+        ":",
+        cmd_with("ui/enter_insert", vec![static_field("context", "command")]),
+        "Command",
+    ));
+    out.push(bind(
+        "normal",
+        ";",
+        cmd_with("ui/enter_insert", vec![static_field("context", "command")]),
+        "Command",
+    ));
+
     // -- Vim fast navigation --
     // g/G: go to top/bottom
     out.push(bind_screen(
