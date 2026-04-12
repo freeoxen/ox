@@ -178,18 +178,8 @@ fn normal_mode(out: &mut Vec<Binding>) {
     ));
 
     // Command mode
-    out.push(bind(
-        "normal",
-        ":",
-        invoke("enter_command"),
-        "Command",
-    ));
-    out.push(bind(
-        "normal",
-        ";",
-        invoke("enter_command"),
-        "Command",
-    ));
+    out.push(bind("normal", ":", invoke("enter_command"), "Command"));
+    out.push(bind("normal", ";", invoke("enter_command"), "Command"));
 
     // -- Vim fast navigation --
     // g/G: go to top/bottom

@@ -489,7 +489,10 @@ pub async fn run_async(
 
                                     // Persist config to disk
                                     client
-                                        .write(&oxpath!("config", "save"), Record::parsed(Value::Null))
+                                        .write(
+                                            &oxpath!("config", "save"),
+                                            Record::parsed(Value::Null),
+                                        )
                                         .await
                                         .ok();
 
@@ -612,7 +615,9 @@ pub async fn run_async(
                                                 .unwrap_or_default();
                                             client
                                                 .write(
-                                                    &oxpath!("config", "gate", "defaults", "account"),
+                                                    &oxpath!(
+                                                        "config", "gate", "defaults", "account"
+                                                    ),
                                                     Record::parsed(Value::String(alt)),
                                                 )
                                                 .await
@@ -733,10 +738,7 @@ pub async fn run_async(
                                     settings.wizard = None;
                                     // Navigate back to inbox
                                     client
-                                        .write(
-                                            &oxpath!("ui", "go_to_inbox"),
-                                            cmd!(),
-                                        )
+                                        .write(&oxpath!("ui", "go_to_inbox"), cmd!())
                                         .await
                                         .ok();
                                     true
@@ -844,7 +846,10 @@ pub async fn run_async(
                                         .ok();
                                     // Persist to disk
                                     client
-                                        .write(&oxpath!("config", "save"), Record::parsed(Value::Null))
+                                        .write(
+                                            &oxpath!("config", "save"),
+                                            Record::parsed(Value::Null),
+                                        )
                                         .await
                                         .ok();
 
@@ -866,10 +871,7 @@ pub async fn run_async(
                                     // Allow skipping wizard — go to inbox
                                     settings.wizard = None;
                                     client
-                                        .write(
-                                            &oxpath!("ui", "go_to_inbox"),
-                                            cmd!(),
-                                        )
+                                        .write(&oxpath!("ui", "go_to_inbox"), cmd!())
                                         .await
                                         .ok();
                                     true
@@ -891,7 +893,9 @@ pub async fn run_async(
                                             use structfs_core_store::{Record, Value};
                                             client
                                                 .write(
-                                                    &oxpath!("config", "gate", "defaults", "account"),
+                                                    &oxpath!(
+                                                        "config", "gate", "defaults", "account"
+                                                    ),
                                                     Record::parsed(Value::String(name)),
                                                 )
                                                 .await
@@ -1266,13 +1270,17 @@ async fn dispatch_search_edit(
 ) {
     match (modifiers, code) {
         (_, KeyCode::Enter) => {
-            let _ = client.write(&oxpath!("ui", "search_save_chip"), cmd!()).await;
+            let _ = client
+                .write(&oxpath!("ui", "search_save_chip"), cmd!())
+                .await;
         }
         (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
             let _ = client.write(&oxpath!("ui", "search_clear"), cmd!()).await;
         }
         (_, KeyCode::Backspace) => {
-            let _ = client.write(&oxpath!("ui", "search_delete_char"), cmd!()).await;
+            let _ = client
+                .write(&oxpath!("ui", "search_delete_char"), cmd!())
+                .await;
         }
         (_, KeyCode::Char(c)) => {
             let _ = client

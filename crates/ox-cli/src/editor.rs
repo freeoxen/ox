@@ -157,12 +157,8 @@ pub(crate) async fn submit_editor_content(
 
     let new_tid = app.send_input_with_text(text, &mode, ctx.as_deref(), active.as_deref());
 
-    let _ = client
-        .write(&oxpath!("ui", "clear_input"), cmd!())
-        .await;
-    let _ = client
-        .write(&oxpath!("ui", "exit_insert"), cmd!())
-        .await;
+    let _ = client.write(&oxpath!("ui", "clear_input"), cmd!()).await;
+    let _ = client.write(&oxpath!("ui", "exit_insert"), cmd!()).await;
     session.reset_after_submit();
 
     new_tid
@@ -515,22 +511,15 @@ pub(crate) async fn handle_editor_command_key(
             match cmd.as_str() {
                 "q" | "quit" => {
                     // Exit the editor (back to app normal mode)
-                    let _ = client
-                        .write(&oxpath!("ui", "clear_input"), cmd!())
-                        .await;
-                    let _ = client
-                        .write(&oxpath!("ui", "exit_insert"), cmd!())
-                        .await;
+                    let _ = client.write(&oxpath!("ui", "clear_input"), cmd!()).await;
+                    let _ = client.write(&oxpath!("ui", "exit_insert"), cmd!()).await;
                     session.reset_after_submit();
                 }
                 "w" | "write" | "wq" | "x" => {
                     let new_tid = submit_editor_content(session, app, client).await;
                     if let Some(tid) = new_tid {
                         let _ = client
-                            .write(
-                                &oxpath!("ui", "open"),
-                                cmd!("thread_id" => tid),
-                            )
+                            .write(&oxpath!("ui", "open"), cmd!("thread_id" => tid))
                             .await;
                     }
                 }

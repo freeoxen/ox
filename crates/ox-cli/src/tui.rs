@@ -118,8 +118,7 @@ pub(crate) fn draw(
 
     // Status bar / command line
     let status_area = chunks[idx];
-    let show_command_line =
-        is_command_mode || vs.editor_mode == crate::editor::EditorMode::Command;
+    let show_command_line = is_command_mode || vs.editor_mode == crate::editor::EditorMode::Command;
     if show_command_line {
         draw_command_line(frame, vs, theme, status_area);
     } else {
