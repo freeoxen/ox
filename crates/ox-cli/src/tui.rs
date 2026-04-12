@@ -91,15 +91,17 @@ pub(crate) fn draw(
         idx += 1;
 
         let ctx_label = match vs.insert_context.as_deref() {
-            Some("compose") => " compose ",
-            Some("reply") => " reply ",
-            Some("search") => " search ",
+            Some("compose") => "compose",
+            Some("reply") => "reply",
+            Some("search") => "search",
             _ => "",
         };
         let title = if vs.thinking {
-            " streaming... "
+            " streaming... ".to_string()
+        } else if vs.editor_mode == crate::event_loop::EditorMode::Normal {
+            format!(" {ctx_label} [NORMAL] ")
         } else {
-            ctx_label
+            format!(" {ctx_label} ")
         };
 
         // Hide cursor when a modal overlay is active or in search context
@@ -108,13 +110,13 @@ pub(crate) fn draw(
             && vs.insert_context.as_deref() != Some("search");
 
         if show_cursor {
-            text_input_view.render(frame, input_area, theme.input_border, title);
+            text_input_view.render(frame, input_area, theme.input_border, &title);
         } else {
             // Render without cursor (use a plain Paragraph like before)
             let input_block = Block::default()
                 .borders(Borders::TOP)
                 .border_style(theme.input_border)
-                .title(title);
+                .title(title.as_str());
             let input = Paragraph::new(vs.input.as_str()).block(input_block);
             frame.render_widget(input, input_area);
         }

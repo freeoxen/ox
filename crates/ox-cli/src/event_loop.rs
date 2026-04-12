@@ -238,6 +238,7 @@ pub async fn run_async(
                 if vs.mode == "insert" {
                     // Entering insert mode — initialize InputSession from broker
                     input_session.init_from(vs.input.clone(), vs.cursor);
+                    input_session.editor_mode = EditorMode::Insert;
                 } else if prev_mode == "insert" {
                     // Exiting insert mode — flush any pending edits
                     flush_pending_edits(&mut input_session, client).await;
