@@ -1,10 +1,9 @@
 use crate::app::App;
 use crate::editor::{
-    EditorMode, InputSession, execute_command_input, flush_pending_edits,
-    handle_editor_command_key, handle_editor_insert_key, handle_editor_normal_key,
-    submit_editor_content,
+    EditorMode, InputSession, execute_command_input, flush_pending_edits, submit_editor_content,
 };
 use crate::settings_state::SettingsState;
+use crate::shell::Outcome;
 use crate::theme::Theme;
 use crate::types::{APPROVAL_OPTIONS, CustomizeState};
 use crate::view_state::fetch_view_state;
@@ -163,7 +162,9 @@ pub async fn run_async(
                 let _ = client
                     .write_typed(
                         &oxpath!("ui"),
-                        &UiCommand::SetViewportHeight { height: viewport_height },
+                        &UiCommand::SetViewportHeight {
+                            height: viewport_height,
+                        },
                     )
                     .await;
             }
@@ -175,7 +176,10 @@ pub async fn run_async(
             insert_context_owned = vs.ui.insert_context;
             has_active_thread = vs.ui.active_thread.is_some();
             active_thread_id = vs.ui.active_thread.clone();
-            selected_thread_id = vs.inbox_threads.get(vs.ui.selected_row).map(|t| t.id.clone());
+            selected_thread_id = vs
+                .inbox_threads
+                .get(vs.ui.selected_row)
+                .map(|t| t.id.clone());
             search_active = vs.ui.search.active;
             has_approval_pending = vs.approval_pending.is_some();
         }
@@ -188,8 +192,12 @@ pub async fn run_async(
                     if insert_context_owned == Some(InsertContext::Command) {
                         flush_pending_edits(&mut input_session, client).await;
                         execute_command_input(&input_session.content, client).await;
-                        let _ = client.write_typed(&oxpath!("ui"), &UiCommand::ClearInput).await;
-                        let _ = client.write_typed(&oxpath!("ui"), &UiCommand::ExitInsert).await;
+                        let _ = client
+                            .write_typed(&oxpath!("ui"), &UiCommand::ClearInput)
+                            .await;
+                        let _ = client
+                            .write_typed(&oxpath!("ui"), &UiCommand::ExitInsert)
+                            .await;
                         input_session.reset_after_submit();
                     } else {
                         let new_tid = submit_editor_content(&mut input_session, app, client).await;
@@ -204,7 +212,12 @@ pub async fn run_async(
                 PendingAction::OpenSelected => {
                     if let Some(id) = &selected_thread_id {
                         let _ = client
-                            .write_typed(&oxpath!("ui"), &UiCommand::Open { thread_id: id.clone() })
+                            .write_typed(
+                                &oxpath!("ui"),
+                                &UiCommand::Open {
+                                    thread_id: id.clone(),
+                                },
+                            )
                             .await;
                     }
                 }
@@ -287,748 +300,27 @@ pub async fn run_async(
                             Screen::Settings => "settings",
                         };
 
-                        // Settings screen — edit dialog key handling
-                        if screen_owned == Screen::Settings && mode_owned == Mode::Normal && settings.editing.is_some() {
-                            use crate::settings_state::{DIALECTS, TestStatus};
+                        // Settings screen — all key handling
+                        if screen_owned == Screen::Settings && mode_owned == Mode::Normal {
                             let inbox_root = app.pool.inbox_root().to_path_buf();
-                            let keys_dir = inbox_root.join("keys");
-
-                            // Use an enum to signal post-match actions that
-                            // require dropping the &mut borrow first.
-                            enum EditAction {
-                                None,
-                                Cancel,
-                                Save {
-                                    name: String,
-                                    provider: String,
-                                    endpoint: Option<String>,
-                                    key: String,
-                                },
-                                Handled,
-                            }
-
-                            let action = if let Some(ref mut editing) = settings.editing {
-                                match key_str.as_str() {
-                                    "Tab" | "Down" => {
-                                        editing.focus = (editing.focus + 1) % 4;
-                                        EditAction::Handled
-                                    }
-                                    "Shift+Tab" | "Up" => {
-                                        editing.focus = if editing.focus == 0 {
-                                            3
-                                        } else {
-                                            editing.focus - 1
-                                        };
-                                        EditAction::Handled
-                                    }
-                                    "Esc" => EditAction::Cancel,
-                                    "Enter" => {
-                                        if !editing.name.is_empty() {
-                                            EditAction::Save {
-                                                name: editing.name.clone(),
-                                                provider: DIALECTS[editing.dialect].to_string(),
-                                                endpoint: if editing.endpoint.is_empty() {
-                                                    None
-                                                } else {
-                                                    Some(editing.endpoint.clone())
-                                                },
-                                                key: editing.key.clone(),
-                                            }
-                                        } else {
-                                            EditAction::Handled
-                                        }
-                                    }
-                                    "Left" if editing.focus == 1 => {
-                                        editing.dialect = if editing.dialect == 0 {
-                                            DIALECTS.len() - 1
-                                        } else {
-                                            editing.dialect - 1
-                                        };
-                                        EditAction::Handled
-                                    }
-                                    "Right" if editing.focus == 1 => {
-                                        editing.dialect = if editing.dialect >= DIALECTS.len() - 1 {
-                                            0
-                                        } else {
-                                            editing.dialect + 1
-                                        };
-                                        EditAction::Handled
-                                    }
-                                    "Backspace" => {
-                                        match editing.focus {
-                                            0 => {
-                                                editing.name.pop();
-                                            }
-                                            2 => {
-                                                editing.endpoint.pop();
-                                            }
-                                            3 => {
-                                                editing.key.pop();
-                                            }
-                                            _ => {}
-                                        }
-                                        EditAction::Handled
-                                    }
-                                    "Ctrl+t" => {
-                                        EditAction::None // handled below as test connection
-                                    }
-                                    other => {
-                                        if other.len() == 1
-                                            && !other.chars().next().unwrap().is_control()
-                                        {
-                                            let ch = other.chars().next().unwrap();
-                                            match editing.focus {
-                                                0 => editing.name.push(ch),
-                                                2 => editing.endpoint.push(ch),
-                                                3 => editing.key.push(ch),
-                                                _ => {}
-                                            }
-                                            EditAction::Handled
-                                        } else {
-                                            EditAction::None
-                                        }
-                                    }
-                                }
-                            } else {
-                                EditAction::None
-                            };
-
-                            // Now the &mut borrow on editing is dropped —
-                            // safe to mutate settings.editing itself.
-                            match action {
-                                EditAction::Cancel => {
-                                    settings.editing = None;
-                                    settings.test_status = TestStatus::Idle;
-                                    continue;
-                                }
-                                EditAction::Save {
-                                    name,
-                                    provider,
-                                    endpoint,
-                                    key,
-                                } => {
-                                    use structfs_core_store::{Record, Value};
-                                    tracing::info!(
-                                        name = %name,
-                                        provider = %provider,
-                                        has_endpoint = endpoint.is_some(),
-                                        has_key = !key.is_empty(),
-                                        "saving account via ConfigStore"
-                                    );
-
-                                    // Write account through ConfigStore (not direct file)
-                                    let provider_path = ox_path::oxpath!(
-                                        "config", "gate", "accounts", name, "provider"
-                                    );
-                                    client
-                                        .write(
-                                            &provider_path,
-                                            Record::parsed(Value::String(provider)),
-                                        )
-                                        .await
-                                        .ok();
-                                    if let Some(ep) = endpoint {
-                                        let ep_path = ox_path::oxpath!(
-                                            "config", "gate", "accounts", name, "endpoint"
-                                        );
-                                        client
-                                            .write(&ep_path, Record::parsed(Value::String(ep)))
-                                            .await
-                                            .ok();
-                                    }
-
-                                    // Write key to ConfigStore (in-memory for session)
-                                    // AND to key file (for persistence across sessions)
-                                    if !key.is_empty() {
-                                        let key_path = ox_path::oxpath!(
-                                            "config", "gate", "accounts", name, "key"
-                                        );
-                                        client
-                                            .write(
-                                                &key_path,
-                                                Record::parsed(Value::String(key.clone())),
-                                            )
-                                            .await
-                                            .ok();
-                                        crate::config::write_key_file(&keys_dir, &name, &key).ok();
-                                    }
-
-                                    // If default account doesn't exist, set it to this one
-                                    let current_default = client
-                                        .read(&oxpath!("config", "gate", "defaults", "account"))
-                                        .await
-                                        .ok()
-                                        .flatten()
-                                        .and_then(|r| match r.as_value() {
-                                            Some(Value::String(s)) => Some(s.clone()),
-                                            _ => None,
-                                        })
-                                        .unwrap_or_default();
-                                    let default_exists = client
-                                        .read(&ox_path::oxpath!(
-                                            "config",
-                                            "gate",
-                                            "accounts",
-                                            current_default,
-                                            "provider"
-                                        ))
-                                        .await
-                                        .ok()
-                                        .flatten()
-                                        .is_some();
-                                    if !default_exists {
-                                        tracing::info!(
-                                            old_default = %current_default,
-                                            new_default = %name,
-                                            "auto-setting default account"
-                                        );
-                                        client
-                                            .write(
-                                                &oxpath!("config", "gate", "defaults", "account"),
-                                                Record::parsed(Value::String(name.clone())),
-                                            )
-                                            .await
-                                            .ok();
-                                    }
-
-                                    // Persist config to disk
-                                    client
-                                        .write(
-                                            &oxpath!("config", "save"),
-                                            Record::parsed(Value::Null),
-                                        )
-                                        .await
-                                        .ok();
-
-                                    settings.editing = None;
-                                    settings.test_status = TestStatus::Idle;
-                                    let config = crate::config::resolve_config(
-                                        &inbox_root,
-                                        &crate::config::CliOverrides::default(),
-                                    );
-                                    settings.refresh_accounts(&config, &keys_dir);
-                                    // Advance wizard after first account save
-                                    if let Some(ref mut step) = settings.wizard {
-                                        use crate::settings_state::WizardStep;
-                                        if *step == WizardStep::AddAccount {
-                                            *step = WizardStep::SetDefaults;
-                                            settings.focus =
-                                                crate::settings_state::SettingsFocus::Defaults;
-                                        }
-                                    }
-                                    continue;
-                                }
-                                EditAction::Handled => {
-                                    continue;
-                                }
-                                EditAction::None => {}
-                            }
-
-                            // Handle Ctrl+t for test connection in edit dialog
-                            // (done after match so the &mut borrow on editing is dropped)
-                            if key_str == "Ctrl+t" {
-                                if let Some(ref editing) = settings.editing {
-                                    if editing.key.is_empty() {
-                                        settings.test_status =
-                                            TestStatus::Failed("No API key entered".into());
-                                    } else {
-                                        let dialect = DIALECTS[editing.dialect];
-                                        let mut provider_config = match dialect {
-                                            "openai" => ox_gate::ProviderConfig::openai(),
-                                            _ => ox_gate::ProviderConfig::anthropic(),
-                                        };
-                                        if !editing.endpoint.is_empty() {
-                                            provider_config.endpoint = editing.endpoint.clone();
-                                        }
-                                        let api_key_for_test = editing.key.clone();
-
-                                        settings.test_status = TestStatus::Testing;
-                                        let (tx, rx) = tokio::sync::oneshot::channel();
-                                        settings.pending_test = Some(rx);
-
-                                        let pc = provider_config;
-                                        let key = api_key_for_test;
-                                        tokio::spawn(async move {
-                                            let test =
-                                                crate::transport::test_connection_async(&pc, &key)
-                                                    .await;
-                                            let models = if test.is_ok() {
-                                                crate::transport::fetch_model_catalog_async(
-                                                    &pc, &key,
-                                                )
-                                                .await
-                                            } else {
-                                                Err("skipped".into())
-                                            };
-                                            let _ = tx.send(crate::settings_state::TestResult {
-                                                test,
-                                                models,
-                                            });
-                                        });
-                                    }
-                                }
+                            if let Outcome::Handled = crate::settings_shell::handle_key(
+                                &mut settings,
+                                &key_str,
+                                client,
+                                &inbox_root,
+                            )
+                            .await
+                            {
                                 continue;
                             }
                         }
 
-                        // Settings screen navigation (before broker dispatch)
-                        if screen_owned == Screen::Settings && mode_owned == Mode::Normal && settings.editing.is_none() {
-                            use crate::settings_state::SettingsFocus;
-
-                            // Delete confirmation — absorb all keys until y/n
-                            if settings.delete_confirming {
-                                if key_str == "y" {
-                                    if let Some(acct) =
-                                        settings.accounts.get(settings.selected_account)
-                                    {
-                                        use structfs_core_store::{Record, Value};
-                                        let name = acct.name.clone();
-                                        let inbox_root = app.pool.inbox_root().to_path_buf();
-                                        let keys_dir = inbox_root.join("keys");
-
-                                        // Delete account through ConfigStore (Null = delete)
-                                        let provider_path = ox_path::oxpath!(
-                                            "config", "gate", "accounts", name, "provider"
-                                        );
-                                        client
-                                            .write(&provider_path, Record::parsed(Value::Null))
-                                            .await
-                                            .ok();
-                                        let ep_path = ox_path::oxpath!(
-                                            "config", "gate", "accounts", name, "endpoint"
-                                        );
-                                        client
-                                            .write(&ep_path, Record::parsed(Value::Null))
-                                            .await
-                                            .ok();
-                                        let key_path = ox_path::oxpath!(
-                                            "config", "gate", "accounts", name, "key"
-                                        );
-                                        client
-                                            .write(&key_path, Record::parsed(Value::Null))
-                                            .await
-                                            .ok();
-
-                                        // Update default if deleted account was default
-                                        if acct.is_default {
-                                            let alt = settings
-                                                .accounts
-                                                .iter()
-                                                .find(|a| a.name != name)
-                                                .map(|a| a.name.clone())
-                                                .unwrap_or_default();
-                                            client
-                                                .write(
-                                                    &oxpath!(
-                                                        "config", "gate", "defaults", "account"
-                                                    ),
-                                                    Record::parsed(Value::String(alt)),
-                                                )
-                                                .await
-                                                .ok();
-                                        }
-
-                                        // Persist and delete key file
-                                        client
-                                            .write(
-                                                &oxpath!("config", "save"),
-                                                Record::parsed(Value::Null),
-                                            )
-                                            .await
-                                            .ok();
-                                        crate::config::delete_key_file(&keys_dir, &name).ok();
-
-                                        let config = crate::config::resolve_config(
-                                            &inbox_root,
-                                            &crate::config::CliOverrides::default(),
-                                        );
-                                        settings.refresh_accounts(&config, &keys_dir);
-                                    }
-                                }
-                                settings.delete_confirming = false;
-                                continue;
-                            }
-
-                            let handled = match key_str.as_str() {
-                                "j" | "Down" => {
-                                    if settings.focus == SettingsFocus::Accounts
-                                        && !settings.accounts.is_empty()
-                                    {
-                                        settings.selected_account = (settings.selected_account + 1)
-                                            .min(settings.accounts.len() - 1);
-                                    } else if settings.focus == SettingsFocus::Defaults {
-                                        settings.defaults_focus =
-                                            (settings.defaults_focus + 1).min(2);
-                                    }
-                                    true
-                                }
-                                "k" | "Up" => {
-                                    if settings.focus == SettingsFocus::Accounts {
-                                        settings.selected_account =
-                                            settings.selected_account.saturating_sub(1);
-                                    } else if settings.focus == SettingsFocus::Defaults {
-                                        settings.defaults_focus =
-                                            settings.defaults_focus.saturating_sub(1);
-                                    }
-                                    true
-                                }
-                                "Tab" => {
-                                    settings.focus = match settings.focus {
-                                        SettingsFocus::Accounts => SettingsFocus::Defaults,
-                                        SettingsFocus::Defaults => SettingsFocus::Accounts,
-                                    };
-                                    true
-                                }
-                                "a" => {
-                                    if settings.focus == SettingsFocus::Accounts {
-                                        settings.editing =
-                                            Some(crate::settings_state::AccountEditFields {
-                                                name: String::new(),
-                                                dialect: 0,
-                                                endpoint: String::new(),
-                                                key: String::new(),
-                                                focus: 0,
-                                                is_new: true,
-                                            });
-                                        settings.test_status =
-                                            crate::settings_state::TestStatus::Idle;
-                                    }
-                                    true
-                                }
-                                "e" => {
-                                    if settings.focus == SettingsFocus::Accounts {
-                                        if let Some(acct) =
-                                            settings.accounts.get(settings.selected_account)
-                                        {
-                                            use crate::settings_state::DIALECTS;
-                                            let dialect_idx = DIALECTS
-                                                .iter()
-                                                .position(|d| *d == acct.dialect)
-                                                .unwrap_or(0);
-                                            let inbox_root = app.pool.inbox_root().to_path_buf();
-                                            let keys_dir = inbox_root.join("keys");
-                                            let key_val =
-                                                crate::config::read_key_file(&keys_dir, &acct.name)
-                                                    .unwrap_or_default();
-                                            let config = crate::config::resolve_config(
-                                                &inbox_root,
-                                                &crate::config::CliOverrides::default(),
-                                            );
-                                            let endpoint = config
-                                                .gate
-                                                .accounts
-                                                .get(&acct.name)
-                                                .and_then(|e| e.endpoint.clone())
-                                                .unwrap_or_default();
-                                            settings.editing =
-                                                Some(crate::settings_state::AccountEditFields {
-                                                    name: acct.name.clone(),
-                                                    dialect: dialect_idx,
-                                                    endpoint,
-                                                    key: key_val,
-                                                    focus: 0,
-                                                    is_new: false,
-                                                });
-                                            settings.test_status =
-                                                crate::settings_state::TestStatus::Idle;
-                                        }
-                                    }
-                                    true
-                                }
-                                "Enter"
-                                    if settings.wizard
-                                        == Some(crate::settings_state::WizardStep::Done) =>
-                                {
-                                    settings.wizard = None;
-                                    // Navigate back to inbox
-                                    client
-                                        .write_typed(&oxpath!("ui"), &UiCommand::GoToInbox)
-                                        .await
-                                        .ok();
-                                    true
-                                }
-                                "Left" if settings.focus == SettingsFocus::Defaults => {
-                                    match settings.defaults_focus {
-                                        0 => {
-                                            if !settings.accounts.is_empty() {
-                                                settings.default_account_idx =
-                                                    if settings.default_account_idx == 0 {
-                                                        settings.accounts.len() - 1
-                                                    } else {
-                                                        settings.default_account_idx - 1
-                                                    };
-                                            }
-                                        }
-                                        1 => {
-                                            if !settings.discovered_models.is_empty() {
-                                                let idx = settings.model_picker_idx.unwrap_or(0);
-                                                let new_idx = if idx == 0 {
-                                                    settings.discovered_models.len() - 1
-                                                } else {
-                                                    idx - 1
-                                                };
-                                                settings.model_picker_idx = Some(new_idx);
-                                                settings.default_model =
-                                                    settings.discovered_models[new_idx].id.clone();
-                                            }
-                                        }
-                                        _ => {}
-                                    }
-                                    true
-                                }
-                                "Right" if settings.focus == SettingsFocus::Defaults => {
-                                    match settings.defaults_focus {
-                                        0 => {
-                                            if !settings.accounts.is_empty() {
-                                                settings.default_account_idx =
-                                                    (settings.default_account_idx + 1)
-                                                        % settings.accounts.len();
-                                            }
-                                        }
-                                        1 => {
-                                            if !settings.discovered_models.is_empty() {
-                                                let idx = settings.model_picker_idx.unwrap_or(0);
-                                                let new_idx =
-                                                    (idx + 1) % settings.discovered_models.len();
-                                                settings.model_picker_idx = Some(new_idx);
-                                                settings.default_model =
-                                                    settings.discovered_models[new_idx].id.clone();
-                                            }
-                                        }
-                                        _ => {}
-                                    }
-                                    true
-                                }
-                                "Backspace"
-                                    if settings.focus == SettingsFocus::Defaults
-                                        && settings.defaults_focus == 1 =>
-                                {
-                                    settings.default_model.pop();
-                                    settings.model_picker_idx = None;
-                                    true
-                                }
-                                "Backspace"
-                                    if settings.focus == SettingsFocus::Defaults
-                                        && settings.defaults_focus == 2 =>
-                                {
-                                    settings.default_max_tokens.pop();
-                                    true
-                                }
-                                "Enter" if settings.focus == SettingsFocus::Defaults => {
-                                    // Determine current selections
-                                    let acct_name = settings
-                                        .accounts
-                                        .get(settings.default_account_idx)
-                                        .map(|a| a.name.clone())
-                                        .unwrap_or_default();
-                                    let model = settings.default_model.clone();
-                                    let max_tokens: i64 =
-                                        settings.default_max_tokens.parse().unwrap_or(4096);
-
-                                    // Write to ConfigStore via broker
-                                    use structfs_core_store::{Record, Value};
-                                    client
-                                        .write(
-                                            &oxpath!("config", "gate", "defaults", "account"),
-                                            Record::parsed(Value::String(acct_name)),
-                                        )
-                                        .await
-                                        .ok();
-                                    client
-                                        .write(
-                                            &oxpath!("config", "gate", "defaults", "model"),
-                                            Record::parsed(Value::String(model.to_string())),
-                                        )
-                                        .await
-                                        .ok();
-                                    client
-                                        .write(
-                                            &oxpath!("config", "gate", "defaults", "max_tokens"),
-                                            Record::parsed(Value::Integer(max_tokens)),
-                                        )
-                                        .await
-                                        .ok();
-                                    // Persist to disk
-                                    client
-                                        .write(
-                                            &oxpath!("config", "save"),
-                                            Record::parsed(Value::Null),
-                                        )
-                                        .await
-                                        .ok();
-
-                                    // Flash "Saved" confirmation
-                                    settings.save_flash_until = Some(
-                                        std::time::Instant::now()
-                                            + std::time::Duration::from_secs(2),
-                                    );
-
-                                    // Advance wizard if active
-                                    if let Some(ref mut step) = settings.wizard {
-                                        if *step == crate::settings_state::WizardStep::SetDefaults {
-                                            *step = crate::settings_state::WizardStep::Done;
-                                        }
-                                    }
-                                    true
-                                }
-                                "Esc" | "q" if settings.wizard.is_some() => {
-                                    // Allow skipping wizard — go to inbox
-                                    settings.wizard = None;
-                                    client
-                                        .write_typed(&oxpath!("ui"), &UiCommand::GoToInbox)
-                                        .await
-                                        .ok();
-                                    true
-                                }
-                                "d" => {
-                                    if settings.focus == SettingsFocus::Accounts
-                                        && !settings.accounts.is_empty()
-                                    {
-                                        settings.delete_confirming = true;
-                                    }
-                                    true
-                                }
-                                "*" => {
-                                    if settings.focus == SettingsFocus::Accounts {
-                                        if let Some(acct) =
-                                            settings.accounts.get(settings.selected_account)
-                                        {
-                                            let name = acct.name.clone();
-                                            use structfs_core_store::{Record, Value};
-                                            client
-                                                .write(
-                                                    &oxpath!(
-                                                        "config", "gate", "defaults", "account"
-                                                    ),
-                                                    Record::parsed(Value::String(name)),
-                                                )
-                                                .await
-                                                .ok();
-                                            client
-                                                .write(
-                                                    &oxpath!("config", "save"),
-                                                    Record::parsed(Value::Null),
-                                                )
-                                                .await
-                                                .ok();
-                                            let inbox_root = app.pool.inbox_root().to_path_buf();
-                                            let config = crate::config::resolve_config(
-                                                &inbox_root,
-                                                &crate::config::CliOverrides::default(),
-                                            );
-                                            settings.refresh_accounts(
-                                                &config,
-                                                &inbox_root.join("keys"),
-                                            );
-                                        }
-                                    }
-                                    true
-                                }
-                                "t" | "Ctrl+t" => {
-                                    if settings.focus == SettingsFocus::Accounts {
-                                        if let Some(acct) =
-                                            settings.accounts.get(settings.selected_account)
-                                        {
-                                            let inbox_root = app.pool.inbox_root().to_path_buf();
-                                            let keys_dir = inbox_root.join("keys");
-                                            let key =
-                                                crate::config::read_key_file(&keys_dir, &acct.name)
-                                                    .unwrap_or_default();
-                                            if key.is_empty() {
-                                                settings.test_status =
-                                                    crate::settings_state::TestStatus::Failed(
-                                                        "No key file found".into(),
-                                                    );
-                                            } else {
-                                                let config = crate::config::resolve_config(
-                                                    &inbox_root,
-                                                    &crate::config::CliOverrides::default(),
-                                                );
-                                                let entry = config.gate.accounts.get(&acct.name);
-                                                let dialect = entry
-                                                    .map(|e| e.provider.as_str())
-                                                    .unwrap_or("anthropic");
-                                                let mut provider_config = match dialect {
-                                                    "openai" => ox_gate::ProviderConfig::openai(),
-                                                    _ => ox_gate::ProviderConfig::anthropic(),
-                                                };
-                                                if let Some(ep) =
-                                                    entry.and_then(|e| e.endpoint.as_ref())
-                                                {
-                                                    provider_config.endpoint = ep.clone();
-                                                }
-
-                                                settings.test_status =
-                                                    crate::settings_state::TestStatus::Testing;
-                                                let (tx, rx) = tokio::sync::oneshot::channel();
-                                                settings.pending_test = Some(rx);
-
-                                                let pc = provider_config;
-                                                let k = key;
-                                                tokio::spawn(async move {
-                                                    let test =
-                                                        crate::transport::test_connection_async(
-                                                            &pc, &k,
-                                                        )
-                                                        .await;
-                                                    let models = if test.is_ok() {
-                                                        crate::transport::fetch_model_catalog_async(
-                                                            &pc, &k,
-                                                        )
-                                                        .await
-                                                    } else {
-                                                        Err("skipped".into())
-                                                    };
-                                                    let _ = tx.send(
-                                                        crate::settings_state::TestResult {
-                                                            test,
-                                                            models,
-                                                        },
-                                                    );
-                                                });
-                                            }
-                                        }
-                                    }
-                                    true
-                                }
-                                other
-                                    if settings.focus == SettingsFocus::Defaults
-                                        && settings.defaults_focus == 1
-                                        && other.len() == 1
-                                        && !other.chars().next().unwrap().is_control() =>
-                                {
-                                    settings.default_model.push(other.chars().next().unwrap());
-                                    settings.model_picker_idx = None;
-                                    true
-                                }
-                                other
-                                    if settings.focus == SettingsFocus::Defaults
-                                        && settings.defaults_focus == 2
-                                        && other.len() == 1
-                                        && other.chars().next().unwrap().is_ascii_digit() =>
-                                {
-                                    settings
-                                        .default_max_tokens
-                                        .push(other.chars().next().unwrap());
-                                    true
-                                }
-                                _ => false,
-                            };
-                            if handled {
-                                continue;
-                            }
-                        }
-
-                        // Search chip dismissal (1-9 in normal mode, inbox, search active)
-                        if mode_owned == Mode::Normal && screen_owned == Screen::Inbox && search_active {
-                            if let KeyCode::Char(c @ '1'..='9') = key.code {
-                                let idx = (c as u8 - b'1') as usize;
-                                let _ = client
-                                    .write_typed(
-                                        &oxpath!("ui"),
-                                        &UiCommand::SearchDismissChip { index: idx },
-                                    )
-                                    .await;
+                        // Inbox screen — search chip dismissal
+                        if mode_owned == Mode::Normal && screen_owned == Screen::Inbox {
+                            if let Outcome::Handled =
+                                crate::inbox_shell::handle_key(key.code, search_active, client)
+                                    .await
+                            {
                                 continue;
                             }
                         }
@@ -1041,24 +333,13 @@ pub async fn run_async(
 
                         // In editor sub-modes (compose/reply), intercept ESC
                         // before the InputStore can fire ui/exit_insert
-                        if mode_owned == Mode::Insert
-                            && key_str == "Esc"
-                            && insert_context_owned != Some(InsertContext::Search)
-                            && insert_context_owned != Some(InsertContext::Command)
-                        {
-                            match input_session.editor_mode {
-                                EditorMode::Insert => {
-                                    input_session.editor_mode = EditorMode::Normal;
-                                    continue;
-                                }
-                                EditorMode::Command => {
-                                    input_session.command_buffer.clear();
-                                    input_session.editor_mode = EditorMode::Normal;
-                                    continue;
-                                }
-                                EditorMode::Normal => {
-                                    // Let ESC fall through to InputStore → ui/exit_insert
-                                }
+                        if mode_owned == Mode::Insert {
+                            if let Outcome::Handled = crate::thread_shell::handle_esc_intercept(
+                                &key_str,
+                                insert_context_owned,
+                                &mut input_session,
+                            ) {
+                                continue;
                             }
                         }
 
@@ -1073,46 +354,18 @@ pub async fn run_async(
                         if result.is_err() && mode_owned == Mode::Insert {
                             if insert_context_owned == Some(InsertContext::Search) {
                                 dispatch_search_edit(client, key.modifiers, key.code).await;
-                            } else if insert_context_owned == Some(InsertContext::Command) {
-                                // Command mode uses the same text editing as editor-insert
-                                handle_editor_insert_key(
+                            } else {
+                                let tw = terminal.get_frame().area().width;
+                                crate::thread_shell::handle_unbound_insert_key(
                                     &mut input_session,
+                                    insert_context_owned,
+                                    app,
+                                    client,
+                                    tw,
                                     key.modifiers,
                                     key.code,
-                                );
-                            } else {
-                                // Compose/reply: vim-style editor with sub-modes
-                                // (ESC from editor-insert → editor-normal is intercepted
-                                //  above the InputStore dispatch, so we only see non-ESC here)
-                                match input_session.editor_mode {
-                                    EditorMode::Insert => {
-                                        handle_editor_insert_key(
-                                            &mut input_session,
-                                            key.modifiers,
-                                            key.code,
-                                        );
-                                    }
-                                    EditorMode::Normal => {
-                                        let tw = terminal.get_frame().area().width;
-                                        handle_editor_normal_key(
-                                            &mut input_session,
-                                            app,
-                                            client,
-                                            tw,
-                                            key.code,
-                                        )
-                                        .await;
-                                    }
-                                    EditorMode::Command => {
-                                        handle_editor_command_key(
-                                            &mut input_session,
-                                            app,
-                                            client,
-                                            key.code,
-                                        )
-                                        .await;
-                                    }
-                                }
+                                )
+                                .await;
                             }
                         }
                     }
@@ -1217,7 +470,9 @@ pub async fn run_async(
                     }
                 }
                 Event::Paste(text) => {
-                    if mode_owned == Mode::Insert && insert_context_owned != Some(InsertContext::Search) {
+                    if mode_owned == Mode::Insert
+                        && insert_context_owned != Some(InsertContext::Search)
+                    {
                         input_session.insert(&text, EditSource::Paste);
                     }
                 }
@@ -1246,16 +501,24 @@ async fn dispatch_mouse_owned(
     match kind {
         MouseEventKind::ScrollUp => {
             if has_active_thread {
-                let _ = client.write_typed(&oxpath!("ui"), &UiCommand::ScrollUp).await;
+                let _ = client
+                    .write_typed(&oxpath!("ui"), &UiCommand::ScrollUp)
+                    .await;
             } else {
-                let _ = client.write_typed(&oxpath!("ui"), &UiCommand::SelectPrev).await;
+                let _ = client
+                    .write_typed(&oxpath!("ui"), &UiCommand::SelectPrev)
+                    .await;
             }
         }
         MouseEventKind::ScrollDown => {
             if has_active_thread {
-                let _ = client.write_typed(&oxpath!("ui"), &UiCommand::ScrollDown).await;
+                let _ = client
+                    .write_typed(&oxpath!("ui"), &UiCommand::ScrollDown)
+                    .await;
             } else {
-                let _ = client.write_typed(&oxpath!("ui"), &UiCommand::SelectNext).await;
+                let _ = client
+                    .write_typed(&oxpath!("ui"), &UiCommand::SelectNext)
+                    .await;
             }
         }
         _ => {}
@@ -1279,7 +542,9 @@ async fn dispatch_search_edit(
                 .await;
         }
         (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
-            let _ = client.write_typed(&oxpath!("ui"), &UiCommand::SearchClear).await;
+            let _ = client
+                .write_typed(&oxpath!("ui"), &UiCommand::SearchClear)
+                .await;
         }
         (_, KeyCode::Backspace) => {
             let _ = client

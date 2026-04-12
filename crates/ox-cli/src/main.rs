@@ -8,7 +8,10 @@ mod clash_sandbox;
 mod config;
 mod dialogs;
 mod editor;
+#[cfg(test)]
+mod editor_snapshots;
 mod event_loop;
+mod inbox_shell;
 mod inbox_view;
 mod key_encode;
 mod key_handlers;
@@ -17,12 +20,15 @@ mod policy;
 mod policy_check;
 #[allow(dead_code)]
 mod session;
+mod settings_shell;
 mod settings_state;
 mod settings_view;
+mod shell;
 mod tab_bar;
 mod text_input_view;
 mod theme;
 pub(crate) mod thread_registry;
+mod thread_shell;
 mod thread_view;
 mod toml_backing;
 mod transport;
