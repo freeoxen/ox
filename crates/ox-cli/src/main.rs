@@ -7,6 +7,7 @@ mod broker_setup;
 mod clash_sandbox;
 mod config;
 mod dialogs;
+mod editor;
 mod event_loop;
 mod inbox_view;
 mod key_encode;

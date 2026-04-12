@@ -85,7 +85,7 @@ pub struct ViewState<'a> {
     /// Whether the shortcuts modal is showing.
     pub show_shortcuts: bool,
     /// Editor sub-mode within compose/reply input (insert vs normal vs command).
-    pub editor_mode: crate::event_loop::EditorMode,
+    pub editor_mode: crate::editor::EditorMode,
     /// Editor command buffer (for `:` prompt within editor).
     pub editor_command_buffer: String,
 }
@@ -102,7 +102,7 @@ pub async fn fetch_view_state<'a>(
     client: &ClientHandle,
     app: &'a App,
     dialog: &'a crate::event_loop::DialogState,
-    editor_mode: crate::event_loop::EditorMode,
+    editor_mode: crate::editor::EditorMode,
     editor_command_buffer: &str,
 ) -> ViewState<'a> {
     // Read UiStore state

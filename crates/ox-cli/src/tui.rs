@@ -92,7 +92,7 @@ pub(crate) fn draw(
 
         let title = if vs.thinking {
             " streaming... "
-        } else if vs.editor_mode == crate::event_loop::EditorMode::Normal {
+        } else if vs.editor_mode == crate::editor::EditorMode::Normal {
             " NORMAL "
         } else {
             ""
@@ -119,7 +119,7 @@ pub(crate) fn draw(
     // Status bar / command line
     let status_area = chunks[idx];
     let show_command_line =
-        is_command_mode || vs.editor_mode == crate::event_loop::EditorMode::Command;
+        is_command_mode || vs.editor_mode == crate::editor::EditorMode::Command;
     if show_command_line {
         draw_command_line(frame, vs, theme, status_area);
     } else {
@@ -148,7 +148,7 @@ fn draw_command_line(frame: &mut Frame, vs: &ViewState, _theme: &Theme, area: Re
         ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::BOLD),
     );
     // Editor-command mode uses the command buffer; app-level command mode uses the input
-    let text = if vs.editor_mode == crate::event_loop::EditorMode::Command {
+    let text = if vs.editor_mode == crate::editor::EditorMode::Command {
         &vs.editor_command_buffer
     } else {
         &vs.input
