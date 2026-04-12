@@ -98,6 +98,40 @@ impl ClientHandle {
             })?
     }
 
+    /// Write a serializable value to the broker.
+    ///
+    /// Converts `value` to a StructFS `Value` via `structfs_serde_store::to_value`,
+    /// wraps it in a `Record::parsed`, and writes it.
+    pub async fn write_typed<T: serde::Serialize>(
+        &self,
+        to: &Path,
+        value: &T,
+    ) -> Result<Path, StoreError> {
+        let v = structfs_serde_store::to_value(value)
+            .map_err(|e| StoreError::store("broker", "write_typed", &e.to_string()))?;
+        self.write(to, Record::parsed(v)).await
+    }
+
+    /// Read a deserializable value from the broker.
+    ///
+    /// Returns `Ok(None)` if the path does not exist or the record has no value.
+    pub async fn read_typed<T: serde::de::DeserializeOwned>(
+        &self,
+        from: &Path,
+    ) -> Result<Option<T>, StoreError> {
+        match self.read(from).await? {
+            Some(record) => match record.as_value() {
+                Some(value) => {
+                    let typed = structfs_serde_store::from_value(value.clone())
+                        .map_err(|e| StoreError::store("broker", "read_typed", &e.to_string()))?;
+                    Ok(Some(typed))
+                }
+                None => Ok(None),
+            },
+            None => Ok(None),
+        }
+    }
+
     /// Async write to the broker.
     pub async fn write(&self, path: &Path, data: Record) -> Result<Path, StoreError> {
         let full_path = self.resolve_path(path);

@@ -15,7 +15,9 @@ categories = ["data-structures", "asynchronous"]
 [dependencies]
 tracing = { workspace = true }
 ox-path = { path = "../ox-path" }
+serde = { version = "1", features = ["derive"] }
 structfs-core-store = { workspace = true }
+structfs-serde-store = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]

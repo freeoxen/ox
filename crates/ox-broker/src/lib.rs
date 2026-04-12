@@ -293,6 +293,56 @@ mod integration_tests {
         }
     }
 
+    #[tokio::test]
+    async fn write_typed_then_read_typed() {
+        use serde::{Deserialize, Serialize};
+        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+        struct Greeting {
+            message: String,
+            count: u32,
+        }
+
+        let broker = BrokerStore::default();
+        let store = MemoryStore::new();
+        let _h = broker.mount(path!("data"), store).await;
+        let client = broker.client();
+
+        let greeting = Greeting {
+            message: "hello".to_string(),
+            count: 42,
+        };
+        client
+            .write_typed(&path!("data/greeting"), &greeting)
+            .await
+            .unwrap();
+
+        let back: Option<Greeting> = client
+            .read_typed(&path!("data/greeting"))
+            .await
+            .unwrap();
+        assert_eq!(back, Some(greeting));
+    }
+
+    #[tokio::test]
+    async fn read_typed_returns_none_for_missing() {
+        use serde::Deserialize;
+        #[derive(Debug, Deserialize)]
+        struct Anything {
+            _x: String,
+        }
+
+        let broker = BrokerStore::default();
+        let store = MemoryStore::new();
+        let _h = broker.mount(path!("data"), store).await;
+        let client = broker.client();
+
+        let result: Option<Anything> = client
+            .read_typed(&path!("data/nonexistent"))
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
     // ---- AsyncReader / AsyncWriter tests ----
 
     use crate::async_store::{AsyncReader, AsyncWriter, BoxFuture};
