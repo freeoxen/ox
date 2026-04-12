@@ -356,11 +356,12 @@ fn normal_mode(out: &mut Vec<Binding>) {
 fn insert_mode(out: &mut Vec<Binding>) {
     out.push(bind("insert", "Ctrl+s", cmd("ui/send_input"), "Send"));
     out.push(bind("insert", "Ctrl+Enter", cmd("ui/send_input"), "Send"));
+    out.push(bind("insert", "Esc", cmd("ui/exit_insert"), "Normal mode"));
     out.push(bind(
         "insert",
         "Ctrl+q",
         cmd("ui/exit_insert"),
-        "Exit insert mode",
+        "Normal mode",
     ));
     // Ctrl+u: screen-specific because search mode handles its own clear
     out.push(bind_screen(

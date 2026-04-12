@@ -20,7 +20,8 @@ pub(crate) fn draw(
     theme: &Theme,
     text_input_view: &mut crate::text_input_view::TextInputView,
 ) -> (Option<usize>, usize) {
-    let in_insert = vs.mode == "insert";
+    let is_command_mode = vs.mode == "insert" && vs.insert_context.as_deref() == Some("command");
+    let in_insert = vs.mode == "insert" && !is_command_mode;
     let show_filter = vs.active_thread.is_none() && vs.search_active;
 
     // Build layout constraints
@@ -93,7 +94,6 @@ pub(crate) fn draw(
             Some("compose") => " compose ",
             Some("reply") => " reply ",
             Some("search") => " search ",
-            Some("command") => " : ",
             _ => "",
         };
         let title = if vs.thinking {
@@ -120,9 +120,13 @@ pub(crate) fn draw(
         }
     }
 
-    // Status bar
+    // Status bar / command line
     let status_area = chunks[idx];
-    draw_status_bar(frame, vs, settings, theme, status_area);
+    if is_command_mode {
+        draw_command_line(frame, vs, theme, status_area);
+    } else {
+        draw_status_bar(frame, vs, settings, theme, status_area);
+    }
 
     // Modal overlays
     if vs.show_shortcuts {
@@ -134,6 +138,26 @@ pub(crate) fn draw(
     }
 
     (content_height, content_area.height as usize)
+}
+
+// ---------------------------------------------------------------------------
+// Command line (vim-style : prompt)
+// ---------------------------------------------------------------------------
+
+fn draw_command_line(frame: &mut Frame, vs: &ViewState, _theme: &Theme, area: Rect) {
+    let prompt = Span::styled(
+        ":",
+        ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::BOLD),
+    );
+    let input = Span::raw(&vs.input);
+    let line = Line::from(vec![prompt, input]);
+    frame.render_widget(Paragraph::new(line), area);
+
+    // Place cursor after the input text
+    let cursor_x = area.x + 1 + vs.input.len() as u16;
+    if cursor_x < area.x + area.width {
+        frame.set_cursor_position((cursor_x, area.y));
+    }
 }
 
 // ---------------------------------------------------------------------------
