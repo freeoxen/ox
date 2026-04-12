@@ -3,20 +3,46 @@ use serde::{Deserialize, Serialize};
 use crate::ui::InsertContext;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "command", rename_all = "snake_case")]
+#[serde(tag = "scope", content = "command", rename_all = "snake_case")]
 pub enum UiCommand {
-    SelectNext,
-    SelectPrev,
-    SelectFirst,
-    SelectLast,
+    Global(GlobalCommand),
+    Inbox(InboxCommand),
+    Thread(ThreadCommand),
+    Settings(SettingsCommand),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "command", rename_all = "snake_case")]
+pub enum GlobalCommand {
+    Quit,
     Open { thread_id: String },
     Close,
     GoToSettings,
     GoToInbox,
-    EnterInsert { context: InsertContext },
-    ExitInsert,
-    SetInput { content: String, cursor: usize },
-    ClearInput,
+    SetStatus { text: String },
+    ClearPendingAction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "command", rename_all = "snake_case")]
+pub enum InboxCommand {
+    SelectNext,
+    SelectPrev,
+    SelectFirst,
+    SelectLast,
+    SetRowCount { count: usize },
+    OpenSelected,
+    ArchiveSelected,
+    SearchInsertChar { char: char },
+    SearchDeleteChar,
+    SearchClear,
+    SearchSaveChip,
+    SearchDismissChip { index: usize },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "command", rename_all = "snake_case")]
+pub enum ThreadCommand {
     ScrollUp,
     ScrollDown,
     ScrollToTop,
@@ -27,16 +53,67 @@ pub enum UiCommand {
     ScrollHalfPageDown,
     SetScrollMax { max: usize },
     SetViewportHeight { height: usize },
-    SetRowCount { count: usize },
+    EnterInsert { context: InsertContext },
+    ExitInsert,
+    SetInput { content: String, cursor: usize },
+    ClearInput,
     SendInput,
-    Quit,
-    OpenSelected,
-    ArchiveSelected,
-    ClearPendingAction,
-    SearchInsertChar { char: char },
-    SearchDeleteChar,
-    SearchClear,
-    SearchSaveChip,
-    SearchDismissChip { index: usize },
-    SetStatus { text: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "command", rename_all = "snake_case")]
+pub enum SettingsCommand {
+    FocusAccounts,
+    FocusDefaults,
+    ToggleFocus,
+    SelectNextAccount,
+    SelectPrevAccount,
+    SelectNextDefault,
+    SelectPrevDefault,
+    StartAddAccount,
+    StartEditAccount {
+        name: String,
+        dialect: usize,
+        endpoint: String,
+        key: String,
+    },
+    StartDeleteAccount,
+    ConfirmDelete,
+    CancelDelete,
+    EditFocusNext,
+    EditFocusPrev,
+    EditFocusField {
+        field: usize,
+    },
+    EditDialectNext,
+    EditDialectPrev,
+    EditInsertChar {
+        char: char,
+    },
+    EditBackspace,
+    EditSave {
+        name: String,
+        provider: String,
+        endpoint: Option<String>,
+        key: String,
+    },
+    EditCancel,
+    DefaultAccountNext,
+    DefaultAccountPrev,
+    DefaultModelNext,
+    DefaultModelPrev,
+    DefaultModelInsertChar {
+        char: char,
+    },
+    DefaultModelBackspace,
+    DefaultMaxTokensInsertChar {
+        char: char,
+    },
+    DefaultMaxTokensBackspace,
+    SaveDefaults {
+        account: String,
+        model: String,
+        max_tokens: i64,
+    },
+    FinishWizard,
 }

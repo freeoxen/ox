@@ -1,20 +1,53 @@
 use serde::{Deserialize, Serialize};
 
-use crate::ui::{InsertContext, Mode, PendingAction, Screen};
+use crate::ui::{AccountEditFields, InsertContext, Mode, PendingAction, SettingsFocus, WizardStep};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "screen", rename_all = "snake_case")]
+pub enum UiSnapshot {
+    Inbox(InboxSnapshot),
+    Thread(ThreadSnapshot),
+    Settings(SettingsSnapshot),
+}
+
+impl Default for UiSnapshot {
+    fn default() -> Self {
+        UiSnapshot::Inbox(InboxSnapshot::default())
+    }
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct UiSnapshot {
-    pub screen: Screen,
-    pub mode: Mode,
-    pub active_thread: Option<String>,
-    pub insert_context: Option<InsertContext>,
+pub struct InboxSnapshot {
     pub selected_row: usize,
+    pub row_count: usize,
+    pub search: SearchSnapshot,
+    pub pending_action: Option<PendingAction>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadSnapshot {
+    pub thread_id: String,
+    pub mode: Mode,
+    pub insert_context: Option<InsertContext>,
     pub scroll: usize,
     pub scroll_max: usize,
     pub viewport_height: usize,
     pub input: InputSnapshot,
     pub pending_action: Option<PendingAction>,
-    pub search: SearchSnapshot,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SettingsSnapshot {
+    pub focus: SettingsFocus,
+    pub selected_account: usize,
+    pub editing: Option<AccountEditFields>,
+    pub delete_confirming: bool,
+    pub wizard: Option<WizardStep>,
+    pub defaults_focus: usize,
+    pub default_account_idx: usize,
+    pub default_model: String,
+    pub default_max_tokens: String,
+    pub pending_action: Option<PendingAction>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

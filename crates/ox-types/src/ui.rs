@@ -34,3 +34,29 @@ pub enum PendingAction {
     OpenSelected,
     ArchiveSelected,
 }
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingsFocus {
+    #[default]
+    Accounts,
+    Defaults,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WizardStep {
+    AddAccount,
+    SetDefaults,
+    Done,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountEditFields {
+    pub name: String,
+    pub dialect: usize,
+    pub endpoint: String,
+    pub key: String,
+    pub focus: usize,
+    pub is_new: bool,
+}

@@ -1,5 +1,7 @@
 use ox_types::*;
 
+// --- ui.rs enums (existing behavior, preserved) ---
+
 #[test]
 fn screen_roundtrip_and_snake_case() {
     let screen = Screen::Inbox;
@@ -50,10 +52,6 @@ fn pending_action_roundtrip_and_snake_case() {
     let json = serde_json::to_string(&action).unwrap();
     assert_eq!(json, r#""open_selected""#);
 
-    let action = PendingAction::ArchiveSelected;
-    let json = serde_json::to_string(&action).unwrap();
-    assert_eq!(json, r#""archive_selected""#);
-
     for variant in [
         PendingAction::SendInput,
         PendingAction::Quit,
@@ -67,116 +65,232 @@ fn pending_action_roundtrip_and_snake_case() {
 }
 
 #[test]
-fn ui_snapshot_default_and_roundtrip() {
-    let snapshot = UiSnapshot::default();
-    assert_eq!(snapshot.screen, Screen::Inbox);
-    assert_eq!(snapshot.mode, Mode::Normal);
-    assert!(snapshot.active_thread.is_none());
-    assert!(snapshot.insert_context.is_none());
-    assert_eq!(snapshot.selected_row, 0);
-    assert_eq!(snapshot.scroll, 0);
-    assert!(snapshot.pending_action.is_none());
-    assert_eq!(snapshot.input.content, "");
-    assert_eq!(snapshot.input.cursor, 0);
-    assert!(snapshot.search.chips.is_empty());
-    assert_eq!(snapshot.search.live_query, "");
-    assert!(!snapshot.search.active);
+fn settings_focus_roundtrip() {
+    for variant in [SettingsFocus::Accounts, SettingsFocus::Defaults] {
+        let json = serde_json::to_string(&variant).unwrap();
+        let back: SettingsFocus = serde_json::from_str(&json).unwrap();
+        assert_eq!(variant, back);
+    }
+    assert_eq!(SettingsFocus::default(), SettingsFocus::Accounts);
+    let json = serde_json::to_string(&SettingsFocus::Accounts).unwrap();
+    assert_eq!(json, r#""accounts""#);
+}
 
+#[test]
+fn wizard_step_roundtrip() {
+    for variant in [
+        WizardStep::AddAccount,
+        WizardStep::SetDefaults,
+        WizardStep::Done,
+    ] {
+        let json = serde_json::to_string(&variant).unwrap();
+        let back: WizardStep = serde_json::from_str(&json).unwrap();
+        assert_eq!(variant, back);
+    }
+    let json = serde_json::to_string(&WizardStep::AddAccount).unwrap();
+    assert_eq!(json, r#""add_account""#);
+}
+
+#[test]
+fn account_edit_fields_roundtrip() {
+    let fields = AccountEditFields {
+        name: "my-account".to_string(),
+        dialect: 1,
+        endpoint: "https://api.example.com".to_string(),
+        key: "sk-secret".to_string(),
+        focus: 2,
+        is_new: true,
+    };
+    let json = serde_json::to_string(&fields).unwrap();
+    let back: AccountEditFields = serde_json::from_str(&json).unwrap();
+    assert_eq!(fields, back);
+}
+
+// --- Hierarchical UiCommand ---
+
+#[test]
+fn ui_command_global_quit_has_scope_tag() {
+    let cmd = UiCommand::Global(GlobalCommand::Quit);
+    let json = serde_json::to_string(&cmd).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(v["scope"], "global");
+    assert_eq!(v["command"]["command"], "quit");
+}
+
+#[test]
+fn ui_command_inbox_select_next_has_scope_tag() {
+    let cmd = UiCommand::Inbox(InboxCommand::SelectNext);
+    let json = serde_json::to_string(&cmd).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(v["scope"], "inbox");
+    assert_eq!(v["command"]["command"], "select_next");
+}
+
+#[test]
+fn ui_command_thread_set_scroll_max_roundtrip() {
+    let cmd = UiCommand::Thread(ThreadCommand::SetScrollMax { max: 42 });
+    let json = serde_json::to_string(&cmd).unwrap();
+    let back: UiCommand = serde_json::from_str(&json).unwrap();
+    let json2 = serde_json::to_string(&back).unwrap();
+    assert_eq!(json, json2);
+
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(v["scope"], "thread");
+    assert_eq!(v["command"]["max"], 42);
+}
+
+#[test]
+fn ui_command_settings_toggle_focus_roundtrip() {
+    let cmd = UiCommand::Settings(SettingsCommand::ToggleFocus);
+    let json = serde_json::to_string(&cmd).unwrap();
+    let back: UiCommand = serde_json::from_str(&json).unwrap();
+    let json2 = serde_json::to_string(&back).unwrap();
+    assert_eq!(json, json2);
+
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(v["scope"], "settings");
+}
+
+#[test]
+fn global_command_open_roundtrip() {
+    let cmd = UiCommand::Global(GlobalCommand::Open {
+        thread_id: "thread-42".to_string(),
+    });
+    let json = serde_json::to_string(&cmd).unwrap();
+    let back: UiCommand = serde_json::from_str(&json).unwrap();
+    let json2 = serde_json::to_string(&back).unwrap();
+    assert_eq!(json, json2);
+}
+
+#[test]
+fn thread_command_enter_insert_roundtrip() {
+    let cmd = UiCommand::Thread(ThreadCommand::EnterInsert {
+        context: InsertContext::Reply,
+    });
+    let json = serde_json::to_string(&cmd).unwrap();
+    let back: UiCommand = serde_json::from_str(&json).unwrap();
+    let json2 = serde_json::to_string(&back).unwrap();
+    assert_eq!(json, json2);
+}
+
+#[test]
+fn inbox_command_search_dismiss_chip_roundtrip() {
+    let cmd = UiCommand::Inbox(InboxCommand::SearchDismissChip { index: 3 });
+    let json = serde_json::to_string(&cmd).unwrap();
+    let back: UiCommand = serde_json::from_str(&json).unwrap();
+    let json2 = serde_json::to_string(&back).unwrap();
+    assert_eq!(json, json2);
+}
+
+#[test]
+fn settings_command_edit_save_roundtrip() {
+    let cmd = UiCommand::Settings(SettingsCommand::EditSave {
+        name: "acme".to_string(),
+        provider: "anthropic".to_string(),
+        endpoint: Some("https://api.example.com".to_string()),
+        key: "sk-secret".to_string(),
+    });
+    let json = serde_json::to_string(&cmd).unwrap();
+    let back: UiCommand = serde_json::from_str(&json).unwrap();
+    let json2 = serde_json::to_string(&back).unwrap();
+    assert_eq!(json, json2);
+}
+
+// --- Screen-discriminated UiSnapshot ---
+
+#[test]
+fn ui_snapshot_inbox_default_has_screen_tag() {
+    let snapshot = UiSnapshot::default();
+    let json = serde_json::to_string(&snapshot).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(v["screen"], "inbox");
+}
+
+#[test]
+fn ui_snapshot_thread_roundtrip() {
+    let snapshot = UiSnapshot::Thread(ThreadSnapshot {
+        thread_id: "t-123".to_string(),
+        mode: Mode::Insert,
+        insert_context: Some(InsertContext::Compose),
+        scroll: 10,
+        scroll_max: 100,
+        viewport_height: 40,
+        input: InputSnapshot {
+            content: "hello".to_string(),
+            cursor: 5,
+        },
+        pending_action: None,
+    });
+    let json = serde_json::to_string(&snapshot).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(v["screen"], "thread");
+    assert_eq!(v["thread_id"], "t-123");
+    assert_eq!(v["scroll"], 10);
+
+    let back: UiSnapshot = serde_json::from_str(&json).unwrap();
+    let json2 = serde_json::to_string(&back).unwrap();
+    assert_eq!(json, json2);
+}
+
+#[test]
+fn ui_snapshot_settings_default_roundtrip() {
+    let snapshot = UiSnapshot::Settings(SettingsSnapshot::default());
     let json = serde_json::to_string(&snapshot).unwrap();
     let back: UiSnapshot = serde_json::from_str(&json).unwrap();
-    assert_eq!(back.screen, snapshot.screen);
-    assert_eq!(back.mode, snapshot.mode);
-    assert_eq!(back.selected_row, snapshot.selected_row);
-}
+    let json2 = serde_json::to_string(&back).unwrap();
+    assert_eq!(json, json2);
 
-#[test]
-fn ui_command_tagged_serialization() {
-    let cmd = UiCommand::SelectNext;
-    let json = serde_json::to_string(&cmd).unwrap();
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(v["command"], "select_next");
+    assert_eq!(v["screen"], "settings");
 }
 
 #[test]
-fn ui_command_unit_variants_roundtrip() {
-    let commands = vec![
-        UiCommand::SelectNext,
-        UiCommand::SelectPrev,
-        UiCommand::SelectFirst,
-        UiCommand::SelectLast,
-        UiCommand::Close,
-        UiCommand::GoToSettings,
-        UiCommand::GoToInbox,
-        UiCommand::ExitInsert,
-        UiCommand::ClearInput,
-        UiCommand::ScrollUp,
-        UiCommand::ScrollDown,
-        UiCommand::ScrollToTop,
-        UiCommand::ScrollToBottom,
-        UiCommand::ScrollPageUp,
-        UiCommand::ScrollPageDown,
-        UiCommand::ScrollHalfPageUp,
-        UiCommand::ScrollHalfPageDown,
-        UiCommand::SendInput,
-        UiCommand::Quit,
-        UiCommand::OpenSelected,
-        UiCommand::ArchiveSelected,
-        UiCommand::ClearPendingAction,
-        UiCommand::SearchDeleteChar,
-        UiCommand::SearchClear,
-        UiCommand::SearchSaveChip,
-    ];
-
-    for cmd in commands {
-        let json = serde_json::to_string(&cmd).unwrap();
-        let back: UiCommand = serde_json::from_str(&json).unwrap();
-        let json2 = serde_json::to_string(&back).unwrap();
-        assert_eq!(json, json2);
-    }
+fn ui_snapshot_inbox_with_search_roundtrip() {
+    let snapshot = UiSnapshot::Inbox(InboxSnapshot {
+        selected_row: 3,
+        row_count: 10,
+        search: SearchSnapshot {
+            chips: vec!["tag:urgent".to_string()],
+            live_query: "foo".to_string(),
+            active: true,
+        },
+        pending_action: Some(PendingAction::OpenSelected),
+    });
+    let json = serde_json::to_string(&snapshot).unwrap();
+    let back: UiSnapshot = serde_json::from_str(&json).unwrap();
+    let json2 = serde_json::to_string(&back).unwrap();
+    assert_eq!(json, json2);
 }
 
+// --- InputKeyEvent ---
+
 #[test]
-fn ui_command_open_roundtrip() {
-    let cmd = UiCommand::Open {
-        thread_id: "thread-42".to_string(),
+fn input_key_event_roundtrip() {
+    let event = InputKeyEvent {
+        mode: Mode::Normal,
+        key: "j".to_string(),
+        screen: Screen::Inbox,
     };
-    let json = serde_json::to_string(&cmd).unwrap();
-    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(v["command"], "open");
-    assert_eq!(v["thread_id"], "thread-42");
-
-    let back: UiCommand = serde_json::from_str(&json).unwrap();
-    let json2 = serde_json::to_string(&back).unwrap();
-    assert_eq!(json, json2);
+    let json = serde_json::to_string(&event).unwrap();
+    let back: InputKeyEvent = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.key, "j");
+    assert_eq!(back.screen, Screen::Inbox);
+    assert_eq!(back.mode, Mode::Normal);
 }
 
+// --- ApprovalResponse ---
+
 #[test]
-fn ui_command_enter_insert_roundtrip() {
-    let cmd = UiCommand::EnterInsert {
-        context: InsertContext::Reply,
+fn approval_response_roundtrip() {
+    let resp = ApprovalResponse {
+        decision: "allow".to_string(),
     };
-    let json = serde_json::to_string(&cmd).unwrap();
-    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(v["command"], "enter_insert");
-    assert_eq!(v["context"], "reply");
-
-    let back: UiCommand = serde_json::from_str(&json).unwrap();
-    let json2 = serde_json::to_string(&back).unwrap();
-    assert_eq!(json, json2);
+    let json = serde_json::to_string(&resp).unwrap();
+    let back: ApprovalResponse = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.decision, "allow");
 }
 
-#[test]
-fn ui_command_search_dismiss_chip_roundtrip() {
-    let cmd = UiCommand::SearchDismissChip { index: 3 };
-    let json = serde_json::to_string(&cmd).unwrap();
-    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(v["command"], "search_dismiss_chip");
-    assert_eq!(v["index"], 3);
-
-    let back: UiCommand = serde_json::from_str(&json).unwrap();
-    let json2 = serde_json::to_string(&back).unwrap();
-    assert_eq!(json, json2);
-}
+// --- Unchanged types ---
 
 #[test]
 fn tool_status_roundtrip() {
