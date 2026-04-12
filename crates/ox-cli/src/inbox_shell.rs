@@ -3,7 +3,7 @@
 use crate::shell::Outcome;
 use crossterm::event::KeyCode;
 use ox_path::oxpath;
-use ox_types::UiCommand;
+use ox_types::{InboxCommand, UiCommand};
 
 /// Handle inbox-specific keys (normal mode).
 ///
@@ -18,7 +18,10 @@ pub(crate) async fn handle_key(
         if let KeyCode::Char(c @ '1'..='9') = key_code {
             let idx = (c as u8 - b'1') as usize;
             let _ = client
-                .write_typed(&oxpath!("ui"), &UiCommand::SearchDismissChip { index: idx })
+                .write_typed(
+                    &oxpath!("ui"),
+                    &UiCommand::Inbox(InboxCommand::SearchDismissChip { index: idx }),
+                )
                 .await;
             return Outcome::Handled;
         }

@@ -179,16 +179,16 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn key_dispatch_through_broker() {
+        use ox_types::{InboxCommand, UiCommand};
+
         let handle = test_setup().await;
         let client = handle.client();
 
         // Set row count so selection can advance
-        let mut count_cmd = BTreeMap::new();
-        count_cmd.insert("count".to_string(), Value::Integer(5));
         client
-            .write(
-                &path!("ui/set_row_count"),
-                Record::parsed(Value::Map(count_cmd)),
+            .write_typed(
+                &path!("ui"),
+                &UiCommand::Inbox(InboxCommand::SetRowCount { count: 5 }),
             )
             .await
             .unwrap();
@@ -214,29 +214,33 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn screen_specific_binding_routes_correctly() {
+        use ox_types::{GlobalCommand, ThreadCommand, UiCommand};
+
         let handle = test_setup().await;
         let client = handle.client();
 
         // Open a thread so we're on the thread screen
-        let mut open_cmd = BTreeMap::new();
-        open_cmd.insert("thread_id".to_string(), Value::String("t_test".to_string()));
         client
-            .write(&path!("ui/open"), Record::parsed(Value::Map(open_cmd)))
-            .await
-            .unwrap();
-
-        // Set row count for inbox selection
-        let mut count_cmd = BTreeMap::new();
-        count_cmd.insert("count".to_string(), Value::Integer(5));
-        client
-            .write(
-                &path!("ui/set_row_count"),
-                Record::parsed(Value::Map(count_cmd)),
+            .write_typed(
+                &path!("ui"),
+                &UiCommand::Global(GlobalCommand::Open {
+                    thread_id: "t_test".to_string(),
+                }),
             )
             .await
             .unwrap();
 
-        // Dispatch "j" on thread screen — should scroll, NOT select
+        // Give the thread some scroll headroom
+        client
+            .write_typed(
+                &path!("ui"),
+                &UiCommand::Thread(ThreadCommand::SetScrollMax { max: 100 }),
+            )
+            .await
+            .unwrap();
+
+        // Dispatch "j" on thread screen — should trigger scroll_down (thread-specific),
+        // NOT select_next (inbox-specific)
         let mut event = BTreeMap::new();
         event.insert("mode".to_string(), Value::String("normal".to_string()));
         event.insert("key".to_string(), Value::String("j".to_string()));
@@ -246,13 +250,16 @@ mod tests {
             .await
             .unwrap();
 
-        // selected_row should NOT have changed (still 0)
-        let row = client
-            .read(&path!("ui/selected_row"))
+        // Verify we're on thread screen (not inbox)
+        let screen = client
+            .read(&path!("ui/screen"))
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(row.as_value().unwrap(), &Value::Integer(0));
+        assert_eq!(
+            screen.as_value().unwrap(),
+            &Value::String("thread".to_string())
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 use ox_path::oxpath;
-use ox_types::UiCommand;
+use ox_types::{GlobalCommand, ThreadCommand, UiCommand, UiSnapshot};
 use ox_ui::text_input_store::{Edit, EditOp, EditSequence, EditSource};
 
 // ---------------------------------------------------------------------------
@@ -134,18 +134,33 @@ pub(crate) async fn submit_editor_content(
         .flatten()
         .unwrap_or_default();
 
+    let (mode, insert_context, active_thread) = match &ui {
+        UiSnapshot::Thread(snap) => (
+            snap.mode,
+            snap.insert_context,
+            Some(snap.thread_id.clone()),
+        ),
+        _ => (ox_types::Mode::Normal, None, None),
+    };
+
     let new_tid = app.send_input_with_text(
         text,
-        ui.mode,
-        ui.insert_context,
-        ui.active_thread.as_deref(),
+        mode,
+        insert_context,
+        active_thread.as_deref(),
     );
 
     let _ = client
-        .write_typed(&oxpath!("ui"), &UiCommand::ClearInput)
+        .write_typed(
+            &oxpath!("ui"),
+            &UiCommand::Thread(ThreadCommand::ClearInput),
+        )
         .await;
     let _ = client
-        .write_typed(&oxpath!("ui"), &UiCommand::ExitInsert)
+        .write_typed(
+            &oxpath!("ui"),
+            &UiCommand::Thread(ThreadCommand::ExitInsert),
+        )
         .await;
     session.reset_after_submit();
 
@@ -252,9 +267,9 @@ pub(crate) async fn execute_command_input(input: &str, client: &ox_broker::Clien
         let _ = client
             .write_typed(
                 &oxpath!("ui"),
-                &UiCommand::SetStatus {
+                &UiCommand::Global(GlobalCommand::SetStatus {
                     text: format!("{e}"),
-                },
+                }),
             )
             .await;
     }
@@ -378,10 +393,10 @@ pub(crate) async fn handle_editor_normal_key(
                 let _ = client
                     .write_typed(
                         &oxpath!("ui"),
-                        &UiCommand::SetInput {
+                        &UiCommand::Thread(ThreadCommand::SetInput {
                             content: text.clone(),
                             cursor,
-                        },
+                        }),
                     )
                     .await;
                 session.init_from(text, cursor);
@@ -397,10 +412,10 @@ pub(crate) async fn handle_editor_normal_key(
                 let _ = client
                     .write_typed(
                         &oxpath!("ui"),
-                        &UiCommand::SetInput {
+                        &UiCommand::Thread(ThreadCommand::SetInput {
                             content: text.clone(),
                             cursor,
-                        },
+                        }),
                     )
                     .await;
                 session.init_from(text, cursor);
@@ -511,10 +526,16 @@ pub(crate) async fn handle_editor_command_key(
                 "q" | "quit" => {
                     // Exit the editor (back to app normal mode)
                     let _ = client
-                        .write_typed(&oxpath!("ui"), &UiCommand::ClearInput)
+                        .write_typed(
+                            &oxpath!("ui"),
+                            &UiCommand::Thread(ThreadCommand::ClearInput),
+                        )
                         .await;
                     let _ = client
-                        .write_typed(&oxpath!("ui"), &UiCommand::ExitInsert)
+                        .write_typed(
+                            &oxpath!("ui"),
+                            &UiCommand::Thread(ThreadCommand::ExitInsert),
+                        )
                         .await;
                     session.reset_after_submit();
                 }
@@ -522,7 +543,10 @@ pub(crate) async fn handle_editor_command_key(
                     let new_tid = submit_editor_content(session, app, client).await;
                     if let Some(tid) = new_tid {
                         let _ = client
-                            .write_typed(&oxpath!("ui"), &UiCommand::Open { thread_id: tid })
+                            .write_typed(
+                                &oxpath!("ui"),
+                                &UiCommand::Global(GlobalCommand::Open { thread_id: tid }),
+                            )
                             .await;
                     }
                 }

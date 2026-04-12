@@ -1,6 +1,6 @@
 use crate::theme::Theme;
 use crate::view_state::ViewState;
-use ox_types::Screen;
+use ox_types::UiSnapshot;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
@@ -8,12 +8,13 @@ use ratatui::widgets::Paragraph;
 
 /// Render the title/header bar into `area`.
 pub fn draw_tabs(frame: &mut Frame, vs: &ViewState, theme: &Theme, area: Rect) {
-    let spans = if vs.ui.screen == Screen::Settings {
+    let spans = if matches!(&vs.ui, UiSnapshot::Settings(_)) {
         vec![
             Span::styled(" ox ", theme.title_badge),
             Span::styled(" settings ", theme.title_info),
         ]
-    } else if let Some(ref tid) = vs.ui.active_thread {
+    } else if let UiSnapshot::Thread(ref snap) = vs.ui {
+        let tid = &snap.thread_id;
         // Thread view — show thread title from messages
         let title = vs
             .messages

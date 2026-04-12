@@ -1,7 +1,7 @@
 use crate::text_input_view::desired_input_height;
 use crate::theme::Theme;
 use crate::view_state::ViewState;
-use ox_types::{InsertContext, Mode, Screen};
+use ox_types::{InsertContext, Mode, UiSnapshot};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span};
@@ -21,10 +21,14 @@ pub(crate) fn draw(
     theme: &Theme,
     text_input_view: &mut crate::text_input_view::TextInputView,
 ) -> (Option<usize>, usize) {
+    let (cur_mode, cur_insert_context) = match &vs.ui {
+        UiSnapshot::Thread(snap) => (snap.mode, snap.insert_context),
+        _ => (Mode::Normal, None),
+    };
     let is_command_mode =
-        vs.ui.mode == Mode::Insert && vs.ui.insert_context == Some(InsertContext::Command);
-    let in_insert = vs.ui.mode == Mode::Insert && !is_command_mode;
-    let show_filter = vs.ui.active_thread.is_none() && vs.ui.search.active;
+        cur_mode == Mode::Insert && cur_insert_context == Some(InsertContext::Command);
+    let in_insert = cur_mode == Mode::Insert && !is_command_mode;
+    let show_filter = matches!(&vs.ui, UiSnapshot::Inbox(s) if s.search.active);
 
     // Build layout constraints
     let mut constraints = vec![Constraint::Length(1)]; // tab bar
@@ -68,23 +72,27 @@ pub(crate) fn draw(
 
     let mut content_height: Option<usize> = None;
 
-    if vs.ui.screen == Screen::Settings {
-        crate::settings_view::draw_settings(frame, settings, theme, content_area);
-    } else if vs.ui.active_thread.is_some() {
-        // Build a ThreadView from broker-sourced data
-        let view = crate::types::ThreadView {
-            messages: vs.messages.clone(),
-            thinking: vs.turn.thinking,
-        };
-        content_height = Some(crate::thread_view::draw_thread(
-            frame,
-            &view,
-            vs.ui.scroll as u16,
-            theme,
-            content_area,
-        ));
-    } else {
-        crate::inbox_view::draw_inbox(frame, vs, theme, content_area);
+    match &vs.ui {
+        UiSnapshot::Settings(_) => {
+            crate::settings_view::draw_settings(frame, settings, theme, content_area);
+        }
+        UiSnapshot::Thread(snap) => {
+            // Build a ThreadView from broker-sourced data
+            let view = crate::types::ThreadView {
+                messages: vs.messages.clone(),
+                thinking: vs.turn.thinking,
+            };
+            content_height = Some(crate::thread_view::draw_thread(
+                frame,
+                &view,
+                snap.scroll as u16,
+                theme,
+                content_area,
+            ));
+        }
+        UiSnapshot::Inbox(_) => {
+            crate::inbox_view::draw_inbox(frame, vs, theme, content_area);
+        }
     }
 
     // Input box (only in insert mode)
@@ -103,7 +111,7 @@ pub(crate) fn draw(
         // Hide cursor when a modal overlay is active or in search context
         let show_cursor = vs.approval_pending.is_none()
             && vs.pending_customize.is_none()
-            && vs.ui.insert_context != Some(InsertContext::Search);
+            && cur_insert_context != Some(InsertContext::Search);
 
         if show_cursor {
             text_input_view.render(frame, input_area, theme.input_border, title);
@@ -113,7 +121,11 @@ pub(crate) fn draw(
                 .borders(Borders::TOP)
                 .border_style(theme.input_border)
                 .title(title);
-            let input = Paragraph::new(vs.ui.input.content.as_str()).block(input_block);
+            let input_content = match &vs.ui {
+                UiSnapshot::Thread(snap) => snap.input.content.as_str(),
+                _ => "",
+            };
+            let input = Paragraph::new(input_content).block(input_block);
             frame.render_widget(input, input_area);
         }
     }
@@ -129,14 +141,14 @@ pub(crate) fn draw(
 
     // Modal overlays
     if vs.show_shortcuts {
-        let mode_str = match vs.ui.mode {
+        let mode_str = match cur_mode {
             Mode::Normal => "normal",
             Mode::Insert => "insert",
         };
-        let screen_str = match vs.ui.screen {
-            Screen::Inbox => "inbox",
-            Screen::Thread => "thread",
-            Screen::Settings => "settings",
+        let screen_str = match &vs.ui {
+            UiSnapshot::Inbox(_) => "inbox",
+            UiSnapshot::Thread(_) => "thread",
+            UiSnapshot::Settings(_) => "settings",
         };
         crate::dialogs::draw_shortcuts_modal(frame, &vs.key_hints, mode_str, screen_str, theme);
     } else if let Some(customize) = vs.pending_customize {
@@ -164,10 +176,14 @@ fn draw_command_line(frame: &mut Frame, vs: &ViewState, _theme: &Theme, area: Re
         ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::BOLD),
     );
     // Editor-command mode uses the command buffer; app-level command mode uses the input
+    let input_content_for_cmd = match &vs.ui {
+        UiSnapshot::Thread(snap) => snap.input.content.as_str(),
+        _ => "",
+    };
     let text = if vs.editor_mode == crate::editor::EditorMode::Command {
         &vs.editor_command_buffer
     } else {
-        &vs.ui.input.content
+        input_content_for_cmd
     };
     let input = Span::raw(text);
     let line = Line::from(vec![prompt, input]);
@@ -190,8 +206,12 @@ fn draw_status_bar(
     theme: &Theme,
     area: Rect,
 ) {
-    let mode_badge = if vs.ui.mode == Mode::Insert {
-        let label = match vs.ui.insert_context {
+    let (cur_mode, cur_insert_context) = match &vs.ui {
+        UiSnapshot::Thread(snap) => (snap.mode, snap.insert_context),
+        _ => (Mode::Normal, None),
+    };
+    let mode_badge = if cur_mode == Mode::Insert {
+        let label = match cur_insert_context {
             Some(InsertContext::Compose) => " COMPOSE ",
             Some(InsertContext::Reply) => " REPLY ",
             Some(InsertContext::Search) => " SEARCH ",
@@ -203,7 +223,7 @@ fn draw_status_bar(
         Span::styled(" NORMAL ", theme.title_badge)
     };
 
-    let context_info = if vs.ui.active_thread.is_some() {
+    let context_info = if matches!(&vs.ui, UiSnapshot::Thread(_)) {
         format!(
             " {}in/{}out",
             vs.turn.tokens.input_tokens, vs.turn.tokens.output_tokens
@@ -213,7 +233,7 @@ fn draw_status_bar(
         format!(" {} thread{}", count, if count == 1 { "" } else { "s" })
     };
 
-    let hints: String = if vs.ui.screen == Screen::Settings {
+    let hints: String = if matches!(&vs.ui, UiSnapshot::Settings(_)) {
         settings_hints(settings)
     } else if vs.key_hints.is_empty() {
         String::new()

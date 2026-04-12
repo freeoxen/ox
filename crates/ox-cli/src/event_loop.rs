@@ -9,7 +9,10 @@ use crate::types::{APPROVAL_OPTIONS, CustomizeState};
 use crate::view_state::fetch_view_state;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
 use ox_path::oxpath;
-use ox_types::{InsertContext, Mode, PendingAction, Screen, UiCommand};
+use ox_types::{
+    GlobalCommand, InboxCommand, InsertContext, Mode, PendingAction, Screen, ThreadCommand,
+    UiCommand, UiSnapshot,
+};
 use ox_ui::text_input_store::EditSource;
 use std::time::Duration;
 use structfs_core_store::Writer as StructWriter;
@@ -48,7 +51,7 @@ pub async fn run_async(
     let mut settings = if needs_setup {
         // Navigate to settings screen via broker
         client
-            .write_typed(&oxpath!("ui"), &UiCommand::GoToSettings)
+            .write_typed(&oxpath!("ui"), &UiCommand::Global(GlobalCommand::GoToSettings))
             .await
             .ok();
         SettingsState::new_wizard()
@@ -120,25 +123,37 @@ pub async fn run_async(
             )
             .await;
 
+            // Extract state from the snapshot variant
+            let cur_mode = match &vs.ui {
+                UiSnapshot::Thread(snap) => snap.mode,
+                _ => Mode::Normal,
+            };
+
             // Detect mode transitions for InputSession sync
-            if vs.ui.mode != prev_mode {
-                if vs.ui.mode == Mode::Insert {
+            if cur_mode != prev_mode {
+                if cur_mode == Mode::Insert {
                     // Entering insert mode — initialize InputSession from broker
-                    input_session.init_from(vs.ui.input.content.clone(), vs.ui.input.cursor);
+                    if let UiSnapshot::Thread(snap) = &vs.ui {
+                        input_session
+                            .init_from(snap.input.content.clone(), snap.input.cursor);
+                    }
                     input_session.editor_mode = EditorMode::Insert;
                 } else if prev_mode == Mode::Insert {
                     // Exiting insert mode — flush any pending edits
                     flush_pending_edits(&mut input_session, client).await;
                 }
-                prev_mode = vs.ui.mode;
+                prev_mode = cur_mode;
             }
 
             // Set row_count in UiStore (for inbox navigation bounds)
             // Only write on inbox screen — thread screen has no row selection.
-            if vs.ui.screen == Screen::Inbox {
+            if matches!(&vs.ui, UiSnapshot::Inbox(_)) {
                 let row_count = vs.inbox_threads.len();
                 let _ = client
-                    .write_typed(&oxpath!("ui"), &UiCommand::SetRowCount { count: row_count })
+                    .write_typed(
+                        &oxpath!("ui"),
+                        &UiCommand::Inbox(InboxCommand::SetRowCount { count: row_count }),
+                    )
                     .await;
             }
 
@@ -153,34 +168,57 @@ pub async fn run_async(
             })?;
 
             // Update scroll_max and viewport_height in broker (after draw)
-            if vs.ui.active_thread.is_some() && viewport_height > 0 {
+            if matches!(&vs.ui, UiSnapshot::Thread(_)) && viewport_height > 0 {
                 let scroll_max = content_height.unwrap_or(0).saturating_sub(viewport_height);
                 let _ = client
-                    .write_typed(&oxpath!("ui"), &UiCommand::SetScrollMax { max: scroll_max })
+                    .write_typed(
+                        &oxpath!("ui"),
+                        &UiCommand::Thread(ThreadCommand::SetScrollMax { max: scroll_max }),
+                    )
                     .await;
 
                 let _ = client
                     .write_typed(
                         &oxpath!("ui"),
-                        &UiCommand::SetViewportHeight {
+                        &UiCommand::Thread(ThreadCommand::SetViewportHeight {
                             height: viewport_height,
-                        },
+                        }),
                     )
                     .await;
             }
 
             // Extract owned copies of data needed after vs is dropped
-            pending_action = vs.ui.pending_action;
-            screen_owned = vs.ui.screen;
-            mode_owned = vs.ui.mode;
-            insert_context_owned = vs.ui.insert_context;
-            has_active_thread = vs.ui.active_thread.is_some();
-            active_thread_id = vs.ui.active_thread.clone();
-            selected_thread_id = vs
-                .inbox_threads
-                .get(vs.ui.selected_row)
-                .map(|t| t.id.clone());
-            search_active = vs.ui.search.active;
+            pending_action = match &vs.ui {
+                UiSnapshot::Inbox(s) => s.pending_action,
+                UiSnapshot::Thread(s) => s.pending_action,
+                UiSnapshot::Settings(s) => s.pending_action,
+            };
+            screen_owned = match &vs.ui {
+                UiSnapshot::Inbox(_) => Screen::Inbox,
+                UiSnapshot::Thread(_) => Screen::Thread,
+                UiSnapshot::Settings(_) => Screen::Settings,
+            };
+            mode_owned = cur_mode;
+            insert_context_owned = match &vs.ui {
+                UiSnapshot::Thread(s) => s.insert_context,
+                _ => None,
+            };
+            has_active_thread = matches!(&vs.ui, UiSnapshot::Thread(_));
+            active_thread_id = match &vs.ui {
+                UiSnapshot::Thread(s) => Some(s.thread_id.clone()),
+                _ => None,
+            };
+            selected_thread_id = match &vs.ui {
+                UiSnapshot::Inbox(s) => vs
+                    .inbox_threads
+                    .get(s.selected_row)
+                    .map(|t| t.id.clone()),
+                _ => None,
+            };
+            search_active = match &vs.ui {
+                UiSnapshot::Inbox(s) => s.search.active,
+                _ => false,
+            };
             has_approval_pending = vs.approval_pending.is_some();
         }
         // vs is now dropped — safe to mutate app
@@ -193,17 +231,28 @@ pub async fn run_async(
                         flush_pending_edits(&mut input_session, client).await;
                         execute_command_input(&input_session.content, client).await;
                         let _ = client
-                            .write_typed(&oxpath!("ui"), &UiCommand::ClearInput)
+                            .write_typed(
+                                &oxpath!("ui"),
+                                &UiCommand::Thread(ThreadCommand::ClearInput),
+                            )
                             .await;
                         let _ = client
-                            .write_typed(&oxpath!("ui"), &UiCommand::ExitInsert)
+                            .write_typed(
+                                &oxpath!("ui"),
+                                &UiCommand::Thread(ThreadCommand::ExitInsert),
+                            )
                             .await;
                         input_session.reset_after_submit();
                     } else {
                         let new_tid = submit_editor_content(&mut input_session, app, client).await;
                         if let Some(tid) = new_tid {
                             let _ = client
-                                .write_typed(&oxpath!("ui"), &UiCommand::Open { thread_id: tid })
+                                .write_typed(
+                                    &oxpath!("ui"),
+                                    &UiCommand::Global(GlobalCommand::Open {
+                                        thread_id: tid,
+                                    }),
+                                )
                                 .await;
                         }
                     }
@@ -214,9 +263,9 @@ pub async fn run_async(
                         let _ = client
                             .write_typed(
                                 &oxpath!("ui"),
-                                &UiCommand::Open {
+                                &UiCommand::Global(GlobalCommand::Open {
                                     thread_id: id.clone(),
-                                },
+                                }),
                             )
                             .await;
                     }
@@ -233,7 +282,10 @@ pub async fn run_async(
             }
             // Clear the pending action
             let _ = client
-                .write_typed(&oxpath!("ui"), &UiCommand::ClearPendingAction)
+                .write_typed(
+                    &oxpath!("ui"),
+                    &UiCommand::Global(GlobalCommand::ClearPendingAction),
+                )
                 .await;
         }
 
@@ -290,16 +342,6 @@ pub async fn run_async(
                     }
                     // Normal + Insert — dispatch through broker
                     else if let Some(key_str) = encode_key(key.modifiers, key.code) {
-                        let mode_str = match mode_owned {
-                            Mode::Normal => "normal",
-                            Mode::Insert => "insert",
-                        };
-                        let screen_str = match screen_owned {
-                            Screen::Inbox => "inbox",
-                            Screen::Thread => "thread",
-                            Screen::Settings => "settings",
-                        };
-
                         // Settings screen — all key handling
                         if screen_owned == Screen::Settings && mode_owned == Mode::Normal {
                             let inbox_root = app.pool.inbox_root().to_path_buf();
@@ -345,9 +387,13 @@ pub async fn run_async(
 
                         // Try InputStore dispatch
                         let result = client
-                            .write(
+                            .write_typed(
                                 &oxpath!("input", "key"),
-                                cmd!("mode" => mode_str, "key" => key_str.clone(), "screen" => screen_str),
+                                &ox_types::InputKeyEvent {
+                                    mode: mode_owned,
+                                    key: key_str.clone(),
+                                    screen: screen_owned,
+                                },
                             )
                             .await;
 
@@ -502,22 +548,34 @@ async fn dispatch_mouse_owned(
         MouseEventKind::ScrollUp => {
             if has_active_thread {
                 let _ = client
-                    .write_typed(&oxpath!("ui"), &UiCommand::ScrollUp)
+                    .write_typed(
+                        &oxpath!("ui"),
+                        &UiCommand::Thread(ThreadCommand::ScrollUp),
+                    )
                     .await;
             } else {
                 let _ = client
-                    .write_typed(&oxpath!("ui"), &UiCommand::SelectPrev)
+                    .write_typed(
+                        &oxpath!("ui"),
+                        &UiCommand::Inbox(InboxCommand::SelectPrev),
+                    )
                     .await;
             }
         }
         MouseEventKind::ScrollDown => {
             if has_active_thread {
                 let _ = client
-                    .write_typed(&oxpath!("ui"), &UiCommand::ScrollDown)
+                    .write_typed(
+                        &oxpath!("ui"),
+                        &UiCommand::Thread(ThreadCommand::ScrollDown),
+                    )
                     .await;
             } else {
                 let _ = client
-                    .write_typed(&oxpath!("ui"), &UiCommand::SelectNext)
+                    .write_typed(
+                        &oxpath!("ui"),
+                        &UiCommand::Inbox(InboxCommand::SelectNext),
+                    )
                     .await;
             }
         }
@@ -538,22 +596,34 @@ async fn dispatch_search_edit(
     match (modifiers, code) {
         (_, KeyCode::Enter) => {
             let _ = client
-                .write_typed(&oxpath!("ui"), &UiCommand::SearchSaveChip)
+                .write_typed(
+                    &oxpath!("ui"),
+                    &UiCommand::Inbox(InboxCommand::SearchSaveChip),
+                )
                 .await;
         }
         (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
             let _ = client
-                .write_typed(&oxpath!("ui"), &UiCommand::SearchClear)
+                .write_typed(
+                    &oxpath!("ui"),
+                    &UiCommand::Inbox(InboxCommand::SearchClear),
+                )
                 .await;
         }
         (_, KeyCode::Backspace) => {
             let _ = client
-                .write_typed(&oxpath!("ui"), &UiCommand::SearchDeleteChar)
+                .write_typed(
+                    &oxpath!("ui"),
+                    &UiCommand::Inbox(InboxCommand::SearchDeleteChar),
+                )
                 .await;
         }
         (_, KeyCode::Char(c)) => {
             let _ = client
-                .write_typed(&oxpath!("ui"), &UiCommand::SearchInsertChar { char: c })
+                .write_typed(
+                    &oxpath!("ui"),
+                    &UiCommand::Inbox(InboxCommand::SearchInsertChar { char: c }),
+                )
                 .await;
         }
         _ => {}

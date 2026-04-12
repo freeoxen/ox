@@ -5,7 +5,7 @@
 //! This decouples rendering from mutable App access and broker writes.
 
 use ox_broker::ClientHandle;
-use ox_types::{ApprovalRequest, Mode, Screen, UiSnapshot};
+use ox_types::{ApprovalRequest, Mode, UiSnapshot};
 use structfs_core_store::{Value, path};
 
 use crate::app::App;
@@ -74,14 +74,14 @@ pub async fn fetch_view_state<'a>(
         .flatten()
         .unwrap_or_default();
 
-    // Conditional reads based on screen
+    // Conditional reads based on screen variant
     let mut inbox_threads = Vec::new();
     let mut messages = Vec::new();
     let mut turn = ox_history::TurnState::new();
     let mut approval_pending: Option<ApprovalRequest> = None;
 
-    match ui.screen {
-        Screen::Inbox => {
+    match &ui {
+        UiSnapshot::Inbox(_) => {
             // Read inbox threads
             if let Ok(Some(record)) = client.read(&path!("inbox/threads")).await {
                 if let Some(val) = record.as_value() {
@@ -89,33 +89,32 @@ pub async fn fetch_view_state<'a>(
                 }
             }
         }
-        Screen::Thread => {
-            if let Some(tid) = &ui.active_thread {
-                // Read committed messages
-                let msg_path = ox_path::oxpath!("threads", tid, "history", "messages");
-                if let Ok(Some(record)) = client.read(&msg_path).await {
-                    if let Some(Value::Array(arr)) = record.as_value() {
-                        messages = parse_chat_messages(arr);
-                    }
+        UiSnapshot::Thread(snap) => {
+            let tid = &snap.thread_id;
+            // Read committed messages
+            let msg_path = ox_path::oxpath!("threads", tid, "history", "messages");
+            if let Ok(Some(record)) = client.read(&msg_path).await {
+                if let Some(Value::Array(arr)) = record.as_value() {
+                    messages = parse_chat_messages(arr);
                 }
+            }
 
-                // Read turn state (typed)
-                let turn_path = ox_path::oxpath!("threads", tid, "history", "turn");
-                if let Ok(Some(t)) = client.read_typed::<ox_history::TurnState>(&turn_path).await {
-                    turn = t;
-                }
+            // Read turn state (typed)
+            let turn_path = ox_path::oxpath!("threads", tid, "history", "turn");
+            if let Ok(Some(t)) = client.read_typed::<ox_history::TurnState>(&turn_path).await {
+                turn = t;
+            }
 
-                // Read approval/pending (typed)
-                let approval_path = ox_path::oxpath!("threads", tid, "approval", "pending");
-                if let Ok(Some(ap)) = client.read_typed::<ApprovalRequest>(&approval_path).await {
-                    // Only treat as pending if the tool_name is non-empty
-                    if !ap.tool_name.is_empty() {
-                        approval_pending = Some(ap);
-                    }
+            // Read approval/pending (typed)
+            let approval_path = ox_path::oxpath!("threads", tid, "approval", "pending");
+            if let Ok(Some(ap)) = client.read_typed::<ApprovalRequest>(&approval_path).await {
+                // Only treat as pending if the tool_name is non-empty
+                if !ap.tool_name.is_empty() {
+                    approval_pending = Some(ap);
                 }
             }
         }
-        Screen::Settings => {}
+        UiSnapshot::Settings(_) => {}
     }
 
     // Read model and default account from broker ConfigStore
@@ -135,14 +134,16 @@ pub async fn fetch_view_state<'a>(
     };
 
     // Read bindings for current mode+screen to build key hints
-    let mode_str = match ui.mode {
-        Mode::Normal => "normal",
-        Mode::Insert => "insert",
-    };
-    let screen_str = match ui.screen {
-        Screen::Inbox => "inbox",
-        Screen::Thread => "thread",
-        Screen::Settings => "settings",
+    let (mode_str, screen_str) = match &ui {
+        UiSnapshot::Inbox(_) => ("normal", "inbox"),
+        UiSnapshot::Thread(snap) => (
+            match snap.mode {
+                Mode::Normal => "normal",
+                Mode::Insert => "insert",
+            },
+            "thread",
+        ),
+        UiSnapshot::Settings(_) => ("normal", "settings"),
     };
     let key_hints = read_key_hints(client, mode_str, screen_str).await;
 

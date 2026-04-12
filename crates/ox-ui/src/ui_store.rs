@@ -743,6 +743,126 @@ impl UiStore {
             }
         }
     }
+
+    fn dispatch_command(&mut self, cmd: UiCommand) -> Result<Path, StoreError> {
+        match cmd {
+            UiCommand::Global(g) => self.handle_global(g),
+            UiCommand::Inbox(i) => self.handle_inbox(i),
+            UiCommand::Thread(t) => self.handle_thread(t),
+            UiCommand::Settings(s) => self.handle_settings(s),
+        }
+    }
+
+    /// Map a legacy path-based command name + args to a UiCommand.
+    ///
+    /// The command dispatch chain (InputStore → CommandStore → UiStore) sends
+    /// writes to paths like "select_next", "scroll_down", "open", etc. This
+    /// method translates those into the typed UiCommand enum.
+    fn resolve_path_command(
+        &self,
+        name: &str,
+        value: &Value,
+    ) -> Result<UiCommand, StoreError> {
+        let map = match value {
+            Value::Map(m) => m,
+            _ => &BTreeMap::new(),
+        };
+
+        fn get_str(map: &BTreeMap<String, Value>, key: &str) -> Option<String> {
+            match map.get(key) {
+                Some(Value::String(s)) => Some(s.clone()),
+                _ => None,
+            }
+        }
+        fn get_usize(map: &BTreeMap<String, Value>, key: &str) -> Option<usize> {
+            match map.get(key) {
+                Some(Value::Integer(n)) => Some(*n as usize),
+                _ => None,
+            }
+        }
+        fn get_char(map: &BTreeMap<String, Value>, key: &str) -> Option<char> {
+            get_str(map, key).and_then(|s| s.chars().next())
+        }
+
+        let err = |msg: &str| StoreError::store("ui", "path_command", msg.to_string());
+
+        match name {
+            // Global commands
+            "quit" => Ok(UiCommand::Global(GlobalCommand::Quit)),
+            "open" => Ok(UiCommand::Global(GlobalCommand::Open {
+                thread_id: get_str(map, "thread_id").ok_or_else(|| err("missing thread_id"))?,
+            })),
+            "close" => Ok(UiCommand::Global(GlobalCommand::Close)),
+            "go_to_settings" => Ok(UiCommand::Global(GlobalCommand::GoToSettings)),
+            "go_to_inbox" => Ok(UiCommand::Global(GlobalCommand::GoToInbox)),
+            "set_status" => Ok(UiCommand::Global(GlobalCommand::SetStatus {
+                text: get_str(map, "text").unwrap_or_default(),
+            })),
+            "clear_pending_action" => Ok(UiCommand::Global(GlobalCommand::ClearPendingAction)),
+
+            // Inbox commands
+            "select_next" => Ok(UiCommand::Inbox(InboxCommand::SelectNext)),
+            "select_prev" => Ok(UiCommand::Inbox(InboxCommand::SelectPrev)),
+            "select_first" => Ok(UiCommand::Inbox(InboxCommand::SelectFirst)),
+            "select_last" => Ok(UiCommand::Inbox(InboxCommand::SelectLast)),
+            "set_row_count" => Ok(UiCommand::Inbox(InboxCommand::SetRowCount {
+                count: get_usize(map, "count").ok_or_else(|| err("missing count"))?,
+            })),
+            "open_selected" => Ok(UiCommand::Inbox(InboxCommand::OpenSelected)),
+            "archive_selected" => Ok(UiCommand::Inbox(InboxCommand::ArchiveSelected)),
+            "search_insert_char" => Ok(UiCommand::Inbox(InboxCommand::SearchInsertChar {
+                char: get_char(map, "char").ok_or_else(|| err("missing char"))?,
+            })),
+            "search_delete_char" => Ok(UiCommand::Inbox(InboxCommand::SearchDeleteChar)),
+            "search_clear" => Ok(UiCommand::Inbox(InboxCommand::SearchClear)),
+            "search_save_chip" => Ok(UiCommand::Inbox(InboxCommand::SearchSaveChip)),
+            "search_dismiss_chip" => Ok(UiCommand::Inbox(InboxCommand::SearchDismissChip {
+                index: get_usize(map, "index").ok_or_else(|| err("missing index"))?,
+            })),
+
+            // Thread commands
+            "scroll_up" => Ok(UiCommand::Thread(ThreadCommand::ScrollUp)),
+            "scroll_down" => Ok(UiCommand::Thread(ThreadCommand::ScrollDown)),
+            "scroll_to_top" => Ok(UiCommand::Thread(ThreadCommand::ScrollToTop)),
+            "scroll_to_bottom" => Ok(UiCommand::Thread(ThreadCommand::ScrollToBottom)),
+            "scroll_page_up" => Ok(UiCommand::Thread(ThreadCommand::ScrollPageUp)),
+            "scroll_page_down" => Ok(UiCommand::Thread(ThreadCommand::ScrollPageDown)),
+            "scroll_half_page_up" => Ok(UiCommand::Thread(ThreadCommand::ScrollHalfPageUp)),
+            "scroll_half_page_down" => Ok(UiCommand::Thread(ThreadCommand::ScrollHalfPageDown)),
+            "set_scroll_max" => Ok(UiCommand::Thread(ThreadCommand::SetScrollMax {
+                max: get_usize(map, "max").ok_or_else(|| err("missing max"))?,
+            })),
+            "set_viewport_height" => Ok(UiCommand::Thread(ThreadCommand::SetViewportHeight {
+                height: get_usize(map, "height").ok_or_else(|| err("missing height"))?,
+            })),
+            "enter_insert" => {
+                let ctx_str = get_str(map, "context").ok_or_else(|| err("missing context"))?;
+                let context: InsertContext =
+                    serde_json::from_value(serde_json::Value::String(ctx_str)).map_err(|e| {
+                        StoreError::store("ui", "path_command", format!("bad context: {e}"))
+                    })?;
+                Ok(UiCommand::Thread(ThreadCommand::EnterInsert { context }))
+            }
+            "exit_insert" => Ok(UiCommand::Thread(ThreadCommand::ExitInsert)),
+            "set_input" => Ok(UiCommand::Thread(ThreadCommand::SetInput {
+                content: get_str(map, "text").unwrap_or_default(),
+                cursor: get_usize(map, "cursor").unwrap_or(0),
+            })),
+            "clear_input" => Ok(UiCommand::Thread(ThreadCommand::ClearInput)),
+            "send_input" => Ok(UiCommand::Thread(ThreadCommand::SendInput)),
+
+            // Modal commands (no-ops for now, kept for backward compat)
+            "show_modal" | "dismiss_modal" => {
+                Ok(UiCommand::Global(GlobalCommand::ClearPendingAction))
+            }
+
+            _ => Err(StoreError::store(
+                "ui",
+                "path_command",
+                format!("unknown command path: {name}"),
+            )),
+        }
+    }
 }
 
 impl Default for UiStore {
@@ -813,6 +933,16 @@ impl Writer for UiStore {
             return self.text_input_store.write(&sub, data);
         }
 
+        // Path-based routing: command dispatch chain sends writes to paths
+        // like "select_next", "scroll_down", etc. Map these to UiCommand.
+        if !to.is_empty() {
+            let value = data.as_value().ok_or_else(|| {
+                StoreError::store("ui", "write", "write data must contain a value")
+            })?;
+            let cmd = self.resolve_path_command(&to.components[0], value)?;
+            return self.dispatch_command(cmd);
+        }
+
         let value = data
             .as_value()
             .ok_or_else(|| StoreError::store("ui", "write", "write data must contain a value"))?;
@@ -825,12 +955,7 @@ impl Writer for UiStore {
             )
         })?;
 
-        match cmd {
-            UiCommand::Global(g) => self.handle_global(g),
-            UiCommand::Inbox(i) => self.handle_inbox(i),
-            UiCommand::Thread(t) => self.handle_thread(t),
-            UiCommand::Settings(s) => self.handle_settings(s),
-        }
+        self.dispatch_command(cmd)
     }
 }
 

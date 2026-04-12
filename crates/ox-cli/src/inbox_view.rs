@@ -8,11 +8,17 @@ use ratatui::widgets::Paragraph;
 /// Render the inbox thread list into `area`.
 /// Uses `vs.inbox_threads` (fetched from broker each frame).
 pub fn draw_inbox(frame: &mut Frame, vs: &ViewState, theme: &Theme, area: Rect) {
+    use ox_types::UiSnapshot;
+
+    let snap = match &vs.ui {
+        UiSnapshot::Inbox(s) => s,
+        _ => return,
+    };
     let threads = &vs.inbox_threads;
 
     if threads.is_empty() {
         let empty = Paragraph::new(Line::from(Span::styled(
-            if vs.ui.search.active {
+            if snap.search.active {
                 "  No threads match the current filter"
             } else {
                 "  No threads — press i to compose"
@@ -26,13 +32,13 @@ pub fn draw_inbox(frame: &mut Frame, vs: &ViewState, theme: &Theme, area: Rect) 
     let row_height = 2usize; // 2 lines per thread row
     let visible_rows = (area.height as usize) / row_height;
 
-    // Use scroll as inbox scroll offset (unified scroll)
-    let inbox_scroll = vs.ui.scroll;
+    // Use selected_row to compute scroll offset for inbox
+    let inbox_scroll = snap.selected_row.saturating_sub(visible_rows.saturating_sub(1));
 
     let mut lines: Vec<Line> = Vec::new();
     let end = (inbox_scroll + visible_rows).min(threads.len());
     for (i, thread) in threads.iter().enumerate().take(end).skip(inbox_scroll) {
-        let is_selected = i == vs.ui.selected_row;
+        let is_selected = i == snap.selected_row;
         let base_style = if is_selected {
             theme.selected_bg
         } else {
@@ -105,14 +111,20 @@ pub fn draw_inbox(frame: &mut Frame, vs: &ViewState, theme: &Theme, area: Rect) 
 
 /// Render the search/filter bar.
 pub fn draw_filter_bar(frame: &mut Frame, vs: &ViewState, theme: &Theme, area: Rect) {
+    use ox_types::UiSnapshot;
+
+    let snap = match &vs.ui {
+        UiSnapshot::Inbox(s) => s,
+        _ => return,
+    };
     let mut spans = vec![Span::styled("/ ", theme.tool_name)];
-    for (i, chip) in vs.ui.search.chips.iter().enumerate() {
+    for (i, chip) in snap.search.chips.iter().enumerate() {
         spans.push(Span::styled(
             format!("[{}: {}] ", i + 1, chip),
             theme.tool_meta,
         ));
     }
-    spans.push(Span::styled(&vs.ui.search.live_query, theme.user_text));
+    spans.push(Span::styled(&snap.search.live_query, theme.user_text));
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 

@@ -3,7 +3,7 @@
 use crate::settings_state::{DIALECTS, SettingsFocus, SettingsState, TestStatus};
 use crate::shell::Outcome;
 use ox_path::oxpath;
-use ox_types::UiCommand;
+use ox_types::{GlobalCommand, UiCommand};
 use structfs_core_store::{Record, Value};
 
 /// Handle a key event on the Settings screen (normal mode).
@@ -438,7 +438,7 @@ async fn handle_navigation_key(
         "Enter" if settings.wizard == Some(crate::settings_state::WizardStep::Done) => {
             settings.wizard = None;
             client
-                .write_typed(&oxpath!("ui"), &UiCommand::GoToInbox)
+                .write_typed(&oxpath!("ui"), &UiCommand::Global(GlobalCommand::GoToInbox))
                 .await
                 .ok();
             true
@@ -557,7 +557,7 @@ async fn handle_navigation_key(
             // Allow skipping wizard — go to inbox
             settings.wizard = None;
             client
-                .write_typed(&oxpath!("ui"), &UiCommand::GoToInbox)
+                .write_typed(&oxpath!("ui"), &UiCommand::Global(GlobalCommand::GoToInbox))
                 .await
                 .ok();
             true
