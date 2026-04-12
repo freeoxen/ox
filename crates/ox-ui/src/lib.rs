@@ -5,6 +5,7 @@
 //! (preconditions + txn deduplication).
 
 pub mod approval_store;
+pub mod builtin_commands;
 pub mod command;
 pub mod command_def;
 pub mod config_store;
@@ -13,6 +14,7 @@ pub mod text_input_store;
 pub mod ui_store;
 
 pub use approval_store::ApprovalStore;
+pub use builtin_commands::builtin_commands;
 pub use command::{Command, TxnLog};
 pub use command_def::{
     CommandDef, CommandError, CommandInvocation, ParamDef, ParamKind, StaticCommandDef,
