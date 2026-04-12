@@ -40,6 +40,19 @@ pub async fn setup(
     // Mount UiStore
     servers.push(broker.mount(path!("ui"), UiStore::new()).await);
 
+    // Mount CommandStore with broker-connected dispatcher
+    {
+        let command_dispatch_client = broker.client();
+        let mut command_store = ox_ui::CommandStore::from_builtins();
+        command_store.set_dispatcher(Box::new(move |target, data| {
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current()
+                    .block_on(command_dispatch_client.write(target, data))
+            })
+        }));
+        servers.push(broker.mount(path!("command"), command_store).await);
+    }
+
     // Mount InputStore with broker-connected dispatcher
     let dispatch_client = broker.client();
     let mut input = InputStore::new(bindings);
@@ -112,6 +125,28 @@ mod tests {
             Value::String("test-key".into()),
         );
         setup(test_inbox(), bindings, test_inbox_root(), config).await
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn command_store_is_mounted() {
+        let handle = test_setup().await;
+        let client = handle.client();
+
+        let result = client.read(&path!("command/commands")).await.unwrap();
+        assert!(result.is_some());
+        match result.unwrap().as_value().unwrap() {
+            Value::Array(arr) => assert!(!arr.is_empty()),
+            _ => panic!("expected array"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn command_store_reads_single_command() {
+        let handle = test_setup().await;
+        let client = handle.client();
+
+        let result = client.read(&path!("command/commands/quit")).await.unwrap();
+        assert!(result.is_some());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
