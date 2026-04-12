@@ -84,8 +84,10 @@ pub struct ViewState<'a> {
     pub key_hints: Vec<(String, String)>,
     /// Whether the shortcuts modal is showing.
     pub show_shortcuts: bool,
-    /// Editor sub-mode within compose/reply input (insert vs normal).
+    /// Editor sub-mode within compose/reply input (insert vs normal vs command).
     pub editor_mode: crate::event_loop::EditorMode,
+    /// Editor command buffer (for `:` prompt within editor).
+    pub editor_command_buffer: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -101,6 +103,7 @@ pub async fn fetch_view_state<'a>(
     app: &'a App,
     dialog: &'a crate::event_loop::DialogState,
     editor_mode: crate::event_loop::EditorMode,
+    editor_command_buffer: &str,
 ) -> ViewState<'a> {
     // Read UiStore state
     let ui_state = match client.read(&path!("ui")).await {
@@ -327,6 +330,7 @@ pub async fn fetch_view_state<'a>(
         key_hints,
         show_shortcuts: dialog.show_shortcuts,
         editor_mode,
+        editor_command_buffer: editor_command_buffer.to_string(),
     }
 }
 

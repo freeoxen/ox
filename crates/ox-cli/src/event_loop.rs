@@ -19,6 +19,8 @@ pub(crate) enum EditorMode {
     Insert,
     /// Vim-style navigation — hjkl, w/b, 0/$, i/a to re-enter insert.
     Normal,
+    /// Command prompt within the editor (`:` line at bottom).
+    Command,
 }
 
 struct InputSession {
@@ -27,6 +29,8 @@ struct InputSession {
     pending_edits: Vec<Edit>,
     generation: u64,
     editor_mode: EditorMode,
+    /// Buffer for the editor command prompt (`:q`, `:w`, etc.)
+    command_buffer: String,
 }
 
 impl InputSession {
@@ -37,6 +41,7 @@ impl InputSession {
             pending_edits: Vec::new(),
             generation: 0,
             editor_mode: EditorMode::Insert,
+            command_buffer: String::new(),
         }
     }
 
@@ -231,7 +236,14 @@ pub async fn run_async(
         let mut content_height: Option<usize> = None;
         let mut viewport_height: usize = 0;
         {
-            let vs = fetch_view_state(client, app, &dialog, input_session.editor_mode).await;
+            let vs = fetch_view_state(
+                client,
+                app,
+                &dialog,
+                input_session.editor_mode,
+                &input_session.command_buffer,
+            )
+            .await;
 
             // Detect mode transitions for InputSession sync
             if vs.mode != prev_mode {
@@ -1156,16 +1168,27 @@ pub async fn run_async(
                             continue;
                         }
 
-                        // In editor-insert mode (compose/reply), intercept ESC
-                        // to transition to editor-normal instead of exiting insert
+                        // In editor sub-modes (compose/reply), intercept ESC
+                        // before the InputStore can fire ui/exit_insert
                         if mode == "insert"
                             && key_str == "Esc"
-                            && input_session.editor_mode == EditorMode::Insert
                             && insert_context_owned.as_deref() != Some("search")
                             && insert_context_owned.as_deref() != Some("command")
                         {
-                            input_session.editor_mode = EditorMode::Normal;
-                            continue;
+                            match input_session.editor_mode {
+                                EditorMode::Insert => {
+                                    input_session.editor_mode = EditorMode::Normal;
+                                    continue;
+                                }
+                                EditorMode::Command => {
+                                    input_session.command_buffer.clear();
+                                    input_session.editor_mode = EditorMode::Normal;
+                                    continue;
+                                }
+                                EditorMode::Normal => {
+                                    // Let ESC fall through to InputStore → ui/exit_insert
+                                }
+                            }
                         }
 
                         // Try InputStore dispatch
@@ -1205,6 +1228,15 @@ pub async fn run_async(
                                             app,
                                             client,
                                             tw,
+                                            key.code,
+                                        )
+                                        .await;
+                                    }
+                                    EditorMode::Command => {
+                                        handle_editor_command_key(
+                                            &mut input_session,
+                                            app,
+                                            client,
                                             key.code,
                                         )
                                         .await;
@@ -1656,6 +1688,140 @@ async fn handle_editor_normal_key(
             }
         }
 
+        // -- Command prompt --
+        KeyCode::Char(':') | KeyCode::Char(';') => {
+            session.command_buffer.clear();
+            session.editor_mode = EditorMode::Command;
+        }
+
+        _ => {}
+    }
+}
+
+/// Handle a key in editor-command mode (`:` prompt within the editor).
+async fn handle_editor_command_key(
+    session: &mut InputSession,
+    app: &mut crate::app::App,
+    client: &ox_broker::ClientHandle,
+    code: KeyCode,
+) {
+    match code {
+        KeyCode::Esc => {
+            session.command_buffer.clear();
+            session.editor_mode = EditorMode::Normal;
+        }
+        KeyCode::Enter => {
+            let cmd = session.command_buffer.trim().to_string();
+            session.command_buffer.clear();
+            session.editor_mode = EditorMode::Normal;
+
+            match cmd.as_str() {
+                "q" | "quit" => {
+                    // Exit the editor (back to app normal mode)
+                    let _ = client
+                        .write(&structfs_core_store::path!("ui/clear_input"), cmd!())
+                        .await;
+                    let _ = client
+                        .write(&structfs_core_store::path!("ui/exit_insert"), cmd!())
+                        .await;
+                    session.reset_after_submit();
+                }
+                "w" | "write" => {
+                    // Send the input
+                    flush_pending_edits(session, client).await;
+                    let text = session.content.clone();
+                    // Read current context to determine compose vs reply
+                    let ctx = client
+                        .read(&structfs_core_store::path!("ui/insert_context"))
+                        .await
+                        .ok()
+                        .flatten()
+                        .and_then(|r| match r.as_value() {
+                            Some(structfs_core_store::Value::String(s)) => Some(s.clone()),
+                            _ => None,
+                        });
+                    let active = client
+                        .read(&structfs_core_store::path!("ui/active_thread"))
+                        .await
+                        .ok()
+                        .flatten()
+                        .and_then(|r| match r.as_value() {
+                            Some(structfs_core_store::Value::String(s)) => Some(s.clone()),
+                            _ => None,
+                        });
+                    let new_tid =
+                        app.send_input_with_text(text, "insert", ctx.as_deref(), active.as_deref());
+                    let _ = client
+                        .write(&structfs_core_store::path!("ui/clear_input"), cmd!())
+                        .await;
+                    let _ = client
+                        .write(&structfs_core_store::path!("ui/exit_insert"), cmd!())
+                        .await;
+                    session.reset_after_submit();
+                    if let Some(tid) = new_tid {
+                        let _ = client
+                            .write(
+                                &structfs_core_store::path!("ui/open"),
+                                cmd!("thread_id" => tid),
+                            )
+                            .await;
+                    }
+                }
+                "wq" | "x" => {
+                    // Send and quit (same as :w then :q)
+                    flush_pending_edits(session, client).await;
+                    let text = session.content.clone();
+                    let ctx = client
+                        .read(&structfs_core_store::path!("ui/insert_context"))
+                        .await
+                        .ok()
+                        .flatten()
+                        .and_then(|r| match r.as_value() {
+                            Some(structfs_core_store::Value::String(s)) => Some(s.clone()),
+                            _ => None,
+                        });
+                    let active = client
+                        .read(&structfs_core_store::path!("ui/active_thread"))
+                        .await
+                        .ok()
+                        .flatten()
+                        .and_then(|r| match r.as_value() {
+                            Some(structfs_core_store::Value::String(s)) => Some(s.clone()),
+                            _ => None,
+                        });
+                    let new_tid =
+                        app.send_input_with_text(text, "insert", ctx.as_deref(), active.as_deref());
+                    let _ = client
+                        .write(&structfs_core_store::path!("ui/clear_input"), cmd!())
+                        .await;
+                    let _ = client
+                        .write(&structfs_core_store::path!("ui/exit_insert"), cmd!())
+                        .await;
+                    session.reset_after_submit();
+                    if let Some(tid) = new_tid {
+                        let _ = client
+                            .write(
+                                &structfs_core_store::path!("ui/open"),
+                                cmd!("thread_id" => tid),
+                            )
+                            .await;
+                    }
+                }
+                other => {
+                    // Unknown command — try dispatching through CommandStore
+                    execute_command_input(other, client).await;
+                }
+            }
+        }
+        KeyCode::Backspace => {
+            session.command_buffer.pop();
+            if session.command_buffer.is_empty() {
+                session.editor_mode = EditorMode::Normal;
+            }
+        }
+        KeyCode::Char(c) => {
+            session.command_buffer.push(c);
+        }
         _ => {}
     }
 }

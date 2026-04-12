@@ -118,7 +118,9 @@ pub(crate) fn draw(
 
     // Status bar / command line
     let status_area = chunks[idx];
-    if is_command_mode {
+    let show_command_line =
+        is_command_mode || vs.editor_mode == crate::event_loop::EditorMode::Command;
+    if show_command_line {
         draw_command_line(frame, vs, theme, status_area);
     } else {
         draw_status_bar(frame, vs, settings, theme, status_area);
@@ -145,12 +147,17 @@ fn draw_command_line(frame: &mut Frame, vs: &ViewState, _theme: &Theme, area: Re
         ":",
         ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::BOLD),
     );
-    let input = Span::raw(&vs.input);
+    // Editor-command mode uses the command buffer; app-level command mode uses the input
+    let text = if vs.editor_mode == crate::event_loop::EditorMode::Command {
+        &vs.editor_command_buffer
+    } else {
+        &vs.input
+    };
+    let input = Span::raw(text);
     let line = Line::from(vec![prompt, input]);
     frame.render_widget(Paragraph::new(line), area);
 
-    // Place cursor after the input text
-    let cursor_x = area.x + 1 + vs.input.len() as u16;
+    let cursor_x = area.x + 1 + text.len() as u16;
     if cursor_x < area.x + area.width {
         frame.set_cursor_position((cursor_x, area.y));
     }
