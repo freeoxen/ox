@@ -9,6 +9,7 @@ pub mod builtin_commands;
 pub mod command;
 pub mod command_def;
 pub mod command_registry;
+pub mod command_store;
 pub mod config_store;
 pub mod input_store;
 pub mod text_input_store;
@@ -22,6 +23,7 @@ pub use command_def::{
     StaticParamDef, StaticParamKind,
 };
 pub use command_registry::CommandRegistry;
+pub use command_store::CommandStore;
 pub use config_store::ConfigStore;
 pub use input_store::{Action, ActionField, Binding, BindingContext, InputStore};
 pub use text_input_store::TextInputStore;
