@@ -163,14 +163,14 @@ fn normal_mode(out: &mut Vec<Binding>) {
     // Enter insert mode — screen determines context
     out.push(bind_screen(
         "normal",
-        "i",
+        "c",
         "inbox",
         cmd_with("ui/enter_insert", vec![static_field("context", "compose")]),
         "Compose new thread",
     ));
     out.push(bind_screen(
         "normal",
-        "i",
+        "c",
         "thread",
         cmd_with("ui/enter_insert", vec![static_field("context", "reply")]),
         "Reply in thread",
@@ -344,7 +344,7 @@ fn insert_mode(out: &mut Vec<Binding>) {
     out.push(bind("insert", "Ctrl+Enter", cmd("ui/send_input"), "Send"));
     out.push(bind(
         "insert",
-        "Esc",
+        "Ctrl+q",
         cmd("ui/exit_insert"),
         "Exit insert mode",
     ));
