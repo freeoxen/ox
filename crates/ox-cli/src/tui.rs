@@ -1,10 +1,10 @@
+use crate::text_input_view::desired_input_height;
 use crate::theme::Theme;
 use crate::view_state::ViewState;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
-use crate::text_input_view::desired_input_height;
 
 // ---------------------------------------------------------------------------
 // Draw — composed view
@@ -30,7 +30,11 @@ pub(crate) fn draw(
     }
     constraints.push(Constraint::Min(1)); // content
     let _input_height = if in_insert {
-        let h = desired_input_height(text_input_view.content(), frame.area().width, text_input_view.height_override());
+        let h = desired_input_height(
+            text_input_view.content(),
+            frame.area().width,
+            text_input_view.height_override(),
+        );
         constraints.push(Constraint::Length(h));
         h
     } else {
@@ -156,20 +160,17 @@ fn draw_status_bar(
 
     let hints: String = if vs.screen == "settings" {
         settings_hints(settings)
+    } else if vs.key_hints.is_empty() {
+        String::new()
     } else {
-        match (
-            vs.mode.as_str(),
-            vs.insert_context.as_deref(),
-            vs.active_thread.is_some(),
-        ) {
-            ("normal", _, false) => {
-                " | i compose | / search | s settings | Enter open | d archive | q quit".into()
-            }
-            ("normal", _, true) => " | i reply | j/k scroll | q/Esc inbox".into(),
-            ("insert", Some("search"), _) => " | Enter chip | Esc cancel".into(),
-            ("insert", _, _) => " | ^Enter send | Esc cancel".into(),
-            _ => String::new(),
+        let mut s = String::new();
+        for (key, desc) in &vs.key_hints {
+            s.push_str(" | ");
+            s.push_str(key);
+            s.push(' ');
+            s.push_str(desc);
         }
+        s
     };
 
     let status_line = Line::from(vec![

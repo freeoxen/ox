@@ -79,6 +79,9 @@ pub struct ViewState<'a> {
     pub pending_customize: &'a Option<CustomizeState>,
     /// Insert context from broker (e.g. "compose", "reply", "search"), or None in normal mode.
     pub insert_context: Option<String>,
+    /// Key hints for the status bar, derived from bindings for the current mode+screen.
+    /// Each entry is (key_label, description).
+    pub key_hints: Vec<(String, String)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -287,6 +290,9 @@ pub async fn fetch_view_state<'a>(
         _ => String::new(),
     };
 
+    // Read bindings for current mode+screen to build key hints
+    let key_hints = read_key_hints(client, &mode, &screen).await;
+
     ViewState {
         screen,
         mode,
@@ -313,5 +319,41 @@ pub async fn fetch_view_state<'a>(
         approval_selected: dialog.approval_selected,
         pending_customize: &dialog.pending_customize,
         insert_context,
+        key_hints,
     }
+}
+
+/// Read bindings for the current mode+screen and extract (key, description) pairs.
+async fn read_key_hints(client: &ClientHandle, mode: &str, screen: &str) -> Vec<(String, String)> {
+    let bindings_path =
+        structfs_core_store::Path::parse(&format!("input/bindings/{mode}/{screen}"))
+            .unwrap_or_else(|_| path!("input/bindings"));
+    let bindings = match client.read(&bindings_path).await {
+        Ok(Some(record)) => match record.as_value() {
+            Some(Value::Array(arr)) => arr.clone(),
+            _ => return Vec::new(),
+        },
+        _ => return Vec::new(),
+    };
+
+    let mut hints = Vec::new();
+    let mut seen_keys = std::collections::HashSet::new();
+    for binding in &bindings {
+        if let Value::Map(m) = binding {
+            let key = match m.get("key") {
+                Some(Value::String(s)) => s.clone(),
+                _ => continue,
+            };
+            let desc = match m.get("description") {
+                Some(Value::String(s)) => s.clone(),
+                _ => continue,
+            };
+            // Skip duplicate keys (screen-specific already takes priority in the
+            // binding list, but we may see both generic and specific)
+            if seen_keys.insert(key.clone()) {
+                hints.push((key, desc));
+            }
+        }
+    }
+    hints
 }
