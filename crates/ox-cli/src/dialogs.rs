@@ -155,6 +155,52 @@ pub(crate) fn build_sandbox_from_customize(
     ))
 }
 
+pub(crate) fn draw_shortcuts_modal(
+    frame: &mut Frame,
+    key_hints: &[(String, String)],
+    mode: &str,
+    screen: &str,
+    theme: &Theme,
+) {
+    let area = frame.area();
+    let content_lines: Vec<Line> = key_hints
+        .iter()
+        .map(|(key, desc)| {
+            Line::from(vec![
+                Span::styled(format!("{key:>12}"), theme.title_badge),
+                Span::styled(format!("  {desc}"), theme.status),
+            ])
+        })
+        .collect();
+
+    let line_count = content_lines.len() as u16 + 4; // +2 border +1 title +1 footer
+    let dialog_width = 50.min(area.width.saturating_sub(4));
+    let dialog_height = line_count.min(area.height.saturating_sub(4));
+    let x = (area.width.saturating_sub(dialog_width)) / 2;
+    let y = (area.height.saturating_sub(dialog_height)) / 2;
+    let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
+
+    frame.render_widget(Clear, dialog_area);
+
+    let title = format!(" Shortcuts — {mode}/{screen} ");
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme.input_border)
+        .title(Span::styled(title, theme.title_badge));
+    let inner = block.inner(dialog_area);
+    frame.render_widget(block, dialog_area);
+
+    let mut lines = content_lines;
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  ? or Esc to close",
+        theme.status,
+    )));
+
+    let content = Paragraph::new(Text::from(lines));
+    frame.render_widget(content, inner);
+}
+
 pub(crate) fn draw_approval_dialog(
     frame: &mut Frame,
     tool: &str,

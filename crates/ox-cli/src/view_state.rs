@@ -82,6 +82,8 @@ pub struct ViewState<'a> {
     /// Key hints for the status bar, derived from bindings for the current mode+screen.
     /// Each entry is (key_label, description).
     pub key_hints: Vec<(String, String)>,
+    /// Whether the shortcuts modal is showing.
+    pub show_shortcuts: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -320,6 +322,7 @@ pub async fn fetch_view_state<'a>(
         pending_customize: &dialog.pending_customize,
         insert_context,
         key_hints,
+        show_shortcuts: dialog.show_shortcuts,
     }
 }
 

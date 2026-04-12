@@ -124,7 +124,9 @@ pub(crate) fn draw(
     draw_status_bar(frame, vs, settings, theme, status_area);
 
     // Modal overlays
-    if let Some(customize) = vs.pending_customize {
+    if vs.show_shortcuts {
+        crate::dialogs::draw_shortcuts_modal(frame, &vs.key_hints, &vs.mode, &vs.screen, theme);
+    } else if let Some(customize) = vs.pending_customize {
         crate::dialogs::draw_customize_dialog(frame, customize, theme);
     } else if let Some((ref tool, ref preview)) = vs.approval_pending {
         crate::dialogs::draw_approval_dialog(frame, tool, preview, vs.approval_selected, theme);

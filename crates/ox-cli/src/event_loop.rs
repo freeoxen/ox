@@ -49,7 +49,8 @@ impl InputSession {
         if self.cursor > 0 {
             // Find previous char boundary
             let before = &self.content[..self.cursor];
-            let prev_char_start = before.char_indices()
+            let prev_char_start = before
+                .char_indices()
                 .next_back()
                 .map(|(i, _)| i)
                 .unwrap_or(0);
@@ -104,10 +105,7 @@ fn now_ms() -> u64 {
 }
 
 /// Flush pending edits to the broker as a single EditSequence write.
-async fn flush_pending_edits(
-    input_session: &mut InputSession,
-    client: &ox_broker::ClientHandle,
-) {
+async fn flush_pending_edits(input_session: &mut InputSession, client: &ox_broker::ClientHandle) {
     if !input_session.pending_edits.is_empty() {
         let seq = EditSequence {
             edits: std::mem::take(&mut input_session.pending_edits),
@@ -127,6 +125,7 @@ async fn flush_pending_edits(
 pub(crate) struct DialogState {
     pub approval_selected: usize,
     pub pending_customize: Option<CustomizeState>,
+    pub show_shortcuts: bool,
 }
 
 /// Async event loop that dispatches through the BrokerStore.
@@ -149,6 +148,7 @@ pub async fn run_async(
     let mut dialog = DialogState {
         approval_selected: 0,
         pending_customize: None,
+        show_shortcuts: false,
     };
     let mut input_session = InputSession::new();
     let mut text_input_view = crate::text_input_view::TextInputView::new();
@@ -247,8 +247,7 @@ pub async fn run_async(
 
             // Draw
             terminal.draw(|frame| {
-                let (ch, vh) =
-                    crate::tui::draw(frame, &vs, &settings, theme, &mut text_input_view);
+                let (ch, vh) = crate::tui::draw(frame, &vs, &settings, theme, &mut text_input_view);
                 content_height = ch;
                 viewport_height = vh;
             })?;
@@ -356,8 +355,16 @@ pub async fn run_async(
         if let Some(evt) = terminal_event {
             match evt {
                 Event::Key(key) => {
+                    // Shortcuts modal — dismiss on ? or Esc, swallow all other keys
+                    if dialog.show_shortcuts {
+                        if let Some(key_str) = encode_key(key.modifiers, key.code) {
+                            if key_str == "?" || key_str == "Esc" || key_str == "Ctrl+q" {
+                                dialog.show_shortcuts = false;
+                            }
+                        }
+                    }
                     // Customize dialog — bypass broker entirely
-                    if dialog.pending_customize.is_some() {
+                    else if dialog.pending_customize.is_some() {
                         crate::key_handlers::handle_customize_key(
                             &mut dialog,
                             client,
@@ -1124,6 +1131,12 @@ pub async fn run_async(
                             }
                         }
 
+                        // ? in normal mode toggles shortcuts modal
+                        if mode == "normal" && key_str == "?" {
+                            dialog.show_shortcuts = !dialog.show_shortcuts;
+                            continue;
+                        }
+
                         // Try InputStore dispatch
                         let result = client
                             .write(
@@ -1147,13 +1160,24 @@ pub async fn run_async(
                                         input_session.clear();
                                     }
                                     (_, KeyCode::Up) => {
-                                        use crate::text_input_view::{wrap_lines, cursor_in_lines, byte_offset_at};
+                                        use crate::text_input_view::{
+                                            byte_offset_at, cursor_in_lines, wrap_lines,
+                                        };
                                         let width = terminal.get_frame().area().width;
                                         let lines = wrap_lines(&input_session.content, width);
-                                        let (cur_line, cur_col) = cursor_in_lines(&input_session.content, input_session.cursor, &lines);
+                                        let (cur_line, cur_col) = cursor_in_lines(
+                                            &input_session.content,
+                                            input_session.cursor,
+                                            &lines,
+                                        );
                                         if cur_line > 0 {
                                             // Move cursor up one visual line
-                                            input_session.cursor = byte_offset_at(&input_session.content, &lines, cur_line - 1, cur_col);
+                                            input_session.cursor = byte_offset_at(
+                                                &input_session.content,
+                                                &lines,
+                                                cur_line - 1,
+                                                cur_col,
+                                            );
                                         } else if let Some((text, cursor)) =
                                             app.history_up(&input_session.content)
                                         {
@@ -1169,13 +1193,24 @@ pub async fn run_async(
                                         }
                                     }
                                     (_, KeyCode::Down) => {
-                                        use crate::text_input_view::{wrap_lines, cursor_in_lines, byte_offset_at};
+                                        use crate::text_input_view::{
+                                            byte_offset_at, cursor_in_lines, wrap_lines,
+                                        };
                                         let width = terminal.get_frame().area().width;
                                         let lines = wrap_lines(&input_session.content, width);
-                                        let (cur_line, cur_col) = cursor_in_lines(&input_session.content, input_session.cursor, &lines);
+                                        let (cur_line, cur_col) = cursor_in_lines(
+                                            &input_session.content,
+                                            input_session.cursor,
+                                            &lines,
+                                        );
                                         if cur_line + 1 < lines.len() {
                                             // Move cursor down one visual line
-                                            input_session.cursor = byte_offset_at(&input_session.content, &lines, cur_line + 1, cur_col);
+                                            input_session.cursor = byte_offset_at(
+                                                &input_session.content,
+                                                &lines,
+                                                cur_line + 1,
+                                                cur_col,
+                                            );
                                         } else if let Some((text, cursor)) = app.history_down() {
                                             // At bottom line — navigate history
                                             flush_pending_edits(&mut input_session, client).await;
@@ -1191,7 +1226,8 @@ pub async fn run_async(
                                     (_, KeyCode::Left) => {
                                         // Move to previous char boundary
                                         let s = &input_session.content[..input_session.cursor];
-                                        input_session.cursor = s.char_indices()
+                                        input_session.cursor = s
+                                            .char_indices()
                                             .next_back()
                                             .map(|(i, _)| i)
                                             .unwrap_or(0);
@@ -1199,10 +1235,8 @@ pub async fn run_async(
                                     (_, KeyCode::Right) => {
                                         // Move to next char boundary
                                         let s = &input_session.content[input_session.cursor..];
-                                        input_session.cursor += s.chars()
-                                            .next()
-                                            .map(|c| c.len_utf8())
-                                            .unwrap_or(0);
+                                        input_session.cursor +=
+                                            s.chars().next().map(|c| c.len_utf8()).unwrap_or(0);
                                     }
                                     (_, KeyCode::Backspace) => {
                                         input_session.backspace();
@@ -1211,8 +1245,7 @@ pub async fn run_async(
                                         input_session.insert("\n", EditSource::Key);
                                     }
                                     (_, KeyCode::Char(c)) => {
-                                        input_session
-                                            .insert(&c.to_string(), EditSource::Key);
+                                        input_session.insert(&c.to_string(), EditSource::Key);
                                     }
                                     _ => {}
                                 }
@@ -1235,15 +1268,21 @@ pub async fn run_async(
                             }
                             // Click in input area — move cursor
                             MouseEventKind::Down(_) => {
-                                if let Some(byte_pos) = text_input_view.click_to_byte_offset(mouse.column, mouse.row) {
+                                if let Some(byte_pos) =
+                                    text_input_view.click_to_byte_offset(mouse.column, mouse.row)
+                                {
                                     input_session.cursor = byte_pos;
                                 }
                             }
                             // Scroll in input area
-                            MouseEventKind::ScrollUp if text_input_view.contains(mouse.column, mouse.row) => {
+                            MouseEventKind::ScrollUp
+                                if text_input_view.contains(mouse.column, mouse.row) =>
+                            {
                                 text_input_view.scroll_by(-3);
                             }
-                            MouseEventKind::ScrollDown if text_input_view.contains(mouse.column, mouse.row) => {
+                            MouseEventKind::ScrollDown
+                                if text_input_view.contains(mouse.column, mouse.row) =>
+                            {
                                 text_input_view.scroll_by(3);
                             }
                             _ => {
@@ -1254,11 +1293,11 @@ pub async fn run_async(
                                     has_approval_pending,
                                     dialog.pending_customize.is_some(),
                                     mouse.kind,
-                                ).await;
+                                )
+                                .await;
                             }
                         }
                     } else
-
                     // Click on settings edit dialog
                     if let MouseEventKind::Down(_) = mouse.kind {
                         if screen_owned == "settings" && settings.editing.is_some() {
@@ -1314,9 +1353,7 @@ pub async fn run_async(
                     }
                 }
                 Event::Paste(text) => {
-                    if mode_owned == "insert"
-                        && insert_context_owned.as_deref() != Some("search")
-                    {
+                    if mode_owned == "insert" && insert_context_owned.as_deref() != Some("search") {
                         input_session.insert(&text, EditSource::Paste);
                     }
                 }
