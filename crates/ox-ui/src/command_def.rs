@@ -55,11 +55,28 @@ pub struct CommandInvocation {
 /// Errors from command validation and resolution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CommandError {
-    UnknownCommand { name: String },
-    MissingParam { command: String, param: String },
-    TypeMismatch { command: String, param: String, expected: String, got: String },
-    InvalidValue { command: String, param: String, allowed: Vec<String>, got: String },
-    DuplicateName { name: String },
+    UnknownCommand {
+        name: String,
+    },
+    MissingParam {
+        command: String,
+        param: String,
+    },
+    TypeMismatch {
+        command: String,
+        param: String,
+        expected: String,
+        got: String,
+    },
+    InvalidValue {
+        command: String,
+        param: String,
+        allowed: Vec<String>,
+        got: String,
+    },
+    DuplicateName {
+        name: String,
+    },
 }
 
 impl std::fmt::Display for CommandError {
@@ -69,10 +86,23 @@ impl std::fmt::Display for CommandError {
             Self::MissingParam { command, param } => {
                 write!(f, "{command}: missing required parameter '{param}'")
             }
-            Self::TypeMismatch { command, param, expected, got } => {
-                write!(f, "{command}: parameter '{param}' expected {expected}, got {got}")
+            Self::TypeMismatch {
+                command,
+                param,
+                expected,
+                got,
+            } => {
+                write!(
+                    f,
+                    "{command}: parameter '{param}' expected {expected}, got {got}"
+                )
             }
-            Self::InvalidValue { command, param, allowed, got } => {
+            Self::InvalidValue {
+                command,
+                param,
+                allowed,
+                got,
+            } => {
                 write!(
                     f,
                     "{command}: parameter '{param}' must be one of {allowed:?}, got '{got}'"
@@ -129,7 +159,9 @@ impl StaticParamDef {
             name: self.name.to_string(),
             kind: self.kind.to_param_kind(),
             required: self.required,
-            default: self.default.map(|s| serde_json::Value::String(s.to_string())),
+            default: self
+                .default
+                .map(|s| serde_json::Value::String(s.to_string())),
         }
     }
 }
@@ -188,7 +220,9 @@ mod tests {
 
     #[test]
     fn command_error_serializes() {
-        let err = CommandError::UnknownCommand { name: "bogus".to_string() };
+        let err = CommandError::UnknownCommand {
+            name: "bogus".to_string(),
+        };
         let value = structfs_serde_store::to_value(&err).unwrap();
         let round_tripped: CommandError = structfs_serde_store::from_value(value).unwrap();
         match round_tripped {

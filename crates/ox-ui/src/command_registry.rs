@@ -44,9 +44,12 @@ impl CommandRegistry {
     }
 
     pub fn unregister(&mut self, name: &str) -> Result<(), CommandError> {
-        let idx = self.by_name.remove(name).ok_or_else(|| CommandError::UnknownCommand {
-            name: name.to_string(),
-        })?;
+        let idx = self
+            .by_name
+            .remove(name)
+            .ok_or_else(|| CommandError::UnknownCommand {
+                name: name.to_string(),
+            })?;
         self.commands.remove(idx);
         // Rebuild index since indices shifted
         self.by_name.clear();
@@ -69,13 +72,12 @@ impl CommandRegistry {
     }
 
     /// Validate and resolve an invocation to a target path + record.
-    pub fn resolve(
-        &self,
-        invocation: &CommandInvocation,
-    ) -> Result<(Path, Record), CommandError> {
-        let def = self.get(&invocation.command).ok_or_else(|| CommandError::UnknownCommand {
-            name: invocation.command.clone(),
-        })?;
+    pub fn resolve(&self, invocation: &CommandInvocation) -> Result<(Path, Record), CommandError> {
+        let def = self
+            .get(&invocation.command)
+            .ok_or_else(|| CommandError::UnknownCommand {
+                name: invocation.command.clone(),
+            })?;
 
         let mut args = invocation.args.clone();
 
@@ -103,9 +105,9 @@ impl CommandRegistry {
         })?;
 
         // Convert serde_json::Value args to structfs Value for the Record
-        let structfs_value = structfs_serde_store::json_to_value(
-            serde_json::Value::Object(args.into_iter().collect()),
-        );
+        let structfs_value = structfs_serde_store::json_to_value(serde_json::Value::Object(
+            args.into_iter().collect(),
+        ));
 
         Ok((path, Record::parsed(structfs_value)))
     }
@@ -256,7 +258,10 @@ mod tests {
     #[test]
     fn resolve_no_params() {
         let r = test_registry();
-        let inv = CommandInvocation { command: "quit".into(), args: BTreeMap::new() };
+        let inv = CommandInvocation {
+            command: "quit".into(),
+            args: BTreeMap::new(),
+        };
         let (path, _record) = r.resolve(&inv).unwrap();
         assert_eq!(path.to_string(), "ui/quit");
     }
@@ -265,8 +270,14 @@ mod tests {
     fn resolve_with_required_param() {
         let r = test_registry();
         let mut args = BTreeMap::new();
-        args.insert("thread_id".into(), serde_json::Value::String("t_123".into()));
-        let inv = CommandInvocation { command: "open".into(), args };
+        args.insert(
+            "thread_id".into(),
+            serde_json::Value::String("t_123".into()),
+        );
+        let inv = CommandInvocation {
+            command: "open".into(),
+            args,
+        };
         let (path, _record) = r.resolve(&inv).unwrap();
         assert_eq!(path.to_string(), "ui/open");
     }
@@ -274,7 +285,10 @@ mod tests {
     #[test]
     fn resolve_missing_required_param_fails() {
         let r = test_registry();
-        let inv = CommandInvocation { command: "open".into(), args: BTreeMap::new() };
+        let inv = CommandInvocation {
+            command: "open".into(),
+            args: BTreeMap::new(),
+        };
         let err = r.resolve(&inv).unwrap_err();
         assert!(matches!(err, CommandError::MissingParam { .. }));
     }
@@ -282,7 +296,10 @@ mod tests {
     #[test]
     fn resolve_applies_default() {
         let r = test_registry();
-        let inv = CommandInvocation { command: "compose".into(), args: BTreeMap::new() };
+        let inv = CommandInvocation {
+            command: "compose".into(),
+            args: BTreeMap::new(),
+        };
         let (path, _) = r.resolve(&inv).unwrap();
         assert_eq!(path.to_string(), "ui/enter_insert");
     }
@@ -292,7 +309,10 @@ mod tests {
         let r = test_registry();
         let mut args = BTreeMap::new();
         args.insert("context".into(), serde_json::Value::String("bogus".into()));
-        let inv = CommandInvocation { command: "compose".into(), args };
+        let inv = CommandInvocation {
+            command: "compose".into(),
+            args,
+        };
         let err = r.resolve(&inv).unwrap_err();
         assert!(matches!(err, CommandError::InvalidValue { .. }));
     }
@@ -302,7 +322,10 @@ mod tests {
         let r = test_registry();
         let mut args = BTreeMap::new();
         args.insert("thread_id".into(), serde_json::json!(42));
-        let inv = CommandInvocation { command: "open".into(), args };
+        let inv = CommandInvocation {
+            command: "open".into(),
+            args,
+        };
         let err = r.resolve(&inv).unwrap_err();
         assert!(matches!(err, CommandError::TypeMismatch { .. }));
     }
@@ -310,7 +333,10 @@ mod tests {
     #[test]
     fn resolve_unknown_command_fails() {
         let r = test_registry();
-        let inv = CommandInvocation { command: "nope".into(), args: BTreeMap::new() };
+        let inv = CommandInvocation {
+            command: "nope".into(),
+            args: BTreeMap::new(),
+        };
         let err = r.resolve(&inv).unwrap_err();
         assert!(matches!(err, CommandError::UnknownCommand { .. }));
     }

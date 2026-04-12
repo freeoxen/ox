@@ -168,7 +168,11 @@ impl InputStore {
                     args: args.clone(),
                 };
                 let inv_value = structfs_serde_store::to_value(&inv).map_err(|e| {
-                    StoreError::store("input", "dispatch", format!("failed to serialize invocation: {e}"))
+                    StoreError::store(
+                        "input",
+                        "dispatch",
+                        format!("failed to serialize invocation: {e}"),
+                    )
                 })?;
                 let target = Path::parse("command/invoke").unwrap();
                 let dispatcher = self.dispatcher.as_mut().ok_or_else(|| {
@@ -897,7 +901,10 @@ mod tests {
     #[test]
     fn dispatch_invoke_with_args() {
         let mut args = BTreeMap::new();
-        args.insert("context".to_string(), serde_json::Value::String("compose".to_string()));
+        args.insert(
+            "context".to_string(),
+            serde_json::Value::String("compose".to_string()),
+        );
         let bindings = vec![Binding {
             context: BindingContext {
                 mode: "normal".to_string(),

@@ -18,7 +18,10 @@ pub struct CommandStore {
 
 impl CommandStore {
     pub fn new(registry: CommandRegistry) -> Self {
-        CommandStore { registry, dispatcher: None }
+        CommandStore {
+            registry,
+            dispatcher: None,
+        }
     }
 
     pub fn from_builtins() -> Self {
@@ -76,20 +79,25 @@ impl Reader for CommandStore {
 
 impl Writer for CommandStore {
     fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
-        let action = if to.is_empty() { "" } else { to.components[0].as_str() };
+        let action = if to.is_empty() {
+            ""
+        } else {
+            to.components[0].as_str()
+        };
         let value = data.as_value().ok_or_else(|| {
             StoreError::store("command", "write", "write data must contain a value")
         })?;
 
         match action {
             "invoke" => {
-                let invocation: CommandInvocation =
-                    structfs_serde_store::from_value(value.clone()).map_err(|e| {
+                let invocation: CommandInvocation = structfs_serde_store::from_value(value.clone())
+                    .map_err(|e| {
                         StoreError::store("command", "invoke", format!("bad invocation: {e}"))
                     })?;
-                let (path, record) = self.registry.resolve(&invocation).map_err(|e| {
-                    StoreError::store("command", "invoke", e.to_string())
-                })?;
+                let (path, record) = self
+                    .registry
+                    .resolve(&invocation)
+                    .map_err(|e| StoreError::store("command", "invoke", e.to_string()))?;
                 let dispatcher = self.dispatcher.as_mut().ok_or_else(|| {
                     StoreError::store("command", "invoke", "no dispatcher configured")
                 })?;
@@ -100,9 +108,9 @@ impl Writer for CommandStore {
                     structfs_serde_store::from_value(value.clone()).map_err(|e| {
                         StoreError::store("command", "register", format!("bad command def: {e}"))
                     })?;
-                self.registry.register(def).map_err(|e| {
-                    StoreError::store("command", "register", e.to_string())
-                })?;
+                self.registry
+                    .register(def)
+                    .map_err(|e| StoreError::store("command", "register", e.to_string()))?;
                 Ok(Path::parse("commands").unwrap())
             }
             "unregister" => {
@@ -115,9 +123,9 @@ impl Writer for CommandStore {
                     _ => None,
                 }
                 .ok_or_else(|| StoreError::store("command", "unregister", "missing name"))?;
-                self.registry.unregister(&name).map_err(|e| {
-                    StoreError::store("command", "unregister", e.to_string())
-                })?;
+                self.registry
+                    .unregister(&name)
+                    .map_err(|e| StoreError::store("command", "unregister", e.to_string()))?;
                 Ok(Path::parse("commands").unwrap())
             }
             _ => Err(StoreError::store(
@@ -212,7 +220,9 @@ mod tests {
             "args": {}
         });
         let inv_value = structfs_serde_store::json_to_value(inv_json);
-        store.write(&path!("invoke"), Record::parsed(inv_value)).unwrap();
+        store
+            .write(&path!("invoke"), Record::parsed(inv_value))
+            .unwrap();
 
         let log = log.lock().unwrap();
         assert_eq!(log.len(), 1);
@@ -243,7 +253,9 @@ mod tests {
             "user_facing": true
         });
         let def_value = structfs_serde_store::json_to_value(def_json);
-        store.write(&path!("register"), Record::parsed(def_value)).unwrap();
+        store
+            .write(&path!("register"), Record::parsed(def_value))
+            .unwrap();
 
         // Should now be discoverable
         let result = store.read(&path!("commands/custom")).unwrap();

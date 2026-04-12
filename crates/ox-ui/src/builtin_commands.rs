@@ -9,86 +9,361 @@ pub fn builtin_commands() -> &'static [StaticCommandDef] {
 
 static BUILTIN_COMMANDS: &[StaticCommandDef] = &[
     // -- Navigation --
-    StaticCommandDef { name: "select_next",          target: "ui/select_next",          params: &[], description: "Move selection down",     user_facing: true },
-    StaticCommandDef { name: "select_prev",          target: "ui/select_prev",          params: &[], description: "Move selection up",       user_facing: true },
-    StaticCommandDef { name: "select_first",         target: "ui/select_first",         params: &[], description: "Jump to first item",      user_facing: true },
-    StaticCommandDef { name: "select_last",          target: "ui/select_last",          params: &[], description: "Jump to last item",       user_facing: true },
-    StaticCommandDef { name: "scroll_up",            target: "ui/scroll_up",            params: &[], description: "Scroll viewport up",      user_facing: true },
-    StaticCommandDef { name: "scroll_down",          target: "ui/scroll_down",          params: &[], description: "Scroll viewport down",    user_facing: true },
-    StaticCommandDef { name: "scroll_to_top",        target: "ui/scroll_to_top",        params: &[], description: "Scroll to top",           user_facing: true },
-    StaticCommandDef { name: "scroll_to_bottom",     target: "ui/scroll_to_bottom",     params: &[], description: "Scroll to bottom",        user_facing: true },
-    StaticCommandDef { name: "scroll_page_up",       target: "ui/scroll_page_up",       params: &[], description: "Scroll one page up",      user_facing: true },
-    StaticCommandDef { name: "scroll_page_down",     target: "ui/scroll_page_down",     params: &[], description: "Scroll one page down",    user_facing: true },
-    StaticCommandDef { name: "scroll_half_page_up",  target: "ui/scroll_half_page_up",  params: &[], description: "Scroll half page up",     user_facing: true },
-    StaticCommandDef { name: "scroll_half_page_down",target: "ui/scroll_half_page_down",params: &[], description: "Scroll half page down",   user_facing: true },
-
+    StaticCommandDef {
+        name: "select_next",
+        target: "ui/select_next",
+        params: &[],
+        description: "Move selection down",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "select_prev",
+        target: "ui/select_prev",
+        params: &[],
+        description: "Move selection up",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "select_first",
+        target: "ui/select_first",
+        params: &[],
+        description: "Jump to first item",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "select_last",
+        target: "ui/select_last",
+        params: &[],
+        description: "Jump to last item",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "scroll_up",
+        target: "ui/scroll_up",
+        params: &[],
+        description: "Scroll viewport up",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "scroll_down",
+        target: "ui/scroll_down",
+        params: &[],
+        description: "Scroll viewport down",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "scroll_to_top",
+        target: "ui/scroll_to_top",
+        params: &[],
+        description: "Scroll to top",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "scroll_to_bottom",
+        target: "ui/scroll_to_bottom",
+        params: &[],
+        description: "Scroll to bottom",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "scroll_page_up",
+        target: "ui/scroll_page_up",
+        params: &[],
+        description: "Scroll one page up",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "scroll_page_down",
+        target: "ui/scroll_page_down",
+        params: &[],
+        description: "Scroll one page down",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "scroll_half_page_up",
+        target: "ui/scroll_half_page_up",
+        params: &[],
+        description: "Scroll half page up",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "scroll_half_page_down",
+        target: "ui/scroll_half_page_down",
+        params: &[],
+        description: "Scroll half page down",
+        user_facing: true,
+    },
     // -- Screen transitions --
-    StaticCommandDef { name: "open", target: "ui/open", params: &[
-        StaticParamDef { name: "thread_id", kind: StaticParamKind::String, required: true, default: None },
-    ], description: "Open a thread", user_facing: true },
-    StaticCommandDef { name: "close",          target: "ui/close",          params: &[], description: "Back to inbox",                user_facing: true },
-    StaticCommandDef { name: "settings",       target: "ui/go_to_settings", params: &[], description: "Open settings screen",         user_facing: true },
-    StaticCommandDef { name: "inbox",          target: "ui/go_to_inbox",    params: &[], description: "Return to inbox",              user_facing: true },
-    StaticCommandDef { name: "open_selected",  target: "ui/open_selected",  params: &[], description: "Open currently selected thread", user_facing: true },
-    StaticCommandDef { name: "quit",           target: "ui/quit",           params: &[], description: "Quit the application",         user_facing: true },
-
+    StaticCommandDef {
+        name: "open",
+        target: "ui/open",
+        params: &[StaticParamDef {
+            name: "thread_id",
+            kind: StaticParamKind::String,
+            required: true,
+            default: None,
+        }],
+        description: "Open a thread",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "close",
+        target: "ui/close",
+        params: &[],
+        description: "Back to inbox",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "settings",
+        target: "ui/go_to_settings",
+        params: &[],
+        description: "Open settings screen",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "inbox",
+        target: "ui/go_to_inbox",
+        params: &[],
+        description: "Return to inbox",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "open_selected",
+        target: "ui/open_selected",
+        params: &[],
+        description: "Open currently selected thread",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "quit",
+        target: "ui/quit",
+        params: &[],
+        description: "Quit the application",
+        user_facing: true,
+    },
     // -- Mode transitions --
-    StaticCommandDef { name: "compose", target: "ui/enter_insert", params: &[
-        StaticParamDef { name: "context", kind: StaticParamKind::Enum(&["compose", "reply", "search"]), required: true, default: Some("compose") },
-    ], description: "Open compose input", user_facing: true },
-    StaticCommandDef { name: "reply", target: "ui/enter_insert", params: &[
-        StaticParamDef { name: "context", kind: StaticParamKind::Enum(&["compose", "reply", "search"]), required: true, default: Some("reply") },
-    ], description: "Open reply input", user_facing: true },
-    StaticCommandDef { name: "search", target: "ui/enter_insert", params: &[
-        StaticParamDef { name: "context", kind: StaticParamKind::Enum(&["compose", "reply", "search"]), required: true, default: Some("search") },
-    ], description: "Open search input", user_facing: true },
-    StaticCommandDef { name: "exit_insert", target: "ui/exit_insert", params: &[], description: "Exit insert mode", user_facing: true },
-
+    StaticCommandDef {
+        name: "compose",
+        target: "ui/enter_insert",
+        params: &[StaticParamDef {
+            name: "context",
+            kind: StaticParamKind::Enum(&["compose", "reply", "search"]),
+            required: true,
+            default: Some("compose"),
+        }],
+        description: "Open compose input",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "reply",
+        target: "ui/enter_insert",
+        params: &[StaticParamDef {
+            name: "context",
+            kind: StaticParamKind::Enum(&["compose", "reply", "search"]),
+            required: true,
+            default: Some("reply"),
+        }],
+        description: "Open reply input",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "search",
+        target: "ui/enter_insert",
+        params: &[StaticParamDef {
+            name: "context",
+            kind: StaticParamKind::Enum(&["compose", "reply", "search"]),
+            required: true,
+            default: Some("search"),
+        }],
+        description: "Open search input",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "exit_insert",
+        target: "ui/exit_insert",
+        params: &[],
+        description: "Exit insert mode",
+        user_facing: true,
+    },
     // -- Text input --
-    StaticCommandDef { name: "send_input", target: "ui/send_input", params: &[], description: "Send current input",  user_facing: true },
-    StaticCommandDef { name: "clear_input", target: "ui/clear_input", params: &[], description: "Clear input buffer", user_facing: true },
-
+    StaticCommandDef {
+        name: "send_input",
+        target: "ui/send_input",
+        params: &[],
+        description: "Send current input",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "clear_input",
+        target: "ui/clear_input",
+        params: &[],
+        description: "Clear input buffer",
+        user_facing: true,
+    },
     // -- Thread actions --
-    StaticCommandDef { name: "archive_selected", target: "ui/archive_selected", params: &[], description: "Archive selected thread", user_facing: true },
-
+    StaticCommandDef {
+        name: "archive_selected",
+        target: "ui/archive_selected",
+        params: &[],
+        description: "Archive selected thread",
+        user_facing: true,
+    },
     // -- Search --
-    StaticCommandDef { name: "search_insert_char", target: "ui/search_insert_char", params: &[
-        StaticParamDef { name: "char", kind: StaticParamKind::String, required: true, default: None },
-    ], description: "Append to search query", user_facing: false },
-    StaticCommandDef { name: "search_delete_char", target: "ui/search_delete_char", params: &[], description: "Delete last search char",    user_facing: false },
-    StaticCommandDef { name: "search_clear",       target: "ui/search_clear",       params: &[], description: "Clear search query",         user_facing: true },
-    StaticCommandDef { name: "search_save_chip",   target: "ui/search_save_chip",   params: &[], description: "Save query as search chip",  user_facing: false },
-    StaticCommandDef { name: "search_dismiss_chip", target: "ui/search_dismiss_chip", params: &[
-        StaticParamDef { name: "index", kind: StaticParamKind::Integer, required: true, default: None },
-    ], description: "Remove a search chip", user_facing: false },
-
+    StaticCommandDef {
+        name: "search_insert_char",
+        target: "ui/search_insert_char",
+        params: &[StaticParamDef {
+            name: "char",
+            kind: StaticParamKind::String,
+            required: true,
+            default: None,
+        }],
+        description: "Append to search query",
+        user_facing: false,
+    },
+    StaticCommandDef {
+        name: "search_delete_char",
+        target: "ui/search_delete_char",
+        params: &[],
+        description: "Delete last search char",
+        user_facing: false,
+    },
+    StaticCommandDef {
+        name: "search_clear",
+        target: "ui/search_clear",
+        params: &[],
+        description: "Clear search query",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "search_save_chip",
+        target: "ui/search_save_chip",
+        params: &[],
+        description: "Save query as search chip",
+        user_facing: false,
+    },
+    StaticCommandDef {
+        name: "search_dismiss_chip",
+        target: "ui/search_dismiss_chip",
+        params: &[StaticParamDef {
+            name: "index",
+            kind: StaticParamKind::Integer,
+            required: true,
+            default: None,
+        }],
+        description: "Remove a search chip",
+        user_facing: false,
+    },
     // -- Modals --
-    StaticCommandDef { name: "show_modal",    target: "ui/show_modal",    params: &[], description: "Show a modal dialog",    user_facing: false },
-    StaticCommandDef { name: "dismiss_modal", target: "ui/dismiss_modal", params: &[], description: "Dismiss current modal",  user_facing: true },
-
+    StaticCommandDef {
+        name: "show_modal",
+        target: "ui/show_modal",
+        params: &[],
+        description: "Show a modal dialog",
+        user_facing: false,
+    },
+    StaticCommandDef {
+        name: "dismiss_modal",
+        target: "ui/dismiss_modal",
+        params: &[],
+        description: "Dismiss current modal",
+        user_facing: true,
+    },
     // -- Approval --
-    StaticCommandDef { name: "approve", target: "approval/response", params: &[
-        StaticParamDef { name: "decision", kind: StaticParamKind::Enum(&["allow_once", "deny_once", "allow_session", "allow_always", "deny_always"]), required: true, default: None },
-    ], description: "Respond to approval request", user_facing: true },
-
+    StaticCommandDef {
+        name: "approve",
+        target: "approval/response",
+        params: &[StaticParamDef {
+            name: "decision",
+            kind: StaticParamKind::Enum(&[
+                "allow_once",
+                "deny_once",
+                "allow_session",
+                "allow_always",
+                "deny_always",
+            ]),
+            required: true,
+            default: None,
+        }],
+        description: "Respond to approval request",
+        user_facing: true,
+    },
     // -- Internal --
-    StaticCommandDef { name: "set_row_count", target: "ui/set_row_count", params: &[
-        StaticParamDef { name: "count", kind: StaticParamKind::Integer, required: true, default: None },
-    ], description: "Set list row count", user_facing: false },
-    StaticCommandDef { name: "set_scroll_max", target: "ui/set_scroll_max", params: &[
-        StaticParamDef { name: "max", kind: StaticParamKind::Integer, required: true, default: None },
-    ], description: "Set max scroll position", user_facing: false },
-    StaticCommandDef { name: "set_viewport_height", target: "ui/set_viewport_height", params: &[
-        StaticParamDef { name: "height", kind: StaticParamKind::Integer, required: true, default: None },
-    ], description: "Set viewport height", user_facing: false },
-    StaticCommandDef { name: "set_input", target: "ui/set_input", params: &[
-        StaticParamDef { name: "text", kind: StaticParamKind::String, required: false, default: None },
-        StaticParamDef { name: "cursor", kind: StaticParamKind::Integer, required: false, default: None },
-    ], description: "Set input content", user_facing: false },
-    StaticCommandDef { name: "set_status", target: "ui/set_status", params: &[
-        StaticParamDef { name: "text", kind: StaticParamKind::String, required: false, default: None },
-    ], description: "Set status bar message", user_facing: false },
-    StaticCommandDef { name: "clear_pending_action", target: "ui/clear_pending_action", params: &[], description: "Clear pending action flag", user_facing: false },
+    StaticCommandDef {
+        name: "set_row_count",
+        target: "ui/set_row_count",
+        params: &[StaticParamDef {
+            name: "count",
+            kind: StaticParamKind::Integer,
+            required: true,
+            default: None,
+        }],
+        description: "Set list row count",
+        user_facing: false,
+    },
+    StaticCommandDef {
+        name: "set_scroll_max",
+        target: "ui/set_scroll_max",
+        params: &[StaticParamDef {
+            name: "max",
+            kind: StaticParamKind::Integer,
+            required: true,
+            default: None,
+        }],
+        description: "Set max scroll position",
+        user_facing: false,
+    },
+    StaticCommandDef {
+        name: "set_viewport_height",
+        target: "ui/set_viewport_height",
+        params: &[StaticParamDef {
+            name: "height",
+            kind: StaticParamKind::Integer,
+            required: true,
+            default: None,
+        }],
+        description: "Set viewport height",
+        user_facing: false,
+    },
+    StaticCommandDef {
+        name: "set_input",
+        target: "ui/set_input",
+        params: &[
+            StaticParamDef {
+                name: "text",
+                kind: StaticParamKind::String,
+                required: false,
+                default: None,
+            },
+            StaticParamDef {
+                name: "cursor",
+                kind: StaticParamKind::Integer,
+                required: false,
+                default: None,
+            },
+        ],
+        description: "Set input content",
+        user_facing: false,
+    },
+    StaticCommandDef {
+        name: "set_status",
+        target: "ui/set_status",
+        params: &[StaticParamDef {
+            name: "text",
+            kind: StaticParamKind::String,
+            required: false,
+            default: None,
+        }],
+        description: "Set status bar message",
+        user_facing: false,
+    },
+    StaticCommandDef {
+        name: "clear_pending_action",
+        target: "ui/clear_pending_action",
+        params: &[],
+        description: "Clear pending action flag",
+        user_facing: false,
+    },
 ];
 
 #[cfg(test)]
@@ -106,14 +381,21 @@ mod tests {
         let cmds = builtin_commands();
         let mut names = std::collections::HashSet::new();
         for cmd in cmds {
-            assert!(names.insert(cmd.name), "duplicate command name: {}", cmd.name);
+            assert!(
+                names.insert(cmd.name),
+                "duplicate command name: {}",
+                cmd.name
+            );
         }
     }
 
     #[test]
     fn compose_command_exists() {
         let cmds = builtin_commands();
-        let compose = cmds.iter().find(|c| c.name == "compose").expect("compose command missing");
+        let compose = cmds
+            .iter()
+            .find(|c| c.name == "compose")
+            .expect("compose command missing");
         assert_eq!(compose.target, "ui/enter_insert");
         assert!(compose.user_facing);
         assert_eq!(compose.params.len(), 1);
@@ -124,7 +406,10 @@ mod tests {
     #[test]
     fn quit_command_exists() {
         let cmds = builtin_commands();
-        let quit = cmds.iter().find(|c| c.name == "quit").expect("quit command missing");
+        let quit = cmds
+            .iter()
+            .find(|c| c.name == "quit")
+            .expect("quit command missing");
         assert_eq!(quit.target, "ui/quit");
         assert!(quit.user_facing);
         assert!(quit.params.is_empty());
@@ -133,7 +418,10 @@ mod tests {
     #[test]
     fn internal_commands_not_user_facing() {
         let cmds = builtin_commands();
-        let set_row = cmds.iter().find(|c| c.name == "set_row_count").expect("set_row_count missing");
+        let set_row = cmds
+            .iter()
+            .find(|c| c.name == "set_row_count")
+            .expect("set_row_count missing");
         assert!(!set_row.user_facing);
     }
 

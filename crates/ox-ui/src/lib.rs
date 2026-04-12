@@ -172,7 +172,11 @@ mod integration_tests {
         let client = broker.client();
 
         // Verify initial state
-        let row = client.read(&path!("ui/selected_row")).await.unwrap().unwrap();
+        let row = client
+            .read(&path!("ui/selected_row"))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(row.as_value().unwrap(), &Value::Integer(0));
 
         // Dispatch "j" → InputStore → CommandStore → UiStore
@@ -186,7 +190,11 @@ mod integration_tests {
             .unwrap();
 
         // Verify state changed
-        let row = client.read(&path!("ui/selected_row")).await.unwrap().unwrap();
+        let row = client
+            .read(&path!("ui/selected_row"))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(row.as_value().unwrap(), &Value::Integer(1));
     }
 }
