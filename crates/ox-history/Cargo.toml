@@ -14,6 +14,8 @@ categories = ["data-structures"]
 
 [dependencies]
 ox-kernel = { path = "../ox-kernel" }
+ox-types = { path = "../ox-types" }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 structfs-core-store = { workspace = true }
 structfs-serde-store = { workspace = true }

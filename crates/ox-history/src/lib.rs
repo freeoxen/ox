@@ -15,6 +15,7 @@
 //! - `"turn/clear"` → reset all ephemeral turn state
 
 mod turn;
+pub use ox_types::{TokenUsage, ToolStatus};
 pub use turn::TurnState;
 
 use ox_kernel::log::{LogEntry, SharedLog};
@@ -229,7 +230,11 @@ impl Writer for HistoryView {
                             if self.turn.write(sub, value) {
                                 Ok(to.clone())
                             } else {
-                                Err(StoreError::store("HistoryView", "write", "invalid turn write"))
+                                Err(StoreError::store(
+                                    "HistoryView",
+                                    "write",
+                                    "invalid turn write",
+                                ))
                             }
                         }
                     }
@@ -452,10 +457,7 @@ mod tests {
         )
         .unwrap();
         let val = hv.read(&path!("turn/streaming")).unwrap().unwrap();
-        assert_eq!(
-            unwrap_value(val),
-            Value::String("hello world".into())
-        );
+        assert_eq!(unwrap_value(val), Value::String("hello world".into()));
     }
 
     #[test]
@@ -467,11 +469,8 @@ mod tests {
             Record::parsed(Value::String("streamed text".into())),
         )
         .unwrap();
-        hv.write(
-            &path!("turn/thinking"),
-            Record::parsed(Value::Bool(true)),
-        )
-        .unwrap();
+        hv.write(&path!("turn/thinking"), Record::parsed(Value::Bool(true)))
+            .unwrap();
         hv.write(&path!("turn/clear"), Record::parsed(Value::Null))
             .unwrap();
         assert!(!hv.turn.is_active());
@@ -497,11 +496,8 @@ mod tests {
             scope: None,
         });
         let mut hv = HistoryView::new(shared);
-        hv.write(
-            &path!("turn/thinking"),
-            Record::parsed(Value::Bool(true)),
-        )
-        .unwrap();
+        hv.write(&path!("turn/thinking"), Record::parsed(Value::Bool(true)))
+            .unwrap();
         hv.write(
             &path!("turn/streaming"),
             Record::parsed(Value::String("partial response".into())),

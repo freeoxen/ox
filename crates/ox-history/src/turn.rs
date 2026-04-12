@@ -3,20 +3,21 @@
 //! Accumulates during a turn. Committed to the message list when
 //! the agent writes to "commit". All turn state clears on commit.
 
-use std::collections::BTreeMap;
+use ox_types::{TokenUsage, ToolStatus};
+use serde::{Deserialize, Serialize};
 use structfs_core_store::Value;
 
 /// Transient state for the current in-progress turn.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct TurnState {
     /// Accumulated streaming text (assistant response being built).
     pub streaming: String,
     /// Whether the agent is currently mid-turn.
     pub thinking: bool,
-    /// Current tool call, if any: (tool_name, status).
-    pub tool: Option<(String, String)>,
-    /// Token usage for this turn: (input_tokens, output_tokens).
-    pub tokens: (u32, u32),
+    /// Current tool call, if any.
+    pub tool: Option<ToolStatus>,
+    /// Token usage for this turn.
+    pub tokens: TokenUsage,
 }
 
 impl TurnState {
@@ -29,7 +30,7 @@ impl TurnState {
         self.streaming.clear();
         self.thinking = false;
         self.tool = None;
-        self.tokens = (0, 0);
+        self.tokens = TokenUsage::default();
     }
 
     /// Whether there is any in-progress content.
@@ -43,20 +44,10 @@ impl TurnState {
             "streaming" => Some(Value::String(self.streaming.clone())),
             "thinking" => Some(Value::Bool(self.thinking)),
             "tool" => Some(match &self.tool {
-                Some((name, status)) => {
-                    let mut map = BTreeMap::new();
-                    map.insert("name".to_string(), Value::String(name.clone()));
-                    map.insert("status".to_string(), Value::String(status.clone()));
-                    Value::Map(map)
-                }
+                Some(tool_status) => structfs_serde_store::to_value(tool_status).unwrap_or(Value::Null),
                 None => Value::Null,
             }),
-            "tokens" => {
-                let mut map = BTreeMap::new();
-                map.insert("in".to_string(), Value::Integer(self.tokens.0 as i64));
-                map.insert("out".to_string(), Value::Integer(self.tokens.1 as i64));
-                Some(Value::Map(map))
-            }
+            "tokens" => Some(structfs_serde_store::to_value(&self.tokens).unwrap_or(Value::Null)),
             _ => None,
         }
     }
@@ -79,20 +70,14 @@ impl TurnState {
                 false
             }
             "tool" => match value {
-                Value::Map(map) => {
-                    let name = map.get("name").and_then(|v| match v {
-                        Value::String(s) => Some(s.clone()),
-                        _ => None,
-                    });
-                    let status = map.get("status").and_then(|v| match v {
-                        Value::String(s) => Some(s.clone()),
-                        _ => None,
-                    });
-                    if let (Some(n), Some(s)) = (name, status) {
-                        self.tool = Some((n, s));
-                        return true;
+                Value::Map(_) => {
+                    match structfs_serde_store::from_value::<ToolStatus>(value.clone()) {
+                        Ok(tool_status) => {
+                            self.tool = Some(tool_status);
+                            true
+                        }
+                        Err(_) => false,
                     }
-                    false
                 }
                 Value::Null => {
                     self.tool = None;
@@ -101,20 +86,14 @@ impl TurnState {
                 _ => false,
             },
             "tokens" => {
-                if let Value::Map(map) = value {
-                    let in_tokens = map.get("in").and_then(|v| match v {
-                        Value::Integer(i) => Some(*i as u32),
-                        _ => None,
-                    });
-                    let out_tokens = map.get("out").and_then(|v| match v {
-                        Value::Integer(i) => Some(*i as u32),
-                        _ => None,
-                    });
-                    if let (Some(i), Some(o)) = (in_tokens, out_tokens) {
-                        self.tokens = (i, o);
-                        return true;
+                if let Value::Map(_) = value {
+                    match structfs_serde_store::from_value::<TokenUsage>(value.clone()) {
+                        Ok(usage) => {
+                            self.tokens = usage;
+                            true
+                        }
+                        Err(_) => false,
                     }
-                    false
                 } else {
                     false
                 }
@@ -127,6 +106,7 @@ impl TurnState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     #[test]
     fn streaming_accumulates() {
@@ -169,10 +149,16 @@ mod tests {
     fn tokens_tracking() {
         let mut turn = TurnState::new();
         let mut map = BTreeMap::new();
-        map.insert("in".to_string(), Value::Integer(100));
-        map.insert("out".to_string(), Value::Integer(50));
+        map.insert("input_tokens".to_string(), Value::Integer(100));
+        map.insert("output_tokens".to_string(), Value::Integer(50));
         turn.write("tokens", &Value::Map(map));
-        assert_eq!(turn.tokens, (100, 50));
+        assert_eq!(
+            turn.tokens,
+            TokenUsage {
+                input_tokens: 100,
+                output_tokens: 50,
+            }
+        );
     }
 
     #[test]
@@ -219,13 +205,13 @@ mod tests {
         tool_map.insert("status".to_string(), Value::String("done".to_string()));
         turn.write("tool", &Value::Map(tool_map));
         let mut tokens = BTreeMap::new();
-        tokens.insert("in".to_string(), Value::Integer(100));
-        tokens.insert("out".to_string(), Value::Integer(50));
+        tokens.insert("input_tokens".to_string(), Value::Integer(100));
+        tokens.insert("output_tokens".to_string(), Value::Integer(50));
         turn.write("tokens", &Value::Map(tokens));
 
         turn.clear();
         assert!(turn.tool.is_none());
-        assert_eq!(turn.tokens, (0, 0));
+        assert_eq!(turn.tokens, TokenUsage::default());
     }
 
     #[test]
@@ -294,22 +280,22 @@ mod tests {
     fn tokens_write_wrong_type_returns_false() {
         let mut turn = TurnState::new();
         assert!(!turn.write("tokens", &Value::String("100".to_string())));
-        assert_eq!(turn.tokens, (0, 0));
+        assert_eq!(turn.tokens, TokenUsage::default());
     }
 
     #[test]
-    fn tokens_write_map_missing_in_returns_false() {
+    fn tokens_write_map_missing_input_tokens_returns_false() {
         let mut turn = TurnState::new();
         let mut map = BTreeMap::new();
-        map.insert("out".to_string(), Value::Integer(50));
+        map.insert("output_tokens".to_string(), Value::Integer(50));
         assert!(!turn.write("tokens", &Value::Map(map)));
     }
 
     #[test]
-    fn tokens_write_map_missing_out_returns_false() {
+    fn tokens_write_map_missing_output_tokens_returns_false() {
         let mut turn = TurnState::new();
         let mut map = BTreeMap::new();
-        map.insert("in".to_string(), Value::Integer(100));
+        map.insert("input_tokens".to_string(), Value::Integer(100));
         assert!(!turn.write("tokens", &Value::Map(map)));
     }
 
@@ -317,8 +303,11 @@ mod tests {
     fn tokens_write_map_non_integer_values_returns_false() {
         let mut turn = TurnState::new();
         let mut map = BTreeMap::new();
-        map.insert("in".to_string(), Value::String("100".to_string()));
-        map.insert("out".to_string(), Value::String("50".to_string()));
+        map.insert("input_tokens".to_string(), Value::String("100".to_string()));
+        map.insert(
+            "output_tokens".to_string(),
+            Value::String("50".to_string()),
+        );
         assert!(!turn.write("tokens", &Value::Map(map)));
     }
 
@@ -338,15 +327,15 @@ mod tests {
     fn tokens_read_returns_map() {
         let mut turn = TurnState::new();
         let mut map = BTreeMap::new();
-        map.insert("in".to_string(), Value::Integer(200));
-        map.insert("out".to_string(), Value::Integer(75));
+        map.insert("input_tokens".to_string(), Value::Integer(200));
+        map.insert("output_tokens".to_string(), Value::Integer(75));
         turn.write("tokens", &Value::Map(map));
 
         let val = turn.read("tokens").unwrap();
         match val {
             Value::Map(m) => {
-                assert_eq!(m.get("in"), Some(&Value::Integer(200)));
-                assert_eq!(m.get("out"), Some(&Value::Integer(75)));
+                assert_eq!(m.get("input_tokens"), Some(&Value::Integer(200)));
+                assert_eq!(m.get("output_tokens"), Some(&Value::Integer(75)));
             }
             _ => panic!("expected map"),
         }
