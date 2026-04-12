@@ -316,10 +316,7 @@ mod integration_tests {
             .await
             .unwrap();
 
-        let back: Option<Greeting> = client
-            .read_typed(&path!("data/greeting"))
-            .await
-            .unwrap();
+        let back: Option<Greeting> = client.read_typed(&path!("data/greeting")).await.unwrap();
         assert_eq!(back, Some(greeting));
     }
 
@@ -336,10 +333,7 @@ mod integration_tests {
         let _h = broker.mount(path!("data"), store).await;
         let client = broker.client();
 
-        let result: Option<Anything> = client
-            .read_typed(&path!("data/nonexistent"))
-            .await
-            .unwrap();
+        let result: Option<Anything> = client.read_typed(&path!("data/nonexistent")).await.unwrap();
         assert!(result.is_none());
     }
 

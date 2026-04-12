@@ -18,7 +18,7 @@ ox-path = { path = "../ox-path" }
 serde = { version = "1", features = ["derive"] }
 structfs-core-store = { workspace = true }
 structfs-serde-store = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
