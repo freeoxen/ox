@@ -166,23 +166,29 @@ pub async fn fetch_view_state<'a>(
         _ => None,
     };
 
-    let search_chips = match ui_state.get("search_chips") {
-        Some(Value::Array(arr)) => arr
-            .iter()
-            .filter_map(|v| match v {
-                Value::String(s) => Some(s.clone()),
-                _ => None,
-            })
-            .collect(),
-        _ => Vec::new(),
-    };
-    let search_live_query = match ui_state.get("search_live_query") {
-        Some(Value::String(s)) => s.clone(),
-        _ => String::new(),
-    };
-    let search_active = match ui_state.get("search_active") {
-        Some(Value::Bool(b)) => *b,
-        _ => false,
+    let (search_chips, search_live_query, search_active) = match ui_state.get("search") {
+        Some(Value::Map(sm)) => {
+            let chips = match sm.get("chips") {
+                Some(Value::Array(arr)) => arr
+                    .iter()
+                    .filter_map(|v| match v {
+                        Value::String(s) => Some(s.clone()),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let live_query = match sm.get("live_query") {
+                Some(Value::String(s)) => s.clone(),
+                _ => String::new(),
+            };
+            let active = match sm.get("active") {
+                Some(Value::Bool(b)) => *b,
+                _ => false,
+            };
+            (chips, live_query, active)
+        }
+        _ => (Vec::new(), String::new(), false),
     };
 
     // Conditional reads based on screen

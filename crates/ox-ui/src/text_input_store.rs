@@ -100,6 +100,10 @@ impl TextInputStore {
         }
     }
 
+    pub fn content_and_cursor(&self) -> (String, usize) {
+        (self.content.clone(), self.cursor)
+    }
+
     fn snapshot(&self) -> Value {
         let mut map = BTreeMap::new();
         map.insert("content".to_string(), Value::String(self.content.clone()));
@@ -169,8 +173,8 @@ impl Writer for TextInputStore {
                 let value = data.as_value().ok_or_else(|| {
                     StoreError::store("text_input", "replace", "write data must contain a value")
                 })?;
-                let payload: ReplacePayload =
-                    structfs_serde_store::from_value(value.clone()).map_err(|e| {
+                let payload: ReplacePayload = structfs_serde_store::from_value(value.clone())
+                    .map_err(|e| {
                         StoreError::store(
                             "text_input",
                             "replace",
@@ -215,7 +219,13 @@ mod tests {
     }
 
     fn insert(text: &str, at: usize) -> Edit {
-        make_edit(EditOp::Insert { text: text.to_string() }, at, EditSource::Key)
+        make_edit(
+            EditOp::Insert {
+                text: text.to_string(),
+            },
+            at,
+            EditSource::Key,
+        )
     }
 
     fn delete(at: usize, len: usize) -> Edit {
@@ -225,9 +235,7 @@ mod tests {
     fn write_edit_seq(store: &mut TextInputStore, edits: Vec<Edit>, generation: u64) {
         let seq = EditSequence { edits, generation };
         let value = structfs_serde_store::to_value(&seq).unwrap();
-        store
-            .write(&path!("edit"), Record::parsed(value))
-            .unwrap();
+        store.write(&path!("edit"), Record::parsed(value)).unwrap();
     }
 
     fn write_replace(store: &mut TextInputStore, content: &str, cursor: usize) {
@@ -242,14 +250,26 @@ mod tests {
     }
 
     fn read_content(store: &mut TextInputStore) -> String {
-        match store.read(&path!("content")).unwrap().unwrap().as_value().unwrap() {
+        match store
+            .read(&path!("content"))
+            .unwrap()
+            .unwrap()
+            .as_value()
+            .unwrap()
+        {
             Value::String(s) => s.clone(),
             other => panic!("expected String, got {other:?}"),
         }
     }
 
     fn read_cursor(store: &mut TextInputStore) -> i64 {
-        match store.read(&path!("cursor")).unwrap().unwrap().as_value().unwrap() {
+        match store
+            .read(&path!("cursor"))
+            .unwrap()
+            .unwrap()
+            .as_value()
+            .unwrap()
+        {
             Value::Integer(i) => *i,
             other => panic!("expected Integer, got {other:?}"),
         }

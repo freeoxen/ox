@@ -14,6 +14,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = { workspace = true }
 ox-broker = { path = "../ox-broker" }
+ox-types = { path = "../ox-types" }
 ox-path = { path = "../ox-path" }
 ox-store-util = { path = "../ox-store-util" }
 structfs-core-store = { workspace = true }

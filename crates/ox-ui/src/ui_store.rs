@@ -5,38 +5,11 @@
 
 use std::collections::BTreeMap;
 
+use ox_types::{InsertContext, Mode, PendingAction, Screen, UiCommand};
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer, path};
 
 use crate::command::{Command, TxnLog};
 use crate::text_input_store::TextInputStore;
-
-// ---------------------------------------------------------------------------
-// Enums
-// ---------------------------------------------------------------------------
-
-/// Which screen is active.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Screen {
-    Inbox,
-    Thread,
-    Settings,
-}
-
-/// Editing mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mode {
-    Normal,
-    Insert,
-}
-
-/// Context for insert mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InsertContext {
-    Compose,
-    Reply,
-    Search,
-    Command,
-}
 
 // ---------------------------------------------------------------------------
 // UiStore
@@ -59,7 +32,7 @@ pub struct UiStore {
     /// Pending application-level action for the TUI to handle.
     /// Set by commands like send_input/quit/open_selected that
     /// require App-level logic the store can't perform.
-    pending_action: Option<String>,
+    pending_action: Option<PendingAction>,
     search_chips: Vec<String>,
     search_live_query: String,
     txn_log: TxnLog,
@@ -91,32 +64,16 @@ impl UiStore {
     // -- Helpers for reading state as Value --
 
     fn screen_value(&self) -> Value {
-        Value::String(
-            match self.screen {
-                Screen::Inbox => "inbox",
-                Screen::Thread => "thread",
-                Screen::Settings => "settings",
-            }
-            .to_string(),
-        )
+        structfs_serde_store::to_value(&self.screen).unwrap_or(Value::Null)
     }
 
     fn mode_value(&self) -> Value {
-        Value::String(
-            match self.mode {
-                Mode::Normal => "normal",
-                Mode::Insert => "insert",
-            }
-            .to_string(),
-        )
+        structfs_serde_store::to_value(&self.mode).unwrap_or(Value::Null)
     }
 
     fn insert_context_value(&self) -> Value {
-        match self.insert_context {
-            Some(InsertContext::Compose) => Value::String("compose".to_string()),
-            Some(InsertContext::Reply) => Value::String("reply".to_string()),
-            Some(InsertContext::Search) => Value::String("search".to_string()),
-            Some(InsertContext::Command) => Value::String("command".to_string()),
+        match &self.insert_context {
+            Some(ctx) => structfs_serde_store::to_value(ctx).unwrap_or(Value::Null),
             None => Value::Null,
         }
     }
@@ -137,7 +94,7 @@ impl UiStore {
 
     fn pending_action_value(&self) -> Value {
         match &self.pending_action {
-            Some(s) => Value::String(s.clone()),
+            Some(action) => structfs_serde_store::to_value(action).unwrap_or(Value::Null),
             None => Value::Null,
         }
     }
@@ -162,68 +119,204 @@ impl UiStore {
         !self.search_chips.is_empty() || !self.search_live_query.is_empty()
     }
 
-    fn all_fields_map(&mut self) -> Value {
-        let mut map = BTreeMap::new();
-        map.insert("screen".to_string(), self.screen_value());
-        map.insert("active_thread".to_string(), self.active_thread_value());
-        map.insert("mode".to_string(), self.mode_value());
-        map.insert("insert_context".to_string(), self.insert_context_value());
-        map.insert(
-            "selected_row".to_string(),
-            Value::Integer(self.selected_row as i64),
-        );
-        map.insert(
-            "row_count".to_string(),
-            Value::Integer(self.row_count as i64),
-        );
-        map.insert("scroll".to_string(), Value::Integer(self.scroll as i64));
-        map.insert(
-            "viewport_height".to_string(),
-            Value::Integer(self.viewport_height as i64),
-        );
-        map.insert(
-            "scroll_max".to_string(),
-            Value::Integer(self.scroll_max as i64),
-        );
-        // Read input snapshot from TextInputStore
-        if let Ok(Some(record)) = self.text_input_store.read(&path!("")) {
-            if let Some(Value::Map(input_map)) = record.as_value() {
-                if let Some(content) = input_map.get("content") {
-                    map.insert("input".to_string(), content.clone());
-                }
-                if let Some(cursor) = input_map.get("cursor") {
-                    map.insert("cursor".to_string(), cursor.clone());
-                }
-            }
+    fn snapshot(&mut self) -> ox_types::UiSnapshot {
+        let (content, cursor) = self.text_input_store.content_and_cursor();
+        ox_types::UiSnapshot {
+            screen: self.screen,
+            mode: self.mode,
+            active_thread: self.active_thread.clone(),
+            insert_context: self.insert_context,
+            selected_row: self.selected_row,
+            scroll: self.scroll,
+            scroll_max: self.scroll_max,
+            viewport_height: self.viewport_height,
+            input: ox_types::InputSnapshot { content, cursor },
+            pending_action: self.pending_action,
+            search: ox_types::SearchSnapshot {
+                chips: self.search_chips.clone(),
+                live_query: self.search_live_query.clone(),
+                active: self.search_active(),
+            },
         }
-        map.insert("modal".to_string(), self.modal_value());
-        map.insert("status".to_string(), self.status_value());
-        map.insert("pending_action".to_string(), self.pending_action_value());
-        map.insert("search_chips".to_string(), self.search_chips_value());
-        map.insert(
-            "search_live_query".to_string(),
-            Value::String(self.search_live_query.clone()),
-        );
-        map.insert(
-            "search_active".to_string(),
-            Value::Bool(self.search_active()),
-        );
-        Value::Map(map)
     }
 
-    // -- Helpers for parsing insert context --
+    // -- Handle typed UiCommand --
 
-    fn parse_insert_context(s: &str) -> Result<InsertContext, StoreError> {
-        match s {
-            "compose" => Ok(InsertContext::Compose),
-            "reply" => Ok(InsertContext::Reply),
-            "search" => Ok(InsertContext::Search),
-            "command" => Ok(InsertContext::Command),
-            _ => Err(StoreError::store(
-                "ui",
-                "enter_insert",
-                "unknown insert context",
-            )),
+    fn handle_ui_command(&mut self, cmd: UiCommand) -> Result<Path, StoreError> {
+        match cmd {
+            UiCommand::SelectNext => {
+                if self.selected_row + 1 < self.row_count {
+                    self.selected_row += 1;
+                }
+                Ok(path!("selected_row"))
+            }
+            UiCommand::SelectPrev => {
+                if self.selected_row > 0 {
+                    self.selected_row -= 1;
+                }
+                Ok(path!("selected_row"))
+            }
+            UiCommand::SelectFirst => {
+                self.selected_row = 0;
+                Ok(path!("selected_row"))
+            }
+            UiCommand::SelectLast => {
+                if self.row_count > 0 {
+                    self.selected_row = self.row_count - 1;
+                }
+                Ok(path!("selected_row"))
+            }
+            UiCommand::Open { thread_id } => {
+                self.active_thread = Some(thread_id);
+                self.screen = Screen::Thread;
+                self.scroll = 0;
+                Ok(path!("screen"))
+            }
+            UiCommand::Close => {
+                self.active_thread = None;
+                self.screen = Screen::Inbox;
+                self.mode = Mode::Normal;
+                self.insert_context = None;
+                self.scroll = 0;
+                self.scroll_max = 0;
+                Ok(path!("screen"))
+            }
+            UiCommand::GoToSettings => {
+                self.screen = Screen::Settings;
+                self.mode = Mode::Normal;
+                Ok(path!("screen"))
+            }
+            UiCommand::GoToInbox => {
+                self.screen = Screen::Inbox;
+                self.mode = Mode::Normal;
+                Ok(path!("screen"))
+            }
+            UiCommand::EnterInsert { context } => {
+                self.mode = Mode::Insert;
+                self.insert_context = Some(context);
+                let _ = self
+                    .text_input_store
+                    .write(&path!("clear"), Record::parsed(Value::Null));
+                Ok(path!("mode"))
+            }
+            UiCommand::ExitInsert => {
+                self.mode = Mode::Normal;
+                self.insert_context = None;
+                Ok(path!("mode"))
+            }
+            UiCommand::SetInput { content, cursor } => {
+                let cursor_pos = cursor.min(content.len());
+                let mut replace_map = BTreeMap::new();
+                replace_map.insert("content".to_string(), Value::String(content));
+                replace_map.insert("cursor".to_string(), Value::Integer(cursor_pos as i64));
+                self.text_input_store
+                    .write(&path!("replace"), Record::parsed(Value::Map(replace_map)))
+            }
+            UiCommand::ClearInput => self
+                .text_input_store
+                .write(&path!("clear"), Record::parsed(Value::Null)),
+            UiCommand::ScrollUp => {
+                if self.scroll < self.scroll_max {
+                    self.scroll += 1;
+                }
+                Ok(path!("scroll"))
+            }
+            UiCommand::ScrollDown => {
+                self.scroll = self.scroll.saturating_sub(1);
+                Ok(path!("scroll"))
+            }
+            UiCommand::ScrollToTop => {
+                self.scroll = self.scroll_max;
+                Ok(path!("scroll"))
+            }
+            UiCommand::ScrollToBottom => {
+                self.scroll = 0;
+                Ok(path!("scroll"))
+            }
+            UiCommand::ScrollPageUp => {
+                self.scroll = (self.scroll + self.viewport_height).min(self.scroll_max);
+                Ok(path!("scroll"))
+            }
+            UiCommand::ScrollPageDown => {
+                self.scroll = self.scroll.saturating_sub(self.viewport_height);
+                Ok(path!("scroll"))
+            }
+            UiCommand::ScrollHalfPageUp => {
+                let half = self.viewport_height / 2;
+                self.scroll = (self.scroll + half).min(self.scroll_max);
+                Ok(path!("scroll"))
+            }
+            UiCommand::ScrollHalfPageDown => {
+                let half = self.viewport_height / 2;
+                self.scroll = self.scroll.saturating_sub(half);
+                Ok(path!("scroll"))
+            }
+            UiCommand::SetScrollMax { max } => {
+                self.scroll_max = max;
+                if self.scroll > self.scroll_max {
+                    self.scroll = self.scroll_max;
+                }
+                Ok(path!("scroll_max"))
+            }
+            UiCommand::SetViewportHeight { height } => {
+                self.viewport_height = height;
+                Ok(path!("viewport_height"))
+            }
+            UiCommand::SetRowCount { count } => {
+                self.row_count = count;
+                if self.row_count > 0 && self.selected_row >= self.row_count {
+                    self.selected_row = self.row_count - 1;
+                } else if self.row_count == 0 {
+                    self.selected_row = 0;
+                }
+                Ok(path!("row_count"))
+            }
+            UiCommand::SendInput => {
+                self.pending_action = Some(PendingAction::SendInput);
+                Ok(path!("pending_action"))
+            }
+            UiCommand::Quit => {
+                self.pending_action = Some(PendingAction::Quit);
+                Ok(path!("pending_action"))
+            }
+            UiCommand::OpenSelected => {
+                self.pending_action = Some(PendingAction::OpenSelected);
+                Ok(path!("pending_action"))
+            }
+            UiCommand::ArchiveSelected => {
+                self.pending_action = Some(PendingAction::ArchiveSelected);
+                Ok(path!("pending_action"))
+            }
+            UiCommand::ClearPendingAction => {
+                self.pending_action = None;
+                Ok(path!("pending_action"))
+            }
+            UiCommand::SearchInsertChar { char: ch } => {
+                self.search_live_query.push(ch);
+                Ok(path!("search_live_query"))
+            }
+            UiCommand::SearchDeleteChar => {
+                self.search_live_query.pop();
+                Ok(path!("search_live_query"))
+            }
+            UiCommand::SearchClear => {
+                self.search_live_query.clear();
+                Ok(path!("search_live_query"))
+            }
+            UiCommand::SearchSaveChip => {
+                let trimmed = self.search_live_query.trim().to_string();
+                if !trimmed.is_empty() {
+                    self.search_chips.push(trimmed);
+                }
+                self.search_live_query.clear();
+                Ok(path!("search_chips"))
+            }
+            UiCommand::SearchDismissChip { index } => {
+                if index < self.search_chips.len() {
+                    self.search_chips.remove(index);
+                }
+                Ok(path!("search_chips"))
+            }
         }
     }
 }
@@ -246,7 +339,9 @@ impl Reader for UiStore {
             from.components[0].as_str()
         };
         let value = match key {
-            "" => self.all_fields_map(),
+            "" => structfs_serde_store::to_value(&self.snapshot()).map_err(|e| {
+                StoreError::store("ui", "read", format!("snapshot serialization failed: {e}"))
+            })?,
             "screen" => self.screen_value(),
             "active_thread" => self.active_thread_value(),
             "mode" => self.mode_value(),
@@ -309,6 +404,13 @@ impl Writer for UiStore {
             .as_value()
             .ok_or_else(|| StoreError::store("ui", "write", "write data must contain a value"))?;
 
+        // Try typed UiCommand on root path writes
+        if command.is_empty() {
+            if let Ok(ui_cmd) = structfs_serde_store::from_value::<UiCommand>(value.clone()) {
+                return self.handle_ui_command(ui_cmd);
+            }
+        }
+
         let cmd = Command::parse(value)?;
 
         // Txn deduplication
@@ -364,7 +466,15 @@ impl Writer for UiStore {
                 let context_str = cmd.get_str("context").ok_or_else(|| {
                     StoreError::store("ui", "enter_insert", "missing required field: context")
                 })?;
-                let ctx = Self::parse_insert_context(context_str)?;
+                let ctx: InsertContext =
+                    serde_json::from_value(serde_json::Value::String(context_str.to_string()))
+                        .map_err(|e| {
+                            StoreError::store(
+                                "ui",
+                                "enter_insert",
+                                format!("unknown insert context: {e}"),
+                            )
+                        })?;
                 self.mode = Mode::Insert;
                 self.insert_context = Some(ctx);
                 // Clear input via TextInputStore
@@ -519,8 +629,20 @@ impl Writer for UiStore {
                 Ok(path!("search_chips"))
             }
             // -- Application-level actions (set pending for TUI to handle) --
-            "send_input" | "quit" | "open_selected" | "archive_selected" => {
-                self.pending_action = Some(command.to_string());
+            "send_input" => {
+                self.pending_action = Some(PendingAction::SendInput);
+                Ok(path!("pending_action"))
+            }
+            "quit" => {
+                self.pending_action = Some(PendingAction::Quit);
+                Ok(path!("pending_action"))
+            }
+            "open_selected" => {
+                self.pending_action = Some(PendingAction::OpenSelected);
+                Ok(path!("pending_action"))
+            }
+            "archive_selected" => {
+                self.pending_action = Some(PendingAction::ArchiveSelected);
                 Ok(path!("pending_action"))
             }
             "clear_pending_action" => {
@@ -579,8 +701,8 @@ mod tests {
                 assert!(m.contains_key("mode"));
                 assert!(m.contains_key("selected_row"));
                 assert!(m.contains_key("input"));
-                assert!(m.contains_key("modal"));
-                assert!(m.contains_key("status"));
+                assert!(m.contains_key("pending_action"));
+                assert!(m.contains_key("search"));
             }
             _ => panic!("expected Map"),
         }
@@ -1224,11 +1346,72 @@ mod tests {
         let val = read_str(&mut store, "");
         match val {
             Value::Map(m) => {
-                assert!(m.contains_key("search_chips"));
-                assert!(m.contains_key("search_live_query"));
-                assert!(m.contains_key("search_active"));
+                // Snapshot nests search under a single "search" key
+                assert!(m.contains_key("search"));
+                match m.get("search") {
+                    Some(Value::Map(sm)) => {
+                        assert!(sm.contains_key("chips"));
+                        assert!(sm.contains_key("live_query"));
+                        assert!(sm.contains_key("active"));
+                    }
+                    _ => panic!("expected search to be a Map"),
+                }
             }
             _ => panic!("expected Map"),
         }
+    }
+
+    // --- Snapshot (Task 8) ---
+
+    #[test]
+    fn full_read_deserializes_as_ui_snapshot() {
+        let mut store = UiStore::new();
+        store
+            .write(
+                &path!("open"),
+                cmd_map(&[("thread_id", Value::String("t_1".into()))]),
+            )
+            .unwrap();
+        let record = store.read(&path!("")).unwrap().unwrap();
+        let value = record.as_value().unwrap();
+        let snapshot: ox_types::UiSnapshot =
+            structfs_serde_store::from_value(value.clone()).unwrap();
+        assert_eq!(snapshot.screen, ox_types::Screen::Thread);
+        assert_eq!(snapshot.active_thread.as_deref(), Some("t_1"));
+    }
+
+    // --- Typed UiCommand (Task 9) ---
+
+    #[test]
+    fn typed_command_open() {
+        let mut store = UiStore::new();
+        let cmd = ox_types::UiCommand::Open {
+            thread_id: "t_42".to_string(),
+        };
+        let value = structfs_serde_store::to_value(&cmd).unwrap();
+        store.write(&path!(""), Record::parsed(value)).unwrap();
+        assert_eq!(
+            read_str(&mut store, "screen"),
+            Value::String("thread".into())
+        );
+        assert_eq!(
+            read_str(&mut store, "active_thread"),
+            Value::String("t_42".into())
+        );
+    }
+
+    #[test]
+    fn typed_command_enter_insert() {
+        let mut store = UiStore::new();
+        let cmd = ox_types::UiCommand::EnterInsert {
+            context: ox_types::InsertContext::Compose,
+        };
+        let value = structfs_serde_store::to_value(&cmd).unwrap();
+        store.write(&path!(""), Record::parsed(value)).unwrap();
+        assert_eq!(read_str(&mut store, "mode"), Value::String("insert".into()));
+        assert_eq!(
+            read_str(&mut store, "insert_context"),
+            Value::String("compose".into())
+        );
     }
 }
