@@ -38,6 +38,11 @@ pub enum Action {
         /// Additional fields to include in the dispatched command value.
         fields: Vec<ActionField>,
     },
+    /// Command invocation through the command registry.
+    Invoke {
+        command: String,
+        args: std::collections::BTreeMap<String, serde_json::Value>,
+    },
     /// Execute a sequence of command actions in order.
     Macro(Vec<Action>),
 }
@@ -156,6 +161,21 @@ impl InputStore {
                 })?;
                 dispatcher(target, Record::parsed(Value::Map(cmd)))
             }
+            Action::Invoke { command, args } => {
+                // Build a CommandInvocation as a StructFS value and dispatch to command/invoke
+                let inv = crate::command_def::CommandInvocation {
+                    command: command.clone(),
+                    args: args.clone(),
+                };
+                let inv_value = structfs_serde_store::to_value(&inv).map_err(|e| {
+                    StoreError::store("input", "dispatch", format!("failed to serialize invocation: {e}"))
+                })?;
+                let target = Path::parse("command/invoke").unwrap();
+                let dispatcher = self.dispatcher.as_mut().ok_or_else(|| {
+                    StoreError::store("input", "dispatch", "no dispatcher configured")
+                })?;
+                dispatcher(&target, Record::parsed(inv_value))
+            }
             Action::Macro(steps) => {
                 let mut last_result = oxpath!();
                 for step in steps {
@@ -183,6 +203,10 @@ impl InputStore {
             Action::Command { target, .. } => {
                 map.insert("target".to_string(), Value::String(target.to_string()));
                 map.insert("type".to_string(), Value::String("command".to_string()));
+            }
+            Action::Invoke { command, .. } => {
+                map.insert("command".to_string(), Value::String(command.clone()));
+                map.insert("type".to_string(), Value::String("invoke".to_string()));
             }
             Action::Macro(steps) => {
                 map.insert("steps".to_string(), Value::Integer(steps.len() as i64));
@@ -839,5 +863,64 @@ mod tests {
         bad.insert("key".to_string(), Value::String("j".to_string()));
         let result = store.write(&path!("key"), Record::parsed(Value::Map(bad)));
         assert!(result.is_err());
+    }
+
+    // -- Invoke tests --
+
+    #[test]
+    fn dispatch_invoke_action() {
+        let bindings = vec![Binding {
+            context: BindingContext {
+                mode: "normal".to_string(),
+                key: "q".to_string(),
+                screen: None,
+            },
+            action: Action::Invoke {
+                command: "quit".to_string(),
+                args: BTreeMap::new(),
+            },
+            description: "quit".to_string(),
+        }];
+        let mut store = InputStore::new(bindings);
+        let (dispatcher, log) = mock_dispatcher();
+        store.set_dispatcher(dispatcher);
+
+        store
+            .write(&path!("key"), key_event("normal", "q", "inbox"))
+            .unwrap();
+
+        let log = log.lock().unwrap();
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].0, "command/invoke");
+    }
+
+    #[test]
+    fn dispatch_invoke_with_args() {
+        let mut args = BTreeMap::new();
+        args.insert("context".to_string(), serde_json::Value::String("compose".to_string()));
+        let bindings = vec![Binding {
+            context: BindingContext {
+                mode: "normal".to_string(),
+                key: "c".to_string(),
+                screen: None,
+            },
+            action: Action::Invoke {
+                command: "compose".to_string(),
+                args,
+            },
+            description: "compose".to_string(),
+        }];
+        let mut store = InputStore::new(bindings);
+        let (dispatcher, log) = mock_dispatcher();
+        store.set_dispatcher(dispatcher);
+
+        store
+            .write(&path!("key"), key_event("normal", "c", "inbox"))
+            .unwrap();
+
+        let log = log.lock().unwrap();
+        assert_eq!(log[0].0, "command/invoke");
+        // The dispatched value should contain the invocation
+        assert!(log[0].1.contains_key("command"));
     }
 }
