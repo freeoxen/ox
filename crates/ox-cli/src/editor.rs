@@ -1,5 +1,6 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 use ox_path::oxpath;
+use ox_types::UiCommand;
 use ox_ui::text_input_store::{Edit, EditOp, EditSequence, EditSource};
 
 // ---------------------------------------------------------------------------
@@ -140,8 +141,8 @@ pub(crate) async fn submit_editor_content(
         ui.active_thread.as_deref(),
     );
 
-    let _ = client.write(&oxpath!("ui", "clear_input"), cmd!()).await;
-    let _ = client.write(&oxpath!("ui", "exit_insert"), cmd!()).await;
+    let _ = client.write_typed(&oxpath!("ui"), &UiCommand::ClearInput).await;
+    let _ = client.write_typed(&oxpath!("ui"), &UiCommand::ExitInsert).await;
     session.reset_after_submit();
 
     new_tid
@@ -245,7 +246,7 @@ pub(crate) async fn execute_command_input(input: &str, client: &ox_broker::Clien
         .await;
     if let Err(e) = result {
         let _ = client
-            .write(&oxpath!("ui", "set_status"), cmd!("text" => format!("{e}")))
+            .write_typed(&oxpath!("ui"), &UiCommand::SetStatus { text: format!("{e}") })
             .await;
     }
 }
@@ -366,9 +367,9 @@ pub(crate) async fn handle_editor_normal_key(
             } else if let Some((text, cursor)) = app.history_down() {
                 flush_pending_edits(session, client).await;
                 let _ = client
-                    .write(
-                        &oxpath!("ui", "set_input"),
-                        cmd!("text" => text.clone(), "cursor" => cursor as i64),
+                    .write_typed(
+                        &oxpath!("ui"),
+                        &UiCommand::SetInput { content: text.clone(), cursor },
                     )
                     .await;
                 session.init_from(text, cursor);
@@ -382,9 +383,9 @@ pub(crate) async fn handle_editor_normal_key(
             } else if let Some((text, cursor)) = app.history_up(&session.content) {
                 flush_pending_edits(session, client).await;
                 let _ = client
-                    .write(
-                        &oxpath!("ui", "set_input"),
-                        cmd!("text" => text.clone(), "cursor" => cursor as i64),
+                    .write_typed(
+                        &oxpath!("ui"),
+                        &UiCommand::SetInput { content: text.clone(), cursor },
                     )
                     .await;
                 session.init_from(text, cursor);
@@ -494,15 +495,15 @@ pub(crate) async fn handle_editor_command_key(
             match cmd.as_str() {
                 "q" | "quit" => {
                     // Exit the editor (back to app normal mode)
-                    let _ = client.write(&oxpath!("ui", "clear_input"), cmd!()).await;
-                    let _ = client.write(&oxpath!("ui", "exit_insert"), cmd!()).await;
+                    let _ = client.write_typed(&oxpath!("ui"), &UiCommand::ClearInput).await;
+                    let _ = client.write_typed(&oxpath!("ui"), &UiCommand::ExitInsert).await;
                     session.reset_after_submit();
                 }
                 "w" | "write" | "wq" | "x" => {
                     let new_tid = submit_editor_content(session, app, client).await;
                     if let Some(tid) = new_tid {
                         let _ = client
-                            .write(&oxpath!("ui", "open"), cmd!("thread_id" => tid))
+                            .write_typed(&oxpath!("ui"), &UiCommand::Open { thread_id: tid })
                             .await;
                     }
                 }

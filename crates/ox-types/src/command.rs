@@ -38,4 +38,5 @@ pub enum UiCommand {
     SearchClear,
     SearchSaveChip,
     SearchDismissChip { index: usize },
+    SetStatus { text: String },
 }

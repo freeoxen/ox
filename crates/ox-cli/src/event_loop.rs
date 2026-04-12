@@ -10,7 +10,7 @@ use crate::types::{APPROVAL_OPTIONS, CustomizeState};
 use crate::view_state::fetch_view_state;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
 use ox_path::oxpath;
-use ox_types::{InsertContext, Mode, PendingAction, Screen};
+use ox_types::{InsertContext, Mode, PendingAction, Screen, UiCommand};
 use ox_ui::text_input_store::EditSource;
 use std::time::Duration;
 use structfs_core_store::Writer as StructWriter;
@@ -49,7 +49,7 @@ pub async fn run_async(
     let mut settings = if needs_setup {
         // Navigate to settings screen via broker
         client
-            .write(&oxpath!("ui", "go_to_settings"), cmd!())
+            .write_typed(&oxpath!("ui"), &UiCommand::GoToSettings)
             .await
             .ok();
         SettingsState::new_wizard()
@@ -137,9 +137,9 @@ pub async fn run_async(
             // Set row_count in UiStore (for inbox navigation bounds)
             // Only write on inbox screen — thread screen has no row selection.
             if vs.ui.screen == Screen::Inbox {
-                let row_count = vs.inbox_threads.len() as i64;
+                let row_count = vs.inbox_threads.len();
                 let _ = client
-                    .write(&oxpath!("ui", "set_row_count"), cmd!("count" => row_count))
+                    .write_typed(&oxpath!("ui"), &UiCommand::SetRowCount { count: row_count })
                     .await;
             }
 
@@ -155,18 +155,15 @@ pub async fn run_async(
 
             // Update scroll_max and viewport_height in broker (after draw)
             if vs.ui.active_thread.is_some() && viewport_height > 0 {
-                let scroll_max = content_height.unwrap_or(0).saturating_sub(viewport_height) as i64;
+                let scroll_max = content_height.unwrap_or(0).saturating_sub(viewport_height);
                 let _ = client
-                    .write(
-                        &oxpath!("ui", "set_scroll_max"),
-                        cmd!("max" => scroll_max.max(0)),
-                    )
+                    .write_typed(&oxpath!("ui"), &UiCommand::SetScrollMax { max: scroll_max })
                     .await;
 
                 let _ = client
-                    .write(
-                        &oxpath!("ui", "set_viewport_height"),
-                        cmd!("height" => viewport_height as i64),
+                    .write_typed(
+                        &oxpath!("ui"),
+                        &UiCommand::SetViewportHeight { height: viewport_height },
                     )
                     .await;
             }
@@ -191,14 +188,14 @@ pub async fn run_async(
                     if insert_context_owned == Some(InsertContext::Command) {
                         flush_pending_edits(&mut input_session, client).await;
                         execute_command_input(&input_session.content, client).await;
-                        let _ = client.write(&oxpath!("ui", "clear_input"), cmd!()).await;
-                        let _ = client.write(&oxpath!("ui", "exit_insert"), cmd!()).await;
+                        let _ = client.write_typed(&oxpath!("ui"), &UiCommand::ClearInput).await;
+                        let _ = client.write_typed(&oxpath!("ui"), &UiCommand::ExitInsert).await;
                         input_session.reset_after_submit();
                     } else {
                         let new_tid = submit_editor_content(&mut input_session, app, client).await;
                         if let Some(tid) = new_tid {
                             let _ = client
-                                .write(&oxpath!("ui", "open"), cmd!("thread_id" => tid))
+                                .write_typed(&oxpath!("ui"), &UiCommand::Open { thread_id: tid })
                                 .await;
                         }
                     }
@@ -207,7 +204,7 @@ pub async fn run_async(
                 PendingAction::OpenSelected => {
                     if let Some(id) = &selected_thread_id {
                         let _ = client
-                            .write(&oxpath!("ui", "open"), cmd!("thread_id" => id))
+                            .write_typed(&oxpath!("ui"), &UiCommand::Open { thread_id: id.clone() })
                             .await;
                     }
                 }
@@ -223,7 +220,7 @@ pub async fn run_async(
             }
             // Clear the pending action
             let _ = client
-                .write(&oxpath!("ui", "clear_pending_action"), cmd!())
+                .write_typed(&oxpath!("ui"), &UiCommand::ClearPendingAction)
                 .await;
         }
 
@@ -745,7 +742,7 @@ pub async fn run_async(
                                     settings.wizard = None;
                                     // Navigate back to inbox
                                     client
-                                        .write(&oxpath!("ui", "go_to_inbox"), cmd!())
+                                        .write_typed(&oxpath!("ui"), &UiCommand::GoToInbox)
                                         .await
                                         .ok();
                                     true
@@ -878,7 +875,7 @@ pub async fn run_async(
                                     // Allow skipping wizard — go to inbox
                                     settings.wizard = None;
                                     client
-                                        .write(&oxpath!("ui", "go_to_inbox"), cmd!())
+                                        .write_typed(&oxpath!("ui"), &UiCommand::GoToInbox)
                                         .await
                                         .ok();
                                     true
@@ -1027,9 +1024,9 @@ pub async fn run_async(
                             if let KeyCode::Char(c @ '1'..='9') = key.code {
                                 let idx = (c as u8 - b'1') as usize;
                                 let _ = client
-                                    .write(
-                                        &oxpath!("ui", "search_dismiss_chip"),
-                                        cmd!("index" => idx as i64),
+                                    .write_typed(
+                                        &oxpath!("ui"),
+                                        &UiCommand::SearchDismissChip { index: idx },
                                     )
                                     .await;
                                 continue;
@@ -1249,16 +1246,16 @@ async fn dispatch_mouse_owned(
     match kind {
         MouseEventKind::ScrollUp => {
             if has_active_thread {
-                let _ = client.write(&oxpath!("ui", "scroll_up"), cmd!()).await;
+                let _ = client.write_typed(&oxpath!("ui"), &UiCommand::ScrollUp).await;
             } else {
-                let _ = client.write(&oxpath!("ui", "select_prev"), cmd!()).await;
+                let _ = client.write_typed(&oxpath!("ui"), &UiCommand::SelectPrev).await;
             }
         }
         MouseEventKind::ScrollDown => {
             if has_active_thread {
-                let _ = client.write(&oxpath!("ui", "scroll_down"), cmd!()).await;
+                let _ = client.write_typed(&oxpath!("ui"), &UiCommand::ScrollDown).await;
             } else {
-                let _ = client.write(&oxpath!("ui", "select_next"), cmd!()).await;
+                let _ = client.write_typed(&oxpath!("ui"), &UiCommand::SelectNext).await;
             }
         }
         _ => {}
@@ -1278,23 +1275,20 @@ async fn dispatch_search_edit(
     match (modifiers, code) {
         (_, KeyCode::Enter) => {
             let _ = client
-                .write(&oxpath!("ui", "search_save_chip"), cmd!())
+                .write_typed(&oxpath!("ui"), &UiCommand::SearchSaveChip)
                 .await;
         }
         (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
-            let _ = client.write(&oxpath!("ui", "search_clear"), cmd!()).await;
+            let _ = client.write_typed(&oxpath!("ui"), &UiCommand::SearchClear).await;
         }
         (_, KeyCode::Backspace) => {
             let _ = client
-                .write(&oxpath!("ui", "search_delete_char"), cmd!())
+                .write_typed(&oxpath!("ui"), &UiCommand::SearchDeleteChar)
                 .await;
         }
         (_, KeyCode::Char(c)) => {
             let _ = client
-                .write(
-                    &oxpath!("ui", "search_insert_char"),
-                    cmd!("char" => c.to_string()),
-                )
+                .write_typed(&oxpath!("ui"), &UiCommand::SearchInsertChar { char: c })
                 .await;
         }
         _ => {}

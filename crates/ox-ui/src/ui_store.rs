@@ -317,6 +317,10 @@ impl UiStore {
                 }
                 Ok(path!("search_chips"))
             }
+            UiCommand::SetStatus { text } => {
+                self.status = if text.is_empty() { None } else { Some(text) };
+                Ok(path!("status"))
+            }
         }
     }
 }

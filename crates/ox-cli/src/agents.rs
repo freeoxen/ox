@@ -54,16 +54,13 @@ impl CompletionTransport for CliCompletionTransport {
             },
         )?;
         if usage.input_tokens > 0 || usage.output_tokens > 0 {
-            let mut tmap = BTreeMap::new();
-            tmap.insert("in".to_string(), Value::Integer(usage.input_tokens as i64));
-            tmap.insert(
-                "out".to_string(),
-                Value::Integer(usage.output_tokens as i64),
-            );
             self.rt_handle
-                .block_on(self.scoped_client.write(
+                .block_on(self.scoped_client.write_typed(
                     &path!("history/turn/tokens"),
-                    Record::parsed(Value::Map(tmap)),
+                    &ox_types::TokenUsage {
+                        input_tokens: usage.input_tokens,
+                        output_tokens: usage.output_tokens,
+                    },
                 ))
                 .ok();
         }
@@ -482,10 +479,15 @@ impl HostEffects for CliEffects {
                 self.broker_write(&path!("history/turn/streaming"), Value::String(text));
             }
             AgentEvent::ToolCallStart { name } => {
-                let mut map = BTreeMap::new();
-                map.insert("name".to_string(), Value::String(name));
-                map.insert("status".to_string(), Value::String("running".to_string()));
-                self.broker_write(&path!("history/turn/tool"), Value::Map(map));
+                self.rt_handle
+                    .block_on(self.scoped_client.write_typed(
+                        &path!("history/turn/tool"),
+                        &ox_types::ToolStatus {
+                            name,
+                            status: "running".to_string(),
+                        },
+                    ))
+                    .ok();
             }
             AgentEvent::ToolCallResult { .. } => {
                 self.broker_write(&path!("history/turn/tool"), Value::Null);
