@@ -114,6 +114,59 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Submit editor content: flush edits, send message, clear, exit, reset.
+/// Returns the new thread ID if a compose created one.
+pub(crate) async fn submit_editor_content(
+    session: &mut InputSession,
+    app: &mut crate::app::App,
+    client: &ox_broker::ClientHandle,
+) -> Option<String> {
+    flush_pending_edits(session, client).await;
+    let text = session.content.clone();
+
+    // Read context from broker
+    let ctx = client
+        .read(&structfs_core_store::path!("ui/insert_context"))
+        .await
+        .ok()
+        .flatten()
+        .and_then(|r| match r.as_value() {
+            Some(structfs_core_store::Value::String(s)) => Some(s.clone()),
+            _ => None,
+        });
+    let active = client
+        .read(&structfs_core_store::path!("ui/active_thread"))
+        .await
+        .ok()
+        .flatten()
+        .and_then(|r| match r.as_value() {
+            Some(structfs_core_store::Value::String(s)) => Some(s.clone()),
+            _ => None,
+        });
+    let mode = client
+        .read(&structfs_core_store::path!("ui/mode"))
+        .await
+        .ok()
+        .flatten()
+        .and_then(|r| match r.as_value() {
+            Some(structfs_core_store::Value::String(s)) => Some(s.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| "insert".to_string());
+
+    let new_tid = app.send_input_with_text(text, &mode, ctx.as_deref(), active.as_deref());
+
+    let _ = client
+        .write(&structfs_core_store::path!("ui/clear_input"), cmd!())
+        .await;
+    let _ = client
+        .write(&structfs_core_store::path!("ui/exit_insert"), cmd!())
+        .await;
+    session.reset_after_submit();
+
+    new_tid
+}
+
 /// Flush pending edits to the broker as a single EditSequence write.
 pub(crate) async fn flush_pending_edits(
     input_session: &mut InputSession,
@@ -471,78 +524,8 @@ pub(crate) async fn handle_editor_command_key(
                         .await;
                     session.reset_after_submit();
                 }
-                "w" | "write" => {
-                    // Send the input
-                    flush_pending_edits(session, client).await;
-                    let text = session.content.clone();
-                    // Read current context to determine compose vs reply
-                    let ctx = client
-                        .read(&structfs_core_store::path!("ui/insert_context"))
-                        .await
-                        .ok()
-                        .flatten()
-                        .and_then(|r| match r.as_value() {
-                            Some(structfs_core_store::Value::String(s)) => Some(s.clone()),
-                            _ => None,
-                        });
-                    let active = client
-                        .read(&structfs_core_store::path!("ui/active_thread"))
-                        .await
-                        .ok()
-                        .flatten()
-                        .and_then(|r| match r.as_value() {
-                            Some(structfs_core_store::Value::String(s)) => Some(s.clone()),
-                            _ => None,
-                        });
-                    let new_tid =
-                        app.send_input_with_text(text, "insert", ctx.as_deref(), active.as_deref());
-                    let _ = client
-                        .write(&structfs_core_store::path!("ui/clear_input"), cmd!())
-                        .await;
-                    let _ = client
-                        .write(&structfs_core_store::path!("ui/exit_insert"), cmd!())
-                        .await;
-                    session.reset_after_submit();
-                    if let Some(tid) = new_tid {
-                        let _ = client
-                            .write(
-                                &structfs_core_store::path!("ui/open"),
-                                cmd!("thread_id" => tid),
-                            )
-                            .await;
-                    }
-                }
-                "wq" | "x" => {
-                    // Send and quit (same as :w then :q)
-                    flush_pending_edits(session, client).await;
-                    let text = session.content.clone();
-                    let ctx = client
-                        .read(&structfs_core_store::path!("ui/insert_context"))
-                        .await
-                        .ok()
-                        .flatten()
-                        .and_then(|r| match r.as_value() {
-                            Some(structfs_core_store::Value::String(s)) => Some(s.clone()),
-                            _ => None,
-                        });
-                    let active = client
-                        .read(&structfs_core_store::path!("ui/active_thread"))
-                        .await
-                        .ok()
-                        .flatten()
-                        .and_then(|r| match r.as_value() {
-                            Some(structfs_core_store::Value::String(s)) => Some(s.clone()),
-                            _ => None,
-                        });
-                    let new_tid =
-                        app.send_input_with_text(text, "insert", ctx.as_deref(), active.as_deref());
-                    let _ = client
-                        .write(&structfs_core_store::path!("ui/clear_input"), cmd!())
-                        .await;
-                    let _ = client
-                        .write(&structfs_core_store::path!("ui/exit_insert"), cmd!())
-                        .await;
-                    session.reset_after_submit();
+                "w" | "write" | "wq" | "x" => {
+                    let new_tid = submit_editor_content(session, app, client).await;
                     if let Some(tid) = new_tid {
                         let _ = client
                             .write(

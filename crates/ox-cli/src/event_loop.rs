@@ -2,6 +2,7 @@ use crate::app::App;
 use crate::editor::{
     EditorMode, InputSession, execute_command_input, flush_pending_edits,
     handle_editor_command_key, handle_editor_insert_key, handle_editor_normal_key,
+    submit_editor_content,
 };
 use crate::settings_state::SettingsState;
 use crate::theme::Theme;
@@ -186,32 +187,20 @@ pub async fn run_async(
         if let Some(action) = &pending_action {
             match action.as_str() {
                 "send_input" => {
-                    // Flush pending edits so broker is in sync
-                    flush_pending_edits(&mut input_session, client).await;
-                    let submit_text = input_session.content.clone();
-
                     if insert_context_owned.as_deref() == Some("command") {
-                        // Command mode: parse input as command invocation
-                        execute_command_input(&submit_text, client).await;
+                        flush_pending_edits(&mut input_session, client).await;
+                        execute_command_input(&input_session.content, client).await;
+                        let _ = client.write(&path!("ui/clear_input"), cmd!()).await;
+                        let _ = client.write(&path!("ui/exit_insert"), cmd!()).await;
+                        input_session.reset_after_submit();
                     } else {
-                        let new_tid = app.send_input_with_text(
-                            submit_text,
-                            &mode_owned,
-                            insert_context_owned.as_deref(),
-                            active_thread_id.as_deref(),
-                        );
-                        // If compose created a new thread, open it in UiStore
+                        let new_tid = submit_editor_content(&mut input_session, app, client).await;
                         if let Some(tid) = new_tid {
                             let _ = client
                                 .write(&path!("ui/open"), cmd!("thread_id" => tid))
                                 .await;
                         }
                     }
-                    // Clear input and exit insert mode through broker
-                    let _ = client.write(&path!("ui/clear_input"), cmd!()).await;
-                    let _ = client.write(&path!("ui/exit_insert"), cmd!()).await;
-                    // Reset local InputSession
-                    input_session.reset_after_submit();
                 }
                 "quit" => return Ok(()),
                 "open_selected" => {
