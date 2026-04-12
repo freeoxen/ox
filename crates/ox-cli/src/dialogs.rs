@@ -2,6 +2,7 @@ use crate::theme::Theme;
 use crate::types::APPROVAL_OPTIONS;
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
@@ -163,18 +164,23 @@ pub(crate) fn draw_shortcuts_modal(
     theme: &Theme,
 ) {
     let area = frame.area();
+    let key_style = Style::default().add_modifier(Modifier::BOLD);
+    let desc_style = Style::default();
+    let footer_style = theme.status; // dim
+
     let content_lines: Vec<Line> = key_hints
         .iter()
         .map(|(key, desc)| {
             Line::from(vec![
-                Span::styled(format!("{key:>12}"), theme.title_badge),
-                Span::styled(format!("  {desc}"), theme.status),
+                Span::styled(format!("  {key:>10}"), key_style),
+                Span::styled(format!("  {desc}"), desc_style),
             ])
         })
         .collect();
 
-    let line_count = content_lines.len() as u16 + 4; // +2 border +1 title +1 footer
-    let dialog_width = 50.min(area.width.saturating_sub(4));
+    let line_count = content_lines.len() as u16 + 4; // +2 border +1 blank +1 footer
+    let max_width = content_lines.iter().map(|l| l.width()).max().unwrap_or(30) as u16 + 4; // padding
+    let dialog_width = max_width.clamp(30, area.width.saturating_sub(4));
     let dialog_height = line_count.min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(dialog_width)) / 2;
     let y = (area.height.saturating_sub(dialog_height)) / 2;
@@ -182,11 +188,11 @@ pub(crate) fn draw_shortcuts_modal(
 
     frame.render_widget(Clear, dialog_area);
 
-    let title = format!(" Shortcuts — {mode}/{screen} ");
+    let title = format!(" {mode}/{screen} ");
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(theme.input_border)
-        .title(Span::styled(title, theme.title_badge));
+        .border_style(Style::default())
+        .title(Span::styled(title, key_style));
     let inner = block.inner(dialog_area);
     frame.render_widget(block, dialog_area);
 
@@ -194,7 +200,7 @@ pub(crate) fn draw_shortcuts_modal(
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "  ? or Esc to close",
-        theme.status,
+        footer_style,
     )));
 
     let content = Paragraph::new(Text::from(lines));
