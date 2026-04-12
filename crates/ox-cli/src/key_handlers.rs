@@ -7,12 +7,15 @@ pub(crate) async fn send_approval_response(
     active_thread_id: &Option<String>,
     response: &str,
 ) {
-    use structfs_core_store::{Record, Value};
-
     if let Some(tid) = active_thread_id {
         let path = ox_path::oxpath!("threads", tid, "approval", "response");
         let _ = client
-            .write(&path, Record::parsed(Value::String(response.to_string())))
+            .write_typed(
+                &path,
+                &ox_types::ApprovalResponse {
+                    decision: response.to_string(),
+                },
+            )
             .await;
     }
 }

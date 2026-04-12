@@ -1,10 +1,11 @@
 use crate::app::App;
 use crate::editor::{
-    EditorMode, InputSession, execute_command_input, flush_pending_edits, submit_editor_content,
+    execute_command_input, flush_pending_edits, submit_editor_content,
 };
-use crate::settings_state::SettingsState;
+use crate::settings_shell::SettingsShell;
 use crate::shell::Outcome;
 use crate::theme::Theme;
+use crate::thread_shell::ThreadShell;
 use crate::types::{APPROVAL_OPTIONS, CustomizeState};
 use crate::view_state::fetch_view_state;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
@@ -45,56 +46,21 @@ pub async fn run_async(
         pending_customize: None,
         show_shortcuts: false,
     };
-    let mut input_session = InputSession::new();
-    let mut text_input_view = crate::text_input_view::TextInputView::new();
-    let mut prev_mode = Mode::Normal;
-    let mut settings = if needs_setup {
+    let mut thread = ThreadShell::new();
+    let mut settings_shell = if needs_setup {
         // Navigate to settings screen via broker
         client
             .write_typed(&oxpath!("ui"), &UiCommand::Global(GlobalCommand::GoToSettings))
             .await
             .ok();
-        SettingsState::new_wizard()
+        SettingsShell::new_wizard()
     } else {
-        SettingsState::new()
+        SettingsShell::new()
     };
 
     loop {
         // Poll pending async test connection
-        if let Some(ref mut rx) = settings.pending_test {
-            match rx.try_recv() {
-                Ok(result) => {
-                    match result.test {
-                        Ok((dialect, ms)) => {
-                            settings.test_status = crate::settings_state::TestStatus::Success(
-                                format!("Connected ({dialect}, {ms}ms)"),
-                            );
-                        }
-                        Err(e) => {
-                            settings.test_status = crate::settings_state::TestStatus::Failed(e);
-                        }
-                    }
-                    match result.models {
-                        Ok(models) => {
-                            settings.discovered_models = models;
-                            settings.model_picker_idx = None;
-                        }
-                        Err(_) => {
-                            settings.discovered_models.clear();
-                        }
-                    }
-                    settings.pending_test = None;
-                }
-                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
-                    // Still in progress — will check next frame
-                }
-                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                    settings.test_status =
-                        crate::settings_state::TestStatus::Failed("Test cancelled".into());
-                    settings.pending_test = None;
-                }
-            }
-        }
+        settings_shell.poll();
 
         // 1. Fetch ViewState, draw, extract owned data needed after drop.
         //
@@ -118,8 +84,8 @@ pub async fn run_async(
                 client,
                 app,
                 &dialog,
-                input_session.editor_mode,
-                &input_session.command_buffer,
+                thread.input_session.editor_mode,
+                &thread.input_session.command_buffer,
             )
             .await;
 
@@ -130,20 +96,12 @@ pub async fn run_async(
             };
 
             // Detect mode transitions for InputSession sync
-            if cur_mode != prev_mode {
-                if cur_mode == Mode::Insert {
-                    // Entering insert mode — initialize InputSession from broker
-                    if let UiSnapshot::Thread(snap) = &vs.ui {
-                        input_session
-                            .init_from(snap.input.content.clone(), snap.input.cursor);
-                    }
-                    input_session.editor_mode = EditorMode::Insert;
-                } else if prev_mode == Mode::Insert {
-                    // Exiting insert mode — flush any pending edits
-                    flush_pending_edits(&mut input_session, client).await;
-                }
-                prev_mode = cur_mode;
+            let was_insert = thread.prev_mode == Mode::Insert && cur_mode != Mode::Insert;
+            if was_insert {
+                // Exiting insert mode — flush any pending edits
+                thread.flush(client).await;
             }
+            thread.sync_mode(&vs.ui);
 
             // Set row_count in UiStore (for inbox navigation bounds)
             // Only write on inbox screen — thread screen has no row selection.
@@ -158,11 +116,11 @@ pub async fn run_async(
             }
 
             // Prepare TextInputView from InputSession (optimistic local state)
-            text_input_view.set_state(&input_session.content, input_session.cursor);
+            thread.prepare_view();
 
             // Draw
             terminal.draw(|frame| {
-                let (ch, vh) = crate::tui::draw(frame, &vs, &settings, theme, &mut text_input_view);
+                let (ch, vh) = crate::tui::draw(frame, &vs, &settings_shell.state, theme, &mut thread.text_input_view);
                 content_height = ch;
                 viewport_height = vh;
             })?;
@@ -228,8 +186,8 @@ pub async fn run_async(
             match action {
                 PendingAction::SendInput => {
                     if insert_context_owned == Some(InsertContext::Command) {
-                        flush_pending_edits(&mut input_session, client).await;
-                        execute_command_input(&input_session.content, client).await;
+                        flush_pending_edits(&mut thread.input_session, client).await;
+                        execute_command_input(&thread.input_session.content, client).await;
                         let _ = client
                             .write_typed(
                                 &oxpath!("ui"),
@@ -242,9 +200,9 @@ pub async fn run_async(
                                 &UiCommand::Thread(ThreadCommand::ExitInsert),
                             )
                             .await;
-                        input_session.reset_after_submit();
+                        thread.input_session.reset_after_submit();
                     } else {
-                        let new_tid = submit_editor_content(&mut input_session, app, client).await;
+                        let new_tid = submit_editor_content(&mut thread.input_session, app, client).await;
                         if let Some(tid) = new_tid {
                             let _ = client
                                 .write_typed(
@@ -273,9 +231,19 @@ pub async fn run_async(
                 PendingAction::ArchiveSelected => {
                     if let Some(id) = &selected_thread_id {
                         let update_path = ox_path::oxpath!("threads", id);
+                        let mut map = std::collections::BTreeMap::new();
+                        map.insert(
+                            "inbox_state".to_string(),
+                            structfs_core_store::Value::String("done".to_string()),
+                        );
                         app.pool
                             .inbox()
-                            .write(&update_path, cmd!("inbox_state" => "done"))
+                            .write(
+                                &update_path,
+                                structfs_core_store::Record::parsed(
+                                    structfs_core_store::Value::Map(map),
+                                ),
+                            )
                             .ok();
                     }
                 }
@@ -290,12 +258,8 @@ pub async fn run_async(
         }
 
         // Populate settings accounts from config when on the settings screen.
-        if screen_owned == Screen::Settings && settings.accounts.is_empty() {
-            let config = crate::config::resolve_config(
-                app.pool.inbox_root(),
-                &crate::config::CliOverrides::default(),
-            );
-            settings.refresh_accounts(&config, &app.pool.inbox_root().join("keys"));
+        if screen_owned == Screen::Settings {
+            settings_shell.ensure_accounts(app.pool.inbox_root());
         }
 
         // 5. Poll terminal event
@@ -346,7 +310,7 @@ pub async fn run_async(
                         if screen_owned == Screen::Settings && mode_owned == Mode::Normal {
                             let inbox_root = app.pool.inbox_root().to_path_buf();
                             if let Outcome::Handled = crate::settings_shell::handle_key(
-                                &mut settings,
+                                &mut settings_shell.state,
                                 &key_str,
                                 client,
                                 &inbox_root,
@@ -379,7 +343,7 @@ pub async fn run_async(
                             if let Outcome::Handled = crate::thread_shell::handle_esc_intercept(
                                 &key_str,
                                 insert_context_owned,
-                                &mut input_session,
+                                &mut thread.input_session,
                             ) {
                                 continue;
                             }
@@ -403,7 +367,7 @@ pub async fn run_async(
                             } else {
                                 let tw = terminal.get_frame().area().width;
                                 crate::thread_shell::handle_unbound_insert_key(
-                                    &mut input_session,
+                                    &mut thread.input_session,
                                     insert_context_owned,
                                     app,
                                     client,
@@ -420,33 +384,33 @@ pub async fn run_async(
                     // Border drag handling
                     if mode_owned == Mode::Insert {
                         match mouse.kind {
-                            MouseEventKind::Down(_) if text_input_view.is_on_border(mouse.row) => {
-                                text_input_view.start_border_drag(mouse.row);
+                            MouseEventKind::Down(_) if thread.text_input_view.is_on_border(mouse.row) => {
+                                thread.text_input_view.start_border_drag(mouse.row);
                             }
-                            MouseEventKind::Drag(_) if text_input_view.is_dragging() => {
-                                text_input_view.update_border_drag(mouse.row);
+                            MouseEventKind::Drag(_) if thread.text_input_view.is_dragging() => {
+                                thread.text_input_view.update_border_drag(mouse.row);
                             }
-                            MouseEventKind::Up(_) if text_input_view.is_dragging() => {
-                                text_input_view.end_border_drag();
+                            MouseEventKind::Up(_) if thread.text_input_view.is_dragging() => {
+                                thread.text_input_view.end_border_drag();
                             }
                             // Click in input area — move cursor
                             MouseEventKind::Down(_) => {
                                 if let Some(byte_pos) =
-                                    text_input_view.click_to_byte_offset(mouse.column, mouse.row)
+                                    thread.text_input_view.click_to_byte_offset(mouse.column, mouse.row)
                                 {
-                                    input_session.cursor = byte_pos;
+                                    thread.input_session.cursor = byte_pos;
                                 }
                             }
                             // Scroll in input area
                             MouseEventKind::ScrollUp
-                                if text_input_view.contains(mouse.column, mouse.row) =>
+                                if thread.text_input_view.contains(mouse.column, mouse.row) =>
                             {
-                                text_input_view.scroll_by(-3);
+                                thread.text_input_view.scroll_by(-3);
                             }
                             MouseEventKind::ScrollDown
-                                if text_input_view.contains(mouse.column, mouse.row) =>
+                                if thread.text_input_view.contains(mouse.column, mouse.row) =>
                             {
-                                text_input_view.scroll_by(3);
+                                thread.text_input_view.scroll_by(3);
                             }
                             _ => {
                                 // Fall through to normal mouse dispatch
@@ -463,7 +427,7 @@ pub async fn run_async(
                     } else
                     // Click on settings edit dialog
                     if let MouseEventKind::Down(_) = mouse.kind {
-                        if screen_owned == Screen::Settings && settings.editing.is_some() {
+                        if screen_owned == Screen::Settings && settings_shell.state.editing.is_some() {
                             let term_size = crossterm::terminal::size().unwrap_or((80, 24));
                             let dialog_h = 10u16;
                             let dialog_w = term_size.0 * 60 / 100;
@@ -478,7 +442,7 @@ pub async fn run_async(
                                 && mouse.column < dialog_left + dialog_w
                             {
                                 let field = (mouse.row - field_first_row) as usize;
-                                if let Some(ref mut editing) = settings.editing {
+                                if let Some(ref mut editing) = settings_shell.state.editing {
                                     editing.focus = field;
                                 }
                             }
@@ -519,14 +483,14 @@ pub async fn run_async(
                     if mode_owned == Mode::Insert
                         && insert_context_owned != Some(InsertContext::Search)
                     {
-                        input_session.insert(&text, EditSource::Paste);
+                        thread.input_session.insert(&text, EditSource::Paste);
                     }
                 }
                 _ => {}
             }
 
             // Batch flush pending edits after processing this event
-            flush_pending_edits(&mut input_session, client).await;
+            flush_pending_edits(&mut thread.input_session, client).await;
         }
     }
 }

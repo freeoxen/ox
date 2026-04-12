@@ -1,14 +1,67 @@
-//! Thread screen key handling — extracted from event_loop.rs.
+//! Thread screen shell — owns editor state and input view.
 //!
-//! Handles editor sub-mode dispatch (compose/reply) and ESC interception.
+//! Extracted from event_loop.rs. ThreadShell holds the InputSession,
+//! TextInputView, and prev_mode that were previously loose locals.
 
 use crate::editor::{
-    EditorMode, InputSession, handle_editor_command_key, handle_editor_insert_key,
-    handle_editor_normal_key,
+    EditorMode, InputSession, flush_pending_edits, handle_editor_command_key,
+    handle_editor_insert_key, handle_editor_normal_key,
 };
 use crate::shell::Outcome;
 use crossterm::event::KeyCode;
-use ox_types::InsertContext;
+use ox_types::{InsertContext, Mode, UiSnapshot};
+
+/// Thread screen local state, owned by the event loop.
+pub(crate) struct ThreadShell {
+    pub input_session: InputSession,
+    pub text_input_view: crate::text_input_view::TextInputView,
+    pub prev_mode: Mode,
+}
+
+impl ThreadShell {
+    pub fn new() -> Self {
+        Self {
+            input_session: InputSession::new(),
+            text_input_view: crate::text_input_view::TextInputView::new(),
+            prev_mode: Mode::Normal,
+        }
+    }
+
+    /// Detect mode transitions and sync InputSession accordingly.
+    ///
+    /// Call each frame after fetching the UI snapshot.
+    pub fn sync_mode(&mut self, ui: &UiSnapshot) {
+        let cur_mode = match ui {
+            UiSnapshot::Thread(snap) => snap.mode,
+            _ => Mode::Normal,
+        };
+
+        if cur_mode != self.prev_mode {
+            if cur_mode == Mode::Insert {
+                // Entering insert mode — initialize InputSession from broker
+                if let UiSnapshot::Thread(snap) = ui {
+                    self.input_session
+                        .init_from(snap.input.content.clone(), snap.input.cursor);
+                }
+                self.input_session.editor_mode = EditorMode::Insert;
+            }
+            // Note: exiting insert (prev_mode == Insert) is handled by flush()
+            // which the caller invokes after sync_mode when prev was Insert.
+            self.prev_mode = cur_mode;
+        }
+    }
+
+    /// Flush pending edits to the broker.
+    pub async fn flush(&mut self, client: &ox_broker::ClientHandle) {
+        flush_pending_edits(&mut self.input_session, client).await;
+    }
+
+    /// Prepare the TextInputView from InputSession (optimistic local state).
+    pub fn prepare_view(&mut self) {
+        self.text_input_view
+            .set_state(&self.input_session.content, self.input_session.cursor);
+    }
+}
 
 /// Handle thread-specific insert-mode keys.
 ///

@@ -1,10 +1,89 @@
-//! Settings screen key handling — extracted from event_loop.rs.
+//! Settings screen shell — owns ephemeral TUI state for the Settings screen.
+//!
+//! `SettingsShell` wraps `SettingsState` and adds poll / ensure helpers that
+//! were previously inlined in `event_loop.rs`.
 
 use crate::settings_state::{DIALECTS, SettingsFocus, SettingsState, TestStatus};
 use crate::shell::Outcome;
 use ox_path::oxpath;
 use ox_types::{GlobalCommand, UiCommand};
 use structfs_core_store::{Record, Value};
+
+// -----------------------------------------------------------------------
+// SettingsShell — event-loop-owned wrapper
+// -----------------------------------------------------------------------
+
+/// Settings screen local state, owned by the event loop.
+pub(crate) struct SettingsShell {
+    pub state: SettingsState,
+}
+
+impl SettingsShell {
+    pub fn new() -> Self {
+        Self {
+            state: SettingsState::new(),
+        }
+    }
+
+    pub fn new_wizard() -> Self {
+        Self {
+            state: SettingsState::new_wizard(),
+        }
+    }
+
+    /// Poll the pending async test connection, updating status on completion.
+    pub fn poll(&mut self) {
+        if let Some(ref mut rx) = self.state.pending_test {
+            match rx.try_recv() {
+                Ok(result) => {
+                    match result.test {
+                        Ok((dialect, ms)) => {
+                            self.state.test_status =
+                                TestStatus::Success(format!("Connected ({dialect}, {ms}ms)"));
+                        }
+                        Err(e) => {
+                            self.state.test_status = TestStatus::Failed(e);
+                        }
+                    }
+                    match result.models {
+                        Ok(models) => {
+                            self.state.discovered_models = models;
+                            self.state.model_picker_idx = None;
+                        }
+                        Err(_) => {
+                            self.state.discovered_models.clear();
+                        }
+                    }
+                    self.state.pending_test = None;
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                    // Still in progress — will check next frame
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                    self.state.test_status = TestStatus::Failed("Test cancelled".into());
+                    self.state.pending_test = None;
+                }
+            }
+        }
+    }
+
+    /// Populate accounts from config if the list is empty and we are on the
+    /// Settings screen.
+    pub fn ensure_accounts(&mut self, inbox_root: &std::path::Path) {
+        if self.state.accounts.is_empty() {
+            let config = crate::config::resolve_config(
+                inbox_root,
+                &crate::config::CliOverrides::default(),
+            );
+            self.state
+                .refresh_accounts(&config, &inbox_root.join("keys"));
+        }
+    }
+}
+
+// -----------------------------------------------------------------------
+// Key handling
+// -----------------------------------------------------------------------
 
 /// Handle a key event on the Settings screen (normal mode).
 ///
@@ -162,25 +241,16 @@ async fn handle_edit_dialog_key(
 
             // Write account through ConfigStore (not direct file)
             let provider_path = ox_path::oxpath!("config", "gate", "accounts", name, "provider");
-            client
-                .write(&provider_path, Record::parsed(Value::String(provider)))
-                .await
-                .ok();
+            client.write_typed(&provider_path, &provider).await.ok();
             if let Some(ep) = endpoint {
                 let ep_path = ox_path::oxpath!("config", "gate", "accounts", name, "endpoint");
-                client
-                    .write(&ep_path, Record::parsed(Value::String(ep)))
-                    .await
-                    .ok();
+                client.write_typed(&ep_path, &ep).await.ok();
             }
 
             // Write key to ConfigStore + key file
             if !key.is_empty() {
                 let key_path = ox_path::oxpath!("config", "gate", "accounts", name, "key");
-                client
-                    .write(&key_path, Record::parsed(Value::String(key.clone())))
-                    .await
-                    .ok();
+                client.write_typed(&key_path, &key).await.ok();
                 crate::config::write_key_file(&keys_dir, &name, &key).ok();
             }
 
@@ -214,10 +284,7 @@ async fn handle_edit_dialog_key(
                     "auto-setting default account"
                 );
                 client
-                    .write(
-                        &oxpath!("config", "gate", "defaults", "account"),
-                        Record::parsed(Value::String(name.clone())),
-                    )
+                    .write_typed(&oxpath!("config", "gate", "defaults", "account"), &name)
                     .await
                     .ok();
             }
@@ -329,10 +396,7 @@ async fn handle_delete_confirm_key(
                     .map(|a| a.name.clone())
                     .unwrap_or_default();
                 client
-                    .write(
-                        &oxpath!("config", "gate", "defaults", "account"),
-                        Record::parsed(Value::String(alt)),
-                    )
+                    .write_typed(&oxpath!("config", "gate", "defaults", "account"), &alt)
                     .await
                     .ok();
             }
@@ -515,24 +579,15 @@ async fn handle_navigation_key(
 
             // Write to ConfigStore via broker
             client
-                .write(
-                    &oxpath!("config", "gate", "defaults", "account"),
-                    Record::parsed(Value::String(acct_name)),
-                )
+                .write_typed(&oxpath!("config", "gate", "defaults", "account"), &acct_name)
                 .await
                 .ok();
             client
-                .write(
-                    &oxpath!("config", "gate", "defaults", "model"),
-                    Record::parsed(Value::String(model.to_string())),
-                )
+                .write_typed(&oxpath!("config", "gate", "defaults", "model"), &model)
                 .await
                 .ok();
             client
-                .write(
-                    &oxpath!("config", "gate", "defaults", "max_tokens"),
-                    Record::parsed(Value::Integer(max_tokens)),
-                )
+                .write_typed(&oxpath!("config", "gate", "defaults", "max_tokens"), &max_tokens)
                 .await
                 .ok();
             // Persist to disk
@@ -573,10 +628,7 @@ async fn handle_navigation_key(
                 if let Some(acct) = settings.accounts.get(settings.selected_account) {
                     let name = acct.name.clone();
                     client
-                        .write(
-                            &oxpath!("config", "gate", "defaults", "account"),
-                            Record::parsed(Value::String(name)),
-                        )
+                        .write_typed(&oxpath!("config", "gate", "defaults", "account"), &name)
                         .await
                         .ok();
                     client
