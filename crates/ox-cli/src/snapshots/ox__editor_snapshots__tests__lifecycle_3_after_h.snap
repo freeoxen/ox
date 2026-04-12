@@ -1,0 +1,6 @@
+---
+source: crates/ox-cli/src/editor_snapshots.rs
+expression: step3
+---
+ NORMAL ────────────────────────────────
+hello world

@@ -1,0 +1,8 @@
+---
+source: crates/ox-cli/src/editor_snapshots.rs
+expression: rendered
+---
+────────────────────────────────────────
+line one
+line two
+line three

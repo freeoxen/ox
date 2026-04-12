@@ -1,0 +1,5 @@
+---
+source: crates/ox-cli/src/editor_snapshots.rs
+expression: rendered
+---
+:open thread_abc123
