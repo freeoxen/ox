@@ -285,7 +285,10 @@ mod tests {
             Box::new(SystemProvider::new("You are helpful.".to_string())),
         );
         ns.mount("tools", Box::new(ox_tools::ToolStore::empty()));
-        ns.mount("history", Box::new(ox_history::HistoryView::new(shared_log)));
+        ns.mount(
+            "history",
+            Box::new(ox_history::HistoryView::new(shared_log)),
+        );
         ns.mount("gate", Box::new(ox_gate::GateStore::new()));
         ns
     }

@@ -21,8 +21,8 @@ pub(crate) fn draw(
     theme: &Theme,
     text_input_view: &mut crate::text_input_view::TextInputView,
 ) -> (Option<usize>, usize) {
-    let is_command_mode = vs.ui.mode == Mode::Insert
-        && vs.ui.insert_context == Some(InsertContext::Command);
+    let is_command_mode =
+        vs.ui.mode == Mode::Insert && vs.ui.insert_context == Some(InsertContext::Command);
     let in_insert = vs.ui.mode == Mode::Insert && !is_command_mode;
     let show_filter = vs.ui.active_thread.is_none() && vs.ui.search.active;
 

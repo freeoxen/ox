@@ -101,19 +101,13 @@ pub async fn fetch_view_state<'a>(
 
                 // Read turn state (typed)
                 let turn_path = ox_path::oxpath!("threads", tid, "history", "turn");
-                if let Ok(Some(t)) = client
-                    .read_typed::<ox_history::TurnState>(&turn_path)
-                    .await
-                {
+                if let Ok(Some(t)) = client.read_typed::<ox_history::TurnState>(&turn_path).await {
                     turn = t;
                 }
 
                 // Read approval/pending (typed)
                 let approval_path = ox_path::oxpath!("threads", tid, "approval", "pending");
-                if let Ok(Some(ap)) = client
-                    .read_typed::<ApprovalRequest>(&approval_path)
-                    .await
-                {
+                if let Ok(Some(ap)) = client.read_typed::<ApprovalRequest>(&approval_path).await {
                     // Only treat as pending if the tool_name is non-empty
                     if !ap.tool_name.is_empty() {
                         approval_pending = Some(ap);

@@ -141,8 +141,12 @@ pub(crate) async fn submit_editor_content(
         ui.active_thread.as_deref(),
     );
 
-    let _ = client.write_typed(&oxpath!("ui"), &UiCommand::ClearInput).await;
-    let _ = client.write_typed(&oxpath!("ui"), &UiCommand::ExitInsert).await;
+    let _ = client
+        .write_typed(&oxpath!("ui"), &UiCommand::ClearInput)
+        .await;
+    let _ = client
+        .write_typed(&oxpath!("ui"), &UiCommand::ExitInsert)
+        .await;
     session.reset_after_submit();
 
     new_tid
@@ -246,7 +250,12 @@ pub(crate) async fn execute_command_input(input: &str, client: &ox_broker::Clien
         .await;
     if let Err(e) = result {
         let _ = client
-            .write_typed(&oxpath!("ui"), &UiCommand::SetStatus { text: format!("{e}") })
+            .write_typed(
+                &oxpath!("ui"),
+                &UiCommand::SetStatus {
+                    text: format!("{e}"),
+                },
+            )
             .await;
     }
 }
@@ -369,7 +378,10 @@ pub(crate) async fn handle_editor_normal_key(
                 let _ = client
                     .write_typed(
                         &oxpath!("ui"),
-                        &UiCommand::SetInput { content: text.clone(), cursor },
+                        &UiCommand::SetInput {
+                            content: text.clone(),
+                            cursor,
+                        },
                     )
                     .await;
                 session.init_from(text, cursor);
@@ -385,7 +397,10 @@ pub(crate) async fn handle_editor_normal_key(
                 let _ = client
                     .write_typed(
                         &oxpath!("ui"),
-                        &UiCommand::SetInput { content: text.clone(), cursor },
+                        &UiCommand::SetInput {
+                            content: text.clone(),
+                            cursor,
+                        },
                     )
                     .await;
                 session.init_from(text, cursor);
@@ -495,8 +510,12 @@ pub(crate) async fn handle_editor_command_key(
             match cmd.as_str() {
                 "q" | "quit" => {
                     // Exit the editor (back to app normal mode)
-                    let _ = client.write_typed(&oxpath!("ui"), &UiCommand::ClearInput).await;
-                    let _ = client.write_typed(&oxpath!("ui"), &UiCommand::ExitInsert).await;
+                    let _ = client
+                        .write_typed(&oxpath!("ui"), &UiCommand::ClearInput)
+                        .await;
+                    let _ = client
+                        .write_typed(&oxpath!("ui"), &UiCommand::ExitInsert)
+                        .await;
                     session.reset_after_submit();
                 }
                 "w" | "write" | "wq" | "x" => {

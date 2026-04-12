@@ -2,7 +2,9 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
+use ratatui::widgets::{
+    Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+};
 use unicode_width::UnicodeWidthChar;
 
 /// Maximum number of lines the input area can expand to.
@@ -34,7 +36,10 @@ pub struct WrapLine {
 /// This is the single source of truth for where line breaks occur.
 pub fn wrap_lines(content: &str, width: u16) -> Vec<WrapLine> {
     if width == 0 {
-        return vec![WrapLine { start: 0, end: content.len() }];
+        return vec![WrapLine {
+            start: 0,
+            end: content.len(),
+        }];
     }
     let w = width as usize;
     let mut lines = Vec::new();
@@ -43,7 +48,10 @@ pub fn wrap_lines(content: &str, width: u16) -> Vec<WrapLine> {
 
     for (byte_pos, ch) in content.char_indices() {
         if ch == '\n' {
-            lines.push(WrapLine { start: line_start, end: byte_pos });
+            lines.push(WrapLine {
+                start: line_start,
+                end: byte_pos,
+            });
             line_start = byte_pos + ch.len_utf8();
             col = 0;
             continue;
@@ -51,14 +59,20 @@ pub fn wrap_lines(content: &str, width: u16) -> Vec<WrapLine> {
         let char_w = ch.width().unwrap_or(0);
         if col + char_w > w && col > 0 {
             // Soft wrap before this character
-            lines.push(WrapLine { start: line_start, end: byte_pos });
+            lines.push(WrapLine {
+                start: line_start,
+                end: byte_pos,
+            });
             line_start = byte_pos;
             col = 0;
         }
         col += char_w;
     }
     // Final line (even if empty — cursor can be here)
-    lines.push(WrapLine { start: line_start, end: content.len() });
+    lines.push(WrapLine {
+        start: line_start,
+        end: content.len(),
+    });
     lines
 }
 
@@ -87,7 +101,10 @@ pub fn cursor_in_lines(content: &str, cursor_byte: usize, lines: &[WrapLine]) ->
     // Fallback: end of last line
     let last = lines.len().saturating_sub(1);
     let col: usize = if let Some(wl) = lines.last() {
-        content[wl.start..wl.end].chars().map(|c| c.width().unwrap_or(0)).sum()
+        content[wl.start..wl.end]
+            .chars()
+            .map(|c| c.width().unwrap_or(0))
+            .sum()
     } else {
         0
     };
@@ -96,7 +113,12 @@ pub fn cursor_in_lines(content: &str, cursor_byte: usize, lines: &[WrapLine]) ->
 
 /// Convert a (line_index, display_column) to a byte offset in the content.
 /// Clamps to valid positions. Used for Up/Down arrows and mouse click.
-pub fn byte_offset_at(content: &str, lines: &[WrapLine], target_line: usize, target_col: u16) -> usize {
+pub fn byte_offset_at(
+    content: &str,
+    lines: &[WrapLine],
+    target_line: usize,
+    target_col: u16,
+) -> usize {
     let line_idx = target_line.min(lines.len().saturating_sub(1));
     let wl = &lines[line_idx];
     let line_str = &content[wl.start..wl.end];
@@ -147,19 +169,14 @@ impl TextInputView {
         self.cursor = cursor.min(content.len());
     }
 
-    pub fn render(
-        &mut self,
-        frame: &mut Frame,
-        area: Rect,
-        border_style: Style,
-        title: &str,
-    ) {
-        let block = Block::default()
+    pub fn render(&mut self, frame: &mut Frame, area: Rect, border_style: Style, title: &str) {
+        // Compute inner area from border geometry (title doesn't affect it)
+        let base_block = Block::default()
             .borders(Borders::TOP)
-            .border_style(border_style)
-            .title(title);
-        let inner = block.inner(area);
+            .border_style(border_style);
+        let inner = base_block.inner(area);
         if inner.width == 0 || inner.height == 0 {
+            let block = base_block.title(title);
             frame.render_widget(block, area);
             return;
         }
@@ -180,13 +197,21 @@ impl TextInputView {
 
         self.last_inner = Some(inner);
 
+        // Build block with line position indicator when content overflows
+        let mut block = base_block.title(title);
+        if total_lines > inner.height as usize {
+            let indicator = format!(" {}/{} ", cursor_line + 1, total_lines);
+            block = block.title_top(Line::from(indicator).right_aligned());
+        }
+
         let paragraph = Paragraph::new(display_lines).block(block);
         frame.render_widget(paragraph, area);
 
         // Scrollbar (only if content overflows)
         if total_lines > inner.height as usize {
-            let mut scrollbar_state = ScrollbarState::new(total_lines.saturating_sub(inner.height as usize))
-                .position(self.scroll_top);
+            let mut scrollbar_state =
+                ScrollbarState::new(total_lines.saturating_sub(inner.height as usize))
+                    .position(self.scroll_top);
             let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
             frame.render_stateful_widget(scrollbar, inner, &mut scrollbar_state);
         }
@@ -194,10 +219,7 @@ impl TextInputView {
         // Cursor
         let visible_cursor_y = cursor_line.saturating_sub(self.scroll_top);
         if (visible_cursor_y as u16) < inner.height {
-            frame.set_cursor_position((
-                inner.x + cursor_col,
-                inner.y + visible_cursor_y as u16,
-            ));
+            frame.set_cursor_position((inner.x + cursor_col, inner.y + visible_cursor_y as u16));
         }
     }
 
@@ -206,8 +228,10 @@ impl TextInputView {
         if let Some(inner) = self.last_inner {
             // Include one row above inner for the top border
             let area_top = inner.y.saturating_sub(1);
-            col >= inner.x && col < inner.x + inner.width
-                && row >= area_top && row < inner.y + inner.height
+            col >= inner.x
+                && col < inner.x + inner.width
+                && row >= area_top
+                && row < inner.y + inner.height
         } else {
             false
         }
@@ -257,7 +281,10 @@ impl TextInputView {
     /// Scroll the input view by a delta (positive = down, negative = up).
     pub fn scroll_by(&mut self, delta: i32) {
         if delta > 0 {
-            let lines = wrap_lines(&self.content, self.last_inner.map(|r| r.width).unwrap_or(80));
+            let lines = wrap_lines(
+                &self.content,
+                self.last_inner.map(|r| r.width).unwrap_or(80),
+            );
             let vh = self.last_inner.map(|r| r.height as usize).unwrap_or(1);
             let max_scroll = lines.len().saturating_sub(vh);
             self.scroll_top = (self.scroll_top + delta as usize).min(max_scroll);
@@ -270,8 +297,10 @@ impl TextInputView {
     /// to move the cursor to, or None if the click is outside the input area.
     pub fn click_to_byte_offset(&self, col: u16, row: u16) -> Option<usize> {
         let inner = self.last_inner?;
-        if col < inner.x || col >= inner.x + inner.width
-            || row < inner.y || row >= inner.y + inner.height
+        if col < inner.x
+            || col >= inner.x + inner.width
+            || row < inner.y
+            || row >= inner.y + inner.height
         {
             return None;
         }
