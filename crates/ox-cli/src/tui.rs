@@ -90,18 +90,12 @@ pub(crate) fn draw(
         let input_area = chunks[idx];
         idx += 1;
 
-        let ctx_label = match vs.insert_context.as_deref() {
-            Some("compose") => "compose",
-            Some("reply") => "reply",
-            Some("search") => "search",
-            _ => "",
-        };
         let title = if vs.thinking {
-            " streaming... ".to_string()
+            " streaming... "
         } else if vs.editor_mode == crate::event_loop::EditorMode::Normal {
-            format!(" {ctx_label} [NORMAL] ")
+            " NORMAL "
         } else {
-            format!(" {ctx_label} ")
+            ""
         };
 
         // Hide cursor when a modal overlay is active or in search context
@@ -110,13 +104,13 @@ pub(crate) fn draw(
             && vs.insert_context.as_deref() != Some("search");
 
         if show_cursor {
-            text_input_view.render(frame, input_area, theme.input_border, &title);
+            text_input_view.render(frame, input_area, theme.input_border, title);
         } else {
             // Render without cursor (use a plain Paragraph like before)
             let input_block = Block::default()
                 .borders(Borders::TOP)
                 .border_style(theme.input_border)
-                .title(title.as_str());
+                .title(title);
             let input = Paragraph::new(vs.input.as_str()).block(input_block);
             frame.render_widget(input, input_area);
         }
@@ -174,7 +168,14 @@ fn draw_status_bar(
     area: Rect,
 ) {
     let mode_badge = if vs.mode == "insert" {
-        Span::styled(" INSERT ", theme.insert_badge)
+        let label = match vs.insert_context.as_deref() {
+            Some("compose") => " COMPOSE ",
+            Some("reply") => " REPLY ",
+            Some("search") => " SEARCH ",
+            Some("command") => " COMMAND ",
+            _ => " INSERT ",
+        };
+        Span::styled(label, theme.insert_badge)
     } else {
         Span::styled(" NORMAL ", theme.title_badge)
     };
