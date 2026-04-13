@@ -265,37 +265,31 @@ fn agent_worker(
         .ok();
 
     // Read provider and API key from thread's GateStore (resolves through config handle)
-    let default_account = match adapter.read(&path!("gate/defaults/account")) {
-        Ok(Some(r)) => match r.as_value() {
-            Some(Value::String(s)) => s.clone(),
-            _ => "anthropic".to_string(),
-        },
-        _ => "anthropic".to_string(),
-    };
-    let provider = match adapter.read(&ox_path::oxpath!(
-        "gate",
-        "accounts",
-        default_account,
-        "provider"
-    )) {
-        Ok(Some(r)) => match r.as_value() {
-            Some(Value::String(s)) => s.clone(),
-            _ => "anthropic".to_string(),
-        },
-        _ => "anthropic".to_string(),
-    };
-    let api_key_for_transport = match adapter.read(&ox_path::oxpath!(
-        "gate",
-        "accounts",
-        default_account,
-        "key"
-    )) {
-        Ok(Some(r)) => match r.as_value() {
-            Some(Value::String(s)) => s.clone(),
-            _ => String::new(),
-        },
-        _ => String::new(),
-    };
+    let default_account = adapter
+        .read_typed::<String>(&path!("gate/defaults/account"))
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "anthropic".to_string());
+    let provider = adapter
+        .read_typed::<String>(&ox_path::oxpath!(
+            "gate",
+            "accounts",
+            default_account,
+            "provider"
+        ))
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "anthropic".to_string());
+    let api_key_for_transport = adapter
+        .read_typed::<String>(&ox_path::oxpath!(
+            "gate",
+            "accounts",
+            default_account,
+            "key"
+        ))
+        .ok()
+        .flatten()
+        .unwrap_or_default();
     let provider_config = match provider.as_str() {
         "openai" => ProviderConfig::openai(),
         _ => ProviderConfig::anthropic(),

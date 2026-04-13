@@ -280,14 +280,10 @@ async fn handle_edit_dialog_key(
 
             // If default account doesn't exist, set it to this one
             let current_default = client
-                .read(&oxpath!("config", "gate", "defaults", "account"))
+                .read_typed::<String>(&oxpath!("config", "gate", "defaults", "account"))
                 .await
                 .ok()
                 .flatten()
-                .and_then(|r| match r.as_value() {
-                    Some(Value::String(s)) => Some(s.clone()),
-                    _ => None,
-                })
                 .unwrap_or_default();
             let default_exists = client
                 .read(&ox_path::oxpath!(
