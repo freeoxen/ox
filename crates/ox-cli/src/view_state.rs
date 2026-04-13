@@ -175,32 +175,19 @@ async fn read_key_hints(client: &ClientHandle, mode: &str, screen: &str) -> Vec<
     let bindings_path =
         structfs_core_store::Path::parse(&format!("input/bindings/{mode}/{screen}"))
             .unwrap_or_else(|_| path!("input/bindings"));
-    let bindings = match client.read(&bindings_path).await {
-        Ok(Some(record)) => match record.as_value() {
-            Some(Value::Array(arr)) => arr.clone(),
-            _ => return Vec::new(),
-        },
-        _ => return Vec::new(),
-    };
+    let hints: Vec<ox_types::KeyHint> = client
+        .read_typed(&bindings_path)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
 
-    let mut hints = Vec::new();
+    let mut result = Vec::new();
     let mut seen_keys = std::collections::HashSet::new();
-    for binding in &bindings {
-        if let Value::Map(m) = binding {
-            let key = match m.get("key") {
-                Some(Value::String(s)) => s.clone(),
-                _ => continue,
-            };
-            let desc = match m.get("description") {
-                Some(Value::String(s)) => s.clone(),
-                _ => continue,
-            };
-            // Skip duplicate keys (screen-specific already takes priority in the
-            // binding list, but we may see both generic and specific)
-            if seen_keys.insert(key.clone()) {
-                hints.push((key, desc));
-            }
+    for hint in hints {
+        if seen_keys.insert(hint.key.clone()) {
+            result.push((hint.key, hint.description));
         }
     }
-    hints
+    result
 }
