@@ -260,11 +260,9 @@ fn agent_worker(
     let broker_client = broker.client();
 
     // Write tool schemas via adapter (triggers ThreadRegistry lazy-mount from disk)
-    if let Ok(val) = structfs_serde_store::to_value(&tool_store.tool_schemas_for_model()) {
-        adapter
-            .write(&path!("tools/schemas"), Record::parsed(val))
-            .ok();
-    }
+    adapter
+        .write_typed(&path!("tools/schemas"), &tool_store.tool_schemas_for_model())
+        .ok();
 
     // Read provider and API key from thread's GateStore (resolves through config handle)
     let default_account = match adapter.read(&path!("gate/defaults/account")) {
