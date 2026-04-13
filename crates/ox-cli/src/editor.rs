@@ -174,20 +174,12 @@ pub(crate) async fn submit_editor_content(
 
 /// Write a set_input command to the broker (path-based, applies to active editor).
 async fn write_set_input(client: &ox_broker::ClientHandle, text: &str, cursor: usize) {
-    let mut map = std::collections::BTreeMap::new();
-    map.insert(
-        "text".to_string(),
-        structfs_core_store::Value::String(text.to_string()),
-    );
-    map.insert(
-        "cursor".to_string(),
-        structfs_core_store::Value::Integer(cursor as i64),
-    );
+    let input = ox_types::SetInput {
+        text: text.to_string(),
+        cursor,
+    };
     let _ = client
-        .write(
-            &oxpath!("ui", "set_input"),
-            structfs_core_store::Record::parsed(structfs_core_store::Value::Map(map)),
-        )
+        .write_typed(&oxpath!("ui", "set_input"), &input)
         .await;
 }
 
@@ -201,12 +193,8 @@ pub(crate) async fn flush_pending_edits(
             edits: std::mem::take(&mut input_session.pending_edits),
             generation: input_session.generation,
         };
-        let value = structfs_serde_store::to_value(&seq).unwrap();
         let _ = client
-            .write(
-                &oxpath!("ui", "input", "edit"),
-                structfs_core_store::Record::parsed(value),
-            )
+            .write_typed(&oxpath!("ui", "input", "edit"), &seq)
             .await;
     }
 }

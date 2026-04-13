@@ -92,7 +92,7 @@ pub async fn setup(
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
-    use structfs_core_store::{Record, Value, path};
+    use structfs_core_store::{Value, path};
 
     fn test_inbox() -> InboxStore {
         let dir = tempfile::tempdir().unwrap();
@@ -194,12 +194,13 @@ mod tests {
             .unwrap();
 
         // Dispatch "j" on inbox screen
-        let mut event = BTreeMap::new();
-        event.insert("mode".to_string(), Value::String("normal".to_string()));
-        event.insert("key".to_string(), Value::String("j".to_string()));
-        event.insert("screen".to_string(), Value::String("inbox".to_string()));
+        let event = ox_types::InputKeyEvent {
+            mode: ox_types::Mode::Normal,
+            key: "j".to_string(),
+            screen: ox_types::Screen::Inbox,
+        };
         client
-            .write(&path!("input/key"), Record::parsed(Value::Map(event)))
+            .write_typed(&path!("input/key"), &event)
             .await
             .unwrap();
 
@@ -241,12 +242,13 @@ mod tests {
 
         // Dispatch "j" on thread screen — should trigger scroll_down (thread-specific),
         // NOT select_next (inbox-specific)
-        let mut event = BTreeMap::new();
-        event.insert("mode".to_string(), Value::String("normal".to_string()));
-        event.insert("key".to_string(), Value::String("j".to_string()));
-        event.insert("screen".to_string(), Value::String("thread".to_string()));
+        let event = ox_types::InputKeyEvent {
+            mode: ox_types::Mode::Normal,
+            key: "j".to_string(),
+            screen: ox_types::Screen::Thread,
+        };
         client
-            .write(&path!("input/key"), Record::parsed(Value::Map(event)))
+            .write_typed(&path!("input/key"), &event)
             .await
             .unwrap();
 
