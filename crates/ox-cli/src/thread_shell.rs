@@ -31,18 +31,17 @@ impl ThreadShell {
     ///
     /// Call each frame after fetching the UI snapshot.
     pub fn sync_mode(&mut self, ui: &UiSnapshot) {
-        let cur_mode = match ui {
-            UiSnapshot::Thread(snap) => snap.mode,
-            _ => Mode::Normal,
+        let (cur_mode, input_content, input_cursor) = match ui {
+            UiSnapshot::Inbox(snap) => (snap.mode, &snap.input.content, snap.input.cursor),
+            UiSnapshot::Thread(snap) => (snap.mode, &snap.input.content, snap.input.cursor),
+            UiSnapshot::Settings(_) => (Mode::Normal, &String::new(), 0),
         };
 
         if cur_mode != self.prev_mode {
             if cur_mode == Mode::Insert {
                 // Entering insert mode — initialize InputSession from broker
-                if let UiSnapshot::Thread(snap) = ui {
-                    self.input_session
-                        .init_from(snap.input.content.clone(), snap.input.cursor);
-                }
+                self.input_session
+                    .init_from(input_content.clone(), input_cursor);
                 self.input_session.editor_mode = EditorMode::Insert;
             }
             // Note: exiting insert (prev_mode == Insert) is handled by flush()

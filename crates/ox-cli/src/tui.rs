@@ -22,8 +22,9 @@ pub(crate) fn draw(
     text_input_view: &mut crate::text_input_view::TextInputView,
 ) -> (Option<usize>, usize) {
     let (cur_mode, cur_insert_context) = match &vs.ui {
+        UiSnapshot::Inbox(snap) => (snap.mode, snap.insert_context),
         UiSnapshot::Thread(snap) => (snap.mode, snap.insert_context),
-        _ => (Mode::Normal, None),
+        UiSnapshot::Settings(_) => (Mode::Normal, None),
     };
     let is_command_mode =
         cur_mode == Mode::Insert && cur_insert_context == Some(InsertContext::Command);
@@ -207,8 +208,9 @@ fn draw_status_bar(
     area: Rect,
 ) {
     let (cur_mode, cur_insert_context) = match &vs.ui {
+        UiSnapshot::Inbox(snap) => (snap.mode, snap.insert_context),
         UiSnapshot::Thread(snap) => (snap.mode, snap.insert_context),
-        _ => (Mode::Normal, None),
+        UiSnapshot::Settings(_) => (Mode::Normal, None),
     };
     let mode_badge = if cur_mode == Mode::Insert {
         let label = match cur_insert_context {

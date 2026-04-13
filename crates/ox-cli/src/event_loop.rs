@@ -82,8 +82,12 @@ pub async fn run_async(
             .await;
 
             // Mode sync (detects insert→normal transitions, flushes edits)
-            let was_insert = thread.prev_mode == Mode::Insert
-                && !matches!(&vs.ui, UiSnapshot::Thread(s) if s.mode == Mode::Insert);
+            let cur_mode = match &vs.ui {
+                UiSnapshot::Inbox(s) => s.mode,
+                UiSnapshot::Thread(s) => s.mode,
+                UiSnapshot::Settings(_) => Mode::Normal,
+            };
+            let was_insert = thread.prev_mode == Mode::Insert && cur_mode != Mode::Insert;
             if was_insert {
                 thread.flush(client).await;
             }
@@ -345,12 +349,13 @@ pub async fn run_async(
                     }
                 }
                 Event::Paste(text) => {
-                    if let UiSnapshot::Thread(snap) = &ui {
-                        if snap.mode == Mode::Insert
-                            && snap.insert_context != Some(InsertContext::Search)
-                        {
-                            thread.input_session.insert(&text, EditSource::Paste);
-                        }
+                    let (is_insert, ctx) = match &ui {
+                        UiSnapshot::Inbox(s) => (s.mode == Mode::Insert, s.insert_context),
+                        UiSnapshot::Thread(s) => (s.mode == Mode::Insert, s.insert_context),
+                        UiSnapshot::Settings(_) => (false, None),
+                    };
+                    if is_insert && ctx != Some(InsertContext::Search) {
+                        thread.input_session.insert(&text, EditSource::Paste);
                     }
                 }
                 _ => {}
@@ -399,6 +404,16 @@ async fn dispatch_key(
             }
         }
         UiSnapshot::Inbox(snap) => {
+            // ESC intercept in insert mode (compose/search on inbox)
+            if snap.mode == Mode::Insert {
+                if let Outcome::Handled = crate::thread_shell::handle_esc_intercept(
+                    key_str,
+                    snap.insert_context,
+                    &mut thread.input_session,
+                ) {
+                    return;
+                }
+            }
             if let Outcome::Handled =
                 crate::inbox_shell::handle_key(code, snap.search.active, client).await
             {
@@ -421,8 +436,9 @@ async fn dispatch_key(
 
     // ? in normal mode toggles shortcuts modal (inbox + thread only)
     let mode = match ui {
+        UiSnapshot::Inbox(s) => s.mode,
         UiSnapshot::Thread(s) => s.mode,
-        _ => Mode::Normal,
+        UiSnapshot::Settings(_) => Mode::Normal,
     };
     if mode == Mode::Normal && key_str == "?" && !matches!(ui, UiSnapshot::Settings(_)) {
         dialog.show_shortcuts = !dialog.show_shortcuts;
@@ -431,7 +447,7 @@ async fn dispatch_key(
 
     // InputStore dispatch
     let (input_mode, input_screen) = match ui {
-        UiSnapshot::Inbox(_) => (Mode::Normal, Screen::Inbox),
+        UiSnapshot::Inbox(s) => (s.mode, Screen::Inbox),
         UiSnapshot::Thread(s) => (s.mode, Screen::Thread),
         UiSnapshot::Settings(_) => (Mode::Normal, Screen::Settings),
     };
@@ -448,23 +464,26 @@ async fn dispatch_key(
 
     // Unbound insert key fallback
     if result.is_err() {
-        if let UiSnapshot::Thread(snap) = ui {
-            if snap.mode == Mode::Insert {
-                if snap.insert_context == Some(InsertContext::Search) {
-                    dispatch_search_edit(client, modifiers, code).await;
-                } else {
-                    let tw = terminal.get_frame().area().width;
-                    crate::thread_shell::handle_unbound_insert_key(
-                        &mut thread.input_session,
-                        snap.insert_context,
-                        app,
-                        client,
-                        tw,
-                        modifiers,
-                        code,
-                    )
-                    .await;
-                }
+        let (is_insert, insert_ctx) = match ui {
+            UiSnapshot::Inbox(s) => (s.mode == Mode::Insert, s.insert_context),
+            UiSnapshot::Thread(s) => (s.mode == Mode::Insert, s.insert_context),
+            UiSnapshot::Settings(_) => (false, None),
+        };
+        if is_insert {
+            if insert_ctx == Some(InsertContext::Search) {
+                dispatch_search_edit(client, modifiers, code).await;
+            } else {
+                let tw = terminal.get_frame().area().width;
+                crate::thread_shell::handle_unbound_insert_key(
+                    &mut thread.input_session,
+                    insert_ctx,
+                    app,
+                    client,
+                    tw,
+                    modifiers,
+                    code,
+                )
+                .await;
             }
         }
     }
