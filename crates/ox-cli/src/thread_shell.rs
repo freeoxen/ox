@@ -8,7 +8,7 @@ use crate::editor::{
     handle_editor_insert_key, handle_editor_normal_key,
 };
 use crate::shell::Outcome;
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
 use ox_types::{InsertContext, Mode, UiSnapshot};
 
 /// Thread screen local state, owned by the event loop.
@@ -60,6 +60,96 @@ impl ThreadShell {
     pub fn prepare_view(&mut self) {
         self.text_input_view
             .set_state(&self.input_session.content, self.input_session.cursor);
+    }
+
+    /// Handle mouse events on the thread screen (insert mode).
+    ///
+    /// Handles border drag, click-to-cursor, input area scroll, and falls
+    /// through to global mouse dispatch for everything else.
+    pub async fn handle_mouse(
+        &mut self,
+        mouse: MouseEvent,
+        has_approval_pending: bool,
+        has_pending_customize: bool,
+        client: &ox_broker::ClientHandle,
+    ) {
+        match mouse.kind {
+            MouseEventKind::Down(_) if self.text_input_view.is_on_border(mouse.row) => {
+                self.text_input_view.start_border_drag(mouse.row);
+            }
+            MouseEventKind::Drag(_) if self.text_input_view.is_dragging() => {
+                self.text_input_view.update_border_drag(mouse.row);
+            }
+            MouseEventKind::Up(_) if self.text_input_view.is_dragging() => {
+                self.text_input_view.end_border_drag();
+            }
+            MouseEventKind::Down(_) => {
+                if let Some(byte_pos) = self
+                    .text_input_view
+                    .click_to_byte_offset(mouse.column, mouse.row)
+                {
+                    self.input_session.cursor = byte_pos;
+                }
+            }
+            MouseEventKind::ScrollUp if self.text_input_view.contains(mouse.column, mouse.row) => {
+                self.text_input_view.scroll_by(-3);
+            }
+            MouseEventKind::ScrollDown
+                if self.text_input_view.contains(mouse.column, mouse.row) =>
+            {
+                self.text_input_view.scroll_by(3);
+            }
+            _ => {
+                dispatch_global_mouse(
+                    client,
+                    true,
+                    has_approval_pending,
+                    has_pending_customize,
+                    mouse.kind,
+                )
+                .await;
+            }
+        }
+    }
+
+    /// Handle the SendInput pending action using the thread snapshot.
+    pub async fn handle_send_input(
+        &mut self,
+        snap: &ox_types::ThreadSnapshot,
+        app: &mut crate::app::App,
+        client: &ox_broker::ClientHandle,
+    ) {
+        use crate::editor::{execute_command_input, submit_editor_content};
+        use ox_path::oxpath;
+        use ox_types::{GlobalCommand, ThreadCommand, UiCommand};
+
+        if snap.insert_context == Some(InsertContext::Command) {
+            flush_pending_edits(&mut self.input_session, client).await;
+            execute_command_input(&self.input_session.content, client).await;
+            let _ = client
+                .write_typed(
+                    &oxpath!("ui"),
+                    &UiCommand::Thread(ThreadCommand::ClearInput),
+                )
+                .await;
+            let _ = client
+                .write_typed(
+                    &oxpath!("ui"),
+                    &UiCommand::Thread(ThreadCommand::ExitInsert),
+                )
+                .await;
+            self.input_session.reset_after_submit();
+        } else {
+            let new_tid = submit_editor_content(&mut self.input_session, app, client).await;
+            if let Some(tid) = new_tid {
+                let _ = client
+                    .write_typed(
+                        &oxpath!("ui"),
+                        &UiCommand::Global(GlobalCommand::Open { thread_id: tid }),
+                    )
+                    .await;
+            }
+        }
     }
 }
 
@@ -126,4 +216,55 @@ pub(crate) async fn handle_unbound_insert_key(
     }
 
     Outcome::Handled
+}
+
+// ---------------------------------------------------------------------------
+// Global mouse dispatch
+// ---------------------------------------------------------------------------
+
+/// Dispatch mouse scroll events: inbox = select prev/next, thread = scroll.
+///
+/// Shared by all screens as a fallback when no screen-specific handler matched.
+pub(crate) async fn dispatch_global_mouse(
+    client: &ox_broker::ClientHandle,
+    has_active_thread: bool,
+    has_pending_approval: bool,
+    has_pending_customize: bool,
+    kind: MouseEventKind,
+) {
+    use ox_path::oxpath;
+    use ox_types::{InboxCommand, ThreadCommand, UiCommand};
+
+    if has_pending_approval || has_pending_customize {
+        return;
+    }
+
+    match kind {
+        MouseEventKind::ScrollUp => {
+            if has_active_thread {
+                let _ = client
+                    .write_typed(&oxpath!("ui"), &UiCommand::Thread(ThreadCommand::ScrollUp))
+                    .await;
+            } else {
+                let _ = client
+                    .write_typed(&oxpath!("ui"), &UiCommand::Inbox(InboxCommand::SelectPrev))
+                    .await;
+            }
+        }
+        MouseEventKind::ScrollDown => {
+            if has_active_thread {
+                let _ = client
+                    .write_typed(
+                        &oxpath!("ui"),
+                        &UiCommand::Thread(ThreadCommand::ScrollDown),
+                    )
+                    .await;
+            } else {
+                let _ = client
+                    .write_typed(&oxpath!("ui"), &UiCommand::Inbox(InboxCommand::SelectNext))
+                    .await;
+            }
+        }
+        _ => {}
+    }
 }

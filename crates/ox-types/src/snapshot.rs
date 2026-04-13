@@ -10,6 +10,16 @@ pub enum UiSnapshot {
     Settings(SettingsSnapshot),
 }
 
+impl UiSnapshot {
+    pub fn pending_action(&self) -> Option<PendingAction> {
+        match self {
+            UiSnapshot::Inbox(s) => s.pending_action,
+            UiSnapshot::Thread(s) => s.pending_action,
+            UiSnapshot::Settings(s) => s.pending_action,
+        }
+    }
+}
+
 impl Default for UiSnapshot {
     fn default() -> Self {
         UiSnapshot::Inbox(InboxSnapshot::default())
