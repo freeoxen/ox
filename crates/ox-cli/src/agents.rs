@@ -1,5 +1,5 @@
 use ox_gate::{GateStore, ProviderConfig};
-use ox_kernel::{AgentEvent, CompletionRequest, Record, StreamEvent, Value, Writer, path};
+use ox_kernel::{AgentEvent, CompletionRequest, Record, StreamEvent, Value, path};
 use ox_runtime::{AgentModule, AgentRuntime, HostEffects, HostStore};
 use ox_tools::completion::CompletionTransport;
 use std::collections::HashMap;
@@ -7,7 +7,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::thread;
 use structfs_core_store::Reader as _;
-use structfs_serde_store::json_to_value;
 
 use crate::policy::PolicyStats;
 
@@ -45,9 +44,9 @@ impl CompletionTransport for CliCompletionTransport {
                 on_event(event);
                 if let StreamEvent::TextDelta(text) = event {
                     handle
-                        .block_on(scoped.write(
+                        .block_on(scoped.write_typed(
                             &path!("history/turn/streaming"),
-                            Record::parsed(Value::String(text.clone())),
+                            text,
                         ))
                         .ok();
                 }
@@ -328,9 +327,9 @@ fn agent_worker(
 
         // Write user message to history
         let user_json = serde_json::json!({"role": "user", "content": input});
-        if let Err(e) = adapter.write(
+        if let Err(e) = adapter.write_typed(
             &path!("history/append"),
-            Record::parsed(json_to_value(user_json)),
+            &user_json,
         ) {
             tracing::error!(thread_id = %thread_id, error = %e, "history append failed");
             continue;
@@ -360,14 +359,14 @@ fn agent_worker(
             // Write error to history before commit
             let msg = serde_json::json!({"role": "assistant", "content": [{"type": "text", "text": format!("error: {e}")}]});
             adapter
-                .write(&path!("history/append"), Record::parsed(json_to_value(msg)))
+                .write_typed(&path!("history/append"), &msg)
                 .ok();
         }
 
         // Clear all ephemeral turn state (streaming text, thinking, tool status).
         // The kernel already wrote the assistant message to log/append.
         adapter
-            .write(&path!("history/turn/clear"), Record::parsed(Value::Null))
+            .write_typed(&path!("history/turn/clear"), &())
             .ok();
 
         // Persist conversation state for restart recovery
