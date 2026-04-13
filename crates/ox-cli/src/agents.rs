@@ -2,7 +2,7 @@ use ox_gate::{GateStore, ProviderConfig};
 use ox_kernel::{AgentEvent, CompletionRequest, Record, StreamEvent, Value, Writer, path};
 use ox_runtime::{AgentModule, AgentRuntime, HostEffects, HostStore};
 use ox_tools::completion::CompletionTransport;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::thread;
@@ -123,14 +123,14 @@ impl AgentPool {
     pub fn create_thread(&mut self, title: &str) -> Result<String, String> {
         use structfs_core_store::{Writer, path};
 
-        let mut map = std::collections::BTreeMap::new();
-        map.insert(
-            "title".to_string(),
-            structfs_core_store::Value::String(title.to_string()),
-        );
+        let create = ox_types::CreateThread {
+            title: title.to_string(),
+            parent_id: None,
+        };
+        let val = structfs_serde_store::to_value(&create).map_err(|e| e.to_string())?;
         let path = self
             .inbox
-            .write(&path!("threads"), Record::parsed(Value::Map(map)))
+            .write(&path!("threads"), Record::parsed(val))
             .map_err(|e| e.to_string())?;
         let thread_id = path
             .iter()
@@ -390,17 +390,16 @@ fn agent_worker(
             } else {
                 "errored"
             };
-            let mut update = BTreeMap::new();
-            update.insert("id".to_string(), Value::String(thread_id.clone()));
-            update.insert(
-                "thread_state".to_string(),
-                Value::String(new_state.to_string()),
-            );
-            update.insert("updated_at".to_string(), Value::Integer(now));
+            let update = ox_types::UpdateThread {
+                id: Some(thread_id.clone()),
+                thread_state: Some(new_state.to_string()),
+                inbox_state: None,
+                updated_at: Some(now),
+            };
             rt_handle
-                .block_on(broker_client.write(
+                .block_on(broker_client.write_typed(
                     &ox_path::oxpath!("inbox", "threads"),
-                    Record::parsed(Value::Map(update)),
+                    &update,
                 ))
                 .ok();
         }

@@ -135,17 +135,16 @@ impl App {
     pub fn update_thread_state(&mut self, thread_id: &str, state: &str) {
         let tid = thread_id.to_string();
         let update_path = ox_path::oxpath!("threads", tid);
-        let mut map = std::collections::BTreeMap::new();
-        map.insert(
-            "thread_state".to_string(),
-            structfs_core_store::Value::String(state.to_string()),
-        );
+        let update = ox_types::UpdateThread {
+            id: None,
+            thread_state: Some(state.to_string()),
+            inbox_state: None,
+            updated_at: None,
+        };
+        let val = structfs_serde_store::to_value(&update).unwrap();
         self.pool
             .inbox()
-            .write(
-                &update_path,
-                structfs_core_store::Record::parsed(structfs_core_store::Value::Map(map)),
-            )
+            .write(&update_path, structfs_core_store::Record::parsed(val))
             .ok();
     }
 }

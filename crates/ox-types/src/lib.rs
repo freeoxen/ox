@@ -1,5 +1,6 @@
 pub mod approval;
 pub mod command;
+pub mod inbox;
 pub mod input;
 pub mod key_hint;
 pub mod snapshot;
@@ -8,6 +9,7 @@ pub mod ui;
 
 pub use approval::*;
 pub use command::*;
+pub use inbox::*;
 pub use input::*;
 pub use key_hint::*;
 pub use snapshot::*;

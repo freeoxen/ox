@@ -184,18 +184,18 @@ pub async fn run_async(
                 PendingAction::ArchiveSelected => {
                     if let Some(id) = &selected_thread_id {
                         let update_path = ox_path::oxpath!("threads", id);
-                        let mut map = std::collections::BTreeMap::new();
-                        map.insert(
-                            "inbox_state".to_string(),
-                            structfs_core_store::Value::String("done".to_string()),
-                        );
+                        let archive = ox_types::UpdateThread {
+                            id: None,
+                            thread_state: None,
+                            inbox_state: Some("done".to_string()),
+                            updated_at: None,
+                        };
+                        let val = structfs_serde_store::to_value(&archive).unwrap();
                         app.pool
                             .inbox()
                             .write(
                                 &update_path,
-                                structfs_core_store::Record::parsed(
-                                    structfs_core_store::Value::Map(map),
-                                ),
+                                structfs_core_store::Record::parsed(val),
                             )
                             .ok();
                     }
