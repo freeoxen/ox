@@ -100,14 +100,22 @@ impl AsyncWriter for ApprovalStore {
                 })
             }
             "response" => {
+                // Accept either a plain String or a typed ApprovalResponse { decision }
                 let decision = match value {
                     Value::String(s) => s,
                     _ => {
-                        return Box::pin(std::future::ready(Err(StoreError::store(
-                            "approval",
-                            "response",
-                            "response must be a String decision",
-                        ))));
+                        match structfs_serde_store::from_value::<ox_types::ApprovalResponse>(
+                            value.clone(),
+                        ) {
+                            Ok(resp) => resp.decision,
+                            Err(_) => {
+                                return Box::pin(std::future::ready(Err(StoreError::store(
+                                    "approval",
+                                    "response",
+                                    "response must be a String or ApprovalResponse",
+                                ))));
+                            }
+                        }
                     }
                 };
 
