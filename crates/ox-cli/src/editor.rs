@@ -1,6 +1,7 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 use ox_path::oxpath;
 use ox_types::{GlobalCommand, ScreenSnapshot, ThreadCommand, UiCommand};
+use ox_ui::command_def::CommandInvocation;
 use ox_ui::text_input_store::{Edit, EditOp, EditSequence, EditSource};
 
 // ---------------------------------------------------------------------------
@@ -218,7 +219,7 @@ pub(crate) async fn execute_command_input(input: &str, client: &ox_broker::Clien
     let rest = parts.next().unwrap_or("").trim();
 
     // Build args map from remaining text
-    let mut args = serde_json::Map::new();
+    let mut args = std::collections::BTreeMap::new();
     if !rest.is_empty() {
         // Try key=value pairs first
         let mut has_kv = false;
@@ -264,16 +265,12 @@ pub(crate) async fn execute_command_input(input: &str, client: &ox_broker::Clien
     }
 
     // Build CommandInvocation and dispatch
-    let inv = serde_json::json!({
-        "command": command_name,
-        "args": args,
-    });
-    let inv_value = structfs_serde_store::json_to_value(inv);
+    let inv = CommandInvocation {
+        command: command_name.to_string(),
+        args,
+    };
     let result = client
-        .write(
-            &oxpath!("command", "invoke"),
-            structfs_core_store::Record::parsed(inv_value),
-        )
+        .write_typed(&oxpath!("command", "invoke"), &inv)
         .await;
     if let Err(e) = result {
         let _ = client
