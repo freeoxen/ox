@@ -68,7 +68,11 @@ pub(crate) const SYSTEM_PROMPT: &str = "\
 You are an expert software engineer working in a coding CLI. \
 You have tools for reading files, writing files, editing files, \
 and running shell commands. \
-Always read a file before modifying it. Be concise.";
+Always read a file before modifying it. Be concise.\n\n\
+IMPORTANT: When you have completed the user's request, respond with your final answer as plain text. \
+Do NOT continue making tool calls after you have the information needed to answer. \
+If a tool call fails or returns unexpected results, explain the problem to the user \
+rather than retrying the same call. Never repeat the same tool call more than once.";
 
 /// Embedded agent Wasm module (built by `scripts/build-agent.sh`).
 pub(crate) const AGENT_WASM: &[u8] = include_bytes!("../../../target/agent.wasm");

@@ -573,7 +573,11 @@ struct CompletionFrame {
 }
 
 /// Maximum total iterations across all frames to prevent runaway loops.
-const MAX_TOTAL_ITERATIONS: usize = 50;
+const MAX_TOTAL_ITERATIONS: usize = 25;
+
+/// After this many iterations, inject a nudge into the system prompt
+/// reminding the model to wrap up.
+const NUDGE_AFTER_ITERATIONS: usize = 8;
 
 // ---------------------------------------------------------------------------
 // Full agentic loop (stack-based reactor)
@@ -619,7 +623,23 @@ pub fn run_turn(context: &mut dyn Store, emit: &mut dyn FnMut(AgentEvent)) -> Re
 
         emit(AgentEvent::TurnStart);
 
-        let events = complete(context, &frame.account, &frame.refs)?;
+        // After several iterations, nudge the model to wrap up.
+        let refs = if total_iterations > NUDGE_AFTER_ITERATIONS {
+            let mut refs = frame.refs.clone();
+            refs.push(ContextRef::Raw {
+                content: format!(
+                    "IMPORTANT: You have used {} tool call iterations. \
+                     Wrap up your work and respond to the user with your findings. \
+                     Do not make further tool calls unless absolutely necessary.",
+                    total_iterations - 1
+                ),
+            });
+            refs
+        } else {
+            frame.refs.clone()
+        };
+
+        let events = complete(context, &frame.account, &refs)?;
         let content = accumulate_response(events, emit)?;
 
         // Record assistant message to log with scope
