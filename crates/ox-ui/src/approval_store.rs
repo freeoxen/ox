@@ -100,24 +100,18 @@ impl AsyncWriter for ApprovalStore {
                 })
             }
             "response" => {
-                // Accept either a plain String or a typed ApprovalResponse { decision }
-                let decision = match value {
-                    Value::String(s) => s,
-                    _ => {
-                        match structfs_serde_store::from_value::<ox_types::ApprovalResponse>(
-                            value.clone(),
-                        ) {
-                            Ok(resp) => resp.decision,
-                            Err(_) => {
-                                return Box::pin(std::future::ready(Err(StoreError::store(
-                                    "approval",
-                                    "response",
-                                    "response must be a String or ApprovalResponse",
-                                ))));
-                            }
+                let resp: ox_types::ApprovalResponse =
+                    match structfs_serde_store::from_value(value.clone()) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            return Box::pin(std::future::ready(Err(StoreError::store(
+                                "approval",
+                                "response",
+                                e.to_string(),
+                            ))));
                         }
-                    }
-                };
+                    };
+                let decision = resp.decision;
 
                 // Unblock the deferred request future
                 if let Some(tx) = self.deferred_tx.take() {
@@ -178,7 +172,12 @@ mod tests {
         store
             .write(
                 &path!("response"),
-                Record::parsed(Value::String("allow_once".to_string())),
+                Record::parsed(
+                    structfs_serde_store::to_value(&ox_types::ApprovalResponse {
+                        decision: "allow_once".to_string(),
+                    })
+                    .unwrap(),
+                ),
             )
             .await
             .unwrap();
@@ -198,7 +197,12 @@ mod tests {
         store
             .write(
                 &path!("response"),
-                Record::parsed(Value::String("allow_once".to_string())),
+                Record::parsed(
+                    structfs_serde_store::to_value(&ox_types::ApprovalResponse {
+                        decision: "allow_once".to_string(),
+                    })
+                    .unwrap(),
+                ),
             )
             .await
             .unwrap();
