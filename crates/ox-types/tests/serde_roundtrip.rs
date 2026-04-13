@@ -249,6 +249,9 @@ fn ui_snapshot_inbox_with_search_roundtrip() {
     let snapshot = UiSnapshot::Inbox(InboxSnapshot {
         selected_row: 3,
         row_count: 10,
+        mode: Mode::Normal,
+        insert_context: None,
+        input: InputSnapshot::default(),
         search: SearchSnapshot {
             chips: vec!["tag:urgent".to_string()],
             live_query: "foo".to_string(),

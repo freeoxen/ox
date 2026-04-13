@@ -30,6 +30,9 @@ impl Default for UiSnapshot {
 pub struct InboxSnapshot {
     pub selected_row: usize,
     pub row_count: usize,
+    pub mode: Mode,
+    pub insert_context: Option<InsertContext>,
+    pub input: InputSnapshot,
     pub search: SearchSnapshot,
     pub pending_action: Option<PendingAction>,
 }

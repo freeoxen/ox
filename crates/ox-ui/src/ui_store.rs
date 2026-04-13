@@ -6,9 +6,9 @@
 use std::collections::BTreeMap;
 
 use ox_types::{
-    AccountEditFields, GlobalCommand, InboxCommand, InboxSnapshot, InsertContext, Mode,
-    PendingAction, SearchSnapshot, SettingsCommand, SettingsFocus, SettingsSnapshot, ThreadCommand,
-    ThreadSnapshot, UiCommand, UiSnapshot, WizardStep,
+    AccountEditFields, GlobalCommand, InboxCommand, InboxSnapshot, InputSnapshot, InsertContext,
+    Mode, PendingAction, SearchSnapshot, SettingsCommand, SettingsFocus, SettingsSnapshot,
+    ThreadCommand, ThreadSnapshot, UiCommand, UiSnapshot, WizardStep,
 };
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer, path};
 
@@ -22,6 +22,8 @@ use crate::text_input_store::TextInputStore;
 struct InboxState {
     selected_row: usize,
     row_count: usize,
+    mode: Mode,
+    insert_context: Option<InsertContext>,
     search_chips: Vec<String>,
     search_live_query: String,
 }
@@ -142,16 +144,22 @@ impl UiStore {
 
     fn snapshot(&mut self) -> UiSnapshot {
         match &self.screen {
-            ActiveScreen::Inbox(s) => UiSnapshot::Inbox(InboxSnapshot {
-                selected_row: s.selected_row,
-                row_count: s.row_count,
-                search: SearchSnapshot {
-                    chips: s.search_chips.clone(),
-                    live_query: s.search_live_query.clone(),
-                    active: s.search_active(),
-                },
-                pending_action: self.pending_action,
-            }),
+            ActiveScreen::Inbox(s) => {
+                let (content, cursor) = self.text_input_store.content_and_cursor();
+                UiSnapshot::Inbox(InboxSnapshot {
+                    selected_row: s.selected_row,
+                    row_count: s.row_count,
+                    mode: s.mode,
+                    insert_context: s.insert_context,
+                    input: InputSnapshot { content, cursor },
+                    search: SearchSnapshot {
+                        chips: s.search_chips.clone(),
+                        live_query: s.search_live_query.clone(),
+                        active: s.search_active(),
+                    },
+                    pending_action: self.pending_action,
+                })
+            }
             ActiveScreen::Thread(s) => {
                 let (content, cursor) = self.text_input_store.content_and_cursor();
                 UiSnapshot::Thread(ThreadSnapshot {
@@ -191,21 +199,23 @@ impl UiStore {
     }
 
     fn mode_value(&self) -> Value {
-        match &self.screen {
-            ActiveScreen::Thread(s) => {
-                structfs_serde_store::to_value(&s.mode).unwrap_or(Value::Null)
-            }
-            _ => structfs_serde_store::to_value(&Mode::Normal).unwrap_or(Value::Null),
-        }
+        let mode = match &self.screen {
+            ActiveScreen::Inbox(s) => s.mode,
+            ActiveScreen::Thread(s) => s.mode,
+            ActiveScreen::Settings(_) => Mode::Normal,
+        };
+        structfs_serde_store::to_value(&mode).unwrap_or(Value::Null)
     }
 
     fn insert_context_value(&self) -> Value {
-        match &self.screen {
-            ActiveScreen::Thread(s) => match &s.insert_context {
-                Some(ctx) => structfs_serde_store::to_value(ctx).unwrap_or(Value::Null),
-                None => Value::Null,
-            },
-            _ => Value::Null,
+        let ctx = match &self.screen {
+            ActiveScreen::Inbox(s) => s.insert_context,
+            ActiveScreen::Thread(s) => s.insert_context,
+            ActiveScreen::Settings(_) => None,
+        };
+        match ctx {
+            Some(c) => structfs_serde_store::to_value(&c).unwrap_or(Value::Null),
+            None => Value::Null,
         }
     }
 
@@ -406,6 +416,36 @@ impl UiStore {
                     s.search_chips.remove(index);
                 }
                 Ok(path!("search_chips"))
+            }
+            InboxCommand::EnterInsert { context } => {
+                let s = self.inbox_state()?;
+                s.mode = Mode::Insert;
+                s.insert_context = Some(context);
+                let _ = self
+                    .text_input_store
+                    .write(&path!("clear"), Record::parsed(Value::Null));
+                Ok(path!("mode"))
+            }
+            InboxCommand::ExitInsert => {
+                let s = self.inbox_state()?;
+                s.mode = Mode::Normal;
+                s.insert_context = None;
+                Ok(path!("mode"))
+            }
+            InboxCommand::SetInput { content, cursor } => {
+                let mut replace_map = BTreeMap::new();
+                let cursor_clamped = cursor.min(content.len());
+                replace_map.insert("content".to_string(), Value::String(content));
+                replace_map.insert("cursor".to_string(), Value::Integer(cursor_clamped as i64));
+                self.text_input_store
+                    .write(&path!("replace"), Record::parsed(Value::Map(replace_map)))
+            }
+            InboxCommand::ClearInput => self
+                .text_input_store
+                .write(&path!("clear"), Record::parsed(Value::Null)),
+            InboxCommand::SendInput => {
+                self.pending_action = Some(PendingAction::SendInput);
+                Ok(path!("pending_action"))
             }
         }
     }
@@ -827,15 +867,67 @@ impl UiStore {
                     serde_json::from_value(serde_json::Value::String(ctx_str)).map_err(|e| {
                         StoreError::store("ui", "path_command", format!("bad context: {e}"))
                     })?;
-                Ok(UiCommand::Thread(ThreadCommand::EnterInsert { context }))
+                // Route to the current screen's command
+                match &self.screen {
+                    ActiveScreen::Inbox(_) => {
+                        Ok(UiCommand::Inbox(InboxCommand::EnterInsert { context }))
+                    }
+                    ActiveScreen::Thread(_) => {
+                        Ok(UiCommand::Thread(ThreadCommand::EnterInsert { context }))
+                    }
+                    ActiveScreen::Settings(_) => Err(StoreError::store(
+                        "ui",
+                        "path_command",
+                        "enter_insert not supported on settings screen",
+                    )),
+                }
             }
-            "exit_insert" => Ok(UiCommand::Thread(ThreadCommand::ExitInsert)),
-            "set_input" => Ok(UiCommand::Thread(ThreadCommand::SetInput {
-                content: get_str(map, "text").unwrap_or_default(),
-                cursor: get_usize(map, "cursor").unwrap_or(0),
-            })),
-            "clear_input" => Ok(UiCommand::Thread(ThreadCommand::ClearInput)),
-            "send_input" => Ok(UiCommand::Thread(ThreadCommand::SendInput)),
+            "exit_insert" => match &self.screen {
+                ActiveScreen::Inbox(_) => Ok(UiCommand::Inbox(InboxCommand::ExitInsert)),
+                ActiveScreen::Thread(_) => Ok(UiCommand::Thread(ThreadCommand::ExitInsert)),
+                ActiveScreen::Settings(_) => Err(StoreError::store(
+                    "ui",
+                    "path_command",
+                    "exit_insert not supported on settings screen",
+                )),
+            },
+            "set_input" => {
+                let cmd_content = get_str(map, "text").unwrap_or_default();
+                let cmd_cursor = get_usize(map, "cursor").unwrap_or(0);
+                match &self.screen {
+                    ActiveScreen::Inbox(_) => Ok(UiCommand::Inbox(InboxCommand::SetInput {
+                        content: cmd_content,
+                        cursor: cmd_cursor,
+                    })),
+                    ActiveScreen::Thread(_) => Ok(UiCommand::Thread(ThreadCommand::SetInput {
+                        content: cmd_content,
+                        cursor: cmd_cursor,
+                    })),
+                    ActiveScreen::Settings(_) => Err(StoreError::store(
+                        "ui",
+                        "path_command",
+                        "set_input not supported on settings screen",
+                    )),
+                }
+            }
+            "clear_input" => match &self.screen {
+                ActiveScreen::Inbox(_) => Ok(UiCommand::Inbox(InboxCommand::ClearInput)),
+                ActiveScreen::Thread(_) => Ok(UiCommand::Thread(ThreadCommand::ClearInput)),
+                ActiveScreen::Settings(_) => Err(StoreError::store(
+                    "ui",
+                    "path_command",
+                    "clear_input not supported on settings screen",
+                )),
+            },
+            "send_input" => match &self.screen {
+                ActiveScreen::Inbox(_) => Ok(UiCommand::Inbox(InboxCommand::SendInput)),
+                ActiveScreen::Thread(_) => Ok(UiCommand::Thread(ThreadCommand::SendInput)),
+                ActiveScreen::Settings(_) => Err(StoreError::store(
+                    "ui",
+                    "path_command",
+                    "send_input not supported on settings screen",
+                )),
+            },
 
             // Modal commands (no-ops for now, kept for backward compat)
             "show_modal" | "dismiss_modal" => {
