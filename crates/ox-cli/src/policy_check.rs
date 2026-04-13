@@ -67,10 +67,9 @@ impl CliPolicyCheck {
         // Use Duration::MAX so deliberation time is never capped by the
         // broker's default 30-second timeout.
         let approval_client = self.scoped_client.with_timeout(std::time::Duration::MAX);
-        let result = self.rt_handle.block_on(approval_client.write_typed(
-            &structfs_core_store::path!("approval/request"),
-            &req,
-        ));
+        let result = self.rt_handle.block_on(
+            approval_client.write_typed(&structfs_core_store::path!("approval/request"), &req),
+        );
 
         let decision_str = match result {
             Ok(returned_path) => {

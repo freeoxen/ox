@@ -193,10 +193,7 @@ pub async fn run_async(
                         let val = structfs_serde_store::to_value(&archive).unwrap();
                         app.pool
                             .inbox()
-                            .write(
-                                &update_path,
-                                structfs_core_store::Record::parsed(val),
-                            )
+                            .write(&update_path, structfs_core_store::Record::parsed(val))
                             .ok();
                     }
                 }

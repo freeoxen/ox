@@ -44,10 +44,7 @@ impl CompletionTransport for CliCompletionTransport {
                 on_event(event);
                 if let StreamEvent::TextDelta(text) = event {
                     handle
-                        .block_on(scoped.write_typed(
-                            &path!("history/turn/streaming"),
-                            text,
-                        ))
+                        .block_on(scoped.write_typed(&path!("history/turn/streaming"), text))
                         .ok();
                 }
             },
@@ -260,7 +257,10 @@ fn agent_worker(
 
     // Write tool schemas via adapter (triggers ThreadRegistry lazy-mount from disk)
     adapter
-        .write_typed(&path!("tools/schemas"), &tool_store.tool_schemas_for_model())
+        .write_typed(
+            &path!("tools/schemas"),
+            &tool_store.tool_schemas_for_model(),
+        )
         .ok();
 
     // Read provider and API key from thread's GateStore (resolves through config handle)
@@ -327,10 +327,7 @@ fn agent_worker(
 
         // Write user message to history
         let user_json = serde_json::json!({"role": "user", "content": input});
-        if let Err(e) = adapter.write_typed(
-            &path!("history/append"),
-            &user_json,
-        ) {
+        if let Err(e) = adapter.write_typed(&path!("history/append"), &user_json) {
             tracing::error!(thread_id = %thread_id, error = %e, "history append failed");
             continue;
         }
@@ -358,16 +355,12 @@ fn agent_worker(
         if let Err(e) = &result {
             // Write error to history before commit
             let msg = serde_json::json!({"role": "assistant", "content": [{"type": "text", "text": format!("error: {e}")}]});
-            adapter
-                .write_typed(&path!("history/append"), &msg)
-                .ok();
+            adapter.write_typed(&path!("history/append"), &msg).ok();
         }
 
         // Clear all ephemeral turn state (streaming text, thinking, tool status).
         // The kernel already wrote the assistant message to log/append.
-        adapter
-            .write_typed(&path!("history/turn/clear"), &())
-            .ok();
+        adapter.write_typed(&path!("history/turn/clear"), &()).ok();
 
         // Persist conversation state for restart recovery
         save_thread_state(&mut adapter, &inbox_root, &thread_id, &title);
@@ -390,10 +383,7 @@ fn agent_worker(
                 updated_at: Some(now),
             };
             rt_handle
-                .block_on(broker_client.write_typed(
-                    &ox_path::oxpath!("inbox", "threads"),
-                    &update,
-                ))
+                .block_on(broker_client.write_typed(&ox_path::oxpath!("inbox", "threads"), &update))
                 .ok();
         }
     }

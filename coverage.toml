@@ -26,6 +26,9 @@ ox-runtime = 65
 # CLI — mostly TUI rendering, hard to unit test
 ox-cli = 30
 
+# Pure data types — all derive-only structs, no logic to test
+ox-types = 0
+
 # Cross-compiled / untestable via llvm-cov
 ox-wasm = 0
 ox-web = 0
