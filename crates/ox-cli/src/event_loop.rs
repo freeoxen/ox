@@ -10,7 +10,7 @@ use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
 use ox_path::oxpath;
 use ox_types::{
     GlobalCommand, InboxCommand, InputKeyEvent, InsertContext, Mode, PendingAction, Screen,
-    ThreadCommand, UiCommand, UiSnapshot,
+    ScreenSnapshot, ThreadCommand, UiCommand, UiSnapshot,
 };
 use ox_ui::text_input_store::EditSource;
 use std::time::Duration;
@@ -81,20 +81,16 @@ pub async fn run_async(
             )
             .await;
 
-            // Mode sync (detects insert→normal transitions, flushes edits)
-            let cur_mode = match &vs.ui {
-                UiSnapshot::Inbox(s) => s.mode,
-                UiSnapshot::Thread(s) => s.mode,
-                UiSnapshot::Settings(_) => Mode::Normal,
-            };
-            let was_insert = thread.prev_mode == Mode::Insert && cur_mode != Mode::Insert;
-            if was_insert {
+            // Editor sync (detects editor appeared/disappeared, flushes edits)
+            let had_editor = thread.had_editor;
+            let has_editor = vs.ui.editor().is_some();
+            if had_editor && !has_editor {
                 thread.flush(client).await;
             }
-            thread.sync_mode(&vs.ui);
+            thread.sync_editor(&vs.ui);
 
             // Set row_count in UiStore (inbox navigation bounds)
-            if matches!(&vs.ui, UiSnapshot::Inbox(_)) {
+            if matches!(&vs.ui.screen, ScreenSnapshot::Inbox(_)) {
                 let row_count = vs.inbox_threads.len();
                 let _ = client
                     .write_typed(
@@ -108,7 +104,7 @@ pub async fn run_async(
             thread.prepare_view();
 
             // Populate settings accounts when on settings screen
-            if matches!(&vs.ui, UiSnapshot::Settings(_)) {
+            if matches!(&vs.ui.screen, ScreenSnapshot::Settings(_)) {
                 settings_shell.ensure_accounts(app.pool.inbox_root());
             }
 
@@ -126,8 +122,10 @@ pub async fn run_async(
             })?;
 
             // Extract the few values needed after dropping vs
-            selected_thread_id = match &vs.ui {
-                UiSnapshot::Inbox(s) => vs.inbox_threads.get(s.selected_row).map(|t| t.id.clone()),
+            selected_thread_id = match &vs.ui.screen {
+                ScreenSnapshot::Inbox(s) => {
+                    vs.inbox_threads.get(s.selected_row).map(|t| t.id.clone())
+                }
                 _ => None,
             };
             has_approval_pending = vs.approval_pending.is_some();
@@ -138,7 +136,7 @@ pub async fn run_async(
         // -----------------------------------------------------------------
         // 2. Post-draw: scroll feedback (thread only)
         // -----------------------------------------------------------------
-        if let UiSnapshot::Thread(_) = &ui {
+        if matches!(&ui.screen, ScreenSnapshot::Thread(_)) {
             if viewport_height > 0 {
                 let scroll_max = content_height.unwrap_or(0).saturating_sub(viewport_height);
                 let _ = client
@@ -171,9 +169,7 @@ pub async fn run_async(
             match action {
                 PendingAction::Quit => return Ok(()),
                 PendingAction::SendInput => {
-                    if let UiSnapshot::Thread(snap) = &ui {
-                        thread.handle_send_input(snap, app, client).await;
-                    }
+                    thread.handle_send_input(&ui, app, client).await;
                 }
                 PendingAction::OpenSelected => {
                     if let Some(id) = &selected_thread_id {
@@ -236,8 +232,8 @@ pub async fn run_async(
                     }
                     // Customize dialog — bypass broker entirely
                     else if dialog.pending_customize.is_some() {
-                        let active_thread_id = match &ui {
-                            UiSnapshot::Thread(s) => Some(s.thread_id.clone()),
+                        let active_thread_id = match &ui.screen {
+                            ScreenSnapshot::Thread(s) => Some(s.thread_id.clone()),
                             _ => None,
                         };
                         crate::key_handlers::handle_customize_key(
@@ -249,8 +245,8 @@ pub async fn run_async(
                         .await;
                     }
                     // Approval dialog (thread screen, normal mode)
-                    else if let UiSnapshot::Thread(snap) = &ui {
-                        if has_approval_pending && snap.mode == Mode::Normal {
+                    else if let ScreenSnapshot::Thread(snap) = &ui.screen {
+                        if has_approval_pending && ui.editor().is_none() {
                             let active_thread_id = Some(snap.thread_id.clone());
                             crate::key_handlers::handle_approval_key(
                                 &mut dialog,
@@ -292,9 +288,9 @@ pub async fn run_async(
                     }
                 }
                 Event::Mouse(mouse) => {
-                    match &ui {
+                    match &ui.screen {
                         // Thread + insert mode: text input mouse handling
-                        UiSnapshot::Thread(snap) if snap.mode == Mode::Insert => {
+                        ScreenSnapshot::Thread(_) if ui.editor().is_some() => {
                             thread
                                 .handle_mouse(
                                     mouse,
@@ -305,14 +301,14 @@ pub async fn run_async(
                                 .await;
                         }
                         // Settings: edit dialog click-to-focus
-                        UiSnapshot::Settings(_)
+                        ScreenSnapshot::Settings(_)
                             if matches!(mouse.kind, MouseEventKind::Down(_))
                                 && settings_shell.state.editing.is_some() =>
                         {
                             settings_shell.handle_mouse(mouse);
                         }
                         // Approval dialog click
-                        UiSnapshot::Thread(snap)
+                        ScreenSnapshot::Thread(snap)
                             if has_approval_pending
                                 && matches!(mouse.kind, MouseEventKind::Down(_)) =>
                         {
@@ -336,7 +332,7 @@ pub async fn run_async(
                         }
                         // Global fallback (scroll)
                         _ => {
-                            let has_active_thread = matches!(&ui, UiSnapshot::Thread(_));
+                            let has_active_thread = matches!(&ui.screen, ScreenSnapshot::Thread(_));
                             dispatch_global_mouse(
                                 client,
                                 has_active_thread,
@@ -349,11 +345,8 @@ pub async fn run_async(
                     }
                 }
                 Event::Paste(text) => {
-                    let (is_insert, ctx) = match &ui {
-                        UiSnapshot::Inbox(s) => (s.mode == Mode::Insert, s.insert_context),
-                        UiSnapshot::Thread(s) => (s.mode == Mode::Insert, s.insert_context),
-                        UiSnapshot::Settings(_) => (false, None),
-                    };
+                    let is_insert = ui.editor().is_some();
+                    let ctx = ui.editor().map(|e| e.context);
                     if is_insert && ctx != Some(InsertContext::Search) {
                         thread.input_session.insert(&text, EditSource::Paste);
                     }
@@ -389,8 +382,8 @@ async fn dispatch_key(
     terminal: &mut ratatui::DefaultTerminal,
 ) {
     // Screen-specific handlers first
-    match ui {
-        UiSnapshot::Settings(_) => {
+    match &ui.screen {
+        ScreenSnapshot::Settings(_) => {
             let inbox_root = app.pool.inbox_root().to_path_buf();
             if let Outcome::Handled = crate::settings_shell::handle_key(
                 &mut settings_shell.state,
@@ -403,29 +396,33 @@ async fn dispatch_key(
                 return;
             }
         }
-        UiSnapshot::Inbox(snap) => {
+        ScreenSnapshot::Inbox(_) => {
             // ESC intercept in insert mode (compose/search on inbox)
-            if snap.mode == Mode::Insert {
+            if ui.editor().is_some() {
+                let insert_ctx = ui.editor().map(|e| e.context);
                 if let Outcome::Handled = crate::thread_shell::handle_esc_intercept(
                     key_str,
-                    snap.insert_context,
+                    insert_ctx,
                     &mut thread.input_session,
                 ) {
                     return;
                 }
             }
-            if let Outcome::Handled =
-                crate::inbox_shell::handle_key(code, snap.search.active, client).await
-            {
-                return;
+            if let ScreenSnapshot::Inbox(snap) = &ui.screen {
+                if let Outcome::Handled =
+                    crate::inbox_shell::handle_key(code, snap.search.active, client).await
+                {
+                    return;
+                }
             }
         }
-        UiSnapshot::Thread(snap) => {
+        ScreenSnapshot::Thread(_) => {
             // ESC intercept in insert mode
-            if snap.mode == Mode::Insert {
+            if ui.editor().is_some() {
+                let insert_ctx = ui.editor().map(|e| e.context);
                 if let Outcome::Handled = crate::thread_shell::handle_esc_intercept(
                     key_str,
-                    snap.insert_context,
+                    insert_ctx,
                     &mut thread.input_session,
                 ) {
                     return;
@@ -435,21 +432,22 @@ async fn dispatch_key(
     }
 
     // ? in normal mode toggles shortcuts modal (inbox + thread only)
-    let mode = match ui {
-        UiSnapshot::Inbox(s) => s.mode,
-        UiSnapshot::Thread(s) => s.mode,
-        UiSnapshot::Settings(_) => Mode::Normal,
+    let mode = if ui.editor().is_some() {
+        Mode::Insert
+    } else {
+        Mode::Normal
     };
-    if mode == Mode::Normal && key_str == "?" && !matches!(ui, UiSnapshot::Settings(_)) {
+    if mode == Mode::Normal && key_str == "?" && !matches!(&ui.screen, ScreenSnapshot::Settings(_))
+    {
         dialog.show_shortcuts = !dialog.show_shortcuts;
         return;
     }
 
     // InputStore dispatch
-    let (input_mode, input_screen) = match ui {
-        UiSnapshot::Inbox(s) => (s.mode, Screen::Inbox),
-        UiSnapshot::Thread(s) => (s.mode, Screen::Thread),
-        UiSnapshot::Settings(_) => (Mode::Normal, Screen::Settings),
+    let (input_mode, input_screen) = match &ui.screen {
+        ScreenSnapshot::Inbox(_) => (mode, Screen::Inbox),
+        ScreenSnapshot::Thread(_) => (mode, Screen::Thread),
+        ScreenSnapshot::Settings(_) => (Mode::Normal, Screen::Settings),
     };
     let result = client
         .write_typed(
@@ -464,11 +462,8 @@ async fn dispatch_key(
 
     // Unbound insert key fallback
     if result.is_err() {
-        let (is_insert, insert_ctx) = match ui {
-            UiSnapshot::Inbox(s) => (s.mode == Mode::Insert, s.insert_context),
-            UiSnapshot::Thread(s) => (s.mode == Mode::Insert, s.insert_context),
-            UiSnapshot::Settings(_) => (false, None),
-        };
+        let is_insert = ui.editor().is_some();
+        let insert_ctx = ui.editor().map(|e| e.context);
         if is_insert {
             if insert_ctx == Some(InsertContext::Search) {
                 dispatch_search_edit(client, modifiers, code).await;

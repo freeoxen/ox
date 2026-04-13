@@ -5,7 +5,7 @@
 //! This decouples rendering from mutable App access and broker writes.
 
 use ox_broker::ClientHandle;
-use ox_types::{ApprovalRequest, Mode, UiSnapshot};
+use ox_types::{ApprovalRequest, ScreenSnapshot, UiSnapshot};
 use structfs_core_store::{Value, path};
 
 use crate::app::App;
@@ -80,8 +80,8 @@ pub async fn fetch_view_state<'a>(
     let mut turn = ox_history::TurnState::new();
     let mut approval_pending: Option<ApprovalRequest> = None;
 
-    match &ui {
-        UiSnapshot::Inbox(_) => {
+    match &ui.screen {
+        ScreenSnapshot::Inbox(_) => {
             // Read inbox threads
             if let Ok(Some(record)) = client.read(&path!("inbox/threads")).await {
                 if let Some(val) = record.as_value() {
@@ -89,7 +89,7 @@ pub async fn fetch_view_state<'a>(
                 }
             }
         }
-        UiSnapshot::Thread(snap) => {
+        ScreenSnapshot::Thread(snap) => {
             let tid = &snap.thread_id;
             // Read committed messages
             let msg_path = ox_path::oxpath!("threads", tid, "history", "messages");
@@ -114,7 +114,7 @@ pub async fn fetch_view_state<'a>(
                 }
             }
         }
-        UiSnapshot::Settings(_) => {}
+        ScreenSnapshot::Settings(_) => {}
     }
 
     // Read model and default account from broker ConfigStore
@@ -134,16 +134,23 @@ pub async fn fetch_view_state<'a>(
     };
 
     // Read bindings for current mode+screen to build key hints
-    let (mode_str, screen_str) = match &ui {
-        UiSnapshot::Inbox(_) => ("normal", "inbox"),
-        UiSnapshot::Thread(snap) => (
-            match snap.mode {
-                Mode::Normal => "normal",
-                Mode::Insert => "insert",
+    let (mode_str, screen_str) = match &ui.screen {
+        ScreenSnapshot::Inbox(_) => {
+            if ui.editor().is_some() {
+                ("insert", "inbox")
+            } else {
+                ("normal", "inbox")
+            }
+        }
+        ScreenSnapshot::Thread(_) => (
+            if ui.editor().is_some() {
+                "insert"
+            } else {
+                "normal"
             },
             "thread",
         ),
-        UiSnapshot::Settings(_) => ("normal", "settings"),
+        ScreenSnapshot::Settings(_) => ("normal", "settings"),
     };
     let key_hints = read_key_hints(client, mode_str, screen_str).await;
 

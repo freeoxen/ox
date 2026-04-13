@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 use ox_path::oxpath;
-use ox_types::{GlobalCommand, ThreadCommand, UiCommand, UiSnapshot};
+use ox_types::{GlobalCommand, ScreenSnapshot, ThreadCommand, UiCommand};
 use ox_ui::text_input_store::{Edit, EditOp, EditSequence, EditSource};
 
 // ---------------------------------------------------------------------------
@@ -134,28 +134,61 @@ pub(crate) async fn submit_editor_content(
         .flatten()
         .unwrap_or_default();
 
-    let (mode, insert_context, active_thread) = match &ui {
-        UiSnapshot::Thread(snap) => (snap.mode, snap.insert_context, Some(snap.thread_id.clone())),
-        _ => (ox_types::Mode::Normal, None, None),
+    let mode = if ui.editor().is_some() {
+        ox_types::Mode::Insert
+    } else {
+        ox_types::Mode::Normal
+    };
+    let insert_context = ui.editor().map(|e| e.context);
+    let active_thread: Option<String> = match &ui.screen {
+        ScreenSnapshot::Thread(snap) => Some(snap.thread_id.clone()),
+        _ => None,
     };
 
     let new_tid = app.send_input_with_text(text, mode, insert_context, active_thread.as_deref());
 
-    let _ = client
-        .write_typed(
-            &oxpath!("ui"),
-            &UiCommand::Thread(ThreadCommand::ClearInput),
-        )
-        .await;
-    let _ = client
-        .write_typed(
-            &oxpath!("ui"),
-            &UiCommand::Thread(ThreadCommand::ExitInsert),
-        )
-        .await;
+    // Dismiss editor on whichever screen is active
+    match &ui.screen {
+        ScreenSnapshot::Thread(_) => {
+            let _ = client
+                .write_typed(
+                    &oxpath!("ui"),
+                    &UiCommand::Thread(ThreadCommand::DismissEditor),
+                )
+                .await;
+        }
+        ScreenSnapshot::Inbox(_) => {
+            let _ = client
+                .write_typed(
+                    &oxpath!("ui"),
+                    &UiCommand::Inbox(ox_types::InboxCommand::DismissEditor),
+                )
+                .await;
+        }
+        _ => {}
+    }
     session.reset_after_submit();
 
     new_tid
+}
+
+/// Write a set_input command to the broker (path-based, applies to active editor).
+async fn write_set_input(client: &ox_broker::ClientHandle, text: &str, cursor: usize) {
+    let mut map = std::collections::BTreeMap::new();
+    map.insert(
+        "text".to_string(),
+        structfs_core_store::Value::String(text.to_string()),
+    );
+    map.insert(
+        "cursor".to_string(),
+        structfs_core_store::Value::Integer(cursor as i64),
+    );
+    let _ = client
+        .write(
+            &oxpath!("ui", "set_input"),
+            structfs_core_store::Record::parsed(structfs_core_store::Value::Map(map)),
+        )
+        .await;
 }
 
 /// Flush pending edits to the broker as a single EditSequence write.
@@ -381,15 +414,7 @@ pub(crate) async fn handle_editor_normal_key(
                 session.cursor = byte_offset_at(&session.content, &lines, cur_line + 1, cur_col);
             } else if let Some((text, cursor)) = app.history_down() {
                 flush_pending_edits(session, client).await;
-                let _ = client
-                    .write_typed(
-                        &oxpath!("ui"),
-                        &UiCommand::Thread(ThreadCommand::SetInput {
-                            content: text.clone(),
-                            cursor,
-                        }),
-                    )
-                    .await;
+                let _ = write_set_input(client, &text, cursor).await;
                 session.init_from(text, cursor);
             }
         }
@@ -400,15 +425,7 @@ pub(crate) async fn handle_editor_normal_key(
                 session.cursor = byte_offset_at(&session.content, &lines, cur_line - 1, cur_col);
             } else if let Some((text, cursor)) = app.history_up(&session.content) {
                 flush_pending_edits(session, client).await;
-                let _ = client
-                    .write_typed(
-                        &oxpath!("ui"),
-                        &UiCommand::Thread(ThreadCommand::SetInput {
-                            content: text.clone(),
-                            cursor,
-                        }),
-                    )
-                    .await;
+                let _ = write_set_input(client, &text, cursor).await;
                 session.init_from(text, cursor);
             }
         }
@@ -519,13 +536,7 @@ pub(crate) async fn handle_editor_command_key(
                     let _ = client
                         .write_typed(
                             &oxpath!("ui"),
-                            &UiCommand::Thread(ThreadCommand::ClearInput),
-                        )
-                        .await;
-                    let _ = client
-                        .write_typed(
-                            &oxpath!("ui"),
-                            &UiCommand::Thread(ThreadCommand::ExitInsert),
+                            &UiCommand::Thread(ThreadCommand::DismissEditor),
                         )
                         .await;
                     session.reset_after_submit();

@@ -1,7 +1,7 @@
 //! Thread screen shell — owns editor state and input view.
 //!
 //! Extracted from event_loop.rs. ThreadShell holds the InputSession,
-//! TextInputView, and prev_mode that were previously loose locals.
+//! TextInputView, and had_editor that were previously loose locals.
 
 use crate::editor::{
     EditorMode, InputSession, flush_pending_edits, handle_editor_command_key,
@@ -9,13 +9,13 @@ use crate::editor::{
 };
 use crate::shell::Outcome;
 use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
-use ox_types::{InsertContext, Mode, UiSnapshot};
+use ox_types::{InsertContext, ScreenSnapshot, UiSnapshot};
 
 /// Thread screen local state, owned by the event loop.
 pub(crate) struct ThreadShell {
     pub input_session: InputSession,
     pub text_input_view: crate::text_input_view::TextInputView,
-    pub prev_mode: Mode,
+    pub had_editor: bool,
 }
 
 impl ThreadShell {
@@ -23,31 +23,27 @@ impl ThreadShell {
         Self {
             input_session: InputSession::new(),
             text_input_view: crate::text_input_view::TextInputView::new(),
-            prev_mode: Mode::Normal,
+            had_editor: false,
         }
     }
 
-    /// Detect mode transitions and sync InputSession accordingly.
+    /// Detect editor transitions and sync InputSession accordingly.
     ///
     /// Call each frame after fetching the UI snapshot.
-    pub fn sync_mode(&mut self, ui: &UiSnapshot) {
-        let (cur_mode, input_content, input_cursor) = match ui {
-            UiSnapshot::Inbox(snap) => (snap.mode, &snap.input.content, snap.input.cursor),
-            UiSnapshot::Thread(snap) => (snap.mode, &snap.input.content, snap.input.cursor),
-            UiSnapshot::Settings(_) => (Mode::Normal, &String::new(), 0),
-        };
+    pub fn sync_editor(&mut self, ui: &UiSnapshot) {
+        let has_editor = ui.editor().is_some();
 
-        if cur_mode != self.prev_mode {
-            if cur_mode == Mode::Insert {
-                // Entering insert mode — initialize InputSession from broker
+        if has_editor && !self.had_editor {
+            // Editor appeared — initialize InputSession from snapshot
+            if let Some(editor) = ui.editor() {
                 self.input_session
-                    .init_from(input_content.clone(), input_cursor);
+                    .init_from(editor.content.clone(), editor.cursor);
                 self.input_session.editor_mode = EditorMode::Insert;
             }
-            // Note: exiting insert (prev_mode == Insert) is handled by flush()
-            // which the caller invokes after sync_mode when prev was Insert.
-            self.prev_mode = cur_mode;
         }
+        // Note: editor disappeared (had_editor && !has_editor) is handled by flush()
+        // which the caller invokes before sync_editor.
+        self.had_editor = has_editor;
     }
 
     /// Flush pending edits to the broker.
@@ -111,32 +107,31 @@ impl ThreadShell {
         }
     }
 
-    /// Handle the SendInput pending action using the thread snapshot.
+    /// Handle the SendInput pending action using the UI snapshot.
     pub async fn handle_send_input(
         &mut self,
-        snap: &ox_types::ThreadSnapshot,
+        ui: &UiSnapshot,
         app: &mut crate::app::App,
         client: &ox_broker::ClientHandle,
     ) {
         use crate::editor::{execute_command_input, submit_editor_content};
         use ox_path::oxpath;
-        use ox_types::{GlobalCommand, ThreadCommand, UiCommand};
+        use ox_types::{ThreadCommand, UiCommand};
 
-        if snap.insert_context == Some(InsertContext::Command) {
+        let insert_ctx = ui.editor().map(|e| e.context);
+
+        if insert_ctx == Some(InsertContext::Command) {
             flush_pending_edits(&mut self.input_session, client).await;
             execute_command_input(&self.input_session.content, client).await;
-            let _ = client
-                .write_typed(
-                    &oxpath!("ui"),
-                    &UiCommand::Thread(ThreadCommand::ClearInput),
-                )
-                .await;
-            let _ = client
-                .write_typed(
-                    &oxpath!("ui"),
-                    &UiCommand::Thread(ThreadCommand::ExitInsert),
-                )
-                .await;
+            // Dismiss editor on thread screen
+            if matches!(&ui.screen, ScreenSnapshot::Thread(_)) {
+                let _ = client
+                    .write_typed(
+                        &oxpath!("ui"),
+                        &UiCommand::Thread(ThreadCommand::DismissEditor),
+                    )
+                    .await;
+            }
             self.input_session.reset_after_submit();
         } else {
             let new_tid = submit_editor_content(&mut self.input_session, app, client).await;
@@ -144,7 +139,7 @@ impl ThreadShell {
                 let _ = client
                     .write_typed(
                         &oxpath!("ui"),
-                        &UiCommand::Global(GlobalCommand::Open { thread_id: tid }),
+                        &UiCommand::Global(ox_types::GlobalCommand::Open { thread_id: tid }),
                     )
                     .await;
             }
@@ -176,7 +171,7 @@ pub(crate) fn handle_esc_intercept(
                 return Outcome::Handled;
             }
             EditorMode::Normal => {
-                // Let ESC fall through to InputStore → ui/exit_insert
+                // Let ESC fall through to InputStore -> ui/exit_insert
             }
         }
     }

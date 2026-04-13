@@ -8,10 +8,10 @@ use ratatui::widgets::Paragraph;
 /// Render the inbox thread list into `area`.
 /// Uses `vs.inbox_threads` (fetched from broker each frame).
 pub fn draw_inbox(frame: &mut Frame, vs: &ViewState, theme: &Theme, area: Rect) {
-    use ox_types::UiSnapshot;
+    use ox_types::ScreenSnapshot;
 
-    let snap = match &vs.ui {
-        UiSnapshot::Inbox(s) => s,
+    let snap = match &vs.ui.screen {
+        ScreenSnapshot::Inbox(s) => s,
         _ => return,
     };
     let threads = &vs.inbox_threads;
@@ -113,10 +113,10 @@ pub fn draw_inbox(frame: &mut Frame, vs: &ViewState, theme: &Theme, area: Rect) 
 
 /// Render the search/filter bar.
 pub fn draw_filter_bar(frame: &mut Frame, vs: &ViewState, theme: &Theme, area: Rect) {
-    use ox_types::UiSnapshot;
+    use ox_types::ScreenSnapshot;
 
-    let snap = match &vs.ui {
-        UiSnapshot::Inbox(s) => s,
+    let snap = match &vs.ui.screen {
+        ScreenSnapshot::Inbox(s) => s,
         _ => return,
     };
     let mut spans = vec![Span::styled("/ ", theme.tool_name)];

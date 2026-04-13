@@ -1,7 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-use crate::ui::InsertContext;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "scope", content = "command", rename_all = "snake_case")]
 pub enum UiCommand {
@@ -33,11 +31,10 @@ pub enum InboxCommand {
     SetRowCount { count: usize },
     OpenSelected,
     ArchiveSelected,
-    EnterInsert { context: InsertContext },
-    ExitInsert,
-    SetInput { content: String, cursor: usize },
-    ClearInput,
-    SendInput,
+    Compose,
+    Search,
+    DismissEditor,
+    SubmitEditor,
     SearchInsertChar { char: char },
     SearchDeleteChar,
     SearchClear,
@@ -58,11 +55,10 @@ pub enum ThreadCommand {
     ScrollHalfPageDown,
     SetScrollMax { max: usize },
     SetViewportHeight { height: usize },
-    EnterInsert { context: InsertContext },
-    ExitInsert,
-    SetInput { content: String, cursor: usize },
-    ClearInput,
-    SendInput,
+    Reply,
+    Command,
+    DismissEditor,
+    SubmitEditor,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

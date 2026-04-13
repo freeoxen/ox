@@ -1,52 +1,62 @@
 use serde::{Deserialize, Serialize};
 
-use crate::ui::{AccountEditFields, InsertContext, Mode, PendingAction, SettingsFocus, WizardStep};
+use crate::ui::{AccountEditFields, InsertContext, PendingAction, SettingsFocus, WizardStep};
 
+/// Top-level UI state snapshot — struct with screen variant and pending action.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "screen", rename_all = "snake_case")]
-pub enum UiSnapshot {
-    Inbox(InboxSnapshot),
-    Thread(ThreadSnapshot),
-    Settings(SettingsSnapshot),
+pub struct UiSnapshot {
+    pub screen: ScreenSnapshot,
+    pub pending_action: Option<PendingAction>,
 }
 
 impl UiSnapshot {
-    pub fn pending_action(&self) -> Option<PendingAction> {
-        match self {
-            UiSnapshot::Inbox(s) => s.pending_action,
-            UiSnapshot::Thread(s) => s.pending_action,
-            UiSnapshot::Settings(s) => s.pending_action,
+    /// Access the active editor regardless of which screen owns it.
+    pub fn editor(&self) -> Option<&EditorSnapshot> {
+        match &self.screen {
+            ScreenSnapshot::Inbox(s) => s.editor.as_ref(),
+            ScreenSnapshot::Thread(s) => s.editor.as_ref(),
+            ScreenSnapshot::Settings(_) => None,
         }
+    }
+
+    pub fn pending_action(&self) -> Option<PendingAction> {
+        self.pending_action
     }
 }
 
 impl Default for UiSnapshot {
     fn default() -> Self {
-        UiSnapshot::Inbox(InboxSnapshot::default())
+        UiSnapshot {
+            screen: ScreenSnapshot::Inbox(InboxSnapshot::default()),
+            pending_action: None,
+        }
     }
+}
+
+/// Which screen is active, with its snapshot data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "screen", rename_all = "snake_case")]
+pub enum ScreenSnapshot {
+    Inbox(InboxSnapshot),
+    Thread(ThreadSnapshot),
+    Settings(SettingsSnapshot),
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct InboxSnapshot {
     pub selected_row: usize,
     pub row_count: usize,
-    pub mode: Mode,
-    pub insert_context: Option<InsertContext>,
-    pub input: InputSnapshot,
+    pub editor: Option<EditorSnapshot>,
     pub search: SearchSnapshot,
-    pub pending_action: Option<PendingAction>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThreadSnapshot {
     pub thread_id: String,
-    pub mode: Mode,
-    pub insert_context: Option<InsertContext>,
     pub scroll: usize,
     pub scroll_max: usize,
     pub viewport_height: usize,
-    pub input: InputSnapshot,
-    pub pending_action: Option<PendingAction>,
+    pub editor: Option<EditorSnapshot>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -60,11 +70,12 @@ pub struct SettingsSnapshot {
     pub default_account_idx: usize,
     pub default_model: String,
     pub default_max_tokens: String,
-    pub pending_action: Option<PendingAction>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct InputSnapshot {
+/// Snapshot of the text editor widget's state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditorSnapshot {
+    pub context: InsertContext,
     pub content: String,
     pub cursor: usize,
 }

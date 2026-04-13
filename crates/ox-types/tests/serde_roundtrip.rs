@@ -163,10 +163,8 @@ fn global_command_open_roundtrip() {
 }
 
 #[test]
-fn thread_command_enter_insert_roundtrip() {
-    let cmd = UiCommand::Thread(ThreadCommand::EnterInsert {
-        context: InsertContext::Reply,
-    });
+fn thread_command_reply_roundtrip() {
+    let cmd = UiCommand::Thread(ThreadCommand::Reply);
     let json = serde_json::to_string(&cmd).unwrap();
     let back: UiCommand = serde_json::from_str(&json).unwrap();
     let json2 = serde_json::to_string(&back).unwrap();
@@ -203,29 +201,31 @@ fn ui_snapshot_inbox_default_has_screen_tag() {
     let snapshot = UiSnapshot::default();
     let json = serde_json::to_string(&snapshot).unwrap();
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(v["screen"], "inbox");
+    // screen is nested inside the screen field
+    assert_eq!(v["screen"]["screen"], "inbox");
 }
 
 #[test]
 fn ui_snapshot_thread_roundtrip() {
-    let snapshot = UiSnapshot::Thread(ThreadSnapshot {
-        thread_id: "t-123".to_string(),
-        mode: Mode::Insert,
-        insert_context: Some(InsertContext::Compose),
-        scroll: 10,
-        scroll_max: 100,
-        viewport_height: 40,
-        input: InputSnapshot {
-            content: "hello".to_string(),
-            cursor: 5,
-        },
+    let snapshot = UiSnapshot {
+        screen: ScreenSnapshot::Thread(ThreadSnapshot {
+            thread_id: "t-123".to_string(),
+            scroll: 10,
+            scroll_max: 100,
+            viewport_height: 40,
+            editor: Some(EditorSnapshot {
+                context: InsertContext::Compose,
+                content: "hello".to_string(),
+                cursor: 5,
+            }),
+        }),
         pending_action: None,
-    });
+    };
     let json = serde_json::to_string(&snapshot).unwrap();
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(v["screen"], "thread");
-    assert_eq!(v["thread_id"], "t-123");
-    assert_eq!(v["scroll"], 10);
+    assert_eq!(v["screen"]["screen"], "thread");
+    assert_eq!(v["screen"]["thread_id"], "t-123");
+    assert_eq!(v["screen"]["scroll"], 10);
 
     let back: UiSnapshot = serde_json::from_str(&json).unwrap();
     let json2 = serde_json::to_string(&back).unwrap();
@@ -234,31 +234,34 @@ fn ui_snapshot_thread_roundtrip() {
 
 #[test]
 fn ui_snapshot_settings_default_roundtrip() {
-    let snapshot = UiSnapshot::Settings(SettingsSnapshot::default());
+    let snapshot = UiSnapshot {
+        screen: ScreenSnapshot::Settings(SettingsSnapshot::default()),
+        pending_action: None,
+    };
     let json = serde_json::to_string(&snapshot).unwrap();
     let back: UiSnapshot = serde_json::from_str(&json).unwrap();
     let json2 = serde_json::to_string(&back).unwrap();
     assert_eq!(json, json2);
 
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(v["screen"], "settings");
+    assert_eq!(v["screen"]["screen"], "settings");
 }
 
 #[test]
 fn ui_snapshot_inbox_with_search_roundtrip() {
-    let snapshot = UiSnapshot::Inbox(InboxSnapshot {
-        selected_row: 3,
-        row_count: 10,
-        mode: Mode::Normal,
-        insert_context: None,
-        input: InputSnapshot::default(),
-        search: SearchSnapshot {
-            chips: vec!["tag:urgent".to_string()],
-            live_query: "foo".to_string(),
-            active: true,
-        },
+    let snapshot = UiSnapshot {
+        screen: ScreenSnapshot::Inbox(InboxSnapshot {
+            selected_row: 3,
+            row_count: 10,
+            editor: None,
+            search: SearchSnapshot {
+                chips: vec!["tag:urgent".to_string()],
+                live_query: "foo".to_string(),
+                active: true,
+            },
+        }),
         pending_action: Some(PendingAction::OpenSelected),
-    });
+    };
     let json = serde_json::to_string(&snapshot).unwrap();
     let back: UiSnapshot = serde_json::from_str(&json).unwrap();
     let json2 = serde_json::to_string(&back).unwrap();

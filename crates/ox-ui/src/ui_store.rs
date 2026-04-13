@@ -6,13 +6,60 @@
 use std::collections::BTreeMap;
 
 use ox_types::{
-    AccountEditFields, GlobalCommand, InboxCommand, InboxSnapshot, InputSnapshot, InsertContext,
-    Mode, PendingAction, SearchSnapshot, SettingsCommand, SettingsFocus, SettingsSnapshot,
-    ThreadCommand, ThreadSnapshot, UiCommand, UiSnapshot, WizardStep,
+    AccountEditFields, EditorSnapshot, GlobalCommand, InboxCommand, InboxSnapshot, InsertContext,
+    Mode, PendingAction, ScreenSnapshot, SearchSnapshot, SettingsCommand, SettingsFocus,
+    SettingsSnapshot, ThreadCommand, ThreadSnapshot, UiCommand, UiSnapshot, WizardStep,
 };
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer, path};
 
-use crate::text_input_store::TextInputStore;
+use crate::text_input_store::{Edit, EditOp, EditSequence};
+
+// ---------------------------------------------------------------------------
+// EditorState — owned by the screen using it
+// ---------------------------------------------------------------------------
+
+/// Internal editor widget state — owned by the screen.
+struct EditorState {
+    context: InsertContext,
+    content: String,
+    cursor: usize,
+    generation: u64,
+}
+
+impl EditorState {
+    fn new(context: InsertContext) -> Self {
+        EditorState {
+            context,
+            content: String::new(),
+            cursor: 0,
+            generation: 0,
+        }
+    }
+
+    /// Apply a single edit, clamping positions to valid bounds.
+    fn apply_edit(&mut self, edit: &Edit) {
+        let at = edit.at.min(self.content.len());
+        match &edit.op {
+            EditOp::Insert { text } => {
+                self.content.insert_str(at, text);
+                self.cursor = at + text.len();
+            }
+            EditOp::Delete { len } => {
+                let end = (at + len).min(self.content.len());
+                self.content.drain(at..end);
+                self.cursor = at.min(self.content.len());
+            }
+        }
+    }
+
+    fn snapshot(&self) -> EditorSnapshot {
+        EditorSnapshot {
+            context: self.context,
+            content: self.content.clone(),
+            cursor: self.cursor,
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Per-screen state
@@ -22,8 +69,7 @@ use crate::text_input_store::TextInputStore;
 struct InboxState {
     selected_row: usize,
     row_count: usize,
-    mode: Mode,
-    insert_context: Option<InsertContext>,
+    editor: Option<EditorState>,
     search_chips: Vec<String>,
     search_live_query: String,
 }
@@ -36,8 +82,7 @@ impl InboxState {
 
 struct ThreadState {
     thread_id: String,
-    mode: Mode,
-    insert_context: Option<InsertContext>,
+    editor: Option<EditorState>,
     scroll: usize,
     scroll_max: usize,
     viewport_height: usize,
@@ -47,8 +92,7 @@ impl ThreadState {
     fn new(thread_id: String) -> Self {
         ThreadState {
             thread_id,
-            mode: Mode::Normal,
-            insert_context: None,
+            editor: None,
             scroll: 0,
             scroll_max: 0,
             viewport_height: 0,
@@ -97,7 +141,6 @@ enum ActiveScreen {
 /// Holds all TUI state. Implements StructFS Reader and Writer.
 pub struct UiStore {
     screen: ActiveScreen,
-    text_input_store: TextInputStore,
     pending_action: Option<PendingAction>,
     status: Option<String>,
 }
@@ -107,7 +150,6 @@ impl UiStore {
     pub fn new() -> Self {
         UiStore {
             screen: ActiveScreen::Inbox(InboxState::default()),
-            text_input_store: TextInputStore::new(),
             pending_action: None,
             status: None,
         }
@@ -140,40 +182,38 @@ impl UiStore {
         }
     }
 
+    /// Get a mutable reference to the active editor, if one exists.
+    fn active_editor_mut(&mut self) -> Result<&mut EditorState, StoreError> {
+        match &mut self.screen {
+            ActiveScreen::Inbox(s) => s.editor.as_mut(),
+            ActiveScreen::Thread(s) => s.editor.as_mut(),
+            ActiveScreen::Settings(_) => None,
+        }
+        .ok_or_else(|| StoreError::store("ui", "editor", "no active editor"))
+    }
+
     // -- Snapshot --
 
-    fn snapshot(&mut self) -> UiSnapshot {
-        match &self.screen {
-            ActiveScreen::Inbox(s) => {
-                let (content, cursor) = self.text_input_store.content_and_cursor();
-                UiSnapshot::Inbox(InboxSnapshot {
-                    selected_row: s.selected_row,
-                    row_count: s.row_count,
-                    mode: s.mode,
-                    insert_context: s.insert_context,
-                    input: InputSnapshot { content, cursor },
-                    search: SearchSnapshot {
-                        chips: s.search_chips.clone(),
-                        live_query: s.search_live_query.clone(),
-                        active: s.search_active(),
-                    },
-                    pending_action: self.pending_action,
-                })
-            }
-            ActiveScreen::Thread(s) => {
-                let (content, cursor) = self.text_input_store.content_and_cursor();
-                UiSnapshot::Thread(ThreadSnapshot {
-                    thread_id: s.thread_id.clone(),
-                    mode: s.mode,
-                    insert_context: s.insert_context,
-                    scroll: s.scroll,
-                    scroll_max: s.scroll_max,
-                    viewport_height: s.viewport_height,
-                    input: ox_types::InputSnapshot { content, cursor },
-                    pending_action: self.pending_action,
-                })
-            }
-            ActiveScreen::Settings(s) => UiSnapshot::Settings(SettingsSnapshot {
+    fn snapshot(&self) -> UiSnapshot {
+        let screen = match &self.screen {
+            ActiveScreen::Inbox(s) => ScreenSnapshot::Inbox(InboxSnapshot {
+                selected_row: s.selected_row,
+                row_count: s.row_count,
+                editor: s.editor.as_ref().map(|e| e.snapshot()),
+                search: SearchSnapshot {
+                    chips: s.search_chips.clone(),
+                    live_query: s.search_live_query.clone(),
+                    active: s.search_active(),
+                },
+            }),
+            ActiveScreen::Thread(s) => ScreenSnapshot::Thread(ThreadSnapshot {
+                thread_id: s.thread_id.clone(),
+                scroll: s.scroll,
+                scroll_max: s.scroll_max,
+                viewport_height: s.viewport_height,
+                editor: s.editor.as_ref().map(|e| e.snapshot()),
+            }),
+            ActiveScreen::Settings(s) => ScreenSnapshot::Settings(SettingsSnapshot {
                 focus: s.focus,
                 selected_account: s.selected_account,
                 editing: s.editing.clone(),
@@ -183,8 +223,11 @@ impl UiStore {
                 default_account_idx: s.default_account_idx,
                 default_model: s.default_model.clone(),
                 default_max_tokens: s.default_max_tokens.clone(),
-                pending_action: self.pending_action,
             }),
+        };
+        UiSnapshot {
+            screen,
+            pending_action: self.pending_action,
         }
     }
 
@@ -200,8 +243,20 @@ impl UiStore {
 
     fn mode_value(&self) -> Value {
         let mode = match &self.screen {
-            ActiveScreen::Inbox(s) => s.mode,
-            ActiveScreen::Thread(s) => s.mode,
+            ActiveScreen::Inbox(s) => {
+                if s.editor.is_some() {
+                    Mode::Insert
+                } else {
+                    Mode::Normal
+                }
+            }
+            ActiveScreen::Thread(s) => {
+                if s.editor.is_some() {
+                    Mode::Insert
+                } else {
+                    Mode::Normal
+                }
+            }
             ActiveScreen::Settings(_) => Mode::Normal,
         };
         structfs_serde_store::to_value(&mode).unwrap_or(Value::Null)
@@ -209,8 +264,8 @@ impl UiStore {
 
     fn insert_context_value(&self) -> Value {
         let ctx = match &self.screen {
-            ActiveScreen::Inbox(s) => s.insert_context,
-            ActiveScreen::Thread(s) => s.insert_context,
+            ActiveScreen::Inbox(s) => s.editor.as_ref().map(|e| e.context),
+            ActiveScreen::Thread(s) => s.editor.as_ref().map(|e| e.context),
             ActiveScreen::Settings(_) => None,
         };
         match ctx {
@@ -298,6 +353,39 @@ impl UiStore {
         match &self.screen {
             ActiveScreen::Inbox(s) => Value::Bool(s.search_active()),
             _ => Value::Bool(false),
+        }
+    }
+
+    /// Read the active editor's content/cursor as an input snapshot value.
+    fn input_value(&self, sub_key: &str) -> Value {
+        let editor = match &self.screen {
+            ActiveScreen::Inbox(s) => s.editor.as_ref(),
+            ActiveScreen::Thread(s) => s.editor.as_ref(),
+            ActiveScreen::Settings(_) => None,
+        };
+        match editor {
+            Some(e) => match sub_key {
+                "" => {
+                    let mut map = BTreeMap::new();
+                    map.insert("content".to_string(), Value::String(e.content.clone()));
+                    map.insert("cursor".to_string(), Value::Integer(e.cursor as i64));
+                    Value::Map(map)
+                }
+                "content" => Value::String(e.content.clone()),
+                "cursor" => Value::Integer(e.cursor as i64),
+                _ => Value::Null,
+            },
+            None => match sub_key {
+                "" => {
+                    let mut map = BTreeMap::new();
+                    map.insert("content".to_string(), Value::String(String::new()));
+                    map.insert("cursor".to_string(), Value::Integer(0));
+                    Value::Map(map)
+                }
+                "content" => Value::String(String::new()),
+                "cursor" => Value::Integer(0),
+                _ => Value::Null,
+            },
         }
     }
 
@@ -417,33 +505,22 @@ impl UiStore {
                 }
                 Ok(path!("search_chips"))
             }
-            InboxCommand::EnterInsert { context } => {
+            InboxCommand::Compose => {
                 let s = self.inbox_state()?;
-                s.mode = Mode::Insert;
-                s.insert_context = Some(context);
-                let _ = self
-                    .text_input_store
-                    .write(&path!("clear"), Record::parsed(Value::Null));
-                Ok(path!("mode"))
+                s.editor = Some(EditorState::new(InsertContext::Compose));
+                Ok(path!("editor"))
             }
-            InboxCommand::ExitInsert => {
+            InboxCommand::Search => {
                 let s = self.inbox_state()?;
-                s.mode = Mode::Normal;
-                s.insert_context = None;
-                Ok(path!("mode"))
+                s.editor = Some(EditorState::new(InsertContext::Search));
+                Ok(path!("editor"))
             }
-            InboxCommand::SetInput { content, cursor } => {
-                let mut replace_map = BTreeMap::new();
-                let cursor_clamped = cursor.min(content.len());
-                replace_map.insert("content".to_string(), Value::String(content));
-                replace_map.insert("cursor".to_string(), Value::Integer(cursor_clamped as i64));
-                self.text_input_store
-                    .write(&path!("replace"), Record::parsed(Value::Map(replace_map)))
+            InboxCommand::DismissEditor => {
+                let s = self.inbox_state()?;
+                s.editor = None;
+                Ok(path!("editor"))
             }
-            InboxCommand::ClearInput => self
-                .text_input_store
-                .write(&path!("clear"), Record::parsed(Value::Null)),
-            InboxCommand::SendInput => {
+            InboxCommand::SubmitEditor => {
                 self.pending_action = Some(PendingAction::SendInput);
                 Ok(path!("pending_action"))
             }
@@ -512,33 +589,22 @@ impl UiStore {
                 s.viewport_height = height;
                 Ok(path!("viewport_height"))
             }
-            ThreadCommand::EnterInsert { context } => {
+            ThreadCommand::Reply => {
                 let s = self.thread_state()?;
-                s.mode = Mode::Insert;
-                s.insert_context = Some(context);
-                let _ = self
-                    .text_input_store
-                    .write(&path!("clear"), Record::parsed(Value::Null));
-                Ok(path!("mode"))
+                s.editor = Some(EditorState::new(InsertContext::Reply));
+                Ok(path!("editor"))
             }
-            ThreadCommand::ExitInsert => {
+            ThreadCommand::Command => {
                 let s = self.thread_state()?;
-                s.mode = Mode::Normal;
-                s.insert_context = None;
-                Ok(path!("mode"))
+                s.editor = Some(EditorState::new(InsertContext::Command));
+                Ok(path!("editor"))
             }
-            ThreadCommand::SetInput { content, cursor } => {
-                let cursor_pos = cursor.min(content.len());
-                let mut replace_map = BTreeMap::new();
-                replace_map.insert("content".to_string(), Value::String(content));
-                replace_map.insert("cursor".to_string(), Value::Integer(cursor_pos as i64));
-                self.text_input_store
-                    .write(&path!("replace"), Record::parsed(Value::Map(replace_map)))
+            ThreadCommand::DismissEditor => {
+                let s = self.thread_state()?;
+                s.editor = None;
+                Ok(path!("editor"))
             }
-            ThreadCommand::ClearInput => self
-                .text_input_store
-                .write(&path!("clear"), Record::parsed(Value::Null)),
-            ThreadCommand::SendInput => {
+            ThreadCommand::SubmitEditor => {
                 self.pending_action = Some(PendingAction::SendInput);
                 Ok(path!("pending_action"))
             }
@@ -785,7 +851,7 @@ impl UiStore {
 
     /// Map a legacy path-based command name + args to a UiCommand.
     ///
-    /// The command dispatch chain (InputStore → CommandStore → UiStore) sends
+    /// The command dispatch chain (InputStore -> CommandStore -> UiStore) sends
     /// writes to paths like "select_next", "scroll_down", "open", etc. This
     /// method translates those into the typed UiCommand enum.
     fn resolve_path_command(&self, name: &str, value: &Value) -> Result<UiCommand, StoreError> {
@@ -868,60 +934,49 @@ impl UiStore {
                         StoreError::store("ui", "path_command", format!("bad context: {e}"))
                     })?;
                 // Route to the current screen's command
-                match &self.screen {
-                    ActiveScreen::Inbox(_) => {
-                        Ok(UiCommand::Inbox(InboxCommand::EnterInsert { context }))
+                match (&self.screen, context) {
+                    (ActiveScreen::Inbox(_), InsertContext::Compose) => {
+                        Ok(UiCommand::Inbox(InboxCommand::Compose))
                     }
-                    ActiveScreen::Thread(_) => {
-                        Ok(UiCommand::Thread(ThreadCommand::EnterInsert { context }))
+                    (ActiveScreen::Inbox(_), InsertContext::Search) => {
+                        Ok(UiCommand::Inbox(InboxCommand::Search))
                     }
-                    ActiveScreen::Settings(_) => Err(StoreError::store(
-                        "ui",
-                        "path_command",
-                        "enter_insert not supported on settings screen",
-                    )),
+                    (ActiveScreen::Thread(_), InsertContext::Reply) => {
+                        Ok(UiCommand::Thread(ThreadCommand::Reply))
+                    }
+                    (ActiveScreen::Thread(_), InsertContext::Command) => {
+                        Ok(UiCommand::Thread(ThreadCommand::Command))
+                    }
+                    (ActiveScreen::Inbox(_), InsertContext::Reply) => {
+                        Ok(UiCommand::Inbox(InboxCommand::Compose))
+                    }
+                    (ActiveScreen::Inbox(_), InsertContext::Command) => {
+                        Err(err("command context not supported on inbox screen"))
+                    }
+                    (ActiveScreen::Thread(_), InsertContext::Compose) => {
+                        Ok(UiCommand::Thread(ThreadCommand::Reply))
+                    }
+                    (ActiveScreen::Thread(_), InsertContext::Search) => {
+                        Err(err("search context not supported on thread screen"))
+                    }
+                    (ActiveScreen::Settings(_), _) => {
+                        Err(err("enter_insert not supported on settings screen"))
+                    }
                 }
             }
             "exit_insert" => match &self.screen {
-                ActiveScreen::Inbox(_) => Ok(UiCommand::Inbox(InboxCommand::ExitInsert)),
-                ActiveScreen::Thread(_) => Ok(UiCommand::Thread(ThreadCommand::ExitInsert)),
+                ActiveScreen::Inbox(_) => Ok(UiCommand::Inbox(InboxCommand::DismissEditor)),
+                ActiveScreen::Thread(_) => Ok(UiCommand::Thread(ThreadCommand::DismissEditor)),
                 ActiveScreen::Settings(_) => Err(StoreError::store(
                     "ui",
                     "path_command",
                     "exit_insert not supported on settings screen",
                 )),
             },
-            "set_input" => {
-                let cmd_content = get_str(map, "text").unwrap_or_default();
-                let cmd_cursor = get_usize(map, "cursor").unwrap_or(0);
-                match &self.screen {
-                    ActiveScreen::Inbox(_) => Ok(UiCommand::Inbox(InboxCommand::SetInput {
-                        content: cmd_content,
-                        cursor: cmd_cursor,
-                    })),
-                    ActiveScreen::Thread(_) => Ok(UiCommand::Thread(ThreadCommand::SetInput {
-                        content: cmd_content,
-                        cursor: cmd_cursor,
-                    })),
-                    ActiveScreen::Settings(_) => Err(StoreError::store(
-                        "ui",
-                        "path_command",
-                        "set_input not supported on settings screen",
-                    )),
-                }
-            }
-            "clear_input" => match &self.screen {
-                ActiveScreen::Inbox(_) => Ok(UiCommand::Inbox(InboxCommand::ClearInput)),
-                ActiveScreen::Thread(_) => Ok(UiCommand::Thread(ThreadCommand::ClearInput)),
-                ActiveScreen::Settings(_) => Err(StoreError::store(
-                    "ui",
-                    "path_command",
-                    "clear_input not supported on settings screen",
-                )),
-            },
+            // set_input and clear_input handled via resolve_path_command_direct
             "send_input" => match &self.screen {
-                ActiveScreen::Inbox(_) => Ok(UiCommand::Inbox(InboxCommand::SendInput)),
-                ActiveScreen::Thread(_) => Ok(UiCommand::Thread(ThreadCommand::SendInput)),
+                ActiveScreen::Inbox(_) => Ok(UiCommand::Inbox(InboxCommand::SubmitEditor)),
+                ActiveScreen::Thread(_) => Ok(UiCommand::Thread(ThreadCommand::SubmitEditor)),
                 ActiveScreen::Settings(_) => Err(StoreError::store(
                     "ui",
                     "path_command",
@@ -975,15 +1030,13 @@ impl Reader for UiStore {
             "viewport_height" => self.viewport_height_value(),
             "input" => {
                 let sub = if from.components.len() > 1 {
-                    Path::parse(&from.components[1..].join("/")).unwrap_or_else(|_| path!(""))
+                    from.components[1].as_str()
                 } else {
-                    path!("")
+                    ""
                 };
-                return self.text_input_store.read(&sub);
+                self.input_value(sub)
             }
-            "cursor" => {
-                return self.text_input_store.read(&path!("cursor"));
-            }
+            "cursor" => self.input_value("cursor"),
             "status" => self.status_value(),
             "pending_action" => self.pending_action_value(),
             "search_chips" => self.search_chips_value(),
@@ -1001,39 +1054,157 @@ impl Reader for UiStore {
 
 impl Writer for UiStore {
     fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
-        // Delegate input/* writes to TextInputStore
+        // Delegate input/* writes to the active editor
         if !to.is_empty() && to.components[0] == "input" {
-            let sub = if to.components.len() > 1 {
-                Path::parse(&to.components[1..].join("/")).unwrap_or_else(|_| path!(""))
+            let action = if to.components.len() > 1 {
+                to.components[1].as_str()
             } else {
-                path!("")
+                return Err(StoreError::store(
+                    "ui",
+                    "write",
+                    "write to input root not supported",
+                ));
             };
-            return self.text_input_store.write(&sub, data);
-        }
 
+            match action {
+                "edit" => {
+                    let value = data.as_value().ok_or_else(|| {
+                        StoreError::store("ui", "input/edit", "write data must contain a value")
+                    })?;
+                    let seq: EditSequence = structfs_serde_store::from_value(value.clone())
+                        .map_err(|e| {
+                            StoreError::store("ui", "input/edit", format!("bad edit sequence: {e}"))
+                        })?;
+                    let editor = self.active_editor_mut()?;
+                    // Stale generation — ignore silently
+                    if seq.generation < editor.generation {
+                        return Ok(path!("input"));
+                    }
+                    for edit in &seq.edits {
+                        editor.apply_edit(edit);
+                    }
+                    Ok(path!("input"))
+                }
+                "replace" => {
+                    let value = data.as_value().ok_or_else(|| {
+                        StoreError::store("ui", "input/replace", "write data must contain a value")
+                    })?;
+                    #[derive(serde::Deserialize)]
+                    struct ReplacePayload {
+                        content: String,
+                        cursor: usize,
+                    }
+                    let payload: ReplacePayload = structfs_serde_store::from_value(value.clone())
+                        .map_err(|e| {
+                        StoreError::store(
+                            "ui",
+                            "input/replace",
+                            format!("bad replace payload: {e}"),
+                        )
+                    })?;
+                    let editor = self.active_editor_mut()?;
+                    editor.content = payload.content;
+                    editor.cursor = payload.cursor.min(editor.content.len());
+                    editor.generation += 1;
+                    Ok(path!("input"))
+                }
+                "clear" => {
+                    let editor = self.active_editor_mut()?;
+                    editor.content.clear();
+                    editor.cursor = 0;
+                    Ok(path!("input"))
+                }
+                _ => Err(StoreError::store(
+                    "ui",
+                    "write",
+                    format!("unknown input path: {action}"),
+                )),
+            }
+        }
         // Path-based routing: command dispatch chain sends writes to paths
         // like "select_next", "scroll_down", etc. Map these to UiCommand.
-        if !to.is_empty() {
+        else if !to.is_empty() {
+            let cmd_name = &to.components[0];
+            // set_input and clear_input are handled directly (they mutate editor state)
+            if cmd_name == "set_input" || cmd_name == "clear_input" {
+                let value = data.as_value().ok_or_else(|| {
+                    StoreError::store("ui", "write", "write data must contain a value")
+                })?;
+                return self.resolve_path_command_direct(cmd_name, value);
+            }
             let value = data.as_value().ok_or_else(|| {
                 StoreError::store("ui", "write", "write data must contain a value")
             })?;
-            let cmd = self.resolve_path_command(&to.components[0], value)?;
-            return self.dispatch_command(cmd);
+            let cmd = self.resolve_path_command(cmd_name, value)?;
+            self.dispatch_command(cmd)
+        } else {
+            let value = data.as_value().ok_or_else(|| {
+                StoreError::store("ui", "write", "write data must contain a value")
+            })?;
+
+            let cmd: UiCommand = structfs_serde_store::from_value(value.clone()).map_err(|e| {
+                StoreError::store(
+                    "ui",
+                    "write",
+                    format!("failed to deserialize UiCommand: {e}"),
+                )
+            })?;
+
+            self.dispatch_command(cmd)
+        }
+    }
+}
+
+impl UiStore {
+    /// Handle set_input and clear_input directly (they mutate editor, not via command dispatch).
+    fn resolve_path_command_direct(
+        &mut self,
+        name: &str,
+        value: &Value,
+    ) -> Result<Path, StoreError> {
+        let map = match value {
+            Value::Map(m) => m,
+            _ => &BTreeMap::new(),
+        };
+
+        fn get_str(map: &BTreeMap<String, Value>, key: &str) -> Option<String> {
+            match map.get(key) {
+                Some(Value::String(s)) => Some(s.clone()),
+                _ => None,
+            }
+        }
+        fn get_usize(map: &BTreeMap<String, Value>, key: &str) -> Option<usize> {
+            match map.get(key) {
+                Some(Value::Integer(n)) => Some(*n as usize),
+                _ => None,
+            }
         }
 
-        let value = data
-            .as_value()
-            .ok_or_else(|| StoreError::store("ui", "write", "write data must contain a value"))?;
-
-        let cmd: UiCommand = structfs_serde_store::from_value(value.clone()).map_err(|e| {
-            StoreError::store(
+        match name {
+            "set_input" => {
+                let content = get_str(map, "text").unwrap_or_default();
+                let cursor = get_usize(map, "cursor").unwrap_or(0);
+                let editor = self.active_editor_mut().map_err(|_| {
+                    StoreError::store("ui", "path_command", "no active editor for set_input")
+                })?;
+                editor.content = content;
+                editor.cursor = cursor.min(editor.content.len());
+                Ok(path!("input"))
+            }
+            "clear_input" => {
+                let editor = self.active_editor_mut().map_err(|_| {
+                    StoreError::store("ui", "path_command", "no active editor for clear_input")
+                })?;
+                editor.content.clear();
+                editor.cursor = 0;
+                Ok(path!("input"))
+            }
+            _ => Err(StoreError::store(
                 "ui",
-                "write",
-                format!("failed to deserialize UiCommand: {e}"),
-            )
-        })?;
-
-        self.dispatch_command(cmd)
+                "path_command",
+                format!("unknown direct command: {name}"),
+            )),
+        }
     }
 }
 
@@ -1080,11 +1251,11 @@ mod tests {
     fn initial_snapshot_is_inbox() {
         let mut store = UiStore::new();
         let snap = read_snapshot(&mut store);
-        match snap {
-            UiSnapshot::Inbox(ref s) => {
+        match snap.screen {
+            ScreenSnapshot::Inbox(ref s) => {
                 assert_eq!(s.selected_row, 0);
                 assert_eq!(s.row_count, 0);
-                assert!(s.pending_action.is_none());
+                assert!(snap.pending_action.is_none());
             }
             _ => panic!("expected Inbox snapshot"),
         }
@@ -1144,7 +1315,7 @@ mod tests {
                 thread_id: "t_001".to_string(),
             }),
         );
-        write_cmd(&mut store, &UiCommand::Thread(ThreadCommand::SendInput));
+        write_cmd(&mut store, &UiCommand::Thread(ThreadCommand::SubmitEditor));
         assert!(read_val(&mut store, "pending_action") != Value::Null);
         write_cmd(&mut store, &UiCommand::Global(GlobalCommand::Close));
         assert_eq!(read_val(&mut store, "pending_action"), Value::Null);
@@ -1477,7 +1648,7 @@ mod tests {
     }
 
     #[test]
-    fn enter_and_exit_insert() {
+    fn reply_and_dismiss_editor() {
         let mut store = UiStore::new();
         write_cmd(
             &mut store,
@@ -1485,25 +1656,20 @@ mod tests {
                 thread_id: "t_1".to_string(),
             }),
         );
-        write_cmd(
-            &mut store,
-            &UiCommand::Thread(ThreadCommand::EnterInsert {
-                context: InsertContext::Compose,
-            }),
-        );
+        write_cmd(&mut store, &UiCommand::Thread(ThreadCommand::Reply));
         assert_eq!(read_val(&mut store, "mode"), Value::String("insert".into()));
         assert_eq!(
             read_val(&mut store, "insert_context"),
-            Value::String("compose".into())
+            Value::String("reply".into())
         );
 
-        write_cmd(&mut store, &UiCommand::Thread(ThreadCommand::ExitInsert));
+        write_cmd(&mut store, &UiCommand::Thread(ThreadCommand::DismissEditor));
         assert_eq!(read_val(&mut store, "mode"), Value::String("normal".into()));
         assert_eq!(read_val(&mut store, "insert_context"), Value::Null);
     }
 
     #[test]
-    fn enter_insert_clears_input() {
+    fn reply_creates_clean_editor() {
         let mut store = UiStore::new();
         write_cmd(
             &mut store,
@@ -1511,26 +1677,8 @@ mod tests {
                 thread_id: "t_1".to_string(),
             }),
         );
-        // Set some input first
-        write_cmd(
-            &mut store,
-            &UiCommand::Thread(ThreadCommand::SetInput {
-                content: "leftover".to_string(),
-                cursor: 5,
-            }),
-        );
-        assert_eq!(
-            read_val(&mut store, "input/content"),
-            Value::String("leftover".into())
-        );
-
-        // Enter insert — should clear
-        write_cmd(
-            &mut store,
-            &UiCommand::Thread(ThreadCommand::EnterInsert {
-                context: InsertContext::Reply,
-            }),
-        );
+        // Reply — should create editor with empty content
+        write_cmd(&mut store, &UiCommand::Thread(ThreadCommand::Reply));
         assert_eq!(
             read_val(&mut store, "input/content"),
             Value::String("".into())
@@ -1539,7 +1687,8 @@ mod tests {
     }
 
     #[test]
-    fn set_and_clear_input() {
+    fn editor_content_via_input_edit() {
+        use crate::text_input_store::{Edit, EditOp, EditSequence, EditSource};
         let mut store = UiStore::new();
         write_cmd(
             &mut store,
@@ -1547,29 +1696,39 @@ mod tests {
                 thread_id: "t_1".to_string(),
             }),
         );
-        write_cmd(
-            &mut store,
-            &UiCommand::Thread(ThreadCommand::SetInput {
-                content: "hello".to_string(),
-                cursor: 3,
-            }),
-        );
-        assert_eq!(
-            read_val(&mut store, "input/content"),
-            Value::String("hello".into())
-        );
-        assert_eq!(read_val(&mut store, "cursor"), Value::Integer(3));
+        write_cmd(&mut store, &UiCommand::Thread(ThreadCommand::Reply));
 
-        write_cmd(&mut store, &UiCommand::Thread(ThreadCommand::ClearInput));
-        assert_eq!(
-            read_val(&mut store, "input/content"),
-            Value::String("".into())
-        );
-        assert_eq!(read_val(&mut store, "cursor"), Value::Integer(0));
+        let seq = EditSequence {
+            edits: vec![Edit {
+                op: EditOp::Insert {
+                    text: "hello".to_string(),
+                },
+                at: 0,
+                source: EditSource::Key,
+                ts_ms: 0,
+            }],
+            generation: 0,
+        };
+        let value = structfs_serde_store::to_value(&seq).unwrap();
+        store
+            .write(&path!("input/edit"), Record::parsed(value))
+            .unwrap();
+
+        let snap = read_val(&mut store, "input");
+        match snap {
+            Value::Map(m) => {
+                assert_eq!(m.get("content"), Some(&Value::String("hello".to_string())));
+                assert_eq!(m.get("cursor"), Some(&Value::Integer(5)));
+            }
+            _ => panic!("expected Map from input read"),
+        }
+
+        // Read via legacy "cursor" path
+        assert_eq!(read_val(&mut store, "cursor"), Value::Integer(5));
     }
 
     #[test]
-    fn set_input_clamps_cursor() {
+    fn submit_editor_sets_pending_action() {
         let mut store = UiStore::new();
         write_cmd(
             &mut store,
@@ -1577,26 +1736,7 @@ mod tests {
                 thread_id: "t_1".to_string(),
             }),
         );
-        write_cmd(
-            &mut store,
-            &UiCommand::Thread(ThreadCommand::SetInput {
-                content: "hi".to_string(),
-                cursor: 100,
-            }),
-        );
-        assert_eq!(read_val(&mut store, "cursor"), Value::Integer(2));
-    }
-
-    #[test]
-    fn send_input_sets_pending_action() {
-        let mut store = UiStore::new();
-        write_cmd(
-            &mut store,
-            &UiCommand::Global(GlobalCommand::Open {
-                thread_id: "t_1".to_string(),
-            }),
-        );
-        write_cmd(&mut store, &UiCommand::Thread(ThreadCommand::SendInput));
+        write_cmd(&mut store, &UiCommand::Thread(ThreadCommand::SubmitEditor));
         assert_eq!(
             read_val(&mut store, "pending_action"),
             Value::String("send_input".into())
@@ -1781,41 +1921,6 @@ mod tests {
         assert_eq!(read_val(&mut store, "search_active"), Value::Bool(true));
     }
 
-    // -- Text input delegation --
-
-    #[test]
-    fn input_edit_via_ui_store() {
-        use crate::text_input_store::{Edit, EditOp, EditSequence, EditSource};
-        let mut store = UiStore::new();
-        let seq = EditSequence {
-            edits: vec![Edit {
-                op: EditOp::Insert {
-                    text: "hello".to_string(),
-                },
-                at: 0,
-                source: EditSource::Key,
-                ts_ms: 0,
-            }],
-            generation: 0,
-        };
-        let value = structfs_serde_store::to_value(&seq).unwrap();
-        store
-            .write(&path!("input/edit"), Record::parsed(value))
-            .unwrap();
-
-        let snap = read_val(&mut store, "input");
-        match snap {
-            Value::Map(m) => {
-                assert_eq!(m.get("content"), Some(&Value::String("hello".to_string())));
-                assert_eq!(m.get("cursor"), Some(&Value::Integer(5)));
-            }
-            _ => panic!("expected Map from input read"),
-        }
-
-        // Read via legacy "cursor" path
-        assert_eq!(read_val(&mut store, "cursor"), Value::Integer(5));
-    }
-
     // -- Snapshot round-trip --
 
     #[test]
@@ -1827,8 +1932,8 @@ mod tests {
         );
         write_cmd(&mut store, &UiCommand::Inbox(InboxCommand::SelectNext));
         let snap = read_snapshot(&mut store);
-        match snap {
-            UiSnapshot::Inbox(s) => {
+        match snap.screen {
+            ScreenSnapshot::Inbox(s) => {
                 assert_eq!(s.selected_row, 1);
                 assert_eq!(s.row_count, 5);
             }
@@ -1846,10 +1951,10 @@ mod tests {
             }),
         );
         let snap = read_snapshot(&mut store);
-        match snap {
-            UiSnapshot::Thread(s) => {
+        match snap.screen {
+            ScreenSnapshot::Thread(s) => {
                 assert_eq!(s.thread_id, "t_42");
-                assert_eq!(s.mode, Mode::Normal);
+                assert!(s.editor.is_none());
             }
             _ => panic!("expected Thread snapshot"),
         }
@@ -1860,8 +1965,8 @@ mod tests {
         let mut store = UiStore::new();
         write_cmd(&mut store, &UiCommand::Global(GlobalCommand::GoToSettings));
         let snap = read_snapshot(&mut store);
-        match snap {
-            UiSnapshot::Settings(s) => {
+        match snap.screen {
+            ScreenSnapshot::Settings(s) => {
                 assert_eq!(s.focus, SettingsFocus::Accounts);
                 assert!(s.editing.is_none());
             }
@@ -1880,8 +1985,8 @@ mod tests {
             &UiCommand::Settings(SettingsCommand::ToggleFocus),
         );
         let snap = read_snapshot(&mut store);
-        match snap {
-            UiSnapshot::Settings(s) => assert_eq!(s.focus, SettingsFocus::Defaults),
+        match snap.screen {
+            ScreenSnapshot::Settings(s) => assert_eq!(s.focus, SettingsFocus::Defaults),
             _ => panic!("expected Settings"),
         }
         write_cmd(
@@ -1889,8 +1994,8 @@ mod tests {
             &UiCommand::Settings(SettingsCommand::ToggleFocus),
         );
         let snap = read_snapshot(&mut store);
-        match snap {
-            UiSnapshot::Settings(s) => assert_eq!(s.focus, SettingsFocus::Accounts),
+        match snap.screen {
+            ScreenSnapshot::Settings(s) => assert_eq!(s.focus, SettingsFocus::Accounts),
             _ => panic!("expected Settings"),
         }
     }
@@ -1914,8 +2019,8 @@ mod tests {
             &UiCommand::Settings(SettingsCommand::StartAddAccount),
         );
         let snap = read_snapshot(&mut store);
-        match snap {
-            UiSnapshot::Settings(s) => {
+        match snap.screen {
+            ScreenSnapshot::Settings(s) => {
                 assert!(s.editing.is_some());
                 assert!(s.editing.unwrap().is_new);
             }
@@ -1936,8 +2041,8 @@ mod tests {
             &UiCommand::Settings(SettingsCommand::EditCancel),
         );
         let snap = read_snapshot(&mut store);
-        match snap {
-            UiSnapshot::Settings(s) => assert!(s.editing.is_none()),
+        match snap.screen {
+            ScreenSnapshot::Settings(s) => assert!(s.editing.is_none()),
             _ => panic!("expected Settings"),
         }
     }
@@ -1960,8 +2065,8 @@ mod tests {
     fn search_fields_in_inbox_snapshot() {
         let mut store = UiStore::new();
         let snap = read_snapshot(&mut store);
-        match snap {
-            UiSnapshot::Inbox(s) => {
+        match snap.screen {
+            ScreenSnapshot::Inbox(s) => {
                 assert!(s.search.chips.is_empty());
                 assert!(s.search.live_query.is_empty());
                 assert!(!s.search.active);
