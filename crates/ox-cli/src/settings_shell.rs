@@ -71,10 +71,8 @@ impl SettingsShell {
     /// Settings screen.
     pub fn ensure_accounts(&mut self, inbox_root: &std::path::Path) {
         if self.state.accounts.is_empty() {
-            let config = crate::config::resolve_config(
-                inbox_root,
-                &crate::config::CliOverrides::default(),
-            );
+            let config =
+                crate::config::resolve_config(inbox_root, &crate::config::CliOverrides::default());
             self.state
                 .refresh_accounts(&config, &inbox_root.join("keys"));
         }
@@ -579,7 +577,10 @@ async fn handle_navigation_key(
 
             // Write to ConfigStore via broker
             client
-                .write_typed(&oxpath!("config", "gate", "defaults", "account"), &acct_name)
+                .write_typed(
+                    &oxpath!("config", "gate", "defaults", "account"),
+                    &acct_name,
+                )
                 .await
                 .ok();
             client
@@ -587,7 +588,10 @@ async fn handle_navigation_key(
                 .await
                 .ok();
             client
-                .write_typed(&oxpath!("config", "gate", "defaults", "max_tokens"), &max_tokens)
+                .write_typed(
+                    &oxpath!("config", "gate", "defaults", "max_tokens"),
+                    &max_tokens,
+                )
                 .await
                 .ok();
             // Persist to disk

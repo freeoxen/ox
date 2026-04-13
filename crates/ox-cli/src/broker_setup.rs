@@ -251,11 +251,7 @@ mod tests {
             .unwrap();
 
         // Verify we're on thread screen (not inbox)
-        let screen = client
-            .read(&path!("ui/screen"))
-            .await
-            .unwrap()
-            .unwrap();
+        let screen = client.read(&path!("ui/screen")).await.unwrap().unwrap();
         assert_eq!(
             screen.as_value().unwrap(),
             &Value::String("thread".to_string())

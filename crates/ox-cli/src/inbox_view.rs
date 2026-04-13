@@ -33,7 +33,9 @@ pub fn draw_inbox(frame: &mut Frame, vs: &ViewState, theme: &Theme, area: Rect) 
     let visible_rows = (area.height as usize) / row_height;
 
     // Use selected_row to compute scroll offset for inbox
-    let inbox_scroll = snap.selected_row.saturating_sub(visible_rows.saturating_sub(1));
+    let inbox_scroll = snap
+        .selected_row
+        .saturating_sub(visible_rows.saturating_sub(1));
 
     let mut lines: Vec<Line> = Vec::new();
     let end = (inbox_scroll + visible_rows).min(threads.len());

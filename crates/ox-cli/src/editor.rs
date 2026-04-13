@@ -135,20 +135,11 @@ pub(crate) async fn submit_editor_content(
         .unwrap_or_default();
 
     let (mode, insert_context, active_thread) = match &ui {
-        UiSnapshot::Thread(snap) => (
-            snap.mode,
-            snap.insert_context,
-            Some(snap.thread_id.clone()),
-        ),
+        UiSnapshot::Thread(snap) => (snap.mode, snap.insert_context, Some(snap.thread_id.clone())),
         _ => (ox_types::Mode::Normal, None, None),
     };
 
-    let new_tid = app.send_input_with_text(
-        text,
-        mode,
-        insert_context,
-        active_thread.as_deref(),
-    );
+    let new_tid = app.send_input_with_text(text, mode, insert_context, active_thread.as_deref());
 
     let _ = client
         .write_typed(

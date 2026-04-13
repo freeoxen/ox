@@ -18,22 +18,12 @@ use crate::text_input_store::TextInputStore;
 // Per-screen state
 // ---------------------------------------------------------------------------
 
+#[derive(Default)]
 struct InboxState {
     selected_row: usize,
     row_count: usize,
     search_chips: Vec<String>,
     search_live_query: String,
-}
-
-impl Default for InboxState {
-    fn default() -> Self {
-        InboxState {
-            selected_row: 0,
-            row_count: 0,
-            search_chips: Vec::new(),
-            search_live_query: String::new(),
-        }
-    }
 }
 
 impl InboxState {
@@ -758,11 +748,7 @@ impl UiStore {
     /// The command dispatch chain (InputStore → CommandStore → UiStore) sends
     /// writes to paths like "select_next", "scroll_down", "open", etc. This
     /// method translates those into the typed UiCommand enum.
-    fn resolve_path_command(
-        &self,
-        name: &str,
-        value: &Value,
-    ) -> Result<UiCommand, StoreError> {
+    fn resolve_path_command(&self, name: &str, value: &Value) -> Result<UiCommand, StoreError> {
         let map = match value {
             Value::Map(m) => m,
             _ => &BTreeMap::new(),

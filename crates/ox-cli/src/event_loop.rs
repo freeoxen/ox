@@ -1,7 +1,5 @@
 use crate::app::App;
-use crate::editor::{
-    execute_command_input, flush_pending_edits, submit_editor_content,
-};
+use crate::editor::{execute_command_input, flush_pending_edits, submit_editor_content};
 use crate::settings_shell::SettingsShell;
 use crate::shell::Outcome;
 use crate::theme::Theme;
@@ -50,7 +48,10 @@ pub async fn run_async(
     let mut settings_shell = if needs_setup {
         // Navigate to settings screen via broker
         client
-            .write_typed(&oxpath!("ui"), &UiCommand::Global(GlobalCommand::GoToSettings))
+            .write_typed(
+                &oxpath!("ui"),
+                &UiCommand::Global(GlobalCommand::GoToSettings),
+            )
             .await
             .ok();
         SettingsShell::new_wizard()
@@ -120,7 +121,13 @@ pub async fn run_async(
 
             // Draw
             terminal.draw(|frame| {
-                let (ch, vh) = crate::tui::draw(frame, &vs, &settings_shell.state, theme, &mut thread.text_input_view);
+                let (ch, vh) = crate::tui::draw(
+                    frame,
+                    &vs,
+                    &settings_shell.state,
+                    theme,
+                    &mut thread.text_input_view,
+                );
                 content_height = ch;
                 viewport_height = vh;
             })?;
@@ -167,10 +174,7 @@ pub async fn run_async(
                 _ => None,
             };
             selected_thread_id = match &vs.ui {
-                UiSnapshot::Inbox(s) => vs
-                    .inbox_threads
-                    .get(s.selected_row)
-                    .map(|t| t.id.clone()),
+                UiSnapshot::Inbox(s) => vs.inbox_threads.get(s.selected_row).map(|t| t.id.clone()),
                 _ => None,
             };
             search_active = match &vs.ui {
@@ -202,14 +206,13 @@ pub async fn run_async(
                             .await;
                         thread.input_session.reset_after_submit();
                     } else {
-                        let new_tid = submit_editor_content(&mut thread.input_session, app, client).await;
+                        let new_tid =
+                            submit_editor_content(&mut thread.input_session, app, client).await;
                         if let Some(tid) = new_tid {
                             let _ = client
                                 .write_typed(
                                     &oxpath!("ui"),
-                                    &UiCommand::Global(GlobalCommand::Open {
-                                        thread_id: tid,
-                                    }),
+                                    &UiCommand::Global(GlobalCommand::Open { thread_id: tid }),
                                 )
                                 .await;
                         }
@@ -384,7 +387,9 @@ pub async fn run_async(
                     // Border drag handling
                     if mode_owned == Mode::Insert {
                         match mouse.kind {
-                            MouseEventKind::Down(_) if thread.text_input_view.is_on_border(mouse.row) => {
+                            MouseEventKind::Down(_)
+                                if thread.text_input_view.is_on_border(mouse.row) =>
+                            {
                                 thread.text_input_view.start_border_drag(mouse.row);
                             }
                             MouseEventKind::Drag(_) if thread.text_input_view.is_dragging() => {
@@ -395,8 +400,9 @@ pub async fn run_async(
                             }
                             // Click in input area — move cursor
                             MouseEventKind::Down(_) => {
-                                if let Some(byte_pos) =
-                                    thread.text_input_view.click_to_byte_offset(mouse.column, mouse.row)
+                                if let Some(byte_pos) = thread
+                                    .text_input_view
+                                    .click_to_byte_offset(mouse.column, mouse.row)
                                 {
                                     thread.input_session.cursor = byte_pos;
                                 }
@@ -427,7 +433,9 @@ pub async fn run_async(
                     } else
                     // Click on settings edit dialog
                     if let MouseEventKind::Down(_) = mouse.kind {
-                        if screen_owned == Screen::Settings && settings_shell.state.editing.is_some() {
+                        if screen_owned == Screen::Settings
+                            && settings_shell.state.editing.is_some()
+                        {
                             let term_size = crossterm::terminal::size().unwrap_or((80, 24));
                             let dialog_h = 10u16;
                             let dialog_w = term_size.0 * 60 / 100;
@@ -512,17 +520,11 @@ async fn dispatch_mouse_owned(
         MouseEventKind::ScrollUp => {
             if has_active_thread {
                 let _ = client
-                    .write_typed(
-                        &oxpath!("ui"),
-                        &UiCommand::Thread(ThreadCommand::ScrollUp),
-                    )
+                    .write_typed(&oxpath!("ui"), &UiCommand::Thread(ThreadCommand::ScrollUp))
                     .await;
             } else {
                 let _ = client
-                    .write_typed(
-                        &oxpath!("ui"),
-                        &UiCommand::Inbox(InboxCommand::SelectPrev),
-                    )
+                    .write_typed(&oxpath!("ui"), &UiCommand::Inbox(InboxCommand::SelectPrev))
                     .await;
             }
         }
@@ -536,10 +538,7 @@ async fn dispatch_mouse_owned(
                     .await;
             } else {
                 let _ = client
-                    .write_typed(
-                        &oxpath!("ui"),
-                        &UiCommand::Inbox(InboxCommand::SelectNext),
-                    )
+                    .write_typed(&oxpath!("ui"), &UiCommand::Inbox(InboxCommand::SelectNext))
                     .await;
             }
         }
@@ -568,10 +567,7 @@ async fn dispatch_search_edit(
         }
         (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
             let _ = client
-                .write_typed(
-                    &oxpath!("ui"),
-                    &UiCommand::Inbox(InboxCommand::SearchClear),
-                )
+                .write_typed(&oxpath!("ui"), &UiCommand::Inbox(InboxCommand::SearchClear))
                 .await;
         }
         (_, KeyCode::Backspace) => {
