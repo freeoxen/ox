@@ -59,43 +59,32 @@ pub(crate) async fn handle_approval_key(
             // Read tool and input_preview from the pending approval in broker
             if let Some(tid) = active_thread_id {
                 let pending_path = ox_path::oxpath!("threads", tid, "approval", "pending");
-                if let Ok(Some(record)) = client.read(&pending_path).await {
-                    if let Some(structfs_core_store::Value::Map(m)) = record.as_value() {
-                        let tool = m
-                            .get("tool_name")
-                            .and_then(|v| match v {
-                                structfs_core_store::Value::String(s) => Some(s.clone()),
-                                _ => None,
-                            })
-                            .unwrap_or_default();
-                        let input_preview = m
-                            .get("input_preview")
-                            .and_then(|v| match v {
-                                structfs_core_store::Value::String(s) => Some(s.clone()),
-                                _ => None,
-                            })
-                            .unwrap_or_default();
-                        let args = crate::dialogs::infer_args(&tool, &input_preview);
-                        dialog.pending_customize = Some(crate::types::CustomizeState {
-                            tool,
-                            args,
-                            arg_cursor: 0,
-                            effect_idx: 0,
-                            scope_idx: 0,
-                            focus: 0,
-                            network_idx: 1, // default: allow
-                            fs_rules: vec![crate::types::FsRuleState {
-                                path: "$PWD".into(),
-                                read: true,
-                                write: true,
-                                create: true,
-                                delete: true,
-                                execute: true,
-                            }],
-                            fs_sub_focus: 0,
-                            fs_path_cursor: 0,
-                        });
-                    }
+                if let Ok(Some(ap)) = client
+                    .read_typed::<ox_types::ApprovalRequest>(&pending_path)
+                    .await
+                {
+                    let tool = ap.tool_name;
+                    let input_preview = ap.input_preview;
+                    let args = crate::dialogs::infer_args(&tool, &input_preview);
+                    dialog.pending_customize = Some(crate::types::CustomizeState {
+                        tool,
+                        args,
+                        arg_cursor: 0,
+                        effect_idx: 0,
+                        scope_idx: 0,
+                        focus: 0,
+                        network_idx: 1, // default: allow
+                        fs_rules: vec![crate::types::FsRuleState {
+                            path: "$PWD".into(),
+                            read: true,
+                            write: true,
+                            create: true,
+                            delete: true,
+                            execute: true,
+                        }],
+                        fs_sub_focus: 0,
+                        fs_path_cursor: 0,
+                    });
                 }
             }
         }
