@@ -136,24 +136,22 @@ pub async fn run_async(
         // -----------------------------------------------------------------
         // 2. Post-draw: scroll feedback (thread only)
         // -----------------------------------------------------------------
-        if matches!(&ui.screen, ScreenSnapshot::Thread(_)) {
-            if viewport_height > 0 {
-                let scroll_max = content_height.unwrap_or(0).saturating_sub(viewport_height);
-                let _ = client
-                    .write_typed(
-                        &oxpath!("ui"),
-                        &UiCommand::Thread(ThreadCommand::SetScrollMax { max: scroll_max }),
-                    )
-                    .await;
-                let _ = client
-                    .write_typed(
-                        &oxpath!("ui"),
-                        &UiCommand::Thread(ThreadCommand::SetViewportHeight {
-                            height: viewport_height,
-                        }),
-                    )
-                    .await;
-            }
+        if matches!(&ui.screen, ScreenSnapshot::Thread(_)) && viewport_height > 0 {
+            let scroll_max = content_height.unwrap_or(0).saturating_sub(viewport_height);
+            let _ = client
+                .write_typed(
+                    &oxpath!("ui"),
+                    &UiCommand::Thread(ThreadCommand::SetScrollMax { max: scroll_max }),
+                )
+                .await;
+            let _ = client
+                .write_typed(
+                    &oxpath!("ui"),
+                    &UiCommand::Thread(ThreadCommand::SetViewportHeight {
+                        height: viewport_height,
+                    }),
+                )
+                .await;
         }
 
         // -----------------------------------------------------------------
