@@ -4,10 +4,8 @@
 //! worker. Evaluates tool calls against the Clash policy, blocking for TUI
 //! approval when the policy returns Ask.
 
-use std::collections::BTreeMap;
-
 use ox_tools::policy_store::{PolicyCheck, PolicyDecision};
-use structfs_core_store::{Path, Record, Value};
+use structfs_core_store::{Path, Record};
 
 use crate::policy::{CheckResult, PolicyGuard};
 
@@ -60,20 +58,18 @@ impl CliPolicyCheck {
 
     /// Handle the Ask flow: write approval request to broker, block for response.
     fn handle_ask(&mut self, tool: &str, input_preview: &str) -> PolicyDecision {
-        let mut request = BTreeMap::new();
-        request.insert("tool_name".to_string(), Value::String(tool.to_string()));
-        request.insert(
-            "input_preview".to_string(),
-            Value::String(input_preview.to_string()),
-        );
+        let req = ox_types::ApprovalRequest {
+            tool_name: tool.to_string(),
+            input_preview: input_preview.to_string(),
+        };
 
         // Write to approval/request — this blocks until the TUI responds.
         // Use Duration::MAX so deliberation time is never capped by the
         // broker's default 30-second timeout.
         let approval_client = self.scoped_client.with_timeout(std::time::Duration::MAX);
-        let result = self.rt_handle.block_on(approval_client.write(
+        let result = self.rt_handle.block_on(approval_client.write_typed(
             &structfs_core_store::path!("approval/request"),
-            Record::parsed(Value::Map(request)),
+            &req,
         ));
 
         let decision_str = match result {
