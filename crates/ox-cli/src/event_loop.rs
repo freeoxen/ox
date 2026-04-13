@@ -370,6 +370,7 @@ pub async fn run_async(
 ///
 /// Called for all key events that aren't consumed by modal overlays (shortcuts,
 /// customize dialog, approval dialog).
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_key(
     ui: &UiSnapshot,
     key_str: &str,
