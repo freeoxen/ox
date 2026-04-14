@@ -119,8 +119,8 @@ pub async fn fetch_view_state<'a>(
         }
         ScreenSnapshot::History(snap) => {
             let tid = &snap.thread_id;
-            let msg_path = ox_path::oxpath!("threads", tid, "history", "messages");
-            if let Ok(Some(record)) = client.read(&msg_path).await {
+            let log_path = ox_path::oxpath!("threads", tid, "log", "entries");
+            if let Ok(Some(record)) = client.read(&log_path).await {
                 if let Some(Value::Array(arr)) = record.as_value() {
                     raw_messages = arr.clone();
                 }

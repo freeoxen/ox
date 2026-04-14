@@ -101,6 +101,14 @@ pub struct Theme {
     pub history_block_content: Style,
     /// History explorer: streaming indicator.
     pub history_streaming: Style,
+    /// History explorer: turn boundary separator.
+    pub history_turn_boundary: Style,
+    /// History explorer: approval request badge.
+    pub history_approval_ask: Style,
+    /// History explorer: approval allowed badge.
+    pub history_approval_allow: Style,
+    /// History explorer: approval denied badge.
+    pub history_approval_deny: Style,
 }
 
 impl Theme {
@@ -169,6 +177,10 @@ impl Theme {
             history_block_tag: bold.fg(Color::Cyan),
             history_block_content: dim,
             history_streaming: dim.fg(Color::Blue),
+            history_turn_boundary: dim,
+            history_approval_ask: bold.fg(Color::Yellow),
+            history_approval_allow: bold.fg(Color::Green),
+            history_approval_deny: bold.fg(Color::Red),
         }
     }
 }

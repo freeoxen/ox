@@ -1,4 +1,4 @@
-use crate::parse::{HistoryBlock, parse_history_entries};
+use crate::parse::{parse_log_entries, LogDisplayEntry, HistoryBlock};
 use crate::theme::Theme;
 use crate::view_state::ViewState;
 use ox_types::ScreenSnapshot;
@@ -20,7 +20,7 @@ pub fn draw_history(
         _ => return (0, area.height as usize),
     };
 
-    let entries = parse_history_entries(&vs.raw_messages);
+    let entries = parse_log_entries(&vs.raw_messages);
     let entry_count = entries.len();
 
     let selected_row = snap.selected_row.min(entry_count.saturating_sub(1));
@@ -42,54 +42,80 @@ pub fn draw_history(
         let is_selected = entry.index == selected_row;
         let cursor = if is_selected { ">" } else { " " };
 
-        // Role badge padded to 12 chars
-        let role_style = match entry.role.as_str() {
-            "user" => theme.history_role_user,
-            "assistant" => theme.history_role_assistant,
-            _ => theme.history_role_tool,
-        };
-        let role_label = format!("{:<12}", entry.role);
-
-        // Summary style
-        let summary_style = if is_selected {
-            theme.history_selected
-        } else {
-            theme.history_summary
-        };
-
-        // Metadata
-        let meta = format!(
-            " ({} block{}, {} chars)",
-            entry.block_count,
-            if entry.block_count == 1 { "" } else { "s" },
-            entry.text_len,
-        );
-
-        let mut summary_line = vec![
-            Span::styled(format!("{cursor} "), theme.history_meta),
-            Span::styled(format!("#{:<4} ", entry.index), theme.history_index),
-            Span::styled(role_label, role_style),
-        ];
-
-        // Duplicate badge
-        if entry.flags.duplicate_content {
-            let dup_label = match entry.flags.duplicate_of {
-                Some(n) => format!(" [DUP of #{}]", n),
-                None => " [DUP]".to_string(),
-            };
-            summary_line.push(Span::styled(dup_label, theme.history_duplicate));
+        match entry.entry_type.as_str() {
+            "turn_start" | "turn_end" => {
+                let token_info = match (entry.meta.input_tokens, entry.meta.output_tokens) {
+                    (Some(i), Some(o)) if i > 0 || o > 0 => format!(" ({}in / {}out)", i, o),
+                    (Some(i), None) if i > 0 => format!(" ({}in)", i),
+                    (None, Some(o)) if o > 0 => format!(" ({}out)", o),
+                    _ => String::new(),
+                };
+                let label = format!(
+                    " ── {}{} ──",
+                    entry.entry_type.replace('_', " "),
+                    token_info
+                );
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{cursor} "), theme.history_meta),
+                    Span::styled(format!("#{:<4} ", entry.index), theme.history_index),
+                    Span::styled(label, theme.history_turn_boundary),
+                ]));
+            }
+            "approval_requested" => {
+                let tool = entry.meta.tool_name.as_deref().unwrap_or("");
+                let preview = entry.meta.input_preview.as_deref().unwrap_or("");
+                let detail = if preview.is_empty() {
+                    tool.to_string()
+                } else {
+                    format!("{}: \"{}\"", tool, preview)
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{cursor} "), theme.history_meta),
+                    Span::styled(format!("#{:<4} ", entry.index), theme.history_index),
+                    Span::styled("[approval?] ", theme.history_approval_ask),
+                    Span::styled(detail, theme.history_summary),
+                ]));
+            }
+            "approval_resolved" => {
+                let decision = entry.meta.decision.as_deref().unwrap_or("");
+                let badge_style = if decision.starts_with("allow") {
+                    theme.history_approval_allow
+                } else {
+                    theme.history_approval_deny
+                };
+                let tool = entry.meta.tool_name.as_deref().unwrap_or("");
+                let badge = format!("[{}] ", if decision.is_empty() { "resolved" } else { decision });
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{cursor} "), theme.history_meta),
+                    Span::styled(format!("#{:<4} ", entry.index), theme.history_index),
+                    Span::styled(badge, badge_style),
+                    Span::styled(tool.to_string(), theme.history_summary),
+                ]));
+            }
+            "error" => {
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{cursor} "), theme.history_meta),
+                    Span::styled(format!("#{:<4} ", entry.index), theme.history_index),
+                    Span::styled("[error] ", theme.history_duplicate),
+                    Span::styled(entry.summary.clone(), theme.history_summary),
+                ]));
+            }
+            "meta" => {
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{cursor} "), theme.history_meta),
+                    Span::styled(format!("#{:<4} ", entry.index), theme.history_index),
+                    Span::styled("[meta] ", theme.history_meta),
+                    Span::styled(entry.summary.clone(), theme.history_summary),
+                ]));
+            }
+            _ => {
+                // "user", "assistant", "tool_call", "tool_result"
+                render_message_entry(entry, is_selected, cursor, theme, &mut lines);
+            }
         }
 
-        summary_line.push(Span::styled(
-            format!(" \"{}\"", entry.summary),
-            summary_style,
-        ));
-        summary_line.push(Span::styled(meta, theme.history_meta));
-
-        lines.push(Line::from(summary_line));
-
         // Expanded blocks
-        if expanded.contains(&entry.index) {
+        if expanded.contains(&entry.index) && !entry.blocks.is_empty() {
             for block in &entry.blocks {
                 render_block(block, theme, &mut lines);
             }
@@ -131,6 +157,57 @@ pub fn draw_history(
     }
 
     (content_height, viewport_height)
+}
+
+/// Render a message-type entry (user / assistant / tool_call / tool_result).
+fn render_message_entry(
+    entry: &LogDisplayEntry,
+    is_selected: bool,
+    cursor: &str,
+    theme: &Theme,
+    out: &mut Vec<Line>,
+) {
+    let role_style = match entry.entry_type.as_str() {
+        "user" => theme.history_role_user,
+        "assistant" => theme.history_role_assistant,
+        _ => theme.history_role_tool,
+    };
+    let role_label = format!("{:<12}", entry.entry_type);
+
+    let summary_style = if is_selected {
+        theme.history_selected
+    } else {
+        theme.history_summary
+    };
+
+    let meta = format!(
+        " ({} block{}, {} chars)",
+        entry.meta.block_count,
+        if entry.meta.block_count == 1 { "" } else { "s" },
+        entry.meta.text_len,
+    );
+
+    let mut summary_line = vec![
+        Span::styled(format!("{cursor} "), theme.history_meta),
+        Span::styled(format!("#{:<4} ", entry.index), theme.history_index),
+        Span::styled(role_label, role_style),
+    ];
+
+    if entry.flags.duplicate_content {
+        let dup_label = match entry.flags.duplicate_of {
+            Some(n) => format!(" [DUP of #{}]", n),
+            None => " [DUP]".to_string(),
+        };
+        summary_line.push(Span::styled(dup_label, theme.history_duplicate));
+    }
+
+    summary_line.push(Span::styled(
+        format!(" \"{}\"", entry.summary),
+        summary_style,
+    ));
+    summary_line.push(Span::styled(meta, theme.history_meta));
+
+    out.push(Line::from(summary_line));
 }
 
 /// Render an expanded content block, appending lines to `out`.
