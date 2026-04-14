@@ -82,9 +82,15 @@ impl HistoryView {
                     }
                     messages.push(serde_json::json!({"role": "user", "content": result_blocks}));
                 }
-                LogEntry::ToolCall { .. } | LogEntry::Meta { .. } => {
+                LogEntry::ToolCall { .. }
+                | LogEntry::Meta { .. }
+                | LogEntry::TurnStart { .. }
+                | LogEntry::TurnEnd { .. }
+                | LogEntry::ApprovalRequested { .. }
+                | LogEntry::ApprovalResolved { .. }
+                | LogEntry::Error { .. } => {
                     // Skip: tool calls are embedded in assistant content,
-                    // meta entries are not conversation messages
+                    // non-message entries are not conversation messages
                     i += 1;
                 }
             }
