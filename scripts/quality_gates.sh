@@ -80,6 +80,11 @@ else
     gate "prettier --check (site)" "$BUN" x prettier --check 'site/**/*.{ts,js,css,html}'
 fi
 
+# Build agent WASM if missing (required by ox-cli build.rs)
+if [ ! -f "$ROOT/target/agent.wasm" ]; then
+    "$ROOT/scripts/build-agent.sh"
+fi
+
 # 3. Lint (native)
 gate "clippy (native)"            cargo clippy --workspace -- -D warnings
 
