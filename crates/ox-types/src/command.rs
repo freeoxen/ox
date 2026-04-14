@@ -7,6 +7,7 @@ pub enum UiCommand {
     Inbox(InboxCommand),
     Thread(ThreadCommand),
     Settings(SettingsCommand),
+    History(HistoryCommand),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,6 +18,8 @@ pub enum GlobalCommand {
     Close,
     GoToSettings,
     GoToInbox,
+    OpenHistory { thread_id: String },
+    BackToThread { thread_id: String },
     SetStatus { text: String },
     ClearPendingAction,
 }
@@ -117,4 +120,26 @@ pub enum SettingsCommand {
         max_tokens: i64,
     },
     FinishWizard,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "command", rename_all = "snake_case")]
+pub enum HistoryCommand {
+    SelectNext,
+    SelectPrev,
+    SelectFirst,
+    SelectLast,
+    ToggleExpand,
+    ExpandAll,
+    CollapseAll,
+    ScrollUp,
+    ScrollDown,
+    ScrollToTop,
+    ScrollToBottom,
+    ScrollPageUp,
+    ScrollPageDown,
+    ScrollHalfPageUp,
+    ScrollHalfPageDown,
+    SetScrollMax { max: usize },
+    SetViewportHeight { height: usize },
 }

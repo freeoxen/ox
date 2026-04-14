@@ -7,6 +7,7 @@ pub enum Screen {
     Inbox,
     Thread,
     Settings,
+    History,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

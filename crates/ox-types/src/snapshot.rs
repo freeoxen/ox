@@ -16,6 +16,7 @@ impl UiSnapshot {
             ScreenSnapshot::Inbox(s) => s.editor.as_ref(),
             ScreenSnapshot::Thread(s) => s.editor.as_ref(),
             ScreenSnapshot::Settings(_) => None,
+            ScreenSnapshot::History(_) => None,
         }
     }
 
@@ -40,6 +41,7 @@ pub enum ScreenSnapshot {
     Inbox(InboxSnapshot),
     Thread(ThreadSnapshot),
     Settings(SettingsSnapshot),
+    History(HistorySnapshot),
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -70,6 +72,17 @@ pub struct SettingsSnapshot {
     pub default_account_idx: usize,
     pub default_model: String,
     pub default_max_tokens: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistorySnapshot {
+    pub thread_id: String,
+    pub selected_row: usize,
+    pub scroll: usize,
+    pub scroll_max: usize,
+    pub viewport_height: usize,
+    /// Message indices currently expanded for detail view.
+    pub expanded: Vec<usize>,
 }
 
 /// Snapshot of the text editor widget's state.
