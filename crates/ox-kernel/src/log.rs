@@ -58,6 +58,41 @@ pub enum LogEntry {
 
     #[serde(rename = "meta")]
     Meta { data: serde_json::Value },
+
+    #[serde(rename = "turn_start")]
+    TurnStart {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<String>,
+    },
+
+    #[serde(rename = "turn_end")]
+    TurnEnd {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<String>,
+        #[serde(default)]
+        input_tokens: u32,
+        #[serde(default)]
+        output_tokens: u32,
+    },
+
+    #[serde(rename = "approval_requested")]
+    ApprovalRequested {
+        tool_name: String,
+        input_preview: String,
+    },
+
+    #[serde(rename = "approval_resolved")]
+    ApprovalResolved {
+        tool_name: String,
+        decision: String,
+    },
+
+    #[serde(rename = "error")]
+    Error {
+        message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<String>,
+    },
 }
 
 /// Shared append-only log backing. Both LogStore and HistoryView read
@@ -502,6 +537,86 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(record.as_value().unwrap(), &Value::Integer(3));
+    }
+
+    #[test]
+    fn turn_start_entry_round_trip() {
+        let mut log = LogStore::new();
+        log.write(
+            &path!("append"),
+            Record::parsed(structfs_serde_store::json_to_value(
+                serde_json::json!({"type": "turn_start", "scope": "root"}),
+            )),
+        )
+        .unwrap();
+        let record = log.read(&path!("entries")).unwrap().unwrap();
+        let json = structfs_serde_store::value_to_json(record.as_value().unwrap().clone());
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["type"], "turn_start");
+        assert_eq!(arr[0]["scope"], "root");
+    }
+
+    #[test]
+    fn turn_end_entry_round_trip() {
+        let mut log = LogStore::new();
+        log.write(
+            &path!("append"),
+            Record::parsed(structfs_serde_store::json_to_value(
+                serde_json::json!({"type": "turn_end", "scope": "root", "input_tokens": 100, "output_tokens": 50}),
+            )),
+        )
+        .unwrap();
+        let record = log.read(&path!("entries")).unwrap().unwrap();
+        let json = structfs_serde_store::value_to_json(record.as_value().unwrap().clone());
+        let entry = &json.as_array().unwrap()[0];
+        assert_eq!(entry["type"], "turn_end");
+        assert_eq!(entry["input_tokens"], 100);
+        assert_eq!(entry["output_tokens"], 50);
+    }
+
+    #[test]
+    fn approval_entries_round_trip() {
+        let mut log = LogStore::new();
+        log.write(
+            &path!("append"),
+            Record::parsed(structfs_serde_store::json_to_value(
+                serde_json::json!({"type": "approval_requested", "tool_name": "bash", "input_preview": "ls -la"}),
+            )),
+        )
+        .unwrap();
+        log.write(
+            &path!("append"),
+            Record::parsed(structfs_serde_store::json_to_value(
+                serde_json::json!({"type": "approval_resolved", "tool_name": "bash", "decision": "allow_once"}),
+            )),
+        )
+        .unwrap();
+        let record = log.read(&path!("entries")).unwrap().unwrap();
+        let json = structfs_serde_store::value_to_json(record.as_value().unwrap().clone());
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["type"], "approval_requested");
+        assert_eq!(arr[0]["tool_name"], "bash");
+        assert_eq!(arr[1]["type"], "approval_resolved");
+        assert_eq!(arr[1]["decision"], "allow_once");
+    }
+
+    #[test]
+    fn error_entry_round_trip() {
+        let mut log = LogStore::new();
+        log.write(
+            &path!("append"),
+            Record::parsed(structfs_serde_store::json_to_value(
+                serde_json::json!({"type": "error", "message": "connection failed", "scope": "root"}),
+            )),
+        )
+        .unwrap();
+        let record = log.read(&path!("entries")).unwrap().unwrap();
+        let json = structfs_serde_store::value_to_json(record.as_value().unwrap().clone());
+        let entry = &json.as_array().unwrap()[0];
+        assert_eq!(entry["type"], "error");
+        assert_eq!(entry["message"], "connection failed");
     }
 
     #[test]
