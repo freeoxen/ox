@@ -142,10 +142,10 @@ fn render_approval_requested(
         format!("{tool}: \"{preview}\"")
     };
     out.push(Line::from(vec![
-        Span::styled(format!("{cursor} "), theme.history_meta),
-        Span::styled(format!("#{:<4} ", entry.index), theme.history_index),
+        Span::styled(format!("{cursor} "), theme.history_approval_ask),
+        Span::styled(format!("#{:<4} ", entry.index), theme.history_approval_ask),
         Span::styled("[approval?] ", theme.history_approval_ask),
-        Span::styled(detail, theme.history_summary),
+        Span::styled(detail, theme.history_approval_ask),
     ]));
 }
 
@@ -171,10 +171,10 @@ fn render_approval_resolved(
         }
     );
     out.push(Line::from(vec![
-        Span::styled(format!("{cursor} "), theme.history_meta),
-        Span::styled(format!("#{:<4} ", entry.index), theme.history_index),
+        Span::styled(format!("{cursor} "), badge_style),
+        Span::styled(format!("#{:<4} ", entry.index), badge_style),
         Span::styled(badge, badge_style),
-        Span::styled(tool.to_string(), theme.history_summary),
+        Span::styled(tool.to_string(), badge_style),
     ]));
 }
 
