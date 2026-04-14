@@ -91,6 +91,19 @@ impl SharedLog {
         let start = entries.len().saturating_sub(n);
         entries[start..].to_vec()
     }
+
+    /// Find a tool result by its tool_use_id and return the output.
+    pub fn tool_result_output(&self, tool_use_id: &str) -> Option<serde_json::Value> {
+        let entries = self.0.lock().unwrap();
+        for entry in entries.iter().rev() {
+            if let LogEntry::ToolResult { id, output, .. } = entry {
+                if id == tool_use_id {
+                    return Some(output.clone());
+                }
+            }
+        }
+        None
+    }
 }
 
 impl Default for SharedLog {
@@ -174,6 +187,78 @@ impl Reader for LogStore {
                 Ok(Some(Record::parsed(structfs_serde_store::json_to_value(
                     json,
                 ))))
+            }
+            "results" => {
+                if from.len() < 2 {
+                    return Err(StoreError::store(
+                        "LogStore",
+                        "read",
+                        "results requires tool_use_id: results/{id}",
+                    ));
+                }
+                let tool_use_id = &from.components[1];
+                let output = self
+                    .shared
+                    .tool_result_output(tool_use_id)
+                    .ok_or_else(|| {
+                        StoreError::store(
+                            "LogStore",
+                            "read",
+                            format!("no tool result with id: {tool_use_id}"),
+                        )
+                    })?;
+                let full = match &output {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => serde_json::to_string(other).unwrap_or_default(),
+                };
+
+                if from.len() == 2 {
+                    return Ok(Some(Record::parsed(Value::String(full))));
+                }
+
+                let sub = from.components[2].as_str();
+                match sub {
+                    "line_count" => {
+                        let count = full.lines().count() as i64;
+                        Ok(Some(Record::parsed(Value::Integer(count))))
+                    }
+                    "lines" => {
+                        if from.len() < 5 {
+                            return Err(StoreError::store(
+                                "LogStore",
+                                "read",
+                                "lines requires offset and limit: results/{id}/lines/{offset}/{limit}",
+                            ));
+                        }
+                        let offset: usize = from.components[3]
+                            .parse()
+                            .map_err(|e: std::num::ParseIntError| {
+                                StoreError::store("LogStore", "read", e.to_string())
+                            })?;
+                        let limit: usize = from.components[4]
+                            .parse()
+                            .map_err(|e: std::num::ParseIntError| {
+                                StoreError::store("LogStore", "read", e.to_string())
+                            })?;
+                        let lines: Vec<&str> = full.lines().collect();
+                        let total = lines.len();
+                        let start = offset.min(total);
+                        let end = (start + limit).min(total);
+                        let sliced = format!(
+                            "[lines {}-{} of {}]\n{}",
+                            start + 1,
+                            end,
+                            total,
+                            lines[start..end].join("\n"),
+                        );
+                        Ok(Some(Record::parsed(Value::String(sliced))))
+                    }
+                    _ => Err(StoreError::store(
+                        "LogStore",
+                        "read",
+                        format!("unknown results sub-path: {sub}"),
+                    )),
+                }
             }
             _ => Ok(None),
         }
@@ -321,5 +406,128 @@ mod tests {
             record.as_value().unwrap(),
             &structfs_core_store::Value::Integer(2)
         );
+    }
+
+    #[test]
+    fn tool_result_output_found() {
+        let log = SharedLog::new();
+        log.append(LogEntry::ToolResult {
+            id: "tc_abc".into(),
+            output: serde_json::Value::String("hello world".into()),
+            is_error: false,
+            scope: None,
+        });
+        let result = log.tool_result_output("tc_abc");
+        assert_eq!(result, Some(serde_json::Value::String("hello world".into())));
+    }
+
+    #[test]
+    fn tool_result_output_not_found() {
+        let log = SharedLog::new();
+        log.append(LogEntry::User {
+            content: "hi".into(),
+            scope: None,
+        });
+        assert_eq!(log.tool_result_output("tc_missing"), None);
+    }
+
+    #[test]
+    fn tool_result_output_returns_last_match() {
+        let log = SharedLog::new();
+        log.append(LogEntry::ToolResult {
+            id: "tc_dup".into(),
+            output: serde_json::Value::String("first".into()),
+            is_error: false,
+            scope: None,
+        });
+        log.append(LogEntry::ToolResult {
+            id: "tc_dup".into(),
+            output: serde_json::Value::String("second".into()),
+            is_error: false,
+            scope: None,
+        });
+        assert_eq!(
+            log.tool_result_output("tc_dup"),
+            Some(serde_json::Value::String("second".into()))
+        );
+    }
+
+    #[test]
+    fn read_result_by_id() {
+        let mut log = LogStore::new();
+        log.write(
+            &path!("append"),
+            Record::parsed(structfs_serde_store::json_to_value(serde_json::json!({
+                "type": "tool_result",
+                "id": "tc_42",
+                "output": "the full output\nline two\nline three",
+                "is_error": false
+            }))),
+        )
+        .unwrap();
+        let record = log
+            .read(&Path::parse("results/tc_42").unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            record.as_value().unwrap(),
+            &Value::String("the full output\nline two\nline three".into())
+        );
+    }
+
+    #[test]
+    fn read_result_not_found() {
+        let mut log = LogStore::new();
+        let result = log.read(&Path::parse("results/tc_missing").unwrap());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn read_result_line_count() {
+        let mut log = LogStore::new();
+        log.write(
+            &path!("append"),
+            Record::parsed(structfs_serde_store::json_to_value(serde_json::json!({
+                "type": "tool_result",
+                "id": "tc_lc",
+                "output": "line1\nline2\nline3",
+                "is_error": false
+            }))),
+        )
+        .unwrap();
+        let record = log
+            .read(&Path::parse("results/tc_lc/line_count").unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.as_value().unwrap(), &Value::Integer(3));
+    }
+
+    #[test]
+    fn read_result_lines_slice() {
+        let mut log = LogStore::new();
+        let output = (0..10).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        log.write(
+            &path!("append"),
+            Record::parsed(structfs_serde_store::json_to_value(serde_json::json!({
+                "type": "tool_result",
+                "id": "tc_sl",
+                "output": output,
+                "is_error": false
+            }))),
+        )
+        .unwrap();
+        let record = log
+            .read(&Path::parse("results/tc_sl/lines/2/3").unwrap())
+            .unwrap()
+            .unwrap();
+        let val = match record.as_value().unwrap() {
+            Value::String(s) => s.clone(),
+            _ => panic!("expected string"),
+        };
+        assert!(val.starts_with("[lines 3-5 of 10]"));
+        assert!(val.contains("line 2"));
+        assert!(val.contains("line 3"));
+        assert!(val.contains("line 4"));
+        assert!(!val.contains("line 5"));
     }
 }
