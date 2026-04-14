@@ -213,13 +213,27 @@ fn normal_mode(out: &mut Vec<Binding>) {
         "Go to bottom",
     ));
 
-    // Ctrl+d/u: half-page scroll
+    // d/u and Ctrl+d/u: half-page scroll
+    out.push(bind_screen(
+        "normal",
+        "d",
+        "thread",
+        invoke("scroll_half_page_down"),
+        "Half page down",
+    ));
     out.push(bind_screen(
         "normal",
         "Ctrl+d",
         "thread",
         invoke("scroll_half_page_down"),
         "Half page down",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "u",
+        "thread",
+        invoke("scroll_half_page_up"),
+        "Half page up",
     ));
     out.push(bind_screen(
         "normal",
