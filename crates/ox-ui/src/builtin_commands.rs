@@ -376,6 +376,42 @@ static BUILTIN_COMMANDS: &[StaticCommandDef] = &[
         description: "Clear pending action flag",
         user_facing: false,
     },
+    // -- History explorer --
+    StaticCommandDef {
+        name: "open_history",
+        target: "ui/open_history",
+        params: &[],
+        description: "Open history explorer",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "back_to_thread",
+        target: "ui/back_to_thread",
+        params: &[],
+        description: "Return to thread from history",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "toggle_expand",
+        target: "ui/toggle_expand",
+        params: &[],
+        description: "Toggle expand/collapse message",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "expand_all",
+        target: "ui/expand_all",
+        params: &[],
+        description: "Expand all messages",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "collapse_all",
+        target: "ui/collapse_all",
+        params: &[],
+        description: "Collapse all messages",
+        user_facing: true,
+    },
 ];
 
 #[cfg(test)]
