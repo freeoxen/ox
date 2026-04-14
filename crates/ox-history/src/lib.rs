@@ -69,10 +69,11 @@ impl HistoryView {
                                 serde_json::Value::String(s) => s.clone(),
                                 other => serde_json::to_string(other).unwrap_or_default(),
                             };
+                            let abbreviated = abbreviate_tool_result(&content_str, id);
                             result_blocks.push(serde_json::json!({
                                 "type": "tool_result",
                                 "tool_use_id": id,
-                                "content": content_str,
+                                "content": abbreviated,
                             }));
                             i += 1;
                         } else {
@@ -253,6 +254,41 @@ impl Writer for HistoryView {
             )),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Tool result abbreviation
+// ---------------------------------------------------------------------------
+
+/// Maximum lines to show in full before abbreviating a tool result.
+const ABBREVIATE_THRESHOLD_LINES: usize = 50;
+
+/// Number of lines to keep from the head and tail when abbreviating.
+const ABBREVIATE_HEAD_LINES: usize = 20;
+const ABBREVIATE_TAIL_LINES: usize = 20;
+
+/// Abbreviate a tool result for history projection.
+///
+/// Results under the threshold are returned unchanged. Large results show
+/// the first and last N lines with an omission marker referencing the
+/// tool_use_id so the model can retrieve the full output.
+fn abbreviate_tool_result(content: &str, tool_use_id: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.len() <= ABBREVIATE_THRESHOLD_LINES {
+        return content.to_string();
+    }
+
+    let head: Vec<&str> = lines[..ABBREVIATE_HEAD_LINES].to_vec();
+    let tail: Vec<&str> = lines[lines.len() - ABBREVIATE_TAIL_LINES..].to_vec();
+    let omitted = lines.len() - ABBREVIATE_HEAD_LINES - ABBREVIATE_TAIL_LINES;
+
+    format!(
+        "{}\n\n[... {omitted} lines omitted — use get_tool_output with \
+         tool_use_id=\"{tool_use_id}\" to see full output, \
+         or re-run the command with max_lines to limit output at the source]\n\n{}",
+        head.join("\n"),
+        tail.join("\n"),
+    )
 }
 
 #[cfg(test)]
@@ -525,5 +561,55 @@ mod tests {
         let mut hv = HistoryView::new(shared);
         let result = hv.write(&path!("turn"), Record::parsed(Value::Null));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn history_abbreviates_large_tool_result() {
+        let shared = SharedLog::new();
+        let big_output = (0..100)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        shared.append(LogEntry::ToolResult {
+            id: "tc_big".into(),
+            output: serde_json::Value::String(big_output),
+            is_error: false,
+            scope: None,
+        });
+        let mut hv = HistoryView::new(shared);
+        let messages = hv.read(&path!("messages")).unwrap().unwrap();
+        let json = value_to_json(unwrap_value(messages));
+        let arr = json.as_array().unwrap();
+        let content = arr[0]["content"].as_array().unwrap();
+        let result_str = content[0]["content"].as_str().unwrap();
+        assert!(result_str.contains("line 0"));
+        assert!(result_str.contains("line 19"));
+        assert!(result_str.contains("lines omitted"));
+        assert!(result_str.contains("tc_big"));
+        assert!(result_str.contains("line 99"));
+        assert!(result_str.contains("line 80"));
+        assert!(!result_str.contains("\nline 40\n"));
+    }
+
+    #[test]
+    fn history_does_not_abbreviate_small_tool_result() {
+        let shared = SharedLog::new();
+        let small_output = (0..10)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        shared.append(LogEntry::ToolResult {
+            id: "tc_small".into(),
+            output: serde_json::Value::String(small_output.clone()),
+            is_error: false,
+            scope: None,
+        });
+        let mut hv = HistoryView::new(shared);
+        let messages = hv.read(&path!("messages")).unwrap().unwrap();
+        let json = value_to_json(unwrap_value(messages));
+        let arr = json.as_array().unwrap();
+        let content = arr[0]["content"].as_array().unwrap();
+        let result_str = content[0]["content"].as_str().unwrap();
+        assert_eq!(result_str, &small_output);
     }
 }
