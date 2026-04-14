@@ -228,11 +228,13 @@ impl AsyncWriter for ThreadRegistry {
                 Some("request") => {
                     if let Some(val) = data.as_value() {
                         let json = structfs_serde_store::value_to_json(val.clone());
-                        let tool_name = json.get("tool_name")
+                        let tool_name = json
+                            .get("tool_name")
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();
-                        let input_preview = json.get("input_preview")
+                        let input_preview = json
+                            .get("input_preview")
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();
@@ -242,10 +244,12 @@ impl AsyncWriter for ThreadRegistry {
                             "input_preview": input_preview,
                         });
                         let log_val = structfs_serde_store::json_to_value(entry);
-                        ns.log.write(
-                            &structfs_core_store::path!("append"),
-                            structfs_core_store::Record::parsed(log_val),
-                        ).ok();
+                        ns.log
+                            .write(
+                                &structfs_core_store::path!("append"),
+                                structfs_core_store::Record::parsed(log_val),
+                            )
+                            .ok();
                     }
                 }
                 Some("response") => {
@@ -253,7 +257,8 @@ impl AsyncWriter for ThreadRegistry {
                     let tool_name = ns.approval.pending_tool_name().unwrap_or_default();
                     if let Some(val) = data.as_value() {
                         let json = structfs_serde_store::value_to_json(val.clone());
-                        let decision = json.get("decision")
+                        let decision = json
+                            .get("decision")
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();
@@ -263,10 +268,12 @@ impl AsyncWriter for ThreadRegistry {
                             "decision": decision,
                         });
                         let log_val = structfs_serde_store::json_to_value(entry);
-                        ns.log.write(
-                            &structfs_core_store::path!("append"),
-                            structfs_core_store::Record::parsed(log_val),
-                        ).ok();
+                        ns.log
+                            .write(
+                                &structfs_core_store::path!("append"),
+                                structfs_core_store::Record::parsed(log_val),
+                            )
+                            .ok();
                     }
                 }
                 _ => {}

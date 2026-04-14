@@ -214,8 +214,9 @@ pub fn search_matches(
 
 // ---------------------------------------------------------------------------
 // HistoryEntry — parsed history entries with duplicate detection
+// (Superseded by LogDisplayEntry for production use; retained for tests)
 // ---------------------------------------------------------------------------
-
+#[allow(dead_code)]
 /// A single parsed history entry (one wire-format message).
 #[derive(Debug, Clone)]
 pub struct HistoryEntry {
@@ -247,6 +248,7 @@ pub struct EntryFlags {
 
 /// Convert a slice of StructFS Values (Anthropic wire-format messages) into
 /// `HistoryEntry`s with duplicate detection applied.
+#[allow(dead_code)]
 pub fn parse_history_entries(values: &[Value]) -> Vec<HistoryEntry> {
     let mut entries: Vec<HistoryEntry> = values
         .iter()
@@ -438,6 +440,7 @@ fn concat_text(blocks: &[HistoryBlock]) -> String {
 }
 
 /// Detect duplicate entries by comparing text content against prior same-role entries.
+#[allow(dead_code)]
 fn detect_duplicates(entries: &mut [HistoryEntry]) {
     for i in 1..entries.len() {
         let current_role = entries[i].role.clone();
@@ -487,6 +490,7 @@ pub struct LogDisplayEntry {
 
 /// Type-specific metadata for rendering.
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
 pub struct LogEntryMeta {
     pub scope: Option<String>,
     pub tool_name: Option<String>,

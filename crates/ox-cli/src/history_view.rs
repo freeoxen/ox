@@ -1,4 +1,4 @@
-use crate::parse::{parse_log_entries, LogDisplayEntry, HistoryBlock};
+use crate::parse::{HistoryBlock, LogDisplayEntry, parse_log_entries};
 use crate::theme::Theme;
 use crate::view_state::ViewState;
 use ox_types::ScreenSnapshot;
@@ -84,7 +84,14 @@ pub fn draw_history(
                     theme.history_approval_deny
                 };
                 let tool = entry.meta.tool_name.as_deref().unwrap_or("");
-                let badge = format!("[{}] ", if decision.is_empty() { "resolved" } else { decision });
+                let badge = format!(
+                    "[{}] ",
+                    if decision.is_empty() {
+                        "resolved"
+                    } else {
+                        decision
+                    }
+                );
                 lines.push(Line::from(vec![
                     Span::styled(format!("{cursor} "), theme.history_meta),
                     Span::styled(format!("#{:<4} ", entry.index), theme.history_index),

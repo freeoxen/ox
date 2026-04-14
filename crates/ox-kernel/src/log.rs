@@ -82,10 +82,7 @@ pub enum LogEntry {
     },
 
     #[serde(rename = "approval_resolved")]
-    ApprovalResolved {
-        tool_name: String,
-        decision: String,
-    },
+    ApprovalResolved { tool_name: String, decision: String },
 
     #[serde(rename = "error")]
     Error {
