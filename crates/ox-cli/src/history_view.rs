@@ -32,14 +32,8 @@ pub fn draw_history(
     // Header line
     lines.push(Line::from(vec![
         Span::styled(" HISTORY ", theme.history_header),
-        Span::styled(
-            format!(" {} messages", entry_count),
-            theme.history_meta,
-        ),
-        Span::styled(
-            format!("  {}", snap.thread_id),
-            theme.history_meta,
-        ),
+        Span::styled(format!(" {} messages", entry_count), theme.history_meta),
+        Span::styled(format!("  {}", snap.thread_id), theme.history_meta),
     ]));
     lines.push(Line::from(""));
 

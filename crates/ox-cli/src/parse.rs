@@ -264,8 +264,7 @@ pub fn parse_history_entries(values: &[Value]) -> Vec<HistoryEntry> {
                 Some(v) => v,
                 None => return None,
             };
-            let (blocks, summary, block_count, text_len) =
-                parse_content_blocks(&role, content);
+            let (blocks, summary, block_count, text_len) = parse_content_blocks(&role, content);
             Some(HistoryEntry {
                 index,
                 role,
@@ -283,10 +282,7 @@ pub fn parse_history_entries(values: &[Value]) -> Vec<HistoryEntry> {
 }
 
 /// Parse content into blocks, returning (blocks, summary, block_count, text_len).
-fn parse_content_blocks(
-    _role: &str,
-    content: &Value,
-) -> (Vec<HistoryBlock>, String, usize, usize) {
+fn parse_content_blocks(_role: &str, content: &Value) -> (Vec<HistoryBlock>, String, usize, usize) {
     match content {
         Value::String(s) => {
             let block = HistoryBlock {
@@ -343,9 +339,7 @@ fn parse_content_blocks(
                             Some(Value::String(s)) => Some(s.clone()),
                             _ => None,
                         };
-                        let input_json = block_map
-                            .get("input")
-                            .map(|v| format_value(v));
+                        let input_json = block_map.get("input").map(format_value);
                         if first_summary.is_none() {
                             let label = name.as_deref().unwrap_or("unknown");
                             first_summary = Some(format!("tool_use: {label}"));
@@ -681,9 +675,15 @@ mod tests {
 
     #[test]
     fn parse_history_entries_duplicate_detection() {
-        let msg1 = map(vec![("role", s("assistant")), ("content", s("hello world"))]);
+        let msg1 = map(vec![
+            ("role", s("assistant")),
+            ("content", s("hello world")),
+        ]);
         let msg2 = map(vec![("role", s("user")), ("content", s("ok"))]);
-        let msg3 = map(vec![("role", s("assistant")), ("content", s("hello world"))]);
+        let msg3 = map(vec![
+            ("role", s("assistant")),
+            ("content", s("hello world")),
+        ]);
         let entries = parse_history_entries(&[msg1, msg2, msg3]);
         assert_eq!(entries.len(), 3);
         assert!(!entries[0].flags.duplicate_content);

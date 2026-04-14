@@ -7,9 +7,9 @@ use std::collections::BTreeMap;
 
 use ox_types::{
     AccountEditFields, EditorSnapshot, GlobalCommand, HistoryCommand, HistorySnapshot,
-    InboxCommand, InboxSnapshot, InsertContext, Mode, PendingAction, ScreenSnapshot, SearchSnapshot,
-    SettingsCommand, SettingsFocus, SettingsSnapshot, ThreadCommand, ThreadSnapshot, UiCommand,
-    UiSnapshot, WizardStep,
+    InboxCommand, InboxSnapshot, InsertContext, Mode, PendingAction, ScreenSnapshot,
+    SearchSnapshot, SettingsCommand, SettingsFocus, SettingsSnapshot, ThreadCommand,
+    ThreadSnapshot, UiCommand, UiSnapshot, WizardStep,
 };
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer, path};
 
