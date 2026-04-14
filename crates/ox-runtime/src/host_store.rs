@@ -91,11 +91,23 @@ impl<B: Reader + Writer + Send, E: HostEffects> HostStore<B, E> {
         match prefix {
             "tools" => {
                 let sub = Path::from_components(path.components[1..].to_vec());
-                let sub_path = self.effects.tool_store().write(&sub, data)?;
-                // Prepend "tools/" so the returned handle is readable through this store
-                let mut components = vec!["tools".to_string()];
-                components.extend(sub_path.components);
-                Ok(Path::from_components(components))
+                let result_path = self.effects.tool_store().write(&sub, data)?;
+                // Redirect detection: if the returned path starts with "exec",
+                // it's a ToolStore-internal handle — prefix with "tools/" so the
+                // kernel reads it back through the ToolStore. Otherwise it's a
+                // namespace-absolute redirect path — return as-is for the kernel
+                // to read through the full namespace.
+                if result_path
+                    .components
+                    .first()
+                    .is_some_and(|c| c == "exec")
+                {
+                    let mut components = vec!["tools".to_string()];
+                    components.extend(result_path.components);
+                    Ok(Path::from_components(components))
+                } else {
+                    Ok(result_path)
+                }
             }
             "events" if path == &path!("events/emit") => {
                 tracing::debug!(path = %path, "effectful write: events/emit");
