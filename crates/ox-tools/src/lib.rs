@@ -28,6 +28,19 @@ pub struct ToolSchemaEntry {
     pub input_schema: serde_json::Value,
 }
 
+/// A tool whose execution returns a namespace-absolute path for the kernel to read.
+///
+/// Unlike normal tools (which compute results), redirect tools build a StructFS path
+/// from their input. The kernel reads the result from that path through namespace routing.
+pub struct RedirectTool {
+    pub wire_name: String,
+    pub internal_path: String,
+    pub description: String,
+    pub input_schema: serde_json::Value,
+    /// Given the tool input, build the namespace path to redirect to.
+    pub build_path: Box<dyn Fn(&serde_json::Value) -> Result<String, String> + Send + Sync>,
+}
+
 /// Central StructFS store that routes reads/writes to the appropriate tool module.
 ///
 /// Path routing:
@@ -43,6 +56,7 @@ pub struct ToolStore {
     completions: CompletionModule,
     name_map: NameMap,
     native_tools: HashMap<String, Box<dyn NativeTool>>,
+    redirect_tools: HashMap<String, RedirectTool>,
     last_result: BTreeMap<String, Value>,
     exec_counter: u64,
     exec_results: BTreeMap<String, Value>,
@@ -69,6 +83,7 @@ impl ToolStore {
             completions,
             name_map,
             native_tools: HashMap::new(),
+            redirect_tools: HashMap::new(),
             last_result: BTreeMap::new(),
             exec_counter: 0,
             exec_results: BTreeMap::new(),
@@ -91,6 +106,13 @@ impl ToolStore {
         self.name_map.unregister(wire_name);
     }
 
+    /// Register a redirect tool.
+    pub fn register_redirect(&mut self, tool: RedirectTool) {
+        self.name_map
+            .register(&tool.wire_name, &tool.internal_path);
+        self.redirect_tools.insert(tool.wire_name.clone(), tool);
+    }
+
     /// Aggregate tool schemas from all modules.
     pub fn all_schemas(&self) -> Vec<ToolSchemaEntry> {
         let mut schemas = self.fs.schemas();
@@ -98,6 +120,14 @@ impl ToolStore {
         schemas.extend(self.completions.schemas());
         for tool in self.native_tools.values() {
             schemas.push(tool.schema());
+        }
+        for tool in self.redirect_tools.values() {
+            schemas.push(ToolSchemaEntry {
+                wire_name: tool.wire_name.clone(),
+                internal_path: tool.internal_path.clone(),
+                description: tool.description.clone(),
+                input_schema: tool.input_schema.clone(),
+            });
         }
         schemas
     }
@@ -354,6 +384,29 @@ impl Writer for ToolStore {
             }
         }
 
+        // Check redirect tools
+        if !to.is_empty() {
+            let wire_name = to.components[0].as_str();
+            if let Some(redirect) = self.redirect_tools.get(wire_name) {
+                let value = data
+                    .as_value()
+                    .ok_or_else(|| {
+                        StoreError::store(
+                            "ToolStore",
+                            "redirect",
+                            format!("{wire_name}: expected parsed record"),
+                        )
+                    })?
+                    .clone();
+                let input_json = structfs_serde_store::value_to_json(value);
+                let target = (redirect.build_path)(&input_json).map_err(|e| {
+                    StoreError::store("ToolStore", "redirect", format!("{wire_name}: {e}"))
+                })?;
+                return Path::parse(&target)
+                    .map_err(|e| StoreError::store("ToolStore", "redirect", e.to_string()));
+            }
+        }
+
         let resolved = match self.resolve_path(to) {
             Some(r) => r,
             None => {
@@ -426,3 +479,62 @@ impl Writer for ToolStore {
 // - CompletionModule wraps GateStore (HashMap)
 // - BTreeMap<String, Value> and NameMap are plain data
 // - HashMap<String, Box<dyn NativeTool>> — NativeTool: Send + Sync
+// - HashMap<String, RedirectTool> — RedirectTool: Send + Sync (build_path: Box<dyn Fn + Send + Sync>)
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use structfs_core_store::path;
+
+    #[test]
+    fn redirect_tool_returns_namespace_path() {
+        let mut store = ToolStore::empty();
+        store.register_redirect(RedirectTool {
+            wire_name: "my_redirect".into(),
+            internal_path: "redirect/my_redirect".into(),
+            description: "test redirect".into(),
+            input_schema: serde_json::json!({"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}),
+            build_path: Box::new(|input| {
+                let id = input.get("id").and_then(|v| v.as_str()).unwrap_or("unknown");
+                Ok(format!("some/namespace/{id}"))
+            }),
+        });
+
+        let input = structfs_serde_store::json_to_value(serde_json::json!({"id": "abc"}));
+        let result_path = store
+            .write(&path!("my_redirect"), Record::parsed(input))
+            .unwrap();
+
+        assert_eq!(result_path.to_string(), "some/namespace/abc");
+    }
+
+    #[test]
+    fn redirect_tool_appears_in_schemas() {
+        let mut store = ToolStore::empty();
+        store.register_redirect(RedirectTool {
+            wire_name: "my_redirect".into(),
+            internal_path: "redirect/my_redirect".into(),
+            description: "test redirect".into(),
+            input_schema: serde_json::json!({}),
+            build_path: Box::new(|_| Ok("target/path".into())),
+        });
+        let schemas = store.all_schemas();
+        assert!(schemas.iter().any(|s| s.wire_name == "my_redirect"));
+    }
+
+    #[test]
+    fn redirect_tool_error_propagates() {
+        let mut store = ToolStore::empty();
+        store.register_redirect(RedirectTool {
+            wire_name: "bad_redirect".into(),
+            internal_path: "redirect/bad".into(),
+            description: "always fails".into(),
+            input_schema: serde_json::json!({}),
+            build_path: Box::new(|_| Err("no good".into())),
+        });
+
+        let input = structfs_serde_store::json_to_value(serde_json::json!({}));
+        let result = store.write(&path!("bad_redirect"), Record::parsed(input));
+        assert!(result.is_err());
+    }
+}
