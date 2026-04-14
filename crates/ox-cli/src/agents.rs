@@ -449,7 +449,7 @@ fn save_thread_state(
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
 
-    ox_inbox::snapshot::save(
+    if let Err(e) = ox_inbox::snapshot::save(
         store,
         &thread_dir,
         thread_id,
@@ -457,8 +457,14 @@ fn save_thread_state(
         &[],
         now,
         &ox_inbox::snapshot::PARTICIPATING_MOUNTS,
-    )
-    .ok();
+    ) {
+        tracing::error!(
+            thread_id,
+            path = %thread_dir.display(),
+            error = %e,
+            "failed to save thread snapshot — conversation may be lost on restart"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -49,12 +49,17 @@ impl ThreadNamespace {
         let mut ns = Self::new_default();
 
         // Restore from context.json + ledger.jsonl
-        ox_inbox::snapshot::restore(
+        if let Err(e) = ox_inbox::snapshot::restore(
             &mut ns,
             thread_dir,
             &ox_inbox::snapshot::PARTICIPATING_MOUNTS,
-        )
-        .ok();
+        ) {
+            tracing::error!(
+                path = %thread_dir.display(),
+                error = %e,
+                "failed to restore thread snapshot — thread will appear empty"
+            );
+        }
 
         // Legacy: replay raw JSONL if no context.json existed
         let ledger_path = thread_dir.join("ledger.jsonl");
