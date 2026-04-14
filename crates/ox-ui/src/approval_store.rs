@@ -235,4 +235,17 @@ mod tests {
         let result = first_deferred.await;
         assert!(result.is_err());
     }
+
+    #[tokio::test]
+    async fn pending_tool_name_returns_name() {
+        let mut store = ApprovalStore::new();
+        assert_eq!(store.pending_tool_name(), None);
+
+        let mut map = BTreeMap::new();
+        map.insert("tool_name".to_string(), Value::String("bash".to_string()));
+        map.insert("input_preview".to_string(), Value::String("ls".to_string()));
+        let _deferred = store.write(&path!("request"), Record::parsed(Value::Map(map)));
+
+        assert_eq!(store.pending_tool_name(), Some("bash".to_string()));
+    }
 }

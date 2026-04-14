@@ -73,6 +73,7 @@ impl LogCache {
     }
 
     /// Get entry by index.
+    #[cfg(test)]
     pub fn get(&self, index: usize) -> Option<&LogDisplayEntry> {
         self.entries.get(index)
     }
@@ -263,6 +264,7 @@ impl HistoryExplorer {
         changed
     }
 
+    #[cfg(test)]
     pub fn generation(&self) -> u64 {
         self.generation
     }

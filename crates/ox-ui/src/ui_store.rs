@@ -1497,6 +1497,93 @@ mod tests {
         store.write(&path!(""), typed_cmd(cmd)).unwrap();
     }
 
+    // -- History screen --
+
+    #[test]
+    fn history_screen_navigation() {
+        let mut store = UiStore::new();
+        // Open a thread, then open history
+        write_cmd(
+            &mut store,
+            &UiCommand::Global(GlobalCommand::Open {
+                thread_id: "t1".into(),
+            }),
+        );
+        write_cmd(
+            &mut store,
+            &UiCommand::Global(GlobalCommand::OpenHistory {
+                thread_id: "t1".into(),
+            }),
+        );
+        assert_eq!(
+            read_val(&mut store, "screen"),
+            Value::String("history".into())
+        );
+
+        // Set row count
+        write_cmd(
+            &mut store,
+            &UiCommand::History(HistoryCommand::SetRowCount { count: 5 }),
+        );
+
+        // SelectLast
+        write_cmd(&mut store, &UiCommand::History(HistoryCommand::SelectLast));
+        let snap = read_snapshot(&mut store);
+        match &snap.screen {
+            ScreenSnapshot::History(s) => assert_eq!(s.selected_row, 4),
+            _ => panic!("expected History"),
+        }
+
+        // SelectFirst
+        write_cmd(&mut store, &UiCommand::History(HistoryCommand::SelectFirst));
+        let snap = read_snapshot(&mut store);
+        match &snap.screen {
+            ScreenSnapshot::History(s) => assert_eq!(s.selected_row, 0),
+            _ => panic!("expected History"),
+        }
+
+        // SelectNext
+        write_cmd(&mut store, &UiCommand::History(HistoryCommand::SelectNext));
+        let snap = read_snapshot(&mut store);
+        match &snap.screen {
+            ScreenSnapshot::History(s) => assert_eq!(s.selected_row, 1),
+            _ => panic!("expected History"),
+        }
+
+        // SelectNext at end stays put
+        write_cmd(&mut store, &UiCommand::History(HistoryCommand::SelectLast));
+        write_cmd(&mut store, &UiCommand::History(HistoryCommand::SelectNext));
+        let snap = read_snapshot(&mut store);
+        match &snap.screen {
+            ScreenSnapshot::History(s) => assert_eq!(s.selected_row, 4),
+            _ => panic!("expected History"),
+        }
+
+        // ToggleExpand
+        write_cmd(&mut store, &UiCommand::History(HistoryCommand::SelectFirst));
+        write_cmd(
+            &mut store,
+            &UiCommand::History(HistoryCommand::ToggleExpand),
+        );
+        let snap = read_snapshot(&mut store);
+        match &snap.screen {
+            ScreenSnapshot::History(s) => assert!(s.expanded.contains(&0)),
+            _ => panic!("expected History"),
+        }
+
+        // BackToThread
+        write_cmd(
+            &mut store,
+            &UiCommand::Global(GlobalCommand::BackToThread {
+                thread_id: "t1".into(),
+            }),
+        );
+        assert_eq!(
+            read_val(&mut store, "screen"),
+            Value::String("thread".into())
+        );
+    }
+
     // -- Initial state --
 
     #[test]
