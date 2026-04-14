@@ -464,6 +464,261 @@ fn detect_duplicates(entries: &mut [HistoryEntry]) {
 }
 
 // ---------------------------------------------------------------------------
+// LogDisplayEntry — parsed log entries for history explorer
+// ---------------------------------------------------------------------------
+
+/// A single log entry parsed for display in the history explorer.
+#[derive(Debug, Clone)]
+pub struct LogDisplayEntry {
+    pub index: usize,
+    /// The LogEntry type tag: "user", "assistant", "tool_call", "tool_result",
+    /// "turn_start", "turn_end", "approval_requested", "approval_resolved",
+    /// "error", "meta".
+    pub entry_type: String,
+    /// Primary display text (summary line).
+    pub summary: String,
+    /// Expandable detail blocks (for message types).
+    pub blocks: Vec<HistoryBlock>,
+    /// Metadata fields for rendering.
+    pub meta: LogEntryMeta,
+    /// Duplicate detection flags (applies to user/assistant only).
+    pub flags: EntryFlags,
+}
+
+/// Type-specific metadata for rendering.
+#[derive(Debug, Clone, Default)]
+pub struct LogEntryMeta {
+    pub scope: Option<String>,
+    pub tool_name: Option<String>,
+    pub tool_use_id: Option<String>,
+    pub decision: Option<String>,
+    pub input_preview: Option<String>,
+    pub input_tokens: Option<u32>,
+    pub output_tokens: Option<u32>,
+    pub block_count: usize,
+    pub text_len: usize,
+}
+
+fn get_string(map: &std::collections::BTreeMap<String, Value>, key: &str) -> Option<String> {
+    match map.get(key) {
+        Some(Value::String(s)) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+fn get_u32(map: &std::collections::BTreeMap<String, Value>, key: &str) -> Option<u32> {
+    match map.get(key) {
+        Some(Value::Integer(n)) => Some(*n as u32),
+        _ => None,
+    }
+}
+
+/// Parse a slice of LogEntry StructFS Values into `LogDisplayEntry`s with
+/// duplicate detection applied to user/assistant entries.
+pub fn parse_log_entries(values: &[Value]) -> Vec<LogDisplayEntry> {
+    let mut entries: Vec<LogDisplayEntry> = values
+        .iter()
+        .enumerate()
+        .filter_map(|(index, val)| {
+            let map = match val {
+                Value::Map(m) => m,
+                _ => return None,
+            };
+            let entry_type = get_string(map, "type")?;
+
+            match entry_type.as_str() {
+                "user" | "assistant" => {
+                    let content = map.get("content")?;
+                    let (blocks, summary, block_count, text_len) =
+                        parse_content_blocks(&entry_type, content);
+                    Some(LogDisplayEntry {
+                        index,
+                        entry_type,
+                        summary,
+                        blocks,
+                        meta: LogEntryMeta {
+                            block_count,
+                            text_len,
+                            ..Default::default()
+                        },
+                        flags: EntryFlags::default(),
+                    })
+                }
+                "tool_call" => {
+                    let name = get_string(map, "name").unwrap_or_default();
+                    let id = get_string(map, "id");
+                    let input_json = map.get("input").map(format_value);
+                    let summary = format!("tool_call: {name}");
+                    Some(LogDisplayEntry {
+                        index,
+                        entry_type,
+                        summary,
+                        blocks: Vec::new(),
+                        meta: LogEntryMeta {
+                            tool_name: Some(name),
+                            tool_use_id: id,
+                            input_preview: input_json,
+                            ..Default::default()
+                        },
+                        flags: EntryFlags::default(),
+                    })
+                }
+                "tool_result" => {
+                    let id = get_string(map, "id");
+                    let output = get_string(map, "output").unwrap_or_default();
+                    let text_len = output.len();
+                    let summary = truncate_summary(&output, 80);
+                    let block = HistoryBlock {
+                        block_type: "tool_result".to_string(),
+                        text: Some(output),
+                        tool_name: None,
+                        tool_use_id: id.clone(),
+                        input_json: None,
+                    };
+                    Some(LogDisplayEntry {
+                        index,
+                        entry_type,
+                        summary,
+                        blocks: vec![block],
+                        meta: LogEntryMeta {
+                            tool_use_id: id,
+                            block_count: 1,
+                            text_len,
+                            ..Default::default()
+                        },
+                        flags: EntryFlags::default(),
+                    })
+                }
+                "turn_start" | "turn_end" => {
+                    let scope = get_string(map, "scope");
+                    let input_tokens = get_u32(map, "input_tokens");
+                    let output_tokens = get_u32(map, "output_tokens");
+                    let summary = match &scope {
+                        Some(s) => format!("{entry_type}: {s}"),
+                        None => entry_type.clone(),
+                    };
+                    Some(LogDisplayEntry {
+                        index,
+                        entry_type,
+                        summary,
+                        blocks: Vec::new(),
+                        meta: LogEntryMeta {
+                            scope,
+                            input_tokens,
+                            output_tokens,
+                            ..Default::default()
+                        },
+                        flags: EntryFlags::default(),
+                    })
+                }
+                "approval_requested" => {
+                    let tool_name = get_string(map, "tool_name");
+                    let input_preview = get_string(map, "input_preview");
+                    let summary = format!(
+                        "{}: \"{}\"",
+                        tool_name.as_deref().unwrap_or("unknown"),
+                        input_preview.as_deref().unwrap_or("")
+                    );
+                    Some(LogDisplayEntry {
+                        index,
+                        entry_type,
+                        summary,
+                        blocks: Vec::new(),
+                        meta: LogEntryMeta {
+                            tool_name,
+                            input_preview,
+                            ..Default::default()
+                        },
+                        flags: EntryFlags::default(),
+                    })
+                }
+                "approval_resolved" => {
+                    let tool_name = get_string(map, "tool_name");
+                    let decision = get_string(map, "decision");
+                    let summary = format!(
+                        "{}: {}",
+                        tool_name.as_deref().unwrap_or("unknown"),
+                        decision.as_deref().unwrap_or("unknown")
+                    );
+                    Some(LogDisplayEntry {
+                        index,
+                        entry_type,
+                        summary,
+                        blocks: Vec::new(),
+                        meta: LogEntryMeta {
+                            tool_name,
+                            decision,
+                            ..Default::default()
+                        },
+                        flags: EntryFlags::default(),
+                    })
+                }
+                "error" => {
+                    let message = get_string(map, "message").unwrap_or_default();
+                    let summary = truncate_summary(&message, 80);
+                    Some(LogDisplayEntry {
+                        index,
+                        entry_type,
+                        summary,
+                        blocks: Vec::new(),
+                        meta: LogEntryMeta::default(),
+                        flags: EntryFlags::default(),
+                    })
+                }
+                "meta" => {
+                    let data_preview = map
+                        .get("data")
+                        .map(format_value)
+                        .unwrap_or_else(|| "{}".to_string());
+                    let summary = truncate_summary(&data_preview, 80);
+                    Some(LogDisplayEntry {
+                        index,
+                        entry_type,
+                        summary,
+                        blocks: Vec::new(),
+                        meta: LogEntryMeta::default(),
+                        flags: EntryFlags::default(),
+                    })
+                }
+                _ => None,
+            }
+        })
+        .collect();
+
+    // Duplicate detection for user/assistant entries only.
+    detect_log_duplicates(&mut entries);
+    entries
+}
+
+/// Detect duplicate log entries by comparing text content of user/assistant entries.
+fn detect_log_duplicates(entries: &mut [LogDisplayEntry]) {
+    for i in 1..entries.len() {
+        let et = &entries[i].entry_type;
+        if et != "user" && et != "assistant" {
+            continue;
+        }
+        let current_text = concat_text(&entries[i].blocks);
+        if current_text.is_empty() {
+            continue;
+        }
+        let mut found: Option<usize> = None;
+        for j in (0..i).rev() {
+            if entries[j].entry_type == entries[i].entry_type {
+                found = Some(j);
+                break;
+            }
+        }
+        if let Some(prev_idx) = found {
+            let prev_text = concat_text(&entries[prev_idx].blocks);
+            if prev_text == current_text {
+                entries[i].flags.duplicate_content = true;
+                entries[i].flags.duplicate_of = Some(prev_idx);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -715,5 +970,60 @@ mod tests {
         );
         assert!(entries[0].blocks[0].input_json.is_some());
         assert!(entries[0].summary.contains("tool_use: read_file"));
+    }
+
+    #[test]
+    fn parse_log_entries_mixed_types() {
+        let entries = vec![
+            map(vec![("type", s("turn_start")), ("scope", s("root"))]),
+            map(vec![("type", s("user")), ("content", s("hello"))]),
+            map(vec![
+                ("type", s("assistant")),
+                (
+                    "content",
+                    Value::Array(vec![map(vec![
+                        ("type", s("text")),
+                        ("text", s("I'll check")),
+                    ])]),
+                ),
+            ]),
+            map(vec![
+                ("type", s("approval_requested")),
+                ("tool_name", s("bash")),
+                ("input_preview", s("ls -la")),
+            ]),
+            map(vec![
+                ("type", s("approval_resolved")),
+                ("tool_name", s("bash")),
+                ("decision", s("allow_once")),
+            ]),
+            map(vec![
+                ("type", s("tool_call")),
+                ("id", s("tc1")),
+                ("name", s("bash")),
+                ("input", map(vec![("command", s("ls -la"))])),
+            ]),
+            map(vec![
+                ("type", s("tool_result")),
+                ("id", s("tc1")),
+                ("output", s("file1\nfile2")),
+            ]),
+            map(vec![
+                ("type", s("turn_end")),
+                ("scope", s("root")),
+                ("input_tokens", Value::Integer(100)),
+                ("output_tokens", Value::Integer(50)),
+            ]),
+        ];
+        let parsed = parse_log_entries(&entries);
+        assert_eq!(parsed.len(), 8);
+        assert_eq!(parsed[0].entry_type, "turn_start");
+        assert_eq!(parsed[1].entry_type, "user");
+        assert_eq!(parsed[2].entry_type, "assistant");
+        assert_eq!(parsed[3].entry_type, "approval_requested");
+        assert_eq!(parsed[4].entry_type, "approval_resolved");
+        assert_eq!(parsed[5].entry_type, "tool_call");
+        assert_eq!(parsed[6].entry_type, "tool_result");
+        assert_eq!(parsed[7].entry_type, "turn_end");
     }
 }

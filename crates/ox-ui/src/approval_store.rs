@@ -20,6 +20,11 @@ impl ApprovalStore {
             deferred_tx: None,
         }
     }
+
+    /// Get the tool name from the current pending request, if any.
+    pub fn pending_tool_name(&self) -> Option<String> {
+        self.pending.as_ref().map(|r| r.tool_name.clone())
+    }
 }
 
 impl Default for ApprovalStore {

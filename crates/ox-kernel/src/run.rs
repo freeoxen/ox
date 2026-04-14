@@ -623,6 +623,19 @@ pub fn run_turn(context: &mut dyn Store, emit: &mut dyn FnMut(AgentEvent)) -> Re
 
         emit(AgentEvent::TurnStart);
 
+        // Log turn start to structured log
+        {
+            let entry = serde_json::json!({
+                "type": "turn_start",
+                "scope": &frame.scope,
+            });
+            let val = structfs_serde_store::json_to_value(entry);
+            let _ = context.write(
+                &structfs_core_store::Path::parse("log/append").unwrap(),
+                structfs_core_store::Record::parsed(val),
+            );
+        }
+
         // After several iterations, nudge the model to wrap up.
         let refs = if total_iterations > NUDGE_AFTER_ITERATIONS {
             let mut refs = frame.refs.clone();
@@ -672,6 +685,18 @@ pub fn run_turn(context: &mut dyn Store, emit: &mut dyn FnMut(AgentEvent)) -> Re
 
             if stack.is_empty() {
                 // Root completion done
+                // Log turn end to structured log
+                {
+                    let entry = serde_json::json!({
+                        "type": "turn_end",
+                        "scope": &popped.scope,
+                    });
+                    let val = structfs_serde_store::json_to_value(entry);
+                    let _ = context.write(
+                        &structfs_core_store::Path::parse("log/append").unwrap(),
+                        structfs_core_store::Record::parsed(val),
+                    );
+                }
                 emit(AgentEvent::TurnEnd);
                 return Ok(());
             }
