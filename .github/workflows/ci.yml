@@ -28,5 +28,8 @@ jobs:
       - name: Install UI dependencies
         run: bun install --cwd crates/ox-web/ui
 
+      - name: Build agent WASM module
+        run: ./scripts/build-agent.sh
+
       - name: Run quality gates
         run: ./scripts/quality_gates.sh
