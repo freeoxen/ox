@@ -74,8 +74,8 @@ Do NOT continue making tool calls after you have the information needed to answe
 If a tool call fails or returns unexpected results, explain the problem to the user \
 rather than retrying the same call. Never repeat the same tool call more than once.";
 
-/// Embedded agent Wasm module (built by `scripts/build-agent.sh`).
-pub(crate) const AGENT_WASM: &[u8] = include_bytes!("../../../target/agent.wasm");
+/// Embedded agent Wasm module (built by build.rs from ox-wasm).
+pub(crate) const AGENT_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/agent.wasm"));
 
 /// Per-thread prompt sender.
 struct ThreadHandle {
@@ -542,5 +542,31 @@ impl HostEffects for CliEffects {
                 self.broker_write(&path!("history/turn/thinking"), Value::Bool(false));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn embedded_wasm_is_valid() {
+        // Verify build.rs produced a real wasm module
+        assert!(
+            AGENT_WASM.len() > 1024,
+            "agent.wasm is {} bytes — too small to be a real module",
+            AGENT_WASM.len()
+        );
+        assert_eq!(
+            &AGENT_WASM[..4],
+            b"\0asm",
+            "agent.wasm missing wasm magic header"
+        );
+        // Version 1
+        assert_eq!(
+            AGENT_WASM[4..8],
+            [1, 0, 0, 0],
+            "agent.wasm has unexpected wasm version"
+        );
     }
 }
