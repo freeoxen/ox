@@ -242,7 +242,48 @@ fn agent_worker(
     let os_module = ox_tools::os::OsModule::new(workspace.clone(), executor, sandbox_policy);
     let gate = GateStore::new();
     let completion_module = ox_tools::completion::CompletionModule::new(gate);
-    let tool_store = ox_tools::ToolStore::new(fs_module, os_module, completion_module);
+    let mut tool_store = ox_tools::ToolStore::new(fs_module, os_module, completion_module);
+
+    // Register get_tool_output — redirect tool for retrieving abbreviated results
+    tool_store.register_redirect(ox_tools::RedirectTool {
+        wire_name: "get_tool_output".into(),
+        internal_path: "redirect/get_tool_output".into(),
+        description: "Retrieve the full or partial output of a previous tool call. \
+                      Use this when a tool result was abbreviated in the conversation."
+            .into(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "tool_use_id": {
+                    "type": "string",
+                    "description": "The tool_use_id from the abbreviated result"
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "0-based line offset to start from (default: 0)"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of lines to return (default: all)"
+                }
+            },
+            "required": ["tool_use_id"]
+        }),
+        build_path: Box::new(|input| {
+            let id = input
+                .get("tool_use_id")
+                .and_then(|v| v.as_str())
+                .ok_or("missing tool_use_id")?;
+            let offset = input.get("offset").and_then(|v| v.as_u64());
+            let limit = input.get("limit").and_then(|v| v.as_u64());
+            match (offset, limit) {
+                (Some(o), Some(l)) => Ok(format!("log/results/{id}/lines/{o}/{l}")),
+                (Some(o), None) => Ok(format!("log/results/{id}/lines/{o}/999999")),
+                (None, Some(l)) => Ok(format!("log/results/{id}/lines/0/{l}")),
+                (None, None) => Ok(format!("log/results/{id}")),
+            }
+        }),
+    });
 
     let policy = if no_policy {
         crate::policy::PolicyGuard::permissive()
@@ -308,7 +349,6 @@ fn agent_worker(
         scoped_client: scoped_client.clone(),
         rt_handle: rt_handle.clone(),
     };
-    let mut tool_store = tool_store;
     tool_store
         .completions_mut()
         .set_transport(Box::new(cli_transport));
