@@ -247,6 +247,10 @@ fn op_shell(args: &serde_json::Value) -> ExecResult {
     };
 
     let workspace = args.get("workspace").and_then(|v| v.as_str());
+    let max_lines = args
+        .get("max_lines")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize);
 
     let mut cmd = std::process::Command::new("sh");
     cmd.arg("-c").arg(command);
@@ -271,6 +275,21 @@ fn op_shell(args: &serde_json::Value) -> ExecResult {
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     let exit_code = output.status.code().unwrap_or(-1);
+
+    let stdout = if let Some(max) = max_lines {
+        let lines: Vec<&str> = stdout.lines().collect();
+        if lines.len() > max {
+            let truncated = lines[..max].join("\n");
+            format!(
+                "{truncated}\n[... truncated at {max} lines, {} total]",
+                lines.len()
+            )
+        } else {
+            stdout
+        }
+    } else {
+        stdout
+    };
 
     ExecResult {
         ok: true,

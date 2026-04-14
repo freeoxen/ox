@@ -58,6 +58,10 @@ impl OsModule {
                     "command": {
                         "type": "string",
                         "description": "Shell command to execute"
+                    },
+                    "max_lines": {
+                        "type": "integer",
+                        "description": "Maximum lines of stdout to return. Use for commands that may produce large output. Omit for full output."
                     }
                 },
                 "required": ["command"]
