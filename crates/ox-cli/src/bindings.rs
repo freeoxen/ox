@@ -410,33 +410,47 @@ fn history_mode(out: &mut Vec<Binding>) {
         "Collapse all",
     ));
 
-    // Scroll
+    // Page movement (moves selection, not just viewport)
+    out.push(bind_screen(
+        "normal",
+        "d",
+        "history",
+        invoke("select_half_page_down"),
+        "Half page down",
+    ));
     out.push(bind_screen(
         "normal",
         "Ctrl+d",
         "history",
-        invoke("scroll_half_page_down"),
+        invoke("select_half_page_down"),
         "Half page down",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "u",
+        "history",
+        invoke("select_half_page_up"),
+        "Half page up",
     ));
     out.push(bind_screen(
         "normal",
         "Ctrl+u",
         "history",
-        invoke("scroll_half_page_up"),
+        invoke("select_half_page_up"),
         "Half page up",
     ));
     out.push(bind_screen(
         "normal",
         "Ctrl+f",
         "history",
-        invoke("scroll_page_down"),
+        invoke("select_page_down"),
         "Page down",
     ));
     out.push(bind_screen(
         "normal",
         "Ctrl+b",
         "history",
-        invoke("scroll_page_up"),
+        invoke("select_page_up"),
         "Page up",
     ));
 

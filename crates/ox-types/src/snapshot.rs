@@ -78,9 +78,6 @@ pub struct SettingsSnapshot {
 pub struct HistorySnapshot {
     pub thread_id: String,
     pub selected_row: usize,
-    pub scroll: usize,
-    pub scroll_max: usize,
-    pub viewport_height: usize,
     /// Message indices currently expanded for detail view.
     pub expanded: Vec<usize>,
 }

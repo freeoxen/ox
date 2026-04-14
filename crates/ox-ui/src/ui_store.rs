@@ -133,9 +133,6 @@ struct HistoryState {
     thread_id: String,
     selected_row: usize,
     row_count: usize,
-    scroll: usize,
-    scroll_max: usize,
-    viewport_height: usize,
     expanded: std::collections::HashSet<usize>,
 }
 
@@ -145,9 +142,6 @@ impl HistoryState {
             thread_id,
             selected_row: 0,
             row_count: 0,
-            scroll: 0,
-            scroll_max: 0,
-            viewport_height: 0,
             expanded: std::collections::HashSet::new(),
         }
     }
@@ -261,9 +255,6 @@ impl UiStore {
             ActiveScreen::History(s) => ScreenSnapshot::History(HistorySnapshot {
                 thread_id: s.thread_id.clone(),
                 selected_row: s.selected_row,
-                scroll: s.scroll,
-                scroll_max: s.scroll_max,
-                viewport_height: s.viewport_height,
                 expanded: s.expanded.iter().copied().collect(),
             }),
         };
@@ -359,7 +350,6 @@ impl UiStore {
     fn scroll_value(&self) -> Value {
         match &self.screen {
             ActiveScreen::Thread(s) => Value::Integer(s.scroll as i64),
-            ActiveScreen::History(s) => Value::Integer(s.scroll as i64),
             _ => Value::Integer(0),
         }
     }
@@ -367,7 +357,6 @@ impl UiStore {
     fn scroll_max_value(&self) -> Value {
         match &self.screen {
             ActiveScreen::Thread(s) => Value::Integer(s.scroll_max as i64),
-            ActiveScreen::History(s) => Value::Integer(s.scroll_max as i64),
             _ => Value::Integer(0),
         }
     }
@@ -375,7 +364,6 @@ impl UiStore {
     fn viewport_height_value(&self) -> Value {
         match &self.screen {
             ActiveScreen::Thread(s) => Value::Integer(s.viewport_height as i64),
-            ActiveScreen::History(s) => Value::Integer(s.viewport_height as i64),
             _ => Value::Integer(0),
         }
     }
@@ -946,49 +934,33 @@ impl UiStore {
                 s.expanded.clear();
                 Ok(path!("expanded"))
             }
-            HistoryCommand::ScrollUp => {
+            HistoryCommand::SelectPageUp => {
                 let s = self.history_state()?;
-                if s.scroll < s.scroll_max {
-                    s.scroll += 1;
+                let page = s.row_count.min(20); // approximate page size
+                s.selected_row = s.selected_row.saturating_sub(page);
+                Ok(path!("selected_row"))
+            }
+            HistoryCommand::SelectPageDown => {
+                let s = self.history_state()?;
+                let page = s.row_count.min(20);
+                if s.row_count > 0 {
+                    s.selected_row = (s.selected_row + page).min(s.row_count - 1);
                 }
-                Ok(path!("scroll"))
+                Ok(path!("selected_row"))
             }
-            HistoryCommand::ScrollDown => {
+            HistoryCommand::SelectHalfPageUp => {
                 let s = self.history_state()?;
-                s.scroll = s.scroll.saturating_sub(1);
-                Ok(path!("scroll"))
+                let half = s.row_count.min(20) / 2;
+                s.selected_row = s.selected_row.saturating_sub(half);
+                Ok(path!("selected_row"))
             }
-            HistoryCommand::ScrollToTop => {
+            HistoryCommand::SelectHalfPageDown => {
                 let s = self.history_state()?;
-                s.scroll = s.scroll_max;
-                Ok(path!("scroll"))
-            }
-            HistoryCommand::ScrollToBottom => {
-                let s = self.history_state()?;
-                s.scroll = 0;
-                Ok(path!("scroll"))
-            }
-            HistoryCommand::ScrollPageUp => {
-                let s = self.history_state()?;
-                s.scroll = (s.scroll + s.viewport_height).min(s.scroll_max);
-                Ok(path!("scroll"))
-            }
-            HistoryCommand::ScrollPageDown => {
-                let s = self.history_state()?;
-                s.scroll = s.scroll.saturating_sub(s.viewport_height);
-                Ok(path!("scroll"))
-            }
-            HistoryCommand::ScrollHalfPageUp => {
-                let s = self.history_state()?;
-                let half = s.viewport_height / 2;
-                s.scroll = (s.scroll + half).min(s.scroll_max);
-                Ok(path!("scroll"))
-            }
-            HistoryCommand::ScrollHalfPageDown => {
-                let s = self.history_state()?;
-                let half = s.viewport_height / 2;
-                s.scroll = s.scroll.saturating_sub(half);
-                Ok(path!("scroll"))
+                let half = s.row_count.min(20) / 2;
+                if s.row_count > 0 {
+                    s.selected_row = (s.selected_row + half).min(s.row_count - 1);
+                }
+                Ok(path!("selected_row"))
             }
             HistoryCommand::SetRowCount { count } => {
                 let s = self.history_state()?;
@@ -997,19 +969,6 @@ impl UiStore {
                     s.selected_row = count - 1;
                 }
                 Ok(path!("row_count"))
-            }
-            HistoryCommand::SetScrollMax { max } => {
-                let s = self.history_state()?;
-                s.scroll_max = max;
-                if s.scroll > s.scroll_max {
-                    s.scroll = s.scroll_max;
-                }
-                Ok(path!("scroll_max"))
-            }
-            HistoryCommand::SetViewportHeight { height } => {
-                let s = self.history_state()?;
-                s.viewport_height = height;
-                Ok(path!("viewport_height"))
             }
         }
     }
@@ -1099,61 +1058,21 @@ impl UiStore {
                 index: get_usize(map, "index").ok_or_else(|| err("missing index"))?,
             })),
 
-            // Scroll commands — route to History or Thread based on screen
-            "scroll_up" => match &self.screen {
-                ActiveScreen::History(_) => Ok(UiCommand::History(HistoryCommand::ScrollUp)),
-                _ => Ok(UiCommand::Thread(ThreadCommand::ScrollUp)),
-            },
-            "scroll_down" => match &self.screen {
-                ActiveScreen::History(_) => Ok(UiCommand::History(HistoryCommand::ScrollDown)),
-                _ => Ok(UiCommand::Thread(ThreadCommand::ScrollDown)),
-            },
-            "scroll_to_top" => match &self.screen {
-                ActiveScreen::History(_) => Ok(UiCommand::History(HistoryCommand::ScrollToTop)),
-                _ => Ok(UiCommand::Thread(ThreadCommand::ScrollToTop)),
-            },
-            "scroll_to_bottom" => match &self.screen {
-                ActiveScreen::History(_) => Ok(UiCommand::History(HistoryCommand::ScrollToBottom)),
-                _ => Ok(UiCommand::Thread(ThreadCommand::ScrollToBottom)),
-            },
-            "scroll_page_up" => match &self.screen {
-                ActiveScreen::History(_) => Ok(UiCommand::History(HistoryCommand::ScrollPageUp)),
-                _ => Ok(UiCommand::Thread(ThreadCommand::ScrollPageUp)),
-            },
-            "scroll_page_down" => match &self.screen {
-                ActiveScreen::History(_) => Ok(UiCommand::History(HistoryCommand::ScrollPageDown)),
-                _ => Ok(UiCommand::Thread(ThreadCommand::ScrollPageDown)),
-            },
-            "scroll_half_page_up" => match &self.screen {
-                ActiveScreen::History(_) => {
-                    Ok(UiCommand::History(HistoryCommand::ScrollHalfPageUp))
-                }
-                _ => Ok(UiCommand::Thread(ThreadCommand::ScrollHalfPageUp)),
-            },
-            "scroll_half_page_down" => match &self.screen {
-                ActiveScreen::History(_) => {
-                    Ok(UiCommand::History(HistoryCommand::ScrollHalfPageDown))
-                }
-                _ => Ok(UiCommand::Thread(ThreadCommand::ScrollHalfPageDown)),
-            },
-            "set_scroll_max" => match &self.screen {
-                ActiveScreen::History(_) => Ok(UiCommand::History(HistoryCommand::SetScrollMax {
-                    max: get_usize(map, "max").ok_or_else(|| err("missing max"))?,
-                })),
-                _ => Ok(UiCommand::Thread(ThreadCommand::SetScrollMax {
-                    max: get_usize(map, "max").ok_or_else(|| err("missing max"))?,
-                })),
-            },
-            "set_viewport_height" => match &self.screen {
-                ActiveScreen::History(_) => {
-                    Ok(UiCommand::History(HistoryCommand::SetViewportHeight {
-                        height: get_usize(map, "height").ok_or_else(|| err("missing height"))?,
-                    }))
-                }
-                _ => Ok(UiCommand::Thread(ThreadCommand::SetViewportHeight {
-                    height: get_usize(map, "height").ok_or_else(|| err("missing height"))?,
-                })),
-            },
+            // Scroll commands — thread only (history uses selection-based paging)
+            "scroll_up" => Ok(UiCommand::Thread(ThreadCommand::ScrollUp)),
+            "scroll_down" => Ok(UiCommand::Thread(ThreadCommand::ScrollDown)),
+            "scroll_to_top" => Ok(UiCommand::Thread(ThreadCommand::ScrollToTop)),
+            "scroll_to_bottom" => Ok(UiCommand::Thread(ThreadCommand::ScrollToBottom)),
+            "scroll_page_up" => Ok(UiCommand::Thread(ThreadCommand::ScrollPageUp)),
+            "scroll_page_down" => Ok(UiCommand::Thread(ThreadCommand::ScrollPageDown)),
+            "scroll_half_page_up" => Ok(UiCommand::Thread(ThreadCommand::ScrollHalfPageUp)),
+            "scroll_half_page_down" => Ok(UiCommand::Thread(ThreadCommand::ScrollHalfPageDown)),
+            "set_scroll_max" => Ok(UiCommand::Thread(ThreadCommand::SetScrollMax {
+                max: get_usize(map, "max").ok_or_else(|| err("missing max"))?,
+            })),
+            "set_viewport_height" => Ok(UiCommand::Thread(ThreadCommand::SetViewportHeight {
+                height: get_usize(map, "height").ok_or_else(|| err("missing height"))?,
+            })),
             "enter_insert" => {
                 let ctx_str = get_str(map, "context").ok_or_else(|| err("missing context"))?;
                 let context: InsertContext =
@@ -1246,6 +1165,10 @@ impl UiStore {
             "toggle_expand" => Ok(UiCommand::History(HistoryCommand::ToggleExpand)),
             "expand_all" => Ok(UiCommand::History(HistoryCommand::ExpandAll)),
             "collapse_all" => Ok(UiCommand::History(HistoryCommand::CollapseAll)),
+            "select_page_up" => Ok(UiCommand::History(HistoryCommand::SelectPageUp)),
+            "select_page_down" => Ok(UiCommand::History(HistoryCommand::SelectPageDown)),
+            "select_half_page_up" => Ok(UiCommand::History(HistoryCommand::SelectHalfPageUp)),
+            "select_half_page_down" => Ok(UiCommand::History(HistoryCommand::SelectHalfPageDown)),
 
             // Modal commands (no-ops for now, kept for backward compat)
             "show_modal" | "dismiss_modal" => {

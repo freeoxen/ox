@@ -412,6 +412,34 @@ static BUILTIN_COMMANDS: &[StaticCommandDef] = &[
         description: "Collapse all messages",
         user_facing: true,
     },
+    StaticCommandDef {
+        name: "select_page_up",
+        target: "ui/select_page_up",
+        params: &[],
+        description: "Page up (move selection)",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "select_page_down",
+        target: "ui/select_page_down",
+        params: &[],
+        description: "Page down (move selection)",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "select_half_page_up",
+        target: "ui/select_half_page_up",
+        params: &[],
+        description: "Half page up (move selection)",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "select_half_page_down",
+        target: "ui/select_half_page_down",
+        params: &[],
+        description: "Half page down (move selection)",
+        user_facing: true,
+    },
 ];
 
 #[cfg(test)]
