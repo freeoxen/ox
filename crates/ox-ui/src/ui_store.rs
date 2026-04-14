@@ -6,9 +6,10 @@
 use std::collections::BTreeMap;
 
 use ox_types::{
-    AccountEditFields, EditorSnapshot, GlobalCommand, InboxCommand, InboxSnapshot, InsertContext,
-    Mode, PendingAction, ScreenSnapshot, SearchSnapshot, SettingsCommand, SettingsFocus,
-    SettingsSnapshot, ThreadCommand, ThreadSnapshot, UiCommand, UiSnapshot, WizardStep,
+    AccountEditFields, EditorSnapshot, GlobalCommand, HistoryCommand, HistorySnapshot,
+    InboxCommand, InboxSnapshot, InsertContext, Mode, PendingAction, ScreenSnapshot, SearchSnapshot,
+    SettingsCommand, SettingsFocus, SettingsSnapshot, ThreadCommand, ThreadSnapshot, UiCommand,
+    UiSnapshot, WizardStep,
 };
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer, path};
 
@@ -128,10 +129,33 @@ impl Default for SettingsState {
     }
 }
 
+struct HistoryState {
+    thread_id: String,
+    selected_row: usize,
+    scroll: usize,
+    scroll_max: usize,
+    viewport_height: usize,
+    expanded: std::collections::HashSet<usize>,
+}
+
+impl HistoryState {
+    fn new(thread_id: String) -> Self {
+        HistoryState {
+            thread_id,
+            selected_row: 0,
+            scroll: 0,
+            scroll_max: 0,
+            viewport_height: 0,
+            expanded: std::collections::HashSet::new(),
+        }
+    }
+}
+
 enum ActiveScreen {
     Inbox(InboxState),
     Thread(ThreadState),
     Settings(SettingsState),
+    History(HistoryState),
 }
 
 // ---------------------------------------------------------------------------
@@ -182,12 +206,20 @@ impl UiStore {
         }
     }
 
+    fn history_state(&mut self) -> Result<&mut HistoryState, StoreError> {
+        match &mut self.screen {
+            ActiveScreen::History(s) => Ok(s),
+            _ => Err(StoreError::store("ui", "history", "not on history screen")),
+        }
+    }
+
     /// Get a mutable reference to the active editor, if one exists.
     fn active_editor_mut(&mut self) -> Result<&mut EditorState, StoreError> {
         match &mut self.screen {
             ActiveScreen::Inbox(s) => s.editor.as_mut(),
             ActiveScreen::Thread(s) => s.editor.as_mut(),
             ActiveScreen::Settings(_) => None,
+            ActiveScreen::History(_) => None,
         }
         .ok_or_else(|| StoreError::store("ui", "editor", "no active editor"))
     }
@@ -224,6 +256,14 @@ impl UiStore {
                 default_model: s.default_model.clone(),
                 default_max_tokens: s.default_max_tokens.clone(),
             }),
+            ActiveScreen::History(s) => ScreenSnapshot::History(HistorySnapshot {
+                thread_id: s.thread_id.clone(),
+                selected_row: s.selected_row,
+                scroll: s.scroll,
+                scroll_max: s.scroll_max,
+                viewport_height: s.viewport_height,
+                expanded: s.expanded.iter().copied().collect(),
+            }),
         };
         UiSnapshot {
             screen,
@@ -238,6 +278,7 @@ impl UiStore {
             ActiveScreen::Inbox(_) => "inbox",
             ActiveScreen::Thread(_) => "thread",
             ActiveScreen::Settings(_) => "settings",
+            ActiveScreen::History(_) => "history",
         }
     }
 
@@ -258,6 +299,7 @@ impl UiStore {
                 }
             }
             ActiveScreen::Settings(_) => Mode::Normal,
+            ActiveScreen::History(_) => Mode::Normal,
         };
         structfs_serde_store::to_value(&mode).unwrap_or(Value::Null)
     }
@@ -267,6 +309,7 @@ impl UiStore {
             ActiveScreen::Inbox(s) => s.editor.as_ref().map(|e| e.context),
             ActiveScreen::Thread(s) => s.editor.as_ref().map(|e| e.context),
             ActiveScreen::Settings(_) => None,
+            ActiveScreen::History(_) => None,
         };
         match ctx {
             Some(c) => structfs_serde_store::to_value(&c).unwrap_or(Value::Null),
@@ -277,6 +320,7 @@ impl UiStore {
     fn active_thread_value(&self) -> Value {
         match &self.screen {
             ActiveScreen::Thread(s) => Value::String(s.thread_id.clone()),
+            ActiveScreen::History(s) => Value::String(s.thread_id.clone()),
             _ => Value::Null,
         }
     }
@@ -298,6 +342,7 @@ impl UiStore {
     fn selected_row_value(&self) -> Value {
         match &self.screen {
             ActiveScreen::Inbox(s) => Value::Integer(s.selected_row as i64),
+            ActiveScreen::History(s) => Value::Integer(s.selected_row as i64),
             _ => Value::Integer(0),
         }
     }
@@ -312,6 +357,7 @@ impl UiStore {
     fn scroll_value(&self) -> Value {
         match &self.screen {
             ActiveScreen::Thread(s) => Value::Integer(s.scroll as i64),
+            ActiveScreen::History(s) => Value::Integer(s.scroll as i64),
             _ => Value::Integer(0),
         }
     }
@@ -319,6 +365,7 @@ impl UiStore {
     fn scroll_max_value(&self) -> Value {
         match &self.screen {
             ActiveScreen::Thread(s) => Value::Integer(s.scroll_max as i64),
+            ActiveScreen::History(s) => Value::Integer(s.scroll_max as i64),
             _ => Value::Integer(0),
         }
     }
@@ -326,6 +373,7 @@ impl UiStore {
     fn viewport_height_value(&self) -> Value {
         match &self.screen {
             ActiveScreen::Thread(s) => Value::Integer(s.viewport_height as i64),
+            ActiveScreen::History(s) => Value::Integer(s.viewport_height as i64),
             _ => Value::Integer(0),
         }
     }
@@ -362,6 +410,7 @@ impl UiStore {
             ActiveScreen::Inbox(s) => s.editor.as_ref(),
             ActiveScreen::Thread(s) => s.editor.as_ref(),
             ActiveScreen::Settings(_) => None,
+            ActiveScreen::History(_) => None,
         };
         match editor {
             Some(e) => match sub_key {
@@ -412,6 +461,14 @@ impl UiStore {
             }
             GlobalCommand::GoToInbox => {
                 self.screen = ActiveScreen::Inbox(InboxState::default());
+                Ok(path!("screen"))
+            }
+            GlobalCommand::OpenHistory { thread_id } => {
+                self.screen = ActiveScreen::History(HistoryState::new(thread_id));
+                Ok(path!("screen"))
+            }
+            GlobalCommand::BackToThread { thread_id } => {
+                self.screen = ActiveScreen::Thread(ThreadState::new(thread_id));
                 Ok(path!("screen"))
             }
             GlobalCommand::SetStatus { text } => {
@@ -840,12 +897,116 @@ impl UiStore {
         }
     }
 
+    fn handle_history(&mut self, cmd: HistoryCommand) -> Result<Path, StoreError> {
+        // Verify we're on the history screen
+        let _ = self.history_state()?;
+
+        match cmd {
+            HistoryCommand::SelectNext => {
+                let s = self.history_state()?;
+                s.selected_row += 1;
+                Ok(path!("selected_row"))
+            }
+            HistoryCommand::SelectPrev => {
+                let s = self.history_state()?;
+                s.selected_row = s.selected_row.saturating_sub(1);
+                Ok(path!("selected_row"))
+            }
+            HistoryCommand::SelectFirst => {
+                let s = self.history_state()?;
+                s.selected_row = 0;
+                Ok(path!("selected_row"))
+            }
+            HistoryCommand::SelectLast => {
+                let s = self.history_state()?;
+                s.selected_row = usize::MAX;
+                Ok(path!("selected_row"))
+            }
+            HistoryCommand::ToggleExpand => {
+                let s = self.history_state()?;
+                let row = s.selected_row;
+                if !s.expanded.remove(&row) {
+                    s.expanded.insert(row);
+                }
+                Ok(path!("expanded"))
+            }
+            HistoryCommand::ExpandAll => {
+                let s = self.history_state()?;
+                s.expanded.extend(0..1000);
+                Ok(path!("expanded"))
+            }
+            HistoryCommand::CollapseAll => {
+                let s = self.history_state()?;
+                s.expanded.clear();
+                Ok(path!("expanded"))
+            }
+            HistoryCommand::ScrollUp => {
+                let s = self.history_state()?;
+                if s.scroll < s.scroll_max {
+                    s.scroll += 1;
+                }
+                Ok(path!("scroll"))
+            }
+            HistoryCommand::ScrollDown => {
+                let s = self.history_state()?;
+                s.scroll = s.scroll.saturating_sub(1);
+                Ok(path!("scroll"))
+            }
+            HistoryCommand::ScrollToTop => {
+                let s = self.history_state()?;
+                s.scroll = s.scroll_max;
+                Ok(path!("scroll"))
+            }
+            HistoryCommand::ScrollToBottom => {
+                let s = self.history_state()?;
+                s.scroll = 0;
+                Ok(path!("scroll"))
+            }
+            HistoryCommand::ScrollPageUp => {
+                let s = self.history_state()?;
+                s.scroll = (s.scroll + s.viewport_height).min(s.scroll_max);
+                Ok(path!("scroll"))
+            }
+            HistoryCommand::ScrollPageDown => {
+                let s = self.history_state()?;
+                s.scroll = s.scroll.saturating_sub(s.viewport_height);
+                Ok(path!("scroll"))
+            }
+            HistoryCommand::ScrollHalfPageUp => {
+                let s = self.history_state()?;
+                let half = s.viewport_height / 2;
+                s.scroll = (s.scroll + half).min(s.scroll_max);
+                Ok(path!("scroll"))
+            }
+            HistoryCommand::ScrollHalfPageDown => {
+                let s = self.history_state()?;
+                let half = s.viewport_height / 2;
+                s.scroll = s.scroll.saturating_sub(half);
+                Ok(path!("scroll"))
+            }
+            HistoryCommand::SetScrollMax { max } => {
+                let s = self.history_state()?;
+                s.scroll_max = max;
+                if s.scroll > s.scroll_max {
+                    s.scroll = s.scroll_max;
+                }
+                Ok(path!("scroll_max"))
+            }
+            HistoryCommand::SetViewportHeight { height } => {
+                let s = self.history_state()?;
+                s.viewport_height = height;
+                Ok(path!("viewport_height"))
+            }
+        }
+    }
+
     fn dispatch_command(&mut self, cmd: UiCommand) -> Result<Path, StoreError> {
         match cmd {
             UiCommand::Global(g) => self.handle_global(g),
             UiCommand::Inbox(i) => self.handle_inbox(i),
             UiCommand::Thread(t) => self.handle_thread(t),
             UiCommand::Settings(s) => self.handle_settings(s),
+            UiCommand::History(h) => self.handle_history(h),
         }
     }
 
@@ -892,11 +1053,23 @@ impl UiStore {
             })),
             "clear_pending_action" => Ok(UiCommand::Global(GlobalCommand::ClearPendingAction)),
 
-            // Inbox commands
-            "select_next" => Ok(UiCommand::Inbox(InboxCommand::SelectNext)),
-            "select_prev" => Ok(UiCommand::Inbox(InboxCommand::SelectPrev)),
-            "select_first" => Ok(UiCommand::Inbox(InboxCommand::SelectFirst)),
-            "select_last" => Ok(UiCommand::Inbox(InboxCommand::SelectLast)),
+            // Selection commands — route to History or Inbox based on screen
+            "select_next" => match &self.screen {
+                ActiveScreen::History(_) => Ok(UiCommand::History(HistoryCommand::SelectNext)),
+                _ => Ok(UiCommand::Inbox(InboxCommand::SelectNext)),
+            },
+            "select_prev" => match &self.screen {
+                ActiveScreen::History(_) => Ok(UiCommand::History(HistoryCommand::SelectPrev)),
+                _ => Ok(UiCommand::Inbox(InboxCommand::SelectPrev)),
+            },
+            "select_first" => match &self.screen {
+                ActiveScreen::History(_) => Ok(UiCommand::History(HistoryCommand::SelectFirst)),
+                _ => Ok(UiCommand::Inbox(InboxCommand::SelectFirst)),
+            },
+            "select_last" => match &self.screen {
+                ActiveScreen::History(_) => Ok(UiCommand::History(HistoryCommand::SelectLast)),
+                _ => Ok(UiCommand::Inbox(InboxCommand::SelectLast)),
+            },
             "set_row_count" => Ok(UiCommand::Inbox(InboxCommand::SetRowCount {
                 count: get_usize(map, "count").ok_or_else(|| err("missing count"))?,
             })),
@@ -912,21 +1085,61 @@ impl UiStore {
                 index: get_usize(map, "index").ok_or_else(|| err("missing index"))?,
             })),
 
-            // Thread commands
-            "scroll_up" => Ok(UiCommand::Thread(ThreadCommand::ScrollUp)),
-            "scroll_down" => Ok(UiCommand::Thread(ThreadCommand::ScrollDown)),
-            "scroll_to_top" => Ok(UiCommand::Thread(ThreadCommand::ScrollToTop)),
-            "scroll_to_bottom" => Ok(UiCommand::Thread(ThreadCommand::ScrollToBottom)),
-            "scroll_page_up" => Ok(UiCommand::Thread(ThreadCommand::ScrollPageUp)),
-            "scroll_page_down" => Ok(UiCommand::Thread(ThreadCommand::ScrollPageDown)),
-            "scroll_half_page_up" => Ok(UiCommand::Thread(ThreadCommand::ScrollHalfPageUp)),
-            "scroll_half_page_down" => Ok(UiCommand::Thread(ThreadCommand::ScrollHalfPageDown)),
-            "set_scroll_max" => Ok(UiCommand::Thread(ThreadCommand::SetScrollMax {
-                max: get_usize(map, "max").ok_or_else(|| err("missing max"))?,
-            })),
-            "set_viewport_height" => Ok(UiCommand::Thread(ThreadCommand::SetViewportHeight {
-                height: get_usize(map, "height").ok_or_else(|| err("missing height"))?,
-            })),
+            // Scroll commands — route to History or Thread based on screen
+            "scroll_up" => match &self.screen {
+                ActiveScreen::History(_) => Ok(UiCommand::History(HistoryCommand::ScrollUp)),
+                _ => Ok(UiCommand::Thread(ThreadCommand::ScrollUp)),
+            },
+            "scroll_down" => match &self.screen {
+                ActiveScreen::History(_) => Ok(UiCommand::History(HistoryCommand::ScrollDown)),
+                _ => Ok(UiCommand::Thread(ThreadCommand::ScrollDown)),
+            },
+            "scroll_to_top" => match &self.screen {
+                ActiveScreen::History(_) => Ok(UiCommand::History(HistoryCommand::ScrollToTop)),
+                _ => Ok(UiCommand::Thread(ThreadCommand::ScrollToTop)),
+            },
+            "scroll_to_bottom" => match &self.screen {
+                ActiveScreen::History(_) => Ok(UiCommand::History(HistoryCommand::ScrollToBottom)),
+                _ => Ok(UiCommand::Thread(ThreadCommand::ScrollToBottom)),
+            },
+            "scroll_page_up" => match &self.screen {
+                ActiveScreen::History(_) => Ok(UiCommand::History(HistoryCommand::ScrollPageUp)),
+                _ => Ok(UiCommand::Thread(ThreadCommand::ScrollPageUp)),
+            },
+            "scroll_page_down" => match &self.screen {
+                ActiveScreen::History(_) => Ok(UiCommand::History(HistoryCommand::ScrollPageDown)),
+                _ => Ok(UiCommand::Thread(ThreadCommand::ScrollPageDown)),
+            },
+            "scroll_half_page_up" => match &self.screen {
+                ActiveScreen::History(_) => {
+                    Ok(UiCommand::History(HistoryCommand::ScrollHalfPageUp))
+                }
+                _ => Ok(UiCommand::Thread(ThreadCommand::ScrollHalfPageUp)),
+            },
+            "scroll_half_page_down" => match &self.screen {
+                ActiveScreen::History(_) => {
+                    Ok(UiCommand::History(HistoryCommand::ScrollHalfPageDown))
+                }
+                _ => Ok(UiCommand::Thread(ThreadCommand::ScrollHalfPageDown)),
+            },
+            "set_scroll_max" => match &self.screen {
+                ActiveScreen::History(_) => Ok(UiCommand::History(HistoryCommand::SetScrollMax {
+                    max: get_usize(map, "max").ok_or_else(|| err("missing max"))?,
+                })),
+                _ => Ok(UiCommand::Thread(ThreadCommand::SetScrollMax {
+                    max: get_usize(map, "max").ok_or_else(|| err("missing max"))?,
+                })),
+            },
+            "set_viewport_height" => match &self.screen {
+                ActiveScreen::History(_) => {
+                    Ok(UiCommand::History(HistoryCommand::SetViewportHeight {
+                        height: get_usize(map, "height").ok_or_else(|| err("missing height"))?,
+                    }))
+                }
+                _ => Ok(UiCommand::Thread(ThreadCommand::SetViewportHeight {
+                    height: get_usize(map, "height").ok_or_else(|| err("missing height"))?,
+                })),
+            },
             "enter_insert" => {
                 let ctx_str = get_str(map, "context").ok_or_else(|| err("missing context"))?;
                 let context: InsertContext =
@@ -962,6 +1175,9 @@ impl UiStore {
                     (ActiveScreen::Settings(_), _) => {
                         Err(err("enter_insert not supported on settings screen"))
                     }
+                    (ActiveScreen::History(_), _) => {
+                        Err(err("enter_insert not supported on history screen"))
+                    }
                 }
             }
             "exit_insert" => match &self.screen {
@@ -971,6 +1187,11 @@ impl UiStore {
                     "ui",
                     "path_command",
                     "exit_insert not supported on settings screen",
+                )),
+                ActiveScreen::History(_) => Err(StoreError::store(
+                    "ui",
+                    "path_command",
+                    "exit_insert not supported on history screen",
                 )),
             },
             // set_input and clear_input handled via resolve_path_command_direct
@@ -982,7 +1203,35 @@ impl UiStore {
                     "path_command",
                     "send_input not supported on settings screen",
                 )),
+                ActiveScreen::History(_) => Err(StoreError::store(
+                    "ui",
+                    "path_command",
+                    "send_input not supported on history screen",
+                )),
             },
+
+            // History commands
+            "open_history" => {
+                let thread_id = match &self.screen {
+                    ActiveScreen::Thread(s) => s.thread_id.clone(),
+                    _ => {
+                        return Err(err("open_history requires thread screen"));
+                    }
+                };
+                Ok(UiCommand::Global(GlobalCommand::OpenHistory { thread_id }))
+            }
+            "back_to_thread" => {
+                let thread_id = match &self.screen {
+                    ActiveScreen::History(s) => s.thread_id.clone(),
+                    _ => {
+                        return Err(err("back_to_thread requires history screen"));
+                    }
+                };
+                Ok(UiCommand::Global(GlobalCommand::BackToThread { thread_id }))
+            }
+            "toggle_expand" => Ok(UiCommand::History(HistoryCommand::ToggleExpand)),
+            "expand_all" => Ok(UiCommand::History(HistoryCommand::ExpandAll)),
+            "collapse_all" => Ok(UiCommand::History(HistoryCommand::CollapseAll)),
 
             // Modal commands (no-ops for now, kept for backward compat)
             "show_modal" | "dismiss_modal" => {
