@@ -73,15 +73,16 @@ pub fn save(
         thread_dir::write_default_view(thread_dir)?;
     }
 
-    // 5. Append new messages to ledger (incremental)
+    // 5. Append new log entries to ledger (incremental)
     let ledger_path = thread_dir.join("ledger.jsonl");
     let last_entry = ledger::read_last_entry(&ledger_path)?;
     let existing_count = last_entry.as_ref().map_or(0, |e| e.seq + 1);
 
-    // Read all messages from history
-    let messages_path =
-        structfs_core_store::Path::parse("history/messages").map_err(|e| e.to_string())?;
-    let messages = match namespace.read(&messages_path) {
+    // Read all entries from the structured log (not history/messages projection,
+    // which only includes user/assistant/tool_result — we want the full audit trail).
+    let log_path =
+        structfs_core_store::Path::parse("log/entries").map_err(|e| e.to_string())?;
+    let messages = match namespace.read(&log_path) {
         Ok(Some(record)) => {
             let json = value_to_json(record.as_value().ok_or("expected value")?.clone());
             json.as_array().cloned().unwrap_or_default()
@@ -132,16 +133,16 @@ pub fn restore(
         }
     }
 
-    // 2. Replay ledger through history/append
+    // 2. Replay ledger through log/append
     let ledger_path = thread_dir.join("ledger.jsonl");
     let entries = ledger::read_ledger(&ledger_path)?;
-    let history_path =
-        structfs_core_store::Path::parse("history/append").map_err(|e| e.to_string())?;
+    let log_path =
+        structfs_core_store::Path::parse("log/append").map_err(|e| e.to_string())?;
 
     for entry in &entries {
         let value = json_to_value(entry.msg.clone());
         namespace
-            .write(&history_path, Record::parsed(value))
+            .write(&log_path, Record::parsed(value))
             .map_err(|e| e.to_string())?;
     }
 
@@ -167,7 +168,14 @@ mod tests {
             Box::new(SystemProvider::new("You are helpful.".to_string())),
         );
         ns.mount("tools", Box::new(ox_tools::ToolStore::empty()));
-        ns.mount("history", Box::new(HistoryView::new(shared_log)));
+        ns.mount(
+            "history",
+            Box::new(HistoryView::new(shared_log.clone())),
+        );
+        ns.mount(
+            "log",
+            Box::new(ox_kernel::log::LogStore::from_shared(shared_log)),
+        );
         ns.mount("gate", Box::new(GateStore::new()));
         ns
     }
