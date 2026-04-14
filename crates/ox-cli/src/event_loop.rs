@@ -9,8 +9,8 @@ use crate::view_state::fetch_view_state;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
 use ox_path::oxpath;
 use ox_types::{
-    GlobalCommand, InboxCommand, InputKeyEvent, InsertContext, Mode, PendingAction, Screen,
-    ScreenSnapshot, ThreadCommand, UiCommand, UiSnapshot,
+    GlobalCommand, HistoryCommand, InboxCommand, InputKeyEvent, InsertContext, Mode, PendingAction,
+    Screen, ScreenSnapshot, ThreadCommand, UiCommand, UiSnapshot,
 };
 use ox_ui::text_input_store::EditSource;
 use std::time::Duration;
@@ -148,6 +148,24 @@ pub async fn run_async(
                 .write_typed(
                     &oxpath!("ui"),
                     &UiCommand::Thread(ThreadCommand::SetViewportHeight {
+                        height: viewport_height,
+                    }),
+                )
+                .await;
+        }
+
+        if matches!(&ui.screen, ScreenSnapshot::History(_)) && viewport_height > 0 {
+            let scroll_max = content_height.unwrap_or(0).saturating_sub(viewport_height);
+            let _ = client
+                .write_typed(
+                    &oxpath!("ui"),
+                    &UiCommand::History(HistoryCommand::SetScrollMax { max: scroll_max }),
+                )
+                .await;
+            let _ = client
+                .write_typed(
+                    &oxpath!("ui"),
+                    &UiCommand::History(HistoryCommand::SetViewportHeight {
                         height: viewport_height,
                     }),
                 )
@@ -424,6 +442,9 @@ async fn dispatch_key(
                 }
             }
         }
+        ScreenSnapshot::History(_) => {
+            // No screen-specific key handling — all goes through InputStore bindings
+        }
     }
 
     // ? in normal mode toggles shortcuts modal (inbox + thread only)
@@ -443,6 +464,7 @@ async fn dispatch_key(
         ScreenSnapshot::Inbox(_) => (mode, Screen::Inbox),
         ScreenSnapshot::Thread(_) => (mode, Screen::Thread),
         ScreenSnapshot::Settings(_) => (Mode::Normal, Screen::Settings),
+        ScreenSnapshot::History(_) => (mode, Screen::History),
     };
     let result = client
         .write_typed(

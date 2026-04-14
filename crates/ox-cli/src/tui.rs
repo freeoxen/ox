@@ -90,6 +90,10 @@ pub(crate) fn draw(
         ScreenSnapshot::Inbox(_) => {
             crate::inbox_view::draw_inbox(frame, vs, theme, content_area);
         }
+        ScreenSnapshot::History(_) => {
+            let (ch, _vh) = crate::history_view::draw_history(frame, vs, theme, content_area);
+            content_height = Some(ch);
+        }
     }
 
     // Input box (only in insert mode)
@@ -144,6 +148,7 @@ pub(crate) fn draw(
             ScreenSnapshot::Inbox(_) => "inbox",
             ScreenSnapshot::Thread(_) => "thread",
             ScreenSnapshot::Settings(_) => "settings",
+            ScreenSnapshot::History(_) => "history",
         };
         crate::dialogs::draw_shortcuts_modal(frame, &vs.key_hints, mode_str, screen_str, theme);
     } else if let Some(customize) = vs.pending_customize {
