@@ -76,6 +76,31 @@ pub struct Theme {
     pub state_waiting: Style,
     /// Inbox state dot — completed.
     pub state_completed: Style,
+
+    /// History explorer: header line.
+    pub history_header: Style,
+    /// History explorer: selected row.
+    pub history_selected: Style,
+    /// History explorer: message index number.
+    pub history_index: Style,
+    /// History explorer: role badge — user.
+    pub history_role_user: Style,
+    /// History explorer: role badge — assistant.
+    pub history_role_assistant: Style,
+    /// History explorer: role badge — tool_result.
+    pub history_role_tool: Style,
+    /// History explorer: message summary text.
+    pub history_summary: Style,
+    /// History explorer: metadata (block count, char count).
+    pub history_meta: Style,
+    /// History explorer: duplicate badge.
+    pub history_duplicate: Style,
+    /// History explorer: expanded block type tag.
+    pub history_block_tag: Style,
+    /// History explorer: expanded block content.
+    pub history_block_content: Style,
+    /// History explorer: streaming indicator.
+    pub history_streaming: Style,
 }
 
 impl Theme {
@@ -131,6 +156,19 @@ impl Theme {
             state_errored: bold.fg(Color::Red),
             state_waiting: bold.fg(Color::Cyan),
             state_completed: dim.fg(Color::Green),
+
+            history_header: bold,
+            history_selected: Style::default().add_modifier(Modifier::REVERSED),
+            history_index: dim,
+            history_role_user: bold.fg(Color::Green),
+            history_role_assistant: bold.fg(Color::Blue),
+            history_role_tool: bold.fg(Color::Yellow),
+            history_summary: Style::default(),
+            history_meta: dim,
+            history_duplicate: bold.fg(Color::Red),
+            history_block_tag: bold.fg(Color::Cyan),
+            history_block_content: dim,
+            history_streaming: dim.fg(Color::Blue),
         }
     }
 }

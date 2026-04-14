@@ -213,6 +213,263 @@ pub fn search_matches(
 }
 
 // ---------------------------------------------------------------------------
+// HistoryEntry — parsed history entries with duplicate detection
+// ---------------------------------------------------------------------------
+
+/// A single parsed history entry (one wire-format message).
+#[derive(Debug, Clone)]
+pub struct HistoryEntry {
+    pub index: usize,
+    pub role: String,
+    pub summary: String,
+    pub block_count: usize,
+    pub text_len: usize,
+    pub blocks: Vec<HistoryBlock>,
+    pub flags: EntryFlags,
+}
+
+/// A single content block within a history entry.
+#[derive(Debug, Clone)]
+pub struct HistoryBlock {
+    pub block_type: String,
+    pub text: Option<String>,
+    pub tool_name: Option<String>,
+    pub tool_use_id: Option<String>,
+    pub input_json: Option<String>,
+}
+
+/// Duplicate-detection flags for a history entry.
+#[derive(Debug, Clone, Default)]
+pub struct EntryFlags {
+    pub duplicate_content: bool,
+    pub duplicate_of: Option<usize>,
+}
+
+/// Convert a slice of StructFS Values (Anthropic wire-format messages) into
+/// `HistoryEntry`s with duplicate detection applied.
+pub fn parse_history_entries(values: &[Value]) -> Vec<HistoryEntry> {
+    let mut entries: Vec<HistoryEntry> = values
+        .iter()
+        .enumerate()
+        .filter_map(|(index, val)| {
+            let map = match val {
+                Value::Map(m) => m,
+                _ => return None,
+            };
+            let role = match map.get("role") {
+                Some(Value::String(s)) => s.clone(),
+                _ => return None,
+            };
+            let content = match map.get("content") {
+                Some(v) => v,
+                None => return None,
+            };
+            let (blocks, summary, block_count, text_len) =
+                parse_content_blocks(&role, content);
+            Some(HistoryEntry {
+                index,
+                role,
+                summary,
+                block_count,
+                text_len,
+                blocks,
+                flags: EntryFlags::default(),
+            })
+        })
+        .collect();
+
+    detect_duplicates(&mut entries);
+    entries
+}
+
+/// Parse content into blocks, returning (blocks, summary, block_count, text_len).
+fn parse_content_blocks(
+    _role: &str,
+    content: &Value,
+) -> (Vec<HistoryBlock>, String, usize, usize) {
+    match content {
+        Value::String(s) => {
+            let block = HistoryBlock {
+                block_type: "text".to_string(),
+                text: Some(s.clone()),
+                tool_name: None,
+                tool_use_id: None,
+                input_json: None,
+            };
+            let summary = truncate_summary(s, 80);
+            let text_len = s.len();
+            (vec![block], summary, 1, text_len)
+        }
+        Value::Array(arr) => {
+            let mut blocks = Vec::new();
+            let mut total_text_len = 0usize;
+            let mut first_summary: Option<String> = None;
+
+            for item in arr {
+                let Value::Map(block_map) = item else {
+                    continue;
+                };
+                let block_type = match block_map.get("type") {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => continue,
+                };
+
+                match block_type.as_str() {
+                    "text" => {
+                        let text = match block_map.get("text") {
+                            Some(Value::String(s)) => Some(s.clone()),
+                            _ => None,
+                        };
+                        if let Some(ref t) = text {
+                            total_text_len += t.len();
+                            if first_summary.is_none() {
+                                first_summary = Some(truncate_summary(t, 80));
+                            }
+                        }
+                        blocks.push(HistoryBlock {
+                            block_type,
+                            text,
+                            tool_name: None,
+                            tool_use_id: None,
+                            input_json: None,
+                        });
+                    }
+                    "tool_use" => {
+                        let name = match block_map.get("name") {
+                            Some(Value::String(s)) => Some(s.clone()),
+                            _ => None,
+                        };
+                        let tool_use_id = match block_map.get("id") {
+                            Some(Value::String(s)) => Some(s.clone()),
+                            _ => None,
+                        };
+                        let input_json = block_map
+                            .get("input")
+                            .map(|v| format_value(v));
+                        if first_summary.is_none() {
+                            let label = name.as_deref().unwrap_or("unknown");
+                            first_summary = Some(format!("tool_use: {label}"));
+                        }
+                        blocks.push(HistoryBlock {
+                            block_type,
+                            text: None,
+                            tool_name: name,
+                            tool_use_id,
+                            input_json,
+                        });
+                    }
+                    "tool_result" => {
+                        let text = match block_map.get("content") {
+                            Some(Value::String(s)) => Some(s.clone()),
+                            _ => None,
+                        };
+                        let tool_use_id = match block_map.get("tool_use_id") {
+                            Some(Value::String(s)) => Some(s.clone()),
+                            _ => None,
+                        };
+                        if let Some(ref t) = text {
+                            total_text_len += t.len();
+                            if first_summary.is_none() {
+                                first_summary = Some(truncate_summary(t, 80));
+                            }
+                        }
+                        blocks.push(HistoryBlock {
+                            block_type,
+                            text,
+                            tool_name: None,
+                            tool_use_id,
+                            input_json: None,
+                        });
+                    }
+                    _ => {
+                        blocks.push(HistoryBlock {
+                            block_type,
+                            text: None,
+                            tool_name: None,
+                            tool_use_id: None,
+                            input_json: None,
+                        });
+                    }
+                }
+            }
+
+            let block_count = blocks.len();
+            let summary = first_summary.unwrap_or_default();
+            (blocks, summary, block_count, total_text_len)
+        }
+        _ => (Vec::new(), String::new(), 0, 0),
+    }
+}
+
+/// Return the first line of `s`, truncated to `max` chars.
+fn truncate_summary(s: &str, max: usize) -> String {
+    let first_line = s.lines().next().unwrap_or(s);
+    if first_line.len() <= max {
+        first_line.to_string()
+    } else {
+        first_line[..max].to_string()
+    }
+}
+
+/// Compact JSON-like formatting of a StructFS Value.
+fn format_value(val: &Value) -> String {
+    match val {
+        Value::String(s) => format!("{s:?}"),
+        Value::Integer(n) => n.to_string(),
+        Value::Float(f) => f.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Null => "null".to_string(),
+        Value::Bytes(b) => format!("<{} bytes>", b.len()),
+        Value::Array(arr) => {
+            let items: Vec<String> = arr.iter().map(format_value).collect();
+            format!("[{}]", items.join(", "))
+        }
+        Value::Map(m) => {
+            let items: Vec<String> = m
+                .iter()
+                .map(|(k, v)| format!("{k:?}: {}", format_value(v)))
+                .collect();
+            format!("{{{}}}", items.join(", "))
+        }
+    }
+}
+
+/// Concatenate all text content from blocks into a single string.
+fn concat_text(blocks: &[HistoryBlock]) -> String {
+    blocks
+        .iter()
+        .filter_map(|b| b.text.as_deref())
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+/// Detect duplicate entries by comparing text content against prior same-role entries.
+fn detect_duplicates(entries: &mut [HistoryEntry]) {
+    for i in 1..entries.len() {
+        let current_role = entries[i].role.clone();
+        let current_text = concat_text(&entries[i].blocks);
+        if current_text.is_empty() {
+            continue;
+        }
+        // Walk backwards to find the most recent same-role entry.
+        let mut found: Option<usize> = None;
+        for j in (0..i).rev() {
+            if entries[j].role == current_role {
+                found = Some(j);
+                break;
+            }
+        }
+        if let Some(prev_idx) = found {
+            let prev_text = concat_text(&entries[prev_idx].blocks);
+            if prev_text == current_text {
+                entries[i].flags.duplicate_content = true;
+                entries[i].flags.duplicate_of = Some(prev_idx);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -397,5 +654,66 @@ mod tests {
         let parsed = parse_chat_messages(&msgs);
         assert_eq!(parsed.len(), 1);
         assert!(matches!(&parsed[0], ChatMessage::AssistantChunk(t) if t == "plain text response"));
+    }
+
+    #[test]
+    fn parse_history_entries_basic() {
+        let user_msg = map(vec![("role", s("user")), ("content", s("hello"))]);
+        let text_block = map(vec![("type", s("text")), ("text", s("hi there"))]);
+        let assistant_msg = map(vec![
+            ("role", s("assistant")),
+            ("content", Value::Array(vec![text_block])),
+        ]);
+        let entries = parse_history_entries(&[user_msg, assistant_msg]);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].index, 0);
+        assert_eq!(entries[0].role, "user");
+        assert_eq!(entries[0].summary, "hello");
+        assert_eq!(entries[0].block_count, 1);
+        assert_eq!(entries[0].text_len, 5);
+        assert!(!entries[0].flags.duplicate_content);
+        assert_eq!(entries[1].index, 1);
+        assert_eq!(entries[1].role, "assistant");
+        assert_eq!(entries[1].summary, "hi there");
+        assert_eq!(entries[1].block_count, 1);
+        assert_eq!(entries[1].text_len, 8);
+    }
+
+    #[test]
+    fn parse_history_entries_duplicate_detection() {
+        let msg1 = map(vec![("role", s("assistant")), ("content", s("hello world"))]);
+        let msg2 = map(vec![("role", s("user")), ("content", s("ok"))]);
+        let msg3 = map(vec![("role", s("assistant")), ("content", s("hello world"))]);
+        let entries = parse_history_entries(&[msg1, msg2, msg3]);
+        assert_eq!(entries.len(), 3);
+        assert!(!entries[0].flags.duplicate_content);
+        assert!(!entries[1].flags.duplicate_content);
+        assert!(entries[2].flags.duplicate_content);
+        assert_eq!(entries[2].flags.duplicate_of, Some(0));
+    }
+
+    #[test]
+    fn parse_history_entries_tool_blocks() {
+        let tool_use_block = map(vec![
+            ("type", s("tool_use")),
+            ("id", s("toolu_01ABC")),
+            ("name", s("read_file")),
+            ("input", map(vec![("path", s("/tmp/x"))])),
+        ]);
+        let assistant_msg = map(vec![
+            ("role", s("assistant")),
+            ("content", Value::Array(vec![tool_use_block])),
+        ]);
+        let entries = parse_history_entries(&[assistant_msg]);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].block_count, 1);
+        assert_eq!(entries[0].blocks[0].block_type, "tool_use");
+        assert_eq!(entries[0].blocks[0].tool_name.as_deref(), Some("read_file"));
+        assert_eq!(
+            entries[0].blocks[0].tool_use_id.as_deref(),
+            Some("toolu_01ABC")
+        );
+        assert!(entries[0].blocks[0].input_json.is_some());
+        assert!(entries[0].summary.contains("tool_use: read_file"));
     }
 }

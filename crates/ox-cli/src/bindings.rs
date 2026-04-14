@@ -11,6 +11,7 @@ use ox_ui::{Action, Binding, BindingContext};
 pub fn default_bindings() -> Vec<Binding> {
     let mut b = Vec::new();
     normal_mode(&mut b);
+    history_mode(&mut b);
     insert_mode(&mut b);
     approval_mode(&mut b);
     b
@@ -244,6 +245,15 @@ fn normal_mode(out: &mut Vec<Binding>) {
         "Page up",
     ));
 
+    // History explorer
+    out.push(bind_screen(
+        "normal",
+        "h",
+        "thread",
+        invoke("open_history"),
+        "History explorer",
+    ));
+
     // Settings
     out.push(bind_screen(
         "normal",
@@ -318,6 +328,146 @@ fn normal_mode(out: &mut Vec<Binding>) {
         "thread",
         invoke_with("approve", &[("decision", "allow_always")]),
         "Allow always",
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// History mode
+// ---------------------------------------------------------------------------
+
+fn history_mode(out: &mut Vec<Binding>) {
+    // Navigation
+    out.push(bind_screen(
+        "normal",
+        "j",
+        "history",
+        invoke("select_next"),
+        "Move selection down",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "Down",
+        "history",
+        invoke("select_next"),
+        "Move selection down",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "k",
+        "history",
+        invoke("select_prev"),
+        "Move selection up",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "Up",
+        "history",
+        invoke("select_prev"),
+        "Move selection up",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "g",
+        "history",
+        invoke("select_first"),
+        "Go to first",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "G",
+        "history",
+        invoke("select_last"),
+        "Go to last",
+    ));
+
+    // Expand
+    out.push(bind_screen(
+        "normal",
+        "Enter",
+        "history",
+        invoke("toggle_expand"),
+        "Toggle expand",
+    ));
+    out.push(bind_screen(
+        "normal",
+        " ",
+        "history",
+        invoke("toggle_expand"),
+        "Toggle expand",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "e",
+        "history",
+        invoke("expand_all"),
+        "Expand all",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "E",
+        "history",
+        invoke("collapse_all"),
+        "Collapse all",
+    ));
+
+    // Scroll
+    out.push(bind_screen(
+        "normal",
+        "Ctrl+d",
+        "history",
+        invoke("scroll_half_page_down"),
+        "Half page down",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "Ctrl+u",
+        "history",
+        invoke("scroll_half_page_up"),
+        "Half page up",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "Ctrl+f",
+        "history",
+        invoke("scroll_page_down"),
+        "Page down",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "Ctrl+b",
+        "history",
+        invoke("scroll_page_up"),
+        "Page up",
+    ));
+
+    // Exit
+    out.push(bind_screen(
+        "normal",
+        "Esc",
+        "history",
+        invoke("back_to_thread"),
+        "Back to thread",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "q",
+        "history",
+        invoke("back_to_thread"),
+        "Back to thread",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "h",
+        "history",
+        invoke("back_to_thread"),
+        "Back to thread",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "Ctrl+c",
+        "history",
+        invoke("back_to_thread"),
+        "Back to thread",
     ));
 }
 
@@ -448,6 +598,35 @@ mod tests {
         assert!(bindings.iter().any(|b| b.context.mode == "normal"));
         assert!(bindings.iter().any(|b| b.context.mode == "insert"));
         assert!(bindings.iter().any(|b| b.context.mode == "approval"));
+    }
+
+    #[test]
+    fn h_on_thread_opens_history() {
+        let bindings = default_bindings();
+        let found: Vec<_> = bindings
+            .iter()
+            .filter(|b| {
+                b.context.mode == "normal"
+                    && b.context.key == "h"
+                    && b.context.screen.as_deref() == Some("thread")
+            })
+            .collect();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].description, "History explorer");
+    }
+
+    #[test]
+    fn history_screen_has_bindings() {
+        let bindings = default_bindings();
+        let history_bindings: Vec<_> = bindings
+            .iter()
+            .filter(|b| b.context.screen.as_deref() == Some("history"))
+            .collect();
+        assert!(
+            history_bindings.len() >= 16,
+            "expected at least 16 history bindings, got {}",
+            history_bindings.len()
+        );
     }
 
     #[test]

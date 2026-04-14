@@ -36,6 +36,8 @@ pub struct ViewState<'a> {
     pub turn: ox_history::TurnState,
     /// Pending approval for the active thread.
     pub approval_pending: Option<ApprovalRequest>,
+    /// Raw StructFS message values for the history explorer.
+    pub raw_messages: Vec<Value>,
 
     // -- Config ----------------------------------------------------------
     pub model: String,
@@ -77,6 +79,7 @@ pub async fn fetch_view_state<'a>(
     // Conditional reads based on screen variant
     let mut inbox_threads = Vec::new();
     let mut messages = Vec::new();
+    let mut raw_messages = Vec::new();
     let mut turn = ox_history::TurnState::new();
     let mut approval_pending: Option<ApprovalRequest> = None;
 
@@ -114,6 +117,19 @@ pub async fn fetch_view_state<'a>(
                 }
             }
         }
+        ScreenSnapshot::History(snap) => {
+            let tid = &snap.thread_id;
+            let msg_path = ox_path::oxpath!("threads", tid, "history", "messages");
+            if let Ok(Some(record)) = client.read(&msg_path).await {
+                if let Some(Value::Array(arr)) = record.as_value() {
+                    raw_messages = arr.clone();
+                }
+            }
+            let turn_path = ox_path::oxpath!("threads", tid, "history", "turn");
+            if let Ok(Some(t)) = client.read_typed::<ox_history::TurnState>(&turn_path).await {
+                turn = t;
+            }
+        }
         ScreenSnapshot::Settings(_) => {}
     }
 
@@ -148,6 +164,7 @@ pub async fn fetch_view_state<'a>(
             },
             "thread",
         ),
+        ScreenSnapshot::History(_) => ("normal", "history"),
         ScreenSnapshot::Settings(_) => ("normal", "settings"),
     };
     let key_hints = read_key_hints(client, mode_str, screen_str).await;
@@ -156,6 +173,7 @@ pub async fn fetch_view_state<'a>(
         ui,
         inbox_threads,
         messages,
+        raw_messages,
         turn,
         approval_pending,
         input_history: &app.input_history,
