@@ -140,6 +140,7 @@ pub enum HistoryCommand {
     ScrollPageDown,
     ScrollHalfPageUp,
     ScrollHalfPageDown,
+    SetRowCount { count: usize },
     SetScrollMax { max: usize },
     SetViewportHeight { height: usize },
 }

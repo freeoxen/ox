@@ -91,7 +91,8 @@ pub(crate) fn draw(
             crate::inbox_view::draw_inbox(frame, vs, theme, content_area);
         }
         ScreenSnapshot::History(_) => {
-            let (ch, _vh) = crate::history_view::draw_history(frame, vs, theme, content_area);
+            let (_ec, ch, _vh) =
+                crate::history_view::draw_history(frame, vs, theme, content_area);
             content_height = Some(ch);
         }
     }

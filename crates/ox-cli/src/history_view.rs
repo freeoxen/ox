@@ -8,16 +8,16 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap};
 
 /// Render the history explorer screen.
-/// Returns (content_height, viewport_height) for scroll_max feedback.
+/// Returns (entry_count, content_height, viewport_height).
 pub fn draw_history(
     frame: &mut Frame,
     vs: &ViewState,
     theme: &Theme,
     area: Rect,
-) -> (usize, usize) {
+) -> (usize, usize, usize) {
     let snap = match &vs.ui.screen {
         ScreenSnapshot::History(s) => s,
-        _ => return (0, area.height as usize),
+        _ => return (0, 0, area.height as usize),
     };
 
     let entries = parse_log_entries(&vs.raw_messages);
@@ -163,7 +163,7 @@ pub fn draw_history(
         frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
     }
 
-    (content_height, viewport_height)
+    (entry_count, content_height, viewport_height)
 }
 
 /// Render a message-type entry (user / assistant / tool_call / tool_result).

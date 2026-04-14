@@ -132,6 +132,7 @@ impl Default for SettingsState {
 struct HistoryState {
     thread_id: String,
     selected_row: usize,
+    row_count: usize,
     scroll: usize,
     scroll_max: usize,
     viewport_height: usize,
@@ -143,6 +144,7 @@ impl HistoryState {
         HistoryState {
             thread_id,
             selected_row: 0,
+            row_count: 0,
             scroll: 0,
             scroll_max: 0,
             viewport_height: 0,
@@ -904,7 +906,9 @@ impl UiStore {
         match cmd {
             HistoryCommand::SelectNext => {
                 let s = self.history_state()?;
-                s.selected_row += 1;
+                if s.row_count > 0 && s.selected_row + 1 < s.row_count {
+                    s.selected_row += 1;
+                }
                 Ok(path!("selected_row"))
             }
             HistoryCommand::SelectPrev => {
@@ -919,7 +923,9 @@ impl UiStore {
             }
             HistoryCommand::SelectLast => {
                 let s = self.history_state()?;
-                s.selected_row = usize::MAX;
+                if s.row_count > 0 {
+                    s.selected_row = s.row_count - 1;
+                }
                 Ok(path!("selected_row"))
             }
             HistoryCommand::ToggleExpand => {
@@ -983,6 +989,14 @@ impl UiStore {
                 let half = s.viewport_height / 2;
                 s.scroll = s.scroll.saturating_sub(half);
                 Ok(path!("scroll"))
+            }
+            HistoryCommand::SetRowCount { count } => {
+                let s = self.history_state()?;
+                s.row_count = count;
+                if s.selected_row >= count && count > 0 {
+                    s.selected_row = count - 1;
+                }
+                Ok(path!("row_count"))
             }
             HistoryCommand::SetScrollMax { max } => {
                 let s = self.history_state()?;

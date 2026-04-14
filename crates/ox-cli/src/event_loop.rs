@@ -89,13 +89,22 @@ pub async fn run_async(
             }
             thread.sync_editor(&vs.ui);
 
-            // Set row_count in UiStore (inbox navigation bounds)
+            // Set row_count in UiStore (navigation bounds)
             if matches!(&vs.ui.screen, ScreenSnapshot::Inbox(_)) {
                 let row_count = vs.inbox_threads.len();
                 let _ = client
                     .write_typed(
                         &oxpath!("ui"),
                         &UiCommand::Inbox(InboxCommand::SetRowCount { count: row_count }),
+                    )
+                    .await;
+            }
+            if matches!(&vs.ui.screen, ScreenSnapshot::History(_)) {
+                let row_count = vs.raw_messages.len();
+                let _ = client
+                    .write_typed(
+                        &oxpath!("ui"),
+                        &UiCommand::History(HistoryCommand::SetRowCount { count: row_count }),
                     )
                     .await;
             }
