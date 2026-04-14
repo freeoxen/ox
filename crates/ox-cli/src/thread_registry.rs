@@ -59,6 +59,18 @@ impl ThreadNamespace {
                 error = %e,
                 "failed to restore thread snapshot — thread will appear empty"
             );
+            // Surface error to the user in the thread view
+            let error_msg = serde_json::json!({
+                "type": "error",
+                "message": format!("Failed to restore thread history: {e}"),
+            });
+            let val = structfs_serde_store::json_to_value(error_msg);
+            ns.log
+                .write(
+                    &structfs_core_store::path!("append"),
+                    structfs_core_store::Record::parsed(val),
+                )
+                .ok();
         }
 
         // Legacy: replay raw JSONL if no context.json existed

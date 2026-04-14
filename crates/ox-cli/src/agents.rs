@@ -464,6 +464,16 @@ fn save_thread_state(
             error = %e,
             "failed to save thread snapshot — conversation may be lost on restart"
         );
+        // Surface error to the user in the thread view
+        let error_msg = serde_json::json!({
+            "type": "error",
+            "message": format!("Failed to save thread: {e}. Conversation may be lost on restart."),
+        });
+        let val = structfs_serde_store::json_to_value(error_msg);
+        let _ = store.write(
+            &structfs_core_store::Path::parse("log/append").unwrap(),
+            structfs_core_store::Record::parsed(val),
+        );
     }
 }
 
