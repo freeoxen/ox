@@ -20,6 +20,7 @@ pub(crate) fn draw(
     settings: &crate::settings_state::SettingsState,
     theme: &Theme,
     text_input_view: &mut crate::text_input_view::TextInputView,
+    history_explorer: &crate::history_state::HistoryExplorer,
 ) -> (Option<usize>, usize) {
     let editor = vs.ui.editor();
     let cur_insert_context = editor.map(|e| e.context);
@@ -90,10 +91,19 @@ pub(crate) fn draw(
         ScreenSnapshot::Inbox(_) => {
             crate::inbox_view::draw_inbox(frame, vs, theme, content_area);
         }
-        ScreenSnapshot::History(_) => {
-            let (_ec, ch, _vh) =
-                crate::history_view::draw_history(frame, vs, theme, content_area);
-            content_height = Some(ch);
+        ScreenSnapshot::History(snap) => {
+            let expanded: std::collections::HashSet<usize> =
+                snap.expanded.iter().copied().collect();
+            crate::history_view::draw_history(
+                frame,
+                history_explorer,
+                &snap.thread_id,
+                snap.selected_row,
+                &expanded,
+                vs.turn.thinking,
+                theme,
+                content_area,
+            );
         }
     }
 

@@ -45,6 +45,7 @@ pub async fn run_async(
         show_shortcuts: false,
     };
     let mut thread = ThreadShell::new();
+    let mut history_explorer = crate::history_state::HistoryExplorer::new();
     let mut settings_shell = if needs_setup {
         // Navigate to settings screen via broker
         client
@@ -99,8 +100,19 @@ pub async fn run_async(
                     )
                     .await;
             }
-            if matches!(&vs.ui.screen, ScreenSnapshot::History(_)) {
-                let row_count = vs.raw_messages.len();
+            // Sync history explorer (incremental parse + layout)
+            if let ScreenSnapshot::History(snap) = &vs.ui.screen {
+                // Approximate viewport: terminal height minus tab bar (1) and status bar (1)
+                let approx_viewport = terminal.get_frame().area().height.saturating_sub(2) as usize;
+                history_explorer.sync(
+                    &snap.thread_id,
+                    &vs.raw_messages,
+                    snap.selected_row,
+                    &snap.expanded,
+                    approx_viewport,
+                );
+                // UiStore still needs row_count for SelectNext/SelectLast bounds
+                let row_count = history_explorer.entry_count();
                 let _ = client
                     .write_typed(
                         &oxpath!("ui"),
@@ -125,6 +137,7 @@ pub async fn run_async(
                     &settings_shell.state,
                     theme,
                     &mut thread.text_input_view,
+                    &history_explorer,
                 );
                 content_height = ch;
                 viewport_height = vh;
@@ -163,23 +176,7 @@ pub async fn run_async(
                 .await;
         }
 
-        if matches!(&ui.screen, ScreenSnapshot::History(_)) && viewport_height > 0 {
-            let scroll_max = content_height.unwrap_or(0).saturating_sub(viewport_height);
-            let _ = client
-                .write_typed(
-                    &oxpath!("ui"),
-                    &UiCommand::History(HistoryCommand::SetScrollMax { max: scroll_max }),
-                )
-                .await;
-            let _ = client
-                .write_typed(
-                    &oxpath!("ui"),
-                    &UiCommand::History(HistoryCommand::SetViewportHeight {
-                        height: viewport_height,
-                    }),
-                )
-                .await;
-        }
+        // History scroll is handled by HistoryExplorer's LayoutManager — no feedback needed.
 
         // -----------------------------------------------------------------
         // 3. Handle pending action

@@ -9,6 +9,7 @@ mod editor;
 #[cfg(test)]
 mod editor_snapshots;
 mod event_loop;
+mod history_state;
 mod history_view;
 mod inbox_shell;
 mod inbox_view;

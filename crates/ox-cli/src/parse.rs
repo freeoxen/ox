@@ -431,7 +431,7 @@ fn format_value(val: &Value) -> String {
 }
 
 /// Concatenate all text content from blocks into a single string.
-fn concat_text(blocks: &[HistoryBlock]) -> String {
+pub fn concat_text(blocks: &[HistoryBlock]) -> String {
     blocks
         .iter()
         .filter_map(|b| b.text.as_deref())
