@@ -28,6 +28,10 @@ pub struct ToolSchemaEntry {
     pub input_schema: serde_json::Value,
 }
 
+/// Closure type for building a namespace redirect path from tool input.
+pub type BuildRedirectPath =
+    Box<dyn Fn(&serde_json::Value) -> Result<String, String> + Send + Sync>;
+
 /// A tool whose execution returns a namespace-absolute path for the kernel to read.
 ///
 /// Unlike normal tools (which compute results), redirect tools build a StructFS path
@@ -38,7 +42,7 @@ pub struct RedirectTool {
     pub description: String,
     pub input_schema: serde_json::Value,
     /// Given the tool input, build the namespace path to redirect to.
-    pub build_path: Box<dyn Fn(&serde_json::Value) -> Result<String, String> + Send + Sync>,
+    pub build_path: BuildRedirectPath,
 }
 
 /// Central StructFS store that routes reads/writes to the appropriate tool module.
@@ -108,8 +112,7 @@ impl ToolStore {
 
     /// Register a redirect tool.
     pub fn register_redirect(&mut self, tool: RedirectTool) {
-        self.name_map
-            .register(&tool.wire_name, &tool.internal_path);
+        self.name_map.register(&tool.wire_name, &tool.internal_path);
         self.redirect_tools.insert(tool.wire_name.clone(), tool);
     }
 

@@ -197,16 +197,13 @@ impl Reader for LogStore {
                     ));
                 }
                 let tool_use_id = &from.components[1];
-                let output = self
-                    .shared
-                    .tool_result_output(tool_use_id)
-                    .ok_or_else(|| {
-                        StoreError::store(
-                            "LogStore",
-                            "read",
-                            format!("no tool result with id: {tool_use_id}"),
-                        )
-                    })?;
+                let output = self.shared.tool_result_output(tool_use_id).ok_or_else(|| {
+                    StoreError::store(
+                        "LogStore",
+                        "read",
+                        format!("no tool result with id: {tool_use_id}"),
+                    )
+                })?;
                 let full = match &output {
                     serde_json::Value::String(s) => s.clone(),
                     other => serde_json::to_string(other).unwrap_or_default(),
@@ -230,16 +227,18 @@ impl Reader for LogStore {
                                 "lines requires offset and limit: results/{id}/lines/{offset}/{limit}",
                             ));
                         }
-                        let offset: usize = from.components[3]
-                            .parse()
-                            .map_err(|e: std::num::ParseIntError| {
-                                StoreError::store("LogStore", "read", e.to_string())
-                            })?;
-                        let limit: usize = from.components[4]
-                            .parse()
-                            .map_err(|e: std::num::ParseIntError| {
-                                StoreError::store("LogStore", "read", e.to_string())
-                            })?;
+                        let offset: usize =
+                            from.components[3]
+                                .parse()
+                                .map_err(|e: std::num::ParseIntError| {
+                                    StoreError::store("LogStore", "read", e.to_string())
+                                })?;
+                        let limit: usize =
+                            from.components[4]
+                                .parse()
+                                .map_err(|e: std::num::ParseIntError| {
+                                    StoreError::store("LogStore", "read", e.to_string())
+                                })?;
                         let lines: Vec<&str> = full.lines().collect();
                         let total = lines.len();
                         let start = offset.min(total);
@@ -418,7 +417,10 @@ mod tests {
             scope: None,
         });
         let result = log.tool_result_output("tc_abc");
-        assert_eq!(result, Some(serde_json::Value::String("hello world".into())));
+        assert_eq!(
+            result,
+            Some(serde_json::Value::String("hello world".into()))
+        );
     }
 
     #[test]
@@ -505,7 +507,10 @@ mod tests {
     #[test]
     fn read_result_lines_slice() {
         let mut log = LogStore::new();
-        let output = (0..10).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let output = (0..10)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         log.write(
             &path!("append"),
             Record::parsed(structfs_serde_store::json_to_value(serde_json::json!({

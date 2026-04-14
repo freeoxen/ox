@@ -1,0 +1,43 @@
+{
+  "sandboxes": {},
+  "tree": [
+    {
+      "condition": {
+        "observe": "tool_name",
+        "pattern": {
+          "literal": {
+            "literal": "fs_read"
+          }
+        },
+        "children": [
+          {
+            "decision": {
+              "allow": null
+            }
+          }
+        ],
+        "source": "ox-cli"
+      }
+    },
+    {
+      "condition": {
+        "observe": "tool_name",
+        "pattern": {
+          "literal": {
+            "literal": "read_file"
+          }
+        },
+        "children": [
+          {
+            "decision": {
+              "allow": null
+            }
+          }
+        ],
+        "doc": "standard: allow all file reads",
+        "source": "ox-cli-default"
+      }
+    }
+  ],
+  "default_effect": "ask"
+}

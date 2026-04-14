@@ -97,11 +97,7 @@ impl<B: Reader + Writer + Send, E: HostEffects> HostStore<B, E> {
                 // kernel reads it back through the ToolStore. Otherwise it's a
                 // namespace-absolute redirect path — return as-is for the kernel
                 // to read through the full namespace.
-                if result_path
-                    .components
-                    .first()
-                    .is_some_and(|c| c == "exec")
-                {
+                if result_path.components.first().is_some_and(|c| c == "exec") {
                     let mut components = vec!["tools".to_string()];
                     components.extend(result_path.components);
                     Ok(Path::from_components(components))
