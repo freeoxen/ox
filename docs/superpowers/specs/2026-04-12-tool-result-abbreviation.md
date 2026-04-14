@@ -16,26 +16,66 @@ which:
 
 ## Design Principles
 
-- **Full results are always stored** — the SharedLog is the source of truth, never truncated
+- **Full results are always stored** — the LogStore is the source of truth, never truncated
 - **Abbreviation is a projection concern** — the history view controls what the model sees
-- **Retrieval is a tool** — the model requests full/partial results through normal tool dispatch
+- **Retrieval via StructFS paths** — the model reads from `log/results/{id}` through normal routing
 - **Source-side control via tool parameters** — the model can proactively limit output
-- **No kernel special cases** — all tools dispatch through the ToolStore, no `if name == "..."` in the kernel
+- **No kernel special cases** — `execute_tools` stays generic
+- **Redirect tools** — a tool whose "execution" returns a namespace path, not a computed result
 
 ## Architecture
 
 ```
-SharedLog (Arc<Mutex<Vec<LogEntry>>>)
-  ├── LogStore        — append-only structured log            (mounted at log/)
-  ├── HistoryView     — wire-format projection, abbreviates   (mounted at history/)
-  └── ResultViewer    — random-access by tool_use_id          (new module in ox-tools)
+LogStore (mounted at log/)
+  ├── log/entries                                  — all log entries
+  ├── log/count                                    — entry count
+  ├── log/last/{n}                                 — last n entries
+  ├── log/results/{tool_use_id}                    — full result string for a tool call
+  ├── log/results/{tool_use_id}/line_count         — number of lines in result
+  └── log/results/{tool_use_id}/lines/{offset}/{limit}  — line-ranged slice
+
+HistoryView (mounted at history/)
+  └── history/messages                             — wire-format projection, abbreviates large results
+
+ToolStore (mounted at tools/)
+  └── get_tool_output → redirect to log/results/…  — LLM-facing tool, dispatches via redirect
 ```
 
-Three views over the same data. Same pattern as LogStore + HistoryView today.
+LogStore is the single source of truth. HistoryView abbreviates when projecting.
+The `get_tool_output` tool is a **redirect** — its execution builds a `log/results/…`
+path from the input parameters, and the kernel reads the result from LogStore through
+normal namespace routing.
 
 ## Components
 
-### 1. History abbreviation (ox-history)
+### 1. LogStore result read paths (ox-kernel)
+
+**Where:** `LogStore` reader in `crates/ox-kernel/src/log.rs`
+
+**New read paths on LogStore:**
+
+```
+results/{tool_use_id}                    → Value::String(full output)
+results/{tool_use_id}/line_count         → Value::Integer(n)
+results/{tool_use_id}/lines/{offset}/{limit} → Value::String(sliced output with header)
+```
+
+**Implementation:** `LogStore::read` matches on the `"results"` prefix. Scans
+`SharedLog` entries (from the end) for a `LogEntry::ToolResult` with matching `id`.
+Converts `output` to string, applies line slicing if sub-path present.
+
+**Line-ranged output format:**
+```
+[lines {start+1}-{end} of {total}]
+{sliced content}
+```
+
+**Edge cases:**
+- Unknown tool_use_id → `StoreError` (not found)
+- Offset beyond end → empty result with header `[lines {total+1}-{total} of {total}]`
+- No limit sub-path → full result string
+
+### 2. History abbreviation (ox-history)
 
 **Where:** `HistoryView::project_messages()` in `crates/ox-history/src/lib.rs`
 
@@ -54,33 +94,52 @@ marker.
  or re-run the command with max_lines to limit output at the source]
 ```
 
-The marker references the `tool_use_id` so the model knows exactly how to retrieve the
-full output. It also nudges toward `max_lines` for proactive control.
+The marker references the `tool_use_id` so the model knows how to retrieve the full
+output. It also nudges toward `max_lines` for proactive source-side control.
 
 **Edge cases:**
 - Non-string outputs (JSON objects) — serialize to string, then abbreviate
 - Empty results — pass through unchanged
 - Results with fewer than threshold lines — pass through unchanged
-- Binary/non-UTF8 content — shouldn't reach here (executor returns strings), but handle gracefully
 
-### 2. Result retrieval tool — ResultViewer (ox-tools)
+### 3. Redirect tool dispatch (ox-tools + ox-runtime)
 
-**New file:** `crates/ox-tools/src/result_viewer.rs`
+**Concept:** A **redirect tool** is a tool whose execution does not compute a result.
+Instead, it returns a **namespace path** as the exec handle. The kernel reads the
+result from that path through normal namespace routing.
 
-**What:** A tool module that holds a `SharedLog` clone and provides random-access
-retrieval of tool results by `tool_use_id`.
+Today all exec handles are ToolStore-internal (`exec/0001`). The HostStore prepends
+`tools/` before returning the handle to the kernel. For redirect tools, the ToolStore
+returns a namespace-absolute path that the HostStore passes through without re-prefixing.
 
-**SharedLog dependency:** `ResultViewer::new(shared: SharedLog)` — same pattern as
-`HistoryView::new(shared)` and `LogStore::from_shared(shared)`. The SharedLog is
-`Clone` (it's an `Arc<Mutex<...>>`), so this is free.
+**Convention:** If the path returned by ToolStore starts with a recognized namespace
+root (anything other than `exec/`), HostStore treats it as namespace-absolute and
+does not prepend `tools/`.
 
-**SharedLog method needed:** `SharedLog::tool_result_output(&self, tool_use_id: &str) -> Option<serde_json::Value>` — searches the log (from the end, since recent results are most common) for a matching `LogEntry::ToolResult`.
+**HostStore change** (in `handle_write`):
+```rust
+let result_path = self.effects.tool_store().write(&sub, data)?;
+if result_path.components.first().map(|c| c.as_str()) == Some("exec") {
+    // ToolStore-internal handle — prefix with tools/
+    let mut components = vec!["tools".to_string()];
+    components.extend(result_path.components);
+    Ok(Path::from_components(components))
+} else {
+    // Namespace-absolute redirect — pass through
+    Ok(result_path)
+}
+```
+
+### 4. get_tool_output tool (ox-tools)
+
+**Wire name:** `get_tool_output`
+**Internal routing:** redirect to `log/results/{tool_use_id}[/lines/{offset}/{limit}]`
 
 **Tool schema:**
 ```json
 {
   "name": "get_tool_output",
-  "description": "Retrieve the full or partial output of a previous tool call. Use this when a tool result was abbreviated in the conversation. Specify offset and limit to retrieve specific line ranges.",
+  "description": "Retrieve the full or partial output of a previous tool call. Use this when a tool result was abbreviated in the conversation.",
   "input_schema": {
     "type": "object",
     "properties": {
@@ -90,11 +149,11 @@ retrieval of tool results by `tool_use_id`.
       },
       "offset": {
         "type": "integer",
-        "description": "0-based line offset to start from (default: 0 = beginning)"
+        "description": "0-based line offset to start from (default: 0)"
       },
       "limit": {
         "type": "integer",
-        "description": "Maximum number of lines to return (default: all remaining lines)"
+        "description": "Maximum number of lines to return (default: all)"
       }
     },
     "required": ["tool_use_id"]
@@ -102,20 +161,15 @@ retrieval of tool results by `tool_use_id`.
 }
 ```
 
-**Execution:** `ResultViewer::execute(tool_use_id, offset?, limit?)`:
-1. Look up result in SharedLog by tool_use_id
-2. Convert output to string
-3. If offset/limit provided, slice by lines
-4. Return the result string (with line range header if sliced)
+**Implementation:** A new module or method on ToolStore that:
+1. Extracts `tool_use_id`, optional `offset`, optional `limit` from input
+2. Builds a namespace path: `log/results/{tool_use_id}` or `log/results/{tool_use_id}/lines/{offset}/{limit}`
+3. Returns the path (not `exec/NNNN`) — HostStore recognizes this as a redirect
 
-**Registration:** The ToolStore constructor takes a `ResultViewer` (or it's added via
-a setter, since the SharedLog isn't available until thread namespace construction).
+The ToolStore does NOT read from the log. It builds a path. The kernel reads the path
+through the namespace. LogStore serves the data. Clean separation.
 
-**Wiring:** In `ThreadNamespace::new_default()` (thread_registry.rs), the SharedLog
-is created and shared with HistoryView, LogStore, and now ResultViewer. The ResultViewer
-is passed to the ToolStore (or registered after construction).
-
-### 3. Source-side output control — max_lines on shell (ox-tools)
+### 5. Source-side output control — max_lines on shell (ox-tools)
 
 **Where:** `OsModule` in `crates/ox-tools/src/os.rs`
 
@@ -137,42 +191,41 @@ the executor truncates stdout to that many lines before returning.
 ```
 
 **Implementation:** The `max_lines` parameter is passed through to the executor binary
-via the `ExecCommand.args`. The executor (ox-tool-exec) handles truncation of the
-stdout result, appending a `[... truncated at {max_lines} lines, {total} total]` marker.
+via `ExecCommand.args`. The executor truncates stdout, appending
+`[... truncated at {max_lines} lines, {total} total]`.
 
-**Why at the executor, not in OsModule?** The executor already owns the subprocess
-stdout. Truncating there avoids reading the full output into memory just to discard it.
+**Why at the executor?** The executor owns the subprocess stdout. Truncating there
+avoids buffering the full output just to discard most of it.
 
-### 4. Optional: max_lines on fs_read
+### 6. Optional: offset/limit on fs_read
 
-Same pattern as shell. The `fs_read` tool gets optional `offset` (line) and `limit` (lines)
-parameters. The executor returns the requested range with a header indicating position.
+Same pattern. The `fs_read` tool gets optional `offset` (line) and `limit` (lines)
+parameters for line-ranged file reads.
 
-This is lower priority — file reads are usually targeted. But it follows the same pattern
-and gives the model the same kind of control.
+Lower priority — file reads are usually targeted. Same pattern, same kind of control.
 
 ## Wiring Summary
 
 | Component | Crate | Change Type |
 |-----------|-------|-------------|
-| `SharedLog::tool_result_output()` | ox-kernel | New method on existing type |
+| `LogStore` read: `results/{id}`, `/line_count`, `/lines/{o}/{l}` | ox-kernel | New read paths |
 | `abbreviate_tool_result()` | ox-history | New function, called from `project_messages()` |
-| `ResultViewer` | ox-tools | New module |
-| `ToolStore` construction | ox-tools | Accept/register `ResultViewer` |
-| `ThreadNamespace::new_default()` | ox-cli | Pass `SharedLog` clone to `ResultViewer` |
-| `shell` schema + executor | ox-tools + ox-tool-exec | Add `max_lines` parameter |
-| Tool schema writes | ox-cli (agents.rs) | No change — schemas auto-aggregate |
+| Redirect tool concept | ox-tools | New dispatch path in ToolStore write |
+| HostStore redirect detection | ox-runtime | Small change in `handle_write` |
+| `get_tool_output` tool + schema | ox-tools | New redirect tool registration |
+| `shell` schema + executor | ox-tools + ox-tool-exec | `max_lines` parameter |
+| Thread namespace wiring | ox-cli | No change — LogStore already mounted, schemas auto-aggregate |
 
 ## What Does NOT Change
 
-- **ox-kernel/run.rs** — `execute_tools` stays generic, no tool-name special cases
+- **ox-kernel/run.rs** — `execute_tools` stays fully generic
 - **Context synthesis** — `ContextRef::History` reads from `history/messages` as before
-- **LogStore** — Stores full results, no truncation
-- **SharedLog** — Append-only, never mutated after write
+- **SharedLog** — Append-only, never mutated after write. No new consumers of raw SharedLog
+- **LogStore as source of truth** — Results are written to and read from LogStore. No bypass
 
 ## Priority
 
-1. **History abbreviation + SharedLog lookup** — Immediately reduces context bloat
-2. **ResultViewer tool** — Gives the model retrieval capability
+1. **LogStore result paths + history abbreviation** — Immediately reduces context bloat
+2. **Redirect tool concept + get_tool_output** — Gives the model retrieval via StructFS
 3. **max_lines on shell** — Source-side control for proactive models
-4. **max_lines on fs_read** — Nice-to-have, same pattern
+4. **offset/limit on fs_read** — Nice-to-have, same pattern
