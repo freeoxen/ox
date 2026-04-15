@@ -132,6 +132,8 @@ pub enum HistoryCommand {
     ToggleExpand,
     ExpandAll,
     CollapseAll,
+    TogglePretty,
+    ToggleFull,
     SelectPageUp,
     SelectPageDown,
     SelectHalfPageUp,

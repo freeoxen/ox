@@ -160,7 +160,8 @@ impl OxAgent {
         let mut ctx = self.context.borrow_mut();
 
         // If no account for this provider exists, create one
-        let provider_comp = PathComponent::try_new(provider).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let provider_comp =
+            PathComponent::try_new(provider).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let key_path = oxpath!("gate", "accounts", provider_comp.clone(), "key");
         let has_account = ctx.read(&key_path).ok().flatten().is_some();
         if !has_account {
@@ -181,7 +182,8 @@ impl OxAgent {
 
     /// Remove the API key for the given provider.
     pub fn remove_api_key(&self, provider: &str) -> Result<(), JsValue> {
-        let provider_comp = PathComponent::try_new(provider).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let provider_comp =
+            PathComponent::try_new(provider).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let key_path = oxpath!("gate", "accounts", provider_comp, "key");
         self.context
             .borrow_mut()
@@ -399,7 +401,8 @@ impl OxAgent {
             let models = fetch_model_catalog(&config, &api_key).await?;
             let value = structfs_serde_store::to_value(&models)
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
-            let provider_comp = PathComponent::try_new(&provider).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let provider_comp =
+                PathComponent::try_new(&provider).map_err(|e| JsValue::from_str(&e.to_string()))?;
             let models_path = oxpath!("gate", "providers", provider_comp, "models");
             context
                 .borrow_mut()

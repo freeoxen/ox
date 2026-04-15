@@ -100,6 +100,8 @@ pub(crate) fn draw(
                 &snap.thread_id,
                 snap.selected_row,
                 &expanded,
+                &vs.history_pretty,
+                &vs.history_full,
                 vs.turn.thinking,
                 theme,
                 content_area,

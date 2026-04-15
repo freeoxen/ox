@@ -423,6 +423,20 @@ fn history_mode(out: &mut Vec<Binding>) {
         invoke("collapse_all"),
         "Collapse all",
     ));
+    out.push(bind_screen(
+        "normal",
+        "p",
+        "history",
+        invoke("toggle_pretty"),
+        "Toggle pretty-print",
+    ));
+    out.push(bind_screen(
+        "normal",
+        "f",
+        "history",
+        invoke("toggle_full"),
+        "Toggle full content",
+    ));
 
     // Page movement (moves selection, not just viewport)
     out.push(bind_screen(

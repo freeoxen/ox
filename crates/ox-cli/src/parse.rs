@@ -341,7 +341,10 @@ fn parse_content_blocks(_role: &str, content: &Value) -> (Vec<HistoryBlock>, Str
                             Some(Value::String(s)) => Some(s.clone()),
                             _ => None,
                         };
-                        let input_json = block_map.get("input").map(format_value);
+                        let input_json = block_map.get("input").map(|v| {
+                            let json = structfs_serde_store::value_to_json(v.clone());
+                            serde_json::to_string(&json).unwrap_or_else(|_| format_value(v))
+                        });
                         if first_summary.is_none() {
                             let label = name.as_deref().unwrap_or("unknown");
                             first_summary = Some(format!("tool_use: {label}"));
@@ -551,7 +554,10 @@ pub fn parse_log_entries(values: &[Value]) -> Vec<LogDisplayEntry> {
                 "tool_call" => {
                     let name = get_string(map, "name").unwrap_or_default();
                     let id = get_string(map, "id");
-                    let input_json = map.get("input").map(format_value);
+                    let input_json = map.get("input").map(|v| {
+                        let json = structfs_serde_store::value_to_json(v.clone());
+                        serde_json::to_string(&json).unwrap_or_else(|_| format_value(v))
+                    });
                     let summary = format!("tool_call: {name}");
                     Some(LogDisplayEntry {
                         index,
@@ -639,9 +645,10 @@ pub fn parse_log_entries(values: &[Value]) -> Vec<LogDisplayEntry> {
                 "approval_resolved" => {
                     let tool_name = get_string(map, "tool_name");
                     let decision_str = get_string(map, "decision");
-                    let decision: Option<ox_types::Decision> = decision_str.as_deref().and_then(
-                        |s| serde_json::from_value(serde_json::Value::String(s.to_string())).ok(),
-                    );
+                    let decision: Option<ox_types::Decision> =
+                        decision_str.as_deref().and_then(|s| {
+                            serde_json::from_value(serde_json::Value::String(s.to_string())).ok()
+                        });
                     let summary = format!(
                         "{}: {}",
                         tool_name.as_deref().unwrap_or("unknown"),

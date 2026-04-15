@@ -22,6 +22,8 @@ pub fn draw_history(
     thread_id: &str,
     selected: usize,
     expanded: &std::collections::HashSet<usize>,
+    pretty: &std::collections::HashSet<usize>,
+    full: &std::collections::HashSet<usize>,
     thinking: bool,
     theme: &Theme,
     area: Rect,
@@ -76,8 +78,10 @@ pub fn draw_history(
 
         // Expanded blocks
         if expanded.contains(&entry.index) && !entry.blocks.is_empty() {
+            let is_pretty = pretty.contains(&entry.index);
+            let is_full = full.contains(&entry.index);
             for block in &entry.blocks {
-                render_block(block, theme, &mut lines);
+                render_block(block, theme, area.width, is_pretty, is_full, &mut lines);
             }
         }
     }
@@ -162,10 +166,7 @@ fn render_approval_resolved(
         None => theme.history_meta,
     };
     let tool = entry.meta.tool_name.as_deref().unwrap_or("");
-    let badge = format!(
-        "[{}] ",
-        decision.map(|d| d.as_str()).unwrap_or("resolved")
-    );
+    let badge = format!("[{}] ", decision.map(|d| d.as_str()).unwrap_or("resolved"));
     out.push(Line::from(vec![
         Span::styled(format!("{cursor} "), theme.history_meta),
         Span::styled(format!("#{:<4} ", entry.index), theme.history_index),
@@ -242,7 +243,18 @@ fn render_message_entry(
     out.push(Line::from(summary_line));
 }
 
-fn render_block(block: &HistoryBlock, theme: &Theme, out: &mut Vec<Line>) {
+fn render_block(
+    block: &HistoryBlock,
+    theme: &Theme,
+    width: u16,
+    is_pretty: bool,
+    is_full: bool,
+    out: &mut Vec<Line>,
+) {
+    let indent = "    ";
+    let content_width = (width as usize).saturating_sub(indent.len());
+    let max_lines = if is_full { usize::MAX } else { 30 };
+
     match block.block_type.as_str() {
         "text" => {
             out.push(Line::from(Span::styled(
@@ -250,12 +262,12 @@ fn render_block(block: &HistoryBlock, theme: &Theme, out: &mut Vec<Line>) {
                 theme.history_block_tag,
             )));
             if let Some(text) = &block.text {
-                for line in text.lines() {
-                    out.push(Line::from(Span::styled(
-                        format!("    {line}"),
-                        theme.history_block_content,
-                    )));
-                }
+                let display = if is_pretty {
+                    try_pretty_json(text)
+                } else {
+                    text.clone()
+                };
+                render_content(&display, indent, content_width, max_lines, theme, out);
             }
         }
         "tool_use" => {
@@ -271,12 +283,12 @@ fn render_block(block: &HistoryBlock, theme: &Theme, out: &mut Vec<Line>) {
                 Span::styled(format!(" {id}"), theme.history_meta),
             ]));
             if let Some(json) = &block.input_json {
-                for line in json.lines() {
-                    out.push(Line::from(Span::styled(
-                        format!("    {line}"),
-                        theme.history_block_content,
-                    )));
-                }
+                let display = if is_pretty {
+                    try_pretty_json(json)
+                } else {
+                    json.clone()
+                };
+                render_content(&display, indent, content_width, max_lines, theme, out);
             }
         }
         "tool_result" => {
@@ -290,20 +302,12 @@ fn render_block(block: &HistoryBlock, theme: &Theme, out: &mut Vec<Line>) {
                 Span::styled(id, theme.history_meta),
             ]));
             if let Some(text) = &block.text {
-                let preview: Vec<&str> = text.lines().take(10).collect();
-                let total = text.lines().count();
-                for line in &preview {
-                    out.push(Line::from(Span::styled(
-                        format!("    {line}"),
-                        theme.history_block_content,
-                    )));
-                }
-                if total > 10 {
-                    out.push(Line::from(Span::styled(
-                        format!("    ... ({} more lines)", total - 10),
-                        theme.history_meta,
-                    )));
-                }
+                let display = if is_pretty {
+                    try_pretty_json(text)
+                } else {
+                    text.clone()
+                };
+                render_content(&display, indent, content_width, max_lines, theme, out);
             }
         }
         other => {
@@ -311,6 +315,88 @@ fn render_block(block: &HistoryBlock, theme: &Theme, out: &mut Vec<Line>) {
                 format!("  [{other}]"),
                 theme.history_block_tag,
             )));
+        }
+    }
+}
+
+/// Render content lines with wrapping and optional truncation.
+fn render_content(
+    text: &str,
+    indent: &str,
+    content_width: usize,
+    max_lines: usize,
+    theme: &Theme,
+    out: &mut Vec<Line>,
+) {
+    let source_lines: Vec<&str> = text.lines().collect();
+    let total = source_lines.len();
+    let showing = total.min(max_lines);
+    push_wrapped(
+        &source_lines[..showing].join("\n"),
+        indent,
+        content_width,
+        theme.history_block_content,
+        out,
+    );
+    if total > max_lines {
+        out.push(Line::from(Span::styled(
+            format!(
+                "{indent}... ({} more lines, press f for full)",
+                total - max_lines
+            ),
+            theme.history_meta,
+        )));
+    }
+}
+
+/// Try to parse as JSON and pretty-print; return original text if not JSON.
+fn try_pretty_json(text: &str) -> String {
+    // Try parsing as JSON value for pretty-printing
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(text) {
+        if let Ok(pretty) = serde_json::to_string_pretty(&val) {
+            return pretty;
+        }
+    }
+    text.to_string()
+}
+
+/// Push text lines with soft-wrapping at the given width.
+fn push_wrapped(
+    text: &str,
+    indent: &str,
+    max_width: usize,
+    style: ratatui::style::Style,
+    out: &mut Vec<Line>,
+) {
+    if max_width == 0 {
+        return;
+    }
+    for line in text.lines() {
+        if line.len() <= max_width {
+            out.push(Line::from(Span::styled(format!("{indent}{line}"), style)));
+        } else {
+            // Soft-wrap at max_width
+            let mut remaining = line;
+            while !remaining.is_empty() {
+                let split = if remaining.len() <= max_width {
+                    remaining.len()
+                } else {
+                    // Find a char boundary at or before max_width
+                    let mut end = max_width;
+                    while end > 0 && !remaining.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    if end == 0 {
+                        // Pathological: single char wider than terminal
+                        remaining.len()
+                    } else {
+                        end
+                    }
+                };
+                let (chunk, rest) = remaining.split_at(split);
+                out.push(Line::from(Span::styled(format!("{indent}{chunk}"), style)));
+                remaining = rest;
+            }
         }
     }
 }

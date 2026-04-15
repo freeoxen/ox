@@ -134,6 +134,8 @@ struct HistoryState {
     selected_row: usize,
     row_count: usize,
     expanded: std::collections::HashSet<usize>,
+    pretty: std::collections::HashSet<usize>,
+    full: std::collections::HashSet<usize>,
 }
 
 impl HistoryState {
@@ -143,6 +145,8 @@ impl HistoryState {
             selected_row: 0,
             row_count: 0,
             expanded: std::collections::HashSet::new(),
+            pretty: std::collections::HashSet::new(),
+            full: std::collections::HashSet::new(),
         }
     }
 }
@@ -329,6 +333,18 @@ impl UiStore {
         match &self.pending_action {
             Some(action) => structfs_serde_store::to_value(action).unwrap_or(Value::Null),
             None => Value::Null,
+        }
+    }
+
+    fn history_set_value(
+        &self,
+        f: impl Fn(&HistoryState) -> &std::collections::HashSet<usize>,
+    ) -> Value {
+        match &self.screen {
+            ActiveScreen::History(s) => {
+                Value::Array(f(s).iter().map(|&n| Value::Integer(n as i64)).collect())
+            }
+            _ => Value::Array(Vec::new()),
         }
     }
 
@@ -932,7 +948,25 @@ impl UiStore {
             HistoryCommand::CollapseAll => {
                 let s = self.history_state()?;
                 s.expanded.clear();
+                s.pretty.clear();
+                s.full.clear();
                 Ok(path!("expanded"))
+            }
+            HistoryCommand::TogglePretty => {
+                let s = self.history_state()?;
+                let row = s.selected_row;
+                if !s.pretty.remove(&row) {
+                    s.pretty.insert(row);
+                }
+                Ok(path!("pretty"))
+            }
+            HistoryCommand::ToggleFull => {
+                let s = self.history_state()?;
+                let row = s.selected_row;
+                if !s.full.remove(&row) {
+                    s.full.insert(row);
+                }
+                Ok(path!("full"))
             }
             HistoryCommand::SelectPageUp => {
                 let s = self.history_state()?;
@@ -1165,6 +1199,8 @@ impl UiStore {
             "toggle_expand" => Ok(UiCommand::History(HistoryCommand::ToggleExpand)),
             "expand_all" => Ok(UiCommand::History(HistoryCommand::ExpandAll)),
             "collapse_all" => Ok(UiCommand::History(HistoryCommand::CollapseAll)),
+            "toggle_pretty" => Ok(UiCommand::History(HistoryCommand::TogglePretty)),
+            "toggle_full" => Ok(UiCommand::History(HistoryCommand::ToggleFull)),
             "select_page_up" => Ok(UiCommand::History(HistoryCommand::SelectPageUp)),
             "select_page_down" => Ok(UiCommand::History(HistoryCommand::SelectPageDown)),
             "select_half_page_up" => Ok(UiCommand::History(HistoryCommand::SelectHalfPageUp)),
@@ -1211,6 +1247,8 @@ impl Reader for UiStore {
             "insert_context" => self.insert_context_value(),
             "selected_row" => self.selected_row_value(),
             "row_count" => self.row_count_value(),
+            "pretty" => self.history_set_value(|s| &s.pretty),
+            "full" => self.history_set_value(|s| &s.full),
             "scroll" => self.scroll_value(),
             "scroll_max" => self.scroll_max_value(),
             "viewport_height" => self.viewport_height_value(),

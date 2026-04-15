@@ -38,6 +38,10 @@ pub struct ViewState<'a> {
     pub approval_pending: Option<ApprovalRequest>,
     /// Raw StructFS message values for the history explorer.
     pub raw_messages: Vec<Value>,
+    /// History entries with pretty-printed content.
+    pub history_pretty: std::collections::HashSet<usize>,
+    /// History entries showing full content.
+    pub history_full: std::collections::HashSet<usize>,
 
     // -- Config ----------------------------------------------------------
     pub model: String,
@@ -82,6 +86,8 @@ pub async fn fetch_view_state<'a>(
     let mut raw_messages = Vec::new();
     let mut turn = ox_history::TurnState::new();
     let mut approval_pending: Option<ApprovalRequest> = None;
+    let mut history_pretty = std::collections::HashSet::new();
+    let mut history_full = std::collections::HashSet::new();
 
     match &ui.screen {
         ScreenSnapshot::Inbox(_) => {
@@ -94,28 +100,28 @@ pub async fn fetch_view_state<'a>(
         }
         ScreenSnapshot::Thread(snap) => {
             if let Ok(tid) = ox_kernel::PathComponent::try_new(snap.thread_id.as_str()) {
-            // Read committed messages
-            let msg_path = ox_path::oxpath!("threads", tid.clone(), "history", "messages");
-            if let Ok(Some(record)) = client.read(&msg_path).await {
-                if let Some(Value::Array(arr)) = record.as_value() {
-                    messages = parse_chat_messages(arr);
+                // Read committed messages
+                let msg_path = ox_path::oxpath!("threads", tid.clone(), "history", "messages");
+                if let Ok(Some(record)) = client.read(&msg_path).await {
+                    if let Some(Value::Array(arr)) = record.as_value() {
+                        messages = parse_chat_messages(arr);
+                    }
                 }
-            }
 
-            // Read turn state (typed)
-            let turn_path = ox_path::oxpath!("threads", tid.clone(), "history", "turn");
-            if let Ok(Some(t)) = client.read_typed::<ox_history::TurnState>(&turn_path).await {
-                turn = t;
-            }
-
-            // Read approval/pending (typed)
-            let approval_path = ox_path::oxpath!("threads", tid, "approval", "pending");
-            if let Ok(Some(ap)) = client.read_typed::<ApprovalRequest>(&approval_path).await {
-                // Only treat as pending if the tool_name is non-empty
-                if !ap.tool_name.is_empty() {
-                    approval_pending = Some(ap);
+                // Read turn state (typed)
+                let turn_path = ox_path::oxpath!("threads", tid.clone(), "history", "turn");
+                if let Ok(Some(t)) = client.read_typed::<ox_history::TurnState>(&turn_path).await {
+                    turn = t;
                 }
-            }
+
+                // Read approval/pending (typed)
+                let approval_path = ox_path::oxpath!("threads", tid, "approval", "pending");
+                if let Ok(Some(ap)) = client.read_typed::<ApprovalRequest>(&approval_path).await {
+                    // Only treat as pending if the tool_name is non-empty
+                    if !ap.tool_name.is_empty() {
+                        approval_pending = Some(ap);
+                    }
+                }
             }
         }
         ScreenSnapshot::History(snap) => {
@@ -129,6 +135,25 @@ pub async fn fetch_view_state<'a>(
                 let turn_path = ox_path::oxpath!("threads", tid, "history", "turn");
                 if let Ok(Some(t)) = client.read_typed::<ox_history::TurnState>(&turn_path).await {
                     turn = t;
+                }
+            }
+            // Read pretty/full sets from UiStore (not serialized in snapshot)
+            if let Ok(Some(record)) = client.read(&path!("ui/pretty")).await {
+                if let Some(Value::Array(arr)) = record.as_value() {
+                    for v in arr {
+                        if let Value::Integer(n) = v {
+                            history_pretty.insert(*n as usize);
+                        }
+                    }
+                }
+            }
+            if let Ok(Some(record)) = client.read(&path!("ui/full")).await {
+                if let Some(Value::Array(arr)) = record.as_value() {
+                    for v in arr {
+                        if let Value::Integer(n) = v {
+                            history_full.insert(*n as usize);
+                        }
+                    }
                 }
             }
         }
@@ -176,6 +201,8 @@ pub async fn fetch_view_state<'a>(
         inbox_threads,
         messages,
         raw_messages,
+        history_pretty,
+        history_full,
         turn,
         approval_pending,
         input_history: &app.input_history,

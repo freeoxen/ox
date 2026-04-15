@@ -314,7 +314,9 @@ fn agent_worker(
         .ok()
         .flatten()
         .unwrap_or_else(|| "anthropic".to_string());
-    let (provider, api_key_for_transport) = match ox_kernel::PathComponent::try_new(default_account.as_str()) {
+    let (provider, api_key_for_transport) = match ox_kernel::PathComponent::try_new(
+        default_account.as_str(),
+    ) {
         Ok(acct_comp) => {
             let prov = adapter
                 .read_typed::<String>(&ox_path::oxpath!(
@@ -327,12 +329,7 @@ fn agent_worker(
                 .flatten()
                 .unwrap_or_else(|| "anthropic".to_string());
             let key = adapter
-                .read_typed::<String>(&ox_path::oxpath!(
-                    "gate",
-                    "accounts",
-                    acct_comp,
-                    "key"
-                ))
+                .read_typed::<String>(&ox_path::oxpath!("gate", "accounts", acct_comp, "key"))
                 .ok()
                 .flatten()
                 .unwrap_or_default();

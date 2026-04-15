@@ -155,7 +155,8 @@ impl SettingsState {
 
         self.default_account_idx = self.accounts.iter().position(|a| a.is_default).unwrap_or(0);
         self.default_model.set(&config.gate.defaults.model);
-        self.default_max_tokens.set(&config.gate.defaults.max_tokens.to_string());
+        self.default_max_tokens
+            .set(&config.gate.defaults.max_tokens.to_string());
 
         if self.selected_account >= self.accounts.len() {
             self.selected_account = self.accounts.len().saturating_sub(1);

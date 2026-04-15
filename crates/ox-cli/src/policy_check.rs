@@ -88,12 +88,13 @@ impl CliPolicyCheck {
 
         // Parse the decision string back to the enum. The path is a transport
         // mechanism (StructFS paths are always strings), so we deserialize here.
-        let decision: ox_types::Decision =
-            serde_json::from_value(serde_json::Value::String(decision_str.clone()))
-                .unwrap_or_else(|_| {
-                    tracing::warn!(decision = %decision_str, "unknown approval decision, denying");
-                    ox_types::Decision::DenyOnce
-                });
+        let decision: ox_types::Decision = serde_json::from_value(serde_json::Value::String(
+            decision_str.clone(),
+        ))
+        .unwrap_or_else(|_| {
+            tracing::warn!(decision = %decision_str, "unknown approval decision, denying");
+            ox_types::Decision::DenyOnce
+        });
 
         match decision {
             ox_types::Decision::AllowOnce => PolicyDecision::Allow,
@@ -107,9 +108,7 @@ impl CliPolicyCheck {
                 self.guard.persist_allow(tool, &input);
                 PolicyDecision::Allow
             }
-            ox_types::Decision::DenyOnce => {
-                PolicyDecision::Deny(format!("denied by user: {tool}"))
-            }
+            ox_types::Decision::DenyOnce => PolicyDecision::Deny(format!("denied by user: {tool}")),
             ox_types::Decision::DenySession => {
                 let input = serde_json::json!({});
                 self.guard.session_deny(tool, &input);

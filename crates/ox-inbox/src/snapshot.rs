@@ -124,7 +124,8 @@ pub fn restore(
 
     for &mount in mounts {
         if let Some(state_json) = ctx.stores.get(mount) {
-            let mount_comp = PathComponent::try_new(mount.to_string()).map_err(|e| e.to_string())?;
+            let mount_comp =
+                PathComponent::try_new(mount.to_string()).map_err(|e| e.to_string())?;
             let path = oxpath!(mount_comp, "snapshot", "state");
             let value = json_to_value(state_json.clone());
             namespace

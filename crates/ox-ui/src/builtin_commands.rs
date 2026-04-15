@@ -413,6 +413,20 @@ static BUILTIN_COMMANDS: &[StaticCommandDef] = &[
         user_facing: true,
     },
     StaticCommandDef {
+        name: "toggle_pretty",
+        target: "ui/toggle_pretty",
+        params: &[],
+        description: "Toggle pretty-print for selected entry",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "toggle_full",
+        target: "ui/toggle_full",
+        params: &[],
+        description: "Toggle full content for selected entry",
+        user_facing: true,
+    },
+    StaticCommandDef {
         name: "select_page_up",
         target: "ui/select_page_up",
         params: &[],

@@ -390,10 +390,7 @@ pub async fn run_async(
                                     let digits: String =
                                         text.chars().filter(|c| c.is_ascii_digit()).collect();
                                     if !digits.is_empty() {
-                                        settings_shell
-                                            .state
-                                            .default_max_tokens
-                                            .insert_str(&digits);
+                                        settings_shell.state.default_max_tokens.insert_str(&digits);
                                     }
                                 }
                                 _ => {}

@@ -658,6 +658,11 @@ pub fn run_turn(context: &mut dyn Store, emit: &mut dyn FnMut(AgentEvent)) -> Re
         // Record assistant message to log with scope
         record_turn_scoped(context, &content, &frame.scope)?;
 
+        // Clear ephemeral turn state (streaming text, thinking indicator) so the
+        // next iteration's context read doesn't see stale streaming text as an
+        // extra assistant message alongside the one we just persisted to the log.
+        let _ = context.write(&path!("history/turn/clear"), Record::parsed(Value::Null));
+
         let tool_calls: Vec<ToolCall> = content
             .iter()
             .filter_map(|b| {

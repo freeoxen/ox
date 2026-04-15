@@ -261,10 +261,12 @@ async fn handle_edit_dialog_key(
                     return Outcome::Handled;
                 }
             };
-            let provider_path = ox_path::oxpath!("config", "gate", "accounts", name_comp.clone(), "provider");
+            let provider_path =
+                ox_path::oxpath!("config", "gate", "accounts", name_comp.clone(), "provider");
             client.write_typed(&provider_path, &provider).await.ok();
             if let Some(ep) = endpoint {
-                let ep_path = ox_path::oxpath!("config", "gate", "accounts", name_comp.clone(), "endpoint");
+                let ep_path =
+                    ox_path::oxpath!("config", "gate", "accounts", name_comp.clone(), "endpoint");
                 client.write_typed(&ep_path, &ep).await.ok();
             }
 
@@ -284,14 +286,11 @@ async fn handle_edit_dialog_key(
                 .unwrap_or_default();
             let default_exists = if current_default.is_empty() {
                 false
-            } else if let Ok(cd_comp) = ox_kernel::PathComponent::try_new(current_default.as_str()) {
+            } else if let Ok(cd_comp) = ox_kernel::PathComponent::try_new(current_default.as_str())
+            {
                 client
                     .read(&ox_path::oxpath!(
-                        "config",
-                        "gate",
-                        "accounts",
-                        cd_comp,
-                        "provider"
+                        "config", "gate", "accounts", cd_comp, "provider"
                     ))
                     .await
                     .ok()
@@ -402,12 +401,14 @@ async fn handle_delete_confirm_key(
                     return Outcome::Handled;
                 }
             };
-            let provider_path = ox_path::oxpath!("config", "gate", "accounts", name_comp.clone(), "provider");
+            let provider_path =
+                ox_path::oxpath!("config", "gate", "accounts", name_comp.clone(), "provider");
             client
                 .write(&provider_path, Record::parsed(Value::Null))
                 .await
                 .ok();
-            let ep_path = ox_path::oxpath!("config", "gate", "accounts", name_comp.clone(), "endpoint");
+            let ep_path =
+                ox_path::oxpath!("config", "gate", "accounts", name_comp.clone(), "endpoint");
             client
                 .write(&ep_path, Record::parsed(Value::Null))
                 .await
@@ -560,7 +561,9 @@ async fn handle_navigation_key(
                             idx - 1
                         };
                         settings.model_picker_idx = Some(new_idx);
-                        settings.default_model.set(&settings.discovered_models[new_idx].id);
+                        settings
+                            .default_model
+                            .set(&settings.discovered_models[new_idx].id);
                     }
                 }
                 _ => {}
@@ -580,7 +583,9 @@ async fn handle_navigation_key(
                         let idx = settings.model_picker_idx.unwrap_or(0);
                         let new_idx = (idx + 1) % settings.discovered_models.len();
                         settings.model_picker_idx = Some(new_idx);
-                        settings.default_model.set(&settings.discovered_models[new_idx].id);
+                        settings
+                            .default_model
+                            .set(&settings.discovered_models[new_idx].id);
                     }
                 }
                 _ => {}
@@ -596,7 +601,11 @@ async fn handle_navigation_key(
                 .map(|a| a.name.clone())
                 .unwrap_or_default();
             let model = settings.default_model.content().to_owned();
-            let max_tokens: i64 = settings.default_max_tokens.content().parse().unwrap_or(4096);
+            let max_tokens: i64 = settings
+                .default_max_tokens
+                .content()
+                .parse()
+                .unwrap_or(4096);
 
             // Write to ConfigStore via broker
             client
