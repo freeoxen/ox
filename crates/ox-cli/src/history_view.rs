@@ -155,26 +155,22 @@ fn render_approval_resolved(
     theme: &Theme,
     out: &mut Vec<Line>,
 ) {
-    let decision = entry.meta.decision.as_deref().unwrap_or("");
-    let badge_style = if decision.starts_with("allow") {
-        theme.history_approval_allow
-    } else {
-        theme.history_approval_deny
+    let decision = entry.meta.decision;
+    let badge_style = match decision {
+        Some(d) if d.is_allow() => theme.history_approval_allow,
+        Some(_) => theme.history_approval_deny,
+        None => theme.history_meta,
     };
     let tool = entry.meta.tool_name.as_deref().unwrap_or("");
     let badge = format!(
         "[{}] ",
-        if decision.is_empty() {
-            "resolved"
-        } else {
-            decision
-        }
+        decision.map(|d| d.as_str()).unwrap_or("resolved")
     );
     out.push(Line::from(vec![
-        Span::styled(format!("{cursor} "), badge_style),
-        Span::styled(format!("#{:<4} ", entry.index), badge_style),
+        Span::styled(format!("{cursor} "), theme.history_meta),
+        Span::styled(format!("#{:<4} ", entry.index), theme.history_index),
         Span::styled(badge, badge_style),
-        Span::styled(tool.to_string(), badge_style),
+        Span::styled(tool.to_string(), theme.history_summary),
     ]));
 }
 

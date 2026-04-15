@@ -495,7 +495,7 @@ pub struct LogEntryMeta {
     pub scope: Option<String>,
     pub tool_name: Option<String>,
     pub tool_use_id: Option<String>,
-    pub decision: Option<String>,
+    pub decision: Option<ox_types::Decision>,
     pub input_preview: Option<String>,
     pub input_tokens: Option<u32>,
     pub output_tokens: Option<u32>,
@@ -638,11 +638,14 @@ pub fn parse_log_entries(values: &[Value]) -> Vec<LogDisplayEntry> {
                 }
                 "approval_resolved" => {
                     let tool_name = get_string(map, "tool_name");
-                    let decision = get_string(map, "decision");
+                    let decision_str = get_string(map, "decision");
+                    let decision: Option<ox_types::Decision> = decision_str.as_deref().and_then(
+                        |s| serde_json::from_value(serde_json::Value::String(s.to_string())).ok(),
+                    );
                     let summary = format!(
                         "{}: {}",
                         tool_name.as_deref().unwrap_or("unknown"),
-                        decision.as_deref().unwrap_or("unknown")
+                        decision.map(|d| d.as_str()).unwrap_or("unknown")
                     );
                     Some(LogDisplayEntry {
                         index,

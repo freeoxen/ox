@@ -68,18 +68,20 @@ pub fn oxpath(input: TokenStream) -> TokenStream {
                 }
             },
             other => {
-                // Runtime expression — accepts String, &String, &str, or PathComponent.
-                // AsRef<str> covers all of these.
+                // Runtime expression — must be a PathComponent (pre-validated).
+                // We call .validated_str(), a method only PathComponent has, so
+                // bare String/&str produce a compile error. Borrows rather than
+                // consumes, so the same component can be reused across calls.
                 component_exprs.push(quote! {
-                    ::std::string::String::from(::std::convert::AsRef::<str>::as_ref(&#other))
+                    ::std::string::String::from((#other).validated_str())
                 });
             }
         }
     }
 
-    // Construct Path directly — all components are validated (literals at
-    // compile time, PathComponent values at their construction site).
-    // Use `from_components` which re-validates at runtime as a safety net.
+    // Construct Path directly — all components are validated: literals at
+    // compile time, PathComponent values at their construction site (try_new).
+    // from_components re-validates as a safety net but should never fail.
     quote! {
         ::structfs_core_store::Path::from_components(
             ::std::vec![#(#component_exprs),*]

@@ -24,6 +24,7 @@ mod settings_shell;
 mod settings_state;
 mod settings_view;
 mod shell;
+mod simple_input;
 mod tab_bar;
 mod text_input_view;
 mod theme;

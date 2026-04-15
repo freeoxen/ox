@@ -1,4 +1,5 @@
 use crate::model::{InboxState, ThreadState};
+use ox_kernel::PathComponent;
 use ox_path::oxpath;
 use rusqlite::Connection;
 use std::collections::BTreeMap;
@@ -90,7 +91,8 @@ fn create_thread(
     let thread_dir = threads_dir.join(&id);
     std::fs::create_dir_all(&thread_dir).map_err(|e| err("create_thread", e))?;
 
-    Ok(oxpath!("threads", id))
+    let id_comp = PathComponent::try_new(id)?;
+    Ok(oxpath!("threads", id_comp))
 }
 
 fn insert_labels(conn: &Connection, thread_id: &str, labels: &[Value]) -> Result<(), StoreError> {
@@ -167,8 +169,8 @@ fn update_thread(db: &Mutex<Connection>, id: &str, data: &Record) -> Result<Path
     conn.execute(&sql, param_refs.as_slice())
         .map_err(|e| err("update_thread", e))?;
 
-    let id = id.to_string();
-    Ok(oxpath!("threads", id))
+    let id_comp = PathComponent::try_new(id)?;
+    Ok(oxpath!("threads", id_comp))
 }
 
 fn set_labels(db: &Mutex<Connection>, id: &str, data: &Record) -> Result<Path, StoreError> {
@@ -199,8 +201,8 @@ fn set_labels(db: &Mutex<Connection>, id: &str, data: &Record) -> Result<Path, S
 
     tx.commit().map_err(|e| err("set_labels", e))?;
 
-    let id = id.to_string();
-    Ok(oxpath!("threads", id, "labels"))
+    let id_comp = PathComponent::try_new(id)?;
+    Ok(oxpath!("threads", id_comp, "labels"))
 }
 
 fn create_task(db: &Mutex<Connection>, thread_id: &str, data: &Record) -> Result<Path, StoreError> {
@@ -216,8 +218,9 @@ fn create_task(db: &Mutex<Connection>, thread_id: &str, data: &Record) -> Result
     )
     .map_err(|e| err("create_task", e))?;
 
-    let thread_id = thread_id.to_string();
-    Ok(oxpath!("threads", thread_id, "tasks", id))
+    let thread_comp = PathComponent::try_new(thread_id)?;
+    let id_comp = PathComponent::try_new(id)?;
+    Ok(oxpath!("threads", thread_comp, "tasks", id_comp))
 }
 
 fn update_task(
@@ -266,7 +269,7 @@ fn update_task(
     conn.execute(&sql, param_refs.as_slice())
         .map_err(|e| err("update_task", e))?;
 
-    let thread_id = thread_id.to_string();
-    let task_id = task_id.to_string();
-    Ok(oxpath!("threads", thread_id, "tasks", task_id))
+    let thread_comp = PathComponent::try_new(thread_id)?;
+    let task_comp = PathComponent::try_new(task_id)?;
+    Ok(oxpath!("threads", thread_comp, "tasks", task_comp))
 }

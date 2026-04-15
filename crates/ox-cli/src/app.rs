@@ -133,7 +133,13 @@ impl App {
 
     /// Update a thread's state in ox-inbox.
     pub fn update_thread_state(&mut self, thread_id: &str, state: &str) {
-        let tid = thread_id.to_string();
+        let tid = match ox_kernel::PathComponent::try_new(thread_id) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(error = %e, "invalid thread id for path");
+                return;
+            }
+        };
         let update_path = ox_path::oxpath!("threads", tid);
         let update = ox_types::UpdateThread {
             id: None,

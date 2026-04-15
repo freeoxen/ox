@@ -1,20 +1,26 @@
 use crate::types::APPROVAL_OPTIONS;
 use crossterm::event::KeyCode;
+use ox_types::Decision;
 
 /// Write an approval response through the broker for the given thread.
 pub(crate) async fn send_approval_response(
     client: &ox_broker::ClientHandle,
     active_thread_id: &Option<String>,
-    response: &str,
+    decision: Decision,
 ) {
     if let Some(tid) = active_thread_id {
-        let path = ox_path::oxpath!("threads", tid, "approval", "response");
+        let tid_comp = match ox_kernel::PathComponent::try_new(tid.as_str()) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(error = %e, "invalid thread id for path");
+                return;
+            }
+        };
+        let path = ox_path::oxpath!("threads", tid_comp, "approval", "response");
         let _ = client
             .write_typed(
                 &path,
-                &ox_types::ApprovalResponse {
-                    decision: response.to_string(),
-                },
+                &ox_types::ApprovalResponse { decision },
             )
             .await;
     }
@@ -58,7 +64,14 @@ pub(crate) async fn handle_approval_key(
         KeyCode::Char('c') | KeyCode::Char('C') => {
             // Read tool and input_preview from the pending approval in broker
             if let Some(tid) = active_thread_id {
-                let pending_path = ox_path::oxpath!("threads", tid, "approval", "pending");
+                let tid_comp = match ox_kernel::PathComponent::try_new(tid.as_str()) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "invalid thread id for path");
+                        return;
+                    }
+                };
+                let pending_path = ox_path::oxpath!("threads", tid_comp, "approval", "pending");
                 if let Ok(Some(ap)) = client
                     .read_typed::<ox_types::ApprovalRequest>(&pending_path)
                     .await
@@ -90,27 +103,27 @@ pub(crate) async fn handle_approval_key(
         }
         // quick keys
         KeyCode::Char('y') | KeyCode::Char('Y') => {
-            send_approval_response(client, active_thread_id, "allow_once").await;
+            send_approval_response(client, active_thread_id, Decision::AllowOnce).await;
             dialog.approval_selected = 0;
         }
         KeyCode::Char('s') | KeyCode::Char('S') => {
-            send_approval_response(client, active_thread_id, "allow_session").await;
+            send_approval_response(client, active_thread_id, Decision::AllowSession).await;
             dialog.approval_selected = 0;
         }
         KeyCode::Char('a') | KeyCode::Char('A') => {
-            send_approval_response(client, active_thread_id, "allow_always").await;
+            send_approval_response(client, active_thread_id, Decision::AllowAlways).await;
             dialog.approval_selected = 0;
         }
         KeyCode::Char('n') | KeyCode::Char('N') => {
-            send_approval_response(client, active_thread_id, "deny_once").await;
+            send_approval_response(client, active_thread_id, Decision::DenyOnce).await;
             dialog.approval_selected = 0;
         }
         KeyCode::Char('d') | KeyCode::Char('D') => {
-            send_approval_response(client, active_thread_id, "deny_always").await;
+            send_approval_response(client, active_thread_id, Decision::DenyAlways).await;
             dialog.approval_selected = 0;
         }
         KeyCode::Esc => {
-            send_approval_response(client, active_thread_id, "deny_once").await;
+            send_approval_response(client, active_thread_id, Decision::DenyOnce).await;
             dialog.approval_selected = 0;
         }
         _ => {}
@@ -130,7 +143,7 @@ pub(crate) async fn handle_customize_key(
     match key {
         KeyCode::Esc => {
             dialog.pending_customize.take();
-            send_approval_response(client, active_thread_id, "deny_once").await;
+            send_approval_response(client, active_thread_id, Decision::DenyOnce).await;
         }
         KeyCode::Tab | KeyCode::Down => {
             cust.focus = if cust.focus >= total - 1 {
@@ -150,11 +163,16 @@ pub(crate) async fn handle_customize_key(
         }
         KeyCode::Enter => {
             let cust = dialog.pending_customize.take().unwrap();
-            // Determine effect and scope, write as string response
-            let effect = EFFECTS[cust.effect_idx];
-            let scope = SCOPES[cust.scope_idx];
-            let response = format!("{effect}_{scope}");
-            send_approval_response(client, active_thread_id, &response).await;
+            let decision = match (EFFECTS[cust.effect_idx], SCOPES[cust.scope_idx]) {
+                ("allow", "once") => Decision::AllowOnce,
+                ("allow", "session") => Decision::AllowSession,
+                ("allow", "always") => Decision::AllowAlways,
+                ("deny", "once") => Decision::DenyOnce,
+                ("deny", "session") => Decision::DenySession,
+                ("deny", "always") => Decision::DenyAlways,
+                _ => Decision::DenyOnce,
+            };
+            send_approval_response(client, active_thread_id, decision).await;
         }
         _ => {
             let num_args = cust.args.len();

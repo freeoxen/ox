@@ -77,7 +77,7 @@ impl CliPolicyCheck {
                 if returned_path.components.len() >= 2 {
                     returned_path.components[1].clone()
                 } else {
-                    "deny".to_string()
+                    "deny_once".to_string()
                 }
             }
             Err(e) => {
@@ -86,29 +86,39 @@ impl CliPolicyCheck {
             }
         };
 
-        match decision_str.as_str() {
-            "allow_once" => PolicyDecision::Allow,
-            "allow_session" => {
-                // Add session-level allow rule so future calls don't ask again
+        // Parse the decision string back to the enum. The path is a transport
+        // mechanism (StructFS paths are always strings), so we deserialize here.
+        let decision: ox_types::Decision =
+            serde_json::from_value(serde_json::Value::String(decision_str.clone()))
+                .unwrap_or_else(|_| {
+                    tracing::warn!(decision = %decision_str, "unknown approval decision, denying");
+                    ox_types::Decision::DenyOnce
+                });
+
+        match decision {
+            ox_types::Decision::AllowOnce => PolicyDecision::Allow,
+            ox_types::Decision::AllowSession => {
                 let input = serde_json::json!({});
                 self.guard.session_allow(tool, &input);
                 PolicyDecision::Allow
             }
-            "allow_always" => {
-                // Persist allow rule to disk
+            ox_types::Decision::AllowAlways => {
                 let input = serde_json::json!({});
                 self.guard.persist_allow(tool, &input);
                 PolicyDecision::Allow
             }
-            "deny" | "deny_once" => PolicyDecision::Deny(format!("denied by user: {tool}")),
-            "deny_session" => {
+            ox_types::Decision::DenyOnce => {
+                PolicyDecision::Deny(format!("denied by user: {tool}"))
+            }
+            ox_types::Decision::DenySession => {
                 let input = serde_json::json!({});
                 self.guard.session_deny(tool, &input);
                 PolicyDecision::Deny(format!("denied by user (session): {tool}"))
             }
-            other => {
-                tracing::warn!(decision = other, "unknown approval decision, denying");
-                PolicyDecision::Deny(format!("unknown decision: {other}"))
+            ox_types::Decision::DenyAlways => {
+                let input = serde_json::json!({});
+                self.guard.persist_deny(tool, &input);
+                PolicyDecision::Deny(format!("denied by user (always): {tool}"))
             }
         }
     }

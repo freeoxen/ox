@@ -21,14 +21,16 @@ pub enum ChatMessage {
     Error(String),
 }
 
+use ox_types::Decision;
+
 /// Approval options for the permission dialog.
-pub const APPROVAL_OPTIONS: [(&str, &str); 6] = [
-    ("Allow once          (y)", "allow_once"),
-    ("Allow for session   (s)", "allow_session"),
-    ("Allow always        (a)", "allow_always"),
-    ("Deny once           (n)", "deny_once"),
-    ("Deny for session      ", "deny_session"),
-    ("Deny always         (d)", "deny_always"),
+pub const APPROVAL_OPTIONS: [(&str, Decision); 6] = [
+    ("Allow once          (y)", Decision::AllowOnce),
+    ("Allow for session   (s)", Decision::AllowSession),
+    ("Allow always        (a)", Decision::AllowAlways),
+    ("Deny once           (n)", Decision::DenyOnce),
+    ("Deny for session      ", Decision::DenySession),
+    ("Deny always         (d)", Decision::DenyAlways),
 ];
 
 /// State for the rule customization editor.

@@ -33,6 +33,13 @@ impl PathComponent {
         &self.0
     }
 
+    /// Borrow the validated string — used by the `oxpath!` macro to enforce
+    /// that only `PathComponent` values (not bare `String`/`&str`) are accepted
+    /// as runtime path components. Named distinctly so no standard type matches.
+    pub fn validated_str(&self) -> &str {
+        &self.0
+    }
+
     /// Consume and return the inner string.
     pub fn into_string(self) -> String {
         self.0

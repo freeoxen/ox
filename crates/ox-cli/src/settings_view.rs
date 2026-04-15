@@ -181,21 +181,31 @@ fn draw_defaults_section(frame: &mut Frame, state: &SettingsState, theme: &Theme
         .map(|a| a.name.as_str())
         .unwrap_or("(none)");
 
-    let model_hint = if !state.discovered_models.is_empty() {
+    let model_suffix = if !state.discovered_models.is_empty() {
         format!(
-            "{} (\u{2190}/\u{2192} {} models)",
-            state.default_model,
+            " (\u{2190}/\u{2192} {} models)",
             state.discovered_models.len()
         )
     } else {
-        state.default_model.clone()
+        String::new()
     };
 
     let cursor = "\u{25b8} ";
     let no_cursor = "  ";
 
-    let lines = vec![
-        Line::from(format!(
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.width < 20 || inner.height < 3 {
+        return;
+    }
+
+    let label_w = 16u16; // "  Max tokens: ▸ " = 16 chars
+
+    // Row 0: Account (selector, not a text field)
+    let row0 = Rect::new(inner.x, inner.y, inner.width, 1);
+    frame.render_widget(
+        Paragraph::new(Line::from(format!(
             "  Account:    {}{} (\u{2190}/\u{2192})",
             if state.defaults_focus == 0 {
                 cursor
@@ -203,30 +213,88 @@ fn draw_defaults_section(frame: &mut Frame, state: &SettingsState, theme: &Theme
                 no_cursor
             },
             acct_name
-        )),
-        Line::from(format!(
-            "  Model:      {}{}",
-            if state.defaults_focus == 1 {
-                cursor
-            } else {
-                no_cursor
-            },
-            model_hint
-        )),
-        Line::from(format!(
-            "  Max tokens: {}{}",
+        ))),
+        row0,
+    );
+
+    // Row 1: Model (text field)
+    let row1 = Rect::new(inner.x, inner.y + 1, inner.width, 1);
+    let label1 = format!(
+        "  Model:      {}",
+        if state.defaults_focus == 1 {
+            cursor
+        } else {
+            no_cursor
+        }
+    );
+    frame.render_widget(Paragraph::new(Span::raw(&label1)), row1);
+    let field1 = Rect::new(
+        inner.x + label_w,
+        inner.y + 1,
+        inner.width.saturating_sub(label_w),
+        1,
+    );
+    state.default_model.render_inline(
+        frame,
+        field1,
+        Style::default(),
+        focused && state.defaults_focus == 1,
+        false,
+    );
+    // Render model suffix after the field content
+    let model_content_w = state
+        .default_model
+        .content()
+        .chars()
+        .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0) as u16)
+        .sum::<u16>();
+    if !model_suffix.is_empty() && model_content_w + (model_suffix.len() as u16) < field1.width {
+        let suffix_area = Rect::new(
+            field1.x + model_content_w,
+            field1.y,
+            field1.width.saturating_sub(model_content_w),
+            1,
+        );
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                &model_suffix,
+                Style::default().add_modifier(Modifier::DIM),
+            )),
+            suffix_area,
+        );
+    }
+
+    // Row 2: Max tokens (text field)
+    if inner.height > 2 {
+        let row2 = Rect::new(inner.x, inner.y + 2, inner.width, 1);
+        let label2 = format!(
+            "  Max tokens: {}",
             if state.defaults_focus == 2 {
                 cursor
             } else {
                 no_cursor
-            },
-            state.default_max_tokens
-        )),
-    ];
-    frame.render_widget(Paragraph::new(lines).block(block), area);
+            }
+        );
+        frame.render_widget(Paragraph::new(Span::raw(&label2)), row2);
+        let field2 = Rect::new(
+            inner.x + label_w,
+            inner.y + 2,
+            inner.width.saturating_sub(label_w),
+            1,
+        );
+        state.default_max_tokens.render_inline(
+            frame,
+            field2,
+            Style::default(),
+            focused && state.defaults_focus == 2,
+            false,
+        );
+    }
 }
 
 /// Draw the account add/edit dialog as a centered overlay.
+///
+/// Text fields use SimpleInput::render_inline() for proper cursor display.
 pub(crate) fn draw_account_edit_dialog(
     frame: &mut Frame,
     editing: &crate::settings_state::AccountEditFields,
@@ -249,21 +317,14 @@ pub(crate) fn draw_account_edit_dialog(
         .borders(Borders::ALL)
         .border_style(theme.title_badge);
 
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.width < 20 || inner.height < 6 {
+        return;
+    }
+
     let dialect_str = DIALECTS.get(editing.dialect).unwrap_or(&"anthropic");
-    let key_display = if editing.key.is_empty() {
-        "(empty)".to_string()
-    } else {
-        let len = editing.key.len();
-        if len > 4 {
-            format!(
-                "{}...{}",
-                "\u{25cf}".repeat((len - 4).min(10)),
-                &editing.key[len - 4..]
-            )
-        } else {
-            "\u{25cf}".repeat(len)
-        }
-    };
 
     let test_display = match test_status {
         TestStatus::Idle => String::new(),
@@ -276,43 +337,106 @@ pub(crate) fn draw_account_edit_dialog(
     let cursor = "\u{25b8} ";
     let no_cursor = "  ";
 
-    let lines = vec![
-        Line::from(format!(
-            "  Name:     {}{}",
-            if focus == 0 { cursor } else { no_cursor },
-            editing.name
-        )),
-        Line::from(format!(
+    // Label column width
+    let label_w = 14u16; // "  API Key:  ▸ " = 14 chars
+
+    // Row 0: Name
+    let row0 = Rect::new(inner.x, inner.y, inner.width, 1);
+    let label0 = format!(
+        "  Name:     {}",
+        if focus == 0 { cursor } else { no_cursor }
+    );
+    frame.render_widget(Paragraph::new(Span::raw(&label0)), row0);
+    let field0 = Rect::new(
+        inner.x + label_w,
+        inner.y,
+        inner.width.saturating_sub(label_w),
+        1,
+    );
+    editing
+        .name
+        .render_inline(frame, field0, Style::default(), focus == 0, false);
+
+    // Row 1: API dialect (not a text field)
+    let row1 = Rect::new(inner.x, inner.y + 1, inner.width, 1);
+    frame.render_widget(
+        Paragraph::new(Line::from(format!(
             "  API:      {}{} (\u{2190}/\u{2192} to change)",
             if focus == 1 { cursor } else { no_cursor },
             dialect_str
-        )),
-        Line::from(format!(
-            "  Endpoint: {}{}",
-            if focus == 2 { cursor } else { no_cursor },
-            if editing.endpoint.is_empty() {
-                match *dialect_str {
-                    "anthropic" => "(api.anthropic.com)",
-                    "openai" => "(api.openai.com)",
-                    _ => "(default)",
-                }
-                .to_string()
-            } else {
-                editing.endpoint.clone()
-            }
-        )),
-        Line::from(format!(
-            "  API Key:  {}{}",
-            if focus == 3 { cursor } else { no_cursor },
-            key_display
-        )),
-        Line::from(""),
-        Line::from(format!(
-            "  Tab/↓ next | Shift+Tab/↑ prev | Ctrl+t test | Enter save | Esc cancel{test_display}"
-        )),
-    ];
+        ))),
+        row1,
+    );
 
-    frame.render_widget(Paragraph::new(lines).block(block), area);
+    // Row 2: Endpoint
+    let row2 = Rect::new(inner.x, inner.y + 2, inner.width, 1);
+    let label2 = format!(
+        "  Endpoint: {}",
+        if focus == 2 { cursor } else { no_cursor }
+    );
+    frame.render_widget(Paragraph::new(Span::raw(&label2)), row2);
+    let field2 = Rect::new(
+        inner.x + label_w,
+        inner.y + 2,
+        inner.width.saturating_sub(label_w),
+        1,
+    );
+    if editing.endpoint.is_empty() && focus != 2 {
+        let placeholder = match *dialect_str {
+            "anthropic" => "(api.anthropic.com)",
+            "openai" => "(api.openai.com)",
+            _ => "(default)",
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                placeholder,
+                Style::default().add_modifier(Modifier::DIM),
+            )),
+            field2,
+        );
+    } else {
+        editing
+            .endpoint
+            .render_inline(frame, field2, Style::default(), focus == 2, false);
+    }
+
+    // Row 3: API Key (masked)
+    let row3 = Rect::new(inner.x, inner.y + 3, inner.width, 1);
+    let label3 = format!(
+        "  API Key:  {}",
+        if focus == 3 { cursor } else { no_cursor }
+    );
+    frame.render_widget(Paragraph::new(Span::raw(&label3)), row3);
+    let field3 = Rect::new(
+        inner.x + label_w,
+        inner.y + 3,
+        inner.width.saturating_sub(label_w),
+        1,
+    );
+    if editing.key.is_empty() && focus != 3 {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "(empty)",
+                Style::default().add_modifier(Modifier::DIM),
+            )),
+            field3,
+        );
+    } else {
+        editing
+            .key
+            .render_inline(frame, field3, Style::default(), focus == 3, true);
+    }
+
+    // Row 5: Help + test status
+    if inner.height > 5 {
+        let help_row = Rect::new(inner.x, inner.y + 5, inner.width, 1);
+        frame.render_widget(
+            Paragraph::new(Line::from(format!(
+                "  Tab/\u{2193} next | Shift+Tab/\u{2191} prev | Ctrl+t test | Enter save | Esc cancel{test_display}"
+            ))),
+            help_row,
+        );
+    }
 }
 
 fn centered_rect(percent_x: u16, height: u16, r: Rect) -> Rect {

@@ -289,11 +289,11 @@ fn input_key_event_roundtrip() {
 #[test]
 fn approval_response_roundtrip() {
     let resp = ApprovalResponse {
-        decision: "allow".to_string(),
+        decision: Decision::AllowOnce,
     };
     let json = serde_json::to_string(&resp).unwrap();
     let back: ApprovalResponse = serde_json::from_str(&json).unwrap();
-    assert_eq!(back.decision, "allow");
+    assert_eq!(back.decision, Decision::AllowOnce);
 }
 
 // --- Unchanged types ---

@@ -239,9 +239,8 @@ pub(crate) fn draw_approval_dialog(
         Line::from(""),
     ];
 
-    for (i, (label, resp_str)) in APPROVAL_OPTIONS.iter().enumerate() {
-        let is_allow = resp_str.starts_with("allow");
-        let base_style = if is_allow {
+    for (i, (label, decision)) in APPROVAL_OPTIONS.iter().enumerate() {
+        let base_style = if decision.is_allow() {
             theme.approval_allow
         } else {
             theme.approval_deny

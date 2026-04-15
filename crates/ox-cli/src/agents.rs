@@ -174,7 +174,7 @@ impl AgentPool {
     }
 
     fn read_thread_title(&mut self, thread_id: &str) -> Option<String> {
-        let tid = thread_id.to_string();
+        let tid = ox_kernel::PathComponent::try_new(thread_id).ok()?;
         let path = ox_path::oxpath!("threads", tid);
         let record = self.inbox.read(&path).ok()??;
         let value = record.as_value()?;
@@ -314,26 +314,35 @@ fn agent_worker(
         .ok()
         .flatten()
         .unwrap_or_else(|| "anthropic".to_string());
-    let provider = adapter
-        .read_typed::<String>(&ox_path::oxpath!(
-            "gate",
-            "accounts",
-            default_account,
-            "provider"
-        ))
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| "anthropic".to_string());
-    let api_key_for_transport = adapter
-        .read_typed::<String>(&ox_path::oxpath!(
-            "gate",
-            "accounts",
-            default_account,
-            "key"
-        ))
-        .ok()
-        .flatten()
-        .unwrap_or_default();
+    let (provider, api_key_for_transport) = match ox_kernel::PathComponent::try_new(default_account.as_str()) {
+        Ok(acct_comp) => {
+            let prov = adapter
+                .read_typed::<String>(&ox_path::oxpath!(
+                    "gate",
+                    "accounts",
+                    acct_comp.clone(),
+                    "provider"
+                ))
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| "anthropic".to_string());
+            let key = adapter
+                .read_typed::<String>(&ox_path::oxpath!(
+                    "gate",
+                    "accounts",
+                    acct_comp,
+                    "key"
+                ))
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            (prov, key)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, account = %default_account, "invalid account name for path");
+            ("anthropic".to_string(), String::new())
+        }
+    };
     let provider_config = match provider.as_str() {
         "openai" => ProviderConfig::openai(),
         _ => ProviderConfig::anthropic(),

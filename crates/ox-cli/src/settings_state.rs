@@ -2,6 +2,7 @@
 //!
 //! Owned by the event loop, not stored in the broker (ephemeral UI state).
 
+use crate::simple_input::SimpleInput;
 use tokio::sync::oneshot;
 
 /// Result of an async test connection + model fetch.
@@ -26,14 +27,27 @@ pub enum WizardStep {
 }
 
 /// Fields for the account add/edit dialog.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct AccountEditFields {
-    pub name: String,
+    pub name: SimpleInput,
     pub dialect: usize, // 0=anthropic, 1=openai
-    pub endpoint: String,
-    pub key: String,
+    pub endpoint: SimpleInput,
+    pub key: SimpleInput,
     pub focus: usize, // 0=name, 1=dialect, 2=endpoint, 3=key
     pub is_new: bool,
+}
+
+impl AccountEditFields {
+    /// Return a mutable reference to the SimpleInput for the currently focused
+    /// text field, or None if the focused field is not a text field (e.g. dialect).
+    pub fn focused_input(&mut self) -> Option<&mut SimpleInput> {
+        match self.focus {
+            0 => Some(&mut self.name),
+            2 => Some(&mut self.endpoint),
+            3 => Some(&mut self.key),
+            _ => None,
+        }
+    }
 }
 
 pub const DIALECTS: [&str; 2] = ["anthropic", "openai"];
@@ -66,8 +80,8 @@ pub struct SettingsState {
     pub test_status: TestStatus,
     pub wizard: Option<WizardStep>,
     pub default_account_idx: usize,
-    pub default_model: String,
-    pub default_max_tokens: String,
+    pub default_model: SimpleInput,
+    pub default_max_tokens: SimpleInput,
     pub defaults_focus: usize,
     pub discovered_models: Vec<ox_kernel::ModelInfo>,
     pub model_picker_idx: Option<usize>,
@@ -86,8 +100,8 @@ impl SettingsState {
             test_status: TestStatus::Idle,
             wizard: None,
             default_account_idx: 0,
-            default_model: "claude-sonnet-4-20250514".to_string(),
-            default_max_tokens: "4096".to_string(),
+            default_model: SimpleInput::from("claude-sonnet-4-20250514"),
+            default_max_tokens: SimpleInput::from("4096"),
             defaults_focus: 0,
             discovered_models: Vec::new(),
             model_picker_idx: None,
@@ -140,8 +154,8 @@ impl SettingsState {
         self.accounts.sort_by(|a, b| a.name.cmp(&b.name));
 
         self.default_account_idx = self.accounts.iter().position(|a| a.is_default).unwrap_or(0);
-        self.default_model = config.gate.defaults.model.clone();
-        self.default_max_tokens = config.gate.defaults.max_tokens.to_string();
+        self.default_model.set(&config.gate.defaults.model);
+        self.default_max_tokens.set(&config.gate.defaults.max_tokens.to_string());
 
         if self.selected_account >= self.accounts.len() {
             self.selected_account = self.accounts.len().saturating_sub(1);
@@ -152,10 +166,10 @@ impl SettingsState {
         let mut s = Self::new();
         s.wizard = Some(WizardStep::AddAccount);
         s.editing = Some(AccountEditFields {
-            name: String::new(),
+            name: SimpleInput::new(),
             dialect: 0,
-            endpoint: String::new(),
-            key: String::new(),
+            endpoint: SimpleInput::new(),
+            key: SimpleInput::new(),
             focus: 0,
             is_new: true,
         });

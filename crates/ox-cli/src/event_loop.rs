@@ -1,12 +1,14 @@
 use crate::app::App;
 use crate::editor::flush_pending_edits;
 use crate::settings_shell::SettingsShell;
+use crate::settings_state::SettingsFocus;
 use crate::shell::Outcome;
 use crate::theme::Theme;
 use crate::thread_shell::{ThreadShell, dispatch_global_mouse};
 use crate::types::{APPROVAL_OPTIONS, CustomizeState};
 use crate::view_state::fetch_view_state;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
+use ox_kernel::PathComponent;
 use ox_path::oxpath;
 use ox_types::{
     GlobalCommand, HistoryCommand, InboxCommand, InputKeyEvent, InsertContext, Mode, PendingAction,
@@ -207,7 +209,14 @@ pub async fn run_async(
                 }
                 PendingAction::ArchiveSelected => {
                     if let Some(id) = &selected_thread_id {
-                        let update_path = ox_path::oxpath!("threads", id);
+                        let id_comp = match PathComponent::try_new(id.as_str()) {
+                            Ok(c) => c,
+                            Err(e) => {
+                                tracing::warn!(error = %e, "invalid thread id for path");
+                                continue;
+                            }
+                        };
+                        let update_path = ox_path::oxpath!("threads", id_comp);
                         let archive = ox_types::UpdateThread {
                             id: None,
                             thread_state: None,
@@ -364,10 +373,38 @@ pub async fn run_async(
                     }
                 }
                 Event::Paste(text) => {
-                    let is_insert = ui.editor().is_some();
-                    let ctx = ui.editor().map(|e| e.context);
-                    if is_insert && ctx != Some(InsertContext::Search) {
-                        thread.input_session.insert(&text, EditSource::Paste);
+                    if matches!(&ui.screen, ScreenSnapshot::Settings(_)) {
+                        // Paste into the focused settings field
+                        if let Some(ref mut editing) = settings_shell.state.editing {
+                            if let Some(input) = editing.focused_input() {
+                                input.insert_str(&text);
+                            }
+                        } else if settings_shell.state.focus == SettingsFocus::Defaults {
+                            match settings_shell.state.defaults_focus {
+                                1 => {
+                                    settings_shell.state.default_model.insert_str(&text);
+                                    settings_shell.state.model_picker_idx = None;
+                                }
+                                2 => {
+                                    // Only paste digits for max_tokens
+                                    let digits: String =
+                                        text.chars().filter(|c| c.is_ascii_digit()).collect();
+                                    if !digits.is_empty() {
+                                        settings_shell
+                                            .state
+                                            .default_max_tokens
+                                            .insert_str(&digits);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    } else {
+                        let is_insert = ui.editor().is_some();
+                        let ctx = ui.editor().map(|e| e.context);
+                        if is_insert && ctx != Some(InsertContext::Search) {
+                            thread.input_session.insert(&text, EditSource::Paste);
+                        }
                     }
                 }
                 _ => {}
@@ -407,6 +444,8 @@ async fn dispatch_key(
             if let Outcome::Handled = crate::settings_shell::handle_key(
                 &mut settings_shell.state,
                 key_str,
+                modifiers,
+                code,
                 client,
                 &inbox_root,
             )

@@ -5,6 +5,8 @@
 
 use crate::settings_state::{DIALECTS, SettingsFocus, SettingsState, TestStatus};
 use crate::shell::Outcome;
+use crate::simple_input::SimpleInput;
+use crossterm::event::{KeyCode, KeyModifiers};
 use ox_path::oxpath;
 use ox_types::{GlobalCommand, UiCommand};
 use structfs_core_store::{Record, Value};
@@ -116,12 +118,15 @@ impl SettingsShell {
 pub(crate) async fn handle_key(
     settings: &mut SettingsState,
     key_str: &str,
+    modifiers: KeyModifiers,
+    code: KeyCode,
     client: &ox_broker::ClientHandle,
     inbox_root: &std::path::Path,
 ) -> Outcome {
     // ---------- edit dialog ----------
     if settings.editing.is_some() {
-        return handle_edit_dialog_key(settings, key_str, client, inbox_root).await;
+        return handle_edit_dialog_key(settings, key_str, modifiers, code, client, inbox_root)
+            .await;
     }
 
     // ---------- delete confirmation ----------
@@ -130,7 +135,7 @@ pub(crate) async fn handle_key(
     }
 
     // ---------- navigation ----------
-    handle_navigation_key(settings, key_str, client, inbox_root).await
+    handle_navigation_key(settings, key_str, modifiers, code, client, inbox_root).await
 }
 
 // -----------------------------------------------------------------------
@@ -153,6 +158,8 @@ enum EditAction {
 async fn handle_edit_dialog_key(
     settings: &mut SettingsState,
     key_str: &str,
+    modifiers: KeyModifiers,
+    code: KeyCode,
     client: &ox_broker::ClientHandle,
     inbox_root: &std::path::Path,
 ) -> Outcome {
@@ -176,14 +183,14 @@ async fn handle_edit_dialog_key(
             "Enter" => {
                 if !editing.name.is_empty() {
                     EditAction::Save {
-                        name: editing.name.clone(),
+                        name: editing.name.content().to_owned(),
                         provider: DIALECTS[editing.dialect].to_string(),
                         endpoint: if editing.endpoint.is_empty() {
                             None
                         } else {
-                            Some(editing.endpoint.clone())
+                            Some(editing.endpoint.content().to_owned())
                         },
-                        key: editing.key.clone(),
+                        key: editing.key.content().to_owned(),
                     }
                 } else {
                     EditAction::Handled
@@ -205,34 +212,17 @@ async fn handle_edit_dialog_key(
                 };
                 EditAction::Handled
             }
-            "Backspace" => {
-                match editing.focus {
-                    0 => {
-                        editing.name.pop();
-                    }
-                    2 => {
-                        editing.endpoint.pop();
-                    }
-                    3 => {
-                        editing.key.pop();
-                    }
-                    _ => {}
-                }
-                EditAction::Handled
-            }
             "Ctrl+t" => {
                 EditAction::None // handled below as test connection
             }
-            other => {
-                if other.len() == 1 && !other.chars().next().unwrap().is_control() {
-                    let ch = other.chars().next().unwrap();
-                    match editing.focus {
-                        0 => editing.name.push(ch),
-                        2 => editing.endpoint.push(ch),
-                        3 => editing.key.push(ch),
-                        _ => {}
+            _ => {
+                // Route to the focused text field's SimpleInput
+                if let Some(input) = editing.focused_input() {
+                    if input.handle_key(modifiers, code) {
+                        EditAction::Handled
+                    } else {
+                        EditAction::None
                     }
-                    EditAction::Handled
                 } else {
                     EditAction::None
                 }
@@ -264,16 +254,23 @@ async fn handle_edit_dialog_key(
             );
 
             // Write account through ConfigStore (not direct file)
-            let provider_path = ox_path::oxpath!("config", "gate", "accounts", name, "provider");
+            let name_comp = match ox_kernel::PathComponent::try_new(name.as_str()) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(error = %e, "invalid account name for path");
+                    return Outcome::Handled;
+                }
+            };
+            let provider_path = ox_path::oxpath!("config", "gate", "accounts", name_comp.clone(), "provider");
             client.write_typed(&provider_path, &provider).await.ok();
             if let Some(ep) = endpoint {
-                let ep_path = ox_path::oxpath!("config", "gate", "accounts", name, "endpoint");
+                let ep_path = ox_path::oxpath!("config", "gate", "accounts", name_comp.clone(), "endpoint");
                 client.write_typed(&ep_path, &ep).await.ok();
             }
 
             // Write key to ConfigStore + key file
             if !key.is_empty() {
-                let key_path = ox_path::oxpath!("config", "gate", "accounts", name, "key");
+                let key_path = ox_path::oxpath!("config", "gate", "accounts", name_comp, "key");
                 client.write_typed(&key_path, &key).await.ok();
                 crate::config::write_key_file(&keys_dir, &name, &key).ok();
             }
@@ -285,18 +282,24 @@ async fn handle_edit_dialog_key(
                 .ok()
                 .flatten()
                 .unwrap_or_default();
-            let default_exists = client
-                .read(&ox_path::oxpath!(
-                    "config",
-                    "gate",
-                    "accounts",
-                    current_default,
-                    "provider"
-                ))
-                .await
-                .ok()
-                .flatten()
-                .is_some();
+            let default_exists = if current_default.is_empty() {
+                false
+            } else if let Ok(cd_comp) = ox_kernel::PathComponent::try_new(current_default.as_str()) {
+                client
+                    .read(&ox_path::oxpath!(
+                        "config",
+                        "gate",
+                        "accounts",
+                        cd_comp,
+                        "provider"
+                    ))
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some()
+            } else {
+                false
+            };
             if !default_exists {
                 tracing::info!(
                     old_default = %current_default,
@@ -348,9 +351,9 @@ async fn handle_edit_dialog_key(
                     _ => ox_gate::ProviderConfig::anthropic(),
                 };
                 if !editing.endpoint.is_empty() {
-                    provider_config.endpoint = editing.endpoint.clone();
+                    provider_config.endpoint = editing.endpoint.content().to_owned();
                 }
-                let api_key_for_test = editing.key.clone();
+                let api_key_for_test = editing.key.content().to_owned();
 
                 settings.test_status = TestStatus::Testing;
                 let (tx, rx) = tokio::sync::oneshot::channel();
@@ -391,17 +394,25 @@ async fn handle_delete_confirm_key(
             let keys_dir = inbox_root.join("keys");
 
             // Delete account through ConfigStore (Null = delete)
-            let provider_path = ox_path::oxpath!("config", "gate", "accounts", name, "provider");
+            let name_comp = match ox_kernel::PathComponent::try_new(name.as_str()) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(error = %e, "invalid account name for path");
+                    settings.delete_confirming = false;
+                    return Outcome::Handled;
+                }
+            };
+            let provider_path = ox_path::oxpath!("config", "gate", "accounts", name_comp.clone(), "provider");
             client
                 .write(&provider_path, Record::parsed(Value::Null))
                 .await
                 .ok();
-            let ep_path = ox_path::oxpath!("config", "gate", "accounts", name, "endpoint");
+            let ep_path = ox_path::oxpath!("config", "gate", "accounts", name_comp.clone(), "endpoint");
             client
                 .write(&ep_path, Record::parsed(Value::Null))
                 .await
                 .ok();
-            let key_path = ox_path::oxpath!("config", "gate", "accounts", name, "key");
+            let key_path = ox_path::oxpath!("config", "gate", "accounts", name_comp, "key");
             client
                 .write(&key_path, Record::parsed(Value::Null))
                 .await
@@ -444,6 +455,8 @@ async fn handle_delete_confirm_key(
 async fn handle_navigation_key(
     settings: &mut SettingsState,
     key_str: &str,
+    modifiers: KeyModifiers,
+    code: KeyCode,
     client: &ox_broker::ClientHandle,
     inbox_root: &std::path::Path,
 ) -> Outcome {
@@ -475,10 +488,10 @@ async fn handle_navigation_key(
         "a" => {
             if settings.focus == SettingsFocus::Accounts {
                 settings.editing = Some(crate::settings_state::AccountEditFields {
-                    name: String::new(),
+                    name: SimpleInput::new(),
                     dialect: 0,
-                    endpoint: String::new(),
-                    key: String::new(),
+                    endpoint: SimpleInput::new(),
+                    key: SimpleInput::new(),
                     focus: 0,
                     is_new: true,
                 });
@@ -507,10 +520,10 @@ async fn handle_navigation_key(
                         .and_then(|e| e.endpoint.clone())
                         .unwrap_or_default();
                     settings.editing = Some(crate::settings_state::AccountEditFields {
-                        name: acct.name.clone(),
+                        name: SimpleInput::from(&acct.name),
                         dialect: dialect_idx,
-                        endpoint,
-                        key: key_val,
+                        endpoint: SimpleInput::from(&endpoint),
+                        key: SimpleInput::from(&key_val),
                         focus: 0,
                         is_new: false,
                     });
@@ -547,7 +560,7 @@ async fn handle_navigation_key(
                             idx - 1
                         };
                         settings.model_picker_idx = Some(new_idx);
-                        settings.default_model = settings.discovered_models[new_idx].id.clone();
+                        settings.default_model.set(&settings.discovered_models[new_idx].id);
                     }
                 }
                 _ => {}
@@ -567,26 +580,14 @@ async fn handle_navigation_key(
                         let idx = settings.model_picker_idx.unwrap_or(0);
                         let new_idx = (idx + 1) % settings.discovered_models.len();
                         settings.model_picker_idx = Some(new_idx);
-                        settings.default_model = settings.discovered_models[new_idx].id.clone();
+                        settings.default_model.set(&settings.discovered_models[new_idx].id);
                     }
                 }
                 _ => {}
             }
             true
         }
-        "Backspace"
-            if settings.focus == SettingsFocus::Defaults && settings.defaults_focus == 1 =>
-        {
-            settings.default_model.pop();
-            settings.model_picker_idx = None;
-            true
-        }
-        "Backspace"
-            if settings.focus == SettingsFocus::Defaults && settings.defaults_focus == 2 =>
-        {
-            settings.default_max_tokens.pop();
-            true
-        }
+        // Backspace on model/max_tokens: fall through to the generic SimpleInput handler below
         "Enter" if settings.focus == SettingsFocus::Defaults => {
             // Determine current selections
             let acct_name = settings
@@ -594,8 +595,8 @@ async fn handle_navigation_key(
                 .get(settings.default_account_idx)
                 .map(|a| a.name.clone())
                 .unwrap_or_default();
-            let model = settings.default_model.clone();
-            let max_tokens: i64 = settings.default_max_tokens.parse().unwrap_or(4096);
+            let model = settings.default_model.content().to_owned();
+            let max_tokens: i64 = settings.default_max_tokens.content().parse().unwrap_or(4096);
 
             // Write to ConfigStore via broker
             client
@@ -713,26 +714,21 @@ async fn handle_navigation_key(
             }
             true
         }
-        other
-            if settings.focus == SettingsFocus::Defaults
-                && settings.defaults_focus == 1
-                && other.len() == 1
-                && !other.chars().next().unwrap().is_control() =>
-        {
-            settings.default_model.push(other.chars().next().unwrap());
-            settings.model_picker_idx = None;
-            true
+        _ if settings.focus == SettingsFocus::Defaults && settings.defaults_focus == 1 => {
+            if settings.default_model.handle_key(modifiers, code) {
+                settings.model_picker_idx = None;
+                true
+            } else {
+                false
+            }
         }
-        other
-            if settings.focus == SettingsFocus::Defaults
-                && settings.defaults_focus == 2
-                && other.len() == 1
-                && other.chars().next().unwrap().is_ascii_digit() =>
-        {
-            settings
-                .default_max_tokens
-                .push(other.chars().next().unwrap());
-            true
+        _ if settings.focus == SettingsFocus::Defaults && settings.defaults_focus == 2 => {
+            // Only allow digits for max_tokens
+            if matches!(code, KeyCode::Char(c) if !c.is_ascii_digit()) {
+                false
+            } else {
+                settings.default_max_tokens.handle_key(modifiers, code)
+            }
         }
         _ => false,
     };

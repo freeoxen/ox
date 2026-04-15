@@ -10,7 +10,7 @@ use structfs_core_store::{Error as StoreError, Path, Record, Value};
 
 pub struct ApprovalStore {
     pending: Option<ApprovalRequest>,
-    deferred_tx: Option<tokio::sync::oneshot::Sender<String>>,
+    deferred_tx: Option<tokio::sync::oneshot::Sender<ox_types::Decision>>,
 }
 
 impl ApprovalStore {
@@ -87,12 +87,12 @@ impl AsyncWriter for ApprovalStore {
 
                 self.pending = Some(req);
 
-                let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+                let (tx, rx) = tokio::sync::oneshot::channel::<ox_types::Decision>();
                 self.deferred_tx = Some(tx);
 
                 Box::pin(async move {
                     // Block until the response arrives via the oneshot channel.
-                    // The decision string is encoded in the returned path so the
+                    // The decision is encoded in the returned path so the
                     // caller can parse it (e.g. "request/allow_once").
                     let decision = rx.await.map_err(|_| {
                         StoreError::store(
@@ -101,7 +101,10 @@ impl AsyncWriter for ApprovalStore {
                             "response channel dropped without a response",
                         )
                     })?;
-                    Ok(Path::from_components(vec!["request".to_string(), decision]))
+                    Ok(Path::from_components(vec![
+                        "request".to_string(),
+                        decision.as_str().to_string(),
+                    ]))
                 })
             }
             "response" => {
@@ -179,7 +182,7 @@ mod tests {
                 &path!("response"),
                 Record::parsed(
                     structfs_serde_store::to_value(&ox_types::ApprovalResponse {
-                        decision: "allow_once".to_string(),
+                        decision: ox_types::Decision::AllowOnce,
                     })
                     .unwrap(),
                 ),
@@ -204,7 +207,7 @@ mod tests {
                 &path!("response"),
                 Record::parsed(
                     structfs_serde_store::to_value(&ox_types::ApprovalResponse {
-                        decision: "allow_once".to_string(),
+                        decision: ox_types::Decision::AllowOnce,
                     })
                     .unwrap(),
                 ),

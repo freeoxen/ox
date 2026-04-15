@@ -93,9 +93,9 @@ pub async fn fetch_view_state<'a>(
             }
         }
         ScreenSnapshot::Thread(snap) => {
-            let tid = &snap.thread_id;
+            if let Ok(tid) = ox_kernel::PathComponent::try_new(snap.thread_id.as_str()) {
             // Read committed messages
-            let msg_path = ox_path::oxpath!("threads", tid, "history", "messages");
+            let msg_path = ox_path::oxpath!("threads", tid.clone(), "history", "messages");
             if let Ok(Some(record)) = client.read(&msg_path).await {
                 if let Some(Value::Array(arr)) = record.as_value() {
                     messages = parse_chat_messages(arr);
@@ -103,7 +103,7 @@ pub async fn fetch_view_state<'a>(
             }
 
             // Read turn state (typed)
-            let turn_path = ox_path::oxpath!("threads", tid, "history", "turn");
+            let turn_path = ox_path::oxpath!("threads", tid.clone(), "history", "turn");
             if let Ok(Some(t)) = client.read_typed::<ox_history::TurnState>(&turn_path).await {
                 turn = t;
             }
@@ -116,18 +116,20 @@ pub async fn fetch_view_state<'a>(
                     approval_pending = Some(ap);
                 }
             }
+            }
         }
         ScreenSnapshot::History(snap) => {
-            let tid = &snap.thread_id;
-            let log_path = ox_path::oxpath!("threads", tid, "log", "entries");
-            if let Ok(Some(record)) = client.read(&log_path).await {
-                if let Some(Value::Array(arr)) = record.as_value() {
-                    raw_messages = arr.clone();
+            if let Ok(tid) = ox_kernel::PathComponent::try_new(snap.thread_id.as_str()) {
+                let log_path = ox_path::oxpath!("threads", tid.clone(), "log", "entries");
+                if let Ok(Some(record)) = client.read(&log_path).await {
+                    if let Some(Value::Array(arr)) = record.as_value() {
+                        raw_messages = arr.clone();
+                    }
                 }
-            }
-            let turn_path = ox_path::oxpath!("threads", tid, "history", "turn");
-            if let Ok(Some(t)) = client.read_typed::<ox_history::TurnState>(&turn_path).await {
-                turn = t;
+                let turn_path = ox_path::oxpath!("threads", tid, "history", "turn");
+                if let Ok(Some(t)) = client.read_typed::<ox_history::TurnState>(&turn_path).await {
+                    turn = t;
+                }
             }
         }
         ScreenSnapshot::Settings(_) => {}
