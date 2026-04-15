@@ -135,13 +135,17 @@ impl ThreadShell {
             self.input_session.reset_after_submit();
         } else {
             let new_tid = submit_editor_content(&mut self.input_session, app, client).await;
+            // Only auto-navigate to the new thread if we're already on a thread
+            // screen (reply). Compose from inbox stays on the inbox.
             if let Some(tid) = new_tid {
-                let _ = client
-                    .write_typed(
-                        &oxpath!("ui"),
-                        &UiCommand::Global(ox_types::GlobalCommand::Open { thread_id: tid }),
-                    )
-                    .await;
+                if matches!(&ui.screen, ScreenSnapshot::Thread(_)) {
+                    let _ = client
+                        .write_typed(
+                            &oxpath!("ui"),
+                            &UiCommand::Global(ox_types::GlobalCommand::Open { thread_id: tid }),
+                        )
+                        .await;
+                }
             }
         }
     }
@@ -182,11 +186,13 @@ pub(crate) fn handle_esc_intercept(
 /// Handle unbound insert-mode keys (after InputStore dispatch fails).
 ///
 /// Routes to search editing, command editing, or vim-style editor sub-modes.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_unbound_insert_key(
     input_session: &mut InputSession,
     insert_context: Option<InsertContext>,
     app: &mut crate::app::App,
     client: &ox_broker::ClientHandle,
+    ui: &UiSnapshot,
     terminal_width: u16,
     modifiers: crossterm::event::KeyModifiers,
     code: KeyCode,
@@ -204,7 +210,7 @@ pub(crate) async fn handle_unbound_insert_key(
                 handle_editor_normal_key(input_session, app, client, terminal_width, code).await;
             }
             EditorMode::Command => {
-                handle_editor_command_key(input_session, app, client, code).await;
+                handle_editor_command_key(input_session, app, client, ui, code).await;
             }
         }
     }

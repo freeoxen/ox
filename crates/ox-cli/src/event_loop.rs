@@ -573,6 +573,7 @@ async fn dispatch_key(
                     insert_ctx,
                     app,
                     client,
+                    ui,
                     tw,
                     modifiers,
                     code,
