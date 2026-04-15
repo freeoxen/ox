@@ -80,8 +80,7 @@ pub fn save(
 
     // Read all entries from the structured log (not history/messages projection,
     // which only includes user/assistant/tool_result — we want the full audit trail).
-    let log_path =
-        structfs_core_store::Path::parse("log/entries").map_err(|e| e.to_string())?;
+    let log_path = structfs_core_store::Path::parse("log/entries").map_err(|e| e.to_string())?;
     let messages = match namespace.read(&log_path) {
         Ok(Some(record)) => {
             let json = value_to_json(record.as_value().ok_or("expected value")?.clone());
@@ -136,8 +135,7 @@ pub fn restore(
     // 2. Replay ledger through log/append
     let ledger_path = thread_dir.join("ledger.jsonl");
     let entries = ledger::read_ledger(&ledger_path)?;
-    let log_path =
-        structfs_core_store::Path::parse("log/append").map_err(|e| e.to_string())?;
+    let log_path = structfs_core_store::Path::parse("log/append").map_err(|e| e.to_string())?;
 
     for entry in &entries {
         let value = json_to_value(entry.msg.clone());
@@ -168,10 +166,7 @@ mod tests {
             Box::new(SystemProvider::new("You are helpful.".to_string())),
         );
         ns.mount("tools", Box::new(ox_tools::ToolStore::empty()));
-        ns.mount(
-            "history",
-            Box::new(HistoryView::new(shared_log.clone())),
-        );
+        ns.mount("history", Box::new(HistoryView::new(shared_log.clone())));
         ns.mount(
             "log",
             Box::new(ox_kernel::log::LogStore::from_shared(shared_log)),
@@ -453,6 +448,107 @@ mod tests {
         assert!(
             !content.contains("sk-secret"),
             "API key must not appear in context.json"
+        );
+    }
+
+    #[test]
+    fn audit_log_entries_persist_and_restore() {
+        let dir = tempfile::tempdir().unwrap();
+        let thread_dir = dir.path().join("t_audit");
+        let mut ns = build_namespace();
+
+        // Write a mix of entry types through history/append (converts to LogEntry)
+        let user_msg = serde_json::json!({"role": "user", "content": "hello"});
+        ns.write(
+            &path!("history/append"),
+            Record::parsed(json_to_value(user_msg)),
+        )
+        .unwrap();
+
+        // Write audit entries directly to log/append
+        let turn_start = serde_json::json!({"type": "turn_start", "scope": "root"});
+        ns.write(
+            &path!("log/append"),
+            Record::parsed(json_to_value(turn_start)),
+        )
+        .unwrap();
+
+        let approval_req = serde_json::json!({
+            "type": "approval_requested",
+            "tool_name": "shell",
+            "input_preview": "ls -la"
+        });
+        ns.write(
+            &path!("log/append"),
+            Record::parsed(json_to_value(approval_req)),
+        )
+        .unwrap();
+
+        let approval_res = serde_json::json!({
+            "type": "approval_resolved",
+            "tool_name": "shell",
+            "decision": "allow_once"
+        });
+        ns.write(
+            &path!("log/append"),
+            Record::parsed(json_to_value(approval_res)),
+        )
+        .unwrap();
+
+        let error_entry = serde_json::json!({
+            "type": "error",
+            "message": "something broke"
+        });
+        ns.write(
+            &path!("log/append"),
+            Record::parsed(json_to_value(error_entry)),
+        )
+        .unwrap();
+
+        // Verify log has all 5 entries
+        let log_count = ns.read(&path!("log/count")).unwrap().unwrap();
+        assert_eq!(
+            log_count.as_value().unwrap(),
+            &structfs_core_store::Value::Integer(5)
+        );
+
+        // Save
+        save(
+            &mut ns,
+            &thread_dir,
+            "t_audit",
+            "Audit test",
+            &[],
+            1712345678,
+            &PARTICIPATING_MOUNTS,
+        )
+        .unwrap();
+
+        // Verify ledger has 5 entries
+        let ledger_entries = crate::ledger::read_ledger(&thread_dir.join("ledger.jsonl")).unwrap();
+        assert_eq!(ledger_entries.len(), 5);
+        assert_eq!(ledger_entries[0].msg["type"], "user");
+        assert_eq!(ledger_entries[1].msg["type"], "turn_start");
+        assert_eq!(ledger_entries[2].msg["type"], "approval_requested");
+        assert_eq!(ledger_entries[3].msg["type"], "approval_resolved");
+        assert_eq!(ledger_entries[4].msg["type"], "error");
+
+        // Restore into fresh namespace
+        let mut ns2 = build_namespace();
+        restore(&mut ns2, &thread_dir, &PARTICIPATING_MOUNTS).unwrap();
+
+        // Verify all 5 entries restored in log
+        let log_count2 = ns2.read(&path!("log/count")).unwrap().unwrap();
+        assert_eq!(
+            log_count2.as_value().unwrap(),
+            &structfs_core_store::Value::Integer(5)
+        );
+
+        // Verify history projection still works (only user message)
+        let hist_count = ns2.read(&path!("history/count")).unwrap().unwrap();
+        assert_eq!(
+            hist_count.as_value().unwrap(),
+            &structfs_core_store::Value::Integer(1)
         );
     }
 }

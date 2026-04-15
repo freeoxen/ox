@@ -443,4 +443,125 @@ mod tests {
         assert_eq!(explorer.entry_count(), 1);
         assert_eq!(explorer.cache.get(0).unwrap().summary, "different thread");
     }
+
+    // -- Jevan's S-tier tests --
+
+    #[test]
+    fn malformed_entries_skipped_without_panic() {
+        // Entries that can't parse should be skipped, not crash
+        let mut cache = LogCache::new();
+        let v = vec![
+            make_user_msg("good"),
+            // Malformed: no "type" field
+            Value::Map({
+                let mut m = BTreeMap::new();
+                m.insert("garbage".to_string(), Value::Integer(42));
+                m
+            }),
+            // Not even a map
+            Value::String("just a string".to_string()),
+            // Null
+            Value::Null,
+            make_assistant_msg("also good"),
+        ];
+        cache.sync(&v);
+        // Only the 2 valid entries should parse
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.get(0).unwrap().entry_type, "user");
+        assert_eq!(cache.get(1).unwrap().entry_type, "assistant");
+    }
+
+    #[test]
+    fn entry_count_matches_cache_len() {
+        // The header shows entry_count(), selection bounds use entry_count().
+        // These must agree with cache.len() — no divergence.
+        let mut explorer = HistoryExplorer::new();
+        let v = vec![
+            make_turn_start(),
+            make_user_msg("hello"),
+            // Malformed — skipped by parser
+            Value::Null,
+            make_assistant_msg("hi"),
+        ];
+        explorer.sync("t1", &v, 0, &[], 20);
+        assert_eq!(explorer.entry_count(), explorer.cache.len());
+        assert_eq!(explorer.entry_count(), 3); // turn_start + user + assistant
+    }
+
+    #[test]
+    fn selection_clamped_when_entries_shrink() {
+        // If cache gets cleared (thread switch) while selected_row is high,
+        // the explorer must not leave selected_row out of bounds.
+        let mut explorer = HistoryExplorer::new();
+        let v = vec![
+            make_user_msg("a"),
+            make_user_msg("b"),
+            make_user_msg("c"),
+            make_user_msg("d"),
+            make_user_msg("e"),
+        ];
+        explorer.sync("t1", &v, 4, &[], 20); // selected = last entry
+        assert_eq!(explorer.entry_count(), 5);
+
+        // Switch to thread with fewer entries
+        let v2 = vec![make_user_msg("only one")];
+        explorer.sync("t2", &v2, 4, &[], 20); // selected_row=4 but only 1 entry
+        // Layout should have clamped
+        let range = explorer.layout.visible_range(explorer.entry_count());
+        assert!(range.start <= 0);
+        assert!(range.end <= 1);
+    }
+
+    #[test]
+    fn visible_range_never_exceeds_total() {
+        let mut explorer = HistoryExplorer::new();
+        let v = vec![make_user_msg("a"), make_user_msg("b")];
+        explorer.sync("t1", &v, 0, &[], 100); // viewport way bigger than entries
+        let range = explorer.layout.visible_range(explorer.entry_count());
+        assert_eq!(range, 0..2); // not 0..100
+    }
+
+    #[test]
+    fn cursor_following_at_boundaries() {
+        let mut layout = HistoryLayout::new();
+        layout.set_viewport_height(7); // capacity = 5
+
+        // At entry 0, scroll should be 0
+        layout.ensure_visible(0);
+        layout.clamp(20);
+        assert_eq!(layout.scroll_offset(), 0);
+
+        // Move to entry 4 — still visible (0..5)
+        layout.ensure_visible(4);
+        layout.clamp(20);
+        assert_eq!(layout.scroll_offset(), 0);
+
+        // Move to entry 5 — must scroll
+        layout.ensure_visible(5);
+        layout.clamp(20);
+        assert_eq!(layout.scroll_offset(), 1);
+
+        // Jump to entry 19 (last of 20)
+        layout.ensure_visible(19);
+        layout.clamp(20);
+        assert_eq!(layout.scroll_offset(), 15); // 19 - 5 + 1
+
+        // Jump back to 0
+        layout.ensure_visible(0);
+        layout.clamp(20);
+        assert_eq!(layout.scroll_offset(), 0);
+    }
+
+    #[test]
+    fn empty_log_does_not_panic() {
+        let mut explorer = HistoryExplorer::new();
+        explorer.sync("t1", &[], 0, &[], 20);
+        assert_eq!(explorer.entry_count(), 0);
+        let range = explorer.layout.visible_range(0);
+        assert_eq!(range, 0..0);
+
+        // Selection at 0 on empty log — should not panic
+        explorer.sync("t1", &[], 999, &[], 20);
+        assert_eq!(explorer.entry_count(), 0);
+    }
 }
