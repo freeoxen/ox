@@ -9,6 +9,7 @@ pub enum ThreadState {
     BlockedOnApproval,
     Completed,
     Errored,
+    Interrupted,
 }
 
 impl ThreadState {
@@ -19,6 +20,7 @@ impl ThreadState {
             ThreadState::BlockedOnApproval => "blocked_on_approval",
             ThreadState::Completed => "completed",
             ThreadState::Errored => "errored",
+            ThreadState::Interrupted => "interrupted",
         }
     }
 
@@ -29,6 +31,7 @@ impl ThreadState {
             "blocked_on_approval" => Some(ThreadState::BlockedOnApproval),
             "completed" => Some(ThreadState::Completed),
             "errored" => Some(ThreadState::Errored),
+            "interrupted" => Some(ThreadState::Interrupted),
             _ => None,
         }
     }
