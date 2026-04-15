@@ -387,6 +387,10 @@ fn agent_worker(
             continue;
         }
 
+        // Save before the agent run so the user's prompt (and any prior history)
+        // survives if the process is killed mid-turn.
+        save_thread_state(&mut adapter, &inbox_root, &thread_id, &title);
+
         let effects = CliEffects {
             thread_id: thread_id.clone(),
             gated_store,

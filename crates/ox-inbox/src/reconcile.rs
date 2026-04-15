@@ -132,6 +132,14 @@ pub fn reconcile(conn: &Connection, threads_dir: &Path) -> Result<(), String> {
         }
     }
 
+    // 6. Sweep stale active states — any thread that was "running" or
+    //    "blocked_on_approval" at startup was interrupted by a previous exit.
+    conn.execute(
+        "UPDATE threads SET thread_state = 'interrupted' WHERE thread_state IN ('running', 'blocked_on_approval')",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+
     Ok(())
 }
 
@@ -218,6 +226,64 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn reconcile_sweeps_stale_running_to_interrupted() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("inbox.db");
+        let threads_dir = dir.path().join("threads");
+        std::fs::create_dir_all(&threads_dir).unwrap();
+
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        schema::initialize(&conn).unwrap();
+
+        let now = 100i64;
+        // Create threads in various states
+        for (id, state) in [
+            ("t_run", "running"),
+            ("t_block", "blocked_on_approval"),
+            ("t_idle", "waiting_for_input"),
+            ("t_err", "errored"),
+        ] {
+            // Create matching directory so they aren't removed as orphans
+            let tdir = threads_dir.join(id);
+            std::fs::create_dir_all(&tdir).unwrap();
+            let ctx = thread_dir::ContextFile {
+                version: 1,
+                thread_id: id.to_string(),
+                title: "test".to_string(),
+                labels: vec![],
+                created_at: now,
+                updated_at: now,
+                stores: std::collections::BTreeMap::new(),
+            };
+            thread_dir::write_context(&tdir, &ctx).unwrap();
+
+            conn.execute(
+                "INSERT INTO threads (id, title, thread_state, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![id, "test", state, now, now],
+            )
+            .unwrap();
+        }
+
+        reconcile(&conn, &threads_dir).unwrap();
+
+        let get_state = |id: &str| -> String {
+            conn.query_row(
+                "SELECT thread_state FROM threads WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+
+        // Running and blocked should become interrupted
+        assert_eq!(get_state("t_run"), "interrupted");
+        assert_eq!(get_state("t_block"), "interrupted");
+        // Idle and errored should be unchanged
+        assert_eq!(get_state("t_idle"), "waiting_for_input");
+        assert_eq!(get_state("t_err"), "errored");
     }
 
     #[test]

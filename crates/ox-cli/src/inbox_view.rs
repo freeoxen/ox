@@ -153,6 +153,10 @@ fn state_indicator<'a>(state: &str, theme: &Theme) -> (Span<'a>, String) {
             Span::styled("● DONE", theme.state_completed),
             "● DONE".to_string(),
         ),
+        "interrupted" => (
+            Span::styled("● INTERRUPTED", theme.state_interrupted),
+            "● INTERRUPTED".to_string(),
+        ),
         _ => (Span::styled("● ???", theme.status), "● ???".to_string()),
     }
 }

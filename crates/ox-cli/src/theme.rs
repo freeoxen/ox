@@ -76,6 +76,8 @@ pub struct Theme {
     pub state_waiting: Style,
     /// Inbox state dot — completed.
     pub state_completed: Style,
+    /// Inbox state dot — interrupted.
+    pub state_interrupted: Style,
 
     /// History explorer: header line.
     pub history_header: Style,
@@ -164,6 +166,7 @@ impl Theme {
             state_errored: bold.fg(Color::Red),
             state_waiting: bold.fg(Color::Cyan),
             state_completed: dim.fg(Color::Green),
+            state_interrupted: bold.fg(Color::Magenta),
 
             history_header: bold,
             history_selected: Style::default().add_modifier(Modifier::REVERSED),
