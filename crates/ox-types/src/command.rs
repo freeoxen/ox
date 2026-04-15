@@ -138,5 +138,6 @@ pub enum HistoryCommand {
     SelectPageDown,
     SelectHalfPageUp,
     SelectHalfPageDown,
+    SelectRow { row: usize },
     SetRowCount { count: usize },
 }

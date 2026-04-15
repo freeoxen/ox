@@ -47,36 +47,43 @@ impl ThreadNamespace {
     /// Create from an on-disk thread directory by restoring a snapshot.
     pub fn from_thread_dir(thread_dir: &std::path::Path) -> Self {
         let mut ns = Self::new_default();
+        let has_context = thread_dir.join("context.json").exists();
+        let ledger_path = thread_dir.join("ledger.jsonl");
+        let mut loaded = false;
 
         // Restore from context.json + ledger.jsonl
-        if let Err(e) = ox_inbox::snapshot::restore(
-            &mut ns,
-            thread_dir,
-            &ox_inbox::snapshot::PARTICIPATING_MOUNTS,
-        ) {
-            tracing::error!(
-                path = %thread_dir.display(),
-                error = %e,
-                "failed to restore thread snapshot — thread will appear empty"
-            );
-            // Surface error to the user in the thread view
-            let error_msg = serde_json::json!({
-                "type": "error",
-                "message": format!("Failed to restore thread history: {e}"),
-            });
-            let val = structfs_serde_store::json_to_value(error_msg);
-            ns.log
-                .write(
-                    &structfs_core_store::path!("append"),
-                    structfs_core_store::Record::parsed(val),
-                )
-                .ok();
+        if has_context {
+            match ox_inbox::snapshot::restore(
+                &mut ns,
+                thread_dir,
+                &ox_inbox::snapshot::PARTICIPATING_MOUNTS,
+            ) {
+                Ok(()) => {
+                    loaded = true;
+                }
+                Err(e) => {
+                    tracing::error!(
+                        path = %thread_dir.display(),
+                        error = %e,
+                        "failed to restore thread snapshot"
+                    );
+                    let error_msg = serde_json::json!({
+                        "type": "error",
+                        "message": format!("Failed to restore thread: {e}"),
+                    });
+                    let val = structfs_serde_store::json_to_value(error_msg);
+                    ns.log
+                        .write(
+                            &structfs_core_store::path!("append"),
+                            structfs_core_store::Record::parsed(val),
+                        )
+                        .ok();
+                }
+            }
         }
 
-        // Legacy: replay raw JSONL if no context.json existed
-        let ledger_path = thread_dir.join("ledger.jsonl");
-        if !thread_dir.join("context.json").exists() {
-            // Look for any .jsonl file that might contain messages
+        // Try JSONL files if context.json didn't exist or failed
+        if !loaded {
             if let Ok(entries) = std::fs::read_dir(thread_dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
@@ -87,6 +94,7 @@ impl ThreadNamespace {
                                     continue;
                                 }
                                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
+                                    loaded = true;
                                     let value = structfs_serde_store::json_to_value(json);
                                     let append_path = ox_path::oxpath!("history", "append");
                                     ns.write(&append_path, Record::parsed(value)).ok();
@@ -96,6 +104,15 @@ impl ThreadNamespace {
                     }
                 }
             }
+        }
+
+        if !loaded && has_context {
+            // context.json existed but restore failed — error already logged above
+        } else if !loaded {
+            tracing::warn!(
+                path = %thread_dir.display(),
+                "no saved state found in thread directory"
+            );
         }
 
         ns

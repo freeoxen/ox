@@ -13,15 +13,15 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 
 /// Main draw function. Takes a ViewState snapshot instead of &mut App.
 ///
-/// Returns `(content_height, viewport_height)` for scroll_max calculation.
+/// Returns `(content_height, viewport_height, history_hit_map)`.
 pub(crate) fn draw(
     frame: &mut Frame,
     vs: &ViewState,
     settings: &crate::settings_state::SettingsState,
     theme: &Theme,
     text_input_view: &mut crate::text_input_view::TextInputView,
-    history_explorer: &crate::history_state::HistoryExplorer,
-) -> (Option<usize>, usize) {
+    history_explorer: &mut crate::history_state::HistoryExplorer,
+) -> (Option<usize>, usize, Option<crate::history_view::HistoryHitMap>) {
     let editor = vs.ui.editor();
     let cur_insert_context = editor.map(|e| e.context);
     let is_command_mode = cur_insert_context == Some(InsertContext::Command);
@@ -69,6 +69,7 @@ pub(crate) fn draw(
     idx += 1;
 
     let mut content_height: Option<usize> = None;
+    let mut history_hit_map: Option<crate::history_view::HistoryHitMap> = None;
 
     match &vs.ui.screen {
         ScreenSnapshot::Settings(_) => {
@@ -94,7 +95,7 @@ pub(crate) fn draw(
         ScreenSnapshot::History(snap) => {
             let expanded: std::collections::HashSet<usize> =
                 snap.expanded.iter().copied().collect();
-            crate::history_view::draw_history(
+            history_hit_map = Some(crate::history_view::draw_history(
                 frame,
                 history_explorer,
                 &snap.thread_id,
@@ -105,7 +106,7 @@ pub(crate) fn draw(
                 vs.turn.thinking,
                 theme,
                 content_area,
-            );
+            ));
         }
     }
 
@@ -176,7 +177,7 @@ pub(crate) fn draw(
         );
     }
 
-    (content_height, content_area.height as usize)
+    (content_height, content_area.height as usize, history_hit_map)
 }
 
 // ---------------------------------------------------------------------------
