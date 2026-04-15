@@ -142,8 +142,8 @@ fn state_indicator<'a>(state: &str, theme: &Theme) -> (Span<'a>, String) {
             "● BLOCKED".to_string(),
         ),
         "waiting_for_input" => (
-            Span::styled("● WAITING", theme.state_waiting),
-            "● WAITING".to_string(),
+            Span::styled("● IDLE", theme.state_waiting),
+            "● IDLE".to_string(),
         ),
         "errored" => (
             Span::styled("● ERRORED", theme.state_errored),

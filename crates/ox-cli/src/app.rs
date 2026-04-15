@@ -77,7 +77,7 @@ impl App {
         let title: String = input.chars().take(40).collect();
         match self.pool.create_thread(&title) {
             Ok(tid) => {
-                self.update_thread_state(&tid, "running");
+                self.update_thread_state(&tid, ox_types::ThreadState::Running);
                 self.pool.send_prompt(&tid, input).ok();
                 Some(tid)
             }
@@ -93,7 +93,7 @@ impl App {
         self.history_cursor = self.input_history.len();
         self.input_draft.clear();
 
-        self.update_thread_state(thread_id, "running");
+        self.update_thread_state(thread_id, ox_types::ThreadState::Running);
         self.pool.send_prompt(thread_id, input).ok();
     }
 
@@ -132,7 +132,7 @@ impl App {
     }
 
     /// Update a thread's state in ox-inbox.
-    pub fn update_thread_state(&mut self, thread_id: &str, state: &str) {
+    pub fn update_thread_state(&mut self, thread_id: &str, state: ox_types::ThreadState) {
         let tid = match ox_kernel::PathComponent::try_new(thread_id) {
             Ok(c) => c,
             Err(e) => {
@@ -143,7 +143,7 @@ impl App {
         let update_path = ox_path::oxpath!("threads", tid);
         let update = ox_types::UpdateThread {
             id: None,
-            thread_state: Some(state.to_string()),
+            thread_state: Some(state),
             inbox_state: None,
             updated_at: None,
         };

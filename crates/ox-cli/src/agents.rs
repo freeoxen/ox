@@ -360,8 +360,13 @@ fn agent_worker(
         .set_transport(Box::new(cli_transport));
 
     // Wrap ToolStore in PolicyStore with CliPolicyCheck for permission enforcement.
-    let policy_check =
-        crate::policy_check::CliPolicyCheck::new(policy, scoped_client.clone(), rt_handle.clone());
+    let policy_check = crate::policy_check::CliPolicyCheck::new(
+        policy,
+        scoped_client.clone(),
+        broker_client.clone(),
+        thread_id.clone(),
+        rt_handle.clone(),
+    );
     let mut gated_store = ox_tools::policy_store::PolicyStore::new(tool_store, policy_check);
 
     tracing::info!(
@@ -422,18 +427,28 @@ fn agent_worker(
             .unwrap_or(0);
         {
             let new_state = if result.is_ok() {
-                "waiting_for_input"
+                ox_types::ThreadState::WaitingForInput
             } else {
-                "errored"
+                ox_types::ThreadState::Errored
+            };
+            let tid_comp = match ox_kernel::PathComponent::try_new(&thread_id) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(error = %e, "invalid thread id for state update path");
+                    continue;
+                }
             };
             let update = ox_types::UpdateThread {
-                id: Some(thread_id.clone()),
-                thread_state: Some(new_state.to_string()),
+                id: None,
+                thread_state: Some(new_state),
                 inbox_state: None,
                 updated_at: Some(now),
             };
             rt_handle
-                .block_on(broker_client.write_typed(&ox_path::oxpath!("inbox", "threads"), &update))
+                .block_on(
+                    broker_client
+                        .write_typed(&ox_path::oxpath!("inbox", "threads", tid_comp), &update),
+                )
                 .ok();
         }
     }

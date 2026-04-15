@@ -351,7 +351,11 @@ fn render_message_entry(
 
     // Chevron indicating expandable/expanded state
     if has_blocks {
-        let chevron = if is_expanded { " \u{25BC}" } else { " \u{25B6}" };
+        let chevron = if is_expanded {
+            " \u{25BC}"
+        } else {
+            " \u{25B6}"
+        };
         summary_line.push(Span::styled(chevron, theme.history_block_tag));
     }
 
