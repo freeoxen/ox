@@ -24,37 +24,7 @@ impl InboxState {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum ThreadState {
-    Running,
-    WaitingForInput,
-    BlockedOnApproval,
-    Completed,
-    Errored,
-}
-
-impl ThreadState {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            ThreadState::Running => "running",
-            ThreadState::WaitingForInput => "waiting_for_input",
-            ThreadState::BlockedOnApproval => "blocked_on_approval",
-            ThreadState::Completed => "completed",
-            ThreadState::Errored => "errored",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "running" => Some(ThreadState::Running),
-            "waiting_for_input" => Some(ThreadState::WaitingForInput),
-            "blocked_on_approval" => Some(ThreadState::BlockedOnApproval),
-            "completed" => Some(ThreadState::Completed),
-            "errored" => Some(ThreadState::Errored),
-            _ => None,
-        }
-    }
-}
+pub use ox_types::ThreadState;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ThreadMetadata {

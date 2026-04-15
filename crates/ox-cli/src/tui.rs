@@ -21,7 +21,11 @@ pub(crate) fn draw(
     theme: &Theme,
     text_input_view: &mut crate::text_input_view::TextInputView,
     history_explorer: &mut crate::history_state::HistoryExplorer,
-) -> (Option<usize>, usize, Option<crate::history_view::HistoryHitMap>) {
+) -> (
+    Option<usize>,
+    usize,
+    Option<crate::history_view::HistoryHitMap>,
+) {
     let editor = vs.ui.editor();
     let cur_insert_context = editor.map(|e| e.context);
     let is_command_mode = cur_insert_context == Some(InsertContext::Command);
@@ -177,7 +181,11 @@ pub(crate) fn draw(
         );
     }
 
-    (content_height, content_area.height as usize, history_hit_map)
+    (
+        content_height,
+        content_area.height as usize,
+        history_hit_map,
+    )
 }
 
 // ---------------------------------------------------------------------------

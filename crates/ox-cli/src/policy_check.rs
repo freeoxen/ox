@@ -17,6 +17,8 @@ use crate::policy::{CheckResult, PolicyGuard};
 pub(crate) struct CliPolicyCheck {
     pub guard: PolicyGuard,
     scoped_client: ox_broker::ClientHandle,
+    broker_client: ox_broker::ClientHandle,
+    thread_id: String,
     rt_handle: tokio::runtime::Handle,
 }
 
@@ -24,11 +26,15 @@ impl CliPolicyCheck {
     pub fn new(
         guard: PolicyGuard,
         scoped_client: ox_broker::ClientHandle,
+        broker_client: ox_broker::ClientHandle,
+        thread_id: String,
         rt_handle: tokio::runtime::Handle,
     ) -> Self {
         Self {
             guard,
             scoped_client,
+            broker_client,
+            thread_id,
             rt_handle,
         }
     }
@@ -56,12 +62,33 @@ impl CliPolicyCheck {
         }
     }
 
+    /// Update inbox thread state via the unscoped broker client.
+    fn set_inbox_state(&self, state: ox_types::ThreadState) {
+        if let Ok(tid_comp) = ox_kernel::PathComponent::try_new(&self.thread_id) {
+            let update = ox_types::UpdateThread {
+                id: None,
+                thread_state: Some(state),
+                inbox_state: None,
+                updated_at: None,
+            };
+            self.rt_handle
+                .block_on(
+                    self.broker_client
+                        .write_typed(&ox_path::oxpath!("inbox", "threads", tid_comp), &update),
+                )
+                .ok();
+        }
+    }
+
     /// Handle the Ask flow: write approval request to broker, block for response.
     fn handle_ask(&mut self, tool: &str, input_preview: &str) -> PolicyDecision {
         let req = ox_types::ApprovalRequest {
             tool_name: tool.to_string(),
             input_preview: input_preview.to_string(),
         };
+
+        // Signal blocked state to the inbox
+        self.set_inbox_state(ox_types::ThreadState::BlockedOnApproval);
 
         // Write to approval/request — this blocks until the TUI responds.
         // Use Duration::MAX so deliberation time is never capped by the
@@ -70,6 +97,9 @@ impl CliPolicyCheck {
         let result = self.rt_handle.block_on(
             approval_client.write_typed(&structfs_core_store::path!("approval/request"), &req),
         );
+
+        // Back to running after user responds
+        self.set_inbox_state(ox_types::ThreadState::Running);
 
         let decision_str = match result {
             Ok(returned_path) => {

@@ -10,6 +10,7 @@ description = "StructFS-backed inbox store for ox agent thread management"
 ox-path = { path = "../ox-path" }
 tracing = { workspace = true }
 ox-kernel = { path = "../ox-kernel" }
+ox-types = { path = "../ox-types" }
 structfs-core-store = { workspace = true }
 structfs-serde-store = { workspace = true }
 rusqlite = { version = "0.32", features = ["bundled"] }

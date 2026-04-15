@@ -365,13 +365,8 @@ pub async fn run_async(
                             match mouse.kind {
                                 MouseEventKind::Down(_) => {
                                     if let Some(ref hm) = history_hit_map {
-                                        handle_history_click(
-                                            client,
-                                            hm,
-                                            mouse.column,
-                                            mouse.row,
-                                        )
-                                        .await;
+                                        handle_history_click(client, hm, mouse.column, mouse.row)
+                                            .await;
                                     }
                                 }
                                 MouseEventKind::ScrollUp => {
@@ -380,9 +375,7 @@ pub async fn run_async(
                                         let _ = client
                                             .write_typed(
                                                 &oxpath!("ui"),
-                                                &UiCommand::History(
-                                                    HistoryCommand::SelectPrev,
-                                                ),
+                                                &UiCommand::History(HistoryCommand::SelectPrev),
                                             )
                                             .await;
                                     } else {
@@ -395,9 +388,7 @@ pub async fn run_async(
                                         let _ = client
                                             .write_typed(
                                                 &oxpath!("ui"),
-                                                &UiCommand::History(
-                                                    HistoryCommand::SelectNext,
-                                                ),
+                                                &UiCommand::History(HistoryCommand::SelectNext),
                                             )
                                             .await;
                                     } else {
