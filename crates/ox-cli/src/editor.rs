@@ -503,6 +503,7 @@ pub(crate) async fn handle_editor_command_key(
     session: &mut InputSession,
     app: &mut crate::app::App,
     client: &ox_broker::ClientHandle,
+    ui: &ox_types::UiSnapshot,
     code: KeyCode,
 ) {
     match code {
@@ -527,14 +528,18 @@ pub(crate) async fn handle_editor_command_key(
                     session.reset_after_submit();
                 }
                 "w" | "write" | "wq" | "x" => {
+                    let on_thread = matches!(ui.screen, ox_types::ScreenSnapshot::Thread(_));
                     let new_tid = submit_editor_content(session, app, client).await;
+                    // Only auto-navigate on reply (thread screen), not compose (inbox)
                     if let Some(tid) = new_tid {
-                        let _ = client
-                            .write_typed(
-                                &oxpath!("ui"),
-                                &UiCommand::Global(GlobalCommand::Open { thread_id: tid }),
-                            )
-                            .await;
+                        if on_thread {
+                            let _ = client
+                                .write_typed(
+                                    &oxpath!("ui"),
+                                    &UiCommand::Global(GlobalCommand::Open { thread_id: tid }),
+                                )
+                                .await;
+                        }
                     }
                 }
                 other => {
