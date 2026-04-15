@@ -932,6 +932,13 @@ impl UiStore {
                 }
                 Ok(path!("selected_row"))
             }
+            HistoryCommand::SelectRow { row } => {
+                let s = self.history_state()?;
+                if s.row_count > 0 {
+                    s.selected_row = row.min(s.row_count - 1);
+                }
+                Ok(path!("selected_row"))
+            }
             HistoryCommand::ToggleExpand => {
                 let s = self.history_state()?;
                 let row = s.selected_row;
@@ -1517,6 +1524,28 @@ mod tests {
         let snap = read_snapshot(&mut store);
         match &snap.screen {
             ScreenSnapshot::History(s) => assert_eq!(s.selected_row, 4),
+            _ => panic!("expected History"),
+        }
+
+        // SelectRow — direct jump
+        write_cmd(
+            &mut store,
+            &UiCommand::History(HistoryCommand::SelectRow { row: 3 }),
+        );
+        let snap = read_snapshot(&mut store);
+        match &snap.screen {
+            ScreenSnapshot::History(s) => assert_eq!(s.selected_row, 3),
+            _ => panic!("expected History"),
+        }
+
+        // SelectRow — clamps to bounds
+        write_cmd(
+            &mut store,
+            &UiCommand::History(HistoryCommand::SelectRow { row: 999 }),
+        );
+        let snap = read_snapshot(&mut store);
+        match &snap.screen {
+            ScreenSnapshot::History(s) => assert_eq!(s.selected_row, 4), // row_count is 5
             _ => panic!("expected History"),
         }
 

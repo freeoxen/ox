@@ -204,6 +204,15 @@ pub struct HistoryExplorer {
     last_count: usize,
     last_selected: usize,
     last_expanded_hash: u64,
+    /// Line-based scroll offset within rendered content.
+    /// Decoupled from entry-based layout — allows scrolling within expanded
+    /// entries that overflow the viewport.
+    content_scroll: u16,
+    /// Content height from the last render (total lines). Used to clamp
+    /// content_scroll on the next frame.
+    last_content_height: u16,
+    /// Viewport height in lines from the last render.
+    last_viewport_height: u16,
 }
 
 impl HistoryExplorer {
@@ -216,6 +225,9 @@ impl HistoryExplorer {
             last_count: 0,
             last_selected: 0,
             last_expanded_hash: 0,
+            content_scroll: 0,
+            last_content_height: 0,
+            last_viewport_height: 0,
         }
     }
 
@@ -229,9 +241,12 @@ impl HistoryExplorer {
         expanded: &[usize],
         viewport_height: usize,
     ) -> bool {
-        // Thread changed — reset cache
+        // Thread changed — reset cache and scroll
         if self.thread_id.as_deref() != Some(thread_id) {
             self.cache.clear();
+            self.content_scroll = 0;
+            self.last_content_height = 0;
+            self.last_viewport_height = 0;
             self.thread_id = Some(thread_id.to_string());
         }
 
@@ -254,6 +269,13 @@ impl HistoryExplorer {
             || clamped_selected != self.last_selected
             || expanded_hash != self.last_expanded_hash;
 
+        // Reset content scroll when selection changes (renderer will
+        // auto-adjust to keep selected entry visible via set_render_metrics).
+        let selection_changed = clamped_selected != self.last_selected;
+        if selection_changed {
+            self.content_scroll = 0;
+        }
+
         if changed {
             self.generation += 1;
             self.last_count = self.cache.len();
@@ -271,6 +293,70 @@ impl HistoryExplorer {
 
     pub fn entry_count(&self) -> usize {
         self.cache.len()
+    }
+
+    /// Current line-based content scroll offset.
+    pub fn content_scroll(&self) -> u16 {
+        self.content_scroll
+    }
+
+    /// Called by the renderer after building lines to record content/viewport
+    /// dimensions and auto-adjust scroll to keep the selected entry visible.
+    pub fn set_render_metrics(
+        &mut self,
+        content_height: u16,
+        viewport_height: u16,
+        selected_summary_row: Option<u16>,
+    ) {
+        self.last_content_height = content_height;
+        self.last_viewport_height = viewport_height;
+
+        // Ensure selected entry's summary line is visible
+        if let Some(row) = selected_summary_row {
+            if row < self.content_scroll {
+                // Selected entry scrolled above — snap to it
+                self.content_scroll = row;
+            } else if row >= self.content_scroll + viewport_height {
+                // Selected entry below viewport — scroll down to show it
+                self.content_scroll = row.saturating_sub(viewport_height - 1);
+            }
+        }
+
+        // Clamp to max scroll
+        self.clamp_content_scroll();
+    }
+
+    /// Scroll content up by `lines` lines.
+    pub fn scroll_content_up(&mut self, lines: u16) {
+        self.content_scroll = self.content_scroll.saturating_sub(lines);
+    }
+
+    /// Scroll content down by `lines` lines.
+    pub fn scroll_content_down(&mut self, lines: u16) {
+        self.content_scroll = self.content_scroll.saturating_add(lines);
+        self.clamp_content_scroll();
+    }
+
+    /// True when content scroll is at the top (no more content above).
+    pub fn at_content_top(&self) -> bool {
+        self.content_scroll == 0
+    }
+
+    /// True when content scroll is at the bottom (no more content below).
+    pub fn at_content_bottom(&self) -> bool {
+        let max = self
+            .last_content_height
+            .saturating_sub(self.last_viewport_height);
+        self.content_scroll >= max
+    }
+
+    fn clamp_content_scroll(&mut self) {
+        let max = self
+            .last_content_height
+            .saturating_sub(self.last_viewport_height);
+        if self.content_scroll > max {
+            self.content_scroll = max;
+        }
     }
 }
 
@@ -563,5 +649,107 @@ mod tests {
         // Selection at 0 on empty log — should not panic
         explorer.sync("t1", &[], 999, &[], 20);
         assert_eq!(explorer.entry_count(), 0);
+    }
+
+    // -- Content scroll tests --
+
+    #[test]
+    fn content_scroll_clamps_to_max() {
+        let mut explorer = HistoryExplorer::new();
+        // Simulate render: 50 lines of content in a 20-line viewport
+        explorer.set_render_metrics(50, 20, Some(0));
+        assert_eq!(explorer.content_scroll(), 0);
+
+        // Scroll down — should work
+        explorer.scroll_content_down(10);
+        assert_eq!(explorer.content_scroll(), 10);
+
+        // Scroll past max — clamped to 30 (50 - 20)
+        explorer.scroll_content_down(100);
+        assert_eq!(explorer.content_scroll(), 30);
+
+        // Scroll up — should work
+        explorer.scroll_content_up(5);
+        assert_eq!(explorer.content_scroll(), 25);
+
+        // Scroll up past 0 — clamped
+        explorer.scroll_content_up(100);
+        assert_eq!(explorer.content_scroll(), 0);
+    }
+
+    #[test]
+    fn content_scroll_no_overflow_when_content_fits() {
+        let mut explorer = HistoryExplorer::new();
+        // Content fits in viewport — no scrolling possible
+        explorer.set_render_metrics(10, 20, Some(0));
+        explorer.scroll_content_down(5);
+        assert_eq!(explorer.content_scroll(), 0); // max is 0
+    }
+
+    #[test]
+    fn content_scroll_auto_adjusts_for_selected_entry() {
+        let mut explorer = HistoryExplorer::new();
+        // Selected entry at row 40, viewport is 20 lines
+        explorer.set_render_metrics(50, 20, Some(40));
+        // Should auto-scroll so row 40 is visible
+        assert!(explorer.content_scroll() >= 21); // at least 40 - 20 + 1
+        assert!(explorer.content_scroll() <= 40);
+    }
+
+    #[test]
+    fn content_scroll_edge_detection() {
+        let mut explorer = HistoryExplorer::new();
+        // 50 lines, 20 viewport — max scroll is 30
+        explorer.set_render_metrics(50, 20, Some(0));
+
+        // At top initially
+        assert!(explorer.at_content_top());
+        assert!(!explorer.at_content_bottom());
+
+        // Scroll to bottom
+        explorer.scroll_content_down(30);
+        assert!(!explorer.at_content_top());
+        assert!(explorer.at_content_bottom());
+
+        // Scroll back to top
+        explorer.scroll_content_up(30);
+        assert!(explorer.at_content_top());
+        assert!(!explorer.at_content_bottom());
+
+        // Content fits viewport — both top and bottom
+        explorer.set_render_metrics(10, 20, Some(0));
+        assert!(explorer.at_content_top());
+        assert!(explorer.at_content_bottom());
+    }
+
+    #[test]
+    fn content_scroll_resets_on_thread_switch() {
+        let mut explorer = HistoryExplorer::new();
+        let v = vec![make_user_msg("a")];
+        explorer.sync("t1", &v, 0, &[], 20);
+        explorer.set_render_metrics(50, 20, Some(0));
+        explorer.scroll_content_down(15);
+        assert_eq!(explorer.content_scroll(), 15);
+
+        // Switch threads — content_scroll resets
+        let v2 = vec![make_user_msg("b")];
+        explorer.sync("t2", &v2, 0, &[], 20);
+        assert_eq!(explorer.content_scroll(), 0);
+    }
+
+    #[test]
+    fn content_scroll_resets_on_selection_change() {
+        let mut explorer = HistoryExplorer::new();
+        let v = vec![make_user_msg("a"), make_user_msg("b")];
+        explorer.sync("t1", &v, 0, &[], 20);
+
+        // Simulate some content scrolling
+        explorer.set_render_metrics(50, 20, Some(0));
+        explorer.scroll_content_down(15);
+        assert_eq!(explorer.content_scroll(), 15);
+
+        // Selection changes — content_scroll resets
+        explorer.sync("t1", &v, 1, &[], 20);
+        assert_eq!(explorer.content_scroll(), 0);
     }
 }

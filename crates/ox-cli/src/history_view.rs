@@ -11,6 +11,54 @@ use ratatui::layout::Rect;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 
+// ---------------------------------------------------------------------------
+// Hit map — mouse click target tracking
+// ---------------------------------------------------------------------------
+
+/// Maps screen rows to clickable history entry targets.
+/// Built during rendering, consumed by the event loop for mouse dispatch.
+pub struct HistoryHitMap {
+    /// Top-left Y coordinate of the content area.
+    pub area_y: u16,
+    /// Top-left X coordinate of the content area.
+    pub area_x: u16,
+    /// Line-based content scroll applied during rendering.
+    pub content_scroll: u16,
+    /// Per-entry hit targets.
+    pub entries: Vec<HitEntry>,
+}
+
+/// Click targets for a single history entry.
+pub struct HitEntry {
+    /// The logical entry index in the log cache.
+    pub entry_index: usize,
+    /// Row offset (from area_y) of the summary line.
+    pub summary_row: u16,
+    /// Toolbar hit targets (only present when expanded).
+    pub toolbar: Option<ToolbarHit>,
+}
+
+/// Column ranges for clickable toggles on the toolbar line.
+pub struct ToolbarHit {
+    /// Row offset (from area_y) of the toolbar line.
+    pub row: u16,
+    /// (start_col, end_col) for the pretty/raw toggle, relative to area start.
+    pub pretty_cols: (u16, u16),
+    /// (start_col, end_col) for the full/truncated toggle, relative to area start.
+    pub full_cols: (u16, u16),
+}
+
+impl HistoryHitMap {
+    fn new(area: Rect, content_scroll: u16) -> Self {
+        Self {
+            area_y: area.y,
+            area_x: area.x,
+            content_scroll,
+            entries: Vec::new(),
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 /// Render the history explorer screen from pre-computed state.
 ///
@@ -18,7 +66,7 @@ use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarStat
 /// Everything else comes from `explorer` (event loop owns this).
 pub fn draw_history(
     frame: &mut Frame,
-    explorer: &HistoryExplorer,
+    explorer: &mut HistoryExplorer,
     thread_id: &str,
     selected: usize,
     expanded: &std::collections::HashSet<usize>,
@@ -27,7 +75,7 @@ pub fn draw_history(
     thinking: bool,
     theme: &Theme,
     area: Rect,
-) {
+) -> HistoryHitMap {
     let total = explorer.entry_count();
     let clamped_selected = if total == 0 {
         0
@@ -37,6 +85,8 @@ pub fn draw_history(
     let visible = explorer.layout.visible_range(total);
 
     let mut lines: Vec<Line> = Vec::new();
+    let content_scroll = explorer.content_scroll();
+    let mut hit_map = HistoryHitMap::new(area, content_scroll);
 
     // Header
     lines.push(Line::from(vec![
@@ -54,6 +104,11 @@ pub fn draw_history(
     for entry in entries {
         let is_selected = entry.index == clamped_selected;
         let cursor = if is_selected { ">" } else { " " };
+        let is_expanded = expanded.contains(&entry.index);
+        let has_blocks = !entry.blocks.is_empty();
+
+        // Record summary line row for hit map
+        let summary_row = lines.len() as u16;
 
         match entry.entry_type.as_str() {
             "turn_start" | "turn_end" => {
@@ -72,18 +127,45 @@ pub fn draw_history(
                 render_meta(entry, cursor, theme, &mut lines);
             }
             _ => {
-                render_message_entry(entry, is_selected, cursor, theme, &mut lines);
+                render_message_entry(
+                    entry,
+                    is_selected,
+                    cursor,
+                    has_blocks,
+                    is_expanded,
+                    theme,
+                    &mut lines,
+                );
             }
         }
 
-        // Expanded blocks
-        if expanded.contains(&entry.index) && !entry.blocks.is_empty() {
+        // Expanded toolbar + blocks
+        let mut toolbar_hit = None;
+        if is_expanded && has_blocks {
             let is_pretty = pretty.contains(&entry.index);
             let is_full = full.contains(&entry.index);
+
+            // Toolbar line with toggle indicators
+            let toolbar_row = lines.len() as u16;
+            toolbar_hit = Some(render_toolbar(
+                toolbar_row,
+                is_pretty,
+                is_full,
+                entry,
+                theme,
+                &mut lines,
+            ));
+
             for block in &entry.blocks {
                 render_block(block, theme, area.width, is_pretty, is_full, &mut lines);
             }
         }
+
+        hit_map.entries.push(HitEntry {
+            entry_index: entry.index,
+            summary_row,
+            toolbar: toolbar_hit,
+        });
     }
 
     // Streaming indicator
@@ -94,19 +176,44 @@ pub fn draw_history(
         )));
     }
 
-    // Render as paragraph (no scroll offset — we already sliced to visible range)
+    // Feed render metrics back to explorer so it can clamp content_scroll
+    // and auto-adjust to keep the selected entry visible.
+    let content_height = lines.len() as u16;
+    let viewport_height = area.height;
+    let selected_summary_row = hit_map
+        .entries
+        .iter()
+        .find(|e| e.entry_index == clamped_selected)
+        .map(|e| e.summary_row);
+    explorer.set_render_metrics(content_height, viewport_height, selected_summary_row);
+    let content_scroll = explorer.content_scroll();
+
+    // Render with line-based scroll — allows viewing expanded content
+    // that overflows the viewport.
     let text = Text::from(lines);
-    let widget = Paragraph::new(text);
+    let widget = Paragraph::new(text).scroll((content_scroll, 0));
     frame.render_widget(widget, area);
 
-    // Scrollbar
-    if total > explorer.layout.visible_range(total).len() {
+    // Scrollbar — reflects content scroll position when content overflows
+    if content_height > viewport_height {
+        let max_scroll = content_height.saturating_sub(viewport_height) as usize;
+        let position = content_scroll as usize;
+        let mut scrollbar_state = ScrollbarState::new(max_scroll).position(position);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
+        frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
+    } else if total > explorer.layout.visible_range(total).len() {
+        // Entry-level scrollbar when content fits but entries are clipped
         let max_offset = total.saturating_sub(visible.len());
         let position = explorer.layout.scroll_offset();
         let mut scrollbar_state = ScrollbarState::new(max_offset).position(position);
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
         frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
     }
+
+    // Update hit map with final content_scroll (may have been adjusted)
+    hit_map.content_scroll = content_scroll;
+
+    hit_map
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +304,8 @@ fn render_message_entry(
     entry: &LogDisplayEntry,
     is_selected: bool,
     cursor: &str,
+    has_blocks: bool,
+    is_expanded: bool,
     theme: &Theme,
     out: &mut Vec<Line>,
 ) {
@@ -240,7 +349,78 @@ fn render_message_entry(
     ));
     summary_line.push(Span::styled(meta, theme.history_meta));
 
+    // Chevron indicating expandable/expanded state
+    if has_blocks {
+        let chevron = if is_expanded { " \u{25BC}" } else { " \u{25B6}" };
+        summary_line.push(Span::styled(chevron, theme.history_block_tag));
+    }
+
     out.push(Line::from(summary_line));
+}
+
+/// Render the toolbar line with pretty/full toggle indicators.
+/// Returns a `ToolbarHit` with column ranges for mouse click targets.
+fn render_toolbar(
+    toolbar_row: u16,
+    is_pretty: bool,
+    is_full: bool,
+    entry: &LogDisplayEntry,
+    theme: &Theme,
+    out: &mut Vec<Line>,
+) -> ToolbarHit {
+    let indent = "    ";
+
+    // Pretty/raw toggle
+    let pretty_label = if is_pretty { "[pretty]" } else { "[raw]" };
+    let pretty_style = if is_pretty {
+        theme.history_block_tag
+    } else {
+        theme.history_meta
+    };
+    let pretty_start = indent.len() as u16;
+    let pretty_end = pretty_start + pretty_label.len() as u16;
+
+    // Full/truncated toggle
+    let total_lines: usize = entry
+        .blocks
+        .iter()
+        .map(|b| {
+            b.text
+                .as_ref()
+                .or(b.input_json.as_ref())
+                .map(|t| t.lines().count())
+                .unwrap_or(0)
+        })
+        .sum();
+    let is_truncatable = total_lines > 30;
+    let full_label = if is_full {
+        format!("[{} lines]", total_lines)
+    } else if is_truncatable {
+        format!("[{}/{}]", 30, total_lines)
+    } else {
+        format!("[{} lines]", total_lines)
+    };
+    let full_style = if is_full {
+        theme.history_block_tag
+    } else {
+        theme.history_meta
+    };
+    // 2 spaces gap between toggles
+    let full_start = pretty_end + 2;
+    let full_end = full_start + full_label.len() as u16;
+
+    out.push(Line::from(vec![
+        Span::raw(indent),
+        Span::styled(pretty_label, pretty_style),
+        Span::raw("  "),
+        Span::styled(full_label, full_style),
+    ]));
+
+    ToolbarHit {
+        row: toolbar_row,
+        pretty_cols: (pretty_start, pretty_end),
+        full_cols: (full_start, full_end),
+    }
 }
 
 fn render_block(

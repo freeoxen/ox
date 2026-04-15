@@ -74,6 +74,7 @@ pub async fn run_async(
         let has_approval_pending: bool;
         let mut content_height: Option<usize> = None;
         let mut viewport_height: usize = 0;
+        let mut history_hit_map: Option<crate::history_view::HistoryHitMap> = None;
         {
             let vs = fetch_view_state(
                 client,
@@ -133,16 +134,17 @@ pub async fn run_async(
 
             // Draw
             terminal.draw(|frame| {
-                let (ch, vh) = crate::tui::draw(
+                let (ch, vh, hm) = crate::tui::draw(
                     frame,
                     &vs,
                     &settings_shell.state,
                     theme,
                     &mut thread.text_input_view,
-                    &history_explorer,
+                    &mut history_explorer,
                 );
                 content_height = ch;
                 viewport_height = vh;
+                history_hit_map = hm;
             })?;
 
             // Extract the few values needed after dropping vs
@@ -358,6 +360,53 @@ pub async fn run_async(
                                 .await;
                             }
                         }
+                        // History screen: click-to-expand + content scroll
+                        ScreenSnapshot::History(_) => {
+                            match mouse.kind {
+                                MouseEventKind::Down(_) => {
+                                    if let Some(ref hm) = history_hit_map {
+                                        handle_history_click(
+                                            client,
+                                            hm,
+                                            mouse.column,
+                                            mouse.row,
+                                        )
+                                        .await;
+                                    }
+                                }
+                                MouseEventKind::ScrollUp => {
+                                    if history_explorer.at_content_top() {
+                                        // At top of content — move selection up
+                                        let _ = client
+                                            .write_typed(
+                                                &oxpath!("ui"),
+                                                &UiCommand::History(
+                                                    HistoryCommand::SelectPrev,
+                                                ),
+                                            )
+                                            .await;
+                                    } else {
+                                        history_explorer.scroll_content_up(3);
+                                    }
+                                }
+                                MouseEventKind::ScrollDown => {
+                                    if history_explorer.at_content_bottom() {
+                                        // At bottom of content — move selection down
+                                        let _ = client
+                                            .write_typed(
+                                                &oxpath!("ui"),
+                                                &UiCommand::History(
+                                                    HistoryCommand::SelectNext,
+                                                ),
+                                            )
+                                            .await;
+                                    } else {
+                                        history_explorer.scroll_content_down(3);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
                         // Global fallback (scroll)
                         _ => {
                             let has_active_thread = matches!(&ui.screen, ScreenSnapshot::Thread(_));
@@ -539,6 +588,75 @@ async fn dispatch_key(
                 )
                 .await;
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// History click handling
+// ---------------------------------------------------------------------------
+
+/// Handle a mouse click on the history screen using the hit map from rendering.
+async fn handle_history_click(
+    client: &ox_broker::ClientHandle,
+    hit_map: &crate::history_view::HistoryHitMap,
+    col: u16,
+    row: u16,
+) {
+    // Convert screen row to content row: account for area offset and content scroll
+    let row_offset = row.saturating_sub(hit_map.area_y) + hit_map.content_scroll;
+    let col_offset = col.saturating_sub(hit_map.area_x);
+
+    for entry in &hit_map.entries {
+        // Check toolbar line first (pretty/full toggles)
+        if let Some(ref toolbar) = entry.toolbar {
+            if row_offset == toolbar.row {
+                // Select the entry first
+                let _ = client
+                    .write_typed(
+                        &oxpath!("ui"),
+                        &UiCommand::History(HistoryCommand::SelectRow {
+                            row: entry.entry_index,
+                        }),
+                    )
+                    .await;
+
+                if col_offset >= toolbar.pretty_cols.0 && col_offset < toolbar.pretty_cols.1 {
+                    let _ = client
+                        .write_typed(
+                            &oxpath!("ui"),
+                            &UiCommand::History(HistoryCommand::TogglePretty),
+                        )
+                        .await;
+                } else if col_offset >= toolbar.full_cols.0 && col_offset < toolbar.full_cols.1 {
+                    let _ = client
+                        .write_typed(
+                            &oxpath!("ui"),
+                            &UiCommand::History(HistoryCommand::ToggleFull),
+                        )
+                        .await;
+                }
+                return;
+            }
+        }
+
+        // Check summary line (click to select + toggle expand)
+        if row_offset == entry.summary_row {
+            let _ = client
+                .write_typed(
+                    &oxpath!("ui"),
+                    &UiCommand::History(HistoryCommand::SelectRow {
+                        row: entry.entry_index,
+                    }),
+                )
+                .await;
+            let _ = client
+                .write_typed(
+                    &oxpath!("ui"),
+                    &UiCommand::History(HistoryCommand::ToggleExpand),
+                )
+                .await;
+            return;
         }
     }
 }
