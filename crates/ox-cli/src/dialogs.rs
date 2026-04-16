@@ -165,7 +165,6 @@ pub(crate) fn draw_shortcuts_modal(
 ) {
     let area = frame.area();
     let key_style = Style::default().add_modifier(Modifier::BOLD);
-    let alt_style = theme.status; // dim for alternate keys
     let desc_style = Style::default();
     let footer_style = theme.status;
 
@@ -202,17 +201,25 @@ pub(crate) fn draw_shortcuts_modal(
         }
     }
 
-    // Build lines: "  primary_key  (alt1, alt2)  description"
-    let content_lines: Vec<Line> = groups
+    // Build "keys" column: "j/Down", "Enter/Space", etc.
+    let key_labels: Vec<String> = groups
         .iter()
         .map(|g| {
-            let mut spans = vec![Span::styled(format!("  {:>10}", g.primary_key), key_style)];
-            if !g.alt_keys.is_empty() {
-                let alts = g.alt_keys.join(", ");
-                spans.push(Span::styled(format!(" ({alts})"), alt_style));
-            }
-            spans.push(Span::styled(format!("  {}", g.description), desc_style));
-            Line::from(spans)
+            let mut keys = vec![g.primary_key.clone()];
+            keys.extend(g.alt_keys.iter().cloned());
+            keys.join("/")
+        })
+        .collect();
+    let key_col_width = key_labels.iter().map(|k| k.len()).max().unwrap_or(6);
+
+    let content_lines: Vec<Line> = groups
+        .iter()
+        .zip(key_labels.iter())
+        .map(|(g, keys)| {
+            Line::from(vec![
+                Span::styled(format!("  {keys:<key_col_width$}"), key_style),
+                Span::styled(format!("  {}", g.description), desc_style),
+            ])
         })
         .collect();
 
