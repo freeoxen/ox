@@ -444,6 +444,9 @@ pub async fn run_async(
                         }
                     }
                 }
+                // Focus events — swallow silently. Without EnableFocusChange,
+                // these arrive as raw escape sequences that get misparsed as keys.
+                Event::FocusGained | Event::FocusLost => {}
                 _ => {}
             }
 

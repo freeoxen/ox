@@ -190,6 +190,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::io::stdout(),
         crossterm::event::EnableMouseCapture,
         crossterm::event::EnableBracketedPaste,
+        crossterm::event::EnableFocusChange,
     )
     .ok();
 
@@ -205,6 +206,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::io::stdout(),
         crossterm::event::DisableMouseCapture,
         crossterm::event::DisableBracketedPaste,
+        crossterm::event::DisableFocusChange,
     )
     .ok();
     ratatui::restore();
