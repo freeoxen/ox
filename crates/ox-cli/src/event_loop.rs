@@ -18,6 +18,60 @@ use ox_ui::text_input_store::EditSource;
 use std::time::Duration;
 use structfs_core_store::Writer as StructWriter;
 
+// ---------------------------------------------------------------------------
+// Scroll momentum — exponential boost for fast scrolling, decay for slow
+// ---------------------------------------------------------------------------
+
+/// Tracks scroll velocity for acceleration. Fast continuous scrolling
+/// ramps up; slow or direction-changed scrolling stays precise.
+struct ScrollMomentum {
+    last_time: std::time::Instant,
+    /// -1 = up, 1 = down, 0 = none
+    last_direction: i8,
+    /// Multiplier applied to base scroll amount. Starts at 1.0.
+    velocity: f32,
+}
+
+impl ScrollMomentum {
+    fn new() -> Self {
+        Self {
+            last_time: std::time::Instant::now(),
+            last_direction: 0,
+            velocity: 1.0,
+        }
+    }
+
+    /// Record a scroll event and return the number of lines to scroll.
+    /// `direction`: -1 for up, 1 for down.
+    fn scroll(&mut self, direction: i8) -> u16 {
+        let now = std::time::Instant::now();
+        let elapsed_ms = now.duration_since(self.last_time).as_millis();
+
+        if direction != self.last_direction {
+            // Direction changed — reset to base speed
+            self.velocity = 1.0;
+        } else if elapsed_ms < 80 {
+            // Rapid scrolling — boost
+            self.velocity = (self.velocity * 1.4).min(6.0);
+        } else if elapsed_ms < 200 {
+            // Moderate scrolling — gentle boost
+            self.velocity = (self.velocity * 1.1).min(6.0);
+        } else {
+            // Slow/paused — decay back toward 1.0
+            self.velocity = 1.0 + (self.velocity - 1.0) * 0.3;
+            if self.velocity < 1.05 {
+                self.velocity = 1.0;
+            }
+        }
+
+        self.last_time = now;
+        self.last_direction = direction;
+
+        // Base 3 lines, scaled by velocity
+        (3.0 * self.velocity).round() as u16
+    }
+}
+
 /// Dialog-local state, owned by the event loop (not App, not broker).
 pub(crate) struct DialogState {
     pub approval_selected: usize,
@@ -48,6 +102,7 @@ pub async fn run_async(
     };
     let mut thread = ThreadShell::new();
     let mut history_explorer = crate::history_state::HistoryExplorer::new();
+    let mut scroll_momentum = ScrollMomentum::new();
     let mut settings_shell = if needs_setup {
         // Navigate to settings screen via broker
         client
@@ -381,8 +436,8 @@ pub async fn run_async(
                                     }
                                 }
                                 MouseEventKind::ScrollUp => {
+                                    let lines = scroll_momentum.scroll(-1);
                                     if history_explorer.at_content_top() {
-                                        // At top of content — move selection up
                                         let _ = client
                                             .write_typed(
                                                 &oxpath!("ui"),
@@ -390,12 +445,12 @@ pub async fn run_async(
                                             )
                                             .await;
                                     } else {
-                                        history_explorer.scroll_content_up(3);
+                                        history_explorer.scroll_content_up(lines);
                                     }
                                 }
                                 MouseEventKind::ScrollDown => {
+                                    let lines = scroll_momentum.scroll(1);
                                     if history_explorer.at_content_bottom() {
-                                        // At bottom of content — move selection down
                                         let _ = client
                                             .write_typed(
                                                 &oxpath!("ui"),
@@ -403,7 +458,7 @@ pub async fn run_async(
                                             )
                                             .await;
                                     } else {
-                                        history_explorer.scroll_content_down(3);
+                                        history_explorer.scroll_content_down(lines);
                                     }
                                 }
                                 _ => {}
@@ -412,12 +467,18 @@ pub async fn run_async(
                         // Global fallback (scroll)
                         _ => {
                             let has_active_thread = matches!(&ui.screen, ScreenSnapshot::Thread(_));
+                            let scroll_lines = match mouse.kind {
+                                MouseEventKind::ScrollUp => scroll_momentum.scroll(-1),
+                                MouseEventKind::ScrollDown => scroll_momentum.scroll(1),
+                                _ => 3,
+                            };
                             dispatch_global_mouse(
                                 client,
                                 has_active_thread,
                                 has_approval_pending,
                                 dialog.pending_customize.is_some(),
                                 mouse.kind,
+                                scroll_lines,
                             )
                             .await;
                         }

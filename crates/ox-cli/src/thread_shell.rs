@@ -101,6 +101,7 @@ impl ThreadShell {
                     has_approval_pending,
                     has_pending_customize,
                     mouse.kind,
+                    3, // no momentum in insert mode
                 )
                 .await;
             }
@@ -231,6 +232,7 @@ pub(crate) async fn dispatch_global_mouse(
     has_pending_approval: bool,
     has_pending_customize: bool,
     kind: MouseEventKind,
+    scroll_lines: u16,
 ) {
     use ox_path::oxpath;
     use ox_types::{InboxCommand, ThreadCommand, UiCommand};
@@ -242,9 +244,14 @@ pub(crate) async fn dispatch_global_mouse(
     match kind {
         MouseEventKind::ScrollUp => {
             if has_active_thread {
-                let _ = client
-                    .write_typed(&oxpath!("ui"), &UiCommand::Thread(ThreadCommand::ScrollUp))
-                    .await;
+                for _ in 0..scroll_lines {
+                    let _ = client
+                        .write_typed(
+                            &oxpath!("ui"),
+                            &UiCommand::Thread(ThreadCommand::ScrollUp),
+                        )
+                        .await;
+                }
             } else {
                 let _ = client
                     .write_typed(&oxpath!("ui"), &UiCommand::Inbox(InboxCommand::SelectPrev))
@@ -253,12 +260,14 @@ pub(crate) async fn dispatch_global_mouse(
         }
         MouseEventKind::ScrollDown => {
             if has_active_thread {
-                let _ = client
-                    .write_typed(
-                        &oxpath!("ui"),
-                        &UiCommand::Thread(ThreadCommand::ScrollDown),
-                    )
-                    .await;
+                for _ in 0..scroll_lines {
+                    let _ = client
+                        .write_typed(
+                            &oxpath!("ui"),
+                            &UiCommand::Thread(ThreadCommand::ScrollDown),
+                        )
+                        .await;
+                }
             } else {
                 let _ = client
                     .write_typed(&oxpath!("ui"), &UiCommand::Inbox(InboxCommand::SelectNext))
