@@ -207,7 +207,7 @@ pub(crate) fn draw_shortcuts_modal(
         .map(|g| {
             let mut keys = vec![g.primary_key.clone()];
             keys.extend(g.alt_keys.iter().cloned());
-            keys.join("/")
+            keys.join(" / ")
         })
         .collect();
     let key_col_width = key_labels.iter().map(|k| k.len()).max().unwrap_or(6);
