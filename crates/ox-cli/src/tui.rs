@@ -252,16 +252,17 @@ fn draw_status_bar(
 
     let hints: String = if matches!(&vs.ui.screen, ScreenSnapshot::Settings(_)) {
         settings_hints(settings)
-    } else if vs.key_hints.is_empty() {
-        String::new()
     } else {
         let mut s = String::new();
-        for (key, desc) in &vs.key_hints {
-            s.push_str(" | ");
-            s.push_str(key);
-            s.push(' ');
-            s.push_str(desc);
+        for h in &vs.key_hints {
+            if h.status_hint {
+                s.push_str(" | ");
+                s.push_str(&h.key);
+                s.push(' ');
+                s.push_str(&h.description);
+            }
         }
+        s.push_str(" | ? help");
         s
     };
 

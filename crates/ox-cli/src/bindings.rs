@@ -44,6 +44,7 @@ fn bind(mode: &str, key: &str, action: Action, desc: &str) -> Binding {
         },
         action,
         description: desc.to_string(),
+        status_hint: false,
     }
 }
 
@@ -56,6 +57,21 @@ fn bind_screen(mode: &str, key: &str, screen: &str, action: Action, desc: &str) 
         },
         action,
         description: desc.to_string(),
+        status_hint: false,
+    }
+}
+
+/// Like bind_screen, but marks this binding for display in the status bar.
+fn hint(mode: &str, key: &str, screen: &str, action: Action, desc: &str) -> Binding {
+    Binding {
+        context: BindingContext {
+            mode: mode.to_string(),
+            key: key.to_string(),
+            screen: Some(screen.to_string()),
+        },
+        action,
+        description: desc.to_string(),
+        status_hint: true,
     }
 }
 
@@ -138,13 +154,7 @@ fn normal_mode(out: &mut Vec<Binding>) {
         invoke("quit"),
         "Quit",
     ));
-    out.push(bind_screen(
-        "normal",
-        "Esc",
-        "thread",
-        invoke("close"),
-        "Back to inbox",
-    ));
+    out.push(hint("normal", "Esc", "thread", invoke("close"), "Back"));
     out.push(bind_screen(
         "normal",
         "q",
@@ -156,27 +166,9 @@ fn normal_mode(out: &mut Vec<Binding>) {
     out.push(bind("normal", "Ctrl+t", invoke("close"), "Back to inbox"));
 
     // Enter insert mode — screen determines context
-    out.push(bind_screen(
-        "normal",
-        "c",
-        "inbox",
-        invoke("compose"),
-        "Compose new thread",
-    ));
-    out.push(bind_screen(
-        "normal",
-        "c",
-        "thread",
-        invoke("reply"),
-        "Reply in thread",
-    ));
-    out.push(bind_screen(
-        "normal",
-        "/",
-        "inbox",
-        invoke("search"),
-        "Search",
-    ));
+    out.push(hint("normal", "c", "inbox", invoke("compose"), "Compose"));
+    out.push(hint("normal", "c", "thread", invoke("reply"), "Reply"));
+    out.push(hint("normal", "/", "inbox", invoke("search"), "Search"));
 
     // Command mode
     out.push(bind("normal", ":", invoke("enter_command"), "Command"));
@@ -260,12 +252,12 @@ fn normal_mode(out: &mut Vec<Binding>) {
     ));
 
     // History explorer
-    out.push(bind_screen(
+    out.push(hint(
         "normal",
         "h",
         "thread",
         invoke("open_history"),
-        "History explorer",
+        "History",
     ));
 
     // Settings
@@ -299,12 +291,12 @@ fn normal_mode(out: &mut Vec<Binding>) {
     ));
 
     // Thread actions
-    out.push(bind_screen(
+    out.push(hint(
         "normal",
         "Enter",
         "inbox",
         invoke("open_selected"),
-        "Open thread",
+        "Open",
     ));
     out.push(bind_screen(
         "normal",
@@ -395,12 +387,12 @@ fn history_mode(out: &mut Vec<Binding>) {
     ));
 
     // Expand
-    out.push(bind_screen(
+    out.push(hint(
         "normal",
         "Enter",
         "history",
         invoke("toggle_expand"),
-        "Toggle expand",
+        "Expand",
     ));
     out.push(bind_screen(
         "normal",
@@ -423,19 +415,19 @@ fn history_mode(out: &mut Vec<Binding>) {
         invoke("collapse_all"),
         "Collapse all",
     ));
-    out.push(bind_screen(
+    out.push(hint(
         "normal",
         "p",
         "history",
         invoke("toggle_pretty"),
-        "Toggle pretty-print",
+        "Pretty",
     ));
-    out.push(bind_screen(
+    out.push(hint(
         "normal",
         "f",
         "history",
         invoke("toggle_full"),
-        "Toggle full content",
+        "Full",
     ));
 
     // Page movement (moves selection, not just viewport)
@@ -483,12 +475,12 @@ fn history_mode(out: &mut Vec<Binding>) {
     ));
 
     // Exit
-    out.push(bind_screen(
+    out.push(hint(
         "normal",
         "Esc",
         "history",
         invoke("back_to_thread"),
-        "Back to thread",
+        "Back",
     ));
     out.push(bind_screen(
         "normal",
@@ -654,7 +646,7 @@ mod tests {
             })
             .collect();
         assert_eq!(found.len(), 1);
-        assert_eq!(found[0].description, "History explorer");
+        assert_eq!(found[0].description, "History");
     }
 
     #[test]

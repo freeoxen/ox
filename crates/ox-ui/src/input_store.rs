@@ -47,6 +47,9 @@ pub struct Binding {
     pub context: BindingContext,
     pub action: Action,
     pub description: String,
+    /// If true, this binding appears in the status bar hint line.
+    /// Only a few key actions per screen should have this set.
+    pub status_hint: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -160,6 +163,9 @@ impl InputStore {
             "description".to_string(),
             Value::String(b.description.clone()),
         );
+        if b.status_hint {
+            map.insert("status_hint".to_string(), Value::Integer(1));
+        }
         match &b.action {
             Action::Invoke { command, .. } => {
                 map.insert("command".to_string(), Value::String(command.clone()));
@@ -225,6 +231,7 @@ impl InputStore {
             context: ctx,
             action: Action::Invoke { command, args },
             description,
+            status_hint: false,
         });
         Ok(oxpath!("bindings"))
     }
@@ -305,6 +312,7 @@ impl InputStore {
             context: ctx,
             action: Action::Macro(steps),
             description,
+            status_hint: false,
         });
         Ok(oxpath!("bindings"))
     }
@@ -415,6 +423,7 @@ mod tests {
                 args: BTreeMap::new(),
             },
             description: desc.to_string(),
+            status_hint: false,
         }
     }
 
@@ -430,6 +439,7 @@ mod tests {
                 args: BTreeMap::new(),
             },
             description: desc.to_string(),
+            status_hint: false,
         }
     }
 
@@ -562,6 +572,7 @@ mod tests {
                 },
             ]),
             description: "go home".to_string(),
+            status_hint: false,
         }];
         let mut store = InputStore::new(bindings);
         let (dispatcher, log) = mock_dispatcher();
@@ -784,6 +795,7 @@ mod tests {
                 args: BTreeMap::new(),
             },
             description: "quit".to_string(),
+            status_hint: false,
         }];
         let mut store = InputStore::new(bindings);
         let (dispatcher, log) = mock_dispatcher();
@@ -816,6 +828,7 @@ mod tests {
                 args,
             },
             description: "compose".to_string(),
+            status_hint: false,
         }];
         let mut store = InputStore::new(bindings);
         let (dispatcher, log) = mock_dispatcher();

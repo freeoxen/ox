@@ -158,7 +158,7 @@ pub(crate) fn build_sandbox_from_customize(
 
 pub(crate) fn draw_shortcuts_modal(
     frame: &mut Frame,
-    key_hints: &[(String, String)],
+    key_hints: &[ox_types::KeyHint],
     mode: &str,
     screen: &str,
     theme: &Theme,
@@ -170,10 +170,10 @@ pub(crate) fn draw_shortcuts_modal(
 
     let content_lines: Vec<Line> = key_hints
         .iter()
-        .map(|(key, desc)| {
+        .map(|h| {
             Line::from(vec![
-                Span::styled(format!("  {key:>10}"), key_style),
-                Span::styled(format!("  {desc}"), desc_style),
+                Span::styled(format!("  {:>10}", h.key), key_style),
+                Span::styled(format!("  {}", h.description), desc_style),
             ])
         })
         .collect();
