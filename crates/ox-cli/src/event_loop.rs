@@ -427,43 +427,40 @@ pub async fn run_async(
                             }
                         }
                         // History screen: click-to-expand + content scroll
-                        ScreenSnapshot::History(_) => {
-                            match mouse.kind {
-                                MouseEventKind::Down(_) => {
-                                    if let Some(ref hm) = history_hit_map {
-                                        handle_history_click(client, hm, mouse.column, mouse.row)
-                                            .await;
-                                    }
+                        ScreenSnapshot::History(_) => match mouse.kind {
+                            MouseEventKind::Down(_) => {
+                                if let Some(ref hm) = history_hit_map {
+                                    handle_history_click(client, hm, mouse.column, mouse.row).await;
                                 }
-                                MouseEventKind::ScrollUp => {
-                                    let lines = scroll_momentum.scroll(-1);
-                                    if history_explorer.at_content_top() {
-                                        let _ = client
-                                            .write_typed(
-                                                &oxpath!("ui"),
-                                                &UiCommand::History(HistoryCommand::SelectPrev),
-                                            )
-                                            .await;
-                                    } else {
-                                        history_explorer.scroll_content_up(lines);
-                                    }
-                                }
-                                MouseEventKind::ScrollDown => {
-                                    let lines = scroll_momentum.scroll(1);
-                                    if history_explorer.at_content_bottom() {
-                                        let _ = client
-                                            .write_typed(
-                                                &oxpath!("ui"),
-                                                &UiCommand::History(HistoryCommand::SelectNext),
-                                            )
-                                            .await;
-                                    } else {
-                                        history_explorer.scroll_content_down(lines);
-                                    }
-                                }
-                                _ => {}
                             }
-                        }
+                            MouseEventKind::ScrollUp => {
+                                let lines = scroll_momentum.scroll(-1);
+                                if history_explorer.at_content_top() {
+                                    let _ = client
+                                        .write_typed(
+                                            &oxpath!("ui"),
+                                            &UiCommand::History(HistoryCommand::SelectPrev),
+                                        )
+                                        .await;
+                                } else {
+                                    history_explorer.scroll_content_up(lines);
+                                }
+                            }
+                            MouseEventKind::ScrollDown => {
+                                let lines = scroll_momentum.scroll(1);
+                                if history_explorer.at_content_bottom() {
+                                    let _ = client
+                                        .write_typed(
+                                            &oxpath!("ui"),
+                                            &UiCommand::History(HistoryCommand::SelectNext),
+                                        )
+                                        .await;
+                                } else {
+                                    history_explorer.scroll_content_down(lines);
+                                }
+                            }
+                            _ => {}
+                        },
                         // Global fallback (scroll)
                         _ => {
                             let has_active_thread = matches!(&ui.screen, ScreenSnapshot::Thread(_));

@@ -246,10 +246,7 @@ pub(crate) async fn dispatch_global_mouse(
             if has_active_thread {
                 for _ in 0..scroll_lines {
                     let _ = client
-                        .write_typed(
-                            &oxpath!("ui"),
-                            &UiCommand::Thread(ThreadCommand::ScrollUp),
-                        )
+                        .write_typed(&oxpath!("ui"), &UiCommand::Thread(ThreadCommand::ScrollUp))
                         .await;
                 }
             } else {
