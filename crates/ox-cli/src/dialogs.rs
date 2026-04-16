@@ -165,21 +165,59 @@ pub(crate) fn draw_shortcuts_modal(
 ) {
     let area = frame.area();
     let key_style = Style::default().add_modifier(Modifier::BOLD);
+    let alt_style = theme.status; // dim for alternate keys
     let desc_style = Style::default();
-    let footer_style = theme.status; // dim
+    let footer_style = theme.status;
 
-    let content_lines: Vec<Line> = key_hints
+    // Group hints by command, preserving first-seen order.
+    // Within each group, status_hint keys come first (the "recommended" form).
+    let mut groups: Vec<ShortcutGroup> = Vec::new();
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
+    for h in key_hints {
+        let group_key = if h.command.is_empty() {
+            // No command — use description as group key (fallback)
+            h.description.clone()
+        } else {
+            h.command.clone()
+        };
+
+        if let Some(&idx) = seen.get(&group_key) {
+            if h.status_hint {
+                // Promoted: status_hint key becomes primary, old primary becomes alt
+                let old_primary = groups[idx].primary_key.clone();
+                groups[idx].alt_keys.insert(0, old_primary);
+                groups[idx].primary_key = h.key.clone();
+                groups[idx].description = h.description.clone();
+            } else {
+                groups[idx].alt_keys.push(h.key.clone());
+            }
+        } else {
+            seen.insert(group_key, groups.len());
+            groups.push(ShortcutGroup {
+                primary_key: h.key.clone(),
+                description: h.description.clone(),
+                alt_keys: Vec::new(),
+            });
+        }
+    }
+
+    // Build lines: "  primary_key  (alt1, alt2)  description"
+    let content_lines: Vec<Line> = groups
         .iter()
-        .map(|h| {
-            Line::from(vec![
-                Span::styled(format!("  {:>10}", h.key), key_style),
-                Span::styled(format!("  {}", h.description), desc_style),
-            ])
+        .map(|g| {
+            let mut spans = vec![Span::styled(format!("  {:>10}", g.primary_key), key_style)];
+            if !g.alt_keys.is_empty() {
+                let alts = g.alt_keys.join(", ");
+                spans.push(Span::styled(format!(" ({alts})"), alt_style));
+            }
+            spans.push(Span::styled(format!("  {}", g.description), desc_style));
+            Line::from(spans)
         })
         .collect();
 
     let line_count = content_lines.len() as u16 + 4; // +2 border +1 blank +1 footer
-    let max_width = content_lines.iter().map(|l| l.width()).max().unwrap_or(30) as u16 + 4; // padding
+    let max_width = content_lines.iter().map(|l| l.width()).max().unwrap_or(30) as u16 + 4;
     let dialog_width = max_width.clamp(30, area.width.saturating_sub(4));
     let dialog_height = line_count.min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(dialog_width)) / 2;
@@ -205,6 +243,16 @@ pub(crate) fn draw_shortcuts_modal(
 
     let content = Paragraph::new(Text::from(lines));
     frame.render_widget(content, inner);
+}
+
+/// A group of bindings that map to the same command.
+struct ShortcutGroup {
+    /// The recommended key (first seen, or status_hint key).
+    primary_key: String,
+    /// Human-readable description.
+    description: String,
+    /// Alternate keys for the same command.
+    alt_keys: Vec<String>,
 }
 
 pub(crate) fn draw_approval_dialog(
