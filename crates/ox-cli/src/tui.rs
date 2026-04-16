@@ -11,9 +11,17 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 // Draw — composed view
 // ---------------------------------------------------------------------------
 
+/// Hyperlink to render via OSC 8 after the frame is flushed.
+pub(crate) struct PendingHyperlink {
+    pub row: u16,
+    pub col: u16,
+    pub url: String,
+    pub text: String,
+}
+
 /// Main draw function. Takes a ViewState snapshot instead of &mut App.
 ///
-/// Returns `(content_height, viewport_height, history_hit_map)`.
+/// Returns `(content_height, viewport_height, history_hit_map, pending_hyperlink)`.
 pub(crate) fn draw(
     frame: &mut Frame,
     vs: &ViewState,
@@ -25,6 +33,7 @@ pub(crate) fn draw(
     Option<usize>,
     usize,
     Option<crate::history_view::HistoryHitMap>,
+    Option<PendingHyperlink>,
 ) {
     let editor = vs.ui.editor();
     let cur_insert_context = editor.map(|e| e.context);
@@ -156,6 +165,8 @@ pub(crate) fn draw(
     }
 
     // Modal overlays
+    let mut pending_hyperlink: Option<PendingHyperlink> = None;
+
     if vs.show_shortcuts {
         let mode_str = if vs.ui.editor().is_some() {
             "insert"
@@ -172,7 +183,7 @@ pub(crate) fn draw(
     } else if let Some(customize) = vs.pending_customize {
         crate::dialogs::draw_customize_dialog(frame, customize, theme);
     } else if vs.show_usage {
-        crate::dialogs::draw_usage_dialog(
+        pending_hyperlink = crate::dialogs::draw_usage_dialog(
             frame,
             &vs.model,
             &vs.turn.session_tokens,
@@ -195,6 +206,7 @@ pub(crate) fn draw(
         content_height,
         content_area.height as usize,
         history_hit_map,
+        pending_hyperlink,
     )
 }
 

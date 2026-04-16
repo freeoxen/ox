@@ -323,6 +323,7 @@ pub(crate) fn draw_approval_dialog(
     frame.render_widget(content, inner);
 }
 
+/// Returns `(row, col, url, text)` if a hyperlink should be rendered via OSC 8.
 pub(crate) fn draw_usage_dialog(
     frame: &mut Frame,
     model: &str,
@@ -331,7 +332,7 @@ pub(crate) fn draw_usage_dialog(
     per_model_usage: &[(String, ox_types::TokenUsage)],
     pricing_overrides: &std::collections::BTreeMap<String, ox_gate::pricing::ModelPricing>,
     theme: &Theme,
-) {
+) -> Option<crate::tui::PendingHyperlink> {
     use ox_gate::pricing;
 
     let area = frame.area();
@@ -406,17 +407,22 @@ pub(crate) fn draw_usage_dialog(
         lines.push(Line::from("  (pricing unavailable for this model)"));
     }
 
-    // Source URL
-    if !url.is_empty() {
+    // Source URL — track line index for OSC 8 hyperlink
+    let url_line_idx = if !url.is_empty() {
         lines.push(Line::from(""));
+        let idx = lines.len();
+        let prefix = "  Source: ";
         lines.push(Line::from(vec![
-            Span::styled("  Source: ", theme.status),
+            Span::styled(prefix, theme.status),
             Span::styled(
                 url.to_string(),
                 theme.status.add_modifier(Modifier::UNDERLINED),
             ),
         ]));
-    }
+        Some((idx, prefix.len()))
+    } else {
+        None
+    };
 
     // Footer
     lines.push(Line::from(""));
@@ -443,6 +449,14 @@ pub(crate) fn draw_usage_dialog(
 
     let content = Paragraph::new(Text::from(lines));
     frame.render_widget(content, inner);
+
+    // Return hyperlink info for OSC 8 post-render
+    url_line_idx.map(|(line_idx, prefix_len)| crate::tui::PendingHyperlink {
+        row: inner.y + line_idx as u16,
+        col: inner.x + prefix_len as u16,
+        url: url.to_string(),
+        text: url.to_string(),
+    })
 }
 
 /// Render a token usage section (tokens + cost) as dialog lines.

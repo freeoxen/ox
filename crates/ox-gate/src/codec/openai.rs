@@ -177,6 +177,14 @@ pub fn parse_sse_events(body: &str) -> (Vec<StreamEvent>, UsageInfo) {
             if let Some(ct) = usage_obj.get("completion_tokens").and_then(|v| v.as_u64()) {
                 usage.output_tokens = ct as u32;
             }
+            // OpenAI reports cached prompt tokens under prompt_tokens_details.cached_tokens
+            if let Some(cached) = usage_obj
+                .get("prompt_tokens_details")
+                .and_then(|d| d.get("cached_tokens"))
+                .and_then(|v| v.as_u64())
+            {
+                usage.cache_read_input_tokens = cached as u32;
+            }
         }
 
         // Process choices
@@ -391,6 +399,24 @@ data: [DONE]\n";
         assert_eq!(events.len(), 1); // just MessageStop
         assert_eq!(usage.input_tokens, 100);
         assert_eq!(usage.output_tokens, 50);
+    }
+
+    #[test]
+    fn parse_usage_with_cached_tokens() {
+        let body = "data: {\"usage\":{\"prompt_tokens\":500,\"completion_tokens\":80,\"prompt_tokens_details\":{\"cached_tokens\":400}}}\ndata: [DONE]\n";
+        let (_events, usage) = parse_sse_events(body);
+        assert_eq!(usage.input_tokens, 500);
+        assert_eq!(usage.output_tokens, 80);
+        assert_eq!(usage.cache_read_input_tokens, 400);
+        assert_eq!(usage.cache_creation_input_tokens, 0);
+    }
+
+    #[test]
+    fn parse_usage_without_cached_tokens_defaults_to_zero() {
+        let body =
+            "data: {\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":50}}\ndata: [DONE]\n";
+        let (_events, usage) = parse_sse_events(body);
+        assert_eq!(usage.cache_read_input_tokens, 0);
     }
 
     #[test]

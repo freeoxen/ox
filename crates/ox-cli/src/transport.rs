@@ -181,6 +181,13 @@ impl SseParser {
             if let Some(ct) = usage_obj.get("completion_tokens").and_then(|v| v.as_u64()) {
                 self.usage.output_tokens = ct as u32;
             }
+            if let Some(cached) = usage_obj
+                .get("prompt_tokens_details")
+                .and_then(|d| d.get("cached_tokens"))
+                .and_then(|v| v.as_u64())
+            {
+                self.usage.cache_read_input_tokens = cached as u32;
+            }
         }
 
         let mut events = Vec::new();
@@ -594,5 +601,14 @@ mod tests {
         parser.feed("data: {\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":50}}");
         assert_eq!(parser.usage.input_tokens, 100);
         assert_eq!(parser.usage.output_tokens, 50);
+    }
+
+    #[test]
+    fn sse_parser_openai_cached_tokens() {
+        let mut parser = SseParser::new("openai");
+        parser.feed("data: {\"usage\":{\"prompt_tokens\":500,\"completion_tokens\":80,\"prompt_tokens_details\":{\"cached_tokens\":400}}}");
+        assert_eq!(parser.usage.input_tokens, 500);
+        assert_eq!(parser.usage.output_tokens, 80);
+        assert_eq!(parser.usage.cache_read_input_tokens, 400);
     }
 }

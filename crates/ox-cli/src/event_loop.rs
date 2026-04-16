@@ -190,8 +190,9 @@ pub async fn run_async(
             }
 
             // Draw
+            let mut pending_hyperlink: Option<crate::tui::PendingHyperlink> = None;
             terminal.draw(|frame| {
-                let (ch, vh, hm) = crate::tui::draw(
+                let (ch, vh, hm, hl) = crate::tui::draw(
                     frame,
                     &vs,
                     &settings_shell.state,
@@ -202,7 +203,26 @@ pub async fn run_async(
                 content_height = ch;
                 viewport_height = vh;
                 history_hit_map = hm;
+                pending_hyperlink = hl;
             })?;
+
+            // Post-draw: write OSC 8 hyperlink if the usage dialog is showing a URL.
+            // Ratatui doesn't support hyperlinks natively, so we write raw escapes
+            // after the frame is flushed.
+            if let Some(hl) = &pending_hyperlink {
+                use std::io::Write;
+                let mut stdout = std::io::stdout();
+                // Move cursor to the URL position and write OSC 8 hyperlink
+                let _ = crossterm::queue!(
+                    stdout,
+                    crossterm::cursor::MoveTo(hl.col, hl.row),
+                    crossterm::style::Print(format!(
+                        "\x1b]8;;{}\x07{}\x1b]8;;\x07",
+                        hl.url, hl.text
+                    ))
+                );
+                let _ = stdout.flush();
+            }
 
             // Extract the few values needed after dropping vs
             selected_thread_id = match &vs.ui.screen {
