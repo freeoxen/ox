@@ -51,7 +51,7 @@ pub struct ViewState<'a> {
     pub input_history: &'a [String],
     pub approval_selected: usize,
     pub pending_customize: &'a Option<CustomizeState>,
-    pub key_hints: Vec<(String, String)>,
+    pub key_hints: Vec<ox_types::KeyHint>,
     pub show_shortcuts: bool,
     pub editor_mode: crate::editor::EditorMode,
     pub editor_command_buffer: String,
@@ -217,8 +217,8 @@ pub async fn fetch_view_state<'a>(
     }
 }
 
-/// Read bindings for the current mode+screen and extract (key, description) pairs.
-async fn read_key_hints(client: &ClientHandle, mode: &str, screen: &str) -> Vec<(String, String)> {
+/// Read bindings for the current mode+screen, deduplicated by key.
+async fn read_key_hints(client: &ClientHandle, mode: &str, screen: &str) -> Vec<ox_types::KeyHint> {
     let bindings_path =
         structfs_core_store::Path::parse(&format!("input/bindings/{mode}/{screen}"))
             .unwrap_or_else(|_| path!("input/bindings"));
@@ -233,7 +233,7 @@ async fn read_key_hints(client: &ClientHandle, mode: &str, screen: &str) -> Vec<
     let mut seen_keys = std::collections::HashSet::new();
     for hint in hints {
         if seen_keys.insert(hint.key.clone()) {
-            result.push((hint.key, hint.description));
+            result.push(hint);
         }
     }
     result
