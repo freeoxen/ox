@@ -318,10 +318,17 @@ fn token_usage_default_and_roundtrip() {
     let usage = TokenUsage {
         input_tokens: 1500,
         output_tokens: 300,
+        ..Default::default()
     };
     let json = serde_json::to_string(&usage).unwrap();
     let back: TokenUsage = serde_json::from_str(&json).unwrap();
     assert_eq!(usage, back);
+
+    // Old serialized data without cache fields should deserialize with 0s
+    let old_json = r#"{"input_tokens":100,"output_tokens":50}"#;
+    let old: TokenUsage = serde_json::from_str(old_json).unwrap();
+    assert_eq!(old.cache_creation_input_tokens, 0);
+    assert_eq!(old.cache_read_input_tokens, 0);
 }
 
 #[test]

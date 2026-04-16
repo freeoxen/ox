@@ -7,6 +7,7 @@
 
 pub mod account;
 pub mod codec;
+pub mod pricing;
 pub mod provider;
 
 pub use account::AccountConfig;

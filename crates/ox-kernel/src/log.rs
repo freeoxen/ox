@@ -69,10 +69,16 @@ pub enum LogEntry {
     TurnEnd {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scope: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
         #[serde(default)]
         input_tokens: u32,
         #[serde(default)]
         output_tokens: u32,
+        #[serde(default)]
+        cache_creation_input_tokens: u32,
+        #[serde(default)]
+        cache_read_input_tokens: u32,
     },
 
     #[serde(rename = "approval_requested")]

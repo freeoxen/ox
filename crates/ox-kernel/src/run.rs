@@ -594,6 +594,7 @@ const NUDGE_AFTER_ITERATIONS: usize = 8;
 /// the same `execute_tools` path, ensuring uniform policy enforcement.
 pub fn run_turn(context: &mut dyn Store, emit: &mut dyn FnMut(AgentEvent)) -> Result<(), String> {
     let account = read_default_account(context)?;
+    let (run_model, _) = read_model_config(context)?;
     let refs = default_refs();
 
     let mut stack: Vec<CompletionFrame> = vec![CompletionFrame {
@@ -607,6 +608,11 @@ pub fn run_turn(context: &mut dyn Store, emit: &mut dyn FnMut(AgentEvent)) -> Re
     // tool call is interleaved with normal tool calls.
     let mut deferred_results: Vec<ToolResult> = Vec::new();
     let mut total_iterations: usize = 0;
+    // Accumulated token usage across all completions in this run.
+    let mut run_input_tokens: u32 = 0;
+    let mut run_output_tokens: u32 = 0;
+    let mut run_cache_creation: u32 = 0;
+    let mut run_cache_read: u32 = 0;
 
     loop {
         total_iterations += 1;
@@ -653,6 +659,29 @@ pub fn run_turn(context: &mut dyn Store, emit: &mut dyn FnMut(AgentEvent)) -> Re
         };
 
         let events = complete(context, &frame.account, &refs)?;
+
+        // Read token usage from the completion metadata.
+        // The CompletionModule stores input/output tokens after each call.
+        if let Ok(meta_path) = Path::parse(&format!("tools/completions/complete/{}", frame.account))
+        {
+            if let Ok(Some(record)) = context.read(&meta_path) {
+                if let Some(Value::Map(meta)) = record.as_value() {
+                    if let Some(Value::Integer(n)) = meta.get("input_tokens") {
+                        run_input_tokens += *n as u32;
+                    }
+                    if let Some(Value::Integer(n)) = meta.get("output_tokens") {
+                        run_output_tokens += *n as u32;
+                    }
+                    if let Some(Value::Integer(n)) = meta.get("cache_creation_input_tokens") {
+                        run_cache_creation += *n as u32;
+                    }
+                    if let Some(Value::Integer(n)) = meta.get("cache_read_input_tokens") {
+                        run_cache_read += *n as u32;
+                    }
+                }
+            }
+        }
+
         let content = accumulate_response(events, emit)?;
 
         // Record assistant message to log with scope
@@ -690,11 +719,16 @@ pub fn run_turn(context: &mut dyn Store, emit: &mut dyn FnMut(AgentEvent)) -> Re
 
             if stack.is_empty() {
                 // Root completion done
-                // Log turn end to structured log
+                // Log turn end with accumulated token usage
                 {
                     let entry = serde_json::json!({
                         "type": "turn_end",
                         "scope": &popped.scope,
+                        "model": &run_model,
+                        "input_tokens": run_input_tokens,
+                        "output_tokens": run_output_tokens,
+                        "cache_creation_input_tokens": run_cache_creation,
+                        "cache_read_input_tokens": run_cache_read,
                     });
                     let val = structfs_serde_store::json_to_value(entry);
                     let _ = context.write(

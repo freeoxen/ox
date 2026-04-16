@@ -19,13 +19,22 @@ use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writ
 /// The host injects this at construction. On native: reqwest HTTP.
 /// On wasm: fetch API. The CompletionModule doesn't know or care.
 pub trait CompletionTransport: Send + Sync {
-    /// Send a completion request, return stream events.
-    /// The callback receives events as they stream in (for real-time TUI updates).
+    /// Send a completion request, return stream events and token usage.
     fn send(
         &self,
         request: &CompletionRequest,
         on_event: &dyn Fn(&StreamEvent),
-    ) -> Result<(Vec<StreamEvent>, u32, u32), String>;
+    ) -> Result<CompletionOutput, String>;
+}
+
+/// Output from a completion transport — events plus token usage.
+#[derive(Debug, Clone, Default)]
+pub struct CompletionOutput {
+    pub events: Vec<StreamEvent>,
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub cache_creation_input_tokens: u32,
+    pub cache_read_input_tokens: u32,
 }
 
 /// Stored result of a completion execution.
@@ -37,6 +46,10 @@ pub struct CompletionResult {
     pub input_tokens: u32,
     /// Output tokens generated.
     pub output_tokens: u32,
+    /// Tokens used to create a new cache entry.
+    pub cache_creation_input_tokens: u32,
+    /// Tokens read from an existing cache entry.
+    pub cache_read_input_tokens: u32,
 }
 
 /// Thin wrapper around [`GateStore`] that exposes it as a StructFS store
@@ -93,11 +106,13 @@ impl CompletionModule {
             .transport
             .as_ref()
             .ok_or_else(|| "no CompletionTransport injected".to_string())?;
-        let (events, input_tokens, output_tokens) = transport.send(request, on_event)?;
+        let output = transport.send(request, on_event)?;
         let result = CompletionResult {
-            events,
-            input_tokens,
-            output_tokens,
+            events: output.events,
+            input_tokens: output.input_tokens,
+            output_tokens: output.output_tokens,
+            cache_creation_input_tokens: output.cache_creation_input_tokens,
+            cache_read_input_tokens: output.cache_read_input_tokens,
         };
         self.results.insert(account.to_string(), result);
         Ok(self.results.get(account).unwrap())
@@ -228,6 +243,14 @@ impl Reader for CompletionModule {
                     Value::Integer(r.output_tokens as i64),
                 );
                 map.insert(
+                    "cache_creation_input_tokens".to_string(),
+                    Value::Integer(r.cache_creation_input_tokens as i64),
+                );
+                map.insert(
+                    "cache_read_input_tokens".to_string(),
+                    Value::Integer(r.cache_read_input_tokens as i64),
+                );
+                map.insert(
                     "event_count".to_string(),
                     Value::Integer(r.events.len() as i64),
                 );
@@ -329,13 +352,18 @@ mod tests {
             &self,
             request: &CompletionRequest,
             on_event: &dyn Fn(&StreamEvent),
-        ) -> Result<(Vec<StreamEvent>, u32, u32), String> {
+        ) -> Result<CompletionOutput, String> {
             self.calls.lock().unwrap().push(request.clone());
             let resp = self.response.lock().unwrap().clone();
             for event in &resp.0 {
                 on_event(event);
             }
-            Ok(resp)
+            Ok(CompletionOutput {
+                events: resp.0,
+                input_tokens: resp.1,
+                output_tokens: resp.2,
+                ..Default::default()
+            })
         }
     }
 

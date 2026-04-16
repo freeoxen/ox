@@ -102,6 +102,18 @@ pub fn extract_usage(body: &str) -> UsageInfo {
                     if let Some(it) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
                         info.input_tokens = it as u32;
                     }
+                    if let Some(ct) = usage
+                        .get("cache_creation_input_tokens")
+                        .and_then(|v| v.as_u64())
+                    {
+                        info.cache_creation_input_tokens = ct as u32;
+                    }
+                    if let Some(cr) = usage
+                        .get("cache_read_input_tokens")
+                        .and_then(|v| v.as_u64())
+                    {
+                        info.cache_read_input_tokens = cr as u32;
+                    }
                 }
             }
             "message_delta" => {
@@ -222,5 +234,29 @@ data: {\"type\":\"message_stop\"}\n";
         let usage = extract_usage(body);
         assert_eq!(usage.input_tokens, 0);
         assert_eq!(usage.output_tokens, 0);
+    }
+
+    #[test]
+    fn extract_usage_with_cache_tokens() {
+        let body = "\
+data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":2095,\"cache_creation_input_tokens\":1800,\"cache_read_input_tokens\":200}}}\n\
+data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":50}}\n\
+data: {\"type\":\"message_stop\"}\n";
+        let usage = extract_usage(body);
+        assert_eq!(usage.input_tokens, 2095);
+        assert_eq!(usage.output_tokens, 50);
+        assert_eq!(usage.cache_creation_input_tokens, 1800);
+        assert_eq!(usage.cache_read_input_tokens, 200);
+    }
+
+    #[test]
+    fn extract_usage_without_cache_fields_defaults_to_zero() {
+        let body = "\
+data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":100}}}\n\
+data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":25}}\n";
+        let usage = extract_usage(body);
+        assert_eq!(usage.input_tokens, 100);
+        assert_eq!(usage.cache_creation_input_tokens, 0);
+        assert_eq!(usage.cache_read_input_tokens, 0);
     }
 }

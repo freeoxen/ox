@@ -46,6 +46,7 @@ pub struct ViewState<'a> {
     // -- Config ----------------------------------------------------------
     pub model: String,
     pub provider: String,
+    pub pricing_overrides: std::collections::BTreeMap<String, ox_gate::pricing::ModelPricing>,
 
     // -- App-borrowed (references) ---------------------------------------
     pub input_history: &'a [String],
@@ -53,6 +54,7 @@ pub struct ViewState<'a> {
     pub pending_customize: &'a Option<CustomizeState>,
     pub key_hints: Vec<ox_types::KeyHint>,
     pub show_shortcuts: bool,
+    pub show_usage: bool,
     pub editor_mode: crate::editor::EditorMode,
     pub editor_command_buffer: String,
 }
@@ -196,6 +198,9 @@ pub async fn fetch_view_state<'a>(
     };
     let key_hints = read_key_hints(client, mode_str, screen_str).await;
 
+    // Read pricing overrides from config (empty BTreeMap if none configured).
+    let pricing_overrides = read_pricing_overrides(client).await;
+
     ViewState {
         ui,
         inbox_threads,
@@ -208,13 +213,67 @@ pub async fn fetch_view_state<'a>(
         input_history: &app.input_history,
         model,
         provider,
+        pricing_overrides,
         approval_selected: dialog.approval_selected,
         pending_customize: &dialog.pending_customize,
         key_hints,
         show_shortcuts: dialog.show_shortcuts,
+        show_usage: dialog.show_usage,
         editor_mode,
         editor_command_buffer: editor_command_buffer.to_string(),
     }
+}
+
+/// Read pricing overrides from config/pricing.
+///
+/// Each key under `config/pricing` is a model prefix (e.g. `claude-sonnet-4`).
+/// The value should be a map with `input_per_mtok` and `output_per_mtok` fields,
+/// plus optional `cache_creation_multiplier` and `cache_read_multiplier`.
+async fn read_pricing_overrides(
+    client: &ClientHandle,
+) -> std::collections::BTreeMap<String, ox_gate::pricing::ModelPricing> {
+    let mut overrides = std::collections::BTreeMap::new();
+    let Ok(Some(record)) = client
+        .read(&structfs_core_store::path!("config/pricing"))
+        .await
+    else {
+        return overrides;
+    };
+    let Some(Value::Map(map)) = record.as_value() else {
+        return overrides;
+    };
+    for (model_prefix, val) in map {
+        if let Value::Map(fields) = val {
+            let input = match fields.get("input_per_mtok") {
+                Some(Value::Float(f)) => *f,
+                Some(Value::Integer(n)) => *n as f64,
+                _ => continue,
+            };
+            let output = match fields.get("output_per_mtok") {
+                Some(Value::Float(f)) => *f,
+                Some(Value::Integer(n)) => *n as f64,
+                _ => continue,
+            };
+            let cc = match fields.get("cache_creation_multiplier") {
+                Some(Value::Float(f)) => *f,
+                _ => 1.0,
+            };
+            let cr = match fields.get("cache_read_multiplier") {
+                Some(Value::Float(f)) => *f,
+                _ => 1.0,
+            };
+            overrides.insert(
+                model_prefix.clone(),
+                ox_gate::pricing::ModelPricing {
+                    input_per_mtok: input,
+                    output_per_mtok: output,
+                    cache_creation_multiplier: cc,
+                    cache_read_multiplier: cr,
+                },
+            );
+        }
+    }
+    overrides
 }
 
 /// Read bindings for the current mode+screen, deduplicated by key.

@@ -429,15 +429,16 @@ mod tests {
             &self,
             _request: &CompletionRequest,
             _on_event: &dyn Fn(&StreamEvent),
-        ) -> Result<(Vec<StreamEvent>, u32, u32), String> {
-            Ok((
-                vec![
+        ) -> Result<ox_tools::completion::CompletionOutput, String> {
+            Ok(ox_tools::completion::CompletionOutput {
+                events: vec![
                     StreamEvent::TextDelta("Hello from the agent!".to_string()),
                     StreamEvent::MessageStop,
                 ],
-                10,
-                5,
-            ))
+                input_tokens: 10,
+                output_tokens: 5,
+                ..Default::default()
+            })
         }
     }
 

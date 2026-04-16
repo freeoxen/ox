@@ -77,6 +77,7 @@ pub(crate) struct DialogState {
     pub approval_selected: usize,
     pub pending_customize: Option<CustomizeState>,
     pub show_shortcuts: bool,
+    pub show_usage: bool,
 }
 
 /// Async event loop that dispatches through the BrokerStore.
@@ -99,6 +100,7 @@ pub async fn run_async(
         approval_selected: 0,
         pending_customize: None,
         show_shortcuts: false,
+        show_usage: false,
     };
     let mut thread = ThreadShell::new();
     let mut history_explorer = crate::history_state::HistoryExplorer::new();
@@ -318,8 +320,12 @@ pub async fn run_async(
         for evt in events {
             match evt {
                 Event::Key(key) => {
+                    // Usage dialog — dismiss on any key
+                    if dialog.show_usage {
+                        dialog.show_usage = false;
+                    }
                     // Shortcuts modal — dismiss on ? or Esc, swallow all other keys
-                    if dialog.show_shortcuts {
+                    else if dialog.show_shortcuts {
                         if let Some(key_str) = encode_key(key.modifiers, key.code) {
                             if key_str == "?" || key_str == "Esc" || key_str == "Ctrl+q" {
                                 dialog.show_shortcuts = false;
@@ -461,6 +467,15 @@ pub async fn run_async(
                             }
                             _ => {}
                         },
+                        // Thread normal mode: click on status bar → toggle usage dialog
+                        ScreenSnapshot::Thread(_)
+                            if matches!(mouse.kind, MouseEventKind::Down(_)) =>
+                        {
+                            let term_h = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24);
+                            if mouse.row == term_h.saturating_sub(1) {
+                                dialog.show_usage = !dialog.show_usage;
+                            }
+                        }
                         // Global fallback (scroll)
                         _ => {
                             let has_active_thread = matches!(&ui.screen, ScreenSnapshot::Thread(_));

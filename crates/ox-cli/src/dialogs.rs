@@ -323,6 +323,194 @@ pub(crate) fn draw_approval_dialog(
     frame.render_widget(content, inner);
 }
 
+pub(crate) fn draw_usage_dialog(
+    frame: &mut Frame,
+    model: &str,
+    session_tokens: &ox_types::TokenUsage,
+    last_run_tokens: &ox_types::TokenUsage,
+    per_model_usage: &[(String, ox_types::TokenUsage)],
+    pricing_overrides: &std::collections::BTreeMap<String, ox_gate::pricing::ModelPricing>,
+    theme: &Theme,
+) {
+    use ox_gate::pricing;
+
+    let area = frame.area();
+    let pricing_info = pricing::model_pricing_with_overrides(model, pricing_overrides);
+    let url = pricing::pricing_url(model);
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Model
+    lines.push(Line::from(vec![
+        Span::styled("  Model:   ", Style::default()),
+        Span::styled(model, Style::default().add_modifier(Modifier::BOLD)),
+    ]));
+    lines.push(Line::from(""));
+
+    // Rates
+    if let Some(p) = pricing_info {
+        lines.push(Line::from(Span::styled(
+            "  Rates (per million tokens)",
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(format!(
+            "    Input:   ${:.2}/Mtok",
+            p.input_per_mtok
+        )));
+        lines.push(Line::from(format!(
+            "    Output:  ${:.2}/Mtok",
+            p.output_per_mtok
+        )));
+        if p.cache_creation_multiplier != 1.0 || p.cache_read_multiplier != 1.0 {
+            lines.push(Line::from(format!(
+                "    Cache:   {:.0}% write, {:.0}% read",
+                p.cache_creation_multiplier * 100.0,
+                p.cache_read_multiplier * 100.0,
+            )));
+        }
+        lines.push(Line::from(""));
+    }
+
+    // Last query breakdown
+    if last_run_tokens.input_tokens > 0 || last_run_tokens.output_tokens > 0 {
+        lines.push(Line::from(Span::styled(
+            "  Last query",
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        lines.extend(usage_section_lines(
+            last_run_tokens,
+            model,
+            pricing_overrides,
+        ));
+        lines.push(Line::from(""));
+    }
+
+    // Session totals
+    lines.push(Line::from(Span::styled(
+        "  Session total",
+        Style::default().add_modifier(Modifier::BOLD),
+    )));
+    if per_model_usage.len() > 1 {
+        // Multi-model: show per-model breakdown with each model's own pricing
+        for (m, usage) in per_model_usage {
+            lines.push(Line::from(format!("    {m}")));
+            lines.extend(usage_section_lines(usage, m, pricing_overrides));
+        }
+    } else if session_tokens.input_tokens > 0 || session_tokens.output_tokens > 0 {
+        lines.extend(usage_section_lines(
+            session_tokens,
+            model,
+            pricing_overrides,
+        ));
+    } else if pricing_info.is_none() {
+        lines.push(Line::from("  (pricing unavailable for this model)"));
+    }
+
+    // Source URL
+    if !url.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("  Source: ", theme.status),
+            Span::styled(
+                url.to_string(),
+                theme.status.add_modifier(Modifier::UNDERLINED),
+            ),
+        ]));
+    }
+
+    // Footer
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("  Esc to close", theme.status)));
+
+    let content_width = lines.iter().map(|l| l.width()).max().unwrap_or(30) as u16 + 4;
+    let dialog_width = content_width.clamp(40, area.width.saturating_sub(4));
+    let dialog_height = (lines.len() as u16 + 2).min(area.height.saturating_sub(4));
+    let x = (area.width.saturating_sub(dialog_width)) / 2;
+    let y = (area.height.saturating_sub(dialog_height)) / 2;
+    let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
+
+    frame.render_widget(Clear, dialog_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default())
+        .title(Span::styled(
+            " Usage & Cost ",
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(dialog_area);
+    frame.render_widget(block, dialog_area);
+
+    let content = Paragraph::new(Text::from(lines));
+    frame.render_widget(content, inner);
+}
+
+/// Render a token usage section (tokens + cost) as dialog lines.
+fn usage_section_lines(
+    usage: &ox_types::TokenUsage,
+    model: &str,
+    overrides: &std::collections::BTreeMap<String, ox_gate::pricing::ModelPricing>,
+) -> Vec<Line<'static>> {
+    use ox_gate::pricing;
+
+    let mut out = Vec::new();
+    let has_cache = usage.cache_creation_input_tokens > 0 || usage.cache_read_input_tokens > 0;
+
+    out.push(Line::from(format!(
+        "    Input:   {:>8} tokens",
+        format_with_commas(usage.input_tokens)
+    )));
+    if has_cache {
+        if usage.cache_creation_input_tokens > 0 {
+            out.push(Line::from(format!(
+                "      cache write {:>8}",
+                format_with_commas(usage.cache_creation_input_tokens)
+            )));
+        }
+        if usage.cache_read_input_tokens > 0 {
+            out.push(Line::from(format!(
+                "      cache read  {:>8}",
+                format_with_commas(usage.cache_read_input_tokens)
+            )));
+        }
+    }
+    out.push(Line::from(format!(
+        "    Output:  {:>8} tokens",
+        format_with_commas(usage.output_tokens)
+    )));
+
+    if let Some(cost) = pricing::estimate_cost_full_with_overrides(
+        model,
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.cache_creation_input_tokens,
+        usage.cache_read_input_tokens,
+        overrides,
+    ) {
+        out.push(Line::from(vec![
+            Span::raw("    Cost:    "),
+            Span::styled(
+                format!("${:.6}", cost),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+        ]));
+    }
+    out
+}
+
+/// Format a u32 with comma separators: 1234567 → "1,234,567".
+fn format_with_commas(n: u32) -> String {
+    let s = n.to_string();
+    let mut result = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            result.push(',');
+        }
+        result.push(c);
+    }
+    result
+}
+
 pub(crate) fn draw_customize_dialog(
     frame: &mut Frame,
     cust: &crate::types::CustomizeState,

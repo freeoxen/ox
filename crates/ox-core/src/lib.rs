@@ -107,7 +107,7 @@ mod tests {
             &self,
             _request: &CompletionRequest,
             on_event: &dyn Fn(&StreamEvent),
-        ) -> Result<(Vec<StreamEvent>, u32, u32), String> {
+        ) -> Result<ox_tools::completion::CompletionOutput, String> {
             let resp = self
                 .responses
                 .lock()
@@ -117,7 +117,12 @@ mod tests {
             for event in &resp.0 {
                 on_event(event);
             }
-            Ok(resp)
+            Ok(ox_tools::completion::CompletionOutput {
+                events: resp.0,
+                input_tokens: resp.1,
+                output_tokens: resp.2,
+                ..Default::default()
+            })
         }
     }
 

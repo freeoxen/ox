@@ -171,6 +171,16 @@ pub(crate) fn draw(
         crate::dialogs::draw_shortcuts_modal(frame, &vs.key_hints, mode_str, screen_str, theme);
     } else if let Some(customize) = vs.pending_customize {
         crate::dialogs::draw_customize_dialog(frame, customize, theme);
+    } else if vs.show_usage {
+        crate::dialogs::draw_usage_dialog(
+            frame,
+            &vs.model,
+            &vs.turn.session_tokens,
+            &vs.turn.last_run_tokens,
+            &vs.turn.per_model_usage,
+            &vs.pricing_overrides,
+            theme,
+        );
     } else if let Some(ref ap) = vs.approval_pending {
         crate::dialogs::draw_approval_dialog(
             frame,
@@ -241,10 +251,82 @@ fn draw_status_bar(
     };
 
     let context_info = if matches!(&vs.ui.screen, ScreenSnapshot::Thread(_)) {
-        format!(
-            " {}in/{}out",
-            vs.turn.tokens.input_tokens, vs.turn.tokens.output_tokens
-        )
+        let st = &vs.turn.session_tokens;
+        let lr = &vs.turn.last_run_tokens;
+
+        if st.input_tokens == 0 && st.output_tokens == 0 {
+            if !vs.messages.is_empty() {
+                " (usage not tracked)".into()
+            } else {
+                String::new()
+            }
+        } else {
+            let session_cost = ox_gate::pricing::estimate_cost_full_with_overrides(
+                &vs.model,
+                st.input_tokens,
+                st.output_tokens,
+                st.cache_creation_input_tokens,
+                st.cache_read_input_tokens,
+                &vs.pricing_overrides,
+            );
+            let run_cost = ox_gate::pricing::estimate_cost_full_with_overrides(
+                &vs.model,
+                lr.input_tokens,
+                lr.output_tokens,
+                lr.cache_creation_input_tokens,
+                lr.cache_read_input_tokens,
+                &vs.pricing_overrides,
+            );
+
+            let mut parts = Vec::new();
+
+            // During streaming: show live "this query" cost delta
+            // After turn: show last completed run cost
+            if vs.turn.thinking {
+                let rs = &vs.turn.run_start_session;
+                let delta_in = st.input_tokens.saturating_sub(rs.input_tokens);
+                let delta_out = st.output_tokens.saturating_sub(rs.output_tokens);
+                let delta_cc = st
+                    .cache_creation_input_tokens
+                    .saturating_sub(rs.cache_creation_input_tokens);
+                let delta_cr = st
+                    .cache_read_input_tokens
+                    .saturating_sub(rs.cache_read_input_tokens);
+                if let Some(c) = ox_gate::pricing::estimate_cost_full_with_overrides(
+                    &vs.model,
+                    delta_in,
+                    delta_out,
+                    delta_cc,
+                    delta_cr,
+                    &vs.pricing_overrides,
+                ) {
+                    parts.push(format!("${:.4}...", c));
+                }
+            } else if lr.input_tokens > 0 || lr.output_tokens > 0 {
+                if let Some(c) = run_cost {
+                    parts.push(format!("${:.4}", c));
+                } else {
+                    parts.push(format!(
+                        "{}in/{}out",
+                        format_tokens(lr.input_tokens),
+                        format_tokens(lr.output_tokens)
+                    ));
+                }
+            }
+
+            // Session total
+            if let Some(c) = session_cost {
+                parts.push(format!("${:.4} total", c));
+            } else {
+                parts.push(format!(
+                    "{}in/{}out total",
+                    format_tokens(st.input_tokens),
+                    format_tokens(st.output_tokens)
+                ));
+            }
+
+            format!(" {}", parts.join(" \u{00b7} "))
+        }
     } else {
         let count = vs.inbox_threads.len();
         format!(" {} thread{}", count, if count == 1 { "" } else { "s" })
@@ -272,6 +354,21 @@ fn draw_status_bar(
         Span::styled(hints, theme.status),
     ]);
     frame.render_widget(Paragraph::new(status_line), area);
+}
+
+/// Format a token count for compact display: 0, 1.2k, 45k, 1.2M.
+fn format_tokens(n: u32) -> String {
+    if n == 0 {
+        "0".into()
+    } else if n < 1_000 {
+        format!("{n}")
+    } else if n < 100_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else if n < 1_000_000 {
+        format!("{}k", n / 1_000)
+    } else {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    }
 }
 
 fn settings_hints(settings: &crate::settings_state::SettingsState) -> String {

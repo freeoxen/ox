@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::thread;
-use structfs_core_store::Reader as _;
+use structfs_core_store::{Reader as _, Writer as _};
 
 use crate::policy::PolicyStats;
 
@@ -32,7 +32,7 @@ impl CompletionTransport for CliCompletionTransport {
         &self,
         request: &CompletionRequest,
         on_event: &dyn Fn(&StreamEvent),
-    ) -> Result<(Vec<StreamEvent>, u32, u32), String> {
+    ) -> Result<ox_tools::completion::CompletionOutput, String> {
         let scoped = self.scoped_client.clone();
         let handle = self.rt_handle.clone();
         let (events, usage) = crate::transport::streaming_fetch(
@@ -56,11 +56,19 @@ impl CompletionTransport for CliCompletionTransport {
                     &ox_types::TokenUsage {
                         input_tokens: usage.input_tokens,
                         output_tokens: usage.output_tokens,
+                        cache_creation_input_tokens: usage.cache_creation_input_tokens,
+                        cache_read_input_tokens: usage.cache_read_input_tokens,
                     },
                 ))
                 .ok();
         }
-        Ok((events, usage.input_tokens, usage.output_tokens))
+        Ok(ox_tools::completion::CompletionOutput {
+            events,
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cache_creation_input_tokens: usage.cache_creation_input_tokens,
+            cache_read_input_tokens: usage.cache_read_input_tokens,
+        })
     }
 }
 
@@ -391,6 +399,16 @@ fn agent_worker(
         // survives if the process is killed mid-turn.
         save_thread_state(&mut adapter, &inbox_root, &thread_id, &title);
 
+        // Snapshot session tokens before the run for per-run delta and streaming cost.
+        let pre_run_session: ox_types::TokenUsage = adapter
+            .read_typed(&path!("history/turn/session_tokens"))
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        adapter
+            .write_typed(&path!("history/turn/run_start"), &pre_run_session)
+            .ok();
+
         let effects = CliEffects {
             thread_id: thread_id.clone(),
             gated_store,
@@ -415,6 +433,52 @@ fn agent_worker(
             // Write error to history before commit
             let msg = serde_json::json!({"role": "assistant", "content": [{"type": "text", "text": format!("error: {e}")}]});
             adapter.write_typed(&path!("history/append"), &msg).ok();
+        }
+
+        // Read model for per-model tracking (may differ from worker-init if changed mid-session).
+        let run_model: String = adapter
+            .read_typed(&path!("gate/defaults/model"))
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+
+        // Compute per-run token usage and write to turn state.
+        let post_run_session: ox_types::TokenUsage = adapter
+            .read_typed(&path!("history/turn/session_tokens"))
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let last_run = ox_types::TokenUsage {
+            input_tokens: post_run_session
+                .input_tokens
+                .saturating_sub(pre_run_session.input_tokens),
+            output_tokens: post_run_session
+                .output_tokens
+                .saturating_sub(pre_run_session.output_tokens),
+            cache_creation_input_tokens: post_run_session
+                .cache_creation_input_tokens
+                .saturating_sub(pre_run_session.cache_creation_input_tokens),
+            cache_read_input_tokens: post_run_session
+                .cache_read_input_tokens
+                .saturating_sub(pre_run_session.cache_read_input_tokens),
+        };
+        adapter
+            .write_typed(&path!("history/turn/last_run"), &last_run)
+            .ok();
+
+        // Accumulate per-model usage for the dialog breakdown.
+        if last_run.input_tokens > 0 || last_run.output_tokens > 0 {
+            let per_model_entry = serde_json::json!({
+                "model": run_model,
+                "usage": last_run,
+            });
+            let val = structfs_serde_store::json_to_value(per_model_entry);
+            adapter
+                .write(
+                    &path!("history/turn/per_model_add"),
+                    structfs_core_store::Record::parsed(val),
+                )
+                .ok();
         }
 
         // Clear all ephemeral turn state (streaming text, thinking, tool status).

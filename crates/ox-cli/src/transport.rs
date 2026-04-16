@@ -100,6 +100,18 @@ impl SseParser {
                     if let Some(it) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
                         self.usage.input_tokens = it as u32;
                     }
+                    if let Some(ct) = usage
+                        .get("cache_creation_input_tokens")
+                        .and_then(|v| v.as_u64())
+                    {
+                        self.usage.cache_creation_input_tokens = ct as u32;
+                    }
+                    if let Some(cr) = usage
+                        .get("cache_read_input_tokens")
+                        .and_then(|v| v.as_u64())
+                    {
+                        self.usage.cache_read_input_tokens = cr as u32;
+                    }
                 }
                 vec![]
             }

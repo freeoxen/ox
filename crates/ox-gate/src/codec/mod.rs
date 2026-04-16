@@ -12,4 +12,8 @@ pub struct UsageInfo {
     pub input_tokens: u32,
     /// Number of output (completion) tokens generated.
     pub output_tokens: u32,
+    /// Tokens used to create a new cache entry (Anthropic).
+    pub cache_creation_input_tokens: u32,
+    /// Tokens read from an existing cache entry (Anthropic).
+    pub cache_read_input_tokens: u32,
 }

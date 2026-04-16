@@ -18,6 +18,26 @@ pub struct TurnState {
     pub tool: Option<ToolStatus>,
     /// Token usage for this turn.
     pub tokens: TokenUsage,
+    /// Cumulative token usage across all turns in this session.
+    /// NOT cleared by `clear()` — persists for the lifetime of the thread.
+    #[serde(default)]
+    pub session_tokens: TokenUsage,
+    /// Token usage for the most recently completed agent run.
+    /// Written by the agent worker after each run_turn completes.
+    /// NOT cleared by `clear()`.
+    #[serde(default)]
+    pub last_run_tokens: TokenUsage,
+    /// Snapshot of session_tokens at the start of the current run.
+    /// Used to compute live "this query so far" cost during streaming.
+    /// NOT cleared by `clear()`.
+    #[serde(default)]
+    pub run_start_session: TokenUsage,
+    /// Per-model token breakdown for accurate multi-model cost reporting.
+    /// Each entry is (model_name, cumulative tokens for that model).
+    /// Populated by `reconstruct_session_usage()` and by live accumulation.
+    /// NOT cleared by `clear()`.
+    #[serde(default)]
+    pub per_model_usage: Vec<(String, TokenUsage)>,
 }
 
 impl TurnState {
@@ -50,6 +70,15 @@ impl TurnState {
                 None => Value::Null,
             }),
             "tokens" => Some(structfs_serde_store::to_value(&self.tokens).unwrap_or(Value::Null)),
+            "session_tokens" => {
+                Some(structfs_serde_store::to_value(&self.session_tokens).unwrap_or(Value::Null))
+            }
+            "last_run" => {
+                Some(structfs_serde_store::to_value(&self.last_run_tokens).unwrap_or(Value::Null))
+            }
+            "run_start" => {
+                Some(structfs_serde_store::to_value(&self.run_start_session).unwrap_or(Value::Null))
+            }
             _ => None,
         }
     }
@@ -91,11 +120,81 @@ impl TurnState {
                 if let Value::Map(_) = value {
                     match structfs_serde_store::from_value::<TokenUsage>(value.clone()) {
                         Ok(usage) => {
+                            // Accumulate into session totals
+                            self.session_tokens.input_tokens += usage.input_tokens;
+                            self.session_tokens.output_tokens += usage.output_tokens;
+                            self.session_tokens.cache_creation_input_tokens +=
+                                usage.cache_creation_input_tokens;
+                            self.session_tokens.cache_read_input_tokens +=
+                                usage.cache_read_input_tokens;
                             self.tokens = usage;
                             true
                         }
                         Err(_) => false,
                     }
+                } else {
+                    false
+                }
+            }
+            "last_run" => {
+                if let Value::Map(_) = value {
+                    match structfs_serde_store::from_value::<TokenUsage>(value.clone()) {
+                        Ok(usage) => {
+                            self.last_run_tokens = usage;
+                            true
+                        }
+                        Err(_) => false,
+                    }
+                } else {
+                    false
+                }
+            }
+            "run_start" => {
+                if let Value::Map(_) = value {
+                    match structfs_serde_store::from_value::<TokenUsage>(value.clone()) {
+                        Ok(usage) => {
+                            self.run_start_session = usage;
+                            true
+                        }
+                        Err(_) => false,
+                    }
+                } else {
+                    false
+                }
+            }
+            "per_model_add" => {
+                // Expects {"model": "...", "usage": {...}}
+                if let Value::Map(map) = value {
+                    let model = match map.get("model") {
+                        Some(Value::String(s)) => s.clone(),
+                        _ => return false,
+                    };
+                    let usage_val = match map.get("usage") {
+                        Some(v @ Value::Map(_)) => v.clone(),
+                        _ => return false,
+                    };
+                    let Ok(usage) = structfs_serde_store::from_value::<TokenUsage>(usage_val)
+                    else {
+                        return false;
+                    };
+                    if let Some(entry) = self.per_model_usage.iter_mut().find(|(m, _)| m == &model)
+                    {
+                        entry.1.input_tokens =
+                            entry.1.input_tokens.saturating_add(usage.input_tokens);
+                        entry.1.output_tokens =
+                            entry.1.output_tokens.saturating_add(usage.output_tokens);
+                        entry.1.cache_creation_input_tokens = entry
+                            .1
+                            .cache_creation_input_tokens
+                            .saturating_add(usage.cache_creation_input_tokens);
+                        entry.1.cache_read_input_tokens = entry
+                            .1
+                            .cache_read_input_tokens
+                            .saturating_add(usage.cache_read_input_tokens);
+                    } else {
+                        self.per_model_usage.push((model, usage));
+                    }
+                    true
                 } else {
                     false
                 }
@@ -159,8 +258,75 @@ mod tests {
             TokenUsage {
                 input_tokens: 100,
                 output_tokens: 50,
+                ..Default::default()
             }
         );
+        // Session tokens should accumulate
+        assert_eq!(
+            turn.session_tokens,
+            TokenUsage {
+                input_tokens: 100,
+                output_tokens: 50,
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn session_tokens_accumulate_across_clears() {
+        let mut turn = TurnState::new();
+
+        // First turn
+        let mut map = BTreeMap::new();
+        map.insert("input_tokens".to_string(), Value::Integer(100));
+        map.insert("output_tokens".to_string(), Value::Integer(50));
+        turn.write("tokens", &Value::Map(map));
+        turn.clear();
+
+        // Turn tokens reset, session tokens persist
+        assert_eq!(turn.tokens, TokenUsage::default());
+        assert_eq!(
+            turn.session_tokens,
+            TokenUsage {
+                input_tokens: 100,
+                output_tokens: 50,
+                ..Default::default()
+            }
+        );
+
+        // Second turn
+        let mut map2 = BTreeMap::new();
+        map2.insert("input_tokens".to_string(), Value::Integer(200));
+        map2.insert("output_tokens".to_string(), Value::Integer(80));
+        turn.write("tokens", &Value::Map(map2));
+
+        // Session tokens accumulated both turns
+        assert_eq!(
+            turn.session_tokens,
+            TokenUsage {
+                input_tokens: 300,
+                output_tokens: 130,
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn session_tokens_readable() {
+        let mut turn = TurnState::new();
+        let mut map = BTreeMap::new();
+        map.insert("input_tokens".to_string(), Value::Integer(500));
+        map.insert("output_tokens".to_string(), Value::Integer(200));
+        turn.write("tokens", &Value::Map(map));
+
+        let val = turn.read("session_tokens").unwrap();
+        match val {
+            Value::Map(m) => {
+                assert_eq!(m.get("input_tokens"), Some(&Value::Integer(500)));
+                assert_eq!(m.get("output_tokens"), Some(&Value::Integer(200)));
+            }
+            _ => panic!("expected map"),
+        }
     }
 
     #[test]

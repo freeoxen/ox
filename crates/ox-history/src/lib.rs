@@ -45,6 +45,69 @@ impl HistoryView {
         }
     }
 
+    /// Reconstruct session token totals from existing log entries.
+    ///
+    /// Call this after restoring a thread from disk. Scans all `TurnEnd`
+    /// entries in the SharedLog and sums their token counts into
+    /// `turn.session_tokens`.
+    pub fn reconstruct_session_usage(&mut self) {
+        let entries = self.shared.entries();
+        let mut input: u32 = 0;
+        let mut output: u32 = 0;
+        let mut cache_creation: u32 = 0;
+        let mut cache_read: u32 = 0;
+        let mut per_model: Vec<(String, TokenUsage)> = Vec::new();
+
+        for entry in &entries {
+            if let LogEntry::TurnEnd {
+                model,
+                input_tokens,
+                output_tokens,
+                cache_creation_input_tokens,
+                cache_read_input_tokens,
+                ..
+            } = entry
+            {
+                input = input.saturating_add(*input_tokens);
+                output = output.saturating_add(*output_tokens);
+                cache_creation = cache_creation.saturating_add(*cache_creation_input_tokens);
+                cache_read = cache_read.saturating_add(*cache_read_input_tokens);
+
+                // Accumulate per-model breakdown
+                let model_name = model.as_deref().unwrap_or("unknown").to_string();
+                if let Some(entry) = per_model.iter_mut().find(|(m, _)| m == &model_name) {
+                    entry.1.input_tokens = entry.1.input_tokens.saturating_add(*input_tokens);
+                    entry.1.output_tokens = entry.1.output_tokens.saturating_add(*output_tokens);
+                    entry.1.cache_creation_input_tokens = entry
+                        .1
+                        .cache_creation_input_tokens
+                        .saturating_add(*cache_creation_input_tokens);
+                    entry.1.cache_read_input_tokens = entry
+                        .1
+                        .cache_read_input_tokens
+                        .saturating_add(*cache_read_input_tokens);
+                } else {
+                    per_model.push((
+                        model_name,
+                        TokenUsage {
+                            input_tokens: *input_tokens,
+                            output_tokens: *output_tokens,
+                            cache_creation_input_tokens: *cache_creation_input_tokens,
+                            cache_read_input_tokens: *cache_read_input_tokens,
+                        },
+                    ));
+                }
+            }
+        }
+        self.turn.session_tokens = TokenUsage {
+            input_tokens: input,
+            output_tokens: output,
+            cache_creation_input_tokens: cache_creation,
+            cache_read_input_tokens: cache_read,
+        };
+        self.turn.per_model_usage = per_model;
+    }
+
     /// Project log entries into wire-format messages.
     fn project_messages(&self) -> Vec<serde_json::Value> {
         let entries = self.shared.entries();
@@ -129,7 +192,10 @@ impl Reader for HistoryView {
                     let sub = from.components[1].as_str();
                     Ok(self.turn.read(sub).map(Record::parsed))
                 } else {
-                    Ok(None)
+                    // Bare "turn" read — return the full TurnState as a serialized value.
+                    let value = structfs_serde_store::to_value(&self.turn)
+                        .map_err(|e| StoreError::store("HistoryView", "read", e.to_string()))?;
+                    Ok(Some(Record::parsed(value)))
                 }
             }
             _ => Ok(None),
@@ -555,10 +621,15 @@ mod tests {
     }
 
     #[test]
-    fn history_view_turn_no_subpath_returns_none() {
+    fn history_view_turn_bare_read_returns_full_state() {
         let shared = SharedLog::new();
         let mut hv = HistoryView::new(shared);
-        assert!(hv.read(&path!("turn")).unwrap().is_none());
+        hv.write(&path!("turn/thinking"), Record::parsed(Value::Bool(true)))
+            .unwrap();
+        let record = hv.read(&path!("turn")).unwrap().unwrap();
+        let json = value_to_json(unwrap_value(record));
+        assert_eq!(json["thinking"], true);
+        assert_eq!(json["streaming"], "");
     }
 
     #[test]
@@ -595,6 +666,39 @@ mod tests {
         assert!(result_str.contains("line 99"));
         assert!(result_str.contains("line 80"));
         assert!(!result_str.contains("\nline 40\n"));
+    }
+
+    #[test]
+    fn reconstruct_session_usage_from_log() {
+        let shared = SharedLog::new();
+        shared.append(LogEntry::User {
+            content: "hello".into(),
+            scope: None,
+        });
+        shared.append(LogEntry::TurnEnd {
+            scope: Some("root".into()),
+            model: None,
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        });
+        shared.append(LogEntry::User {
+            content: "again".into(),
+            scope: None,
+        });
+        shared.append(LogEntry::TurnEnd {
+            scope: Some("root".into()),
+            model: None,
+            input_tokens: 200,
+            output_tokens: 80,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        });
+        let mut hv = HistoryView::new(shared);
+        hv.reconstruct_session_usage();
+        assert_eq!(hv.turn.session_tokens.input_tokens, 300);
+        assert_eq!(hv.turn.session_tokens.output_tokens, 130);
     }
 
     #[test]

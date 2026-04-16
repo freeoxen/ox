@@ -115,6 +115,9 @@ impl ThreadNamespace {
             );
         }
 
+        // Reconstruct session token totals from restored log entries.
+        ns.history.reconstruct_session_usage();
+
         ns
     }
 
