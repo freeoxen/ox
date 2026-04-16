@@ -236,20 +236,31 @@ pub async fn run_async(
         }
 
         // -----------------------------------------------------------------
-        // 4. Poll terminal event
+        // 4. Drain all pending terminal events
         // -----------------------------------------------------------------
-        let terminal_event = tokio::task::block_in_place(|| {
+        let events: Vec<Event> = tokio::task::block_in_place(|| {
+            let mut buf = Vec::new();
+            // Block up to 50ms for the first event
             if event::poll(Duration::from_millis(50)).unwrap_or(false) {
-                event::read().ok()
-            } else {
-                None
+                if let Ok(evt) = event::read() {
+                    buf.push(evt);
+                }
             }
+            // Drain remaining queued events without blocking
+            while event::poll(Duration::ZERO).unwrap_or(false) {
+                if let Ok(evt) = event::read() {
+                    buf.push(evt);
+                } else {
+                    break;
+                }
+            }
+            buf
         });
 
         // -----------------------------------------------------------------
-        // 5. Dispatch terminal event
+        // 5. Dispatch terminal events
         // -----------------------------------------------------------------
-        if let Some(evt) = terminal_event {
+        for evt in events {
             match evt {
                 Event::Key(key) => {
                     // Shortcuts modal — dismiss on ? or Esc, swallow all other keys
