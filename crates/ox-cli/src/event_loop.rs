@@ -52,10 +52,10 @@ impl ScrollMomentum {
             self.velocity = 1.0;
         } else if elapsed_ms < 80 {
             // Rapid scrolling — boost
-            self.velocity = (self.velocity * 1.4).min(6.0);
+            self.velocity = (self.velocity * 1.2).min(4.0);
         } else if elapsed_ms < 200 {
             // Moderate scrolling — gentle boost
-            self.velocity = (self.velocity * 1.1).min(6.0);
+            self.velocity = (self.velocity * 1.05).min(4.0);
         } else {
             // Slow/paused — decay back toward 1.0
             self.velocity = 1.0 + (self.velocity - 1.0) * 0.3;
