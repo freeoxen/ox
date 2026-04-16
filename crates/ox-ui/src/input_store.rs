@@ -164,7 +164,7 @@ impl InputStore {
             Value::String(b.description.clone()),
         );
         if b.status_hint {
-            map.insert("status_hint".to_string(), Value::Integer(1));
+            map.insert("status_hint".to_string(), Value::Bool(true));
         }
         match &b.action {
             Action::Invoke { command, .. } => {
