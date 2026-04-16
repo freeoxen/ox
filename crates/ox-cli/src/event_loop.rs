@@ -50,12 +50,12 @@ impl ScrollMomentum {
         if direction != self.last_direction {
             // Direction changed — reset to base speed
             self.velocity = 1.0;
-        } else if elapsed_ms < 80 {
+        } else if elapsed_ms < 60 {
             // Rapid scrolling — boost
-            self.velocity = (self.velocity * 1.2).min(4.0);
-        } else if elapsed_ms < 200 {
+            self.velocity = (self.velocity * 1.08).min(4.0);
+        } else if elapsed_ms < 150 {
             // Moderate scrolling — gentle boost
-            self.velocity = (self.velocity * 1.05).min(4.0);
+            self.velocity = (self.velocity * 1.03).min(4.0);
         } else {
             // Slow/paused — decay back toward 1.0
             self.velocity = 1.0 + (self.velocity - 1.0) * 0.3;
