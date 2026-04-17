@@ -660,27 +660,71 @@ pub fn run_turn(context: &mut dyn Store, emit: &mut dyn FnMut(AgentEvent)) -> Re
 
         let events = complete(context, &frame.account, &refs)?;
 
-        // Read token usage from the completion metadata.
-        // The CompletionModule stores input/output tokens after each call.
-        if let Ok(meta_path) = Path::parse(&format!("tools/completions/complete/{}", frame.account))
+        // Read per-completion token usage from CompletionModule metadata.
+        // Capture the delta before accumulating into run totals.
+        let (comp_in, comp_out, comp_cc, comp_cr) = if let Ok(meta_path) =
+            Path::parse(&format!("tools/completions/complete/{}", frame.account))
         {
             if let Ok(Some(record)) = context.read(&meta_path) {
                 if let Some(Value::Map(meta)) = record.as_value() {
-                    if let Some(Value::Integer(n)) = meta.get("input_tokens") {
-                        run_input_tokens += *n as u32;
-                    }
-                    if let Some(Value::Integer(n)) = meta.get("output_tokens") {
-                        run_output_tokens += *n as u32;
-                    }
-                    if let Some(Value::Integer(n)) = meta.get("cache_creation_input_tokens") {
-                        run_cache_creation += *n as u32;
-                    }
-                    if let Some(Value::Integer(n)) = meta.get("cache_read_input_tokens") {
-                        run_cache_read += *n as u32;
-                    }
+                    let i = meta
+                        .get("input_tokens")
+                        .and_then(|v| match v {
+                            Value::Integer(n) => Some(*n as u32),
+                            _ => None,
+                        })
+                        .unwrap_or(0);
+                    let o = meta
+                        .get("output_tokens")
+                        .and_then(|v| match v {
+                            Value::Integer(n) => Some(*n as u32),
+                            _ => None,
+                        })
+                        .unwrap_or(0);
+                    let cc = meta
+                        .get("cache_creation_input_tokens")
+                        .and_then(|v| match v {
+                            Value::Integer(n) => Some(*n as u32),
+                            _ => None,
+                        })
+                        .unwrap_or(0);
+                    let cr = meta
+                        .get("cache_read_input_tokens")
+                        .and_then(|v| match v {
+                            Value::Integer(n) => Some(*n as u32),
+                            _ => None,
+                        })
+                        .unwrap_or(0);
+                    (i, o, cc, cr)
+                } else {
+                    (0, 0, 0, 0)
                 }
+            } else {
+                (0, 0, 0, 0)
             }
-        }
+        } else {
+            (0, 0, 0, 0)
+        };
+
+        // Accumulate into run totals
+        run_input_tokens += comp_in;
+        run_output_tokens += comp_out;
+        run_cache_creation += comp_cc;
+        run_cache_read += comp_cr;
+
+        // Log per-completion usage as a first-class event
+        log_entry(
+            context,
+            serde_json::json!({
+                "type": "completion_end",
+                "scope": &frame.scope,
+                "model": &run_model,
+                "input_tokens": comp_in,
+                "output_tokens": comp_out,
+                "cache_creation_input_tokens": comp_cc,
+                "cache_read_input_tokens": comp_cr,
+            }),
+        );
 
         let content = accumulate_response(events, emit)?;
 

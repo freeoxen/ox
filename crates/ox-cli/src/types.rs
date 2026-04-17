@@ -10,6 +10,13 @@ pub struct ThreadView {
 pub enum ChatMessage {
     User(String),
     AssistantChunk(String),
+    CompletionMeta {
+        model: String,
+        input_tokens: u32,
+        output_tokens: u32,
+        cache_creation_input_tokens: u32,
+        cache_read_input_tokens: u32,
+    },
     ToolCall {
         name: String,
     },

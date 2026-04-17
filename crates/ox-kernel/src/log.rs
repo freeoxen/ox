@@ -81,6 +81,16 @@ pub enum LogEntry {
         cache_read_input_tokens: u32,
     },
 
+    #[serde(rename = "completion_end")]
+    CompletionEnd {
+        scope: String,
+        model: String,
+        input_tokens: u32,
+        output_tokens: u32,
+        cache_creation_input_tokens: u32,
+        cache_read_input_tokens: u32,
+    },
+
     #[serde(rename = "approval_requested")]
     ApprovalRequested {
         tool_name: String,

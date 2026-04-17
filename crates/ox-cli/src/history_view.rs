@@ -114,6 +114,9 @@ pub fn draw_history(
             "turn_start" | "turn_end" => {
                 render_turn_boundary(entry, cursor, theme, &mut lines);
             }
+            "completion_end" => {
+                render_completion_end(entry, cursor, theme, &mut lines);
+            }
             "approval_requested" => {
                 render_approval_requested(entry, cursor, theme, &mut lines);
             }
@@ -220,12 +223,41 @@ pub fn draw_history(
 // Per-entry-type renderers
 // ---------------------------------------------------------------------------
 
+fn render_completion_end(
+    entry: &LogDisplayEntry,
+    cursor: &str,
+    theme: &Theme,
+    out: &mut Vec<Line>,
+) {
+    let model = entry.meta.model.as_deref().unwrap_or("?");
+    let in_tok = entry.meta.input_tokens.unwrap_or(0);
+    let out_tok = entry.meta.output_tokens.unwrap_or(0);
+    let cc = entry.meta.cache_creation_input_tokens.unwrap_or(0);
+    let cr = entry.meta.cache_read_input_tokens.unwrap_or(0);
+    let cost_str = ox_gate::pricing::estimate_cost_full(model, in_tok, out_tok, cc, cr)
+        .map(|c| format!(" ${:.6}", c))
+        .unwrap_or_default();
+    let label = format!(" ── completion ── {model} ({in_tok}in / {out_tok}out){cost_str}");
+    out.push(Line::from(vec![
+        Span::styled(format!("{cursor} "), theme.history_meta),
+        Span::styled(format!("#{:<4} ", entry.index), theme.history_index),
+        Span::styled(label, theme.history_turn_boundary),
+    ]));
+}
+
 fn render_turn_boundary(entry: &LogDisplayEntry, cursor: &str, theme: &Theme, out: &mut Vec<Line>) {
-    let token_info = match (entry.meta.input_tokens, entry.meta.output_tokens) {
-        (Some(i), Some(o)) if i > 0 || o > 0 => format!(" ({}in / {}out)", i, o),
-        (Some(i), None) if i > 0 => format!(" ({}in)", i),
-        (None, Some(o)) if o > 0 => format!(" ({}out)", o),
-        _ => String::new(),
+    let in_tok = entry.meta.input_tokens.unwrap_or(0);
+    let out_tok = entry.meta.output_tokens.unwrap_or(0);
+    let token_info = if in_tok > 0 || out_tok > 0 {
+        let cc = entry.meta.cache_creation_input_tokens.unwrap_or(0);
+        let cr = entry.meta.cache_read_input_tokens.unwrap_or(0);
+        let model = entry.meta.model.as_deref().unwrap_or("");
+        let cost_str = ox_gate::pricing::estimate_cost_full(model, in_tok, out_tok, cc, cr)
+            .map(|c| format!(" ${:.6}", c))
+            .unwrap_or_default();
+        format!(" ({in_tok}in / {out_tok}out){cost_str}")
+    } else {
+        String::new()
     };
     let label = format!(
         " ── {}{} ──",

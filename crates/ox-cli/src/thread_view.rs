@@ -36,6 +36,27 @@ pub fn draw_thread(
                     lines.push(Line::from(Span::styled(line, theme.assistant_text)));
                 }
             }
+            ChatMessage::CompletionMeta {
+                model,
+                input_tokens,
+                output_tokens,
+                cache_creation_input_tokens,
+                cache_read_input_tokens,
+            } => {
+                let cost_str = ox_gate::pricing::estimate_cost_full(
+                    model,
+                    *input_tokens,
+                    *output_tokens,
+                    *cache_creation_input_tokens,
+                    *cache_read_input_tokens,
+                )
+                .map(|c| format!(" ${:.4}", c))
+                .unwrap_or_default();
+                lines.push(Line::from(Span::styled(
+                    format!("  [{model}] {input_tokens}in/{output_tokens}out{cost_str}",),
+                    theme.tool_meta,
+                )));
+            }
             ChatMessage::ToolCall { name } => {
                 lines.push(Line::from(vec![
                     Span::styled(format!("  [{name}] "), theme.tool_name),

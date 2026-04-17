@@ -110,6 +110,14 @@ pub async fn fetch_view_state<'a>(
                     }
                 }
 
+                // Read log entries to inject per-completion metadata into thread view
+                let log_path = ox_path::oxpath!("threads", tid.clone(), "log", "entries");
+                if let Ok(Some(record)) = client.read(&log_path).await {
+                    if let Some(Value::Array(arr)) = record.as_value() {
+                        inject_completion_meta(&mut messages, arr);
+                    }
+                }
+
                 // Read turn state (typed)
                 let turn_path = ox_path::oxpath!("threads", tid.clone(), "history", "turn");
                 if let Ok(Some(t)) = client.read_typed::<ox_history::TurnState>(&turn_path).await {
@@ -274,6 +282,78 @@ async fn read_pricing_overrides(
         }
     }
     overrides
+}
+
+/// Inject `CompletionMeta` items into the messages vec from log entries.
+///
+/// Scans log entries for `completion_end` events and inserts a `CompletionMeta`
+/// before the corresponding `AssistantChunk` group. The Nth `completion_end`
+/// in the log corresponds to the Nth assistant message group.
+fn inject_completion_meta(messages: &mut Vec<ChatMessage>, log_entries: &[Value]) {
+    // Extract completion_end entries from the log
+    let mut completions: Vec<ChatMessage> = Vec::new();
+    for val in log_entries {
+        let Some(map) = (match val {
+            Value::Map(m) => Some(m),
+            _ => None,
+        }) else {
+            continue;
+        };
+        let entry_type = match map.get("type") {
+            Some(Value::String(s)) => s.as_str(),
+            _ => continue,
+        };
+        if entry_type != "completion_end" {
+            continue;
+        }
+        let model = match map.get("model") {
+            Some(Value::String(s)) => s.clone(),
+            _ => "?".to_string(),
+        };
+        let get = |key: &str| -> u32 {
+            match map.get(key) {
+                Some(Value::Integer(n)) => *n as u32,
+                _ => 0,
+            }
+        };
+        completions.push(ChatMessage::CompletionMeta {
+            model,
+            input_tokens: get("input_tokens"),
+            output_tokens: get("output_tokens"),
+            cache_creation_input_tokens: get("cache_creation_input_tokens"),
+            cache_read_input_tokens: get("cache_read_input_tokens"),
+        });
+    }
+
+    if completions.is_empty() {
+        return;
+    }
+
+    // Insert each CompletionMeta before the Nth AssistantChunk group.
+    // Walk messages, count assistant groups (a group starts when we see
+    // an AssistantChunk after a non-AssistantChunk).
+    let mut insert_points: Vec<usize> = Vec::new();
+    let mut in_assistant = false;
+    for (i, msg) in messages.iter().enumerate() {
+        match msg {
+            ChatMessage::AssistantChunk(_) => {
+                if !in_assistant {
+                    insert_points.push(i);
+                    in_assistant = true;
+                }
+            }
+            _ => {
+                in_assistant = false;
+            }
+        }
+    }
+
+    // Insert in reverse order so indices stay valid
+    for (comp_idx, insert_idx) in insert_points.iter().enumerate().rev() {
+        if comp_idx < completions.len() {
+            messages.insert(*insert_idx, completions[comp_idx].clone());
+        }
+    }
 }
 
 /// Read bindings for the current mode+screen, deduplicated by key.

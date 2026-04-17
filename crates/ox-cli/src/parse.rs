@@ -502,6 +502,9 @@ pub struct LogEntryMeta {
     pub input_preview: Option<String>,
     pub input_tokens: Option<u32>,
     pub output_tokens: Option<u32>,
+    pub cache_creation_input_tokens: Option<u32>,
+    pub cache_read_input_tokens: Option<u32>,
+    pub model: Option<String>,
     pub block_count: usize,
     pub text_len: usize,
 }
@@ -601,8 +604,11 @@ pub fn parse_log_entries(values: &[Value]) -> Vec<LogDisplayEntry> {
                 }
                 "turn_start" | "turn_end" => {
                     let scope = get_string(map, "scope");
+                    let model = get_string(map, "model");
                     let input_tokens = get_u32(map, "input_tokens");
                     let output_tokens = get_u32(map, "output_tokens");
+                    let cache_creation = get_u32(map, "cache_creation_input_tokens");
+                    let cache_read = get_u32(map, "cache_read_input_tokens");
                     let summary = match &scope {
                         Some(s) => format!("{entry_type}: {s}"),
                         None => entry_type.clone(),
@@ -614,8 +620,41 @@ pub fn parse_log_entries(values: &[Value]) -> Vec<LogDisplayEntry> {
                         blocks: Vec::new(),
                         meta: LogEntryMeta {
                             scope,
+                            model,
                             input_tokens,
                             output_tokens,
+                            cache_creation_input_tokens: cache_creation,
+                            cache_read_input_tokens: cache_read,
+                            ..Default::default()
+                        },
+                        flags: EntryFlags::default(),
+                    })
+                }
+                "completion_end" => {
+                    let scope = get_string(map, "scope");
+                    let model = get_string(map, "model");
+                    let input_tokens = get_u32(map, "input_tokens");
+                    let output_tokens = get_u32(map, "output_tokens");
+                    let cache_creation = get_u32(map, "cache_creation_input_tokens");
+                    let cache_read = get_u32(map, "cache_read_input_tokens");
+                    let model_short = model.as_deref().unwrap_or("?");
+                    let summary = format!(
+                        "completion: {model_short} ({}in / {}out)",
+                        input_tokens.unwrap_or(0),
+                        output_tokens.unwrap_or(0),
+                    );
+                    Some(LogDisplayEntry {
+                        index,
+                        entry_type,
+                        summary,
+                        blocks: Vec::new(),
+                        meta: LogEntryMeta {
+                            scope,
+                            model,
+                            input_tokens,
+                            output_tokens,
+                            cache_creation_input_tokens: cache_creation,
+                            cache_read_input_tokens: cache_read,
                             ..Default::default()
                         },
                         flags: EntryFlags::default(),

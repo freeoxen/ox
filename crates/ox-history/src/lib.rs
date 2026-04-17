@@ -149,6 +149,7 @@ impl HistoryView {
                 | LogEntry::Meta { .. }
                 | LogEntry::TurnStart { .. }
                 | LogEntry::TurnEnd { .. }
+                | LogEntry::CompletionEnd { .. }
                 | LogEntry::ApprovalRequested { .. }
                 | LogEntry::ApprovalResolved { .. }
                 | LogEntry::Error { .. } => {
