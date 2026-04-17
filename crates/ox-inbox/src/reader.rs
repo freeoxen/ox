@@ -7,7 +7,11 @@ fn err(op: &'static str, msg: impl std::fmt::Display) -> StoreError {
     StoreError::store("InboxStore", op, msg.to_string())
 }
 
-pub fn read_dispatch(db: &Mutex<Connection>, from: &Path) -> Result<Option<Record>, StoreError> {
+pub fn read_dispatch(
+    db: &Mutex<Connection>,
+    search_results: &std::collections::HashMap<String, Vec<structfs_core_store::Value>>,
+    from: &Path,
+) -> Result<Option<Record>, StoreError> {
     let segments: Vec<&String> = from.iter().collect();
     match segments.as_slice() {
         [root] if root.as_str() == "threads" => list_threads(db, "inbox"),
@@ -22,6 +26,40 @@ pub fn read_dispatch(db: &Mutex<Connection>, from: &Path) -> Result<Option<Recor
         }
         [root, id, sub] if root.as_str() == "threads" && sub.as_str() == "tasks" => {
             list_tasks(db, id)
+        }
+        // Search result handles: search/results/{id}
+        [a, b, id] if a.as_str() == "search" && b.as_str() == "results" => {
+            match search_results.get(id.as_str()) {
+                Some(results) => Ok(Some(Record::parsed(Value::Array(results.clone())))),
+                None => Ok(None),
+            }
+        }
+        // Paginated: search/results/{id}/{offset}/{limit}
+        [a, b, id, off, lim] if a.as_str() == "search" && b.as_str() == "results" => {
+            let offset: usize = off.parse().unwrap_or(0);
+            let limit: usize = lim.parse().unwrap_or(20);
+            match search_results.get(id.as_str()) {
+                Some(results) => {
+                    let start = offset.min(results.len());
+                    let end = (start + limit).min(results.len());
+                    Ok(Some(Record::parsed(Value::Array(
+                        results[start..end].to_vec(),
+                    ))))
+                }
+                None => Ok(None),
+            }
+        }
+        // Recent inputs: inputs/recent or inputs/recent/{limit}
+        [a, b] if a.as_str() == "inputs" && b.as_str() == "recent" => {
+            let conn = db.lock().map_err(|e| err("read", e))?;
+            let results = crate::search::recent_inputs(&conn, 50).map_err(|e| err("read", e))?;
+            Ok(Some(Record::parsed(Value::Array(results))))
+        }
+        [a, b, lim] if a.as_str() == "inputs" && b.as_str() == "recent" => {
+            let limit: usize = lim.parse().unwrap_or(50);
+            let conn = db.lock().map_err(|e| err("read", e))?;
+            let results = crate::search::recent_inputs(&conn, limit).map_err(|e| err("read", e))?;
+            Ok(Some(Record::parsed(Value::Array(results))))
         }
         _ => Ok(None),
     }

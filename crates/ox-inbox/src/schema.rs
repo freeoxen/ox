@@ -50,5 +50,67 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
+    // -- Search tables (inputs, messages, FTS5 indexes) -----------------------
+
+    conn.execute_batch(
+        "
+        PRAGMA journal_mode=WAL;
+
+        CREATE TABLE IF NOT EXISTS inputs (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            text       TEXT NOT NULL,
+            thread_id  TEXT NOT NULL,
+            context    TEXT NOT NULL,
+            seq        INTEGER,
+            created_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+
+        CREATE TABLE IF NOT EXISTS messages (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            thread_id  TEXT NOT NULL,
+            role       TEXT NOT NULL,
+            content    TEXT NOT NULL,
+            entry_type TEXT NOT NULL,
+            seq        INTEGER NOT NULL,
+            hash       TEXT,
+            created_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+
+        CREATE TABLE IF NOT EXISTS index_state (
+            thread_id TEXT PRIMARY KEY,
+            last_seq  INTEGER NOT NULL DEFAULT 0
+        );
+        ",
+    )?;
+
+    // FTS5 virtual tables — CREATE VIRTUAL TABLE doesn't support IF NOT EXISTS
+    // in all SQLite builds, so check first.
+    let has_inputs_fts: bool = conn.prepare("SELECT rowid FROM inputs_fts LIMIT 0").is_ok();
+    if !has_inputs_fts {
+        conn.execute_batch(
+            "
+            CREATE VIRTUAL TABLE inputs_fts USING fts5(
+                text, content=inputs, content_rowid=id
+            );
+            CREATE TRIGGER inputs_ai AFTER INSERT ON inputs BEGIN
+                INSERT INTO inputs_fts(rowid, text) VALUES (new.id, new.text);
+            END;
+            CREATE TRIGGER inputs_ad AFTER DELETE ON inputs BEGIN
+                INSERT INTO inputs_fts(inputs_fts, rowid, text) VALUES ('delete', old.id, old.text);
+            END;
+
+            CREATE VIRTUAL TABLE messages_fts USING fts5(
+                content, content=messages, content_rowid=id
+            );
+            CREATE TRIGGER messages_ai AFTER INSERT ON messages BEGIN
+                INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+            END;
+            CREATE TRIGGER messages_ad AFTER DELETE ON messages BEGIN
+                INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', old.id, old.content);
+            END;
+            ",
+        )?;
+    }
+
     Ok(())
 }

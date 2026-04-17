@@ -6,6 +6,7 @@ pub mod model;
 mod reader;
 pub mod reconcile;
 mod schema;
+pub mod search;
 pub mod snapshot;
 pub mod thread_dir;
 mod writer;
@@ -21,13 +22,23 @@ use structfs_core_store::Value;
 pub struct InboxStore {
     db: Mutex<Connection>,
     threads_dir: PathBuf,
+    /// Cached search results keyed by handle ID (auto-incrementing).
+    search_results: std::collections::HashMap<String, Vec<Value>>,
+    search_counter: u64,
 }
 
 impl InboxStore {
     pub fn open(root: &FsPath) -> Result<Self, StoreError> {
         std::fs::create_dir_all(root)
             .map_err(|e| StoreError::store("InboxStore", "open", e.to_string()))?;
-        let db_path = root.join("inbox.db");
+
+        // Migration: rename inbox.db → ox.db
+        let old_path = root.join("inbox.db");
+        let db_path = root.join("ox.db");
+        if old_path.exists() && !db_path.exists() {
+            std::fs::rename(&old_path, &db_path).ok();
+        }
+
         let threads_dir = root.join("threads");
         std::fs::create_dir_all(&threads_dir)
             .map_err(|e| StoreError::store("InboxStore", "open", e.to_string()))?;
@@ -40,21 +51,153 @@ impl InboxStore {
         // Best-effort startup reconciliation: sync SQLite index with thread directories
         reconcile::reconcile(&conn, &threads_dir).ok();
 
+        // Best-effort: rebuild search index if empty (first run after feature ships)
+        {
+            let needs_rebuild: bool = conn
+                .query_row("SELECT COUNT(*) = 0 FROM index_state", [], |r| r.get(0))
+                .unwrap_or(true);
+            if needs_rebuild && threads_dir.exists() {
+                search::rebuild_index(&conn, &threads_dir).ok();
+            }
+        }
+
         Ok(Self {
             db: Mutex::new(conn),
             threads_dir,
+            search_results: std::collections::HashMap::new(),
+            search_counter: 0,
         })
+    }
+
+    fn next_search_handle(&mut self) -> String {
+        self.search_counter += 1;
+        format!("{:04}", self.search_counter)
     }
 }
 
 impl Reader for InboxStore {
     fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
-        reader::read_dispatch(&self.db, from)
+        reader::read_dispatch(&self.db, &self.search_results, from)
     }
 }
 
 impl Writer for InboxStore {
     fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
+        let segments: Vec<&String> = to.iter().collect();
+
+        // Search write paths — handled here because they need &mut self for caching
+        match segments.as_slice() {
+            // Record a user input
+            [root] if root.as_str() == "inputs" => {
+                let map = match data.as_value() {
+                    Some(Value::Map(m)) => m,
+                    _ => {
+                        return Err(StoreError::store(
+                            "InboxStore",
+                            "write",
+                            "inputs: expected map",
+                        ));
+                    }
+                };
+                let text = match map.get("text") {
+                    Some(Value::String(s)) => s.as_str(),
+                    _ => {
+                        return Err(StoreError::store(
+                            "InboxStore",
+                            "write",
+                            "inputs: missing text",
+                        ));
+                    }
+                };
+                let thread_id = match map.get("thread_id") {
+                    Some(Value::String(s)) => s.as_str(),
+                    _ => "",
+                };
+                let context = match map.get("context") {
+                    Some(Value::String(s)) => s.as_str(),
+                    _ => "compose",
+                };
+                let seq = match map.get("seq") {
+                    Some(Value::Integer(n)) => Some(*n),
+                    _ => None,
+                };
+                let conn = self
+                    .db
+                    .lock()
+                    .map_err(|e| StoreError::store("InboxStore", "write", e.to_string()))?;
+                search::record_input(&conn, text, thread_id, context, seq)
+                    .map_err(|e| StoreError::store("InboxStore", "write", e))?;
+                return Ok(to.clone());
+            }
+            // Execute a search query → return handle
+            [a, b]
+                if a.as_str() == "search"
+                    && (b.as_str() == "inputs" || b.as_str() == "messages") =>
+            {
+                let map = match data.as_value() {
+                    Some(Value::Map(m)) => m,
+                    _ => {
+                        return Err(StoreError::store(
+                            "InboxStore",
+                            "write",
+                            "search: expected map with query",
+                        ));
+                    }
+                };
+                let query = match map.get("query") {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => {
+                        return Err(StoreError::store(
+                            "InboxStore",
+                            "write",
+                            "search: missing query",
+                        ));
+                    }
+                };
+                let limit = match map.get("limit") {
+                    Some(Value::Integer(n)) => *n as usize,
+                    _ => 20,
+                };
+                let results = {
+                    let conn = self
+                        .db
+                        .lock()
+                        .map_err(|e| StoreError::store("InboxStore", "write", e.to_string()))?;
+                    if b.as_str() == "inputs" {
+                        search::search_inputs(&conn, &query, limit)
+                    } else {
+                        search::search_messages(&conn, &query, limit)
+                    }
+                    .map_err(|e| StoreError::store("InboxStore", "write", e))?
+                };
+
+                let handle = self.next_search_handle();
+                self.search_results.insert(handle.clone(), results);
+                return Ok(Path::parse(&format!("search/results/{handle}")).unwrap());
+            }
+            // Trigger ledger indexing for a thread
+            [a, thread_id] if a.as_str() == "index" => {
+                let ledger_path = self
+                    .threads_dir
+                    .join(thread_id.as_str())
+                    .join("ledger.jsonl");
+                if ledger_path.exists() {
+                    let conn = self
+                        .db
+                        .lock()
+                        .map_err(|e| StoreError::store("InboxStore", "write", e.to_string()))?;
+                    let from_seq = search::get_index_state(&conn, thread_id).unwrap_or(0);
+                    if let Ok(entries) = crate::ledger::read_ledger(&ledger_path) {
+                        search::index_ledger_entries(&conn, thread_id, &entries, from_seq)
+                            .map_err(|e| StoreError::store("InboxStore", "write", e))?;
+                    }
+                }
+                return Ok(to.clone());
+            }
+            _ => {}
+        }
+
+        // Existing thread/task write paths
         writer::write_dispatch(&self.db, &self.threads_dir, to, data)
     }
 }
@@ -90,7 +233,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("nested/inbox");
         let _store = InboxStore::open(&root).unwrap();
-        assert!(root.join("inbox.db").exists());
+        assert!(root.join("ox.db").exists());
         assert!(root.join("threads").is_dir());
     }
 
