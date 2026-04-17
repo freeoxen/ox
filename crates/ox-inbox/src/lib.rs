@@ -22,8 +22,8 @@ use structfs_core_store::Value;
 pub struct InboxStore {
     db: Mutex<Connection>,
     threads_dir: PathBuf,
-    /// Cached search results keyed by handle ID (auto-incrementing).
-    search_results: std::collections::HashMap<String, Vec<Value>>,
+    /// Single-slot cache for the most recent search result. Evicts on each new query.
+    last_search_result: Option<(String, Vec<Value>)>,
     search_counter: u64,
 }
 
@@ -64,7 +64,7 @@ impl InboxStore {
         Ok(Self {
             db: Mutex::new(conn),
             threads_dir,
-            search_results: std::collections::HashMap::new(),
+            last_search_result: None,
             search_counter: 0,
         })
     }
@@ -77,7 +77,7 @@ impl InboxStore {
 
 impl Reader for InboxStore {
     fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
-        reader::read_dispatch(&self.db, &self.search_results, from)
+        reader::read_dispatch(&self.db, &self.last_search_result, from)
     }
 }
 
@@ -117,15 +117,11 @@ impl Writer for InboxStore {
                     Some(Value::String(s)) => s.as_str(),
                     _ => "compose",
                 };
-                let seq = match map.get("seq") {
-                    Some(Value::Integer(n)) => Some(*n),
-                    _ => None,
-                };
                 let conn = self
                     .db
                     .lock()
                     .map_err(|e| StoreError::store("InboxStore", "write", e.to_string()))?;
-                search::record_input(&conn, text, thread_id, context, seq)
+                search::record_input(&conn, text, thread_id, context)
                     .map_err(|e| StoreError::store("InboxStore", "write", e))?;
                 return Ok(to.clone());
             }
@@ -172,7 +168,7 @@ impl Writer for InboxStore {
                 };
 
                 let handle = self.next_search_handle();
-                self.search_results.insert(handle.clone(), results);
+                self.last_search_result = Some((handle.clone(), results));
                 return Ok(Path::parse(&format!("search/results/{handle}")).unwrap());
             }
             // Trigger ledger indexing for a thread

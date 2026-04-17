@@ -9,7 +9,7 @@ fn err(op: &'static str, msg: impl std::fmt::Display) -> StoreError {
 
 pub fn read_dispatch(
     db: &Mutex<Connection>,
-    search_results: &std::collections::HashMap<String, Vec<structfs_core_store::Value>>,
+    last_search_result: &Option<(String, Vec<structfs_core_store::Value>)>,
     from: &Path,
 ) -> Result<Option<Record>, StoreError> {
     let segments: Vec<&String> = from.iter().collect();
@@ -27,26 +27,27 @@ pub fn read_dispatch(
         [root, id, sub] if root.as_str() == "threads" && sub.as_str() == "tasks" => {
             list_tasks(db, id)
         }
-        // Search result handles: search/results/{id}
-        [a, b, id] if a.as_str() == "search" && b.as_str() == "results" => {
-            match search_results.get(id.as_str()) {
-                Some(results) => Ok(Some(Record::parsed(Value::Array(results.clone())))),
-                None => Ok(None),
+        // Search result handle: search/results/{id}
+        [a, b, id] if a.as_str() == "search" && b.as_str() == "results" => match last_search_result
+        {
+            Some((handle, results)) if handle == id.as_str() => {
+                Ok(Some(Record::parsed(Value::Array(results.clone()))))
             }
-        }
+            _ => Ok(None),
+        },
         // Paginated: search/results/{id}/{offset}/{limit}
         [a, b, id, off, lim] if a.as_str() == "search" && b.as_str() == "results" => {
-            let offset: usize = off.parse().unwrap_or(0);
-            let limit: usize = lim.parse().unwrap_or(20);
-            match search_results.get(id.as_str()) {
-                Some(results) => {
+            match last_search_result {
+                Some((handle, results)) if handle == id.as_str() => {
+                    let offset: usize = off.parse().unwrap_or(0);
+                    let limit: usize = lim.parse().unwrap_or(20);
                     let start = offset.min(results.len());
                     let end = (start + limit).min(results.len());
                     Ok(Some(Record::parsed(Value::Array(
                         results[start..end].to_vec(),
                     ))))
                 }
-                None => Ok(None),
+                _ => Ok(None),
             }
         }
         // Recent inputs: inputs/recent or inputs/recent/{limit}
@@ -238,17 +239,36 @@ fn escape_like(s: &str) -> String {
 fn search_threads(db: &Mutex<Connection>, query: &str) -> Result<Option<Record>, StoreError> {
     let conn = db.lock().map_err(|e| err("read", e))?;
     let pattern = format!("%{}%", escape_like(query));
-    // Search title, labels, AND message content via FTS5
-    let threads = query_threads(
-        &conn,
-        "inbox_state = 'inbox' AND (title LIKE ?1 ESCAPE '\\' OR id IN \
-         (SELECT thread_id FROM labels WHERE label LIKE ?1 ESCAPE '\\') OR id IN \
-         (SELECT m.thread_id FROM messages_fts f JOIN messages m ON f.rowid = m.id \
-          WHERE messages_fts MATCH ?2))",
-        &[
-            &pattern as &dyn rusqlite::types::ToSql,
-            &query as &dyn rusqlite::types::ToSql,
-        ],
-    )?;
-    threads_to_record(threads)
+
+    // Run FTS5 content search separately so a malformed query can't kill title/label search.
+    let content_thread_ids = crate::search::search_thread_ids_by_content(&conn, query, 50);
+
+    if content_thread_ids.is_empty() {
+        // No content matches — just search titles and labels
+        let threads = query_threads(
+            &conn,
+            "inbox_state = 'inbox' AND (title LIKE ?1 ESCAPE '\\' OR id IN \
+             (SELECT thread_id FROM labels WHERE label LIKE ?1 ESCAPE '\\'))",
+            &[&pattern as &dyn rusqlite::types::ToSql],
+        )?;
+        threads_to_record(threads)
+    } else {
+        // Merge content matches with title/label matches
+        let placeholders: String = content_thread_ids
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 2))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let where_clause = format!(
+            "inbox_state = 'inbox' AND (title LIKE ?1 ESCAPE '\\' OR id IN \
+             (SELECT thread_id FROM labels WHERE label LIKE ?1 ESCAPE '\\') OR id IN ({placeholders}))"
+        );
+        let mut params: Vec<&dyn rusqlite::types::ToSql> = vec![&pattern];
+        for id in &content_thread_ids {
+            params.push(id);
+        }
+        let threads = query_threads(&conn, &where_clause, &params)?;
+        threads_to_record(threads)
+    }
 }
