@@ -170,13 +170,7 @@ impl AgentPool {
             .map_err(|_| "thread channel closed".to_string())
     }
 
-    /// Borrow the inbox store (mutable — StructFS Reader requires &mut self).
-    pub fn inbox(&mut self) -> &mut ox_inbox::InboxStore {
-        &mut self.inbox
-    }
-
     /// Path to the inbox root directory (for direct file reads).
-    #[allow(dead_code)]
     pub fn inbox_root(&self) -> &std::path::Path {
         &self.inbox_root
     }

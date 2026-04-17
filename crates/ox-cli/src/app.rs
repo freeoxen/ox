@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use structfs_core_store::Writer as _;
 
 use crate::agents::AgentPool;
 
@@ -10,6 +9,9 @@ use crate::agents::AgentPool;
 /// the fields that are mutated by event handling or needed for agent control.
 pub struct App {
     pub pool: AgentPool,
+    /// Broker client for all store access (inbox, threads, search).
+    pub broker_client: ox_broker::ClientHandle,
+    pub rt_handle: tokio::runtime::Handle,
     /// Offset into input history (0 = at the draft, N = Nth entry from newest).
     history_offset: usize,
     input_draft: String,
@@ -25,10 +27,20 @@ impl App {
         rt_handle: tokio::runtime::Handle,
     ) -> Result<Self, String> {
         let inbox = ox_inbox::InboxStore::open(&inbox_root).map_err(|e| e.to_string())?;
-        let pool = AgentPool::new(workspace, no_policy, inbox, inbox_root, broker, rt_handle)?;
+        let broker_client = broker.client();
+        let pool = AgentPool::new(
+            workspace,
+            no_policy,
+            inbox,
+            inbox_root,
+            broker,
+            rt_handle.clone(),
+        )?;
 
         Ok(Self {
             pool,
+            broker_client,
+            rt_handle,
             history_offset: 0,
             input_draft: String::new(),
         })
@@ -123,18 +135,19 @@ impl App {
         Some((text, cursor))
     }
 
-    /// Read the Nth most recent input from ox.db (1-indexed: 1 = most recent).
-    fn read_history_at(&mut self, offset: usize) -> Option<String> {
-        use structfs_core_store::{Reader, Value};
-        // inputs/recent/{limit} returns newest first, so we read offset items
-        // and take the last one.
-        let path = structfs_core_store::Path::parse(&format!("inputs/recent/{offset}")).ok()?;
-        let record = self.pool.inbox().read(&path).ok()??;
+    /// Read the Nth most recent input from ox.db via broker (1-indexed).
+    fn read_history_at(&self, offset: usize) -> Option<String> {
+        use structfs_core_store::Value;
+        let path =
+            structfs_core_store::Path::parse(&format!("inbox/inputs/recent/{offset}")).ok()?;
+        let record = self
+            .rt_handle
+            .block_on(self.broker_client.read(&path))
+            .ok()??;
         let arr = match record.as_value() {
             Some(Value::Array(a)) => a,
             _ => return None,
         };
-        // The result is newest-first; we want the item at index offset-1 (the oldest in the slice)
         arr.last().and_then(|v| match v {
             Value::Map(m) => match m.get("text") {
                 Some(Value::String(s)) => Some(s.clone()),
@@ -144,8 +157,8 @@ impl App {
         })
     }
 
-    /// Update a thread's state in ox-inbox.
-    pub fn update_thread_state(&mut self, thread_id: &str, state: ox_types::ThreadState) {
+    /// Update a thread's state via broker.
+    pub fn update_thread_state(&self, thread_id: &str, state: ox_types::ThreadState) {
         let tid = match ox_kernel::PathComponent::try_new(thread_id) {
             Ok(c) => c,
             Err(e) => {
@@ -153,7 +166,7 @@ impl App {
                 return;
             }
         };
-        let update_path = ox_path::oxpath!("threads", tid);
+        let update_path = ox_path::oxpath!("inbox", "threads", tid);
         let update = ox_types::UpdateThread {
             id: None,
             thread_state: Some(state),
@@ -161,9 +174,11 @@ impl App {
             updated_at: None,
         };
         let val = structfs_serde_store::to_value(&update).unwrap();
-        self.pool
-            .inbox()
-            .write(&update_path, structfs_core_store::Record::parsed(val))
+        self.rt_handle
+            .block_on(
+                self.broker_client
+                    .write(&update_path, structfs_core_store::Record::parsed(val)),
+            )
             .ok();
     }
 }

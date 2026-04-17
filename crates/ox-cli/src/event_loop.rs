@@ -16,7 +16,6 @@ use ox_types::{
 };
 use ox_ui::text_input_store::EditSource;
 use std::time::Duration;
-use structfs_core_store::Writer as StructWriter;
 
 // ---------------------------------------------------------------------------
 // Scroll momentum — exponential boost for fast scrolling, decay for slow
@@ -317,7 +316,7 @@ pub async fn run_async(
                                 continue;
                             }
                         };
-                        let update_path = ox_path::oxpath!("threads", id_comp);
+                        let update_path = ox_path::oxpath!("inbox", "threads", id_comp);
                         let archive = ox_types::UpdateThread {
                             id: None,
                             thread_state: None,
@@ -325,10 +324,9 @@ pub async fn run_async(
                             updated_at: None,
                         };
                         let val = structfs_serde_store::to_value(&archive).unwrap();
-                        app.pool
-                            .inbox()
+                        let _ = client
                             .write(&update_path, structfs_core_store::Record::parsed(val))
-                            .ok();
+                            .await;
                     }
                 }
             }
@@ -939,11 +937,11 @@ fn refresh_search_results(state: &mut HistorySearchState, app: &mut App) {
     }
 }
 
-/// Load N most recent inputs from ox.db.
-fn load_recent_inputs(app: &mut App, limit: usize) -> Vec<String> {
-    use structfs_core_store::{Reader, Value};
-    let path = structfs_core_store::Path::parse(&format!("inputs/recent/{limit}")).unwrap();
-    match app.pool.inbox().read(&path) {
+/// Load N most recent inputs from ox.db via broker.
+fn load_recent_inputs(app: &App, limit: usize) -> Vec<String> {
+    use structfs_core_store::Value;
+    let path = structfs_core_store::Path::parse(&format!("inbox/inputs/recent/{limit}")).unwrap();
+    match app.rt_handle.block_on(app.broker_client.read(&path)) {
         Ok(Some(record)) => match record.as_value() {
             Some(Value::Array(arr)) => arr
                 .iter()
@@ -961,21 +959,23 @@ fn load_recent_inputs(app: &mut App, limit: usize) -> Vec<String> {
     }
 }
 
-/// FTS5 search over inputs via the StructFS write-then-read-handle pattern.
-fn search_inputs_fts(app: &mut App, query: &str, limit: usize) -> Vec<String> {
-    use structfs_core_store::{Reader, Value, Writer};
+/// FTS5 search over inputs via broker write-then-read-handle pattern.
+fn search_inputs_fts(app: &App, query: &str, limit: usize) -> Vec<String> {
+    use structfs_core_store::Value;
     let query_val = structfs_serde_store::json_to_value(serde_json::json!({
         "query": query,
         "limit": limit,
     }));
-    let handle = match app.pool.inbox().write(
-        &structfs_core_store::Path::parse("search/inputs").unwrap(),
+    let handle = match app.rt_handle.block_on(app.broker_client.write(
+        &structfs_core_store::Path::parse("inbox/search/inputs").unwrap(),
         structfs_core_store::Record::parsed(query_val),
-    ) {
+    )) {
         Ok(h) => h,
         Err(_) => return Vec::new(),
     };
-    match app.pool.inbox().read(&handle) {
+    // Prefix handle with "inbox/" since the broker strips it on write but returns relative
+    let full_handle = structfs_core_store::Path::parse(&format!("inbox/{handle}")).unwrap();
+    match app.rt_handle.block_on(app.broker_client.read(&full_handle)) {
         Ok(Some(record)) => match record.as_value() {
             Some(Value::Array(arr)) => arr
                 .iter()
