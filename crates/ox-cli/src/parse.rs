@@ -2,6 +2,7 @@
 
 use structfs_core_store::Value;
 
+#[cfg(test)]
 use crate::types::ChatMessage;
 
 // ---------------------------------------------------------------------------
@@ -25,6 +26,7 @@ pub struct InboxThread {
 
 /// Convert a slice of StructFS Values (Anthropic wire-format messages) into
 /// `ChatMessage`s suitable for display.
+#[cfg(test)]
 pub fn parse_chat_messages(values: &[Value]) -> Vec<ChatMessage> {
     let mut out = Vec::new();
     for val in values {
@@ -33,6 +35,7 @@ pub fn parse_chat_messages(values: &[Value]) -> Vec<ChatMessage> {
     out
 }
 
+#[cfg(test)]
 fn parse_one_message(val: &Value, out: &mut Vec<ChatMessage>) {
     let map = match val {
         Value::Map(m) => m,
@@ -56,6 +59,7 @@ fn parse_one_message(val: &Value, out: &mut Vec<ChatMessage>) {
     }
 }
 
+#[cfg(test)]
 fn parse_user_content(content: &Value, out: &mut Vec<ChatMessage>) {
     // Plain string content
     if let Value::String(s) = content {
@@ -82,6 +86,7 @@ fn parse_user_content(content: &Value, out: &mut Vec<ChatMessage>) {
     }
 }
 
+#[cfg(test)]
 fn parse_assistant_content(content: &Value, out: &mut Vec<ChatMessage>) {
     // Plain string content
     if let Value::String(s) = content {

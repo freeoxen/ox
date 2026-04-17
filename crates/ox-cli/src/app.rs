@@ -10,9 +10,8 @@ use crate::agents::AgentPool;
 /// the fields that are mutated by event handling or needed for agent control.
 pub struct App {
     pub pool: AgentPool,
-    // Input history
-    pub input_history: Vec<String>,
-    history_cursor: usize,
+    /// Offset into input history (0 = at the draft, N = Nth entry from newest).
+    history_offset: usize,
     input_draft: String,
 }
 
@@ -25,40 +24,12 @@ impl App {
         broker: ox_broker::BrokerStore,
         rt_handle: tokio::runtime::Handle,
     ) -> Result<Self, String> {
-        let mut inbox = ox_inbox::InboxStore::open(&inbox_root).map_err(|e| e.to_string())?;
-
-        // Load persistent input history from ox.db before moving inbox into pool
-        let input_history: Vec<String> = {
-            use structfs_core_store::Reader;
-            let path = structfs_core_store::Path::parse("inputs/recent/200").unwrap();
-            match inbox.read(&path) {
-                Ok(Some(record)) => {
-                    if let Some(structfs_core_store::Value::Array(arr)) = record.as_value() {
-                        arr.iter()
-                            .rev() // recent_inputs returns newest first; we want oldest first
-                            .filter_map(|v| match v {
-                                structfs_core_store::Value::Map(m) => match m.get("text") {
-                                    Some(structfs_core_store::Value::String(s)) => Some(s.clone()),
-                                    _ => None,
-                                },
-                                _ => None,
-                            })
-                            .collect()
-                    } else {
-                        Vec::new()
-                    }
-                }
-                _ => Vec::new(),
-            }
-        };
-
+        let inbox = ox_inbox::InboxStore::open(&inbox_root).map_err(|e| e.to_string())?;
         let pool = AgentPool::new(workspace, no_policy, inbox, inbox_root, broker, rt_handle)?;
-        let history_cursor = input_history.len();
 
         Ok(Self {
             pool,
-            input_history,
-            history_cursor,
+            history_offset: 0,
             input_draft: String::new(),
         })
     }
@@ -96,8 +67,7 @@ impl App {
     }
 
     fn do_compose(&mut self, input: String) -> Option<String> {
-        self.input_history.push(input.clone());
-        self.history_cursor = self.input_history.len();
+        self.history_offset = 0;
         self.input_draft.clear();
 
         let title: String = input.chars().take(40).collect();
@@ -115,46 +85,63 @@ impl App {
     }
 
     fn do_reply(&mut self, input: String, thread_id: &str) {
-        self.input_history.push(input.clone());
-        self.history_cursor = self.input_history.len();
+        self.history_offset = 0;
         self.input_draft.clear();
 
         self.update_thread_state(thread_id, ox_types::ThreadState::Running);
         self.pool.send_prompt(thread_id, input).ok();
     }
 
-    /// Navigate input history up (older). Returns (new_input, new_cursor) or None.
+    /// Navigate input history up (older). Reads from ox.db on demand.
     pub fn history_up(&mut self, current_input: &str) -> Option<(String, usize)> {
-        if self.input_history.is_empty() {
-            return None;
-        }
-        if self.history_cursor == self.input_history.len() {
+        if self.history_offset == 0 {
             self.input_draft = current_input.to_string();
         }
-        if self.history_cursor > 0 {
-            self.history_cursor -= 1;
-            let text = self.input_history[self.history_cursor].clone();
+        let target_offset = self.history_offset + 1;
+        if let Some(text) = self.read_history_at(target_offset) {
+            self.history_offset = target_offset;
             let cursor = text.len();
             Some((text, cursor))
         } else {
-            None
+            None // no more history
         }
     }
 
-    /// Navigate input history down (newer). Returns (new_input, new_cursor) or None.
+    /// Navigate input history down (newer). Returns to draft at offset 0.
     pub fn history_down(&mut self) -> Option<(String, usize)> {
-        if self.history_cursor < self.input_history.len() {
-            self.history_cursor += 1;
-            let text = if self.history_cursor == self.input_history.len() {
-                self.input_draft.clone()
-            } else {
-                self.input_history[self.history_cursor].clone()
-            };
-            let cursor = text.len();
-            Some((text, cursor))
-        } else {
-            None
+        if self.history_offset == 0 {
+            return None;
         }
+        self.history_offset -= 1;
+        let text = if self.history_offset == 0 {
+            self.input_draft.clone()
+        } else {
+            self.read_history_at(self.history_offset)
+                .unwrap_or_default()
+        };
+        let cursor = text.len();
+        Some((text, cursor))
+    }
+
+    /// Read the Nth most recent input from ox.db (1-indexed: 1 = most recent).
+    fn read_history_at(&mut self, offset: usize) -> Option<String> {
+        use structfs_core_store::{Reader, Value};
+        // inputs/recent/{limit} returns newest first, so we read offset items
+        // and take the last one.
+        let path = structfs_core_store::Path::parse(&format!("inputs/recent/{offset}")).ok()?;
+        let record = self.pool.inbox().read(&path).ok()??;
+        let arr = match record.as_value() {
+            Some(Value::Array(a)) => a,
+            _ => return None,
+        };
+        // The result is newest-first; we want the item at index offset-1 (the oldest in the slice)
+        arr.last().and_then(|v| match v {
+            Value::Map(m) => match m.get("text") {
+                Some(Value::String(s)) => Some(s.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
     }
 
     /// Update a thread's state in ox-inbox.

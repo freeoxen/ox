@@ -272,6 +272,7 @@ impl Writer for HistoryView {
                             content,
                             source: None,
                             scope: None,
+                            completion_id: 0,
                         });
                     }
                     _ => {
@@ -401,6 +402,7 @@ mod tests {
             }],
             source: None,
             scope: None,
+            completion_id: 0,
         });
         let mut hv = HistoryView::new(shared);
         let messages = hv.read(&path!("messages")).unwrap().unwrap();
@@ -476,6 +478,7 @@ mod tests {
             content: vec![ox_kernel::ContentBlock::Text { text: "hi".into() }],
             source: None,
             scope: None,
+            completion_id: 0,
         });
         let mut hv = HistoryView::new(shared);
         let count = hv.read(&path!("count")).unwrap().unwrap();

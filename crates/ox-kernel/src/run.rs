@@ -364,7 +364,7 @@ pub fn record_turn(
     context: &mut dyn Writer,
     content: &[ContentBlock],
 ) -> Result<Vec<ToolCall>, String> {
-    record_turn_scoped(context, content, "root")
+    record_turn_scoped(context, content, "root", 0)
 }
 
 /// Write the assistant message to the log with a scope ID.
@@ -375,11 +375,13 @@ fn record_turn_scoped(
     context: &mut dyn Writer,
     content: &[ContentBlock],
     scope: &str,
+    completion_id: u64,
 ) -> Result<Vec<ToolCall>, String> {
     let entry = serde_json::json!({
         "type": "assistant",
         "content": serde_json::to_value(content).unwrap_or_default(),
         "scope": scope,
+        "completion_id": completion_id,
     });
     context
         .write(
@@ -613,6 +615,8 @@ pub fn run_turn(context: &mut dyn Store, emit: &mut dyn FnMut(AgentEvent)) -> Re
     let mut run_output_tokens: u32 = 0;
     let mut run_cache_creation: u32 = 0;
     let mut run_cache_read: u32 = 0;
+    // Per-completion identifier — links CompletionEnd to its Assistant entry.
+    let mut completion_counter: u64 = 0;
 
     loop {
         total_iterations += 1;
@@ -719,6 +723,7 @@ pub fn run_turn(context: &mut dyn Store, emit: &mut dyn FnMut(AgentEvent)) -> Re
                 "type": "completion_end",
                 "scope": &frame.scope,
                 "model": &run_model,
+                "completion_id": completion_counter,
                 "input_tokens": comp_in,
                 "output_tokens": comp_out,
                 "cache_creation_input_tokens": comp_cc,
@@ -728,8 +733,9 @@ pub fn run_turn(context: &mut dyn Store, emit: &mut dyn FnMut(AgentEvent)) -> Re
 
         let content = accumulate_response(events, emit)?;
 
-        // Record assistant message to log with scope
-        record_turn_scoped(context, &content, &frame.scope)?;
+        // Record assistant message to log with scope + completion_id
+        record_turn_scoped(context, &content, &frame.scope, completion_counter)?;
+        completion_counter += 1;
 
         // Clear ephemeral turn state (streaming text, thinking indicator) so the
         // next iteration's context read doesn't see stale streaming text as an

@@ -12,7 +12,7 @@ use crate::app::App;
 use crate::types::{ChatMessage, CustomizeState};
 
 pub use crate::parse::InboxThread;
-use crate::parse::{parse_chat_messages, parse_inbox_threads};
+use crate::parse::parse_inbox_threads;
 
 // ---------------------------------------------------------------------------
 // ViewState — per-frame rendering snapshot
@@ -49,7 +49,7 @@ pub struct ViewState<'a> {
     pub pricing_overrides: std::collections::BTreeMap<String, ox_gate::pricing::ModelPricing>,
 
     // -- App-borrowed (references) ---------------------------------------
-    pub input_history: &'a [String],
+    // input_history removed — history reads from ox.db on demand
     pub approval_selected: usize,
     pub pending_customize: &'a Option<CustomizeState>,
     pub key_hints: Vec<ox_types::KeyHint>,
@@ -70,7 +70,7 @@ pub struct ViewState<'a> {
 /// reads `threads/{id}/history/messages`. Does not read both.
 pub async fn fetch_view_state<'a>(
     client: &ClientHandle,
-    app: &'a App,
+    _app: &'a App,
     dialog: &'a crate::event_loop::DialogState,
     editor_mode: crate::editor::EditorMode,
     editor_command_buffer: &str,
@@ -103,19 +103,12 @@ pub async fn fetch_view_state<'a>(
         }
         ScreenSnapshot::Thread(snap) => {
             if let Ok(tid) = ox_kernel::PathComponent::try_new(snap.thread_id.as_str()) {
-                // Read committed messages
-                let msg_path = ox_path::oxpath!("threads", tid.clone(), "history", "messages");
-                if let Ok(Some(record)) = client.read(&msg_path).await {
-                    if let Some(Value::Array(arr)) = record.as_value() {
-                        messages = parse_chat_messages(arr);
-                    }
-                }
-
-                // Read log entries to inject per-completion metadata into thread view
+                // Build thread view from log entries (single source of truth).
+                // Includes CompletionMeta linked by completion_id — no stitching.
                 let log_path = ox_path::oxpath!("threads", tid.clone(), "log", "entries");
                 if let Ok(Some(record)) = client.read(&log_path).await {
                     if let Some(Value::Array(arr)) = record.as_value() {
-                        inject_completion_meta(&mut messages, arr);
+                        messages = build_thread_from_log(arr);
                     }
                 }
 
@@ -219,7 +212,7 @@ pub async fn fetch_view_state<'a>(
         history_full,
         turn,
         approval_pending,
-        input_history: &app.input_history,
+        // input_history removed — reads from ox.db on demand
         model,
         provider,
         pricing_overrides,
@@ -289,75 +282,134 @@ async fn read_pricing_overrides(
     overrides
 }
 
-/// Inject `CompletionMeta` items into the messages vec from log entries.
+/// Build thread view ChatMessages directly from log entries.
 ///
-/// Scans log entries for `completion_end` events and inserts a `CompletionMeta`
-/// before the corresponding `AssistantChunk` group. The Nth `completion_end`
-/// in the log corresponds to the Nth assistant message group.
-fn inject_completion_meta(messages: &mut Vec<ChatMessage>, log_entries: &[Value]) {
-    // Extract completion_end entries from the log
-    let mut completions: Vec<ChatMessage> = Vec::new();
+/// Single source of truth — no stitching of two reads. CompletionEnd entries
+/// become CompletionMeta items placed before their linked Assistant response
+/// (matched by completion_id).
+fn build_thread_from_log(log_entries: &[Value]) -> Vec<ChatMessage> {
+    let mut out = Vec::new();
+    // Pending CompletionMeta keyed by completion_id, inserted before the matching Assistant.
+    let mut pending_meta: std::collections::HashMap<u64, ChatMessage> =
+        std::collections::HashMap::new();
+
     for val in log_entries {
-        let Some(map) = (match val {
-            Value::Map(m) => Some(m),
-            _ => None,
-        }) else {
-            continue;
+        let map = match val {
+            Value::Map(m) => m,
+            _ => continue,
         };
         let entry_type = match map.get("type") {
             Some(Value::String(s)) => s.as_str(),
             _ => continue,
         };
-        if entry_type != "completion_end" {
-            continue;
-        }
-        let model = match map.get("model") {
-            Some(Value::String(s)) => s.clone(),
-            _ => "?".to_string(),
+        let get_str = |key: &str| -> String {
+            match map.get(key) {
+                Some(Value::String(s)) => s.clone(),
+                _ => String::new(),
+            }
         };
-        let get = |key: &str| -> u32 {
+        let get_u32 = |key: &str| -> u32 {
             match map.get(key) {
                 Some(Value::Integer(n)) => *n as u32,
                 _ => 0,
             }
         };
-        completions.push(ChatMessage::CompletionMeta {
-            model,
-            input_tokens: get("input_tokens"),
-            output_tokens: get("output_tokens"),
-            cache_creation_input_tokens: get("cache_creation_input_tokens"),
-            cache_read_input_tokens: get("cache_read_input_tokens"),
-        });
-    }
+        let get_u64 = |key: &str| -> u64 {
+            match map.get(key) {
+                Some(Value::Integer(n)) => *n as u64,
+                _ => 0,
+            }
+        };
 
-    if completions.is_empty() {
-        return;
-    }
-
-    // Insert each CompletionMeta before the Nth AssistantChunk group.
-    // Walk messages, count assistant groups (a group starts when we see
-    // an AssistantChunk after a non-AssistantChunk).
-    let mut insert_points: Vec<usize> = Vec::new();
-    let mut in_assistant = false;
-    for (i, msg) in messages.iter().enumerate() {
-        match msg {
-            ChatMessage::AssistantChunk(_) => {
-                if !in_assistant {
-                    insert_points.push(i);
-                    in_assistant = true;
+        match entry_type {
+            "user" => {
+                let content = get_str("content");
+                if !content.is_empty() {
+                    out.push(ChatMessage::User(content));
                 }
             }
-            _ => {
-                in_assistant = false;
+            "completion_end" => {
+                let cid = get_u64("completion_id");
+                pending_meta.insert(
+                    cid,
+                    ChatMessage::CompletionMeta {
+                        model: get_str("model"),
+                        input_tokens: get_u32("input_tokens"),
+                        output_tokens: get_u32("output_tokens"),
+                        cache_creation_input_tokens: get_u32("cache_creation_input_tokens"),
+                        cache_read_input_tokens: get_u32("cache_read_input_tokens"),
+                    },
+                );
             }
+            "assistant" => {
+                // Emit pending CompletionMeta for this assistant's completion_id
+                let cid = get_u64("completion_id");
+                if let Some(meta) = pending_meta.remove(&cid) {
+                    out.push(meta);
+                }
+                // Parse content blocks
+                if let Some(content) = map.get("content") {
+                    parse_assistant_content_into(content, &mut out);
+                }
+            }
+            "tool_result" => {
+                let output = get_str("output");
+                out.push(ChatMessage::ToolResult {
+                    name: "tool".into(),
+                    output,
+                });
+            }
+            "error" => {
+                let msg = get_str("message");
+                if !msg.is_empty() {
+                    out.push(ChatMessage::Error(msg));
+                }
+            }
+            // Skip: turn_start, turn_end, tool_call, meta, approval_*
+            _ => {}
         }
     }
+    out
+}
 
-    // Insert in reverse order so indices stay valid
-    for (comp_idx, insert_idx) in insert_points.iter().enumerate().rev() {
-        if comp_idx < completions.len() {
-            messages.insert(*insert_idx, completions[comp_idx].clone());
+/// Parse assistant content blocks into ChatMessages.
+fn parse_assistant_content_into(content: &Value, out: &mut Vec<ChatMessage>) {
+    match content {
+        Value::String(s) => {
+            if !s.is_empty() {
+                out.push(ChatMessage::AssistantChunk(s.clone()));
+            }
         }
+        Value::Array(arr) => {
+            for block in arr {
+                let block_map = match block {
+                    Value::Map(m) => m,
+                    _ => continue,
+                };
+                let block_type = match block_map.get("type") {
+                    Some(Value::String(s)) => s.as_str(),
+                    _ => continue,
+                };
+                match block_type {
+                    "text" => {
+                        if let Some(Value::String(text)) = block_map.get("text") {
+                            if !text.is_empty() {
+                                out.push(ChatMessage::AssistantChunk(text.clone()));
+                            }
+                        }
+                    }
+                    "tool_use" => {
+                        let name = match block_map.get("name") {
+                            Some(Value::String(s)) => s.clone(),
+                            _ => "tool".into(),
+                        };
+                        out.push(ChatMessage::ToolCall { name });
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
     }
 }
 

@@ -35,6 +35,9 @@ pub enum LogEntry {
         source: Option<LogSource>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scope: Option<String>,
+        /// Links this response to its CompletionEnd entry.
+        #[serde(default)]
+        completion_id: u64,
     },
 
     #[serde(rename = "tool_call")]
@@ -85,6 +88,7 @@ pub enum LogEntry {
     CompletionEnd {
         scope: String,
         model: String,
+        completion_id: u64,
         input_tokens: u32,
         output_tokens: u32,
         cache_creation_input_tokens: u32,

@@ -86,9 +86,6 @@ pub(crate) struct HistorySearchState {
     pub query: String,
     pub results: Vec<String>,
     pub selected: usize,
-    /// The InsertContext to return to when accepting/canceling.
-    #[allow(dead_code)]
-    pub return_context: Option<InsertContext>,
 }
 
 /// Async event loop that dispatches through the BrokerStore.
@@ -704,11 +701,12 @@ async fn dispatch_key(
             ctx,
             Some(InsertContext::Compose) | Some(InsertContext::Reply)
         ) {
+            // Load recent inputs from ox.db for initial display
+            let recent = load_recent_inputs(app, 50);
             dialog.history_search = Some(HistorySearchState {
                 query: String::new(),
-                results: app.input_history.clone(),
+                results: recent,
                 selected: 0,
-                return_context: ctx,
             });
             return;
         }
@@ -916,33 +914,81 @@ async fn handle_history_search_key(
         // Backspace → delete last char from query
         (_, KeyCode::Backspace) => {
             state.query.pop();
-            update_history_search_results(state, &app.input_history);
+            refresh_search_results(state, app);
         }
         // Printable char → append to query, re-search
         (_, KeyCode::Char(c)) if !modifiers.contains(KeyModifiers::CONTROL) => {
             state.query.push(c);
-            update_history_search_results(state, &app.input_history);
+            refresh_search_results(state, app);
         }
         _ => {}
     }
 }
 
-fn update_history_search_results(state: &mut HistorySearchState, history: &[String]) {
-    if state.query.is_empty() {
-        state.results = history.to_vec();
+/// Re-query the search database based on the current query string.
+fn refresh_search_results(state: &mut HistorySearchState, app: &mut App) {
+    state.results = if state.query.is_empty() {
+        load_recent_inputs(app, 50)
     } else {
-        let query_lower = state.query.to_lowercase();
-        state.results = history
-            .iter()
-            .rev() // newest first
-            .filter(|s| s.to_lowercase().contains(&query_lower))
-            .cloned()
-            .collect();
-    }
-    // Clamp selected index
+        search_inputs_fts(app, &state.query, 50)
+    };
     if state.results.is_empty() {
         state.selected = 0;
     } else {
         state.selected = state.selected.min(state.results.len() - 1);
+    }
+}
+
+/// Load N most recent inputs from ox.db.
+fn load_recent_inputs(app: &mut App, limit: usize) -> Vec<String> {
+    use structfs_core_store::{Reader, Value};
+    let path = structfs_core_store::Path::parse(&format!("inputs/recent/{limit}")).unwrap();
+    match app.pool.inbox().read(&path) {
+        Ok(Some(record)) => match record.as_value() {
+            Some(Value::Array(arr)) => arr
+                .iter()
+                .filter_map(|v| match v {
+                    Value::Map(m) => match m.get("text") {
+                        Some(Value::String(s)) => Some(s.clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    }
+}
+
+/// FTS5 search over inputs via the StructFS write-then-read-handle pattern.
+fn search_inputs_fts(app: &mut App, query: &str, limit: usize) -> Vec<String> {
+    use structfs_core_store::{Reader, Value, Writer};
+    let query_val = structfs_serde_store::json_to_value(serde_json::json!({
+        "query": query,
+        "limit": limit,
+    }));
+    let handle = match app.pool.inbox().write(
+        &structfs_core_store::Path::parse("search/inputs").unwrap(),
+        structfs_core_store::Record::parsed(query_val),
+    ) {
+        Ok(h) => h,
+        Err(_) => return Vec::new(),
+    };
+    match app.pool.inbox().read(&handle) {
+        Ok(Some(record)) => match record.as_value() {
+            Some(Value::Array(arr)) => arr
+                .iter()
+                .filter_map(|v| match v {
+                    Value::Map(m) => match m.get("text") {
+                        Some(Value::String(s)) => Some(s.clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
     }
 }
