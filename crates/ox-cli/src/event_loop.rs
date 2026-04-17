@@ -129,6 +129,8 @@ pub async fn run_async(
         let ui: UiSnapshot;
         let selected_thread_id: Option<String>;
         let has_approval_pending: bool;
+        let approval_preview_len: usize;
+        let approval_tool_len: usize;
         let mut content_height: Option<usize> = None;
         let mut viewport_height: usize = 0;
         let mut history_hit_map: Option<crate::history_view::HistoryHitMap> = None;
@@ -232,6 +234,17 @@ pub async fn run_async(
                 _ => None,
             };
             has_approval_pending = vs.approval_pending.is_some();
+            // Stash preview info for approval dialog mouse hit-testing
+            approval_preview_len = vs
+                .approval_pending
+                .as_ref()
+                .map(|ap| ap.input_preview.len())
+                .unwrap_or(0);
+            approval_tool_len = vs
+                .approval_pending
+                .as_ref()
+                .map(|ap| ap.tool_name.len())
+                .unwrap_or(0);
             ui = vs.ui.clone();
         }
         // vs is now dropped — safe to mutate app
@@ -434,10 +447,24 @@ pub async fn run_async(
                             if has_approval_pending
                                 && matches!(mouse.kind, MouseEventKind::Down(_)) =>
                         {
-                            let term_h = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24);
-                            let dialog_h = 13u16;
+                            let (term_w, term_h) = crossterm::terminal::size().unwrap_or((80, 24));
+                            // Compute dialog dimensions matching draw_approval_dialog
+                            let prefix_len = approval_tool_len + 3; // "[tool] "
+                            let dialog_width = ((prefix_len + approval_preview_len + 4) as u16)
+                                .clamp(50, term_w.saturating_sub(4));
+                            let inner_width = dialog_width.saturating_sub(2) as usize;
+                            let preview_avail = inner_width.saturating_sub(prefix_len);
+                            let wrapped_count =
+                                if preview_avail > 0 && approval_preview_len > preview_avail {
+                                    approval_preview_len.div_ceil(preview_avail)
+                                } else {
+                                    1
+                                };
+                            let dialog_h =
+                                (2 + wrapped_count as u16 + 9).min(term_h.saturating_sub(4));
                             let dialog_top = term_h.saturating_sub(dialog_h) / 2;
-                            let first_option_row = dialog_top + 3;
+                            // Options start after: border(1) + wrapped lines + blank(1)
+                            let first_option_row = dialog_top + 1 + wrapped_count as u16 + 1;
                             if mouse.row >= first_option_row
                                 && mouse.row < first_option_row + APPROVAL_OPTIONS.len() as u16
                             {

@@ -270,8 +270,29 @@ pub(crate) fn draw_approval_dialog(
     theme: &Theme,
 ) {
     let area = frame.area();
-    let dialog_width = 50.min(area.width.saturating_sub(4));
-    let dialog_height = 13;
+
+    // Size the dialog to fit the preview: wider for long commands, up to terminal width.
+    let prefix = format!("[{tool}] ");
+    let preview_width = prefix.len() + input_preview.len();
+    let min_width = 50u16;
+    let max_width = area.width.saturating_sub(4);
+    let dialog_width = (preview_width as u16 + 4).clamp(min_width, max_width);
+
+    // Wrap preview text if it exceeds the inner width.
+    let inner_width = dialog_width.saturating_sub(2) as usize; // borders
+    let preview_avail = inner_width.saturating_sub(prefix.len());
+    let wrapped_lines: Vec<&str> = if preview_avail > 0 && input_preview.len() > preview_avail {
+        input_preview
+            .as_bytes()
+            .chunks(preview_avail)
+            .map(|chunk| std::str::from_utf8(chunk).unwrap_or(""))
+            .collect()
+    } else {
+        vec![input_preview]
+    };
+
+    // 2 (borders) + wrapped preview lines + 1 blank + 6 options + 1 blank + 1 footer
+    let dialog_height = (2 + wrapped_lines.len() as u16 + 9).min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(dialog_width)) / 2;
     let y = (area.height.saturating_sub(dialog_height)) / 2;
     let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
@@ -286,13 +307,25 @@ pub(crate) fn draw_approval_dialog(
     let inner = block.inner(dialog_area);
     frame.render_widget(block, dialog_area);
 
-    let mut lines = vec![
-        Line::from(vec![
-            Span::styled(format!("[{tool}] "), theme.approval_tool),
-            Span::styled(input_preview, theme.approval_preview),
-        ]),
-        Line::from(""),
-    ];
+    let mut lines = Vec::new();
+
+    // First wrapped line includes the [tool] prefix
+    if let Some(first) = wrapped_lines.first() {
+        lines.push(Line::from(vec![
+            Span::styled(&prefix, theme.approval_tool),
+            Span::styled((*first).to_string(), theme.approval_preview),
+        ]));
+    }
+    // Continuation lines indented to align with the preview text
+    let indent = " ".repeat(prefix.len());
+    for continuation in wrapped_lines.iter().skip(1) {
+        lines.push(Line::from(vec![
+            Span::raw(indent.clone()),
+            Span::styled((*continuation).to_string(), theme.approval_preview),
+        ]));
+    }
+
+    lines.push(Line::from(""));
 
     for (i, (label, decision)) in APPROVAL_OPTIONS.iter().enumerate() {
         let base_style = if decision.is_allow() {
