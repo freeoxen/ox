@@ -25,14 +25,40 @@ impl App {
         broker: ox_broker::BrokerStore,
         rt_handle: tokio::runtime::Handle,
     ) -> Result<Self, String> {
-        let inbox = ox_inbox::InboxStore::open(&inbox_root).map_err(|e| e.to_string())?;
+        let mut inbox = ox_inbox::InboxStore::open(&inbox_root).map_err(|e| e.to_string())?;
+
+        // Load persistent input history from ox.db before moving inbox into pool
+        let input_history: Vec<String> = {
+            use structfs_core_store::Reader;
+            let path = structfs_core_store::Path::parse("inputs/recent/200").unwrap();
+            match inbox.read(&path) {
+                Ok(Some(record)) => {
+                    if let Some(structfs_core_store::Value::Array(arr)) = record.as_value() {
+                        arr.iter()
+                            .rev() // recent_inputs returns newest first; we want oldest first
+                            .filter_map(|v| match v {
+                                structfs_core_store::Value::Map(m) => match m.get("text") {
+                                    Some(structfs_core_store::Value::String(s)) => Some(s.clone()),
+                                    _ => None,
+                                },
+                                _ => None,
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    }
+                }
+                _ => Vec::new(),
+            }
+        };
 
         let pool = AgentPool::new(workspace, no_policy, inbox, inbox_root, broker, rt_handle)?;
+        let history_cursor = input_history.len();
 
         Ok(Self {
             pool,
-            input_history: Vec::new(),
-            history_cursor: 0,
+            input_history,
+            history_cursor,
             input_draft: String::new(),
         })
     }

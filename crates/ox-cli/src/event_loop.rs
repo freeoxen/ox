@@ -78,6 +78,17 @@ pub(crate) struct DialogState {
     pub pending_customize: Option<CustomizeState>,
     pub show_shortcuts: bool,
     pub show_usage: bool,
+    pub history_search: Option<HistorySearchState>,
+}
+
+/// State for Ctrl+R reverse-incremental search.
+pub(crate) struct HistorySearchState {
+    pub query: String,
+    pub results: Vec<String>,
+    pub selected: usize,
+    /// The InsertContext to return to when accepting/canceling.
+    #[allow(dead_code)]
+    pub return_context: Option<InsertContext>,
 }
 
 /// Async event loop that dispatches through the BrokerStore.
@@ -101,6 +112,7 @@ pub async fn run_async(
         pending_customize: None,
         show_shortcuts: false,
         show_usage: false,
+        history_search: None,
     };
     let mut thread = ThreadShell::new();
     let mut history_explorer = crate::history_state::HistoryExplorer::new();
@@ -353,8 +365,21 @@ pub async fn run_async(
         for evt in events {
             match evt {
                 Event::Key(key) => {
+                    // History search — handles all keys when active
+                    if dialog.history_search.is_some() {
+                        handle_history_search_key(
+                            &mut dialog,
+                            app,
+                            client,
+                            &ui,
+                            &mut thread,
+                            key.modifiers,
+                            key.code,
+                        )
+                        .await;
+                    }
                     // Usage dialog — dismiss on any key
-                    if dialog.show_usage {
+                    else if dialog.show_usage {
                         dialog.show_usage = false;
                     }
                     // Shortcuts modal — dismiss on ? or Esc, swallow all other keys
@@ -663,12 +688,33 @@ async fn dispatch_key(
         }
     }
 
-    // ? in normal mode toggles shortcuts modal (inbox + thread only)
     let mode = if ui.editor().is_some() {
         Mode::Insert
     } else {
         Mode::Normal
     };
+
+    // Ctrl+R in insert mode (Compose or Reply) → enter history search
+    if mode == Mode::Insert
+        && modifiers.contains(KeyModifiers::CONTROL)
+        && code == KeyCode::Char('r')
+    {
+        let ctx = ui.editor().map(|e| e.context);
+        if matches!(
+            ctx,
+            Some(InsertContext::Compose) | Some(InsertContext::Reply)
+        ) {
+            dialog.history_search = Some(HistorySearchState {
+                query: String::new(),
+                results: app.input_history.clone(),
+                selected: 0,
+                return_context: ctx,
+            });
+            return;
+        }
+    }
+
+    // ? in normal mode toggles shortcuts modal (inbox + thread only)
     if mode == Mode::Normal && key_str == "?" && !matches!(&ui.screen, ScreenSnapshot::Settings(_))
     {
         dialog.show_shortcuts = !dialog.show_shortcuts;
@@ -828,5 +874,75 @@ async fn dispatch_search_edit(
                 .await;
         }
         _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ctrl+R history search key handling
+// ---------------------------------------------------------------------------
+
+async fn handle_history_search_key(
+    dialog: &mut DialogState,
+    app: &mut App,
+    _client: &ox_broker::ClientHandle,
+    _ui: &UiSnapshot,
+    thread: &mut ThreadShell,
+    modifiers: KeyModifiers,
+    code: KeyCode,
+) {
+    let state = match &mut dialog.history_search {
+        Some(s) => s,
+        None => return,
+    };
+
+    match (modifiers, code) {
+        // Ctrl+R again → cycle to next match
+        (KeyModifiers::CONTROL, KeyCode::Char('r')) => {
+            if !state.results.is_empty() {
+                state.selected = (state.selected + 1) % state.results.len();
+            }
+        }
+        // Enter → accept selected result, populate input editor
+        (_, KeyCode::Enter) => {
+            if let Some(text) = state.results.get(state.selected).cloned() {
+                thread.input_session.set_content(&text);
+            }
+            dialog.history_search = None;
+        }
+        // Esc / Ctrl+G → cancel
+        (_, KeyCode::Esc) | (KeyModifiers::CONTROL, KeyCode::Char('g')) => {
+            dialog.history_search = None;
+        }
+        // Backspace → delete last char from query
+        (_, KeyCode::Backspace) => {
+            state.query.pop();
+            update_history_search_results(state, &app.input_history);
+        }
+        // Printable char → append to query, re-search
+        (_, KeyCode::Char(c)) if !modifiers.contains(KeyModifiers::CONTROL) => {
+            state.query.push(c);
+            update_history_search_results(state, &app.input_history);
+        }
+        _ => {}
+    }
+}
+
+fn update_history_search_results(state: &mut HistorySearchState, history: &[String]) {
+    if state.query.is_empty() {
+        state.results = history.to_vec();
+    } else {
+        let query_lower = state.query.to_lowercase();
+        state.results = history
+            .iter()
+            .rev() // newest first
+            .filter(|s| s.to_lowercase().contains(&query_lower))
+            .cloned()
+            .collect();
+    }
+    // Clamp selected index
+    if state.results.is_empty() {
+        state.selected = 0;
+    } else {
+        state.selected = state.selected.min(state.results.len() - 1);
     }
 }

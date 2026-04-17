@@ -155,13 +155,18 @@ pub(crate) fn draw(
         }
     }
 
-    // Status bar / command line
+    // Status bar / command line / history search
     let status_area = chunks[idx];
-    let show_command_line = is_command_mode || vs.editor_mode == crate::editor::EditorMode::Command;
-    if show_command_line {
-        draw_command_line(frame, vs, theme, status_area);
+    if let Some((query, results, selected)) = &vs.history_search {
+        draw_history_search(frame, query, results, *selected, theme, status_area);
     } else {
-        draw_status_bar(frame, vs, settings, theme, status_area);
+        let show_command_line =
+            is_command_mode || vs.editor_mode == crate::editor::EditorMode::Command;
+        if show_command_line {
+            draw_command_line(frame, vs, theme, status_area);
+        } else {
+            draw_status_bar(frame, vs, settings, theme, status_area);
+        }
     }
 
     // Modal overlays
@@ -213,6 +218,32 @@ pub(crate) fn draw(
 // ---------------------------------------------------------------------------
 // Command line (vim-style : prompt)
 // ---------------------------------------------------------------------------
+
+fn draw_history_search(
+    frame: &mut Frame,
+    query: &str,
+    results: &[String],
+    selected: usize,
+    theme: &Theme,
+    area: Rect,
+) {
+    let matched = results.get(selected).map(|s| s.as_str()).unwrap_or("");
+    let line = Line::from(vec![
+        Span::styled(
+            "(reverse-i-search)",
+            ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::BOLD),
+        ),
+        Span::styled(format!("'{query}': "), theme.status),
+        Span::raw(matched),
+    ]);
+    frame.render_widget(Paragraph::new(line), area);
+
+    // Position cursor after the query
+    let cursor_x = area.x + 18 + 1 + query.len() as u16 + 3;
+    if cursor_x < area.x + area.width {
+        frame.set_cursor_position((cursor_x, area.y));
+    }
+}
 
 fn draw_command_line(frame: &mut Frame, vs: &ViewState, _theme: &Theme, area: Rect) {
     let prompt = Span::styled(

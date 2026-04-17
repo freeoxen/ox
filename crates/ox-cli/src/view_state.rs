@@ -55,6 +55,7 @@ pub struct ViewState<'a> {
     pub key_hints: Vec<ox_types::KeyHint>,
     pub show_shortcuts: bool,
     pub show_usage: bool,
+    pub history_search: Option<(String, Vec<String>, usize)>, // (query, results, selected)
     pub editor_mode: crate::editor::EditorMode,
     pub editor_command_buffer: String,
 }
@@ -227,6 +228,10 @@ pub async fn fetch_view_state<'a>(
         key_hints,
         show_shortcuts: dialog.show_shortcuts,
         show_usage: dialog.show_usage,
+        history_search: dialog
+            .history_search
+            .as_ref()
+            .map(|s| (s.query.clone(), s.results.clone(), s.selected)),
         editor_mode,
         editor_command_buffer: editor_command_buffer.to_string(),
     }

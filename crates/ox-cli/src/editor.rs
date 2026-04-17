@@ -41,6 +41,28 @@ impl InputSession {
         }
     }
 
+    /// Replace the entire content and move cursor to end.
+    pub(crate) fn set_content(&mut self, text: &str) {
+        let old_len = self.content.len();
+        self.content.clear();
+        self.content.push_str(text);
+        self.cursor = text.len();
+        self.pending_edits.push(Edit {
+            op: EditOp::Delete { len: old_len },
+            at: 0,
+            source: EditSource::Paste,
+            ts_ms: now_ms(),
+        });
+        self.pending_edits.push(Edit {
+            op: EditOp::Insert {
+                text: text.to_string(),
+            },
+            at: 0,
+            source: EditSource::Paste,
+            ts_ms: now_ms(),
+        });
+    }
+
     /// Insert text at the current cursor position, push an Edit.
     pub(crate) fn insert(&mut self, text: &str, source: EditSource) {
         let at = self.cursor.min(self.content.len());

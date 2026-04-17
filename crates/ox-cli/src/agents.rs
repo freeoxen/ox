@@ -395,6 +395,21 @@ fn agent_worker(
             continue;
         }
 
+        // Record input in the search database for Ctrl+R history
+        {
+            let input_record = structfs_serde_store::json_to_value(serde_json::json!({
+                "text": &input,
+                "thread_id": &thread_id,
+                "context": "reply",
+            }));
+            rt_handle
+                .block_on(broker_client.write(
+                    &ox_path::oxpath!("inbox", "inputs"),
+                    Record::parsed(input_record),
+                ))
+                .ok();
+        }
+
         // Save before the agent run so the user's prompt (and any prior history)
         // survives if the process is killed mid-turn.
         save_thread_state(&mut adapter, &inbox_root, &thread_id, &title);
@@ -487,6 +502,16 @@ fn agent_worker(
 
         // Persist conversation state for restart recovery
         save_thread_state(&mut adapter, &inbox_root, &thread_id, &title);
+
+        // Index conversation content for full-text search
+        if let Ok(tid_comp) = ox_kernel::PathComponent::try_new(&thread_id) {
+            rt_handle
+                .block_on(broker_client.write(
+                    &ox_path::oxpath!("inbox", "index", tid_comp),
+                    Record::parsed(Value::Null),
+                ))
+                .ok();
+        }
 
         // Write inbox metadata updates through broker
         let now = std::time::SystemTime::now()
