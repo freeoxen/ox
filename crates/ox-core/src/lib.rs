@@ -210,11 +210,11 @@ mod tests {
             "expected 2 history messages (user + assistant)"
         );
 
-        // log/count == 4: user + turn_start + assistant + turn_end
+        // log/count == 5: user + turn_start + completion_end + assistant + turn_end
         let log_count = read_count(&mut ns, "log/count");
         assert_eq!(
-            log_count, 4,
-            "expected 4 log entries (user + turn_start + assistant + turn_end)"
+            log_count, 5,
+            "expected 5 log entries (user + turn_start + completion_end + assistant + turn_end)"
         );
     }
 
