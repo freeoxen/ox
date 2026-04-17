@@ -238,11 +238,17 @@ fn escape_like(s: &str) -> String {
 fn search_threads(db: &Mutex<Connection>, query: &str) -> Result<Option<Record>, StoreError> {
     let conn = db.lock().map_err(|e| err("read", e))?;
     let pattern = format!("%{}%", escape_like(query));
+    // Search title, labels, AND message content via FTS5
     let threads = query_threads(
         &conn,
         "inbox_state = 'inbox' AND (title LIKE ?1 ESCAPE '\\' OR id IN \
-         (SELECT thread_id FROM labels WHERE label LIKE ?1 ESCAPE '\\'))",
-        &[&pattern as &dyn rusqlite::types::ToSql],
+         (SELECT thread_id FROM labels WHERE label LIKE ?1 ESCAPE '\\') OR id IN \
+         (SELECT m.thread_id FROM messages_fts f JOIN messages m ON f.rowid = m.id \
+          WHERE messages_fts MATCH ?2))",
+        &[
+            &pattern as &dyn rusqlite::types::ToSql,
+            &query as &dyn rusqlite::types::ToSql,
+        ],
     )?;
     threads_to_record(threads)
 }
