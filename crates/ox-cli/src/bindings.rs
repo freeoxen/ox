@@ -545,7 +545,7 @@ fn insert_mode(out: &mut Vec<Binding>) {
     // ESC toggles editor sub-mode (Insert→Normal→exit)
     out.push(bind(
         Insert,
-        "Escape",
+        "Esc",
         invoke(Cmd::ToggleEditorMode),
         "Toggle mode",
     ));
@@ -687,7 +687,7 @@ fn approval_mode(out: &mut Vec<Binding>) {
         "Confirm selected",
     ));
     // Esc closes thread (same as q)
-    out.push(bind(Approval, "Escape", invoke(Cmd::Close), "Close thread"));
+    out.push(bind(Approval, "Esc", invoke(Cmd::Close), "Close thread"));
     // Number keys for direct selection
     for (i, (_, decision)) in crate::types::APPROVAL_OPTIONS.iter().enumerate() {
         let key = format!("{}", i + 1);
@@ -716,7 +716,7 @@ fn shortcuts_mode(out: &mut Vec<Binding>) {
     ));
     out.push(bind(
         Mode::Shortcuts,
-        "Escape",
+        "Esc",
         invoke(Cmd::DismissShortcuts),
         "Close",
     ));
@@ -734,12 +734,7 @@ fn shortcuts_mode(out: &mut Vec<Binding>) {
 
 fn usage_mode(out: &mut Vec<Binding>) {
     // Any key dismisses — Esc is the canonical one
-    out.push(bind(
-        Mode::Usage,
-        "Escape",
-        invoke(Cmd::DismissUsage),
-        "Close",
-    ));
+    out.push(bind(Mode::Usage, "Esc", invoke(Cmd::DismissUsage), "Close"));
 }
 
 // ---------------------------------------------------------------------------
@@ -749,7 +744,7 @@ fn usage_mode(out: &mut Vec<Binding>) {
 fn history_search_mode(out: &mut Vec<Binding>) {
     out.push(bind(
         Mode::HistorySearch,
-        "Escape",
+        "Esc",
         invoke(Cmd::DismissHistorySearch),
         "Cancel",
     ));
