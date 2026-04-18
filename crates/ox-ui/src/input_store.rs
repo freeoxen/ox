@@ -14,6 +14,7 @@
 use std::collections::BTreeMap;
 
 use ox_path::oxpath;
+use ox_types::CommandName;
 use ox_types::ui::{Mode, Screen};
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer};
 
@@ -35,7 +36,7 @@ pub struct BindingContext {
 pub enum Action {
     /// Command invocation through the command registry.
     Invoke {
-        command: String,
+        command: CommandName,
         args: std::collections::BTreeMap<String, serde_json::Value>,
     },
     /// Execute a sequence of actions in order.
@@ -128,7 +129,7 @@ impl InputStore {
             Action::Invoke { command, args } => {
                 // Build a CommandInvocation as a StructFS value and dispatch to command/invoke
                 let inv = crate::command_def::CommandInvocation {
-                    command: command.clone(),
+                    command: command.as_str().to_string(),
                     args: args.clone(),
                 };
                 let inv_value = structfs_serde_store::to_value(&inv).map_err(|e| {
@@ -175,7 +176,10 @@ impl InputStore {
         }
         match &b.action {
             Action::Invoke { command, .. } => {
-                map.insert("command".to_string(), Value::String(command.clone()));
+                map.insert(
+                    "command".to_string(),
+                    Value::String(command.as_str().to_string()),
+                );
                 map.insert("type".to_string(), Value::String("invoke".to_string()));
             }
             Action::Macro(steps) => {
@@ -214,9 +218,12 @@ impl InputStore {
         })?;
         let key = extract_str(map, "key")
             .ok_or_else(|| StoreError::store("input", "bind", "missing key"))?;
-        let command = extract_str(map, "command")
+        let command_str = extract_str(map, "command")
             .or_else(|| extract_str(map, "target")) // backwards compat
             .ok_or_else(|| StoreError::store("input", "bind", "missing command"))?;
+        let command = CommandName::parse(&command_str).ok_or_else(|| {
+            StoreError::store("input", "bind", format!("unknown command: {command_str}"))
+        })?;
         let description = extract_str(map, "description").unwrap_or_default();
         let screen = match extract_str(map, "screen") {
             Some(s) => Some(Screen::parse(&s).ok_or_else(|| {
@@ -311,9 +318,12 @@ impl InputStore {
                     ));
                 }
             };
-            let command = extract_str(step_map, "command")
+            let command_str = extract_str(step_map, "command")
                 .or_else(|| extract_str(step_map, "target")) // backwards compat
                 .ok_or_else(|| StoreError::store("input", "macro", "step missing command"))?;
+            let command = CommandName::parse(&command_str).ok_or_else(|| {
+                StoreError::store("input", "macro", format!("unknown command: {command_str}"))
+            })?;
             let args = match step_map.get("args") {
                 Some(Value::Map(m)) => m
                     .iter()
@@ -429,7 +439,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use structfs_core_store::path;
 
-    fn simple_binding(mode: Mode, key: &str, command: &str, desc: &str) -> Binding {
+    fn simple_binding(mode: Mode, key: &str, command: CommandName, desc: &str) -> Binding {
         Binding {
             context: BindingContext {
                 mode,
@@ -437,7 +447,7 @@ mod tests {
                 screen: None,
             },
             action: Action::Invoke {
-                command: command.to_string(),
+                command,
                 args: BTreeMap::new(),
             },
             description: desc.to_string(),
@@ -445,7 +455,13 @@ mod tests {
         }
     }
 
-    fn screen_binding(mode: Mode, key: &str, screen: Screen, command: &str, desc: &str) -> Binding {
+    fn screen_binding(
+        mode: Mode,
+        key: &str,
+        screen: Screen,
+        command: CommandName,
+        desc: &str,
+    ) -> Binding {
         Binding {
             context: BindingContext {
                 mode,
@@ -453,7 +469,7 @@ mod tests {
                 screen: Some(screen),
             },
             action: Action::Invoke {
-                command: command.to_string(),
+                command,
                 args: BTreeMap::new(),
             },
             description: desc.to_string(),
@@ -489,7 +505,12 @@ mod tests {
 
     #[test]
     fn resolve_generic_binding() {
-        let bindings = vec![simple_binding(Mode::Normal, "j", "ui/select_next", "down")];
+        let bindings = vec![simple_binding(
+            Mode::Normal,
+            "j",
+            CommandName::SelectNext,
+            "down",
+        )];
         let store = InputStore::new(bindings);
         let b = store.resolve("normal", "j", Some("inbox")).unwrap();
         assert_eq!(b.description, "down");
@@ -498,12 +519,12 @@ mod tests {
     #[test]
     fn resolve_screen_specific_wins() {
         let bindings = vec![
-            simple_binding(Mode::Normal, "j", "ui/select_next", "generic"),
+            simple_binding(Mode::Normal, "j", CommandName::SelectNext, "generic"),
             screen_binding(
                 Mode::Normal,
                 "j",
                 Screen::Thread,
-                "ui/scroll_down",
+                CommandName::ScrollDown,
                 "scroll",
             ),
         ];
@@ -528,7 +549,12 @@ mod tests {
 
     #[test]
     fn dispatch_simple_command() {
-        let bindings = vec![simple_binding(Mode::Normal, "j", "select_next", "down")];
+        let bindings = vec![simple_binding(
+            Mode::Normal,
+            "j",
+            CommandName::SelectNext,
+            "down",
+        )];
         let mut store = InputStore::new(bindings);
         let (dispatcher, log) = mock_dispatcher();
         store.set_dispatcher(dispatcher);
@@ -546,8 +572,20 @@ mod tests {
     #[test]
     fn dispatch_screen_specific() {
         let bindings = vec![
-            screen_binding(Mode::Normal, "j", Screen::Inbox, "select_next", "down"),
-            screen_binding(Mode::Normal, "j", Screen::Thread, "scroll_down", "scroll"),
+            screen_binding(
+                Mode::Normal,
+                "j",
+                Screen::Inbox,
+                CommandName::SelectNext,
+                "down",
+            ),
+            screen_binding(
+                Mode::Normal,
+                "j",
+                Screen::Thread,
+                CommandName::ScrollDown,
+                "scroll",
+            ),
         ];
         let mut store = InputStore::new(bindings);
         let (dispatcher, log) = mock_dispatcher();
@@ -587,11 +625,11 @@ mod tests {
             },
             action: Action::Macro(vec![
                 Action::Invoke {
-                    command: "close".to_string(),
+                    command: CommandName::Close,
                     args: BTreeMap::new(),
                 },
                 Action::Invoke {
-                    command: "scroll_to_bottom".to_string(),
+                    command: CommandName::ScrollToBottom,
                     args: BTreeMap::new(),
                 },
             ]),
@@ -617,8 +655,8 @@ mod tests {
     #[test]
     fn read_all_bindings() {
         let bindings = vec![
-            simple_binding(Mode::Normal, "j", "ui/select_next", "down"),
-            simple_binding(Mode::Insert, "Esc", "ui/exit_insert", "exit"),
+            simple_binding(Mode::Normal, "j", CommandName::SelectNext, "down"),
+            simple_binding(Mode::Insert, "Esc", CommandName::ExitInsert, "exit"),
         ];
         let mut store = InputStore::new(bindings);
         let val = store.read(&path!("bindings")).unwrap().unwrap();
@@ -632,9 +670,9 @@ mod tests {
     #[test]
     fn read_bindings_by_mode() {
         let bindings = vec![
-            simple_binding(Mode::Normal, "j", "ui/select_next", "down"),
-            simple_binding(Mode::Normal, "k", "ui/select_prev", "up"),
-            simple_binding(Mode::Insert, "Esc", "ui/exit_insert", "exit"),
+            simple_binding(Mode::Normal, "j", CommandName::SelectNext, "down"),
+            simple_binding(Mode::Normal, "k", CommandName::SelectPrev, "up"),
+            simple_binding(Mode::Insert, "Esc", CommandName::ExitInsert, "exit"),
         ];
         let mut store = InputStore::new(bindings);
         let val = store.read(&path!("bindings/normal")).unwrap().unwrap();
@@ -648,15 +686,15 @@ mod tests {
     #[test]
     fn read_bindings_by_mode_and_screen() {
         let bindings = vec![
-            simple_binding(Mode::Normal, "j", "ui/select_next", "generic j"),
+            simple_binding(Mode::Normal, "j", CommandName::SelectNext, "generic j"),
             screen_binding(
                 Mode::Normal,
                 "j",
                 Screen::Thread,
-                "ui/scroll_down",
+                CommandName::ScrollDown,
                 "thread j",
             ),
-            simple_binding(Mode::Normal, "k", "ui/select_prev", "generic k"),
+            simple_binding(Mode::Normal, "k", CommandName::SelectPrev, "generic k"),
         ];
         let mut store = InputStore::new(bindings);
         // bindings/normal/thread should return generic j (no screen) + thread j + generic k
@@ -703,7 +741,12 @@ mod tests {
 
     #[test]
     fn bind_replaces_existing() {
-        let bindings = vec![simple_binding(Mode::Normal, "j", "select_next", "old")];
+        let bindings = vec![simple_binding(
+            Mode::Normal,
+            "j",
+            CommandName::SelectNext,
+            "old",
+        )];
         let mut store = InputStore::new(bindings);
         let (dispatcher, _log) = mock_dispatcher();
         store.set_dispatcher(dispatcher);
@@ -713,7 +756,7 @@ mod tests {
         bind_val.insert("key".to_string(), Value::String("j".to_string()));
         bind_val.insert(
             "command".to_string(),
-            Value::String("scroll_down".to_string()),
+            Value::String(CommandName::ScrollDown.to_string()),
         );
         bind_val.insert("description".to_string(), Value::String("new".to_string()));
         store
@@ -723,14 +766,19 @@ mod tests {
         // Verify the new binding replaced the old one
         assert_eq!(store.bindings.len(), 1);
         match &store.bindings[0].action {
-            Action::Invoke { command, .. } => assert_eq!(command, "scroll_down"),
+            Action::Invoke { command, .. } => assert_eq!(*command, CommandName::ScrollDown),
             _ => panic!("expected Invoke"),
         }
     }
 
     #[test]
     fn unbind_removes_binding() {
-        let bindings = vec![simple_binding(Mode::Normal, "j", "ui/select_next", "down")];
+        let bindings = vec![simple_binding(
+            Mode::Normal,
+            "j",
+            CommandName::SelectNext,
+            "down",
+        )];
         let mut store = InputStore::new(bindings);
 
         let mut unbind_val = BTreeMap::new();
@@ -792,7 +840,12 @@ mod tests {
 
     #[test]
     fn dispatch_without_dispatcher_returns_error() {
-        let bindings = vec![simple_binding(Mode::Normal, "j", "ui/select_next", "down")];
+        let bindings = vec![simple_binding(
+            Mode::Normal,
+            "j",
+            CommandName::SelectNext,
+            "down",
+        )];
         let mut store = InputStore::new(bindings);
         let result = store.write(&path!("key"), key_event("normal", "j", "inbox"));
         assert!(result.is_err());
@@ -821,7 +874,7 @@ mod tests {
                 screen: None,
             },
             action: Action::Invoke {
-                command: "quit".to_string(),
+                command: CommandName::Quit,
                 args: BTreeMap::new(),
             },
             description: "quit".to_string(),
@@ -854,7 +907,7 @@ mod tests {
                 screen: None,
             },
             action: Action::Invoke {
-                command: "compose".to_string(),
+                command: CommandName::Compose,
                 args,
             },
             description: "compose".to_string(),
