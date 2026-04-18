@@ -1442,6 +1442,23 @@ impl Writer for UiStore {
                 self.pending_action = Some(PendingAction::ApprovalConfirm);
                 return Ok(path!("pending_action"));
             }
+            // Modal and dialog commands — all route through PendingAction
+            let pending = match cmd_name.as_str() {
+                "toggle_shortcuts" => Some(PendingAction::ToggleShortcuts),
+                "dismiss_shortcuts" => Some(PendingAction::DismissShortcuts),
+                "dismiss_usage" => Some(PendingAction::DismissUsage),
+                "toggle_usage" => Some(PendingAction::ToggleUsage),
+                "enter_history_search" => Some(PendingAction::EnterHistorySearch),
+                "history_search_cycle" => Some(PendingAction::HistorySearchCycle),
+                "accept_history_search" => Some(PendingAction::AcceptHistorySearch),
+                "dismiss_history_search" => Some(PendingAction::DismissHistorySearch),
+                "toggle_editor_mode" => Some(PendingAction::ToggleEditorMode),
+                _ => None,
+            };
+            if let Some(action) = pending {
+                self.pending_action = Some(action);
+                return Ok(path!("pending_action"));
+            }
             // set_input and clear_input are handled directly (they mutate editor state)
             if cmd_name == "set_input" || cmd_name == "clear_input" {
                 let value = data.as_value().ok_or_else(|| {

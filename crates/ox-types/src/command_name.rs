@@ -73,6 +73,21 @@ pub enum CommandName {
     SetStatus,
     ClearPendingAction,
 
+    // -- Modal dialogs --
+    ToggleShortcuts,
+    DismissShortcuts,
+    DismissUsage,
+    ToggleUsage,
+
+    // -- History search --
+    EnterHistorySearch,
+    HistorySearchCycle,
+    AcceptHistorySearch,
+    DismissHistorySearch,
+
+    // -- Editor sub-modes --
+    ToggleEditorMode,
+
     // -- History explorer --
     OpenHistory,
     BackToThread,
@@ -135,6 +150,15 @@ impl CommandName {
             Self::SetInput => "set_input",
             Self::SetStatus => "set_status",
             Self::ClearPendingAction => "clear_pending_action",
+            Self::ToggleShortcuts => "toggle_shortcuts",
+            Self::DismissShortcuts => "dismiss_shortcuts",
+            Self::DismissUsage => "dismiss_usage",
+            Self::ToggleUsage => "toggle_usage",
+            Self::EnterHistorySearch => "enter_history_search",
+            Self::HistorySearchCycle => "history_search_cycle",
+            Self::AcceptHistorySearch => "accept_history_search",
+            Self::DismissHistorySearch => "dismiss_history_search",
+            Self::ToggleEditorMode => "toggle_editor_mode",
             Self::OpenHistory => "open_history",
             Self::BackToThread => "back_to_thread",
             Self::ToggleExpand => "toggle_expand",
@@ -196,6 +220,15 @@ impl CommandName {
             "set_input" => Some(Self::SetInput),
             "set_status" => Some(Self::SetStatus),
             "clear_pending_action" => Some(Self::ClearPendingAction),
+            "toggle_shortcuts" => Some(Self::ToggleShortcuts),
+            "dismiss_shortcuts" => Some(Self::DismissShortcuts),
+            "dismiss_usage" => Some(Self::DismissUsage),
+            "toggle_usage" => Some(Self::ToggleUsage),
+            "enter_history_search" => Some(Self::EnterHistorySearch),
+            "history_search_cycle" => Some(Self::HistorySearchCycle),
+            "accept_history_search" => Some(Self::AcceptHistorySearch),
+            "dismiss_history_search" => Some(Self::DismissHistorySearch),
+            "toggle_editor_mode" => Some(Self::ToggleEditorMode),
             "open_history" => Some(Self::OpenHistory),
             "back_to_thread" => Some(Self::BackToThread),
             "toggle_expand" => Some(Self::ToggleExpand),

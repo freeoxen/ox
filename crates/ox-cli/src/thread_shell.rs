@@ -152,38 +152,6 @@ impl ThreadShell {
     }
 }
 
-/// Handle thread-specific insert-mode keys.
-///
-/// Intercepts ESC to toggle between editor sub-modes before the InputStore
-/// can fire `ui/exit_insert`. Returns `Outcome::Handled` when consumed.
-pub(crate) fn handle_esc_intercept(
-    key_str: &str,
-    insert_context: Option<InsertContext>,
-    input_session: &mut InputSession,
-) -> Outcome {
-    if key_str == "Esc"
-        && insert_context != Some(InsertContext::Search)
-        && insert_context != Some(InsertContext::Command)
-    {
-        match input_session.editor_mode {
-            EditorMode::Insert => {
-                input_session.editor_mode = EditorMode::Normal;
-                return Outcome::Handled;
-            }
-            EditorMode::Command => {
-                input_session.command_buffer.clear();
-                input_session.editor_mode = EditorMode::Normal;
-                return Outcome::Handled;
-            }
-            EditorMode::Normal => {
-                // Let ESC fall through to InputStore -> ui/exit_insert
-            }
-        }
-    }
-
-    Outcome::Ignored
-}
-
 /// Handle unbound insert-mode keys (after InputStore dispatch fails).
 ///
 /// Routes to search editing, command editing, or vim-style editor sub-modes.

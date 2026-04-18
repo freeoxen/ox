@@ -336,6 +336,72 @@ static BUILTIN_COMMANDS: &[StaticCommandDef] = &[
         description: "Scroll approval preview up",
         user_facing: true,
     },
+    // -- Modal dialogs --
+    StaticCommandDef {
+        name: "toggle_shortcuts",
+        target: "ui/toggle_shortcuts",
+        params: &[],
+        description: "Toggle shortcuts help",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "dismiss_shortcuts",
+        target: "ui/dismiss_shortcuts",
+        params: &[],
+        description: "Dismiss shortcuts help",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "dismiss_usage",
+        target: "ui/dismiss_usage",
+        params: &[],
+        description: "Dismiss usage dialog",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "toggle_usage",
+        target: "ui/toggle_usage",
+        params: &[],
+        description: "Toggle usage info",
+        user_facing: true,
+    },
+    // -- History search --
+    StaticCommandDef {
+        name: "enter_history_search",
+        target: "ui/enter_history_search",
+        params: &[],
+        description: "Enter history search",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "history_search_cycle",
+        target: "ui/history_search_cycle",
+        params: &[],
+        description: "Cycle to next history match",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "accept_history_search",
+        target: "ui/accept_history_search",
+        params: &[],
+        description: "Accept history search result",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "dismiss_history_search",
+        target: "ui/dismiss_history_search",
+        params: &[],
+        description: "Cancel history search",
+        user_facing: true,
+    },
+    // -- Editor sub-modes --
+    StaticCommandDef {
+        name: "toggle_editor_mode",
+        target: "ui/toggle_editor_mode",
+        params: &[],
+        description: "Toggle editor insert/normal mode",
+        user_facing: true,
+    },
     // -- Internal --
     StaticCommandDef {
         name: "set_row_count",

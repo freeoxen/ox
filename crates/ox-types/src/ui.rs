@@ -40,6 +40,10 @@ pub enum Mode {
     Normal,
     Insert,
     Approval,
+    HistorySearch,
+    Shortcuts,
+    Usage,
+    Customize,
 }
 
 impl Mode {
@@ -48,6 +52,10 @@ impl Mode {
             Mode::Normal => "normal",
             Mode::Insert => "insert",
             Mode::Approval => "approval",
+            Mode::HistorySearch => "history_search",
+            Mode::Shortcuts => "shortcuts",
+            Mode::Usage => "usage",
+            Mode::Customize => "customize",
         }
     }
 
@@ -56,6 +64,10 @@ impl Mode {
             "normal" => Some(Mode::Normal),
             "insert" => Some(Mode::Insert),
             "approval" => Some(Mode::Approval),
+            "history_search" => Some(Mode::HistorySearch),
+            "shortcuts" => Some(Mode::Shortcuts),
+            "usage" => Some(Mode::Usage),
+            "customize" => Some(Mode::Customize),
             _ => None,
         }
     }
@@ -79,6 +91,15 @@ pub enum PendingAction {
     ArchiveSelected,
     ApprovalConfirm,
     Approve(Decision),
+    ToggleShortcuts,
+    DismissShortcuts,
+    DismissUsage,
+    ToggleUsage,
+    EnterHistorySearch,
+    HistorySearchCycle,
+    AcceptHistorySearch,
+    DismissHistorySearch,
+    ToggleEditorMode,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

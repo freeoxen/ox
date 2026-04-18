@@ -297,61 +297,64 @@ pub async fn run_async(
                     &UiCommand::Global(GlobalCommand::ClearPendingAction),
                 )
                 .await;
-            match action {
-                PendingAction::Quit => return Ok(()),
-                PendingAction::SendInput => {
-                    thread.handle_send_input(&ui, app, client).await;
+            let mut editor_content = None;
+            let effects = crate::action_executor::execute(
+                action,
+                &mut dialog,
+                &mut thread.input_session.editor_mode,
+                &mut thread.input_session.command_buffer,
+                &ui,
+                selected_thread_id.as_deref(),
+                &mut editor_content,
+            );
+
+            if effects.quit {
+                return Ok(());
+            }
+            if effects.send_input {
+                thread.handle_send_input(&ui, app, client).await;
+            }
+            if let Some(text) = editor_content {
+                thread.input_session.set_content(&text);
+            }
+            if let Some(id) = &effects.open_thread {
+                let _ = client
+                    .write_typed(
+                        &oxpath!("ui"),
+                        &UiCommand::Global(GlobalCommand::Open {
+                            thread_id: id.clone(),
+                        }),
+                    )
+                    .await;
+            }
+            if let Some(id) = &effects.archive_thread {
+                if let Ok(id_comp) = PathComponent::try_new(id.as_str()) {
+                    let update_path = ox_path::oxpath!("inbox", "threads", id_comp);
+                    let archive = ox_types::UpdateThread {
+                        id: None,
+                        thread_state: None,
+                        inbox_state: Some("done".to_string()),
+                        updated_at: None,
+                    };
+                    let val = structfs_serde_store::to_value(&archive).unwrap();
+                    let _ = client
+                        .write(&update_path, structfs_core_store::Record::parsed(val))
+                        .await;
                 }
-                PendingAction::OpenSelected => {
-                    if let Some(id) = &selected_thread_id {
-                        let _ = client
-                            .write_typed(
-                                &oxpath!("ui"),
-                                &UiCommand::Global(GlobalCommand::Open {
-                                    thread_id: id.clone(),
-                                }),
-                            )
-                            .await;
-                    }
+            }
+            if let Some(decision) = effects.approval_response {
+                if let ScreenSnapshot::Thread(snap) = &ui.screen {
+                    let tid = Some(snap.thread_id.clone());
+                    crate::key_handlers::send_approval_response(client, &tid, decision).await;
                 }
-                PendingAction::ArchiveSelected => {
-                    if let Some(id) = &selected_thread_id {
-                        let id_comp = match PathComponent::try_new(id.as_str()) {
-                            Ok(c) => c,
-                            Err(e) => {
-                                tracing::warn!(error = %e, "invalid thread id for path");
-                                continue;
-                            }
-                        };
-                        let update_path = ox_path::oxpath!("inbox", "threads", id_comp);
-                        let archive = ox_types::UpdateThread {
-                            id: None,
-                            thread_state: None,
-                            inbox_state: Some("done".to_string()),
-                            updated_at: None,
-                        };
-                        let val = structfs_serde_store::to_value(&archive).unwrap();
-                        let _ = client
-                            .write(&update_path, structfs_core_store::Record::parsed(val))
-                            .await;
-                    }
-                }
-                PendingAction::ApprovalConfirm => {
-                    if let ScreenSnapshot::Thread(snap) = &ui.screen {
-                        let idx = snap.approval_selected;
-                        if idx < APPROVAL_OPTIONS.len() {
-                            let decision = APPROVAL_OPTIONS[idx].1;
-                            let tid = Some(snap.thread_id.clone());
-                            crate::key_handlers::send_approval_response(client, &tid, decision)
-                                .await;
-                        }
-                    }
-                }
-                PendingAction::Approve(decision) => {
-                    if let ScreenSnapshot::Thread(snap) = &ui.screen {
-                        let tid = Some(snap.thread_id.clone());
-                        crate::key_handlers::send_approval_response(client, &tid, decision).await;
-                    }
+            }
+            for cmd in &effects.broker_commands {
+                let _ = client.write_typed(&oxpath!("ui"), cmd).await;
+            }
+            // Load history search results if just entered
+            if matches!(action, PendingAction::EnterHistorySearch) {
+                if let Some(ref mut hs) = dialog.history_search {
+                    hs.results = load_recent_inputs(client).await;
                 }
             }
         }
@@ -384,31 +387,9 @@ pub async fn run_async(
         for evt in events {
             match evt {
                 Event::Key(key) => {
-                    // History search — handles all keys when active
-                    if dialog.history_search.is_some() {
-                        handle_history_search_key(
-                            &mut dialog,
-                            client,
-                            &mut thread,
-                            key.modifiers,
-                            key.code,
-                        )
-                        .await;
-                    }
-                    // Usage dialog — dismiss on any key
-                    else if dialog.show_usage {
-                        dialog.show_usage = false;
-                    }
-                    // Shortcuts modal — dismiss on ? or Esc, swallow all other keys
-                    else if dialog.show_shortcuts {
-                        if let Some(key_str) = encode_key(key.modifiers, key.code) {
-                            if key_str == "?" || key_str == "Esc" || key_str == "Ctrl+q" {
-                                dialog.show_shortcuts = false;
-                            }
-                        }
-                    }
-                    // Customize dialog — bypass broker entirely
-                    else if dialog.pending_customize.is_some() {
+                    // Customize dialog is the only remaining bypass — it has
+                    // its own text editing and complex widget state.
+                    if dialog.pending_customize.is_some() {
                         let active_thread_id = match &ui.screen {
                             ScreenSnapshot::Thread(s) => Some(s.thread_id.clone()),
                             _ => None,
@@ -420,9 +401,7 @@ pub async fn run_async(
                             key.code,
                         )
                         .await;
-                    }
-                    // All other screens (including thread with approval pending)
-                    else if let Some(key_str) = encode_key(key.modifiers, key.code) {
+                    } else if let Some(key_str) = encode_key(key.modifiers, key.code) {
                         dispatch_key(
                             &ui,
                             &key_str,
@@ -628,96 +607,38 @@ async fn dispatch_key(
     client: &ox_broker::ClientHandle,
     terminal: &mut ratatui::DefaultTerminal,
 ) {
-    // Screen-specific handlers first
-    match &ui.screen {
-        ScreenSnapshot::Settings(_) => {
-            let inbox_root = app.pool.inbox_root().to_path_buf();
-            if let Outcome::Handled = crate::settings_shell::handle_key(
-                &mut settings_shell.state,
-                key_str,
-                modifiers,
-                code,
-                client,
-                &inbox_root,
-            )
-            .await
-            {
-                return;
-            }
-        }
-        ScreenSnapshot::Inbox(_) => {
-            // ESC intercept in insert mode (compose/search on inbox)
-            if ui.editor().is_some() {
-                let insert_ctx = ui.editor().map(|e| e.context);
-                if let Outcome::Handled = crate::thread_shell::handle_esc_intercept(
-                    key_str,
-                    insert_ctx,
-                    &mut thread.input_session,
-                ) {
-                    return;
-                }
-            }
-            if let ScreenSnapshot::Inbox(snap) = &ui.screen {
-                if let Outcome::Handled =
-                    crate::inbox_shell::handle_key(code, snap.search.active, client).await
-                {
-                    return;
-                }
-            }
-        }
-        ScreenSnapshot::Thread(_) => {
-            // ESC intercept in insert mode
-            if ui.editor().is_some() {
-                let insert_ctx = ui.editor().map(|e| e.context);
-                if let Outcome::Handled = crate::thread_shell::handle_esc_intercept(
-                    key_str,
-                    insert_ctx,
-                    &mut thread.input_session,
-                ) {
-                    return;
-                }
-            }
-        }
-        ScreenSnapshot::History(_) => {
-            // No screen-specific key handling — all goes through InputStore bindings
+    // Settings screen still has its own key handler (complex widget state).
+    // All other screen-specific handling is now in bindings.
+    if let ScreenSnapshot::Settings(_) = &ui.screen {
+        let inbox_root = app.pool.inbox_root().to_path_buf();
+        if let Outcome::Handled = crate::settings_shell::handle_key(
+            &mut settings_shell.state,
+            key_str,
+            modifiers,
+            code,
+            client,
+            &inbox_root,
+        )
+        .await
+        {
+            return;
         }
     }
 
-    let mode = if has_approval_pending && ui.editor().is_none() {
+    // Determine mode from dialog/UI state
+    let mode = if dialog.history_search.is_some() {
+        Mode::HistorySearch
+    } else if dialog.show_shortcuts {
+        Mode::Shortcuts
+    } else if dialog.show_usage {
+        Mode::Usage
+    } else if has_approval_pending && ui.editor().is_none() {
         Mode::Approval
     } else if ui.editor().is_some() {
         Mode::Insert
     } else {
         Mode::Normal
     };
-
-    // Ctrl+R in insert mode (Compose or Reply) → enter history search
-    if mode == Mode::Insert
-        && modifiers.contains(KeyModifiers::CONTROL)
-        && code == KeyCode::Char('r')
-    {
-        let ctx = ui.editor().map(|e| e.context);
-        if matches!(
-            ctx,
-            Some(InsertContext::Compose) | Some(InsertContext::Reply)
-        ) {
-            // Load recent inputs from ox.db for initial display
-            let recent = load_recent_inputs(client).await;
-            dialog.history_search = Some(HistorySearchState {
-                query: String::new(),
-                results: recent,
-                selected: 0,
-            });
-            return;
-        }
-    }
-
-    // ? in normal mode toggles shortcuts modal (inbox + thread only)
-    if mode == Mode::Normal && key_str == "?" && !matches!(&ui.screen, ScreenSnapshot::Settings(_))
-    {
-        dialog.show_shortcuts = !dialog.show_shortcuts;
-        return;
-    }
 
     // InputStore dispatch
     let (input_mode, input_screen) = match &ui.screen {
@@ -742,22 +663,18 @@ async fn dispatch_key(
         let is_insert = ui.editor().is_some();
         let insert_ctx = ui.editor().map(|e| e.context);
         if is_insert {
-            if insert_ctx == Some(InsertContext::Search) {
-                dispatch_search_edit(client, modifiers, code).await;
-            } else {
-                let tw = terminal.get_frame().area().width;
-                crate::thread_shell::handle_unbound_insert_key(
-                    &mut thread.input_session,
-                    insert_ctx,
-                    app,
-                    client,
-                    ui,
-                    tw,
-                    modifiers,
-                    code,
-                )
-                .await;
-            }
+            let tw = terminal.get_frame().area().width;
+            crate::thread_shell::handle_unbound_insert_key(
+                &mut thread.input_session,
+                insert_ctx,
+                app,
+                client,
+                ui,
+                tw,
+                modifiers,
+                code,
+            )
+            .await;
         }
     }
 }
@@ -832,136 +749,20 @@ async fn handle_history_click(
 }
 
 // ---------------------------------------------------------------------------
-// Search text editing — dispatched through UiStore via broker
+// Ctrl+R history search — load recent inputs
 // ---------------------------------------------------------------------------
-
-/// Dispatch search text editing through UiStore via the broker.
-async fn dispatch_search_edit(
-    client: &ox_broker::ClientHandle,
-    modifiers: KeyModifiers,
-    code: KeyCode,
-) {
-    match (modifiers, code) {
-        (_, KeyCode::Enter) => {
-            let _ = client
-                .write_typed(
-                    &oxpath!("ui"),
-                    &UiCommand::Inbox(InboxCommand::SearchSaveChip),
-                )
-                .await;
-        }
-        (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
-            let _ = client
-                .write_typed(&oxpath!("ui"), &UiCommand::Inbox(InboxCommand::SearchClear))
-                .await;
-        }
-        (_, KeyCode::Backspace) => {
-            let _ = client
-                .write_typed(
-                    &oxpath!("ui"),
-                    &UiCommand::Inbox(InboxCommand::SearchDeleteChar),
-                )
-                .await;
-        }
-        (_, KeyCode::Char(c)) => {
-            let _ = client
-                .write_typed(
-                    &oxpath!("ui"),
-                    &UiCommand::Inbox(InboxCommand::SearchInsertChar { char: c }),
-                )
-                .await;
-        }
-        _ => {}
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Ctrl+R history search key handling
-// ---------------------------------------------------------------------------
-
-async fn handle_history_search_key(
-    dialog: &mut DialogState,
-    client: &ox_broker::ClientHandle,
-    thread: &mut ThreadShell,
-    modifiers: KeyModifiers,
-    code: KeyCode,
-) {
-    let state = match &mut dialog.history_search {
-        Some(s) => s,
-        None => return,
-    };
-
-    match (modifiers, code) {
-        // Ctrl+R again → cycle to next match
-        (KeyModifiers::CONTROL, KeyCode::Char('r')) => {
-            if !state.results.is_empty() {
-                state.selected = (state.selected + 1) % state.results.len();
-            }
-        }
-        // Enter → accept selected result, populate input editor
-        (_, KeyCode::Enter) => {
-            if let Some(text) = state.results.get(state.selected).cloned() {
-                thread.input_session.set_content(&text);
-            }
-            dialog.history_search = None;
-        }
-        // Esc / Ctrl+G → cancel
-        (_, KeyCode::Esc) | (KeyModifiers::CONTROL, KeyCode::Char('g')) => {
-            dialog.history_search = None;
-        }
-        // Backspace → delete last char from query
-        (_, KeyCode::Backspace) => {
-            state.query.pop();
-            refresh_search_results(state, client).await;
-        }
-        // Printable char → append to query, re-search
-        (_, KeyCode::Char(c)) if !modifiers.contains(KeyModifiers::CONTROL) => {
-            state.query.push(c);
-            refresh_search_results(state, client).await;
-        }
-        _ => {}
-    }
-}
-
-/// Re-query the search database based on the current query string.
-async fn refresh_search_results(state: &mut HistorySearchState, client: &ox_broker::ClientHandle) {
-    state.results = if state.query.is_empty() {
-        load_recent_inputs(client).await
-    } else {
-        search_inputs_fts(client, &state.query).await
-    };
-    if state.results.is_empty() {
-        state.selected = 0;
-    } else {
-        state.selected = state.selected.min(state.results.len() - 1);
-    }
-}
 
 /// Load N most recent inputs from ox.db via broker.
 ///
 /// Uses the unified search path with an empty terms list and "inputs" scope.
 async fn load_recent_inputs(client: &ox_broker::ClientHandle) -> Vec<String> {
+    use structfs_core_store::Value;
+
     let query_val = structfs_serde_store::json_to_value(serde_json::json!({
         "terms": [],
         "scope": "inputs",
     }));
-    search_inputs_via_broker(client, query_val).await
-}
 
-/// FTS5 search over inputs via unified search path.
-async fn search_inputs_fts(client: &ox_broker::ClientHandle, query: &str) -> Vec<String> {
-    let query_val = structfs_serde_store::json_to_value(serde_json::json!({
-        "terms": [query],
-        "scope": "inputs",
-    }));
-    search_inputs_via_broker(client, query_val).await
-}
-
-/// Write a search query and read the first page of input results.
-async fn search_inputs_via_broker(
-    client: &ox_broker::ClientHandle,
-    query_val: structfs_core_store::Value,
-) -> Vec<String> {
     // Static path — safe to unwrap
     let search_path = structfs_core_store::Path::parse("inbox/search").unwrap();
     let handle = match client
@@ -976,24 +777,14 @@ async fn search_inputs_via_broker(
         Ok(p) => p,
         Err(_) => return Vec::new(),
     };
-    extract_input_texts_from_page(client, &page_path).await
-}
 
-/// Read a paginated search result page and extract text fields from items.
-async fn extract_input_texts_from_page(
-    client: &ox_broker::ClientHandle,
-    page_path: &structfs_core_store::Path,
-) -> Vec<String> {
-    use structfs_core_store::Value;
-    match client.read(page_path).await {
+    match client.read(&page_path).await {
         Ok(Some(record)) => {
             let items = match record.as_value() {
-                // Page envelope
                 Some(Value::Map(map)) => match map.get("items") {
                     Some(Value::Array(arr)) => arr.clone(),
                     _ => return Vec::new(),
                 },
-                // Legacy: plain array
                 Some(Value::Array(arr)) => arr.clone(),
                 _ => return Vec::new(),
             };

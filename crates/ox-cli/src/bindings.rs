@@ -16,6 +16,9 @@ pub fn default_bindings() -> Vec<Binding> {
     history_mode(&mut b);
     insert_mode(&mut b);
     approval_mode(&mut b);
+    shortcuts_mode(&mut b);
+    usage_mode(&mut b);
+    history_search_mode(&mut b);
     b
 }
 
@@ -309,6 +312,36 @@ fn normal_mode(out: &mut Vec<Binding>) {
         "Archive thread",
     ));
 
+    // Modal toggles
+    out.push(bind_screen(
+        Normal,
+        "?",
+        Inbox,
+        invoke(Cmd::ToggleShortcuts),
+        "Show shortcuts",
+    ));
+    out.push(bind_screen(
+        Normal,
+        "?",
+        Thread,
+        invoke(Cmd::ToggleShortcuts),
+        "Show shortcuts",
+    ));
+    out.push(bind_screen(
+        Normal,
+        "$",
+        Inbox,
+        invoke(Cmd::ToggleUsage),
+        "Usage info",
+    ));
+    out.push(bind_screen(
+        Normal,
+        "$",
+        Thread,
+        invoke(Cmd::ToggleUsage),
+        "Usage info",
+    ));
+
     // Approval quick keys (thread only)
     out.push(bind_screen(
         Normal,
@@ -509,12 +542,18 @@ fn history_mode(out: &mut Vec<Binding>) {
 fn insert_mode(out: &mut Vec<Binding>) {
     out.push(bind(Insert, "Ctrl+s", invoke(Cmd::SendInput), "Send"));
     out.push(bind(Insert, "Ctrl+Enter", invoke(Cmd::SendInput), "Send"));
-    out.push(bind(Insert, "Esc", invoke(Cmd::ExitInsert), "Normal mode"));
+    // ESC toggles editor sub-mode (Insert→Normal→exit)
+    out.push(bind(
+        Insert,
+        "Escape",
+        invoke(Cmd::ToggleEditorMode),
+        "Toggle mode",
+    ));
     out.push(bind(
         Insert,
         "Ctrl+q",
         invoke(Cmd::ExitInsert),
-        "Normal mode",
+        "Exit insert",
     ));
     // Ctrl+u: screen-specific because search mode handles its own clear
     out.push(bind_screen(
@@ -531,6 +570,39 @@ fn insert_mode(out: &mut Vec<Binding>) {
         invoke(Cmd::ClearInput),
         "Clear line",
     ));
+    // Ctrl+R: enter history search (compose/reply only)
+    out.push(bind_screen(
+        Insert,
+        "Ctrl+r",
+        Thread,
+        invoke(Cmd::EnterHistorySearch),
+        "History search",
+    ));
+    out.push(bind_screen(
+        Insert,
+        "Ctrl+r",
+        Inbox,
+        invoke(Cmd::EnterHistorySearch),
+        "History search",
+    ));
+    // Search text editing (inbox search mode)
+    out.push(bind_screen(
+        Insert,
+        "Enter",
+        Inbox,
+        invoke(Cmd::SearchSaveChip),
+        "Save filter",
+    ));
+    // Chip dismissal keys (1-9) in inbox normal mode when search active
+    for i in 1..=9u8 {
+        out.push(bind_screen(
+            Normal,
+            &i.to_string(),
+            Inbox,
+            invoke_with(Cmd::SearchDismissChip, &[("index", &(i - 1).to_string())]),
+            &format!("Dismiss chip {i}"),
+        ));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -629,6 +701,76 @@ fn approval_mode(out: &mut Vec<Binding>) {
     }
     // q to close thread (falls through to normal dispatch)
     out.push(bind(Approval, "q", invoke(Cmd::Close), "Close thread"));
+}
+
+// ---------------------------------------------------------------------------
+// Shortcuts modal mode
+// ---------------------------------------------------------------------------
+
+fn shortcuts_mode(out: &mut Vec<Binding>) {
+    out.push(bind(
+        Mode::Shortcuts,
+        "?",
+        invoke(Cmd::DismissShortcuts),
+        "Close",
+    ));
+    out.push(bind(
+        Mode::Shortcuts,
+        "Escape",
+        invoke(Cmd::DismissShortcuts),
+        "Close",
+    ));
+    out.push(bind(
+        Mode::Shortcuts,
+        "Ctrl+q",
+        invoke(Cmd::DismissShortcuts),
+        "Close",
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// Usage dialog mode
+// ---------------------------------------------------------------------------
+
+fn usage_mode(out: &mut Vec<Binding>) {
+    // Any key dismisses — Esc is the canonical one
+    out.push(bind(
+        Mode::Usage,
+        "Escape",
+        invoke(Cmd::DismissUsage),
+        "Close",
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// History search mode
+// ---------------------------------------------------------------------------
+
+fn history_search_mode(out: &mut Vec<Binding>) {
+    out.push(bind(
+        Mode::HistorySearch,
+        "Escape",
+        invoke(Cmd::DismissHistorySearch),
+        "Cancel",
+    ));
+    out.push(bind(
+        Mode::HistorySearch,
+        "Ctrl+g",
+        invoke(Cmd::DismissHistorySearch),
+        "Cancel",
+    ));
+    out.push(bind(
+        Mode::HistorySearch,
+        "Enter",
+        invoke(Cmd::AcceptHistorySearch),
+        "Accept",
+    ));
+    out.push(bind(
+        Mode::HistorySearch,
+        "Ctrl+r",
+        invoke(Cmd::HistorySearchCycle),
+        "Next match",
+    ));
 }
 
 #[cfg(test)]
