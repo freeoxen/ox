@@ -284,7 +284,7 @@ static BUILTIN_COMMANDS: &[StaticCommandDef] = &[
     // -- Approval --
     StaticCommandDef {
         name: "approve",
-        target: "approval/response",
+        target: "ui/approve",
         params: &[StaticParamDef {
             name: "decision",
             kind: StaticParamKind::Enum(&[
@@ -293,6 +293,7 @@ static BUILTIN_COMMANDS: &[StaticCommandDef] = &[
                 "allow_session",
                 "allow_always",
                 "deny_always",
+                "deny_session",
             ]),
             required: true,
             default: None,

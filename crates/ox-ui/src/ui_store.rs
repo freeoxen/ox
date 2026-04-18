@@ -1415,7 +1415,29 @@ impl Writer for UiStore {
         // like "select_next", "scroll_down", etc. Map these to UiCommand.
         else if !to.is_empty() {
             let cmd_name = &to.components[0];
-            // approval_confirm sets pending action and resets approval state directly
+            // approve: parse decision, set PendingAction; event loop resolves thread scope
+            if cmd_name == "approve" {
+                let value = data.as_value().ok_or_else(|| {
+                    StoreError::store("ui", "write", "write data must contain a value")
+                })?;
+                let decision_str = match value {
+                    Value::Map(m) => match m.get("decision") {
+                        Some(Value::String(s)) => s.clone(),
+                        _ => "deny_once".to_string(),
+                    },
+                    _ => "deny_once".to_string(),
+                };
+                let decision: ox_types::Decision =
+                    serde_json::from_value(serde_json::Value::String(decision_str))
+                        .unwrap_or(ox_types::Decision::DenyOnce);
+                self.pending_action = Some(PendingAction::Approve(decision));
+                if let Ok(s) = self.thread_state() {
+                    s.approval_selected = 0;
+                    s.approval_preview_scroll = 0;
+                }
+                return Ok(path!("pending_action"));
+            }
+            // approval_confirm: event loop resolves selected index to a decision
             if cmd_name == "approval_confirm" {
                 self.pending_action = Some(PendingAction::ApprovalConfirm);
                 return Ok(path!("pending_action"));

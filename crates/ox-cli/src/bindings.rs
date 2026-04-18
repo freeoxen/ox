@@ -617,13 +617,8 @@ fn approval_mode(out: &mut Vec<Binding>) {
         invoke("approval_confirm"),
         "Confirm selected",
     ));
-    // Esc denies once
-    out.push(bind(
-        "approval",
-        "Escape",
-        invoke_with("approve", &[("decision", "deny_once")]),
-        "Deny once",
-    ));
+    // Esc closes thread (same as q)
+    out.push(bind("approval", "Escape", invoke("close"), "Close thread"));
     // Number keys for direct selection
     for (i, (_, decision)) in crate::types::APPROVAL_OPTIONS.iter().enumerate() {
         let key = format!("{}", i + 1);

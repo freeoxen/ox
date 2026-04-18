@@ -337,26 +337,20 @@ pub async fn run_async(
                     }
                 }
                 PendingAction::ApprovalConfirm => {
-                    // Read approval_selected from UiStore and send the decision
                     if let ScreenSnapshot::Thread(snap) = &ui.screen {
                         let idx = snap.approval_selected;
-                        if idx < crate::types::APPROVAL_OPTIONS.len() {
-                            let decision = crate::types::APPROVAL_OPTIONS[idx].1;
-                            let active_thread_id = Some(snap.thread_id.clone());
-                            crate::key_handlers::send_approval_response(
-                                client,
-                                &active_thread_id,
-                                decision,
-                            )
-                            .await;
-                            // Reset approval state
-                            let _ = client
-                                .write_typed(
-                                    &oxpath!("ui"),
-                                    &UiCommand::Thread(ThreadCommand::ApprovalReset),
-                                )
+                        if idx < APPROVAL_OPTIONS.len() {
+                            let decision = APPROVAL_OPTIONS[idx].1;
+                            let tid = Some(snap.thread_id.clone());
+                            crate::key_handlers::send_approval_response(client, &tid, decision)
                                 .await;
                         }
+                    }
+                }
+                PendingAction::Approve(decision) => {
+                    if let ScreenSnapshot::Thread(snap) = &ui.screen {
+                        let tid = Some(snap.thread_id.clone());
+                        crate::key_handlers::send_approval_response(client, &tid, decision).await;
                     }
                 }
             }

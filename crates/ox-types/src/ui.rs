@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::Decision;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Screen {
@@ -36,6 +38,7 @@ pub enum PendingAction {
     OpenSelected,
     ArchiveSelected,
     ApprovalConfirm,
+    Approve(Decision),
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
