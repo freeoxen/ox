@@ -23,22 +23,28 @@ pub(crate) async fn send_approval_response(
     }
 }
 
+/// Handle a key press in the approval dialog.
+///
+/// Returns `true` if the key was consumed, `false` if it should fall
+/// through to normal key dispatch (e.g. `q` to close the thread).
 pub(crate) async fn handle_approval_key(
     dialog: &mut crate::event_loop::DialogState,
     client: &ox_broker::ClientHandle,
     active_thread_id: &Option<String>,
     key: KeyCode,
     _modifiers: crossterm::event::KeyModifiers,
-) {
+) -> bool {
     match key {
         // vim navigation
         KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
             dialog.approval_selected = dialog.approval_selected.saturating_sub(1);
+            true
         }
         KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
             if dialog.approval_selected < APPROVAL_OPTIONS.len() - 1 {
                 dialog.approval_selected += 1;
             }
+            true
         }
         // number keys for direct selection
         KeyCode::Char(c @ '1'..='6') => {
@@ -47,6 +53,7 @@ pub(crate) async fn handle_approval_key(
                 send_approval_response(client, active_thread_id, APPROVAL_OPTIONS[idx].1).await;
                 dialog.approval_selected = 0;
             }
+            true
         }
         KeyCode::Enter => {
             send_approval_response(
@@ -56,6 +63,7 @@ pub(crate) async fn handle_approval_key(
             )
             .await;
             dialog.approval_selected = 0;
+            true
         }
         // customize — enter customize dialog
         KeyCode::Char('c') | KeyCode::Char('C') => {
@@ -65,7 +73,7 @@ pub(crate) async fn handle_approval_key(
                     Ok(c) => c,
                     Err(e) => {
                         tracing::warn!(error = %e, "invalid thread id for path");
-                        return;
+                        return true;
                     }
                 };
                 let pending_path = ox_path::oxpath!("threads", tid_comp, "approval", "pending");
@@ -97,33 +105,41 @@ pub(crate) async fn handle_approval_key(
                     });
                 }
             }
+            true
         }
         // quick keys
         KeyCode::Char('y') | KeyCode::Char('Y') => {
             send_approval_response(client, active_thread_id, Decision::AllowOnce).await;
             dialog.approval_selected = 0;
+            true
         }
         KeyCode::Char('s') | KeyCode::Char('S') => {
             send_approval_response(client, active_thread_id, Decision::AllowSession).await;
             dialog.approval_selected = 0;
+            true
         }
         KeyCode::Char('a') | KeyCode::Char('A') => {
             send_approval_response(client, active_thread_id, Decision::AllowAlways).await;
             dialog.approval_selected = 0;
+            true
         }
         KeyCode::Char('n') | KeyCode::Char('N') => {
             send_approval_response(client, active_thread_id, Decision::DenyOnce).await;
             dialog.approval_selected = 0;
+            true
         }
         KeyCode::Char('d') | KeyCode::Char('D') => {
             send_approval_response(client, active_thread_id, Decision::DenyAlways).await;
             dialog.approval_selected = 0;
+            true
         }
         KeyCode::Esc => {
             send_approval_response(client, active_thread_id, Decision::DenyOnce).await;
             dialog.approval_selected = 0;
+            true
         }
-        _ => {}
+        // Unhandled keys fall through to normal dispatch (e.g. q to close)
+        _ => false,
     }
 }
 

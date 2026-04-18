@@ -399,9 +399,10 @@ pub async fn run_async(
                     }
                     // Approval dialog (thread screen, normal mode)
                     else if let ScreenSnapshot::Thread(snap) = &ui.screen {
+                        let mut handled = false;
                         if has_approval_pending && ui.editor().is_none() {
                             let active_thread_id = Some(snap.thread_id.clone());
-                            crate::key_handlers::handle_approval_key(
+                            handled = crate::key_handlers::handle_approval_key(
                                 &mut dialog,
                                 client,
                                 &active_thread_id,
@@ -409,20 +410,23 @@ pub async fn run_async(
                                 key.modifiers,
                             )
                             .await;
-                        } else if let Some(key_str) = encode_key(key.modifiers, key.code) {
-                            dispatch_key(
-                                &ui,
-                                &key_str,
-                                key.modifiers,
-                                key.code,
-                                &mut dialog,
-                                &mut thread,
-                                &mut settings_shell,
-                                app,
-                                client,
-                                terminal,
-                            )
-                            .await;
+                        }
+                        if !handled {
+                            if let Some(key_str) = encode_key(key.modifiers, key.code) {
+                                dispatch_key(
+                                    &ui,
+                                    &key_str,
+                                    key.modifiers,
+                                    key.code,
+                                    &mut dialog,
+                                    &mut thread,
+                                    &mut settings_shell,
+                                    app,
+                                    client,
+                                    terminal,
+                                )
+                                .await;
+                            }
                         }
                     } else if let Some(key_str) = encode_key(key.modifiers, key.code) {
                         dispatch_key(
