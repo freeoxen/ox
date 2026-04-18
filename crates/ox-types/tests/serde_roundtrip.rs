@@ -213,6 +213,8 @@ fn ui_snapshot_thread_roundtrip() {
             scroll: 10,
             scroll_max: 100,
             viewport_height: 40,
+            approval_selected: 0,
+            approval_preview_scroll: 0,
             editor: Some(EditorSnapshot {
                 context: InsertContext::Compose,
                 content: "hello".to_string(),

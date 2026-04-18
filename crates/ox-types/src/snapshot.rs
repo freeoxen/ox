@@ -59,6 +59,12 @@ pub struct ThreadSnapshot {
     pub scroll_max: usize,
     pub viewport_height: usize,
     pub editor: Option<EditorSnapshot>,
+    /// Selected option index in approval dialog.
+    #[serde(default)]
+    pub approval_selected: usize,
+    /// Preview scroll offset in approval dialog.
+    #[serde(default)]
+    pub approval_preview_scroll: usize,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -541,24 +541,43 @@ fn insert_mode(out: &mut Vec<Binding>) {
 // ---------------------------------------------------------------------------
 
 fn approval_mode(out: &mut Vec<Binding>) {
-    out.push(bind("approval", "j", invoke("select_next"), "Next option"));
+    // Option navigation
+    out.push(bind(
+        "approval",
+        "j",
+        invoke("approval_select_next"),
+        "Next option",
+    ));
     out.push(bind(
         "approval",
         "Down",
-        invoke("select_next"),
+        invoke("approval_select_next"),
         "Next option",
     ));
     out.push(bind(
         "approval",
         "k",
-        invoke("select_prev"),
+        invoke("approval_select_prev"),
         "Previous option",
     ));
     out.push(bind(
         "approval",
         "Up",
-        invoke("select_prev"),
+        invoke("approval_select_prev"),
         "Previous option",
+    ));
+    // Preview scroll
+    out.push(bind(
+        "approval",
+        "Ctrl+j",
+        invoke("approval_scroll_down"),
+        "Scroll preview down",
+    ));
+    out.push(bind(
+        "approval",
+        "Ctrl+k",
+        invoke("approval_scroll_up"),
+        "Scroll preview up",
     ));
 
     out.push(bind(
@@ -591,6 +610,33 @@ fn approval_mode(out: &mut Vec<Binding>) {
         invoke_with("approve", &[("decision", "deny_always")]),
         "Deny always",
     ));
+    // Enter confirms currently selected option
+    out.push(bind(
+        "approval",
+        "Enter",
+        invoke("approval_confirm"),
+        "Confirm selected",
+    ));
+    // Esc denies once
+    out.push(bind(
+        "approval",
+        "Escape",
+        invoke_with("approve", &[("decision", "deny_once")]),
+        "Deny once",
+    ));
+    // Number keys for direct selection
+    for (i, (_, decision)) in crate::types::APPROVAL_OPTIONS.iter().enumerate() {
+        let key = format!("{}", i + 1);
+        let decision_str = decision.as_str();
+        out.push(bind(
+            "approval",
+            &key,
+            invoke_with("approve", &[("decision", decision_str)]),
+            &format!("Option {}", i + 1),
+        ));
+    }
+    // q to close thread (falls through to normal dispatch)
+    out.push(bind("approval", "q", invoke("close"), "Close thread"));
 }
 
 #[cfg(test)]

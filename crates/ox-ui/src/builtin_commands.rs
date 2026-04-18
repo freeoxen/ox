@@ -300,6 +300,41 @@ static BUILTIN_COMMANDS: &[StaticCommandDef] = &[
         description: "Respond to approval request",
         user_facing: true,
     },
+    StaticCommandDef {
+        name: "approval_confirm",
+        target: "ui/approval_confirm",
+        params: &[],
+        description: "Confirm selected approval option",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "approval_select_next",
+        target: "ui/approval_select_next",
+        params: &[],
+        description: "Select next approval option",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "approval_select_prev",
+        target: "ui/approval_select_prev",
+        params: &[],
+        description: "Select previous approval option",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "approval_scroll_down",
+        target: "ui/approval_scroll_down",
+        params: &[],
+        description: "Scroll approval preview down",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "approval_scroll_up",
+        target: "ui/approval_scroll_up",
+        params: &[],
+        description: "Scroll approval preview up",
+        user_facing: true,
+    },
     // -- Internal --
     StaticCommandDef {
         name: "set_row_count",

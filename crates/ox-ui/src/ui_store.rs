@@ -94,6 +94,10 @@ struct ThreadState {
     scroll: usize,
     scroll_max: usize,
     viewport_height: usize,
+    /// Selected option index in the approval dialog (0-based).
+    approval_selected: usize,
+    /// Preview scroll offset in the approval dialog.
+    approval_preview_scroll: usize,
 }
 
 impl ThreadState {
@@ -104,6 +108,8 @@ impl ThreadState {
             scroll: 0,
             scroll_max: 0,
             viewport_height: 0,
+            approval_selected: 0,
+            approval_preview_scroll: 0,
         }
     }
 }
@@ -252,6 +258,8 @@ impl UiStore {
                 scroll_max: s.scroll_max,
                 viewport_height: s.viewport_height,
                 editor: s.editor.as_ref().map(|e| e.snapshot()),
+                approval_selected: s.approval_selected,
+                approval_preview_scroll: s.approval_preview_scroll,
             }),
             ActiveScreen::Settings(s) => ScreenSnapshot::Settings(SettingsSnapshot {
                 focus: s.focus,
@@ -689,6 +697,32 @@ impl UiStore {
                 self.pending_action = Some(PendingAction::SendInput);
                 Ok(path!("pending_action"))
             }
+            ThreadCommand::ApprovalSelectNext => {
+                let s = self.thread_state()?;
+                s.approval_selected += 1;
+                Ok(path!("approval_selected"))
+            }
+            ThreadCommand::ApprovalSelectPrev => {
+                let s = self.thread_state()?;
+                s.approval_selected = s.approval_selected.saturating_sub(1);
+                Ok(path!("approval_selected"))
+            }
+            ThreadCommand::ApprovalScrollDown => {
+                let s = self.thread_state()?;
+                s.approval_preview_scroll += 1;
+                Ok(path!("approval_preview_scroll"))
+            }
+            ThreadCommand::ApprovalScrollUp => {
+                let s = self.thread_state()?;
+                s.approval_preview_scroll = s.approval_preview_scroll.saturating_sub(1);
+                Ok(path!("approval_preview_scroll"))
+            }
+            ThreadCommand::ApprovalReset => {
+                let s = self.thread_state()?;
+                s.approval_selected = 0;
+                s.approval_preview_scroll = 0;
+                Ok(path!("approval_selected"))
+            }
         }
     }
 
@@ -1117,6 +1151,13 @@ impl UiStore {
                 index: get_usize(map, "index").ok_or_else(|| err("missing index"))?,
             })),
 
+            // Approval dialog commands
+            "approval_select_next" => Ok(UiCommand::Thread(ThreadCommand::ApprovalSelectNext)),
+            "approval_select_prev" => Ok(UiCommand::Thread(ThreadCommand::ApprovalSelectPrev)),
+            "approval_scroll_down" => Ok(UiCommand::Thread(ThreadCommand::ApprovalScrollDown)),
+            "approval_scroll_up" => Ok(UiCommand::Thread(ThreadCommand::ApprovalScrollUp)),
+            "approval_reset" => Ok(UiCommand::Thread(ThreadCommand::ApprovalReset)),
+
             // Scroll commands — thread only (history uses selection-based paging)
             "scroll_up" => Ok(UiCommand::Thread(ThreadCommand::ScrollUp)),
             "scroll_down" => Ok(UiCommand::Thread(ThreadCommand::ScrollDown)),
@@ -1374,6 +1415,11 @@ impl Writer for UiStore {
         // like "select_next", "scroll_down", etc. Map these to UiCommand.
         else if !to.is_empty() {
             let cmd_name = &to.components[0];
+            // approval_confirm sets pending action and resets approval state directly
+            if cmd_name == "approval_confirm" {
+                self.pending_action = Some(PendingAction::ApprovalConfirm);
+                return Ok(path!("pending_action"));
+            }
             // set_input and clear_input are handled directly (they mutate editor state)
             if cmd_name == "set_input" || cmd_name == "clear_input" {
                 let value = data.as_value().ok_or_else(|| {

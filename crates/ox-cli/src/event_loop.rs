@@ -73,8 +73,6 @@ impl ScrollMomentum {
 
 /// Dialog-local state, owned by the event loop (not App, not broker).
 pub(crate) struct DialogState {
-    pub approval_selected: usize,
-    pub approval_preview_scroll: usize,
     pub pending_customize: Option<CustomizeState>,
     pub show_shortcuts: bool,
     pub show_usage: bool,
@@ -105,8 +103,6 @@ pub async fn run_async(
     use crate::key_encode::encode_key;
 
     let mut dialog = DialogState {
-        approval_selected: 0,
-        approval_preview_scroll: 0,
         pending_customize: None,
         show_shortcuts: false,
         show_usage: false,
@@ -340,6 +336,29 @@ pub async fn run_async(
                             .await;
                     }
                 }
+                PendingAction::ApprovalConfirm => {
+                    // Read approval_selected from UiStore and send the decision
+                    if let ScreenSnapshot::Thread(snap) = &ui.screen {
+                        let idx = snap.approval_selected;
+                        if idx < crate::types::APPROVAL_OPTIONS.len() {
+                            let decision = crate::types::APPROVAL_OPTIONS[idx].1;
+                            let active_thread_id = Some(snap.thread_id.clone());
+                            crate::key_handlers::send_approval_response(
+                                client,
+                                &active_thread_id,
+                                decision,
+                            )
+                            .await;
+                            // Reset approval state
+                            let _ = client
+                                .write_typed(
+                                    &oxpath!("ui"),
+                                    &UiCommand::Thread(ThreadCommand::ApprovalReset),
+                                )
+                                .await;
+                        }
+                    }
+                }
             }
         }
 
@@ -408,43 +427,14 @@ pub async fn run_async(
                         )
                         .await;
                     }
-                    // Approval dialog (thread screen, normal mode)
-                    else if let ScreenSnapshot::Thread(snap) = &ui.screen {
-                        let mut handled = false;
-                        if has_approval_pending && ui.editor().is_none() {
-                            let active_thread_id = Some(snap.thread_id.clone());
-                            handled = crate::key_handlers::handle_approval_key(
-                                &mut dialog,
-                                client,
-                                &active_thread_id,
-                                key.code,
-                                key.modifiers,
-                            )
-                            .await;
-                        }
-                        if !handled {
-                            if let Some(key_str) = encode_key(key.modifiers, key.code) {
-                                dispatch_key(
-                                    &ui,
-                                    &key_str,
-                                    key.modifiers,
-                                    key.code,
-                                    &mut dialog,
-                                    &mut thread,
-                                    &mut settings_shell,
-                                    app,
-                                    client,
-                                    terminal,
-                                )
-                                .await;
-                            }
-                        }
-                    } else if let Some(key_str) = encode_key(key.modifiers, key.code) {
+                    // All other screens (including thread with approval pending)
+                    else if let Some(key_str) = encode_key(key.modifiers, key.code) {
                         dispatch_key(
                             &ui,
                             &key_str,
                             key.modifiers,
                             key.code,
+                            has_approval_pending,
                             &mut dialog,
                             &mut thread,
                             &mut settings_shell,
@@ -502,7 +492,6 @@ pub async fn run_async(
                                 && mouse.row < first_option_row + APPROVAL_OPTIONS.len() as u16
                             {
                                 let idx = (mouse.row - first_option_row) as usize;
-                                dialog.approval_selected = idx;
                                 let active_thread_id = Some(snap.thread_id.clone());
                                 crate::key_handlers::send_approval_response(
                                     client,
@@ -637,6 +626,7 @@ async fn dispatch_key(
     key_str: &str,
     modifiers: KeyModifiers,
     code: KeyCode,
+    has_approval_pending: bool,
     dialog: &mut DialogState,
     thread: &mut ThreadShell,
     settings_shell: &mut SettingsShell,
@@ -699,7 +689,9 @@ async fn dispatch_key(
         }
     }
 
-    let mode = if ui.editor().is_some() {
+    let mode = if has_approval_pending && ui.editor().is_none() {
+        Mode::Approval
+    } else if ui.editor().is_some() {
         Mode::Insert
     } else {
         Mode::Normal

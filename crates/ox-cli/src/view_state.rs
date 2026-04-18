@@ -54,6 +54,7 @@ pub struct ViewState<'a> {
     // input_history removed — history reads from ox.db on demand
     pub approval_selected: usize,
     pub approval_preview_scroll: usize,
+    // These are now read from ThreadSnapshot, not DialogState
     pub pending_customize: &'a Option<CustomizeState>,
     pub key_hints: Vec<ox_types::KeyHint>,
     pub show_shortcuts: bool,
@@ -211,6 +212,12 @@ pub async fn fetch_view_state<'a>(
     // Read pricing overrides from config (empty BTreeMap if none configured).
     let pricing_overrides = read_pricing_overrides(client).await;
 
+    // Extract approval state before moving ui
+    let (approval_selected, approval_preview_scroll) = match &ui.screen {
+        ScreenSnapshot::Thread(snap) => (snap.approval_selected, snap.approval_preview_scroll),
+        _ => (0, 0),
+    };
+
     ViewState {
         ui,
         inbox_threads,
@@ -220,12 +227,11 @@ pub async fn fetch_view_state<'a>(
         history_full,
         turn,
         approval_pending,
-        // input_history removed — reads from ox.db on demand
         model,
         provider,
         pricing_overrides,
-        approval_selected: dialog.approval_selected,
-        approval_preview_scroll: dialog.approval_preview_scroll,
+        approval_selected,
+        approval_preview_scroll,
         pending_customize: &dialog.pending_customize,
         key_hints,
         show_shortcuts: dialog.show_shortcuts,

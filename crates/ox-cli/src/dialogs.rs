@@ -11,6 +11,7 @@ pub(crate) const SCOPES: [&str; 3] = ["once", "session", "always"];
 pub(crate) const NETWORKS: [&str; 3] = ["deny", "allow", "localhost"];
 
 /// Decompose a tool call's raw input into editable arg strings.
+#[allow(dead_code)] // Used when customize dialog is entered from approval
 pub(crate) fn infer_args_from_input(tool: &str, input: &serde_json::Value) -> Vec<String> {
     match tool {
         "shell" => {
@@ -372,7 +373,7 @@ pub(crate) fn draw_approval_dialog(
         }
         if shown_end < total_detail {
             lines.push(Line::from(Span::styled(
-                format!("  ↓ {} more (j/k scroll)", total_detail - shown_end),
+                format!("  ↓ {} more (C-j/C-k scroll)", total_detail - shown_end),
                 theme.tool_meta,
             )));
         }
@@ -401,7 +402,7 @@ pub(crate) fn draw_approval_dialog(
 
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "  (c)ustomize rule | j/k scroll | Esc deny once",
+        "  (c)ustomize rule | C-j/C-k scroll | Esc deny once",
         theme.approval_option,
     )));
 

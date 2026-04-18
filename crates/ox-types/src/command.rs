@@ -63,6 +63,11 @@ pub enum ThreadCommand {
     Command,
     DismissEditor,
     SubmitEditor,
+    ApprovalSelectNext,
+    ApprovalSelectPrev,
+    ApprovalScrollDown,
+    ApprovalScrollUp,
+    ApprovalReset,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

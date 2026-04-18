@@ -16,6 +16,7 @@ pub enum Mode {
     #[default]
     Normal,
     Insert,
+    Approval,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,6 +35,7 @@ pub enum PendingAction {
     Quit,
     OpenSelected,
     ArchiveSelected,
+    ApprovalConfirm,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
