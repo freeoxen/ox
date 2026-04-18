@@ -14,6 +14,7 @@
 use std::collections::BTreeMap;
 
 use ox_path::oxpath;
+use ox_types::ui::{Mode, Screen};
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer};
 
 // ---------------------------------------------------------------------------
@@ -23,10 +24,10 @@ use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writ
 /// When a binding is active.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BindingContext {
-    pub mode: String,
+    pub mode: Mode,
     pub key: String,
     /// If Some, only active on this screen. If None, active on all screens.
-    pub screen: Option<String>,
+    pub screen: Option<Screen>,
 }
 
 /// What a binding does when activated.
@@ -90,15 +91,18 @@ impl InputStore {
     /// Find the best binding for a (mode, key, screen) triple.
     ///
     /// Screen-specific bindings take priority over screen-agnostic ones.
+    /// The incoming mode/screen strings are compared against the typed enum's
+    /// string representation so that the serde boundary doesn't require
+    /// deserialization into the enum.
     fn resolve(&self, mode: &str, key: &str, screen: Option<&str>) -> Option<&Binding> {
         let mut best: Option<&Binding> = None;
         for b in &self.bindings {
-            if b.context.mode != mode || b.context.key != key {
+            if b.context.mode.as_str() != mode || b.context.key != key {
                 continue;
             }
             match (&b.context.screen, screen) {
                 // Exact screen match — highest priority, return immediately
-                (Some(bs), Some(s)) if bs == s => return Some(b),
+                (Some(bs), Some(s)) if bs.as_str() == s => return Some(b),
                 // Binding has no screen constraint — matches any screen
                 (None, _) => {
                     if best.is_none() {
@@ -154,10 +158,13 @@ impl InputStore {
 
     fn binding_to_value(b: &Binding) -> Value {
         let mut map = BTreeMap::new();
-        map.insert("mode".to_string(), Value::String(b.context.mode.clone()));
+        map.insert(
+            "mode".to_string(),
+            Value::String(b.context.mode.as_str().to_string()),
+        );
         map.insert("key".to_string(), Value::String(b.context.key.clone()));
-        if let Some(ref s) = b.context.screen {
-            map.insert("screen".to_string(), Value::String(s.clone()));
+        if let Some(s) = b.context.screen {
+            map.insert("screen".to_string(), Value::String(s.as_str().to_string()));
         }
         map.insert(
             "description".to_string(),
@@ -183,9 +190,10 @@ impl InputStore {
         self.bindings
             .iter()
             .filter(|b| {
-                mode.is_none_or(|m| b.context.mode == m)
+                mode.is_none_or(|m| b.context.mode.as_str() == m)
                     && screen.is_none_or(|s| {
-                        b.context.screen.is_none() || b.context.screen.as_deref() == Some(s)
+                        b.context.screen.is_none()
+                            || b.context.screen.map(|sc| sc.as_str()) == Some(s)
                     })
             })
             .map(Self::binding_to_value)
@@ -199,21 +207,25 @@ impl InputStore {
             Value::Map(m) => m,
             _ => return Err(StoreError::store("input", "bind", "expected Map")),
         };
-        let mode = extract_str(map, "mode")
+        let mode_str = extract_str(map, "mode")
             .ok_or_else(|| StoreError::store("input", "bind", "missing mode"))?;
+        let mode = Mode::parse(&mode_str).ok_or_else(|| {
+            StoreError::store("input", "bind", format!("unknown mode: {mode_str}"))
+        })?;
         let key = extract_str(map, "key")
             .ok_or_else(|| StoreError::store("input", "bind", "missing key"))?;
         let command = extract_str(map, "command")
             .or_else(|| extract_str(map, "target")) // backwards compat
             .ok_or_else(|| StoreError::store("input", "bind", "missing command"))?;
         let description = extract_str(map, "description").unwrap_or_default();
-        let screen = extract_str(map, "screen");
-
-        let ctx = BindingContext {
-            mode: mode.clone(),
-            key: key.clone(),
-            screen: screen.clone(),
+        let screen = match extract_str(map, "screen") {
+            Some(s) => Some(Screen::parse(&s).ok_or_else(|| {
+                StoreError::store("input", "bind", format!("unknown screen: {s}"))
+            })?),
+            None => None,
         };
+
+        let ctx = BindingContext { mode, key, screen };
 
         // Remove existing binding with same context
         self.bindings.retain(|b| b.context != ctx);
@@ -241,15 +253,17 @@ impl InputStore {
             Value::Map(m) => m,
             _ => return Err(StoreError::store("input", "unbind", "expected Map")),
         };
-        let mode = extract_str(map, "mode")
+        let mode_str = extract_str(map, "mode")
             .ok_or_else(|| StoreError::store("input", "unbind", "missing mode"))?;
         let key = extract_str(map, "key")
             .ok_or_else(|| StoreError::store("input", "unbind", "missing key"))?;
-        let screen = extract_str(map, "screen");
+        let screen_str = extract_str(map, "screen");
 
         let before = self.bindings.len();
         self.bindings.retain(|b| {
-            !(b.context.mode == mode && b.context.key == key && b.context.screen == screen)
+            !(b.context.mode.as_str() == mode_str
+                && b.context.key == key
+                && b.context.screen.map(|s| s.as_str().to_string()) == screen_str)
         });
         if self.bindings.len() == before {
             return Err(StoreError::store("input", "unbind", "binding not found"));
@@ -262,12 +276,20 @@ impl InputStore {
             Value::Map(m) => m,
             _ => return Err(StoreError::store("input", "macro", "expected Map")),
         };
-        let mode = extract_str(map, "mode")
+        let mode_str = extract_str(map, "mode")
             .ok_or_else(|| StoreError::store("input", "macro", "missing mode"))?;
+        let mode = Mode::parse(&mode_str).ok_or_else(|| {
+            StoreError::store("input", "macro", format!("unknown mode: {mode_str}"))
+        })?;
         let key = extract_str(map, "key")
             .ok_or_else(|| StoreError::store("input", "macro", "missing key"))?;
         let description = extract_str(map, "description").unwrap_or_default();
-        let screen = extract_str(map, "screen");
+        let screen = match extract_str(map, "screen") {
+            Some(s) => Some(Screen::parse(&s).ok_or_else(|| {
+                StoreError::store("input", "macro", format!("unknown screen: {s}"))
+            })?),
+            None => None,
+        };
 
         let steps_arr = map
             .get("steps")
@@ -302,11 +324,7 @@ impl InputStore {
             steps.push(Action::Invoke { command, args });
         }
 
-        let ctx = BindingContext {
-            mode: mode.clone(),
-            key: key.clone(),
-            screen: screen.clone(),
-        };
+        let ctx = BindingContext { mode, key, screen };
         self.bindings.retain(|b| b.context != ctx);
         self.bindings.push(Binding {
             context: ctx,
@@ -411,10 +429,10 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use structfs_core_store::path;
 
-    fn simple_binding(mode: &str, key: &str, command: &str, desc: &str) -> Binding {
+    fn simple_binding(mode: Mode, key: &str, command: &str, desc: &str) -> Binding {
         Binding {
             context: BindingContext {
-                mode: mode.to_string(),
+                mode,
                 key: key.to_string(),
                 screen: None,
             },
@@ -427,12 +445,12 @@ mod tests {
         }
     }
 
-    fn screen_binding(mode: &str, key: &str, screen: &str, command: &str, desc: &str) -> Binding {
+    fn screen_binding(mode: Mode, key: &str, screen: Screen, command: &str, desc: &str) -> Binding {
         Binding {
             context: BindingContext {
-                mode: mode.to_string(),
+                mode,
                 key: key.to_string(),
-                screen: Some(screen.to_string()),
+                screen: Some(screen),
             },
             action: Action::Invoke {
                 command: command.to_string(),
@@ -471,7 +489,7 @@ mod tests {
 
     #[test]
     fn resolve_generic_binding() {
-        let bindings = vec![simple_binding("normal", "j", "ui/select_next", "down")];
+        let bindings = vec![simple_binding(Mode::Normal, "j", "ui/select_next", "down")];
         let store = InputStore::new(bindings);
         let b = store.resolve("normal", "j", Some("inbox")).unwrap();
         assert_eq!(b.description, "down");
@@ -480,8 +498,14 @@ mod tests {
     #[test]
     fn resolve_screen_specific_wins() {
         let bindings = vec![
-            simple_binding("normal", "j", "ui/select_next", "generic"),
-            screen_binding("normal", "j", "thread", "ui/scroll_down", "scroll"),
+            simple_binding(Mode::Normal, "j", "ui/select_next", "generic"),
+            screen_binding(
+                Mode::Normal,
+                "j",
+                Screen::Thread,
+                "ui/scroll_down",
+                "scroll",
+            ),
         ];
         let store = InputStore::new(bindings);
 
@@ -504,7 +528,7 @@ mod tests {
 
     #[test]
     fn dispatch_simple_command() {
-        let bindings = vec![simple_binding("normal", "j", "select_next", "down")];
+        let bindings = vec![simple_binding(Mode::Normal, "j", "select_next", "down")];
         let mut store = InputStore::new(bindings);
         let (dispatcher, log) = mock_dispatcher();
         store.set_dispatcher(dispatcher);
@@ -522,8 +546,8 @@ mod tests {
     #[test]
     fn dispatch_screen_specific() {
         let bindings = vec![
-            screen_binding("normal", "j", "inbox", "select_next", "down"),
-            screen_binding("normal", "j", "thread", "scroll_down", "scroll"),
+            screen_binding(Mode::Normal, "j", Screen::Inbox, "select_next", "down"),
+            screen_binding(Mode::Normal, "j", Screen::Thread, "scroll_down", "scroll"),
         ];
         let mut store = InputStore::new(bindings);
         let (dispatcher, log) = mock_dispatcher();
@@ -557,7 +581,7 @@ mod tests {
     fn dispatch_macro_executes_steps() {
         let bindings = vec![Binding {
             context: BindingContext {
-                mode: "normal".to_string(),
+                mode: Mode::Normal,
                 key: "G".to_string(),
                 screen: None,
             },
@@ -593,8 +617,8 @@ mod tests {
     #[test]
     fn read_all_bindings() {
         let bindings = vec![
-            simple_binding("normal", "j", "ui/select_next", "down"),
-            simple_binding("insert", "Esc", "ui/exit_insert", "exit"),
+            simple_binding(Mode::Normal, "j", "ui/select_next", "down"),
+            simple_binding(Mode::Insert, "Esc", "ui/exit_insert", "exit"),
         ];
         let mut store = InputStore::new(bindings);
         let val = store.read(&path!("bindings")).unwrap().unwrap();
@@ -608,9 +632,9 @@ mod tests {
     #[test]
     fn read_bindings_by_mode() {
         let bindings = vec![
-            simple_binding("normal", "j", "ui/select_next", "down"),
-            simple_binding("normal", "k", "ui/select_prev", "up"),
-            simple_binding("insert", "Esc", "ui/exit_insert", "exit"),
+            simple_binding(Mode::Normal, "j", "ui/select_next", "down"),
+            simple_binding(Mode::Normal, "k", "ui/select_prev", "up"),
+            simple_binding(Mode::Insert, "Esc", "ui/exit_insert", "exit"),
         ];
         let mut store = InputStore::new(bindings);
         let val = store.read(&path!("bindings/normal")).unwrap().unwrap();
@@ -624,9 +648,15 @@ mod tests {
     #[test]
     fn read_bindings_by_mode_and_screen() {
         let bindings = vec![
-            simple_binding("normal", "j", "ui/select_next", "generic j"),
-            screen_binding("normal", "j", "thread", "ui/scroll_down", "thread j"),
-            simple_binding("normal", "k", "ui/select_prev", "generic k"),
+            simple_binding(Mode::Normal, "j", "ui/select_next", "generic j"),
+            screen_binding(
+                Mode::Normal,
+                "j",
+                Screen::Thread,
+                "ui/scroll_down",
+                "thread j",
+            ),
+            simple_binding(Mode::Normal, "k", "ui/select_prev", "generic k"),
         ];
         let mut store = InputStore::new(bindings);
         // bindings/normal/thread should return generic j (no screen) + thread j + generic k
@@ -673,7 +703,7 @@ mod tests {
 
     #[test]
     fn bind_replaces_existing() {
-        let bindings = vec![simple_binding("normal", "j", "select_next", "old")];
+        let bindings = vec![simple_binding(Mode::Normal, "j", "select_next", "old")];
         let mut store = InputStore::new(bindings);
         let (dispatcher, _log) = mock_dispatcher();
         store.set_dispatcher(dispatcher);
@@ -700,7 +730,7 @@ mod tests {
 
     #[test]
     fn unbind_removes_binding() {
-        let bindings = vec![simple_binding("normal", "j", "ui/select_next", "down")];
+        let bindings = vec![simple_binding(Mode::Normal, "j", "ui/select_next", "down")];
         let mut store = InputStore::new(bindings);
 
         let mut unbind_val = BTreeMap::new();
@@ -762,7 +792,7 @@ mod tests {
 
     #[test]
     fn dispatch_without_dispatcher_returns_error() {
-        let bindings = vec![simple_binding("normal", "j", "ui/select_next", "down")];
+        let bindings = vec![simple_binding(Mode::Normal, "j", "ui/select_next", "down")];
         let mut store = InputStore::new(bindings);
         let result = store.write(&path!("key"), key_event("normal", "j", "inbox"));
         assert!(result.is_err());
@@ -786,7 +816,7 @@ mod tests {
     fn dispatch_invoke_action() {
         let bindings = vec![Binding {
             context: BindingContext {
-                mode: "normal".to_string(),
+                mode: Mode::Normal,
                 key: "q".to_string(),
                 screen: None,
             },
@@ -819,7 +849,7 @@ mod tests {
         );
         let bindings = vec![Binding {
             context: BindingContext {
-                mode: "normal".to_string(),
+                mode: Mode::Normal,
                 key: "c".to_string(),
                 screen: None,
             },

@@ -12,6 +12,27 @@ pub enum Screen {
     History,
 }
 
+impl Screen {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Screen::Inbox => "inbox",
+            Screen::Thread => "thread",
+            Screen::Settings => "settings",
+            Screen::History => "history",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "inbox" => Some(Screen::Inbox),
+            "thread" => Some(Screen::Thread),
+            "settings" => Some(Screen::Settings),
+            "history" => Some(Screen::History),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
@@ -19,6 +40,25 @@ pub enum Mode {
     Normal,
     Insert,
     Approval,
+}
+
+impl Mode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Mode::Normal => "normal",
+            Mode::Insert => "insert",
+            Mode::Approval => "approval",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "normal" => Some(Mode::Normal),
+            "insert" => Some(Mode::Insert),
+            "approval" => Some(Mode::Approval),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

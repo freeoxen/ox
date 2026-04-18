@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 
+use ox_types::ui::{Mode, Screen};
 use ox_ui::{Action, Binding, BindingContext};
 
 /// Build the default binding table.
@@ -35,10 +36,10 @@ fn invoke_with(command: &str, args: &[(&str, &str)]) -> Action {
     }
 }
 
-fn bind(mode: &str, key: &str, action: Action, desc: &str) -> Binding {
+fn bind(mode: Mode, key: &str, action: Action, desc: &str) -> Binding {
     Binding {
         context: BindingContext {
-            mode: mode.to_string(),
+            mode,
             key: key.to_string(),
             screen: None,
         },
@@ -48,12 +49,12 @@ fn bind(mode: &str, key: &str, action: Action, desc: &str) -> Binding {
     }
 }
 
-fn bind_screen(mode: &str, key: &str, screen: &str, action: Action, desc: &str) -> Binding {
+fn bind_screen(mode: Mode, key: &str, screen: Screen, action: Action, desc: &str) -> Binding {
     Binding {
         context: BindingContext {
-            mode: mode.to_string(),
+            mode,
             key: key.to_string(),
-            screen: Some(screen.to_string()),
+            screen: Some(screen),
         },
         action,
         description: desc.to_string(),
@@ -62,18 +63,21 @@ fn bind_screen(mode: &str, key: &str, screen: &str, action: Action, desc: &str) 
 }
 
 /// Like bind_screen, but marks this binding for display in the status bar.
-fn hint(mode: &str, key: &str, screen: &str, action: Action, desc: &str) -> Binding {
+fn hint(mode: Mode, key: &str, screen: Screen, action: Action, desc: &str) -> Binding {
     Binding {
         context: BindingContext {
-            mode: mode.to_string(),
+            mode,
             key: key.to_string(),
-            screen: Some(screen.to_string()),
+            screen: Some(screen),
         },
         action,
         description: desc.to_string(),
         status_hint: true,
     }
 }
+
+use Mode::{Approval, Insert, Normal};
+use Screen::{History, Inbox, Settings, Thread};
 
 // ---------------------------------------------------------------------------
 // Normal mode
@@ -82,256 +86,244 @@ fn hint(mode: &str, key: &str, screen: &str, action: Action, desc: &str) -> Bind
 fn normal_mode(out: &mut Vec<Binding>) {
     // Navigation — screen-specific
     out.push(bind_screen(
-        "normal",
+        Normal,
         "j",
-        "inbox",
+        Inbox,
         invoke("select_next"),
         "Move selection down",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         "Down",
-        "inbox",
+        Inbox,
         invoke("select_next"),
         "Move selection down",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         "k",
-        "inbox",
+        Inbox,
         invoke("select_prev"),
         "Move selection up",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         "Up",
-        "inbox",
+        Inbox,
         invoke("select_prev"),
         "Move selection up",
     ));
 
     out.push(bind_screen(
-        "normal",
+        Normal,
         "j",
-        "thread",
+        Thread,
         invoke("scroll_down"),
         "Scroll down",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         "Down",
-        "thread",
+        Thread,
         invoke("scroll_down"),
         "Scroll down",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         "k",
-        "thread",
+        Thread,
         invoke("scroll_up"),
         "Scroll up",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         "Up",
-        "thread",
+        Thread,
         invoke("scroll_up"),
         "Scroll up",
     ));
 
     // Screen transitions
     out.push(bind_screen(
-        "normal",
+        Normal,
         "Ctrl+c",
-        "thread",
+        Thread,
         invoke("close"),
         "Back to inbox",
     ));
+    out.push(bind_screen(Normal, "Ctrl+c", Inbox, invoke("quit"), "Quit"));
+    out.push(hint(Normal, "Esc", Thread, invoke("close"), "Back"));
     out.push(bind_screen(
-        "normal",
-        "Ctrl+c",
-        "inbox",
-        invoke("quit"),
-        "Quit",
-    ));
-    out.push(hint("normal", "Esc", "thread", invoke("close"), "Back"));
-    out.push(bind_screen(
-        "normal",
+        Normal,
         "q",
-        "thread",
+        Thread,
         invoke("close"),
         "Back to inbox",
     ));
-    out.push(bind_screen("normal", "q", "inbox", invoke("quit"), "Quit"));
-    out.push(bind("normal", "Ctrl+t", invoke("close"), "Back to inbox"));
+    out.push(bind_screen(Normal, "q", Inbox, invoke("quit"), "Quit"));
+    out.push(bind(Normal, "Ctrl+t", invoke("close"), "Back to inbox"));
 
     // Enter insert mode — screen determines context
-    out.push(hint("normal", "c", "inbox", invoke("compose"), "Compose"));
-    out.push(hint("normal", "c", "thread", invoke("reply"), "Reply"));
-    out.push(hint("normal", "/", "inbox", invoke("search"), "Search"));
+    out.push(hint(Normal, "c", Inbox, invoke("compose"), "Compose"));
+    out.push(hint(Normal, "c", Thread, invoke("reply"), "Reply"));
+    out.push(hint(Normal, "/", Inbox, invoke("search"), "Search"));
 
     // Command mode
-    out.push(bind("normal", ":", invoke("enter_command"), "Command"));
-    out.push(bind("normal", ";", invoke("enter_command"), "Command"));
+    out.push(bind(Normal, ":", invoke("enter_command"), "Command"));
+    out.push(bind(Normal, ";", invoke("enter_command"), "Command"));
 
     // -- Vim fast navigation --
     // g/G: go to top/bottom
     out.push(bind_screen(
-        "normal",
+        Normal,
         "g",
-        "inbox",
+        Inbox,
         invoke("select_first"),
         "Go to first",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         "G",
-        "inbox",
+        Inbox,
         invoke("select_last"),
         "Go to last",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         "g",
-        "thread",
+        Thread,
         invoke("scroll_to_top"),
         "Go to top",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         "G",
-        "thread",
+        Thread,
         invoke("scroll_to_bottom"),
         "Go to bottom",
     ));
 
     // d/u and Ctrl+d/u: half-page scroll
     out.push(bind_screen(
-        "normal",
+        Normal,
         "d",
-        "thread",
+        Thread,
         invoke("scroll_half_page_down"),
         "Half page down",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         "Ctrl+d",
-        "thread",
+        Thread,
         invoke("scroll_half_page_down"),
         "Half page down",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         "u",
-        "thread",
+        Thread,
         invoke("scroll_half_page_up"),
         "Half page up",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         "Ctrl+u",
-        "thread",
+        Thread,
         invoke("scroll_half_page_up"),
         "Half page up",
     ));
 
     // Ctrl+f/b: full page scroll
     out.push(bind_screen(
-        "normal",
+        Normal,
         "Ctrl+f",
-        "thread",
+        Thread,
         invoke("scroll_page_down"),
         "Page down",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         "Ctrl+b",
-        "thread",
+        Thread,
         invoke("scroll_page_up"),
         "Page up",
     ));
 
     // History explorer
-    out.push(hint(
-        "normal",
-        "h",
-        "thread",
-        invoke("open_history"),
-        "History",
-    ));
+    out.push(hint(Normal, "h", Thread, invoke("open_history"), "History"));
 
     // Settings
     out.push(bind_screen(
-        "normal",
+        Normal,
         "s",
-        "inbox",
+        Inbox,
         invoke("settings"),
         "Open settings",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         "Esc",
-        "settings",
+        Settings,
         invoke("inbox"),
         "Back to inbox",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         "q",
-        "settings",
+        Settings,
         invoke("inbox"),
         "Back to inbox",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         "Ctrl+c",
-        "settings",
+        Settings,
         invoke("quit"),
         "Quit",
     ));
 
     // Thread actions
     out.push(hint(
-        "normal",
+        Normal,
         "Enter",
-        "inbox",
+        Inbox,
         invoke("open_selected"),
         "Open",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         "d",
-        "inbox",
+        Inbox,
         invoke("archive_selected"),
         "Archive thread",
     ));
 
     // Approval quick keys (thread only)
     out.push(bind_screen(
-        "normal",
+        Normal,
         "y",
-        "thread",
+        Thread,
         invoke_with("approve", &[("decision", "allow_once")]),
         "Allow once",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         "n",
-        "thread",
+        Thread,
         invoke_with("approve", &[("decision", "deny_once")]),
         "Deny once",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         "s",
-        "thread",
+        Thread,
         invoke_with("approve", &[("decision", "allow_session")]),
         "Allow for session",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         "a",
-        "thread",
+        Thread,
         invoke_with("approve", &[("decision", "allow_always")]),
         "Allow always",
     ));
@@ -344,162 +336,156 @@ fn normal_mode(out: &mut Vec<Binding>) {
 fn history_mode(out: &mut Vec<Binding>) {
     // Navigation
     out.push(bind_screen(
-        "normal",
+        Normal,
         "j",
-        "history",
+        History,
         invoke("select_next"),
         "Move selection down",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         "Down",
-        "history",
+        History,
         invoke("select_next"),
         "Move selection down",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         "k",
-        "history",
+        History,
         invoke("select_prev"),
         "Move selection up",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         "Up",
-        "history",
+        History,
         invoke("select_prev"),
         "Move selection up",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         "g",
-        "history",
+        History,
         invoke("select_first"),
         "Go to first",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         "G",
-        "history",
+        History,
         invoke("select_last"),
         "Go to last",
     ));
 
     // Expand
     out.push(hint(
-        "normal",
+        Normal,
         "Enter",
-        "history",
+        History,
         invoke("toggle_expand"),
         "Expand",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         " ",
-        "history",
+        History,
         invoke("toggle_expand"),
         "Toggle expand",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         "e",
-        "history",
+        History,
         invoke("expand_all"),
         "Expand all",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         "E",
-        "history",
+        History,
         invoke("collapse_all"),
         "Collapse all",
     ));
     out.push(hint(
-        "normal",
+        Normal,
         "p",
-        "history",
+        History,
         invoke("toggle_pretty"),
         "Pretty",
     ));
-    out.push(hint(
-        "normal",
-        "f",
-        "history",
-        invoke("toggle_full"),
-        "Full",
-    ));
+    out.push(hint(Normal, "f", History, invoke("toggle_full"), "Full"));
 
     // Page movement (moves selection, not just viewport)
     out.push(bind_screen(
-        "normal",
+        Normal,
         "d",
-        "history",
+        History,
         invoke("select_half_page_down"),
         "Half page down",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         "Ctrl+d",
-        "history",
+        History,
         invoke("select_half_page_down"),
         "Half page down",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         "u",
-        "history",
+        History,
         invoke("select_half_page_up"),
         "Half page up",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         "Ctrl+u",
-        "history",
+        History,
         invoke("select_half_page_up"),
         "Half page up",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         "Ctrl+f",
-        "history",
+        History,
         invoke("select_page_down"),
         "Page down",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         "Ctrl+b",
-        "history",
+        History,
         invoke("select_page_up"),
         "Page up",
     ));
 
     // Exit
     out.push(hint(
-        "normal",
+        Normal,
         "Esc",
-        "history",
+        History,
         invoke("back_to_thread"),
         "Back",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         "q",
-        "history",
+        History,
         invoke("back_to_thread"),
         "Back to thread",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         "h",
-        "history",
+        History,
         invoke("back_to_thread"),
         "Back to thread",
     ));
     out.push(bind_screen(
-        "normal",
+        Normal,
         "Ctrl+c",
-        "history",
+        History,
         invoke("back_to_thread"),
         "Back to thread",
     ));
@@ -510,27 +496,22 @@ fn history_mode(out: &mut Vec<Binding>) {
 // ---------------------------------------------------------------------------
 
 fn insert_mode(out: &mut Vec<Binding>) {
-    out.push(bind("insert", "Ctrl+s", invoke("send_input"), "Send"));
-    out.push(bind("insert", "Ctrl+Enter", invoke("send_input"), "Send"));
-    out.push(bind("insert", "Esc", invoke("exit_insert"), "Normal mode"));
-    out.push(bind(
-        "insert",
-        "Ctrl+q",
-        invoke("exit_insert"),
-        "Normal mode",
-    ));
+    out.push(bind(Insert, "Ctrl+s", invoke("send_input"), "Send"));
+    out.push(bind(Insert, "Ctrl+Enter", invoke("send_input"), "Send"));
+    out.push(bind(Insert, "Esc", invoke("exit_insert"), "Normal mode"));
+    out.push(bind(Insert, "Ctrl+q", invoke("exit_insert"), "Normal mode"));
     // Ctrl+u: screen-specific because search mode handles its own clear
     out.push(bind_screen(
-        "insert",
+        Insert,
         "Ctrl+u",
-        "inbox",
+        Inbox,
         invoke("clear_input"),
         "Clear line",
     ));
     out.push(bind_screen(
-        "insert",
+        Insert,
         "Ctrl+u",
-        "thread",
+        Thread,
         invoke("clear_input"),
         "Clear line",
     ));
@@ -543,95 +524,95 @@ fn insert_mode(out: &mut Vec<Binding>) {
 fn approval_mode(out: &mut Vec<Binding>) {
     // Option navigation
     out.push(bind(
-        "approval",
+        Approval,
         "j",
         invoke("approval_select_next"),
         "Next option",
     ));
     out.push(bind(
-        "approval",
+        Approval,
         "Down",
         invoke("approval_select_next"),
         "Next option",
     ));
     out.push(bind(
-        "approval",
+        Approval,
         "k",
         invoke("approval_select_prev"),
         "Previous option",
     ));
     out.push(bind(
-        "approval",
+        Approval,
         "Up",
         invoke("approval_select_prev"),
         "Previous option",
     ));
     // Preview scroll
     out.push(bind(
-        "approval",
+        Approval,
         "Ctrl+j",
         invoke("approval_scroll_down"),
         "Scroll preview down",
     ));
     out.push(bind(
-        "approval",
+        Approval,
         "Ctrl+k",
         invoke("approval_scroll_up"),
         "Scroll preview up",
     ));
 
     out.push(bind(
-        "approval",
+        Approval,
         "y",
         invoke_with("approve", &[("decision", "allow_once")]),
         "Allow once",
     ));
     out.push(bind(
-        "approval",
+        Approval,
         "n",
         invoke_with("approve", &[("decision", "deny_once")]),
         "Deny once",
     ));
     out.push(bind(
-        "approval",
+        Approval,
         "s",
         invoke_with("approve", &[("decision", "allow_session")]),
         "Allow for session",
     ));
     out.push(bind(
-        "approval",
+        Approval,
         "a",
         invoke_with("approve", &[("decision", "allow_always")]),
         "Allow always",
     ));
     out.push(bind(
-        "approval",
+        Approval,
         "d",
         invoke_with("approve", &[("decision", "deny_always")]),
         "Deny always",
     ));
     // Enter confirms currently selected option
     out.push(bind(
-        "approval",
+        Approval,
         "Enter",
         invoke("approval_confirm"),
         "Confirm selected",
     ));
     // Esc closes thread (same as q)
-    out.push(bind("approval", "Escape", invoke("close"), "Close thread"));
+    out.push(bind(Approval, "Escape", invoke("close"), "Close thread"));
     // Number keys for direct selection
     for (i, (_, decision)) in crate::types::APPROVAL_OPTIONS.iter().enumerate() {
         let key = format!("{}", i + 1);
         let decision_str = decision.as_str();
         out.push(bind(
-            "approval",
+            Approval,
             &key,
             invoke_with("approve", &[("decision", decision_str)]),
             &format!("Option {}", i + 1),
         ));
     }
     // q to close thread (falls through to normal dispatch)
-    out.push(bind("approval", "q", invoke("close"), "Close thread"));
+    out.push(bind(Approval, "q", invoke("close"), "Close thread"));
 }
 
 #[cfg(test)]
@@ -650,17 +631,13 @@ mod tests {
         let j_inbox: Vec<_> = bindings
             .iter()
             .filter(|b| {
-                b.context.mode == "normal"
-                    && b.context.key == "j"
-                    && b.context.screen.as_deref() == Some("inbox")
+                b.context.mode == Normal && b.context.key == "j" && b.context.screen == Some(Inbox)
             })
             .collect();
         let j_thread: Vec<_> = bindings
             .iter()
             .filter(|b| {
-                b.context.mode == "normal"
-                    && b.context.key == "j"
-                    && b.context.screen.as_deref() == Some("thread")
+                b.context.mode == Normal && b.context.key == "j" && b.context.screen == Some(Thread)
             })
             .collect();
         assert_eq!(j_inbox.len(), 1);
@@ -670,9 +647,9 @@ mod tests {
     #[test]
     fn all_three_modes_have_bindings() {
         let bindings = default_bindings();
-        assert!(bindings.iter().any(|b| b.context.mode == "normal"));
-        assert!(bindings.iter().any(|b| b.context.mode == "insert"));
-        assert!(bindings.iter().any(|b| b.context.mode == "approval"));
+        assert!(bindings.iter().any(|b| b.context.mode == Normal));
+        assert!(bindings.iter().any(|b| b.context.mode == Insert));
+        assert!(bindings.iter().any(|b| b.context.mode == Approval));
     }
 
     #[test]
@@ -681,9 +658,7 @@ mod tests {
         let found: Vec<_> = bindings
             .iter()
             .filter(|b| {
-                b.context.mode == "normal"
-                    && b.context.key == "h"
-                    && b.context.screen.as_deref() == Some("thread")
+                b.context.mode == Normal && b.context.key == "h" && b.context.screen == Some(Thread)
             })
             .collect();
         assert_eq!(found.len(), 1);
@@ -695,7 +670,7 @@ mod tests {
         let bindings = default_bindings();
         let history_bindings: Vec<_> = bindings
             .iter()
-            .filter(|b| b.context.screen.as_deref() == Some("history"))
+            .filter(|b| b.context.screen == Some(History))
             .collect();
         assert!(
             history_bindings.len() >= 16,
