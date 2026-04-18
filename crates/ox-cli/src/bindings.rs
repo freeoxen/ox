@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 
+use crossterm::event::{KeyCode, KeyModifiers};
 use ox_types::CommandName;
 use ox_types::ui::{Mode, Screen};
 use ox_ui::{Action, Binding, BindingContext};
@@ -35,6 +36,18 @@ fn invoke_with(command: CommandName, args: &[(&str, &str)]) -> Action {
         map.insert(k.to_string(), serde_json::Value::String(v.to_string()));
     }
     Action::Invoke { command, args: map }
+}
+
+/// Encode key for binding registration. Panics if the key is not encodable
+/// (e.g. F-keys) — this is a compile-time/startup check, not a runtime path.
+fn key(code: KeyCode) -> String {
+    crate::key_encode::encode_key(KeyModifiers::NONE, code)
+        .unwrap_or_else(|| panic!("key {code:?} is not encodable"))
+}
+
+fn ctrl(code: KeyCode) -> String {
+    crate::key_encode::encode_key(KeyModifiers::CONTROL, code)
+        .unwrap_or_else(|| panic!("Ctrl+{code:?} is not encodable"))
 }
 
 fn bind(mode: Mode, key: &str, action: Action, desc: &str) -> Binding {
@@ -78,8 +91,23 @@ fn hint(mode: Mode, key: &str, screen: Screen, action: Action, desc: &str) -> Bi
 }
 
 use CommandName as Cmd;
+use KeyCode::Char;
 use Mode::{Approval, Insert, Normal};
 use Screen::{History, Inbox, Settings, Thread};
+
+// Pre-computed key strings for common keys
+fn esc() -> String {
+    key(KeyCode::Esc)
+}
+fn enter() -> String {
+    key(KeyCode::Enter)
+}
+fn up() -> String {
+    key(KeyCode::Up)
+}
+fn down() -> String {
+    key(KeyCode::Down)
+}
 
 // ---------------------------------------------------------------------------
 // Normal mode
@@ -89,28 +117,28 @@ fn normal_mode(out: &mut Vec<Binding>) {
     // Navigation — screen-specific
     out.push(bind_screen(
         Normal,
-        "j",
+        &key(Char('j')),
         Inbox,
         invoke(Cmd::SelectNext),
         "Move selection down",
     ));
     out.push(bind_screen(
         Normal,
-        "Down",
+        &down(),
         Inbox,
         invoke(Cmd::SelectNext),
         "Move selection down",
     ));
     out.push(bind_screen(
         Normal,
-        "k",
+        &key(Char('k')),
         Inbox,
         invoke(Cmd::SelectPrev),
         "Move selection up",
     ));
     out.push(bind_screen(
         Normal,
-        "Up",
+        &up(),
         Inbox,
         invoke(Cmd::SelectPrev),
         "Move selection up",
@@ -118,28 +146,28 @@ fn normal_mode(out: &mut Vec<Binding>) {
 
     out.push(bind_screen(
         Normal,
-        "j",
+        &key(Char('j')),
         Thread,
         invoke(Cmd::ScrollDown),
         "Scroll down",
     ));
     out.push(bind_screen(
         Normal,
-        "Down",
+        &down(),
         Thread,
         invoke(Cmd::ScrollDown),
         "Scroll down",
     ));
     out.push(bind_screen(
         Normal,
-        "k",
+        &key(Char('k')),
         Thread,
         invoke(Cmd::ScrollUp),
         "Scroll up",
     ));
     out.push(bind_screen(
         Normal,
-        "Up",
+        &up(),
         Thread,
         invoke(Cmd::ScrollUp),
         "Scroll up",
@@ -148,64 +176,103 @@ fn normal_mode(out: &mut Vec<Binding>) {
     // Screen transitions
     out.push(bind_screen(
         Normal,
-        "Ctrl+c",
+        &ctrl(Char('c')),
         Thread,
         invoke(Cmd::Close),
         "Back to inbox",
     ));
     out.push(bind_screen(
         Normal,
-        "Ctrl+c",
+        &ctrl(Char('c')),
         Inbox,
         invoke(Cmd::Quit),
         "Quit",
     ));
-    out.push(hint(Normal, "Esc", Thread, invoke(Cmd::Close), "Back"));
+    out.push(hint(Normal, &esc(), Thread, invoke(Cmd::Close), "Back"));
     out.push(bind_screen(
         Normal,
-        "q",
+        &key(Char('q')),
         Thread,
         invoke(Cmd::Close),
         "Back to inbox",
     ));
-    out.push(bind_screen(Normal, "q", Inbox, invoke(Cmd::Quit), "Quit"));
-    out.push(bind(Normal, "Ctrl+t", invoke(Cmd::Close), "Back to inbox"));
+    out.push(bind_screen(
+        Normal,
+        &key(Char('q')),
+        Inbox,
+        invoke(Cmd::Quit),
+        "Quit",
+    ));
+    out.push(bind(
+        Normal,
+        &ctrl(Char('t')),
+        invoke(Cmd::Close),
+        "Back to inbox",
+    ));
 
     // Enter insert mode — screen determines context
-    out.push(hint(Normal, "c", Inbox, invoke(Cmd::Compose), "Compose"));
-    out.push(hint(Normal, "c", Thread, invoke(Cmd::Reply), "Reply"));
-    out.push(hint(Normal, "/", Inbox, invoke(Cmd::Search), "Search"));
+    out.push(hint(
+        Normal,
+        &key(Char('c')),
+        Inbox,
+        invoke(Cmd::Compose),
+        "Compose",
+    ));
+    out.push(hint(
+        Normal,
+        &key(Char('c')),
+        Thread,
+        invoke(Cmd::Reply),
+        "Reply",
+    ));
+    out.push(hint(
+        Normal,
+        &key(Char('/')),
+        Inbox,
+        invoke(Cmd::Search),
+        "Search",
+    ));
 
     // Command mode
-    out.push(bind(Normal, ":", invoke(Cmd::EnterCommand), "Command"));
-    out.push(bind(Normal, ";", invoke(Cmd::EnterCommand), "Command"));
+    out.push(bind(
+        Normal,
+        &key(Char(':')),
+        invoke(Cmd::EnterCommand),
+        "Command",
+    ));
+    out.push(bind(
+        Normal,
+        &key(Char(';')),
+        invoke(Cmd::EnterCommand),
+        "Command",
+    ));
 
     // -- Vim fast navigation --
     // g/G: go to top/bottom
     out.push(bind_screen(
         Normal,
-        "g",
+        &key(Char('g')),
         Inbox,
         invoke(Cmd::SelectFirst),
         "Go to first",
     ));
     out.push(bind_screen(
         Normal,
-        "G",
+        &key(Char('G')),
         Inbox,
         invoke(Cmd::SelectLast),
         "Go to last",
     ));
     out.push(bind_screen(
         Normal,
-        "g",
+        &key(Char('g')),
         Thread,
         invoke(Cmd::ScrollToTop),
         "Go to top",
     ));
     out.push(bind_screen(
         Normal,
-        "G",
+        &key(Char('G')),
         Thread,
         invoke(Cmd::ScrollToBottom),
         "Go to bottom",
@@ -214,28 +281,28 @@ fn normal_mode(out: &mut Vec<Binding>) {
     // d/u and Ctrl+d/u: half-page scroll
     out.push(bind_screen(
         Normal,
-        "d",
+        &key(Char('d')),
         Thread,
         invoke(Cmd::ScrollHalfPageDown),
         "Half page down",
     ));
     out.push(bind_screen(
         Normal,
-        "Ctrl+d",
+        &ctrl(Char('d')),
         Thread,
         invoke(Cmd::ScrollHalfPageDown),
         "Half page down",
     ));
     out.push(bind_screen(
         Normal,
-        "u",
+        &key(Char('u')),
         Thread,
         invoke(Cmd::ScrollHalfPageUp),
         "Half page up",
     ));
     out.push(bind_screen(
         Normal,
-        "Ctrl+u",
+        &ctrl(Char('u')),
         Thread,
         invoke(Cmd::ScrollHalfPageUp),
         "Half page up",
@@ -244,14 +311,14 @@ fn normal_mode(out: &mut Vec<Binding>) {
     // Ctrl+f/b: full page scroll
     out.push(bind_screen(
         Normal,
-        "Ctrl+f",
+        &ctrl(Char('f')),
         Thread,
         invoke(Cmd::ScrollPageDown),
         "Page down",
     ));
     out.push(bind_screen(
         Normal,
-        "Ctrl+b",
+        &ctrl(Char('b')),
         Thread,
         invoke(Cmd::ScrollPageUp),
         "Page up",
@@ -260,7 +327,7 @@ fn normal_mode(out: &mut Vec<Binding>) {
     // History explorer
     out.push(hint(
         Normal,
-        "h",
+        &key(Char('h')),
         Thread,
         invoke(Cmd::OpenHistory),
         "History",
@@ -269,28 +336,28 @@ fn normal_mode(out: &mut Vec<Binding>) {
     // Settings
     out.push(bind_screen(
         Normal,
-        "s",
+        &key(Char('s')),
         Inbox,
         invoke(Cmd::Settings),
         "Open settings",
     ));
     out.push(bind_screen(
         Normal,
-        "Esc",
+        &esc(),
         Settings,
         invoke(Cmd::Inbox),
         "Back to inbox",
     ));
     out.push(bind_screen(
         Normal,
-        "q",
+        &key(Char('q')),
         Settings,
         invoke(Cmd::Inbox),
         "Back to inbox",
     ));
     out.push(bind_screen(
         Normal,
-        "Ctrl+c",
+        &ctrl(Char('c')),
         Settings,
         invoke(Cmd::Quit),
         "Quit",
@@ -299,14 +366,14 @@ fn normal_mode(out: &mut Vec<Binding>) {
     // Thread actions
     out.push(hint(
         Normal,
-        "Enter",
+        &enter(),
         Inbox,
         invoke(Cmd::OpenSelected),
         "Open",
     ));
     out.push(bind_screen(
         Normal,
-        "d",
+        &key(Char('d')),
         Inbox,
         invoke(Cmd::ArchiveSelected),
         "Archive thread",
@@ -315,28 +382,28 @@ fn normal_mode(out: &mut Vec<Binding>) {
     // Modal toggles
     out.push(bind_screen(
         Normal,
-        "?",
+        &key(Char('?')),
         Inbox,
         invoke(Cmd::ToggleShortcuts),
         "Show shortcuts",
     ));
     out.push(bind_screen(
         Normal,
-        "?",
+        &key(Char('?')),
         Thread,
         invoke(Cmd::ToggleShortcuts),
         "Show shortcuts",
     ));
     out.push(bind_screen(
         Normal,
-        "$",
+        &key(Char('$')),
         Inbox,
         invoke(Cmd::ToggleUsage),
         "Usage info",
     ));
     out.push(bind_screen(
         Normal,
-        "$",
+        &key(Char('$')),
         Thread,
         invoke(Cmd::ToggleUsage),
         "Usage info",
@@ -345,28 +412,28 @@ fn normal_mode(out: &mut Vec<Binding>) {
     // Approval quick keys (thread only)
     out.push(bind_screen(
         Normal,
-        "y",
+        &key(Char('y')),
         Thread,
         invoke_with(Cmd::Approve, &[("decision", "allow_once")]),
         "Allow once",
     ));
     out.push(bind_screen(
         Normal,
-        "n",
+        &key(Char('n')),
         Thread,
         invoke_with(Cmd::Approve, &[("decision", "deny_once")]),
         "Deny once",
     ));
     out.push(bind_screen(
         Normal,
-        "s",
+        &key(Char('s')),
         Thread,
         invoke_with(Cmd::Approve, &[("decision", "allow_session")]),
         "Allow for session",
     ));
     out.push(bind_screen(
         Normal,
-        "a",
+        &key(Char('a')),
         Thread,
         invoke_with(Cmd::Approve, &[("decision", "allow_always")]),
         "Allow always",
@@ -381,42 +448,42 @@ fn history_mode(out: &mut Vec<Binding>) {
     // Navigation
     out.push(bind_screen(
         Normal,
-        "j",
+        &key(Char('j')),
         History,
         invoke(Cmd::SelectNext),
         "Move selection down",
     ));
     out.push(bind_screen(
         Normal,
-        "Down",
+        &down(),
         History,
         invoke(Cmd::SelectNext),
         "Move selection down",
     ));
     out.push(bind_screen(
         Normal,
-        "k",
+        &key(Char('k')),
         History,
         invoke(Cmd::SelectPrev),
         "Move selection up",
     ));
     out.push(bind_screen(
         Normal,
-        "Up",
+        &up(),
         History,
         invoke(Cmd::SelectPrev),
         "Move selection up",
     ));
     out.push(bind_screen(
         Normal,
-        "g",
+        &key(Char('g')),
         History,
         invoke(Cmd::SelectFirst),
         "Go to first",
     ));
     out.push(bind_screen(
         Normal,
-        "G",
+        &key(Char('G')),
         History,
         invoke(Cmd::SelectLast),
         "Go to last",
@@ -425,80 +492,86 @@ fn history_mode(out: &mut Vec<Binding>) {
     // Expand
     out.push(hint(
         Normal,
-        "Enter",
+        &enter(),
         History,
         invoke(Cmd::ToggleExpand),
         "Expand",
     ));
     out.push(bind_screen(
         Normal,
-        " ",
+        &key(Char(' ')),
         History,
         invoke(Cmd::ToggleExpand),
         "Toggle expand",
     ));
     out.push(bind_screen(
         Normal,
-        "e",
+        &key(Char('e')),
         History,
         invoke(Cmd::ExpandAll),
         "Expand all",
     ));
     out.push(bind_screen(
         Normal,
-        "E",
+        &key(Char('E')),
         History,
         invoke(Cmd::CollapseAll),
         "Collapse all",
     ));
     out.push(hint(
         Normal,
-        "p",
+        &key(Char('p')),
         History,
         invoke(Cmd::TogglePretty),
         "Pretty",
     ));
-    out.push(hint(Normal, "f", History, invoke(Cmd::ToggleFull), "Full"));
+    out.push(hint(
+        Normal,
+        &key(Char('f')),
+        History,
+        invoke(Cmd::ToggleFull),
+        "Full",
+    ));
 
     // Page movement (moves selection, not just viewport)
     out.push(bind_screen(
         Normal,
-        "d",
+        &key(Char('d')),
         History,
         invoke(Cmd::SelectHalfPageDown),
         "Half page down",
     ));
     out.push(bind_screen(
         Normal,
-        "Ctrl+d",
+        &ctrl(Char('d')),
         History,
         invoke(Cmd::SelectHalfPageDown),
         "Half page down",
     ));
     out.push(bind_screen(
         Normal,
-        "u",
+        &key(Char('u')),
         History,
         invoke(Cmd::SelectHalfPageUp),
         "Half page up",
     ));
     out.push(bind_screen(
         Normal,
-        "Ctrl+u",
+        &ctrl(Char('u')),
         History,
         invoke(Cmd::SelectHalfPageUp),
         "Half page up",
     ));
     out.push(bind_screen(
         Normal,
-        "Ctrl+f",
+        &ctrl(Char('f')),
         History,
         invoke(Cmd::SelectPageDown),
         "Page down",
     ));
     out.push(bind_screen(
         Normal,
-        "Ctrl+b",
+        &ctrl(Char('b')),
         History,
         invoke(Cmd::SelectPageUp),
         "Page up",
@@ -507,28 +580,28 @@ fn history_mode(out: &mut Vec<Binding>) {
     // Exit
     out.push(hint(
         Normal,
-        "Esc",
+        &esc(),
         History,
         invoke(Cmd::BackToThread),
         "Back",
     ));
     out.push(bind_screen(
         Normal,
-        "q",
+        &key(Char('q')),
         History,
         invoke(Cmd::BackToThread),
         "Back to thread",
     ));
     out.push(bind_screen(
         Normal,
-        "h",
+        &key(Char('h')),
         History,
         invoke(Cmd::BackToThread),
         "Back to thread",
     ));
     out.push(bind_screen(
         Normal,
-        "Ctrl+c",
+        &ctrl(Char('c')),
         History,
         invoke(Cmd::BackToThread),
         "Back to thread",
@@ -540,32 +613,42 @@ fn history_mode(out: &mut Vec<Binding>) {
 // ---------------------------------------------------------------------------
 
 fn insert_mode(out: &mut Vec<Binding>) {
-    out.push(bind(Insert, "Ctrl+s", invoke(Cmd::SendInput), "Send"));
-    out.push(bind(Insert, "Ctrl+Enter", invoke(Cmd::SendInput), "Send"));
+    out.push(bind(
+        Insert,
+        &ctrl(Char('s')),
+        invoke(Cmd::SendInput),
+        "Send",
+    ));
+    out.push(bind(
+        Insert,
+        &ctrl(KeyCode::Enter),
+        invoke(Cmd::SendInput),
+        "Send",
+    ));
     // ESC toggles editor sub-mode (Insert→Normal→exit)
     out.push(bind(
         Insert,
-        "Esc",
+        &esc(),
         invoke(Cmd::ToggleEditorMode),
         "Toggle mode",
     ));
     out.push(bind(
         Insert,
-        "Ctrl+q",
+        &ctrl(Char('q')),
         invoke(Cmd::ExitInsert),
         "Exit insert",
     ));
     // Ctrl+u: screen-specific because search mode handles its own clear
     out.push(bind_screen(
         Insert,
-        "Ctrl+u",
+        &ctrl(Char('u')),
         Inbox,
         invoke(Cmd::ClearInput),
         "Clear line",
     ));
     out.push(bind_screen(
         Insert,
-        "Ctrl+u",
+        &ctrl(Char('u')),
         Thread,
         invoke(Cmd::ClearInput),
         "Clear line",
@@ -573,14 +656,14 @@ fn insert_mode(out: &mut Vec<Binding>) {
     // Ctrl+R: enter history search (compose/reply only)
     out.push(bind_screen(
         Insert,
-        "Ctrl+r",
+        &ctrl(Char('r')),
         Thread,
         invoke(Cmd::EnterHistorySearch),
         "History search",
     ));
     out.push(bind_screen(
         Insert,
-        "Ctrl+r",
+        &ctrl(Char('r')),
         Inbox,
         invoke(Cmd::EnterHistorySearch),
         "History search",
@@ -588,7 +671,7 @@ fn insert_mode(out: &mut Vec<Binding>) {
     // Search text editing (inbox search mode)
     out.push(bind_screen(
         Insert,
-        "Enter",
+        &enter(),
         Inbox,
         invoke(Cmd::SearchSaveChip),
         "Save filter",
@@ -613,81 +696,81 @@ fn approval_mode(out: &mut Vec<Binding>) {
     // Option navigation
     out.push(bind(
         Approval,
-        "j",
+        &key(Char('j')),
         invoke(Cmd::ApprovalSelectNext),
         "Next option",
     ));
     out.push(bind(
         Approval,
-        "Down",
+        &down(),
         invoke(Cmd::ApprovalSelectNext),
         "Next option",
     ));
     out.push(bind(
         Approval,
-        "k",
+        &key(Char('k')),
         invoke(Cmd::ApprovalSelectPrev),
         "Previous option",
     ));
     out.push(bind(
         Approval,
-        "Up",
+        &up(),
         invoke(Cmd::ApprovalSelectPrev),
         "Previous option",
     ));
     // Preview scroll
     out.push(bind(
         Approval,
-        "Ctrl+j",
+        &ctrl(Char('j')),
         invoke(Cmd::ApprovalScrollDown),
         "Scroll preview down",
     ));
     out.push(bind(
         Approval,
-        "Ctrl+k",
+        &ctrl(Char('k')),
         invoke(Cmd::ApprovalScrollUp),
         "Scroll preview up",
     ));
 
     out.push(bind(
         Approval,
-        "y",
+        &key(Char('y')),
         invoke_with(Cmd::Approve, &[("decision", "allow_once")]),
         "Allow once",
     ));
     out.push(bind(
         Approval,
-        "n",
+        &key(Char('n')),
         invoke_with(Cmd::Approve, &[("decision", "deny_once")]),
         "Deny once",
     ));
     out.push(bind(
         Approval,
-        "s",
+        &key(Char('s')),
         invoke_with(Cmd::Approve, &[("decision", "allow_session")]),
         "Allow for session",
     ));
     out.push(bind(
         Approval,
-        "a",
+        &key(Char('a')),
         invoke_with(Cmd::Approve, &[("decision", "allow_always")]),
         "Allow always",
     ));
     out.push(bind(
         Approval,
-        "d",
+        &key(Char('d')),
         invoke_with(Cmd::Approve, &[("decision", "deny_always")]),
         "Deny always",
     ));
     // Enter confirms currently selected option
     out.push(bind(
         Approval,
-        "Enter",
+        &enter(),
         invoke(Cmd::ApprovalConfirm),
         "Confirm selected",
     ));
     // Esc closes thread (same as q)
-    out.push(bind(Approval, "Esc", invoke(Cmd::Close), "Close thread"));
+    out.push(bind(Approval, &esc(), invoke(Cmd::Close), "Close thread"));
     // Number keys for direct selection
     for (i, (_, decision)) in crate::types::APPROVAL_OPTIONS.iter().enumerate() {
         let key = format!("{}", i + 1);
@@ -700,7 +783,12 @@ fn approval_mode(out: &mut Vec<Binding>) {
         ));
     }
     // q to close thread (falls through to normal dispatch)
-    out.push(bind(Approval, "q", invoke(Cmd::Close), "Close thread"));
+    out.push(bind(
+        Approval,
+        &key(Char('q')),
+        invoke(Cmd::Close),
+        "Close thread",
+    ));
 }
 
 // ---------------------------------------------------------------------------
@@ -710,19 +798,19 @@ fn approval_mode(out: &mut Vec<Binding>) {
 fn shortcuts_mode(out: &mut Vec<Binding>) {
     out.push(bind(
         Mode::Shortcuts,
-        "?",
+        &key(Char('?')),
         invoke(Cmd::DismissShortcuts),
         "Close",
     ));
     out.push(bind(
         Mode::Shortcuts,
-        "Esc",
+        &esc(),
         invoke(Cmd::DismissShortcuts),
         "Close",
     ));
     out.push(bind(
         Mode::Shortcuts,
-        "Ctrl+q",
+        &ctrl(Char('q')),
         invoke(Cmd::DismissShortcuts),
         "Close",
     ));
@@ -734,7 +822,12 @@ fn shortcuts_mode(out: &mut Vec<Binding>) {
 
 fn usage_mode(out: &mut Vec<Binding>) {
     // Any key dismisses — Esc is the canonical one
-    out.push(bind(Mode::Usage, "Esc", invoke(Cmd::DismissUsage), "Close"));
+    out.push(bind(
+        Mode::Usage,
+        &esc(),
+        invoke(Cmd::DismissUsage),
+        "Close",
+    ));
 }
 
 // ---------------------------------------------------------------------------
@@ -744,25 +837,25 @@ fn usage_mode(out: &mut Vec<Binding>) {
 fn history_search_mode(out: &mut Vec<Binding>) {
     out.push(bind(
         Mode::HistorySearch,
-        "Esc",
+        &esc(),
         invoke(Cmd::DismissHistorySearch),
         "Cancel",
     ));
     out.push(bind(
         Mode::HistorySearch,
-        "Ctrl+g",
+        &ctrl(Char('g')),
         invoke(Cmd::DismissHistorySearch),
         "Cancel",
     ));
     out.push(bind(
         Mode::HistorySearch,
-        "Enter",
+        &enter(),
         invoke(Cmd::AcceptHistorySearch),
         "Accept",
     ));
     out.push(bind(
         Mode::HistorySearch,
-        "Ctrl+r",
+        &ctrl(Char('r')),
         invoke(Cmd::HistorySearchCycle),
         "Next match",
     ));
