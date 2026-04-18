@@ -35,15 +35,24 @@ pub(crate) async fn handle_approval_key(
     _modifiers: crossterm::event::KeyModifiers,
 ) -> bool {
     match key {
-        // vim navigation
-        KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
+        // Option navigation (Up/Down arrows)
+        KeyCode::Up | KeyCode::Char('K') => {
             dialog.approval_selected = dialog.approval_selected.saturating_sub(1);
             true
         }
-        KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
+        KeyCode::Down | KeyCode::Char('J') => {
             if dialog.approval_selected < APPROVAL_OPTIONS.len() - 1 {
                 dialog.approval_selected += 1;
             }
+            true
+        }
+        // Preview scroll (j/k)
+        KeyCode::Char('j') => {
+            dialog.approval_preview_scroll += 1;
+            true
+        }
+        KeyCode::Char('k') => {
+            dialog.approval_preview_scroll = dialog.approval_preview_scroll.saturating_sub(1);
             true
         }
         // number keys for direct selection
@@ -52,6 +61,7 @@ pub(crate) async fn handle_approval_key(
             if idx < APPROVAL_OPTIONS.len() {
                 send_approval_response(client, active_thread_id, APPROVAL_OPTIONS[idx].1).await;
                 dialog.approval_selected = 0;
+                dialog.approval_preview_scroll = 0;
             }
             true
         }
@@ -82,8 +92,7 @@ pub(crate) async fn handle_approval_key(
                     .await
                 {
                     let tool = ap.tool_name;
-                    let input_preview = ap.input_preview;
-                    let args = crate::dialogs::infer_args(&tool, &input_preview);
+                    let args = crate::dialogs::infer_args_from_input(&tool, &ap.tool_input);
                     dialog.pending_customize = Some(crate::types::CustomizeState {
                         tool,
                         args,

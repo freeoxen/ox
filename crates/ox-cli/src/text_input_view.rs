@@ -48,11 +48,26 @@ pub fn wrap_lines(content: &str, width: u16) -> Vec<WrapLine> {
 
     for (byte_pos, ch) in content.char_indices() {
         if ch == '\n' {
+            if byte_pos > 0 && line_start == byte_pos && content.as_bytes()[byte_pos - 1] == b'\r' {
+                // \r\n pair: the \r already pushed a line break; just skip the \n
+                line_start = byte_pos + 1;
+            } else {
+                lines.push(WrapLine {
+                    start: line_start,
+                    end: byte_pos,
+                });
+                line_start = byte_pos + 1;
+                col = 0;
+            }
+            continue;
+        }
+        // Treat bare \r as a line break (some clipboard sources use \r).
+        if ch == '\r' {
             lines.push(WrapLine {
                 start: line_start,
                 end: byte_pos,
             });
-            line_start = byte_pos + ch.len_utf8();
+            line_start = byte_pos + 1;
             col = 0;
             continue;
         }
@@ -366,6 +381,22 @@ mod tests {
         assert_eq!(&"abc\ndefghij"[lines[0].start..lines[0].end], "abc");
         assert_eq!(&"abc\ndefghij"[lines[1].start..lines[1].end], "defgh");
         assert_eq!(&"abc\ndefghij"[lines[2].start..lines[2].end], "ij");
+    }
+
+    #[test]
+    fn wrap_bare_cr() {
+        let lines = wrap_lines("hello\rworld", 80);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(&"hello\rworld"[lines[0].start..lines[0].end], "hello");
+        assert_eq!(&"hello\rworld"[lines[1].start..lines[1].end], "world");
+    }
+
+    #[test]
+    fn wrap_crlf() {
+        let lines = wrap_lines("hello\r\nworld", 80);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(&"hello\r\nworld"[lines[0].start..lines[0].end], "hello");
+        assert_eq!(&"hello\r\nworld"[lines[1].start..lines[1].end], "world");
     }
 
     #[test]

@@ -157,10 +157,9 @@ mod tests {
         let mut store = ApprovalStore::new();
         let mut map = BTreeMap::new();
         map.insert("tool_name".to_string(), Value::String("bash".to_string()));
-        map.insert(
-            "input_preview".to_string(),
-            Value::String("ls -la".to_string()),
-        );
+        let mut input_map = BTreeMap::new();
+        input_map.insert("command".to_string(), Value::String("ls -la".to_string()));
+        map.insert("tool_input".to_string(), Value::Map(input_map));
 
         // Write request — capture the deferred future but don't await yet
         let deferred = store.write(&path!("request"), Record::parsed(Value::Map(map)));
@@ -227,11 +226,13 @@ mod tests {
         // First request
         let mut map = BTreeMap::new();
         map.insert("tool_name".to_string(), Value::String("bash".to_string()));
+        map.insert("tool_input".to_string(), Value::Map(BTreeMap::new()));
         let first_deferred = store.write(&path!("request"), Record::parsed(Value::Map(map)));
 
         // Second request overwrites; first sender is dropped
         let mut map2 = BTreeMap::new();
         map2.insert("tool_name".to_string(), Value::String("write".to_string()));
+        map2.insert("tool_input".to_string(), Value::Map(BTreeMap::new()));
         let _second_deferred = store.write(&path!("request"), Record::parsed(Value::Map(map2)));
 
         // The first deferred should error (sender dropped)
@@ -246,7 +247,9 @@ mod tests {
 
         let mut map = BTreeMap::new();
         map.insert("tool_name".to_string(), Value::String("bash".to_string()));
-        map.insert("input_preview".to_string(), Value::String("ls".to_string()));
+        let mut input = BTreeMap::new();
+        input.insert("command".to_string(), Value::String("ls".to_string()));
+        map.insert("tool_input".to_string(), Value::Map(input));
         let _deferred = store.write(&path!("request"), Record::parsed(Value::Map(map)));
 
         assert_eq!(store.pending_tool_name(), Some("bash".to_string()));

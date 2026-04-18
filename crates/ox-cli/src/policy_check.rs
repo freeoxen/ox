@@ -81,10 +81,10 @@ impl CliPolicyCheck {
     }
 
     /// Handle the Ask flow: write approval request to broker, block for response.
-    fn handle_ask(&mut self, tool: &str, input_preview: &str) -> PolicyDecision {
+    fn handle_ask(&mut self, tool: &str, input: &serde_json::Value) -> PolicyDecision {
         let req = ox_types::ApprovalRequest {
             tool_name: tool.to_string(),
-            input_preview: input_preview.to_string(),
+            tool_input: input.clone(),
         };
 
         // Signal blocked state to the inbox
@@ -172,11 +172,7 @@ impl PolicyCheck for CliPolicyCheck {
         match self.guard.check(&tool_name, &input) {
             CheckResult::Allow => PolicyDecision::Allow,
             CheckResult::Deny(reason) => PolicyDecision::Deny(reason),
-            CheckResult::Ask {
-                tool,
-                input_preview,
-                ..
-            } => self.handle_ask(&tool, &input_preview),
+            CheckResult::Ask { tool, .. } => self.handle_ask(&tool, &input),
         }
     }
 }

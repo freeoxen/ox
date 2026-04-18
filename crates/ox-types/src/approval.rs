@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApprovalRequest {
     pub tool_name: String,
-    pub input_preview: String,
+    /// Raw tool input as JSON — the rendering layer decides how to present it.
+    pub tool_input: serde_json::Value,
 }
 
 /// The outcome of a tool approval prompt.

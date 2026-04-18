@@ -10,11 +10,21 @@ pub(crate) const EFFECTS: [&str; 2] = ["allow", "deny"];
 pub(crate) const SCOPES: [&str; 3] = ["once", "session", "always"];
 pub(crate) const NETWORKS: [&str; 3] = ["deny", "allow", "localhost"];
 
-/// Decompose a tool call into editable arg strings.
-pub(crate) fn infer_args(tool: &str, preview: &str) -> Vec<String> {
+/// Decompose a tool call's raw input into editable arg strings.
+pub(crate) fn infer_args_from_input(tool: &str, input: &serde_json::Value) -> Vec<String> {
     match tool {
-        "shell" => preview.split_whitespace().map(|s| s.to_string()).collect(),
-        "read_file" | "write_file" | "edit_file" => vec![preview.to_string()],
+        "shell" => {
+            let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
+            cmd.split_whitespace().map(|s| s.to_string()).collect()
+        }
+        "read_file" | "write_file" | "edit_file" => {
+            let path = input
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            vec![path]
+        }
         _ => vec![],
     }
 }
@@ -265,64 +275,107 @@ struct ShortcutGroup {
 pub(crate) fn draw_approval_dialog(
     frame: &mut Frame,
     tool: &str,
-    input_preview: &str,
+    tool_input: &serde_json::Value,
     selected: usize,
+    preview_scroll: usize,
     theme: &Theme,
 ) {
     let area = frame.area();
 
-    // Size the dialog to fit the preview: wider for long commands, up to terminal width.
+    // Build tool-specific preview from structured input.
+    let (header, detail) = build_approval_preview(tool, tool_input);
+
     let prefix = format!("[{tool}] ");
-    let preview_width = prefix.len() + input_preview.len();
+    let header_width = prefix.len() + header.len();
+    let detail_width = detail.iter().map(|l| l.text.len() + 2).max().unwrap_or(0);
+    let content_width = header_width.max(detail_width);
     let min_width = 50u16;
     let max_width = area.width.saturating_sub(4);
-    let dialog_width = (preview_width as u16 + 4).clamp(min_width, max_width);
+    let dialog_width = (content_width as u16 + 4).clamp(min_width, max_width);
+    let inner_width = dialog_width.saturating_sub(2) as usize;
 
-    // Wrap preview text if it exceeds the inner width.
-    let inner_width = dialog_width.saturating_sub(2) as usize; // borders
-    let preview_avail = inner_width.saturating_sub(prefix.len());
-    let wrapped_lines: Vec<&str> = if preview_avail > 0 && input_preview.len() > preview_avail {
-        input_preview
+    // Wrap header if needed.
+    let first_avail = inner_width.saturating_sub(prefix.len());
+    let wrapped_first: Vec<&str> = if first_avail > 0 && header.len() > first_avail {
+        header
             .as_bytes()
-            .chunks(preview_avail)
+            .chunks(first_avail)
             .map(|chunk| std::str::from_utf8(chunk).unwrap_or(""))
             .collect()
     } else {
-        vec![input_preview]
+        vec![&header]
     };
 
-    // 2 (borders) + wrapped preview lines + 1 blank + 6 options + 1 blank + 1 footer
-    let dialog_height = (2 + wrapped_lines.len() as u16 + 9).min(area.height.saturating_sub(4));
+    // Reserve room for chrome: header + blank + 6 options + blank + footer + borders.
+    let chrome_lines = wrapped_first.len() + 11;
+    let max_detail = (area.height as usize).saturating_sub(chrome_lines + 4);
+    let total_detail = detail.len();
+    let scroll = preview_scroll.min(total_detail.saturating_sub(max_detail.max(1)));
+    let shown_end = (scroll + max_detail).min(total_detail);
+    let visible_detail = if max_detail > 0 && !detail.is_empty() {
+        &detail[scroll..shown_end]
+    } else {
+        &[]
+    };
+
+    let dialog_height =
+        (chrome_lines as u16 + visible_detail.len() as u16 + 2).min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(dialog_width)) / 2;
     let y = (area.height.saturating_sub(dialog_height)) / 2;
     let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
 
     frame.render_widget(Clear, dialog_area);
 
+    let mut title_parts = vec![Span::styled(" Permission Required ", theme.approval_title)];
+    if total_detail > max_detail {
+        title_parts.push(Span::styled(
+            format!(
+                " {}/{} ",
+                scroll + 1,
+                total_detail.saturating_sub(max_detail) + 1
+            ),
+            theme.tool_meta,
+        ));
+    }
+
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(theme.approval_border)
-        .title(Span::styled(" Permission Required ", theme.approval_title));
-
+        .title(Line::from(title_parts));
     let inner = block.inner(dialog_area);
     frame.render_widget(block, dialog_area);
 
     let mut lines = Vec::new();
 
-    // First wrapped line includes the [tool] prefix
-    if let Some(first) = wrapped_lines.first() {
+    // Header: [tool] primary_info
+    if let Some(first) = wrapped_first.first() {
         lines.push(Line::from(vec![
             Span::styled(&prefix, theme.approval_tool),
             Span::styled((*first).to_string(), theme.approval_preview),
         ]));
     }
-    // Continuation lines indented to align with the preview text
     let indent = " ".repeat(prefix.len());
-    for continuation in wrapped_lines.iter().skip(1) {
+    for continuation in wrapped_first.iter().skip(1) {
         lines.push(Line::from(vec![
             Span::raw(indent.clone()),
             Span::styled((*continuation).to_string(), theme.approval_preview),
         ]));
+    }
+
+    // Detail lines (scrollable)
+    if !detail.is_empty() {
+        for pl in visible_detail {
+            lines.push(Line::from(Span::styled(
+                format!("  {}", pl.text),
+                pl.style(theme),
+            )));
+        }
+        if shown_end < total_detail {
+            lines.push(Line::from(Span::styled(
+                format!("  ↓ {} more (j/k scroll)", total_detail - shown_end),
+                theme.tool_meta,
+            )));
+        }
     }
 
     lines.push(Line::from(""));
@@ -348,12 +401,162 @@ pub(crate) fn draw_approval_dialog(
 
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "  (c)ustomize rule | Esc deny once",
+        "  (c)ustomize rule | j/k scroll | Esc deny once",
         theme.approval_option,
     )));
 
     let content = Paragraph::new(Text::from(lines));
     frame.render_widget(content, inner);
+}
+
+/// A styled line in the approval preview.
+struct PreviewLine {
+    text: String,
+    kind: PreviewLineKind,
+}
+
+enum PreviewLineKind {
+    Content,
+    DiffAdd,
+    DiffRemove,
+    DiffContext,
+    Info,
+}
+
+impl PreviewLine {
+    fn style(&self, theme: &Theme) -> Style {
+        match self.kind {
+            PreviewLineKind::Content => theme.approval_preview,
+            PreviewLineKind::DiffAdd => theme.approval_allow,
+            PreviewLineKind::DiffRemove => theme.approval_deny,
+            PreviewLineKind::DiffContext => theme.approval_preview,
+            PreviewLineKind::Info => theme.tool_meta,
+        }
+    }
+}
+
+/// Build structured preview from tool input. Returns (header, detail_lines).
+fn build_approval_preview(tool: &str, input: &serde_json::Value) -> (String, Vec<PreviewLine>) {
+    let get_str = |key: &str| -> &str { input.get(key).and_then(|v| v.as_str()).unwrap_or("") };
+
+    match tool {
+        "shell" => (get_str("command").to_string(), Vec::new()),
+        "read_file" => (get_str("path").to_string(), Vec::new()),
+        "write_file" => {
+            let path = get_str("path");
+            let content = get_str("content");
+            let lines: Vec<PreviewLine> = content
+                .lines()
+                .map(|l| PreviewLine {
+                    text: l.to_string(),
+                    kind: PreviewLineKind::Content,
+                })
+                .collect();
+            (path.to_string(), lines)
+        }
+        "edit_file" => {
+            let path = get_str("path");
+            let old = get_str("old_string");
+            let new = get_str("new_string");
+            let diff = compute_unified_diff(old, new);
+            (path.to_string(), diff)
+        }
+        _ => {
+            let s = serde_json::to_string_pretty(input).unwrap_or_default();
+            let lines: Vec<PreviewLine> = s
+                .lines()
+                .map(|l| PreviewLine {
+                    text: l.to_string(),
+                    kind: PreviewLineKind::Content,
+                })
+                .collect();
+            (tool.to_string(), lines)
+        }
+    }
+}
+
+/// Compute a unified diff with context between old and new text.
+fn compute_unified_diff(old: &str, new: &str) -> Vec<PreviewLine> {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+
+    // LCS-based diff
+    let lcs = lcs_table(&old_lines, &new_lines);
+    let mut chunks: Vec<PreviewLine> = Vec::new();
+    let mut i = old_lines.len();
+    let mut j = new_lines.len();
+
+    while i > 0 || j > 0 {
+        if i > 0 && j > 0 && old_lines[i - 1] == new_lines[j - 1] {
+            chunks.push(PreviewLine {
+                text: format!(" {}", old_lines[i - 1]),
+                kind: PreviewLineKind::DiffContext,
+            });
+            i -= 1;
+            j -= 1;
+        } else if j > 0 && (i == 0 || lcs[i][j - 1] >= lcs[i - 1][j]) {
+            chunks.push(PreviewLine {
+                text: format!("+{}", new_lines[j - 1]),
+                kind: PreviewLineKind::DiffAdd,
+            });
+            j -= 1;
+        } else if i > 0 {
+            chunks.push(PreviewLine {
+                text: format!("-{}", old_lines[i - 1]),
+                kind: PreviewLineKind::DiffRemove,
+            });
+            i -= 1;
+        }
+    }
+    chunks.reverse();
+
+    // Trim to 3 lines of context around changes.
+    let is_change: Vec<bool> = chunks
+        .iter()
+        .map(|c| !matches!(c.kind, PreviewLineKind::DiffContext))
+        .collect();
+    let context = 3;
+    let mut show = vec![false; chunks.len()];
+    for (idx, _) in is_change.iter().enumerate().filter(|&(_, &v)| v) {
+        let start = idx.saturating_sub(context);
+        let end = (idx + context + 1).min(chunks.len());
+        for s in &mut show[start..end] {
+            *s = true;
+        }
+    }
+
+    let mut result = Vec::new();
+    let mut last_shown = false;
+    for (idx, chunk) in chunks.into_iter().enumerate() {
+        if show[idx] {
+            result.push(chunk);
+            last_shown = true;
+        } else if last_shown {
+            result.push(PreviewLine {
+                text: "···".to_string(),
+                kind: PreviewLineKind::Info,
+            });
+            last_shown = false;
+        }
+    }
+    result
+}
+
+/// LCS length table for line-level diff.
+fn lcs_table(a: &[&str], b: &[&str]) -> Vec<Vec<usize>> {
+    let m = a.len();
+    let n = b.len();
+    let mut table = vec![vec![0usize; n + 1]; m + 1];
+    for i in 1..=m {
+        for j in 1..=n {
+            if a[i - 1] == b[j - 1] {
+                table[i][j] = table[i - 1][j - 1] + 1;
+            } else {
+                table[i][j] = table[i - 1][j].max(table[i][j - 1]);
+            }
+        }
+    }
+    table
 }
 
 /// Returns `(row, col, url, text)` if a hyperlink should be rendered via OSC 8.

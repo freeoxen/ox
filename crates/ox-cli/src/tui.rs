@@ -201,8 +201,9 @@ pub(crate) fn draw(
         crate::dialogs::draw_approval_dialog(
             frame,
             &ap.tool_name,
-            &ap.input_preview,
+            &ap.tool_input,
             vs.approval_selected,
+            vs.approval_preview_scroll,
             theme,
         );
     }

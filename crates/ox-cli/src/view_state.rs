@@ -53,6 +53,7 @@ pub struct ViewState<'a> {
     // -- App-borrowed (references) ---------------------------------------
     // input_history removed — history reads from ox.db on demand
     pub approval_selected: usize,
+    pub approval_preview_scroll: usize,
     pub pending_customize: &'a Option<CustomizeState>,
     pub key_hints: Vec<ox_types::KeyHint>,
     pub show_shortcuts: bool,
@@ -224,6 +225,7 @@ pub async fn fetch_view_state<'a>(
         provider,
         pricing_overrides,
         approval_selected: dialog.approval_selected,
+        approval_preview_scroll: dialog.approval_preview_scroll,
         pending_customize: &dialog.pending_customize,
         key_hints,
         show_shortcuts: dialog.show_shortcuts,

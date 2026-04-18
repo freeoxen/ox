@@ -317,6 +317,9 @@ fn build_query_context(tool_name: &str, input: &serde_json::Value) -> QueryConte
 }
 
 /// Format a human-readable preview of a tool call.
+///
+/// Short single-line summary for log entries. The full rendering is
+/// handled by `draw_approval_dialog` from structured `tool_input`.
 fn format_input_preview(tool_name: &str, input: &serde_json::Value) -> String {
     match tool_name {
         "shell" => input

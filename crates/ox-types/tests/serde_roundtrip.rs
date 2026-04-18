@@ -335,11 +335,11 @@ fn token_usage_default_and_roundtrip() {
 #[test]
 fn approval_request_roundtrip() {
     let req = ApprovalRequest {
-        tool_name: "file_write".to_string(),
-        input_preview: "Writing to /tmp/test.txt".to_string(),
+        tool_name: "shell".to_string(),
+        tool_input: serde_json::json!({"command": "ls -la"}),
     };
     let json = serde_json::to_string(&req).unwrap();
     let back: ApprovalRequest = serde_json::from_str(&json).unwrap();
-    assert_eq!(back.tool_name, "file_write");
-    assert_eq!(back.input_preview, "Writing to /tmp/test.txt");
+    assert_eq!(back.tool_name, "shell");
+    assert_eq!(back.tool_input["command"], "ls -la");
 }

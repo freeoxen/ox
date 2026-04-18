@@ -270,8 +270,11 @@ impl AsyncWriter for ThreadRegistry {
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();
-                        let input_preview = json
-                            .get("input_preview")
+                        // Extract a display preview from the structured tool_input
+                        let tool_input = json.get("tool_input").cloned().unwrap_or_default();
+                        let input_preview = tool_input
+                            .get("path")
+                            .or_else(|| tool_input.get("command"))
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();

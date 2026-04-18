@@ -74,6 +74,7 @@ impl ScrollMomentum {
 /// Dialog-local state, owned by the event loop (not App, not broker).
 pub(crate) struct DialogState {
     pub approval_selected: usize,
+    pub approval_preview_scroll: usize,
     pub pending_customize: Option<CustomizeState>,
     pub show_shortcuts: bool,
     pub show_usage: bool,
@@ -105,6 +106,7 @@ pub async fn run_async(
 
     let mut dialog = DialogState {
         approval_selected: 0,
+        approval_preview_scroll: 0,
         pending_customize: None,
         show_shortcuts: false,
         show_usage: false,
@@ -246,7 +248,16 @@ pub async fn run_async(
             approval_preview_len = vs
                 .approval_pending
                 .as_ref()
-                .map(|ap| ap.input_preview.len())
+                .map(|ap| {
+                    // Use the primary field (path or command) for width calculation
+                    let input = &ap.tool_input;
+                    input
+                        .get("path")
+                        .or_else(|| input.get("command"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .len()
+                })
                 .unwrap_or(0);
             approval_tool_len = vs
                 .approval_pending
@@ -565,7 +576,10 @@ pub async fn run_async(
                         }
                     }
                 }
-                Event::Paste(text) => {
+                Event::Paste(ref text) => {
+                    // Normalize line endings: \r\n → \n, bare \r → \n.
+                    // Some clipboard sources (macOS) may use \r or \r\n.
+                    let text = text.replace("\r\n", "\n").replace('\r', "\n");
                     if matches!(&ui.screen, ScreenSnapshot::Settings(_)) {
                         // Paste into the focused settings field
                         if let Some(ref mut editing) = settings_shell.state.editing {
