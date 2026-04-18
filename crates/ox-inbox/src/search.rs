@@ -211,6 +211,33 @@ pub fn search_thread_ids_by_content(conn: &Connection, query: &str, limit: usize
     }
 }
 
+/// FTS5 search returning matching thread_ids with their best snippet.
+/// Each entry is (thread_id, snippet). Runs separately from LIKE queries.
+pub fn search_thread_ids_with_snippets(
+    conn: &Connection,
+    query: &str,
+    limit: usize,
+) -> Vec<(String, String)> {
+    let fts_query = sanitize_fts_query(query);
+    let mut stmt = match conn.prepare(
+        "SELECT m.thread_id, snippet(messages_fts, 0, '>>>', '<<<', '...', 32) as snip \
+         FROM messages_fts f JOIN messages m ON f.rowid = m.id \
+         WHERE messages_fts MATCH ?1 \
+         GROUP BY m.thread_id \
+         ORDER BY MIN(rank) \
+         LIMIT ?2",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    match stmt.query_map(rusqlite::params![fts_query, limit as i64], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    }) {
+        Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
 /// Recent user inputs ordered by newest first.
 pub fn recent_inputs(conn: &Connection, limit: usize) -> Result<Vec<Value>, String> {
     let mut stmt = conn

@@ -5,8 +5,10 @@
 //! This decouples rendering from mutable App access and broker writes.
 
 use ox_broker::ClientHandle;
-use ox_types::{ApprovalRequest, ScreenSnapshot, UiSnapshot};
-use structfs_core_store::{Value, path};
+use ox_types::{
+    ApprovalRequest, InboxCommand, ScreenSnapshot, SearchSnapshot, UiCommand, UiSnapshot,
+};
+use structfs_core_store::{Record, Value, path};
 
 use crate::app::App;
 use crate::types::{ChatMessage, CustomizeState};
@@ -93,11 +95,16 @@ pub async fn fetch_view_state<'a>(
     let mut history_full = std::collections::HashSet::new();
 
     match &ui.screen {
-        ScreenSnapshot::Inbox(_) => {
-            // Read inbox threads
-            if let Ok(Some(record)) = client.read(&path!("inbox/threads")).await {
-                if let Some(val) = record.as_value() {
-                    inbox_threads = parse_inbox_threads(val);
+        ScreenSnapshot::Inbox(snap) => {
+            if snap.search.active {
+                // Search is active — write query, read paginated results
+                inbox_threads = fetch_search_results(client, &snap.search).await;
+            } else {
+                // No search — read all inbox threads
+                if let Ok(Some(record)) = client.read(&path!("inbox/threads")).await {
+                    if let Some(val) = record.as_value() {
+                        inbox_threads = parse_inbox_threads(val);
+                    }
                 }
             }
         }
@@ -433,4 +440,80 @@ async fn read_key_hints(client: &ClientHandle, mode: &str, screen: &str) -> Vec<
         }
     }
     result
+}
+
+/// Execute search and read paginated results through the broker.
+///
+/// Writes a search query document to `inbox/search`, gets a handle path back,
+/// reads the first page of results through that handle using the StructFS
+/// pagination protocol.
+async fn fetch_search_results(client: &ClientHandle, search: &SearchSnapshot) -> Vec<InboxThread> {
+    // Build combined query from chips + live query
+    let mut terms: Vec<String> = search.chips.clone();
+    let live = search.live_query.trim().to_string();
+    if !live.is_empty() {
+        terms.push(live);
+    }
+
+    // Write search query document
+    let query_val = structfs_serde_store::json_to_value(serde_json::json!({
+        "terms": terms,
+        "scope": "threads",
+    }));
+    let handle_path = match client
+        .write(
+            &structfs_core_store::Path::parse("inbox/search").unwrap(),
+            Record::parsed(query_val),
+        )
+        .await
+    {
+        Ok(p) => p,
+        Err(_) => return Vec::new(),
+    };
+
+    // Store the handle back in UiStore for future reference
+    let _ = client
+        .write_typed(
+            &path!("ui"),
+            &UiCommand::Inbox(InboxCommand::SetSearchResultHandle {
+                handle: format!("inbox/{handle_path}"),
+            }),
+        )
+        .await;
+
+    // Read first page — use a generous limit for the inbox view
+    let page_path = structfs_core_store::Path::parse(&format!("inbox/{handle_path}/limit/100"))
+        .unwrap_or_else(|_| path!("inbox/threads"));
+
+    match client.read(&page_path).await {
+        Ok(Some(record)) => {
+            if let Some(val) = record.as_value() {
+                parse_search_page(val)
+            } else {
+                Vec::new()
+            }
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Parse a StructFS Page response into InboxThreads.
+///
+/// Extracts items from the Page envelope. Falls back to parsing as a plain
+/// array for backward compatibility.
+fn parse_search_page(value: &Value) -> Vec<InboxThread> {
+    match value {
+        Value::Map(map) => {
+            // Page envelope: extract items array
+            match map.get("items") {
+                Some(items_val) => parse_inbox_threads(items_val),
+                None => Vec::new(),
+            }
+        }
+        Value::Array(_) => {
+            // Legacy: plain array of threads
+            parse_inbox_threads(value)
+        }
+        _ => Vec::new(),
+    }
 }

@@ -136,14 +136,15 @@ impl App {
     }
 
     /// Read the Nth most recent input from ox.db via broker (1-indexed).
+    ///
+    /// Uses `block_in_place` to safely block within an async runtime context.
     fn read_history_at(&self, offset: usize) -> Option<String> {
         use structfs_core_store::Value;
         let path =
             structfs_core_store::Path::parse(&format!("inbox/inputs/recent/{offset}")).ok()?;
-        let record = self
-            .rt_handle
-            .block_on(self.broker_client.read(&path))
-            .ok()??;
+        let record =
+            tokio::task::block_in_place(|| self.rt_handle.block_on(self.broker_client.read(&path)))
+                .ok()??;
         let arr = match record.as_value() {
             Some(Value::Array(a)) => a,
             _ => return None,
@@ -158,6 +159,8 @@ impl App {
     }
 
     /// Update a thread's state via broker.
+    ///
+    /// Uses `block_in_place` to safely block within an async runtime context.
     pub fn update_thread_state(&self, thread_id: &str, state: ox_types::ThreadState) {
         let tid = match ox_kernel::PathComponent::try_new(thread_id) {
             Ok(c) => c,
@@ -174,12 +177,13 @@ impl App {
             updated_at: None,
         };
         let val = structfs_serde_store::to_value(&update).unwrap();
-        self.rt_handle
-            .block_on(
+        tokio::task::block_in_place(|| {
+            self.rt_handle.block_on(
                 self.broker_client
                     .write(&update_path, structfs_core_store::Record::parsed(val)),
             )
-            .ok();
+        })
+        .ok();
     }
 }
 

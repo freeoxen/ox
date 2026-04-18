@@ -1,4 +1,5 @@
 use crate::model::{InboxState, TaskInfo, ThreadMetadata, ThreadState};
+use crate::pagination;
 use rusqlite::Connection;
 use std::sync::Mutex;
 use structfs_core_store::{Error as StoreError, Path, Record, Value};
@@ -9,7 +10,7 @@ fn err(op: &'static str, msg: impl std::fmt::Display) -> StoreError {
 
 pub fn read_dispatch(
     db: &Mutex<Connection>,
-    last_search_result: &Option<(String, Vec<structfs_core_store::Value>)>,
+    last_search_result: &Option<crate::SearchCache>,
     from: &Path,
 ) -> Result<Option<Record>, StoreError> {
     let segments: Vec<&String> = from.iter().collect();
@@ -27,28 +28,27 @@ pub fn read_dispatch(
         [root, id, sub] if root.as_str() == "threads" && sub.as_str() == "tasks" => {
             list_tasks(db, id)
         }
-        // Search result handle: search/results/{id}
-        [a, b, id] if a.as_str() == "search" && b.as_str() == "results" => match last_search_result
+        // --- Paginated search results (StructFS pagination protocol) ---
+        // search/results/{handle}
+        [a, b, id] if a.as_str() == "search" && b.as_str() == "results" => {
+            paginate_search_results(last_search_result, id, None, 20)
+        }
+        // search/results/{handle}/limit/{n}
+        [a, b, id, c, lim]
+            if a.as_str() == "search" && b.as_str() == "results" && c.as_str() == "limit" =>
         {
-            Some((handle, results)) if handle == id.as_str() => {
-                Ok(Some(Record::parsed(Value::Array(results.clone()))))
-            }
-            _ => Ok(None),
-        },
-        // Paginated: search/results/{id}/{offset}/{limit}
-        [a, b, id, off, lim] if a.as_str() == "search" && b.as_str() == "results" => {
-            match last_search_result {
-                Some((handle, results)) if handle == id.as_str() => {
-                    let offset: usize = off.parse().unwrap_or(0);
-                    let limit: usize = lim.parse().unwrap_or(20);
-                    let start = offset.min(results.len());
-                    let end = (start + limit).min(results.len());
-                    Ok(Some(Record::parsed(Value::Array(
-                        results[start..end].to_vec(),
-                    ))))
-                }
-                _ => Ok(None),
-            }
+            let limit: usize = lim.parse().unwrap_or(20);
+            paginate_search_results(last_search_result, id, None, limit)
+        }
+        // search/results/{handle}/after/{cursor}/limit/{n}
+        [a, b, id, c, cursor, d, lim]
+            if a.as_str() == "search"
+                && b.as_str() == "results"
+                && c.as_str() == "after"
+                && d.as_str() == "limit" =>
+        {
+            let limit: usize = lim.parse().unwrap_or(20);
+            paginate_search_results(last_search_result, id, Some(cursor.as_str()), limit)
         }
         // Recent inputs: inputs/recent or inputs/recent/{limit}
         [a, b] if a.as_str() == "inputs" && b.as_str() == "recent" => {
@@ -61,6 +61,24 @@ pub fn read_dispatch(
             let conn = db.lock().map_err(|e| err("read", e))?;
             let results = crate::search::recent_inputs(&conn, limit).map_err(|e| err("read", e))?;
             Ok(Some(Record::parsed(Value::Array(results))))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Paginate a cached search result set using StructFS cursor-based pagination.
+fn paginate_search_results(
+    cache: &Option<crate::SearchCache>,
+    handle: &str,
+    after_cursor: Option<&str>,
+    limit: usize,
+) -> Result<Option<Record>, StoreError> {
+    match cache {
+        Some(cached) if cached.handle == handle => {
+            let base_path = format!("search/results/{handle}");
+            // Use "id" as cursor field for threads, "id" for inputs too
+            let page = pagination::paginate(&cached.items, &base_path, "id", after_cursor, limit);
+            Ok(Some(Record::parsed(page.to_value())))
         }
         _ => Ok(None),
     }
@@ -228,6 +246,112 @@ fn threads_by_state(db: &Mutex<Connection>, state: &str) -> Result<Option<Record
         &[&state],
     )?;
     threads_to_record(threads)
+}
+
+/// Search threads by title, label, and content, returning Values with match metadata.
+///
+/// Called from InboxStore::execute_search for the "threads" scope.
+pub(crate) fn search_threads_to_values(
+    conn: &Connection,
+    query: &str,
+) -> Result<Vec<Value>, StoreError> {
+    if query.is_empty() {
+        // Empty query returns all inbox threads (unfiltered)
+        let threads = query_threads(conn, "inbox_state = 'inbox'", &[])?;
+        return Ok(threads.into_iter().map(|t| t.to_value()).collect());
+    }
+
+    let pattern = format!("%{}%", escape_like(query));
+
+    // FTS5 content search — returns thread_ids with snippets
+    let content_matches = crate::search::search_thread_ids_with_snippets(conn, query, 50);
+    let content_ids: std::collections::HashSet<String> =
+        content_matches.iter().map(|(id, _)| id.clone()).collect();
+    let snippet_map: std::collections::HashMap<String, String> =
+        content_matches.into_iter().collect();
+
+    // Title/label LIKE search
+    let title_match_ids: std::collections::HashSet<String> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id FROM threads WHERE inbox_state = 'inbox' \
+                 AND title LIKE ?1 ESCAPE '\\'",
+            )
+            .map_err(|e| err("read", e))?;
+        stmt.query_map([&pattern as &dyn rusqlite::types::ToSql], |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(|e| err("read", e))?
+        .filter_map(|r| r.ok())
+        .collect()
+    };
+
+    let label_match_ids: std::collections::HashSet<String> = {
+        let mut stmt = conn
+            .prepare("SELECT DISTINCT thread_id FROM labels WHERE label LIKE ?1 ESCAPE '\\'")
+            .map_err(|e| err("read", e))?;
+        stmt.query_map([&pattern as &dyn rusqlite::types::ToSql], |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(|e| err("read", e))?
+        .filter_map(|r| r.ok())
+        .collect()
+    };
+
+    // Merge all matching thread IDs
+    let mut all_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    all_ids.extend(content_ids.iter().cloned());
+    all_ids.extend(title_match_ids.iter().cloned());
+    all_ids.extend(label_match_ids.iter().cloned());
+
+    if all_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Fetch full thread metadata for matching IDs
+    let placeholders: String = all_ids
+        .iter()
+        .enumerate()
+        .map(|(i, _)| format!("?{}", i + 1))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let where_clause = format!("inbox_state = 'inbox' AND id IN ({placeholders})");
+    let id_vec: Vec<String> = all_ids.into_iter().collect();
+    let params: Vec<&dyn rusqlite::types::ToSql> = id_vec
+        .iter()
+        .map(|s| s as &dyn rusqlite::types::ToSql)
+        .collect();
+    let threads = query_threads(conn, &where_clause, &params)?;
+
+    // Annotate with match_source and snippet
+    let values: Vec<Value> = threads
+        .into_iter()
+        .map(|t| {
+            let mut val = t.to_value();
+            if let Value::Map(ref mut map) = val {
+                let in_title = title_match_ids.contains(&t.id);
+                let in_label = label_match_ids.contains(&t.id);
+                let in_content = content_ids.contains(&t.id);
+                let source = match (in_title, in_label, in_content) {
+                    (true, _, true) | (_, true, true) => "multiple",
+                    (true, _, _) => "title",
+                    (_, true, _) => "label",
+                    (_, _, true) => "content",
+                    _ => "title",
+                };
+                map.insert(
+                    "match_source".to_string(),
+                    Value::String(source.to_string()),
+                );
+                if let Some(snippet) = snippet_map.get(&t.id) {
+                    map.insert("snippet".to_string(), Value::String(snippet.clone()));
+                }
+            }
+            val
+        })
+        .collect();
+
+    Ok(values)
 }
 
 fn escape_like(s: &str) -> String {

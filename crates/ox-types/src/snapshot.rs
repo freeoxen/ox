@@ -95,4 +95,8 @@ pub struct SearchSnapshot {
     pub chips: Vec<String>,
     pub live_query: String,
     pub active: bool,
+    /// Path to the materialized search result set (e.g. "inbox/search/results/0001").
+    /// Present when a search query has been executed and results are available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result_handle: Option<String>,
 }

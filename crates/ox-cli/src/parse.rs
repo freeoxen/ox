@@ -184,40 +184,6 @@ pub fn parse_inbox_threads(value: &Value) -> Vec<InboxThread> {
 }
 
 // ---------------------------------------------------------------------------
-// Standalone search filter
-// ---------------------------------------------------------------------------
-
-/// Check whether a thread matches all search chips and the live query.
-#[allow(dead_code)]
-pub fn search_matches(
-    chips: &[String],
-    live_query: &str,
-    title: &str,
-    labels: &[String],
-    state: &str,
-) -> bool {
-    let hay = format!(
-        "{} {} {}",
-        title.to_lowercase(),
-        labels
-            .iter()
-            .map(|l| l.to_lowercase())
-            .collect::<Vec<_>>()
-            .join(" "),
-        state.to_lowercase()
-    );
-    for chip in chips {
-        if !hay.contains(&chip.to_lowercase()) {
-            return false;
-        }
-    }
-    if !live_query.is_empty() && !hay.contains(&live_query.to_lowercase()) {
-        return false;
-    }
-    true
-}
-
-// ---------------------------------------------------------------------------
 // HistoryEntry — parsed history entries with duplicate detection
 // (Superseded by LogDisplayEntry for production use; retained for tests)
 // ---------------------------------------------------------------------------

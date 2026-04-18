@@ -3,6 +3,7 @@ pub use file_backing::JsonFileBacking;
 
 pub mod ledger;
 pub mod model;
+pub mod pagination;
 mod reader;
 pub mod reconcile;
 mod schema;
@@ -22,9 +23,19 @@ use structfs_core_store::Value;
 pub struct InboxStore {
     db: Mutex<Connection>,
     threads_dir: PathBuf,
-    /// Single-slot cache for the most recent search result. Evicts on each new query.
-    last_search_result: Option<(String, Vec<Value>)>,
+    /// Single-slot cache for the most recent search result set.
+    /// Key is (scope, terms_joined) for dedup; value is (handle, items).
+    last_search_result: Option<SearchCache>,
     search_counter: u64,
+}
+
+struct SearchCache {
+    /// Cache key: scope + terms concatenated for dedup.
+    cache_key: String,
+    /// Handle ID (e.g. "0001").
+    handle: String,
+    /// Materialized result set.
+    items: Vec<Value>,
 }
 
 impl InboxStore {
@@ -61,7 +72,7 @@ impl InboxStore {
             }
         }
 
-        Ok(Self {
+        Ok(InboxStore {
             db: Mutex::new(conn),
             threads_dir,
             last_search_result: None,
@@ -78,6 +89,100 @@ impl InboxStore {
 impl Reader for InboxStore {
     fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
         reader::read_dispatch(&self.db, &self.last_search_result, from)
+    }
+}
+
+impl InboxStore {
+    /// Execute a search query and cache the result set.
+    ///
+    /// If `legacy_scope` is provided, the query uses the old format
+    /// (`{query, limit}` with scope from path). Otherwise it uses the
+    /// unified format (`{terms, scope}`).
+    fn execute_search(
+        &mut self,
+        data: Record,
+        legacy_scope: Option<&str>,
+    ) -> Result<Path, StoreError> {
+        let map = match data.as_value() {
+            Some(Value::Map(m)) => m,
+            _ => {
+                return Err(StoreError::store(
+                    "InboxStore",
+                    "write",
+                    "search: expected map",
+                ));
+            }
+        };
+
+        // Parse query document — unified or legacy format
+        let (scope, terms) = if let Some(legacy) = legacy_scope {
+            let query = match map.get("query") {
+                Some(Value::String(s)) => s.clone(),
+                _ => {
+                    return Err(StoreError::store(
+                        "InboxStore",
+                        "write",
+                        "search: missing query",
+                    ));
+                }
+            };
+            (legacy.to_string(), vec![query])
+        } else {
+            let scope = match map.get("scope") {
+                Some(Value::String(s)) => s.clone(),
+                _ => "threads".to_string(),
+            };
+            let terms = match map.get("terms") {
+                Some(Value::Array(arr)) => arr
+                    .iter()
+                    .filter_map(|v| match v {
+                        Value::String(s) => Some(s.clone()),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            (scope, terms)
+        };
+
+        let query = terms.join(" ");
+        let cache_key = format!("{scope}:{query}");
+
+        // Dedup: if same query, return existing handle
+        if let Some(ref cached) = self.last_search_result {
+            if cached.cache_key == cache_key {
+                return Ok(Path::parse(&format!("search/results/{}", cached.handle)).unwrap());
+            }
+        }
+
+        let results = {
+            let conn = self
+                .db
+                .lock()
+                .map_err(|e| StoreError::store("InboxStore", "write", e.to_string()))?;
+            match scope.as_str() {
+                "inputs" => if query.is_empty() {
+                    search::recent_inputs(&conn, 50)
+                } else {
+                    search::search_inputs(&conn, &query, 50)
+                }
+                .map_err(|e| StoreError::store("InboxStore", "write", e))?,
+                "messages" => search::search_messages(&conn, &query, 50)
+                    .map_err(|e| StoreError::store("InboxStore", "write", e))?,
+                _ => {
+                    // "threads" scope: search thread metadata with match info
+                    reader::search_threads_to_values(&conn, &query)?
+                }
+            }
+        };
+
+        let handle = self.next_search_handle();
+        self.last_search_result = Some(SearchCache {
+            cache_key,
+            handle: handle.clone(),
+            items: results,
+        });
+        Ok(Path::parse(&format!("search/results/{handle}")).unwrap())
     }
 }
 
@@ -125,51 +230,17 @@ impl Writer for InboxStore {
                     .map_err(|e| StoreError::store("InboxStore", "write", e))?;
                 return Ok(to.clone());
             }
-            // Execute a search query → return handle
+            // Unified search: write query document, get handle back
+            // Accepts: search (unified), search/inputs (legacy), search/messages (legacy)
+            [a] if a.as_str() == "search" => {
+                return self.execute_search(data, None);
+            }
             [a, b]
                 if a.as_str() == "search"
                     && (b.as_str() == "inputs" || b.as_str() == "messages") =>
             {
-                let map = match data.as_value() {
-                    Some(Value::Map(m)) => m,
-                    _ => {
-                        return Err(StoreError::store(
-                            "InboxStore",
-                            "write",
-                            "search: expected map with query",
-                        ));
-                    }
-                };
-                let query = match map.get("query") {
-                    Some(Value::String(s)) => s.clone(),
-                    _ => {
-                        return Err(StoreError::store(
-                            "InboxStore",
-                            "write",
-                            "search: missing query",
-                        ));
-                    }
-                };
-                let limit = match map.get("limit") {
-                    Some(Value::Integer(n)) => *n as usize,
-                    _ => 20,
-                };
-                let results = {
-                    let conn = self
-                        .db
-                        .lock()
-                        .map_err(|e| StoreError::store("InboxStore", "write", e.to_string()))?;
-                    if b.as_str() == "inputs" {
-                        search::search_inputs(&conn, &query, limit)
-                    } else {
-                        search::search_messages(&conn, &query, limit)
-                    }
-                    .map_err(|e| StoreError::store("InboxStore", "write", e))?
-                };
-
-                let handle = self.next_search_handle();
-                self.last_search_result = Some((handle.clone(), results));
-                return Ok(Path::parse(&format!("search/results/{handle}")).unwrap());
+                // Legacy path: translate to unified format
+                return self.execute_search(data, Some(b.as_str()));
             }
             // Trigger ledger indexing for a thread
             [a, thread_id] if a.as_str() == "index" => {

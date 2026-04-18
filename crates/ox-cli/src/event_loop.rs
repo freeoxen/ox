@@ -364,9 +364,7 @@ pub async fn run_async(
                     if dialog.history_search.is_some() {
                         handle_history_search_key(
                             &mut dialog,
-                            app,
                             client,
-                            &ui,
                             &mut thread,
                             key.modifiers,
                             key.code,
@@ -700,7 +698,7 @@ async fn dispatch_key(
             Some(InsertContext::Compose) | Some(InsertContext::Reply)
         ) {
             // Load recent inputs from ox.db for initial display
-            let recent = load_recent_inputs(app, 50);
+            let recent = load_recent_inputs(client).await;
             dialog.history_search = Some(HistorySearchState {
                 query: String::new(),
                 results: recent,
@@ -879,9 +877,7 @@ async fn dispatch_search_edit(
 
 async fn handle_history_search_key(
     dialog: &mut DialogState,
-    app: &mut App,
-    _client: &ox_broker::ClientHandle,
-    _ui: &UiSnapshot,
+    client: &ox_broker::ClientHandle,
     thread: &mut ThreadShell,
     modifiers: KeyModifiers,
     code: KeyCode,
@@ -912,23 +908,23 @@ async fn handle_history_search_key(
         // Backspace → delete last char from query
         (_, KeyCode::Backspace) => {
             state.query.pop();
-            refresh_search_results(state, app);
+            refresh_search_results(state, client).await;
         }
         // Printable char → append to query, re-search
         (_, KeyCode::Char(c)) if !modifiers.contains(KeyModifiers::CONTROL) => {
             state.query.push(c);
-            refresh_search_results(state, app);
+            refresh_search_results(state, client).await;
         }
         _ => {}
     }
 }
 
 /// Re-query the search database based on the current query string.
-fn refresh_search_results(state: &mut HistorySearchState, app: &mut App) {
+async fn refresh_search_results(state: &mut HistorySearchState, client: &ox_broker::ClientHandle) {
     state.results = if state.query.is_empty() {
-        load_recent_inputs(app, 50)
+        load_recent_inputs(client).await
     } else {
-        search_inputs_fts(app, &state.query, 50)
+        search_inputs_fts(client, &state.query).await
     };
     if state.results.is_empty() {
         state.selected = 0;
@@ -938,46 +934,66 @@ fn refresh_search_results(state: &mut HistorySearchState, app: &mut App) {
 }
 
 /// Load N most recent inputs from ox.db via broker.
-fn load_recent_inputs(app: &App, limit: usize) -> Vec<String> {
-    use structfs_core_store::Value;
-    let path = structfs_core_store::Path::parse(&format!("inbox/inputs/recent/{limit}")).unwrap();
-    match app.rt_handle.block_on(app.broker_client.read(&path)) {
-        Ok(Some(record)) => match record.as_value() {
-            Some(Value::Array(arr)) => arr
-                .iter()
-                .filter_map(|v| match v {
-                    Value::Map(m) => match m.get("text") {
-                        Some(Value::String(s)) => Some(s.clone()),
-                        _ => None,
-                    },
-                    _ => None,
-                })
-                .collect(),
-            _ => Vec::new(),
-        },
-        _ => Vec::new(),
-    }
+///
+/// Uses the unified search path with an empty terms list and "inputs" scope.
+async fn load_recent_inputs(client: &ox_broker::ClientHandle) -> Vec<String> {
+    let query_val = structfs_serde_store::json_to_value(serde_json::json!({
+        "terms": [],
+        "scope": "inputs",
+    }));
+    search_inputs_via_broker(client, query_val).await
 }
 
-/// FTS5 search over inputs via broker write-then-read-handle pattern.
-fn search_inputs_fts(app: &App, query: &str, limit: usize) -> Vec<String> {
-    use structfs_core_store::Value;
+/// FTS5 search over inputs via unified search path.
+async fn search_inputs_fts(client: &ox_broker::ClientHandle, query: &str) -> Vec<String> {
     let query_val = structfs_serde_store::json_to_value(serde_json::json!({
-        "query": query,
-        "limit": limit,
+        "terms": [query],
+        "scope": "inputs",
     }));
-    let handle = match app.rt_handle.block_on(app.broker_client.write(
-        &structfs_core_store::Path::parse("inbox/search/inputs").unwrap(),
-        structfs_core_store::Record::parsed(query_val),
-    )) {
+    search_inputs_via_broker(client, query_val).await
+}
+
+/// Write a search query and read the first page of input results.
+async fn search_inputs_via_broker(
+    client: &ox_broker::ClientHandle,
+    query_val: structfs_core_store::Value,
+) -> Vec<String> {
+    // Static path — safe to unwrap
+    let search_path = structfs_core_store::Path::parse("inbox/search").unwrap();
+    let handle = match client
+        .write(&search_path, structfs_core_store::Record::parsed(query_val))
+        .await
+    {
         Ok(h) => h,
         Err(_) => return Vec::new(),
     };
-    // Prefix handle with "inbox/" since the broker strips it on write but returns relative
-    let full_handle = structfs_core_store::Path::parse(&format!("inbox/{handle}")).unwrap();
-    match app.rt_handle.block_on(app.broker_client.read(&full_handle)) {
-        Ok(Some(record)) => match record.as_value() {
-            Some(Value::Array(arr)) => arr
+    // handle is a Path from InboxStore; join with inbox prefix for broker routing
+    let page_path = match structfs_core_store::Path::parse(&format!("inbox/{handle}/limit/50")) {
+        Ok(p) => p,
+        Err(_) => return Vec::new(),
+    };
+    extract_input_texts_from_page(client, &page_path).await
+}
+
+/// Read a paginated search result page and extract text fields from items.
+async fn extract_input_texts_from_page(
+    client: &ox_broker::ClientHandle,
+    page_path: &structfs_core_store::Path,
+) -> Vec<String> {
+    use structfs_core_store::Value;
+    match client.read(page_path).await {
+        Ok(Some(record)) => {
+            let items = match record.as_value() {
+                // Page envelope
+                Some(Value::Map(map)) => match map.get("items") {
+                    Some(Value::Array(arr)) => arr.clone(),
+                    _ => return Vec::new(),
+                },
+                // Legacy: plain array
+                Some(Value::Array(arr)) => arr.clone(),
+                _ => return Vec::new(),
+            };
+            items
                 .iter()
                 .filter_map(|v| match v {
                     Value::Map(m) => match m.get("text") {
@@ -986,9 +1002,8 @@ fn search_inputs_fts(app: &App, query: &str, limit: usize) -> Vec<String> {
                     },
                     _ => None,
                 })
-                .collect(),
-            _ => Vec::new(),
-        },
+                .collect()
+        }
         _ => Vec::new(),
     }
 }

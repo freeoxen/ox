@@ -73,11 +73,18 @@ struct InboxState {
     editor: Option<EditorState>,
     search_chips: Vec<String>,
     search_live_query: String,
+    /// Path to the materialized search result set.
+    search_result_handle: Option<String>,
 }
 
 impl InboxState {
     fn search_active(&self) -> bool {
         !self.search_chips.is_empty() || !self.search_live_query.is_empty()
+    }
+
+    /// Invalidate the cached search result handle (query changed).
+    fn invalidate_search(&mut self) {
+        self.search_result_handle = None;
     }
 }
 
@@ -236,6 +243,7 @@ impl UiStore {
                     chips: s.search_chips.clone(),
                     live_query: s.search_live_query.clone(),
                     active: s.search_active(),
+                    result_handle: s.search_result_handle.clone(),
                 },
             }),
             ActiveScreen::Thread(s) => ScreenSnapshot::Thread(ThreadSnapshot {
@@ -540,16 +548,19 @@ impl UiStore {
             InboxCommand::SearchInsertChar { char: ch } => {
                 let s = self.inbox_state()?;
                 s.search_live_query.push(ch);
+                s.invalidate_search();
                 Ok(path!("search_live_query"))
             }
             InboxCommand::SearchDeleteChar => {
                 let s = self.inbox_state()?;
                 s.search_live_query.pop();
+                s.invalidate_search();
                 Ok(path!("search_live_query"))
             }
             InboxCommand::SearchClear => {
                 let s = self.inbox_state()?;
                 s.search_live_query.clear();
+                s.invalidate_search();
                 Ok(path!("search_live_query"))
             }
             InboxCommand::SearchSaveChip => {
@@ -559,6 +570,7 @@ impl UiStore {
                     s.search_chips.push(trimmed);
                 }
                 s.search_live_query.clear();
+                s.invalidate_search();
                 Ok(path!("search_chips"))
             }
             InboxCommand::SearchDismissChip { index } => {
@@ -566,7 +578,13 @@ impl UiStore {
                 if index < s.search_chips.len() {
                     s.search_chips.remove(index);
                 }
+                s.invalidate_search();
                 Ok(path!("search_chips"))
+            }
+            InboxCommand::SetSearchResultHandle { handle } => {
+                let s = self.inbox_state()?;
+                s.search_result_handle = Some(handle);
+                Ok(path!("search_result_handle"))
             }
             InboxCommand::Compose => {
                 let s = self.inbox_state()?;

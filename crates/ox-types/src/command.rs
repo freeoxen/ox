@@ -43,6 +43,7 @@ pub enum InboxCommand {
     SearchClear,
     SearchSaveChip,
     SearchDismissChip { index: usize },
+    SetSearchResultHandle { handle: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

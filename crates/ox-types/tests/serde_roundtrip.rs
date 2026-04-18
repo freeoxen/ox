@@ -258,6 +258,7 @@ fn ui_snapshot_inbox_with_search_roundtrip() {
                 chips: vec!["tag:urgent".to_string()],
                 live_query: "foo".to_string(),
                 active: true,
+                result_handle: None,
             },
         }),
         pending_action: Some(PendingAction::OpenSelected),
