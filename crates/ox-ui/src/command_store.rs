@@ -310,10 +310,7 @@ mod tests {
     fn exec_bare_command_dispatches_to_target() {
         let (mut store, log) = test_store();
         store
-            .write(
-                &path!("exec"),
-                Record::parsed(Value::String("quit".into())),
-            )
+            .write(&path!("exec"), Record::parsed(Value::String("quit".into())))
             .unwrap();
         let log = log.lock().unwrap();
         assert_eq!(log.len(), 1);
@@ -369,10 +366,7 @@ mod tests {
     #[test]
     fn exec_unknown_command_errors() {
         let (mut store, _log) = test_store();
-        let result = store.write(
-            &path!("exec"),
-            Record::parsed(Value::String("nope".into())),
-        );
+        let result = store.write(&path!("exec"), Record::parsed(Value::String("nope".into())));
         assert!(result.is_err());
     }
 
@@ -380,8 +374,7 @@ mod tests {
     fn exec_missing_required_param_errors() {
         let (mut store, _log) = test_store();
         // open requires thread_id — plain `open` has no positional, no kv
-        let result =
-            store.write(&path!("exec"), Record::parsed(Value::String("open".into())));
+        let result = store.write(&path!("exec"), Record::parsed(Value::String("open".into())));
         assert!(result.is_err());
     }
 

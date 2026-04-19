@@ -20,8 +20,7 @@ use structfs_core_store::{Error as StoreError, Path, Record, Value};
 /// [`InputStore`]: crate::InputStore
 /// [`CommandStore`]: crate::CommandStore
 /// [`CommandLineStore`]: crate::CommandLineStore
-pub type Dispatcher =
-    Box<dyn FnMut(&Path, Record) -> Result<Path, StoreError> + Send + Sync>;
+pub type Dispatcher = Box<dyn FnMut(&Path, Record) -> Result<Path, StoreError> + Send + Sync>;
 
 /// Maximum number of txn IDs to remember for deduplication.
 const TXN_HISTORY_SIZE: usize = 256;

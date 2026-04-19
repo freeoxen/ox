@@ -205,7 +205,13 @@ mod tests {
     }
 
     fn read_open(store: &mut CommandLineStore) -> bool {
-        match store.read(&path!("open")).unwrap().unwrap().as_value().unwrap() {
+        match store
+            .read(&path!("open"))
+            .unwrap()
+            .unwrap()
+            .as_value()
+            .unwrap()
+        {
             Value::Bool(b) => *b,
             other => panic!("expected Bool, got {other:?}"),
         }
@@ -226,7 +232,8 @@ mod tests {
         let mut s = CommandLineStore::new();
         write_insert(&mut s, "stale", 0, 0);
         assert_eq!(s.content(), "stale");
-        s.write(&path!("open"), Record::parsed(Value::Null)).unwrap();
+        s.write(&path!("open"), Record::parsed(Value::Null))
+            .unwrap();
         assert!(read_open(&mut s));
         assert_eq!(s.content(), "");
     }
@@ -234,9 +241,11 @@ mod tests {
     #[test]
     fn close_flips_flag_and_clears_buffer() {
         let mut s = CommandLineStore::new();
-        s.write(&path!("open"), Record::parsed(Value::Null)).unwrap();
+        s.write(&path!("open"), Record::parsed(Value::Null))
+            .unwrap();
         write_insert(&mut s, "q", 0, 0);
-        s.write(&path!("close"), Record::parsed(Value::Null)).unwrap();
+        s.write(&path!("close"), Record::parsed(Value::Null))
+            .unwrap();
         assert!(!read_open(&mut s));
         assert_eq!(s.content(), "");
     }
@@ -256,7 +265,8 @@ mod tests {
     #[test]
     fn root_read_returns_full_snapshot() {
         let mut s = CommandLineStore::new();
-        s.write(&path!("open"), Record::parsed(Value::Null)).unwrap();
+        s.write(&path!("open"), Record::parsed(Value::Null))
+            .unwrap();
         write_insert(&mut s, "quit", 0, 0);
         let v = s.read(&path!("")).unwrap().unwrap();
         let map = match v.as_value().unwrap() {
@@ -276,7 +286,8 @@ mod tests {
         let (dispatcher, log) = mock_dispatcher();
         s.set_dispatcher(dispatcher);
 
-        s.write(&path!("open"), Record::parsed(Value::Null)).unwrap();
+        s.write(&path!("open"), Record::parsed(Value::Null))
+            .unwrap();
         write_insert(&mut s, "quit", 0, 0);
         s.write(&path!("submit"), Record::parsed(Value::Null))
             .unwrap();
@@ -306,7 +317,8 @@ mod tests {
         // text should remain so they can edit and retry.
         let mut s = CommandLineStore::new();
         s.set_dispatcher(failing_dispatcher());
-        s.write(&path!("open"), Record::parsed(Value::Null)).unwrap();
+        s.write(&path!("open"), Record::parsed(Value::Null))
+            .unwrap();
         write_insert(&mut s, "oops typo", 0, 0);
 
         let err = s.write(&path!("submit"), Record::parsed(Value::Null));
@@ -330,7 +342,9 @@ mod tests {
     #[test]
     fn write_to_root_errors() {
         let mut s = CommandLineStore::new();
-        let err = s.write(&path!(""), Record::parsed(Value::Null)).unwrap_err();
+        let err = s
+            .write(&path!(""), Record::parsed(Value::Null))
+            .unwrap_err();
         assert!(format!("{err}").contains("root"));
     }
 }
