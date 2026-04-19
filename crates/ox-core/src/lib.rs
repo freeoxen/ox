@@ -260,7 +260,7 @@ mod tests {
             "native/echo_tool",
             "Echoes its input back",
             serde_json::json!({"type": "object", "properties": {"text": {"type": "string"}}}),
-            |input| Ok(input),
+            Ok,
         )));
 
         let shared_log = ox_kernel::log::SharedLog::new();

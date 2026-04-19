@@ -594,7 +594,7 @@ mod tests {
         explorer.sync("t2", &v2, 4, &[], 20); // selected_row=4 but only 1 entry
         // Layout should have clamped
         let range = explorer.layout.visible_range(explorer.entry_count());
-        assert!(range.start <= 0);
+        assert_eq!(range.start, 0);
         assert!(range.end <= 1);
     }
 

@@ -225,7 +225,7 @@ fn native_tool_appears_in_schemas() {
         "custom/echo",
         "Echo input",
         serde_json::json!({"type": "object"}),
-        |input| Ok(input),
+        Ok,
     );
     store.register_native(Box::new(tool));
 
@@ -266,7 +266,7 @@ fn native_tool_registered_in_name_map() {
         "custom/my_tool",
         "A tool",
         serde_json::json!({}),
-        |input| Ok(input),
+        Ok,
     );
     store.register_native(Box::new(tool));
 

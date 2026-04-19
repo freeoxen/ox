@@ -140,7 +140,7 @@ mod tests {
         assert!(result.is_ok());
         // The command should still target "echo"
         let wrapped = result.unwrap();
-        assert_eq!(format!("{:?}", wrapped).contains("echo"), true);
+        assert!(format!("{:?}", wrapped).contains("echo"));
     }
 
     #[test]

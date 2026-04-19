@@ -85,7 +85,7 @@ mod tests {
         let (tx, rx) = oneshot::channel::<Result<Path, StoreError>>();
         tx.send(Ok(path!("result/path"))).unwrap();
         let result = rx.blocking_recv().unwrap();
-        assert!(matches!(result, Ok(_)));
+        assert!(result.is_ok());
     }
 
     #[test]
@@ -94,6 +94,6 @@ mod tests {
         tx.send(Err(StoreError::store("test", "write", "failed")))
             .unwrap();
         let result = rx.blocking_recv().unwrap();
-        assert!(matches!(result, Err(_)));
+        assert!(result.is_err());
     }
 }

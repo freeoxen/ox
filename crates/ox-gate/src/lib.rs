@@ -870,7 +870,7 @@ mod tests {
                             Value::Map(a) => a,
                             _ => panic!("expected map"),
                         };
-                        for (_name, acct) in accounts {
+                        for acct in accounts.values() {
                             let acct_json = value_to_json(acct.clone());
                             assert!(
                                 acct_json.get("key").is_none(),
