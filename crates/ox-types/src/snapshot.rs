@@ -7,6 +7,9 @@ use crate::ui::{AccountEditFields, InsertContext, PendingAction, SettingsFocus, 
 pub struct UiSnapshot {
     pub screen: ScreenSnapshot,
     pub pending_action: Option<PendingAction>,
+    /// Global vim-style command line (screen-agnostic).
+    #[serde(default)]
+    pub command_line: CommandLineSnapshot,
 }
 
 impl UiSnapshot {
@@ -30,8 +33,17 @@ impl Default for UiSnapshot {
         UiSnapshot {
             screen: ScreenSnapshot::Inbox(InboxSnapshot::default()),
             pending_action: None,
+            command_line: CommandLineSnapshot::default(),
         }
     }
+}
+
+/// State of the global command line.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CommandLineSnapshot {
+    pub open: bool,
+    pub content: String,
+    pub cursor: usize,
 }
 
 /// Which screen is active, with its snapshot data.

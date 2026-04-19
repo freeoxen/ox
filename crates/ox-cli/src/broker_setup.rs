@@ -37,8 +37,32 @@ pub async fn setup(
     let broker = BrokerStore::default();
     let mut servers = Vec::new();
 
-    // Mount UiStore
-    servers.push(broker.mount(path!("ui"), UiStore::new()).await);
+    // Mount UiStore with broker-connected command-line dispatcher so
+    // the embedded CommandLineStore can forward submit writes to
+    // command/exec.
+    //
+    // The dispatch is fire-and-forget on purpose: the command-line store
+    // is composed inside UiStore, so its submit handler runs on UiStore's
+    // server task. If we awaited the downstream write here, any command
+    // that ultimately routes back to `ui/*` would deadlock against the
+    // server that's still handling submit. Spawning decouples them; the
+    // submit write returns Ok immediately, and the resolved command
+    // reaches its target store on the next scheduling tick.
+    {
+        let cmdline_dispatch_client = broker.client();
+        let mut ui = UiStore::new();
+        ui.set_command_line_dispatcher(Box::new(move |target, data| {
+            let client = cmdline_dispatch_client.clone();
+            let t = target.clone();
+            tokio::spawn(async move {
+                if let Err(e) = client.write(&t, data).await {
+                    tracing::warn!(target = %t, error = %e, "command-line dispatch failed");
+                }
+            });
+            Ok(target.clone())
+        }));
+        servers.push(broker.mount(path!("ui"), ui).await);
+    }
 
     // Mount CommandStore with broker-connected dispatcher
     {
@@ -307,6 +331,101 @@ mod tests {
             model.as_value().unwrap(),
             &Value::String("claude-sonnet-4-20250514".into())
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn command_line_open_submits_through_command_exec() {
+        // Full pipeline: open the command line, type "quit", submit —
+        // should route through command/exec to the quit target and land
+        // as a ui/quit write observable in UiStore's pending_action.
+        use ox_ui::text_input_store::{Edit, EditOp, EditSequence, EditSource};
+
+        let handle = test_setup().await;
+        let client = handle.client();
+
+        // Open the command line
+        client
+            .write(
+                &path!("ui/command_line/open"),
+                structfs_core_store::Record::parsed(Value::Null),
+            )
+            .await
+            .unwrap();
+
+        // Verify open flag toggled
+        let open = client
+            .read(&path!("ui/command_line/open"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(open.as_value().unwrap(), &Value::Bool(true));
+
+        // Type "quit" into the buffer
+        let seq = EditSequence {
+            edits: vec![Edit {
+                op: EditOp::Insert {
+                    text: "quit".into(),
+                },
+                at: 0,
+                source: EditSource::Key,
+                ts_ms: 0,
+            }],
+            generation: 0,
+        };
+        client
+            .write_typed(&path!("ui/command_line/edit"), &seq)
+            .await
+            .unwrap();
+
+        // Submit — dispatches quit via command/exec
+        client
+            .write(
+                &path!("ui/command_line/submit"),
+                structfs_core_store::Record::parsed(Value::Null),
+            )
+            .await
+            .unwrap();
+
+        // Post-submit: command line is closed and buffer cleared
+        let open = client
+            .read(&path!("ui/command_line/open"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(open.as_value().unwrap(), &Value::Bool(false));
+
+        // quit set pending_action to Quit
+        let pa = client
+            .read(&path!("ui/pending_action"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(pa.as_value().unwrap(), &Value::String("quit".into()));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn colon_binding_on_inbox_opens_command_line() {
+        // The original bug: `:` didn't work on the inbox screen. This
+        // test nails the regression: Normal mode on inbox, key ":".
+        let handle = test_setup().await;
+        let client = handle.client();
+
+        let event = ox_types::InputKeyEvent {
+            mode: ox_types::Mode::Normal,
+            key: ":".to_string(),
+            screen: ox_types::Screen::Inbox,
+        };
+        client
+            .write_typed(&path!("input/key"), &event)
+            .await
+            .unwrap();
+
+        let open = client
+            .read(&path!("ui/command_line/open"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(open.as_value().unwrap(), &Value::Bool(true));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

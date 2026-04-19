@@ -8,7 +8,20 @@
 
 use std::collections::VecDeque;
 
-use structfs_core_store::{Error as StoreError, Value};
+use structfs_core_store::{Error as StoreError, Path, Record, Value};
+
+/// Callback a store invokes to forward a resolved write to another store.
+///
+/// Shared shape used by [`InputStore`], [`CommandStore`], and
+/// [`CommandLineStore`] — each receives a broker-connected dispatcher
+/// at setup time so its synchronous `Writer::write` path can initiate
+/// cross-store writes without owning the client.
+///
+/// [`InputStore`]: crate::InputStore
+/// [`CommandStore`]: crate::CommandStore
+/// [`CommandLineStore`]: crate::CommandLineStore
+pub type Dispatcher =
+    Box<dyn FnMut(&Path, Record) -> Result<Path, StoreError> + Send + Sync>;
 
 /// Maximum number of txn IDs to remember for deduplication.
 const TXN_HISTORY_SIZE: usize = 256;

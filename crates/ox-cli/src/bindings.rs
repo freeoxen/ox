@@ -20,6 +20,7 @@ pub fn default_bindings() -> Vec<Binding> {
     shortcuts_mode(&mut b);
     usage_mode(&mut b);
     history_search_mode(&mut b);
+    command_line_mode(&mut b);
     b
 }
 
@@ -233,17 +234,17 @@ fn normal_mode(out: &mut Vec<Binding>) {
         "Search",
     ));
 
-    // Command mode
+    // Command line (global vim-style `:`). Works on every screen.
     out.push(bind(
         Normal,
         &key(Char(':')),
-        invoke(Cmd::EnterCommand),
+        invoke(Cmd::OpenCommandLine),
         "Command",
     ));
     out.push(bind(
         Normal,
         &key(Char(';')),
-        invoke(Cmd::EnterCommand),
+        invoke(Cmd::OpenCommandLine),
         "Command",
     ));
 
@@ -858,6 +859,33 @@ fn history_search_mode(out: &mut Vec<Binding>) {
         &ctrl(Char('r')),
         invoke(Cmd::HistorySearchCycle),
         "Next match",
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// Command-line mode (the global `:` prompt). Text editing keys fall
+// through to the unbound handler, which writes edits to
+// `ui/command_line/edit`. Only the control keys are bound.
+// ---------------------------------------------------------------------------
+
+fn command_line_mode(out: &mut Vec<Binding>) {
+    out.push(bind(
+        Mode::Command,
+        &esc(),
+        invoke(Cmd::CloseCommandLine),
+        "Cancel",
+    ));
+    out.push(bind(
+        Mode::Command,
+        &ctrl(Char('c')),
+        invoke(Cmd::CloseCommandLine),
+        "Cancel",
+    ));
+    out.push(bind(
+        Mode::Command,
+        &enter(),
+        invoke(Cmd::SubmitCommandLine),
+        "Run",
     ));
 }
 

@@ -625,13 +625,16 @@ async fn dispatch_key(
         }
     }
 
-    // Determine mode from dialog/UI state
+    // Determine mode from dialog/UI state. Command line wins over
+    // everything except the explicit dialog overlays above it.
     let mode = if dialog.history_search.is_some() {
         Mode::HistorySearch
     } else if dialog.show_shortcuts {
         Mode::Shortcuts
     } else if dialog.show_usage {
         Mode::Usage
+    } else if ui.command_line.open {
+        Mode::Command
     } else if has_approval_pending && ui.editor().is_none() {
         Mode::Approval
     } else if ui.editor().is_some() {
@@ -658,11 +661,12 @@ async fn dispatch_key(
         )
         .await;
 
-    // Unbound insert key fallback
+    // Unbound key fallback: command line > editor.
     if result.is_err() {
-        let is_insert = ui.editor().is_some();
-        let insert_ctx = ui.editor().map(|e| e.context);
-        if is_insert {
+        if ui.command_line.open {
+            handle_unbound_command_line_key(client, ui, code).await;
+        } else if ui.editor().is_some() {
+            let insert_ctx = ui.editor().map(|e| e.context);
             let tw = terminal.get_frame().area().width;
             crate::thread_shell::handle_unbound_insert_key(
                 &mut thread.input_session,
@@ -677,6 +681,58 @@ async fn dispatch_key(
             .await;
         }
     }
+}
+
+/// Translate an unbound Command-mode key into an edit on the command-line
+/// buffer. Ordinary chars insert; Backspace deletes one char before the
+/// cursor. Everything else is a no-op — control keys that matter (Esc,
+/// Enter, Ctrl+C) are handled by Command-mode bindings above.
+async fn handle_unbound_command_line_key(
+    client: &ox_broker::ClientHandle,
+    ui: &UiSnapshot,
+    code: KeyCode,
+) {
+    use ox_ui::text_input_store::{Edit, EditOp, EditSequence, EditSource};
+
+    let cursor = ui.command_line.cursor;
+    let edit = match code {
+        KeyCode::Char(c) => Edit {
+            op: EditOp::Insert {
+                text: c.to_string(),
+            },
+            at: cursor,
+            source: EditSource::Key,
+            ts_ms: 0,
+        },
+        KeyCode::Backspace => {
+            if cursor == 0 {
+                return;
+            }
+            // Delete the char ending at `cursor`. Find the previous char
+            // boundary in the content so we handle multi-byte codepoints.
+            let content = &ui.command_line.content;
+            let prev_boundary = content[..cursor]
+                .char_indices()
+                .next_back()
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            let len = cursor - prev_boundary;
+            Edit {
+                op: EditOp::Delete { len },
+                at: prev_boundary,
+                source: EditSource::Key,
+                ts_ms: 0,
+            }
+        }
+        _ => return,
+    };
+    let seq = EditSequence {
+        edits: vec![edit],
+        generation: 0,
+    };
+    let _ = client
+        .write_typed(&oxpath!("ui", "command_line", "edit"), &seq)
+        .await;
 }
 
 // ---------------------------------------------------------------------------

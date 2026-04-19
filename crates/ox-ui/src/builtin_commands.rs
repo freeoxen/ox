@@ -197,6 +197,28 @@ static BUILTIN_COMMANDS: &[StaticCommandDef] = &[
         description: "Exit insert mode",
         user_facing: true,
     },
+    // -- Command line (global vim-style `:`) --
+    StaticCommandDef {
+        name: "open_command_line",
+        target: "ui/command_line/open",
+        params: &[],
+        description: "Open the global command line",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "close_command_line",
+        target: "ui/command_line/close",
+        params: &[],
+        description: "Close the global command line",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "submit_command_line",
+        target: "ui/command_line/submit",
+        params: &[],
+        description: "Submit the global command line",
+        user_facing: true,
+    },
     // -- Text input --
     StaticCommandDef {
         name: "send_input",

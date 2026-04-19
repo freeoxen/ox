@@ -222,6 +222,7 @@ fn ui_snapshot_thread_roundtrip() {
             }),
         }),
         pending_action: None,
+        command_line: Default::default(),
     };
     let json = serde_json::to_string(&snapshot).unwrap();
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -239,6 +240,7 @@ fn ui_snapshot_settings_default_roundtrip() {
     let snapshot = UiSnapshot {
         screen: ScreenSnapshot::Settings(SettingsSnapshot::default()),
         pending_action: None,
+        command_line: Default::default(),
     };
     let json = serde_json::to_string(&snapshot).unwrap();
     let back: UiSnapshot = serde_json::from_str(&json).unwrap();
@@ -264,6 +266,7 @@ fn ui_snapshot_inbox_with_search_roundtrip() {
             },
         }),
         pending_action: Some(PendingAction::OpenSelected),
+        command_line: Default::default(),
     };
     let json = serde_json::to_string(&snapshot).unwrap();
     let back: UiSnapshot = serde_json::from_str(&json).unwrap();

@@ -8,6 +8,7 @@ pub mod approval_store;
 pub mod builtin_commands;
 pub mod command;
 pub mod command_def;
+pub mod command_line_store;
 pub mod command_registry;
 pub mod command_store;
 pub mod config_store;
@@ -18,12 +19,14 @@ pub mod ui_store;
 pub use approval_store::ApprovalStore;
 pub use builtin_commands::builtin_commands;
 // Legacy Command/TxnLog removed — UiStore uses typed UiCommand protocol.
+pub use command::Dispatcher;
 pub use command_def::{
     CommandDef, CommandError, CommandInvocation, ParamDef, ParamKind, StaticCommandDef,
     StaticParamDef, StaticParamKind,
 };
+pub use command_line_store::CommandLineStore;
 pub use command_registry::CommandRegistry;
-pub use command_store::CommandStore;
+pub use command_store::{CommandStore, parse_command_text};
 pub use config_store::ConfigStore;
 pub use input_store::{Action, Binding, BindingContext, InputStore};
 pub use ox_types::ApprovalRequest;
@@ -34,7 +37,7 @@ pub use ui_store::UiStore;
 mod integration_tests {
     use super::*;
     use ox_types::{GlobalCommand, InboxCommand, UiCommand};
-    use structfs_core_store::{Reader, Record, Value, Writer, path};
+    use structfs_core_store::{Record, Value, Writer, path};
 
     fn typed_cmd(cmd: &UiCommand) -> Record {
         Record::parsed(structfs_serde_store::to_value(cmd).unwrap())

@@ -44,6 +44,8 @@ pub enum Mode {
     Shortcuts,
     Usage,
     Customize,
+    /// The global `:` command line is open.
+    Command,
 }
 
 impl Mode {
@@ -56,6 +58,7 @@ impl Mode {
             Mode::Shortcuts => "shortcuts",
             Mode::Usage => "usage",
             Mode::Customize => "customize",
+            Mode::Command => "command",
         }
     }
 
@@ -68,6 +71,7 @@ impl Mode {
             "shortcuts" => Some(Mode::Shortcuts),
             "usage" => Some(Mode::Usage),
             "customize" => Some(Mode::Customize),
+            "command" => Some(Mode::Command),
             _ => None,
         }
     }

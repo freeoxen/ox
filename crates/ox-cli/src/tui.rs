@@ -160,8 +160,12 @@ pub(crate) fn draw(
     if let Some((query, results, selected)) = &vs.history_search {
         draw_history_search(frame, query, results, *selected, theme, status_area);
     } else {
-        let show_command_line =
-            is_command_mode || vs.editor_mode == crate::editor::EditorMode::Command;
+        // The global command line (vs.ui.command_line) wins; legacy
+        // editor-internal command mode is the fallback until the editor
+        // migrates to the same store.
+        let show_command_line = vs.ui.command_line.open
+            || is_command_mode
+            || vs.editor_mode == crate::editor::EditorMode::Command;
         if show_command_line {
             draw_command_line(frame, vs, theme, status_area);
         } else {
@@ -251,12 +255,15 @@ fn draw_command_line(frame: &mut Frame, vs: &ViewState, _theme: &Theme, area: Re
         ":",
         ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::BOLD),
     );
-    // Editor-command mode uses the command buffer; app-level command mode uses the input
-    let input_content_for_cmd = vs.ui.editor().map(|e| e.content.as_str()).unwrap_or("");
-    let text = if vs.editor_mode == crate::editor::EditorMode::Command {
+    // Priority: global command line > legacy editor command mode > legacy
+    // editor-as-command-context fallback. The first two paths will merge
+    // when the editor migrates to CommandLineStore.
+    let text: &str = if vs.ui.command_line.open {
+        vs.ui.command_line.content.as_str()
+    } else if vs.editor_mode == crate::editor::EditorMode::Command {
         &vs.editor_command_buffer
     } else {
-        input_content_for_cmd
+        vs.ui.editor().map(|e| e.content.as_str()).unwrap_or("")
     };
     let input = Span::raw(text);
     let line = Line::from(vec![prompt, input]);

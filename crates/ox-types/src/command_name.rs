@@ -39,6 +39,11 @@ pub enum CommandName {
     EnterCommand,
     ExitInsert,
 
+    // -- Command line (global vim-style `:`) --
+    OpenCommandLine,
+    CloseCommandLine,
+    SubmitCommandLine,
+
     // -- Text input --
     SendInput,
     ClearInput,
@@ -128,6 +133,9 @@ impl CommandName {
             Self::Search => "search",
             Self::EnterCommand => "enter_command",
             Self::ExitInsert => "exit_insert",
+            Self::OpenCommandLine => "open_command_line",
+            Self::CloseCommandLine => "close_command_line",
+            Self::SubmitCommandLine => "submit_command_line",
             Self::SendInput => "send_input",
             Self::ClearInput => "clear_input",
             Self::ArchiveSelected => "archive_selected",
@@ -198,6 +206,9 @@ impl CommandName {
             "search" => Some(Self::Search),
             "enter_command" => Some(Self::EnterCommand),
             "exit_insert" => Some(Self::ExitInsert),
+            "open_command_line" => Some(Self::OpenCommandLine),
+            "close_command_line" => Some(Self::CloseCommandLine),
+            "submit_command_line" => Some(Self::SubmitCommandLine),
             "send_input" => Some(Self::SendInput),
             "clear_input" => Some(Self::ClearInput),
             "archive_selected" => Some(Self::ArchiveSelected),

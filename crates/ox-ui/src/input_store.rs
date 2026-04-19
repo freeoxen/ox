@@ -55,23 +55,14 @@ pub struct Binding {
 }
 
 // ---------------------------------------------------------------------------
-// Dispatcher
-// ---------------------------------------------------------------------------
-
-/// Callback for dispatching commands to target stores.
-///
-/// In production, wraps a broker ClientHandle. In tests, a mock
-/// that records dispatched commands.
-pub type CommandDispatcher =
-    Box<dyn FnMut(&Path, Record) -> Result<Path, StoreError> + Send + Sync>;
-
-// ---------------------------------------------------------------------------
 // InputStore
 // ---------------------------------------------------------------------------
 
+use crate::command::Dispatcher;
+
 pub struct InputStore {
     bindings: Vec<Binding>,
-    dispatcher: Option<CommandDispatcher>,
+    dispatcher: Option<Dispatcher>,
 }
 
 impl InputStore {
@@ -83,7 +74,7 @@ impl InputStore {
     }
 
     /// Set the command dispatcher.
-    pub fn set_dispatcher(&mut self, dispatcher: CommandDispatcher) {
+    pub fn set_dispatcher(&mut self, dispatcher: Dispatcher) {
         self.dispatcher = Some(dispatcher);
     }
 
@@ -487,10 +478,10 @@ mod tests {
 
     type DispatchLog = Arc<Mutex<Vec<(String, BTreeMap<String, Value>)>>>;
 
-    fn mock_dispatcher() -> (CommandDispatcher, DispatchLog) {
+    fn mock_dispatcher() -> (Dispatcher, DispatchLog) {
         let log: DispatchLog = Arc::new(Mutex::new(Vec::new()));
         let log_clone = log.clone();
-        let dispatcher: CommandDispatcher = Box::new(move |path, data| {
+        let dispatcher: Dispatcher = Box::new(move |path, data| {
             let fields = match data.as_value() {
                 Some(Value::Map(m)) => m.clone(),
                 _ => BTreeMap::new(),

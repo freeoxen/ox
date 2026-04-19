@@ -104,6 +104,20 @@ impl TextInputStore {
         (self.content.clone(), self.cursor)
     }
 
+    pub fn content(&self) -> &str {
+        &self.content
+    }
+
+    pub fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    /// Reset buffer to empty. Does not bump generation.
+    pub fn clear(&mut self) {
+        self.content.clear();
+        self.cursor = 0;
+    }
+
     fn snapshot(&self) -> Value {
         let mut map = BTreeMap::new();
         map.insert("content".to_string(), Value::String(self.content.clone()));

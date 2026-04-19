@@ -6,10 +6,10 @@
 use std::collections::BTreeMap;
 
 use ox_types::{
-    AccountEditFields, EditorSnapshot, GlobalCommand, HistoryCommand, HistorySnapshot,
-    InboxCommand, InboxSnapshot, InsertContext, Mode, PendingAction, ScreenSnapshot,
-    SearchSnapshot, SettingsCommand, SettingsFocus, SettingsSnapshot, ThreadCommand,
-    ThreadSnapshot, UiCommand, UiSnapshot, WizardStep,
+    AccountEditFields, CommandLineSnapshot, EditorSnapshot, GlobalCommand, HistoryCommand,
+    HistorySnapshot, InboxCommand, InboxSnapshot, InsertContext, Mode, PendingAction,
+    ScreenSnapshot, SearchSnapshot, SettingsCommand, SettingsFocus, SettingsSnapshot,
+    ThreadCommand, ThreadSnapshot, UiCommand, UiSnapshot, WizardStep,
 };
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer, path};
 
@@ -180,6 +180,7 @@ pub struct UiStore {
     screen: ActiveScreen,
     pending_action: Option<PendingAction>,
     status: Option<String>,
+    command_line: crate::CommandLineStore,
 }
 
 impl UiStore {
@@ -189,7 +190,15 @@ impl UiStore {
             screen: ActiveScreen::Inbox(InboxState::default()),
             pending_action: None,
             status: None,
+            command_line: crate::CommandLineStore::new(),
         }
+    }
+
+    /// Wire the embedded command-line store's dispatcher. Must be called
+    /// before [`UiStore`] is mounted into the broker; the dispatcher
+    /// forwards `submit` writes to `command/exec`.
+    pub fn set_command_line_dispatcher(&mut self, dispatcher: crate::Dispatcher) {
+        self.command_line.set_dispatcher(dispatcher);
     }
 
     // -- Screen guard helpers --
@@ -281,6 +290,11 @@ impl UiStore {
         UiSnapshot {
             screen,
             pending_action: self.pending_action,
+            command_line: CommandLineSnapshot {
+                open: self.command_line.is_open(),
+                content: self.command_line.content().to_string(),
+                cursor: self.command_line.cursor(),
+            },
         }
     }
 
@@ -1293,6 +1307,22 @@ impl Default for UiStore {
 }
 
 // ---------------------------------------------------------------------------
+// Path helpers
+// ---------------------------------------------------------------------------
+
+/// Build a new `Path` that omits the leading component of `p`. Panics if
+/// `p` is empty; only callers that have already matched on components[0]
+/// use this, so the precondition is structurally guaranteed.
+fn strip_first_component(p: &Path) -> Path {
+    let rest = p.components[1..]
+        .iter()
+        .map(|c| c.as_str())
+        .collect::<Vec<_>>()
+        .join("/");
+    Path::parse(&rest).expect("stripped path is valid by construction")
+}
+
+// ---------------------------------------------------------------------------
 // Reader
 // ---------------------------------------------------------------------------
 
@@ -1303,6 +1333,11 @@ impl Reader for UiStore {
         } else {
             from.components[0].as_str()
         };
+        // Delegate command_line/* reads to the embedded sub-store.
+        if key == "command_line" {
+            let sub = strip_first_component(from);
+            return self.command_line.read(&sub);
+        }
         let value = match key {
             "" => structfs_serde_store::to_value(&self.snapshot()).map_err(|e| {
                 StoreError::store("ui", "read", format!("snapshot serialization failed: {e}"))
@@ -1344,6 +1379,11 @@ impl Reader for UiStore {
 
 impl Writer for UiStore {
     fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
+        // Delegate command_line/* writes to the embedded sub-store.
+        if !to.is_empty() && to.components[0] == "command_line" {
+            let sub = strip_first_component(to);
+            return self.command_line.write(&sub, data);
+        }
         // Delegate input/* writes to the active editor
         if !to.is_empty() && to.components[0] == "input" {
             let action = if to.components.len() > 1 {

@@ -159,7 +159,7 @@ pub(crate) fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ox_types::{InboxSnapshot, SearchSnapshot, ThreadSnapshot};
+    use ox_types::{InboxSnapshot, ThreadSnapshot};
 
     fn empty_dialog() -> DialogState {
         DialogState {
@@ -174,6 +174,7 @@ mod tests {
         UiSnapshot {
             screen: ScreenSnapshot::Inbox(InboxSnapshot::default()),
             pending_action: None,
+            command_line: Default::default(),
         }
     }
 
@@ -189,6 +190,7 @@ mod tests {
                 approval_preview_scroll: 0,
             }),
             pending_action: None,
+            command_line: Default::default(),
         }
     }
 
