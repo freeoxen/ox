@@ -36,7 +36,6 @@ pub enum CommandName {
     Compose,
     Reply,
     Search,
-    EnterCommand,
     ExitInsert,
 
     // -- Command line (global vim-style `:`) --
@@ -52,6 +51,7 @@ pub enum CommandName {
     ArchiveSelected,
 
     // -- Search --
+    SearchClose,
     SearchInsertChar,
     SearchDeleteChar,
     SearchClear,
@@ -131,7 +131,6 @@ impl CommandName {
             Self::Compose => "compose",
             Self::Reply => "reply",
             Self::Search => "search",
-            Self::EnterCommand => "enter_command",
             Self::ExitInsert => "exit_insert",
             Self::OpenCommandLine => "open_command_line",
             Self::CloseCommandLine => "close_command_line",
@@ -139,6 +138,7 @@ impl CommandName {
             Self::SendInput => "send_input",
             Self::ClearInput => "clear_input",
             Self::ArchiveSelected => "archive_selected",
+            Self::SearchClose => "search_close",
             Self::SearchInsertChar => "search_insert_char",
             Self::SearchDeleteChar => "search_delete_char",
             Self::SearchClear => "search_clear",
@@ -204,7 +204,6 @@ impl CommandName {
             "compose" => Some(Self::Compose),
             "reply" => Some(Self::Reply),
             "search" => Some(Self::Search),
-            "enter_command" => Some(Self::EnterCommand),
             "exit_insert" => Some(Self::ExitInsert),
             "open_command_line" => Some(Self::OpenCommandLine),
             "close_command_line" => Some(Self::CloseCommandLine),
@@ -212,6 +211,7 @@ impl CommandName {
             "send_input" => Some(Self::SendInput),
             "clear_input" => Some(Self::ClearInput),
             "archive_selected" => Some(Self::ArchiveSelected),
+            "search_close" => Some(Self::SearchClose),
             "search_insert_char" => Some(Self::SearchInsertChar),
             "search_delete_char" => Some(Self::SearchDeleteChar),
             "search_clear" => Some(Self::SearchClear),

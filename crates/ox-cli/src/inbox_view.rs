@@ -111,23 +111,49 @@ pub fn draw_inbox(frame: &mut Frame, vs: &ViewState, theme: &Theme, area: Rect) 
     frame.render_widget(list, area);
 }
 
-/// Render the search/filter bar.
-pub fn draw_filter_bar(frame: &mut Frame, vs: &ViewState, theme: &Theme, area: Rect) {
+/// Render the chip bar — persistent view filters shown at the top of
+/// the inbox whenever any chips are set. Numbers 1-9 dismiss.
+pub fn draw_chip_bar(frame: &mut Frame, vs: &ViewState, theme: &Theme, area: Rect) {
     use ox_types::ScreenSnapshot;
 
     let snap = match &vs.ui.screen {
         ScreenSnapshot::Inbox(s) => s,
         _ => return,
     };
-    let mut spans = vec![Span::styled("/ ", theme.tool_name)];
+    if snap.search.chips.is_empty() {
+        return;
+    }
+    let mut spans = vec![Span::styled("Filters: ", theme.tool_name)];
     for (i, chip) in snap.search.chips.iter().enumerate() {
         spans.push(Span::styled(
             format!("[{}: {}] ", i + 1, chip),
             theme.tool_meta,
         ));
     }
-    spans.push(Span::styled(&snap.search.live_query, theme.user_text));
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// Render the search prompt — the `/` input at the bottom when search
+/// mode is open. Chips live in the top chip bar (see `draw_chip_bar`).
+pub fn draw_search_prompt(frame: &mut Frame, vs: &ViewState, theme: &Theme, area: Rect) {
+    use ox_types::ScreenSnapshot;
+
+    let snap = match &vs.ui.screen {
+        ScreenSnapshot::Inbox(s) => s,
+        _ => return,
+    };
+    let prompt_width: u16 = 2; // "/ "
+    let spans = vec![
+        Span::styled("/ ", theme.tool_name),
+        Span::styled(&snap.search.live_query, theme.user_text),
+    ];
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+
+    let query_width = snap.search.live_query.len() as u16;
+    let cursor_x = area.x + prompt_width + query_width;
+    if cursor_x < area.x + area.width {
+        frame.set_cursor_position((cursor_x, area.y));
+    }
 }
 
 /// Colored state indicator: returns (dot_span, label_string) for layout width calculation.

@@ -11,8 +11,8 @@ use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
 use ox_kernel::PathComponent;
 use ox_path::oxpath;
 use ox_types::{
-    GlobalCommand, HistoryCommand, InboxCommand, InputKeyEvent, InsertContext, Mode, PendingAction,
-    Screen, ScreenSnapshot, ThreadCommand, UiCommand, UiSnapshot,
+    GlobalCommand, HistoryCommand, InboxCommand, InputKeyEvent, Mode, PendingAction, Screen,
+    ScreenSnapshot, ThreadCommand, UiCommand, UiSnapshot,
 };
 use ox_ui::text_input_store::EditSource;
 use std::time::Duration;
@@ -141,14 +141,7 @@ pub async fn run_async(
         let mut viewport_height: usize = 0;
         let mut history_hit_map: Option<crate::history_view::HistoryHitMap> = None;
         {
-            let vs = fetch_view_state(
-                client,
-                app,
-                &dialog,
-                thread.input_session.editor_mode,
-                &thread.input_session.command_buffer,
-            )
-            .await;
+            let vs = fetch_view_state(client, app, &dialog, thread.input_session.editor_mode).await;
 
             // Editor sync (detects editor appeared/disappeared, flushes edits)
             let had_editor = thread.had_editor;
@@ -157,6 +150,29 @@ pub async fn run_async(
                 thread.flush(client).await;
             }
             thread.sync_editor(&vs.ui);
+
+            // Command-line submit drain. A submit write stages the
+            // buffer text on `ui/command_line/pending_submit`; we
+            // dispatch it through `command/exec` here (on a tick
+            // separate from the submit write itself) and ack by
+            // clearing the field. This breaks re-entrancy with UiStore
+            // for commands whose target routes back into `ui/*`.
+            if let Some(text) = vs.ui.command_line.pending_submit.clone() {
+                let _ = client
+                    .write(
+                        &oxpath!("command", "exec"),
+                        structfs_core_store::Record::parsed(structfs_core_store::Value::String(
+                            text,
+                        )),
+                    )
+                    .await;
+                let _ = client
+                    .write(
+                        &oxpath!("ui", "command_line", "clear_pending_submit"),
+                        structfs_core_store::Record::parsed(structfs_core_store::Value::Null),
+                    )
+                    .await;
+            }
 
             // Set row_count in UiStore (navigation bounds)
             if matches!(&vs.ui.screen, ScreenSnapshot::Inbox(_)) {
@@ -302,7 +318,6 @@ pub async fn run_async(
                 action,
                 &mut dialog,
                 &mut thread.input_session.editor_mode,
-                &mut thread.input_session.command_buffer,
                 &ui,
                 selected_thread_id.as_deref(),
                 &mut editor_content,
@@ -565,12 +580,8 @@ pub async fn run_async(
                                 _ => {}
                             }
                         }
-                    } else {
-                        let is_insert = ui.editor().is_some();
-                        let ctx = ui.editor().map(|e| e.context);
-                        if is_insert && ctx != Some(InsertContext::Search) {
-                            thread.input_session.insert(&text, EditSource::Paste);
-                        }
+                    } else if ui.editor().is_some() {
+                        thread.input_session.insert(&text, EditSource::Paste);
                     }
                 }
                 // Focus events — swallow silently. Without EnableFocusChange,
@@ -625,23 +636,16 @@ async fn dispatch_key(
         }
     }
 
-    // Determine mode from dialog/UI state. Command line wins over
-    // everything except the explicit dialog overlays above it.
-    let mode = if dialog.history_search.is_some() {
-        Mode::HistorySearch
-    } else if dialog.show_shortcuts {
-        Mode::Shortcuts
-    } else if dialog.show_usage {
-        Mode::Usage
-    } else if ui.command_line.open {
-        Mode::Command
-    } else if has_approval_pending && ui.editor().is_none() {
-        Mode::Approval
-    } else if ui.editor().is_some() {
-        Mode::Insert
-    } else {
-        Mode::Normal
-    };
+    // Single source of truth for modal focus — see `focus::focus_mode`.
+    let mode = crate::focus::focus_mode(
+        ui,
+        &crate::focus::DialogFlags {
+            history_search_active: dialog.history_search.is_some(),
+            show_shortcuts: dialog.show_shortcuts,
+            show_usage: dialog.show_usage,
+            has_approval_pending,
+        },
+    );
 
     // InputStore dispatch
     let (input_mode, input_screen) = match &ui.screen {
@@ -661,25 +665,43 @@ async fn dispatch_key(
         )
         .await;
 
-    // Unbound key fallback: command line > editor.
+    // Unbound-key fallback routes to the focused surface — the same
+    // `mode` the binding system resolved against.
     if result.is_err() {
-        if ui.command_line.open {
-            handle_unbound_command_line_key(client, ui, code).await;
-        } else if ui.editor().is_some() {
-            let insert_ctx = ui.editor().map(|e| e.context);
-            let tw = terminal.get_frame().area().width;
-            crate::thread_shell::handle_unbound_insert_key(
-                &mut thread.input_session,
-                insert_ctx,
-                app,
-                client,
-                ui,
-                tw,
-                modifiers,
-                code,
+        match mode {
+            Mode::Command => handle_unbound_command_line_key(client, ui, code).await,
+            Mode::Search => handle_unbound_search_key(client, code).await,
+            Mode::Insert => {
+                let insert_ctx = ui.editor().map(|e| e.context);
+                let tw = terminal.get_frame().area().width;
+                crate::thread_shell::handle_unbound_insert_key(
+                    &mut thread.input_session,
+                    insert_ctx,
+                    app,
+                    client,
+                    ui,
+                    tw,
+                    modifiers,
+                    code,
+                )
+                .await;
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Translate an unbound Search-mode key into a `SearchInsertChar` write.
+/// Control keys (Esc, Enter, Backspace, Ctrl+U, Ctrl+C) are bound in the
+/// binding table and never reach this fallback.
+pub(crate) async fn handle_unbound_search_key(client: &ox_broker::ClientHandle, code: KeyCode) {
+    if let KeyCode::Char(c) = code {
+        let _ = client
+            .write_typed(
+                &oxpath!("ui"),
+                &UiCommand::Inbox(InboxCommand::SearchInsertChar { char: c }),
             )
             .await;
-        }
     }
 }
 

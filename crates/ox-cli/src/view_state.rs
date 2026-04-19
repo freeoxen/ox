@@ -6,7 +6,7 @@
 
 use ox_broker::ClientHandle;
 use ox_types::{
-    ApprovalRequest, InboxCommand, ScreenSnapshot, SearchSnapshot, UiCommand, UiSnapshot,
+    ApprovalRequest, InboxCommand, Mode, ScreenSnapshot, SearchSnapshot, UiCommand, UiSnapshot,
 };
 use structfs_core_store::{Record, Value, path};
 
@@ -61,7 +61,22 @@ pub struct ViewState<'a> {
     pub show_usage: bool,
     pub history_search: Option<(String, Vec<String>, usize)>, // (query, results, selected)
     pub editor_mode: crate::editor::EditorMode,
-    pub editor_command_buffer: String,
+}
+
+impl<'a> ViewState<'a> {
+    /// Current modal focus. Single source of truth shared with the
+    /// input dispatcher so rendering and key routing never drift.
+    pub fn focus(&self) -> Mode {
+        crate::focus::focus_mode(
+            &self.ui,
+            &crate::focus::DialogFlags {
+                history_search_active: self.history_search.is_some(),
+                show_shortcuts: self.show_shortcuts,
+                show_usage: self.show_usage,
+                has_approval_pending: self.approval_pending.is_some(),
+            },
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -77,7 +92,6 @@ pub async fn fetch_view_state<'a>(
     _app: &'a App,
     dialog: &'a crate::event_loop::DialogState,
     editor_mode: crate::editor::EditorMode,
-    editor_command_buffer: &str,
 ) -> ViewState<'a> {
     // Read UiSnapshot via typed deserialization
     let ui: UiSnapshot = client
@@ -241,7 +255,6 @@ pub async fn fetch_view_state<'a>(
             .as_ref()
             .map(|s| (s.query.clone(), s.results.clone(), s.selected)),
         editor_mode,
-        editor_command_buffer: editor_command_buffer.to_string(),
     }
 }
 

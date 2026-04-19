@@ -30,12 +30,7 @@ fn mode_roundtrip() {
 
 #[test]
 fn insert_context_roundtrip() {
-    for variant in [
-        InsertContext::Compose,
-        InsertContext::Reply,
-        InsertContext::Search,
-        InsertContext::Command,
-    ] {
+    for variant in [InsertContext::Compose, InsertContext::Reply] {
         let json = serde_json::to_string(&variant).unwrap();
         let back: InsertContext = serde_json::from_str(&json).unwrap();
         assert_eq!(variant, back);
@@ -262,6 +257,7 @@ fn ui_snapshot_inbox_with_search_roundtrip() {
                 chips: vec!["tag:urgent".to_string()],
                 live_query: "foo".to_string(),
                 active: true,
+                mode_open: true,
                 result_handle: None,
             },
         }),

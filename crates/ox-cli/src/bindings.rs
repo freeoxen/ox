@@ -21,6 +21,7 @@ pub fn default_bindings() -> Vec<Binding> {
     usage_mode(&mut b);
     history_search_mode(&mut b);
     command_line_mode(&mut b);
+    search_mode(&mut b);
     b
 }
 
@@ -36,6 +37,15 @@ fn invoke_with(command: CommandName, args: &[(&str, &str)]) -> Action {
     for (k, v) in args {
         map.insert(k.to_string(), serde_json::Value::String(v.to_string()));
     }
+    Action::Invoke { command, args: map }
+}
+
+/// Like [`invoke_with`] but with a single typed integer argument. Used
+/// for commands whose registry declaration is `ParamKind::Integer` —
+/// the registry rejects String values even if they parse as numbers.
+fn invoke_with_int(command: CommandName, key: &str, value: i64) -> Action {
+    let mut map = BTreeMap::new();
+    map.insert(key.to_string(), serde_json::Value::from(value));
     Action::Invoke { command, args: map }
 }
 
@@ -669,21 +679,14 @@ fn insert_mode(out: &mut Vec<Binding>) {
         invoke(Cmd::EnterHistorySearch),
         "History search",
     ));
-    // Search text editing (inbox search mode)
-    out.push(bind_screen(
-        Insert,
-        &enter(),
-        Inbox,
-        invoke(Cmd::SearchSaveChip),
-        "Save filter",
-    ));
-    // Chip dismissal keys (1-9) in inbox normal mode when search active
+    // Chip dismissal keys (1-9) in Normal+Inbox — chips are a persistent
+    // view filter managed outside of Search mode.
     for i in 1..=9u8 {
         out.push(bind_screen(
             Normal,
             &i.to_string(),
             Inbox,
-            invoke_with(Cmd::SearchDismissChip, &[("index", &(i - 1).to_string())]),
+            invoke_with_int(Cmd::SearchDismissChip, "index", (i - 1) as i64),
             &format!("Dismiss chip {i}"),
         ));
     }
@@ -859,6 +862,45 @@ fn history_search_mode(out: &mut Vec<Binding>) {
         &ctrl(Char('r')),
         invoke(Cmd::HistorySearchCycle),
         "Next match",
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// Search mode (the inbox `/` prompt). Unbound keys fall through to the
+// Search-mode handler which writes SearchInsertChar. Enter commits the
+// live query as a chip; Esc closes the mode and drops the query.
+// ---------------------------------------------------------------------------
+
+fn search_mode(out: &mut Vec<Binding>) {
+    out.push(bind(
+        Mode::Search,
+        &esc(),
+        invoke(Cmd::SearchClose),
+        "Close",
+    ));
+    out.push(bind(
+        Mode::Search,
+        &ctrl(Char('c')),
+        invoke(Cmd::SearchClose),
+        "Close",
+    ));
+    out.push(bind(
+        Mode::Search,
+        &enter(),
+        invoke(Cmd::SearchSaveChip),
+        "Save filter",
+    ));
+    out.push(bind(
+        Mode::Search,
+        &key(KeyCode::Backspace),
+        invoke(Cmd::SearchDeleteChar),
+        "Delete",
+    ));
+    out.push(bind(
+        Mode::Search,
+        &ctrl(Char('u')),
+        invoke(Cmd::SearchClear),
+        "Clear query",
     ));
 }
 

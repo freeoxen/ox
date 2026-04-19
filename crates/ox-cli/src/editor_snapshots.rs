@@ -300,16 +300,5 @@ mod tests {
             .unwrap_or(0);
         let step3 = render_editor(&session.content, session.cursor, " NORMAL ", 40, 3);
         insta::assert_snapshot!("lifecycle_3_after_h", step3);
-
-        // 4. : → command mode
-        session.command_buffer.clear();
-        session.editor_mode = EditorMode::Command;
-        let step4_cmd = render_command_line("", 40);
-        insta::assert_snapshot!("lifecycle_4_command_prompt", step4_cmd);
-
-        // 5. Type "q"
-        session.command_buffer.push('q');
-        let step5_cmd = render_command_line(&session.command_buffer, 40);
-        insta::assert_snapshot!("lifecycle_5_command_q", step5_cmd);
     }
 }

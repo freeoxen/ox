@@ -31,19 +31,30 @@ pub enum InboxCommand {
     SelectPrev,
     SelectFirst,
     SelectLast,
-    SetRowCount { count: usize },
+    SetRowCount {
+        count: usize,
+    },
     OpenSelected,
     ArchiveSelected,
     Compose,
+    /// Open the search input (sets search mode).
     Search,
+    /// Close the search input, dropping the in-flight live query. Chips persist.
+    SearchClose,
     DismissEditor,
     SubmitEditor,
-    SearchInsertChar { char: char },
+    SearchInsertChar {
+        char: char,
+    },
     SearchDeleteChar,
     SearchClear,
     SearchSaveChip,
-    SearchDismissChip { index: usize },
-    SetSearchResultHandle { handle: String },
+    SearchDismissChip {
+        index: usize,
+    },
+    SetSearchResultHandle {
+        handle: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,7 +71,6 @@ pub enum ThreadCommand {
     SetScrollMax { max: usize },
     SetViewportHeight { height: usize },
     Reply,
-    Command,
     DismissEditor,
     SubmitEditor,
     ApprovalSelectNext,

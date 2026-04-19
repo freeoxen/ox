@@ -4,8 +4,8 @@
 //! TextInputView, and had_editor that were previously loose locals.
 
 use crate::editor::{
-    EditorMode, InputSession, flush_pending_edits, handle_editor_command_key,
-    handle_editor_insert_key, handle_editor_normal_key,
+    EditorMode, InputSession, flush_pending_edits, handle_editor_insert_key,
+    handle_editor_normal_key,
 };
 use crate::shell::Outcome;
 use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
@@ -115,38 +115,21 @@ impl ThreadShell {
         app: &mut crate::app::App,
         client: &ox_broker::ClientHandle,
     ) {
-        use crate::editor::{execute_command_input, submit_editor_content};
+        use crate::editor::submit_editor_content;
         use ox_path::oxpath;
-        use ox_types::{ThreadCommand, UiCommand};
+        use ox_types::UiCommand;
 
-        let insert_ctx = ui.editor().map(|e| e.context);
-
-        if insert_ctx == Some(InsertContext::Command) {
-            flush_pending_edits(&mut self.input_session, client).await;
-            execute_command_input(&self.input_session.content, client).await;
-            // Dismiss editor on thread screen
+        let new_tid = submit_editor_content(&mut self.input_session, app, client).await;
+        // Only auto-navigate to the new thread if we're already on a thread
+        // screen (reply). Compose from inbox stays on the inbox.
+        if let Some(tid) = new_tid {
             if matches!(&ui.screen, ScreenSnapshot::Thread(_)) {
                 let _ = client
                     .write_typed(
                         &oxpath!("ui"),
-                        &UiCommand::Thread(ThreadCommand::DismissEditor),
+                        &UiCommand::Global(ox_types::GlobalCommand::Open { thread_id: tid }),
                     )
                     .await;
-            }
-            self.input_session.reset_after_submit();
-        } else {
-            let new_tid = submit_editor_content(&mut self.input_session, app, client).await;
-            // Only auto-navigate to the new thread if we're already on a thread
-            // screen (reply). Compose from inbox stays on the inbox.
-            if let Some(tid) = new_tid {
-                if matches!(&ui.screen, ScreenSnapshot::Thread(_)) {
-                    let _ = client
-                        .write_typed(
-                            &oxpath!("ui"),
-                            &UiCommand::Global(ox_types::GlobalCommand::Open { thread_id: tid }),
-                        )
-                        .await;
-                }
             }
         }
     }
@@ -154,36 +137,27 @@ impl ThreadShell {
 
 /// Handle unbound insert-mode keys (after InputStore dispatch fails).
 ///
-/// Routes to search editing, command editing, or vim-style editor sub-modes.
+/// Routes to the editor's Insert or Normal sub-mode. The global `:`
+/// command line is a separate modal surface handled upstream.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_unbound_insert_key(
     input_session: &mut InputSession,
-    insert_context: Option<InsertContext>,
+    _insert_context: Option<InsertContext>,
     app: &mut crate::app::App,
     client: &ox_broker::ClientHandle,
-    ui: &UiSnapshot,
+    _ui: &UiSnapshot,
     terminal_width: u16,
     modifiers: crossterm::event::KeyModifiers,
     code: KeyCode,
 ) -> Outcome {
-    if insert_context == Some(InsertContext::Command) {
-        // Command mode uses the same text editing as editor-insert
-        handle_editor_insert_key(input_session, modifiers, code);
-    } else {
-        // Compose/reply: vim-style editor with sub-modes
-        match input_session.editor_mode {
-            EditorMode::Insert => {
-                handle_editor_insert_key(input_session, modifiers, code);
-            }
-            EditorMode::Normal => {
-                handle_editor_normal_key(input_session, app, client, terminal_width, code).await;
-            }
-            EditorMode::Command => {
-                handle_editor_command_key(input_session, app, client, ui, code).await;
-            }
+    match input_session.editor_mode {
+        EditorMode::Insert => {
+            handle_editor_insert_key(input_session, modifiers, code);
+        }
+        EditorMode::Normal => {
+            handle_editor_normal_key(input_session, app, client, terminal_width, code).await;
         }
     }
-
     Outcome::Handled
 }
 

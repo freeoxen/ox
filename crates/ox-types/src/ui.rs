@@ -46,6 +46,8 @@ pub enum Mode {
     Customize,
     /// The global `:` command line is open.
     Command,
+    /// The inbox search input is open.
+    Search,
 }
 
 impl Mode {
@@ -59,6 +61,7 @@ impl Mode {
             Mode::Usage => "usage",
             Mode::Customize => "customize",
             Mode::Command => "command",
+            Mode::Search => "search",
         }
     }
 
@@ -72,6 +75,7 @@ impl Mode {
             "usage" => Some(Mode::Usage),
             "customize" => Some(Mode::Customize),
             "command" => Some(Mode::Command),
+            "search" => Some(Mode::Search),
             _ => None,
         }
     }
@@ -82,8 +86,6 @@ impl Mode {
 pub enum InsertContext {
     Compose,
     Reply,
-    Search,
-    Command,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

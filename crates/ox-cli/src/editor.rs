@@ -1,22 +1,21 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 use ox_path::oxpath;
-use ox_types::{GlobalCommand, ScreenSnapshot, ThreadCommand, UiCommand};
-use ox_ui::command_def::CommandInvocation;
+use ox_types::{ScreenSnapshot, ThreadCommand, UiCommand};
 use ox_ui::text_input_store::{Edit, EditOp, EditSequence, EditSource};
 
 // ---------------------------------------------------------------------------
 // InputSession — optimistic local input state
 // ---------------------------------------------------------------------------
 
-/// Sub-mode within the text editor (compose/reply input).
+/// Sub-mode within the text editor (compose/reply input). The app-level
+/// command line (`:` prompt) is a separate modal surface — see
+/// [`crate::focus::focus_mode`] — and does not appear here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EditorMode {
     /// Typing text — characters are inserted at cursor.
     Insert,
     /// Vim-style navigation — hjkl, w/b, 0/$, i/a to re-enter insert.
     Normal,
-    /// Command prompt within the editor (`:` line at bottom).
-    Command,
 }
 
 pub(crate) struct InputSession {
@@ -25,8 +24,6 @@ pub(crate) struct InputSession {
     pub(crate) pending_edits: Vec<Edit>,
     pub(crate) generation: u64,
     pub(crate) editor_mode: EditorMode,
-    /// Buffer for the editor command prompt (`:q`, `:w`, etc.)
-    pub(crate) command_buffer: String,
 }
 
 impl InputSession {
@@ -37,7 +34,6 @@ impl InputSession {
             pending_edits: Vec::new(),
             generation: 0,
             editor_mode: EditorMode::Insert,
-            command_buffer: String::new(),
         }
     }
 
@@ -225,86 +221,6 @@ pub(crate) async fn flush_pending_edits(
 // ---------------------------------------------------------------------------
 // Command input execution
 // ---------------------------------------------------------------------------
-
-/// Parse command input text and dispatch through the CommandStore.
-///
-/// Syntax: `command_name` or `command_name key=value key=value`
-/// For commands with a single required param, positional: `command_name value`
-pub(crate) async fn execute_command_input(input: &str, client: &ox_broker::ClientHandle) {
-    let input = input.trim();
-    if input.is_empty() {
-        return;
-    }
-
-    let mut parts = input.splitn(2, ' ');
-    let command_name = parts.next().unwrap_or("");
-    let rest = parts.next().unwrap_or("").trim();
-
-    // Build args map from remaining text
-    let mut args = std::collections::BTreeMap::new();
-    if !rest.is_empty() {
-        // Try key=value pairs first
-        let mut has_kv = false;
-        for token in rest.split_whitespace() {
-            if let Some((k, v)) = token.split_once('=') {
-                args.insert(k.to_string(), serde_json::Value::String(v.to_string()));
-                has_kv = true;
-            }
-        }
-        // If no key=value pairs found, treat as a single positional argument.
-        // Look up the command to find the first required param name.
-        if !has_kv {
-            let cmd_path =
-                structfs_core_store::Path::parse(&format!("command/commands/{command_name}"))
-                    .unwrap_or_else(|_| oxpath!("command", "commands"));
-            if let Ok(Some(record)) = client.read(&cmd_path).await {
-                if let Some(structfs_core_store::Value::Map(def_map)) = record.as_value() {
-                    if let Some(structfs_core_store::Value::Array(params)) = def_map.get("params") {
-                        // Find the first required param
-                        for param in params {
-                            if let structfs_core_store::Value::Map(p) = param {
-                                let required = matches!(
-                                    p.get("required"),
-                                    Some(structfs_core_store::Value::Bool(true))
-                                );
-                                if required {
-                                    if let Some(structfs_core_store::Value::String(name)) =
-                                        p.get("name")
-                                    {
-                                        args.insert(
-                                            name.clone(),
-                                            serde_json::Value::String(rest.to_string()),
-                                        );
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Build CommandInvocation and dispatch
-    let inv = CommandInvocation {
-        command: command_name.to_string(),
-        args,
-    };
-    let result = client
-        .write_typed(&oxpath!("command", "invoke"), &inv)
-        .await;
-    if let Err(e) = result {
-        let _ = client
-            .write_typed(
-                &oxpath!("ui"),
-                &UiCommand::Global(GlobalCommand::SetStatus {
-                    text: format!("{e}"),
-                }),
-            )
-            .await;
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Editor sub-mode key handlers
@@ -510,75 +426,17 @@ pub(crate) async fn handle_editor_normal_key(
             }
         }
 
-        // -- Command prompt --
+        // -- Command prompt — opens the global command line (one `:`
+        //    path app-wide; editor content is preserved underneath).
         KeyCode::Char(':') | KeyCode::Char(';') => {
-            session.command_buffer.clear();
-            session.editor_mode = EditorMode::Command;
+            let _ = client
+                .write(
+                    &oxpath!("ui", "command_line", "open"),
+                    structfs_core_store::Record::parsed(structfs_core_store::Value::Null),
+                )
+                .await;
         }
 
-        _ => {}
-    }
-}
-
-/// Handle a key in editor-command mode (`:` prompt within the editor).
-pub(crate) async fn handle_editor_command_key(
-    session: &mut InputSession,
-    app: &mut crate::app::App,
-    client: &ox_broker::ClientHandle,
-    ui: &ox_types::UiSnapshot,
-    code: KeyCode,
-) {
-    match code {
-        KeyCode::Esc => {
-            session.command_buffer.clear();
-            session.editor_mode = EditorMode::Normal;
-        }
-        KeyCode::Enter => {
-            let cmd = session.command_buffer.trim().to_string();
-            session.command_buffer.clear();
-            session.editor_mode = EditorMode::Normal;
-
-            match cmd.as_str() {
-                "q" | "quit" => {
-                    // Exit the editor (back to app normal mode)
-                    let _ = client
-                        .write_typed(
-                            &oxpath!("ui"),
-                            &UiCommand::Thread(ThreadCommand::DismissEditor),
-                        )
-                        .await;
-                    session.reset_after_submit();
-                }
-                "w" | "write" | "wq" | "x" => {
-                    let on_thread = matches!(ui.screen, ox_types::ScreenSnapshot::Thread(_));
-                    let new_tid = submit_editor_content(session, app, client).await;
-                    // Only auto-navigate on reply (thread screen), not compose (inbox)
-                    if let Some(tid) = new_tid {
-                        if on_thread {
-                            let _ = client
-                                .write_typed(
-                                    &oxpath!("ui"),
-                                    &UiCommand::Global(GlobalCommand::Open { thread_id: tid }),
-                                )
-                                .await;
-                        }
-                    }
-                }
-                other => {
-                    // Unknown command — try dispatching through CommandStore
-                    execute_command_input(other, client).await;
-                }
-            }
-        }
-        KeyCode::Backspace => {
-            session.command_buffer.pop();
-            if session.command_buffer.is_empty() {
-                session.editor_mode = EditorMode::Normal;
-            }
-        }
-        KeyCode::Char(c) => {
-            session.command_buffer.push(c);
-        }
         _ => {}
     }
 }
@@ -855,74 +713,14 @@ mod tests {
     }
 
     // ======================================================================
-    // Editor Command Mode
-    // ======================================================================
-
-    #[test]
-    fn command_buffer_appends_chars() {
-        let mut s = InputSession::new();
-        s.editor_mode = EditorMode::Command;
-        // Simulates two KeyCode::Char presses routed through handle_editor_command_key.
-        s.command_buffer.push('w');
-        s.command_buffer.push('q');
-        assert_eq!(s.command_buffer, "wq");
-    }
-
-    #[test]
-    fn command_buffer_backspace() {
-        let mut s = InputSession::new();
-        s.editor_mode = EditorMode::Command;
-        s.command_buffer = "wq".to_string();
-        // Simulate the Backspace arm: pop, then check for empty.
-        s.command_buffer.pop();
-        if s.command_buffer.is_empty() {
-            s.editor_mode = EditorMode::Normal;
-        }
-        assert_eq!(s.command_buffer, "w");
-        assert_eq!(s.editor_mode, EditorMode::Command); // not empty, stays Command
-    }
-
-    #[test]
-    fn command_backspace_empty_transitions_to_normal() {
-        let mut s = InputSession::new();
-        s.editor_mode = EditorMode::Command;
-        // buffer is already empty; pop is a no-op, then the empty-check fires.
-        s.command_buffer.pop();
-        if s.command_buffer.is_empty() {
-            s.editor_mode = EditorMode::Normal;
-        }
-        assert_eq!(s.editor_mode, EditorMode::Normal);
-    }
-
-    #[test]
-    fn command_esc_clears_and_returns_to_normal() {
-        let mut s = InputSession::new();
-        s.editor_mode = EditorMode::Command;
-        s.command_buffer = "wq".to_string();
-        // Simulate the Esc arm.
-        s.command_buffer.clear();
-        s.editor_mode = EditorMode::Normal;
-        assert!(s.command_buffer.is_empty());
-        assert_eq!(s.editor_mode, EditorMode::Normal);
-    }
-
-    // ======================================================================
     // Mode Transitions
     // ======================================================================
 
     #[test]
-    fn mode_cycle_insert_normal_command_normal_insert() {
+    fn mode_cycle_insert_normal_insert() {
         let mut s = InputSession::new();
         assert_eq!(s.editor_mode, EditorMode::Insert);
 
-        s.editor_mode = EditorMode::Normal;
-        assert_eq!(s.editor_mode, EditorMode::Normal);
-
-        s.command_buffer.clear();
-        s.editor_mode = EditorMode::Command;
-        assert_eq!(s.editor_mode, EditorMode::Command);
-
-        s.command_buffer.clear();
         s.editor_mode = EditorMode::Normal;
         assert_eq!(s.editor_mode, EditorMode::Normal);
 
@@ -931,18 +729,15 @@ mod tests {
     }
 
     /// reset_after_submit clears content/cursor/pending_edits, sets Insert mode,
-    /// bumps generation — but does NOT clear command_buffer.
+    /// bumps generation.
     #[test]
     fn reset_after_submit_returns_to_insert() {
         let mut s = session_with("hello", 3);
         s.editor_mode = EditorMode::Normal;
-        s.command_buffer = "wq".to_string();
         s.reset_after_submit();
         assert_eq!(s.editor_mode, EditorMode::Insert);
         assert!(s.content.is_empty());
         assert_eq!(s.cursor, 0);
-        // command_buffer is intentionally NOT cleared by reset_after_submit.
-        assert_eq!(s.command_buffer, "wq");
     }
 
     /// init_from sets content + cursor, clears pending_edits, leaves editor_mode alone.

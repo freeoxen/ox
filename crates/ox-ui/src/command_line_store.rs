@@ -1,29 +1,37 @@
 //! CommandLineStore — reusable vim-style command-line state machine.
 //!
-//! A buffer paired with an open/closed flag. On submit, writes the raw
-//! buffer text to `command/exec` — the [`CommandStore`] owns parsing and
-//! resolution, so this store stays ignorant of command grammar and of
-//! the command registry. Two surfaces (bindings and command line) feed
-//! the same downstream pipeline.
+//! A buffer paired with an open/closed flag. On submit, the buffer text
+//! is moved into [`CommandLineStore::pending_submit`] and the prompt
+//! closes. A consumer (event loop) drains the pending text and routes
+//! it through the command pipeline — typically a write to `command/exec`.
+//!
+//! This deferred-effect shape matches [`UiStore`]'s `pending_action`
+//! pattern: the store records intent synchronously; the caller performs
+//! the async side-effect on the next tick. Keeping dispatch out of the
+//! Writer call is load-bearing: when this store is composed inside
+//! another (like [`UiStore`]), dispatching from its handler would block
+//! the parent's server task, which any write routed back to the same
+//! server would then deadlock against. Pending-effect sidesteps that
+//! without sleeps or spawn-and-pray.
 //!
 //! Screen-agnostic and UI-agnostic: mount under any path, embed as a
-//! sub-store, or exercise standalone in tests. The only wiring needed is
-//! a [`Dispatcher`] that routes writes to the broker.
+//! sub-store, or exercise standalone in tests.
 //!
 //! Read paths:
-//! - `""` — snapshot `{open, content, cursor}`
+//! - `""` — snapshot `{open, content, cursor, pending_submit}`
 //! - `"open"` — Bool
 //! - `"content"` — String
 //! - `"cursor"` — Integer
+//! - `"pending_submit"` — String or Null
 //!
 //! Write paths:
 //! - `"open"` — set open=true, clear buffer
-//! - `"close"` — set open=false, clear buffer
-//! - `"submit"` — send buffer to `command/exec`, then close
+//! - `"close"` — set open=false, clear buffer (pending_submit untouched)
+//! - `"submit"` — move buffer content into pending_submit, then close
+//! - `"clear_pending_submit"` — consumer ack, drops pending_submit
 //! - `"edit"` / `"replace"` / `"clear"` — delegate to the inner [`TextInputStore`]
 //!
-//! [`CommandStore`]: crate::CommandStore
-//! [`Dispatcher`]: crate::command::Dispatcher
+//! [`UiStore`]: crate::UiStore
 //! [`TextInputStore`]: crate::text_input_store::TextInputStore
 
 use std::collections::BTreeMap;
@@ -31,7 +39,6 @@ use std::collections::BTreeMap;
 use ox_path::oxpath;
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer};
 
-use crate::command::Dispatcher;
 use crate::text_input_store::TextInputStore;
 
 // ---------------------------------------------------------------------------
@@ -41,7 +48,10 @@ use crate::text_input_store::TextInputStore;
 pub struct CommandLineStore {
     open: bool,
     buffer: TextInputStore,
-    dispatcher: Option<Dispatcher>,
+    /// Committed text waiting for a consumer to route to `command/exec`.
+    /// `None` in the steady state; `Some` between submit and the next
+    /// tick of the consumer.
+    pending_submit: Option<String>,
 }
 
 impl CommandLineStore {
@@ -49,12 +59,8 @@ impl CommandLineStore {
         CommandLineStore {
             open: false,
             buffer: TextInputStore::new(),
-            dispatcher: None,
+            pending_submit: None,
         }
-    }
-
-    pub fn set_dispatcher(&mut self, dispatcher: Dispatcher) {
-        self.dispatcher = Some(dispatcher);
     }
 
     pub fn is_open(&self) -> bool {
@@ -69,6 +75,10 @@ impl CommandLineStore {
         self.buffer.cursor()
     }
 
+    pub fn pending_submit(&self) -> Option<&str> {
+        self.pending_submit.as_deref()
+    }
+
     fn snapshot(&self) -> Value {
         let mut map = BTreeMap::new();
         map.insert("open".to_string(), Value::Bool(self.open));
@@ -79,6 +89,13 @@ impl CommandLineStore {
         map.insert(
             "cursor".to_string(),
             Value::Integer(self.buffer.cursor() as i64),
+        );
+        map.insert(
+            "pending_submit".to_string(),
+            self.pending_submit
+                .as_ref()
+                .map(|s| Value::String(s.clone()))
+                .unwrap_or(Value::Null),
         );
         Value::Map(map)
     }
@@ -96,17 +113,22 @@ impl CommandLineStore {
     }
 
     fn do_submit(&mut self) -> Result<Path, StoreError> {
-        let dispatcher = self.dispatcher.as_mut().ok_or_else(|| {
-            StoreError::store("command_line", "submit", "no dispatcher configured")
-        })?;
         let content = self.buffer.content().to_string();
-        let target = oxpath!("command", "exec");
-        // Dispatch first so parse errors leave the buffer intact for the
-        // user to correct. Only clear on successful dispatch.
-        dispatcher(&target, Record::parsed(Value::String(content)))?;
+        if content.trim().is_empty() {
+            // Empty submit: vim behavior — silently close, no pending.
+            self.open = false;
+            self.buffer.clear();
+            return Ok(oxpath!("open"));
+        }
+        self.pending_submit = Some(content);
         self.open = false;
         self.buffer.clear();
-        Ok(oxpath!("open"))
+        Ok(oxpath!("pending_submit"))
+    }
+
+    fn do_clear_pending_submit(&mut self) -> Result<Path, StoreError> {
+        self.pending_submit = None;
+        Ok(oxpath!("pending_submit"))
     }
 }
 
@@ -128,6 +150,12 @@ impl Reader for CommandLineStore {
         match from.components[0].as_str() {
             "open" => Ok(Some(Record::parsed(Value::Bool(self.open)))),
             "content" | "cursor" => self.buffer.read(from),
+            "pending_submit" => Ok(Some(Record::parsed(
+                self.pending_submit
+                    .as_ref()
+                    .map(|s| Value::String(s.clone()))
+                    .unwrap_or(Value::Null),
+            ))),
             _ => Ok(None),
         }
     }
@@ -150,6 +178,7 @@ impl Writer for CommandLineStore {
             "open" => self.do_open(),
             "close" => self.do_close(),
             "submit" => self.do_submit(),
+            "clear_pending_submit" => self.do_clear_pending_submit(),
             "edit" | "replace" | "clear" => self.buffer.write(to, data),
             other => Err(StoreError::store(
                 "command_line",
@@ -168,25 +197,7 @@ impl Writer for CommandLineStore {
 mod tests {
     use super::*;
     use crate::text_input_store::{Edit, EditOp, EditSequence, EditSource};
-    use std::sync::{Arc, Mutex};
     use structfs_core_store::path;
-
-    type DispatchLog = Arc<Mutex<Vec<(String, Value)>>>;
-
-    fn mock_dispatcher() -> (Dispatcher, DispatchLog) {
-        let log: DispatchLog = Arc::new(Mutex::new(Vec::new()));
-        let log_clone = log.clone();
-        let dispatcher: Dispatcher = Box::new(move |p, r| {
-            let v = r.as_value().cloned().unwrap_or(Value::Null);
-            log_clone.lock().unwrap().push((p.to_string(), v));
-            Ok(p.clone())
-        });
-        (dispatcher, log)
-    }
-
-    fn failing_dispatcher() -> Dispatcher {
-        Box::new(|_, _| Err(StoreError::store("test", "dispatch", "nope")))
-    }
 
     fn write_insert(store: &mut CommandLineStore, text: &str, at: usize, generation: u64) {
         let seq = EditSequence {
@@ -217,6 +228,16 @@ mod tests {
         }
     }
 
+    fn read_pending(store: &mut CommandLineStore) -> Value {
+        store
+            .read(&path!("pending_submit"))
+            .unwrap()
+            .unwrap()
+            .as_value()
+            .cloned()
+            .unwrap()
+    }
+
     // -- Open / close --
 
     #[test]
@@ -225,6 +246,7 @@ mod tests {
         assert!(!read_open(&mut s));
         assert_eq!(s.content(), "");
         assert_eq!(s.cursor(), 0);
+        assert!(s.pending_submit().is_none());
     }
 
     #[test]
@@ -248,6 +270,22 @@ mod tests {
             .unwrap();
         assert!(!read_open(&mut s));
         assert_eq!(s.content(), "");
+    }
+
+    #[test]
+    fn close_does_not_drop_pending_submit() {
+        // A consumer might observe the pending text after submit even
+        // though the prompt itself has closed.
+        let mut s = CommandLineStore::new();
+        s.write(&path!("open"), Record::parsed(Value::Null))
+            .unwrap();
+        write_insert(&mut s, "quit", 0, 0);
+        s.write(&path!("submit"), Record::parsed(Value::Null))
+            .unwrap();
+        // close after submit preserves pending_submit
+        s.write(&path!("close"), Record::parsed(Value::Null))
+            .unwrap();
+        assert_eq!(s.pending_submit(), Some("quit"));
     }
 
     // -- Edit delegates to inner buffer --
@@ -276,56 +314,50 @@ mod tests {
         assert_eq!(map.get("open"), Some(&Value::Bool(true)));
         assert_eq!(map.get("content"), Some(&Value::String("quit".into())));
         assert_eq!(map.get("cursor"), Some(&Value::Integer(4)));
+        assert_eq!(map.get("pending_submit"), Some(&Value::Null));
     }
 
-    // -- Submit --
+    // -- Submit: deferred effect, no dispatcher --
 
     #[test]
-    fn submit_writes_raw_buffer_to_command_exec_and_closes() {
+    fn submit_moves_buffer_to_pending_and_closes() {
         let mut s = CommandLineStore::new();
-        let (dispatcher, log) = mock_dispatcher();
-        s.set_dispatcher(dispatcher);
-
         s.write(&path!("open"), Record::parsed(Value::Null))
             .unwrap();
         write_insert(&mut s, "quit", 0, 0);
         s.write(&path!("submit"), Record::parsed(Value::Null))
             .unwrap();
 
-        let log = log.lock().unwrap();
-        assert_eq!(log.len(), 1);
-        assert_eq!(log[0].0, "command/exec");
-        assert_eq!(log[0].1, Value::String("quit".into()));
-
         assert!(!read_open(&mut s));
         assert_eq!(s.content(), "");
+        assert_eq!(read_pending(&mut s), Value::String("quit".into()));
     }
 
     #[test]
-    fn submit_without_dispatcher_errors() {
+    fn submit_on_empty_buffer_is_silent_noop() {
         let mut s = CommandLineStore::new();
-        write_insert(&mut s, "quit", 0, 0);
-        let err = s
-            .write(&path!("submit"), Record::parsed(Value::Null))
-            .unwrap_err();
-        assert!(format!("{err}").contains("dispatcher"));
-    }
-
-    #[test]
-    fn submit_preserves_buffer_on_dispatch_error() {
-        // If dispatch fails (e.g., parse error downstream), the user's
-        // text should remain so they can edit and retry.
-        let mut s = CommandLineStore::new();
-        s.set_dispatcher(failing_dispatcher());
         s.write(&path!("open"), Record::parsed(Value::Null))
             .unwrap();
-        write_insert(&mut s, "oops typo", 0, 0);
+        // Buffer is empty. Submitting should close without staging anything.
+        s.write(&path!("submit"), Record::parsed(Value::Null))
+            .unwrap();
+        assert!(!read_open(&mut s));
+        assert!(s.pending_submit().is_none());
+    }
 
-        let err = s.write(&path!("submit"), Record::parsed(Value::Null));
-        assert!(err.is_err());
-        // Buffer + open flag preserved for user to correct
-        assert!(read_open(&mut s));
-        assert_eq!(s.content(), "oops typo");
+    #[test]
+    fn clear_pending_submit_drops_the_staged_text() {
+        let mut s = CommandLineStore::new();
+        s.write(&path!("open"), Record::parsed(Value::Null))
+            .unwrap();
+        write_insert(&mut s, "quit", 0, 0);
+        s.write(&path!("submit"), Record::parsed(Value::Null))
+            .unwrap();
+        assert_eq!(s.pending_submit(), Some("quit"));
+
+        s.write(&path!("clear_pending_submit"), Record::parsed(Value::Null))
+            .unwrap();
+        assert!(s.pending_submit().is_none());
     }
 
     // -- Unknown write paths --

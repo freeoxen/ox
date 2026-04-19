@@ -44,6 +44,11 @@ pub struct CommandLineSnapshot {
     pub open: bool,
     pub content: String,
     pub cursor: usize,
+    /// Text committed by submit and waiting for the event loop to route
+    /// it through `command/exec`. Consumers ack by writing to
+    /// `ui/command_line/clear_pending_submit`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_submit: Option<String>,
 }
 
 /// Which screen is active, with its snapshot data.
@@ -112,7 +117,16 @@ pub struct EditorSnapshot {
 pub struct SearchSnapshot {
     pub chips: Vec<String>,
     pub live_query: String,
+    /// True when the filter bar is visible (mode open OR chips present OR
+    /// an in-flight live query). Drives renderer visibility; consumers
+    /// that specifically need "keystrokes route here" should check
+    /// `mode_open` instead.
     pub active: bool,
+    /// True when the search input is the keystroke destination — i.e.
+    /// the user has the prompt open and a cursor. Chips alone do not
+    /// imply this; they are a persistent view filter.
+    #[serde(default)]
+    pub mode_open: bool,
     /// Path to the materialized search result set (e.g. "inbox/search/results/0001").
     /// Present when a search query has been executed and results are available.
     #[serde(skip_serializing_if = "Option::is_none")]

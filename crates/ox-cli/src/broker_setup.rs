@@ -37,32 +37,11 @@ pub async fn setup(
     let broker = BrokerStore::default();
     let mut servers = Vec::new();
 
-    // Mount UiStore with broker-connected command-line dispatcher so
-    // the embedded CommandLineStore can forward submit writes to
-    // command/exec.
-    //
-    // The dispatch is fire-and-forget on purpose: the command-line store
-    // is composed inside UiStore, so its submit handler runs on UiStore's
-    // server task. If we awaited the downstream write here, any command
-    // that ultimately routes back to `ui/*` would deadlock against the
-    // server that's still handling submit. Spawning decouples them; the
-    // submit write returns Ok immediately, and the resolved command
-    // reaches its target store on the next scheduling tick.
-    {
-        let cmdline_dispatch_client = broker.client();
-        let mut ui = UiStore::new();
-        ui.set_command_line_dispatcher(Box::new(move |target, data| {
-            let client = cmdline_dispatch_client.clone();
-            let t = target.clone();
-            tokio::spawn(async move {
-                if let Err(e) = client.write(&t, data).await {
-                    tracing::warn!(target = %t, error = %e, "command-line dispatch failed");
-                }
-            });
-            Ok(target.clone())
-        }));
-        servers.push(broker.mount(path!("ui"), ui).await);
-    }
+    // Mount UiStore. The embedded CommandLineStore records submit
+    // intent as a pending_submit field; the event loop drains it and
+    // dispatches `command/exec`, avoiding re-entrant writes back into
+    // UiStore's server task.
+    servers.push(broker.mount(path!("ui"), UiStore::new()).await);
 
     // Mount CommandStore with broker-connected dispatcher
     {
@@ -334,6 +313,270 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn chips_survive_thread_roundtrip() {
+        // Chips are a persistent view filter. Opening a thread and
+        // closing back to the inbox must not drop them.
+        use ox_types::{GlobalCommand, InboxCommand, UiCommand};
+
+        let handle = test_setup().await;
+        let client = handle.client();
+
+        // Seed a chip.
+        client
+            .write_typed(
+                &path!("ui"),
+                &UiCommand::Inbox(InboxCommand::SearchInsertChar { char: 'f' }),
+            )
+            .await
+            .unwrap();
+        client
+            .write_typed(
+                &path!("ui"),
+                &UiCommand::Inbox(InboxCommand::SearchSaveChip),
+            )
+            .await
+            .unwrap();
+
+        // Open a thread, then close back.
+        client
+            .write_typed(
+                &path!("ui"),
+                &UiCommand::Global(GlobalCommand::Open {
+                    thread_id: "t_roundtrip".into(),
+                }),
+            )
+            .await
+            .unwrap();
+        client
+            .write_typed(&path!("ui"), &UiCommand::Global(GlobalCommand::Close))
+            .await
+            .unwrap();
+
+        // Chip should still be there.
+        let chips = client
+            .read(&path!("ui/search_chips"))
+            .await
+            .unwrap()
+            .unwrap();
+        match chips.as_value().unwrap() {
+            Value::Array(a) => {
+                assert_eq!(a.len(), 1);
+                assert_eq!(a[0], Value::String("f".into()));
+            }
+            other => panic!("expected array, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn number_keys_in_normal_mode_dismiss_chips() {
+        // Regression: `1`-`9` bindings declared `index` as a String,
+        // but the builtin registry declares it as Integer — every
+        // dismiss was silently rejected by the type-mismatch validator.
+        use ox_types::{InboxCommand, UiCommand};
+
+        let handle = test_setup().await;
+        let client = handle.client();
+        client
+            .write_typed(
+                &path!("ui"),
+                &UiCommand::Inbox(InboxCommand::SetRowCount { count: 5 }),
+            )
+            .await
+            .unwrap();
+
+        // Seed two chips by typing and hitting Enter twice via Search mode.
+        let slash = ox_types::InputKeyEvent {
+            mode: ox_types::Mode::Normal,
+            key: "/".into(),
+            screen: ox_types::Screen::Inbox,
+        };
+        client
+            .write_typed(&path!("input/key"), &slash)
+            .await
+            .unwrap();
+        for c in "foo".chars() {
+            crate::event_loop::handle_unbound_search_key(
+                &client,
+                crossterm::event::KeyCode::Char(c),
+            )
+            .await;
+        }
+        let enter = ox_types::InputKeyEvent {
+            mode: ox_types::Mode::Search,
+            key: "Enter".into(),
+            screen: ox_types::Screen::Inbox,
+        };
+        client
+            .write_typed(&path!("input/key"), &enter)
+            .await
+            .unwrap();
+        // Type bar + Enter → second chip
+        for c in "bar".chars() {
+            crate::event_loop::handle_unbound_search_key(
+                &client,
+                crossterm::event::KeyCode::Char(c),
+            )
+            .await;
+        }
+        client
+            .write_typed(&path!("input/key"), &enter)
+            .await
+            .unwrap();
+        // Esc out of Search mode
+        let esc = ox_types::InputKeyEvent {
+            mode: ox_types::Mode::Search,
+            key: "Esc".into(),
+            screen: ox_types::Screen::Inbox,
+        };
+        client.write_typed(&path!("input/key"), &esc).await.unwrap();
+
+        // Sanity: two chips
+        let chips = client
+            .read(&path!("ui/search_chips"))
+            .await
+            .unwrap()
+            .unwrap();
+        match chips.as_value().unwrap() {
+            Value::Array(a) => assert_eq!(a.len(), 2),
+            other => panic!("expected array, got {other:?}"),
+        }
+
+        // Press `1` in Normal mode on inbox → dismiss chip 0 (first).
+        let one = ox_types::InputKeyEvent {
+            mode: ox_types::Mode::Normal,
+            key: "1".into(),
+            screen: ox_types::Screen::Inbox,
+        };
+        client.write_typed(&path!("input/key"), &one).await.unwrap();
+
+        let chips = client
+            .read(&path!("ui/search_chips"))
+            .await
+            .unwrap()
+            .unwrap();
+        match chips.as_value().unwrap() {
+            Value::Array(a) => {
+                assert_eq!(a.len(), 1, "chip should have been dismissed");
+                assert_eq!(a[0], Value::String("bar".into()));
+            }
+            other => panic!("expected array, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn search_slash_on_inbox_opens_mode_not_editor() {
+        // `/` should open search mode without creating an editor. Hitting
+        // Enter promotes the live query into a chip. Esc closes the mode
+        // and drops any in-flight live query but leaves chips intact.
+        let handle = test_setup().await;
+        let client = handle.client();
+
+        // Press `/` on inbox — Normal mode
+        let slash = ox_types::InputKeyEvent {
+            mode: ox_types::Mode::Normal,
+            key: "/".to_string(),
+            screen: ox_types::Screen::Inbox,
+        };
+        client
+            .write_typed(&path!("input/key"), &slash)
+            .await
+            .unwrap();
+
+        // Mode snapshot reports search
+        let mode = client.read(&path!("ui/mode")).await.unwrap().unwrap();
+        assert_eq!(mode.as_value().unwrap(), &Value::String("search".into()));
+        // Editor is not involved
+        let ctx = client
+            .read(&path!("ui/insert_context"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(ctx.as_value().unwrap(), &Value::Null);
+
+        // Type "foo" through the same fallback the event loop uses for
+        // unbound Search-mode keys — the path real keystrokes take.
+        for c in "foo".chars() {
+            crate::event_loop::handle_unbound_search_key(
+                &client,
+                crossterm::event::KeyCode::Char(c),
+            )
+            .await;
+        }
+        let live = client
+            .read(&path!("ui/search_live_query"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(live.as_value().unwrap(), &Value::String("foo".into()));
+
+        // Enter → SearchSaveChip via Search-mode binding
+        let enter = ox_types::InputKeyEvent {
+            mode: ox_types::Mode::Search,
+            key: "Enter".to_string(),
+            screen: ox_types::Screen::Inbox,
+        };
+        client
+            .write_typed(&path!("input/key"), &enter)
+            .await
+            .unwrap();
+
+        // Chip committed; live_query empty; still in search mode (cursor ready)
+        let chips = client
+            .read(&path!("ui/search_chips"))
+            .await
+            .unwrap()
+            .unwrap();
+        match chips.as_value().unwrap() {
+            Value::Array(a) => {
+                assert_eq!(a.len(), 1);
+                assert_eq!(a[0], Value::String("foo".into()));
+            }
+            other => panic!("expected array, got {other:?}"),
+        }
+        let live = client
+            .read(&path!("ui/search_live_query"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(live.as_value().unwrap(), &Value::String("".into()));
+
+        // Type "bar" via the fallback again, then Esc → closes mode
+        // and drops the in-flight query.
+        for c in "bar".chars() {
+            crate::event_loop::handle_unbound_search_key(
+                &client,
+                crossterm::event::KeyCode::Char(c),
+            )
+            .await;
+        }
+        let esc = ox_types::InputKeyEvent {
+            mode: ox_types::Mode::Search,
+            key: "Esc".to_string(),
+            screen: ox_types::Screen::Inbox,
+        };
+        client.write_typed(&path!("input/key"), &esc).await.unwrap();
+
+        let mode = client.read(&path!("ui/mode")).await.unwrap().unwrap();
+        assert_eq!(mode.as_value().unwrap(), &Value::String("normal".into()));
+        let live = client
+            .read(&path!("ui/search_live_query"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(live.as_value().unwrap(), &Value::String("".into()));
+        // Chip persists across close — it's a view filter.
+        let chips = client
+            .read(&path!("ui/search_chips"))
+            .await
+            .unwrap()
+            .unwrap();
+        match chips.as_value().unwrap() {
+            Value::Array(a) => assert_eq!(a.len(), 1),
+            other => panic!("expected array, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn command_line_open_submits_through_command_exec() {
         // Full pipeline: open the command line, type "quit", submit —
         // should route through command/exec to the quit target and land
@@ -386,21 +629,53 @@ mod tests {
             .await
             .unwrap();
 
-        // Post-submit: command line is closed and buffer cleared
+        // Post-submit: prompt is closed, buffer cleared, and the text
+        // is staged on pending_submit waiting for the event loop to
+        // drain it. No spawn, no race — synchronous state transitions.
         let open = client
             .read(&path!("ui/command_line/open"))
             .await
             .unwrap()
             .unwrap();
         assert_eq!(open.as_value().unwrap(), &Value::Bool(false));
+        let pending = client
+            .read(&path!("ui/command_line/pending_submit"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(pending.as_value().unwrap(), &Value::String("quit".into()));
 
-        // quit set pending_action to Quit
+        // Simulate the event loop's drain: dispatch `command/exec`,
+        // then clear the pending field. Both writes are synchronous
+        // through the broker and the effect lands deterministically.
+        client
+            .write(
+                &path!("command/exec"),
+                structfs_core_store::Record::parsed(Value::String("quit".into())),
+            )
+            .await
+            .unwrap();
+        client
+            .write(
+                &path!("ui/command_line/clear_pending_submit"),
+                structfs_core_store::Record::parsed(Value::Null),
+            )
+            .await
+            .unwrap();
+
+        // quit set pending_action to Quit; pending_submit is cleared.
         let pa = client
             .read(&path!("ui/pending_action"))
             .await
             .unwrap()
             .unwrap();
         assert_eq!(pa.as_value().unwrap(), &Value::String("quit".into()));
+        let pending = client
+            .read(&path!("ui/command_line/pending_submit"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(pending.as_value().unwrap(), &Value::Null);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

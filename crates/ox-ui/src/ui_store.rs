@@ -73,13 +73,19 @@ struct InboxState {
     editor: Option<EditorState>,
     search_chips: Vec<String>,
     search_live_query: String,
+    /// True when the search prompt is accepting keystrokes. Chips alone
+    /// do not imply this — they are a persistent view filter.
+    search_mode_open: bool,
     /// Path to the materialized search result set.
     search_result_handle: Option<String>,
 }
 
 impl InboxState {
+    /// The filter bar is visible whenever any of these hold. `mode_open`
+    /// means the user is editing; `chips` and `live_query` mean the
+    /// filter has content, which is worth showing even with no cursor.
     fn search_active(&self) -> bool {
-        !self.search_chips.is_empty() || !self.search_live_query.is_empty()
+        self.search_mode_open || !self.search_chips.is_empty() || !self.search_live_query.is_empty()
     }
 
     /// Invalidate the cached search result handle (query changed).
@@ -165,7 +171,10 @@ impl HistoryState {
 }
 
 enum ActiveScreen {
-    Inbox(InboxState),
+    /// Inbox is active. State lives on [`UiStore::inbox`] so persistent
+    /// filters (chips, selected row) survive round-trips to other
+    /// screens.
+    Inbox,
     Thread(ThreadState),
     Settings(SettingsState),
     History(HistoryState),
@@ -177,6 +186,9 @@ enum ActiveScreen {
 
 /// Holds all TUI state. Implements StructFS Reader and Writer.
 pub struct UiStore {
+    /// Inbox state lives outside the active-screen enum so filter chips
+    /// and the selected row survive navigation to a thread (and back).
+    inbox: InboxState,
     screen: ActiveScreen,
     pending_action: Option<PendingAction>,
     status: Option<String>,
@@ -187,25 +199,28 @@ impl UiStore {
     /// Create a new UiStore with default state.
     pub fn new() -> Self {
         UiStore {
-            screen: ActiveScreen::Inbox(InboxState::default()),
+            inbox: InboxState::default(),
+            screen: ActiveScreen::Inbox,
             pending_action: None,
             status: None,
             command_line: crate::CommandLineStore::new(),
         }
     }
 
-    /// Wire the embedded command-line store's dispatcher. Must be called
-    /// before [`UiStore`] is mounted into the broker; the dispatcher
-    /// forwards `submit` writes to `command/exec`.
-    pub fn set_command_line_dispatcher(&mut self, dispatcher: crate::Dispatcher) {
-        self.command_line.set_dispatcher(dispatcher);
+    /// Drop any in-flight search prompt state when navigating off the
+    /// inbox. Chips and the selected row stay; the transient prompt
+    /// (mode flag + live query) does not.
+    fn close_search_prompt(&mut self) {
+        self.inbox.search_mode_open = false;
+        self.inbox.search_live_query.clear();
+        self.inbox.invalidate_search();
     }
 
     // -- Screen guard helpers --
 
     fn inbox_state(&mut self) -> Result<&mut InboxState, StoreError> {
-        match &mut self.screen {
-            ActiveScreen::Inbox(s) => Ok(s),
+        match &self.screen {
+            ActiveScreen::Inbox => Ok(&mut self.inbox),
             _ => Err(StoreError::store("ui", "inbox", "not on inbox screen")),
         }
     }
@@ -238,7 +253,7 @@ impl UiStore {
     /// Get a mutable reference to the active editor, if one exists.
     fn active_editor_mut(&mut self) -> Result<&mut EditorState, StoreError> {
         match &mut self.screen {
-            ActiveScreen::Inbox(s) => s.editor.as_mut(),
+            ActiveScreen::Inbox => self.inbox.editor.as_mut(),
             ActiveScreen::Thread(s) => s.editor.as_mut(),
             ActiveScreen::Settings(_) => None,
             ActiveScreen::History(_) => None,
@@ -250,15 +265,16 @@ impl UiStore {
 
     fn snapshot(&self) -> UiSnapshot {
         let screen = match &self.screen {
-            ActiveScreen::Inbox(s) => ScreenSnapshot::Inbox(InboxSnapshot {
-                selected_row: s.selected_row,
-                row_count: s.row_count,
-                editor: s.editor.as_ref().map(|e| e.snapshot()),
+            ActiveScreen::Inbox => ScreenSnapshot::Inbox(InboxSnapshot {
+                selected_row: self.inbox.selected_row,
+                row_count: self.inbox.row_count,
+                editor: self.inbox.editor.as_ref().map(|e| e.snapshot()),
                 search: SearchSnapshot {
-                    chips: s.search_chips.clone(),
-                    live_query: s.search_live_query.clone(),
-                    active: s.search_active(),
-                    result_handle: s.search_result_handle.clone(),
+                    chips: self.inbox.search_chips.clone(),
+                    live_query: self.inbox.search_live_query.clone(),
+                    active: self.inbox.search_active(),
+                    mode_open: self.inbox.search_mode_open,
+                    result_handle: self.inbox.search_result_handle.clone(),
                 },
             }),
             ActiveScreen::Thread(s) => ScreenSnapshot::Thread(ThreadSnapshot {
@@ -294,6 +310,7 @@ impl UiStore {
                 open: self.command_line.is_open(),
                 content: self.command_line.content().to_string(),
                 cursor: self.command_line.cursor(),
+                pending_submit: self.command_line.pending_submit().map(|s| s.to_string()),
             },
         }
     }
@@ -302,7 +319,7 @@ impl UiStore {
 
     fn screen_name(&self) -> &str {
         match &self.screen {
-            ActiveScreen::Inbox(_) => "inbox",
+            ActiveScreen::Inbox => "inbox",
             ActiveScreen::Thread(_) => "thread",
             ActiveScreen::Settings(_) => "settings",
             ActiveScreen::History(_) => "history",
@@ -311,8 +328,10 @@ impl UiStore {
 
     fn mode_value(&self) -> Value {
         let mode = match &self.screen {
-            ActiveScreen::Inbox(s) => {
-                if s.editor.is_some() {
+            ActiveScreen::Inbox => {
+                if self.inbox.search_mode_open {
+                    Mode::Search
+                } else if self.inbox.editor.is_some() {
                     Mode::Insert
                 } else {
                     Mode::Normal
@@ -333,7 +352,7 @@ impl UiStore {
 
     fn insert_context_value(&self) -> Value {
         let ctx = match &self.screen {
-            ActiveScreen::Inbox(s) => s.editor.as_ref().map(|e| e.context),
+            ActiveScreen::Inbox => self.inbox.editor.as_ref().map(|e| e.context),
             ActiveScreen::Thread(s) => s.editor.as_ref().map(|e| e.context),
             ActiveScreen::Settings(_) => None,
             ActiveScreen::History(_) => None,
@@ -380,7 +399,7 @@ impl UiStore {
 
     fn selected_row_value(&self) -> Value {
         match &self.screen {
-            ActiveScreen::Inbox(s) => Value::Integer(s.selected_row as i64),
+            ActiveScreen::Inbox => Value::Integer(self.inbox.selected_row as i64),
             ActiveScreen::History(s) => Value::Integer(s.selected_row as i64),
             _ => Value::Integer(0),
         }
@@ -388,7 +407,7 @@ impl UiStore {
 
     fn row_count_value(&self) -> Value {
         match &self.screen {
-            ActiveScreen::Inbox(s) => Value::Integer(s.row_count as i64),
+            ActiveScreen::Inbox => Value::Integer(self.inbox.row_count as i64),
             _ => Value::Integer(0),
         }
     }
@@ -415,35 +434,27 @@ impl UiStore {
     }
 
     fn search_chips_value(&self) -> Value {
-        match &self.screen {
-            ActiveScreen::Inbox(s) => Value::Array(
-                s.search_chips
-                    .iter()
-                    .map(|c| Value::String(c.clone()))
-                    .collect(),
-            ),
-            _ => Value::Array(vec![]),
-        }
+        Value::Array(
+            self.inbox
+                .search_chips
+                .iter()
+                .map(|c| Value::String(c.clone()))
+                .collect(),
+        )
     }
 
     fn search_live_query_value(&self) -> Value {
-        match &self.screen {
-            ActiveScreen::Inbox(s) => Value::String(s.search_live_query.clone()),
-            _ => Value::String(String::new()),
-        }
+        Value::String(self.inbox.search_live_query.clone())
     }
 
     fn search_active_value(&self) -> Value {
-        match &self.screen {
-            ActiveScreen::Inbox(s) => Value::Bool(s.search_active()),
-            _ => Value::Bool(false),
-        }
+        Value::Bool(self.inbox.search_active())
     }
 
     /// Read the active editor's content/cursor as an input snapshot value.
     fn input_value(&self, sub_key: &str) -> Value {
         let editor = match &self.screen {
-            ActiveScreen::Inbox(s) => s.editor.as_ref(),
+            ActiveScreen::Inbox => self.inbox.editor.as_ref(),
             ActiveScreen::Thread(s) => s.editor.as_ref(),
             ActiveScreen::Settings(_) => None,
             ActiveScreen::History(_) => None,
@@ -483,23 +494,29 @@ impl UiStore {
                 Ok(path!("pending_action"))
             }
             GlobalCommand::Open { thread_id } => {
+                self.close_search_prompt();
                 self.screen = ActiveScreen::Thread(ThreadState::new(thread_id));
                 Ok(path!("screen"))
             }
             GlobalCommand::Close => {
-                self.screen = ActiveScreen::Inbox(InboxState::default());
+                // Return to the inbox with its persistent state intact
+                // (chips, selected row). Only the transient prompt
+                // should have been reset on the way out.
+                self.screen = ActiveScreen::Inbox;
                 self.pending_action = None;
                 Ok(path!("screen"))
             }
             GlobalCommand::GoToSettings => {
+                self.close_search_prompt();
                 self.screen = ActiveScreen::Settings(SettingsState::default());
                 Ok(path!("screen"))
             }
             GlobalCommand::GoToInbox => {
-                self.screen = ActiveScreen::Inbox(InboxState::default());
+                self.screen = ActiveScreen::Inbox;
                 Ok(path!("screen"))
             }
             GlobalCommand::OpenHistory { thread_id } => {
+                self.close_search_prompt();
                 self.screen = ActiveScreen::History(HistoryState::new(thread_id));
                 Ok(path!("screen"))
             }
@@ -615,8 +632,15 @@ impl UiStore {
             }
             InboxCommand::Search => {
                 let s = self.inbox_state()?;
-                s.editor = Some(EditorState::new(InsertContext::Search));
-                Ok(path!("editor"))
+                s.search_mode_open = true;
+                Ok(path!("search_mode_open"))
+            }
+            InboxCommand::SearchClose => {
+                let s = self.inbox_state()?;
+                s.search_mode_open = false;
+                s.search_live_query.clear();
+                s.invalidate_search();
+                Ok(path!("search_mode_open"))
             }
             InboxCommand::DismissEditor => {
                 let s = self.inbox_state()?;
@@ -695,11 +719,6 @@ impl UiStore {
             ThreadCommand::Reply => {
                 let s = self.thread_state()?;
                 s.editor = Some(EditorState::new(InsertContext::Reply));
-                Ok(path!("editor"))
-            }
-            ThreadCommand::Command => {
-                let s = self.thread_state()?;
-                s.editor = Some(EditorState::new(InsertContext::Command));
                 Ok(path!("editor"))
             }
             ThreadCommand::DismissEditor => {
@@ -1155,6 +1174,8 @@ impl UiStore {
             })),
             "open_selected" => Ok(UiCommand::Inbox(InboxCommand::OpenSelected)),
             "archive_selected" => Ok(UiCommand::Inbox(InboxCommand::ArchiveSelected)),
+            "search" => Ok(UiCommand::Inbox(InboxCommand::Search)),
+            "search_close" => Ok(UiCommand::Inbox(InboxCommand::SearchClose)),
             "search_insert_char" => Ok(UiCommand::Inbox(InboxCommand::SearchInsertChar {
                 char: get_char(map, "char").ok_or_else(|| err("missing char"))?,
             })),
@@ -1193,31 +1214,19 @@ impl UiStore {
                     serde_json::from_value(serde_json::Value::String(ctx_str)).map_err(|e| {
                         StoreError::store("ui", "path_command", format!("bad context: {e}"))
                     })?;
-                // Route to the current screen's command
+                // Route to the current screen's command.
                 match (&self.screen, context) {
-                    (ActiveScreen::Inbox(_), InsertContext::Compose) => {
+                    (ActiveScreen::Inbox, InsertContext::Compose) => {
                         Ok(UiCommand::Inbox(InboxCommand::Compose))
-                    }
-                    (ActiveScreen::Inbox(_), InsertContext::Search) => {
-                        Ok(UiCommand::Inbox(InboxCommand::Search))
                     }
                     (ActiveScreen::Thread(_), InsertContext::Reply) => {
                         Ok(UiCommand::Thread(ThreadCommand::Reply))
                     }
-                    (ActiveScreen::Thread(_), InsertContext::Command) => {
-                        Ok(UiCommand::Thread(ThreadCommand::Command))
-                    }
-                    (ActiveScreen::Inbox(_), InsertContext::Reply) => {
+                    (ActiveScreen::Inbox, InsertContext::Reply) => {
                         Ok(UiCommand::Inbox(InboxCommand::Compose))
-                    }
-                    (ActiveScreen::Inbox(_), InsertContext::Command) => {
-                        Err(err("command context not supported on inbox screen"))
                     }
                     (ActiveScreen::Thread(_), InsertContext::Compose) => {
                         Ok(UiCommand::Thread(ThreadCommand::Reply))
-                    }
-                    (ActiveScreen::Thread(_), InsertContext::Search) => {
-                        Err(err("search context not supported on thread screen"))
                     }
                     (ActiveScreen::Settings(_), _) => {
                         Err(err("enter_insert not supported on settings screen"))
@@ -1228,7 +1237,7 @@ impl UiStore {
                 }
             }
             "exit_insert" => match &self.screen {
-                ActiveScreen::Inbox(_) => Ok(UiCommand::Inbox(InboxCommand::DismissEditor)),
+                ActiveScreen::Inbox => Ok(UiCommand::Inbox(InboxCommand::DismissEditor)),
                 ActiveScreen::Thread(_) => Ok(UiCommand::Thread(ThreadCommand::DismissEditor)),
                 ActiveScreen::Settings(_) => Err(StoreError::store(
                     "ui",
@@ -1243,7 +1252,7 @@ impl UiStore {
             },
             // set_input and clear_input handled via resolve_path_command_direct
             "send_input" => match &self.screen {
-                ActiveScreen::Inbox(_) => Ok(UiCommand::Inbox(InboxCommand::SubmitEditor)),
+                ActiveScreen::Inbox => Ok(UiCommand::Inbox(InboxCommand::SubmitEditor)),
                 ActiveScreen::Thread(_) => Ok(UiCommand::Thread(ThreadCommand::SubmitEditor)),
                 ActiveScreen::Settings(_) => Err(StoreError::store(
                     "ui",

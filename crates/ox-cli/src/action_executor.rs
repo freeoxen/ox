@@ -51,7 +51,6 @@ pub(crate) fn execute(
     action: PendingAction,
     dialog: &mut DialogState,
     editor_mode: &mut EditorMode,
-    command_buffer: &mut String,
     ui: &UiSnapshot,
     selected_thread_id: Option<&str>,
     editor_content_setter: &mut Option<String>,
@@ -129,10 +128,6 @@ pub(crate) fn execute(
                 EditorMode::Insert => {
                     *editor_mode = EditorMode::Normal;
                 }
-                EditorMode::Command => {
-                    command_buffer.clear();
-                    *editor_mode = EditorMode::Normal;
-                }
                 EditorMode::Normal => {
                     // Exit insert entirely — dismiss editor on current screen
                     match &ui.screen {
@@ -198,13 +193,11 @@ mod tests {
     fn quit_sets_flag() {
         let mut dialog = empty_dialog();
         let mut mode = EditorMode::Insert;
-        let mut buf = String::new();
         let mut setter = None;
         let effects = execute(
             PendingAction::Quit,
             &mut dialog,
             &mut mode,
-            &mut buf,
             &inbox_ui(),
             None,
             &mut setter,
@@ -216,14 +209,12 @@ mod tests {
     fn toggle_shortcuts() {
         let mut dialog = empty_dialog();
         let mut mode = EditorMode::Insert;
-        let mut buf = String::new();
         let mut setter = None;
 
         execute(
             PendingAction::ToggleShortcuts,
             &mut dialog,
             &mut mode,
-            &mut buf,
             &inbox_ui(),
             None,
             &mut setter,
@@ -234,7 +225,6 @@ mod tests {
             PendingAction::ToggleShortcuts,
             &mut dialog,
             &mut mode,
-            &mut buf,
             &inbox_ui(),
             None,
             &mut setter,
@@ -247,13 +237,11 @@ mod tests {
         let mut dialog = empty_dialog();
         dialog.show_usage = true;
         let mut mode = EditorMode::Insert;
-        let mut buf = String::new();
         let mut setter = None;
         execute(
             PendingAction::DismissUsage,
             &mut dialog,
             &mut mode,
-            &mut buf,
             &inbox_ui(),
             None,
             &mut setter,
@@ -265,13 +253,11 @@ mod tests {
     fn enter_history_search_creates_state() {
         let mut dialog = empty_dialog();
         let mut mode = EditorMode::Insert;
-        let mut buf = String::new();
         let mut setter = None;
         execute(
             PendingAction::EnterHistorySearch,
             &mut dialog,
             &mut mode,
-            &mut buf,
             &inbox_ui(),
             None,
             &mut setter,
@@ -291,14 +277,12 @@ mod tests {
             selected: 0,
         });
         let mut mode = EditorMode::Insert;
-        let mut buf = String::new();
         let mut setter = None;
 
         execute(
             PendingAction::HistorySearchCycle,
             &mut dialog,
             &mut mode,
-            &mut buf,
             &inbox_ui(),
             None,
             &mut setter,
@@ -309,7 +293,6 @@ mod tests {
             PendingAction::HistorySearchCycle,
             &mut dialog,
             &mut mode,
-            &mut buf,
             &inbox_ui(),
             None,
             &mut setter,
@@ -321,7 +304,6 @@ mod tests {
             PendingAction::HistorySearchCycle,
             &mut dialog,
             &mut mode,
-            &mut buf,
             &inbox_ui(),
             None,
             &mut setter,
@@ -338,14 +320,12 @@ mod tests {
             selected: 0,
         });
         let mut mode = EditorMode::Insert;
-        let mut buf = String::new();
         let mut setter = None;
 
         execute(
             PendingAction::AcceptHistorySearch,
             &mut dialog,
             &mut mode,
-            &mut buf,
             &inbox_ui(),
             None,
             &mut setter,
@@ -363,14 +343,12 @@ mod tests {
             selected: 0,
         });
         let mut mode = EditorMode::Insert;
-        let mut buf = String::new();
         let mut setter = None;
 
         execute(
             PendingAction::DismissHistorySearch,
             &mut dialog,
             &mut mode,
-            &mut buf,
             &inbox_ui(),
             None,
             &mut setter,
@@ -383,13 +361,11 @@ mod tests {
     fn toggle_editor_mode_insert_to_normal() {
         let mut dialog = empty_dialog();
         let mut mode = EditorMode::Insert;
-        let mut buf = String::new();
         let mut setter = None;
         let effects = execute(
             PendingAction::ToggleEditorMode,
             &mut dialog,
             &mut mode,
-            &mut buf,
             &inbox_ui(),
             None,
             &mut setter,
@@ -399,35 +375,14 @@ mod tests {
     }
 
     #[test]
-    fn toggle_editor_mode_command_to_normal_clears_buffer() {
-        let mut dialog = empty_dialog();
-        let mut mode = EditorMode::Command;
-        let mut buf = "some command".to_string();
-        let mut setter = None;
-        execute(
-            PendingAction::ToggleEditorMode,
-            &mut dialog,
-            &mut mode,
-            &mut buf,
-            &inbox_ui(),
-            None,
-            &mut setter,
-        );
-        assert_eq!(mode, EditorMode::Normal);
-        assert!(buf.is_empty());
-    }
-
-    #[test]
     fn toggle_editor_mode_normal_exits_insert_thread() {
         let mut dialog = empty_dialog();
         let mut mode = EditorMode::Normal;
-        let mut buf = String::new();
         let mut setter = None;
         let effects = execute(
             PendingAction::ToggleEditorMode,
             &mut dialog,
             &mut mode,
-            &mut buf,
             &thread_ui("t_1"),
             None,
             &mut setter,
@@ -443,13 +398,11 @@ mod tests {
     fn toggle_editor_mode_normal_exits_insert_inbox() {
         let mut dialog = empty_dialog();
         let mut mode = EditorMode::Normal;
-        let mut buf = String::new();
         let mut setter = None;
         let effects = execute(
             PendingAction::ToggleEditorMode,
             &mut dialog,
             &mut mode,
-            &mut buf,
             &inbox_ui(),
             None,
             &mut setter,
@@ -465,7 +418,6 @@ mod tests {
     fn approval_confirm_reads_selected() {
         let mut dialog = empty_dialog();
         let mut mode = EditorMode::Insert;
-        let mut buf = String::new();
         let mut setter = None;
         let mut ui = thread_ui("t_1");
         if let ScreenSnapshot::Thread(ref mut snap) = ui.screen {
@@ -475,7 +427,6 @@ mod tests {
             PendingAction::ApprovalConfirm,
             &mut dialog,
             &mut mode,
-            &mut buf,
             &ui,
             None,
             &mut setter,
@@ -487,13 +438,11 @@ mod tests {
     fn open_selected_passes_thread_id() {
         let mut dialog = empty_dialog();
         let mut mode = EditorMode::Insert;
-        let mut buf = String::new();
         let mut setter = None;
         let effects = execute(
             PendingAction::OpenSelected,
             &mut dialog,
             &mut mode,
-            &mut buf,
             &inbox_ui(),
             Some("t_42"),
             &mut setter,
@@ -505,13 +454,11 @@ mod tests {
     fn archive_selected_passes_thread_id() {
         let mut dialog = empty_dialog();
         let mut mode = EditorMode::Insert;
-        let mut buf = String::new();
         let mut setter = None;
         let effects = execute(
             PendingAction::ArchiveSelected,
             &mut dialog,
             &mut mode,
-            &mut buf,
             &inbox_ui(),
             Some("t_99"),
             &mut setter,

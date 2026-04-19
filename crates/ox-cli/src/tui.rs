@@ -36,15 +36,19 @@ pub(crate) fn draw(
     Option<PendingHyperlink>,
 ) {
     let editor = vs.ui.editor();
-    let cur_insert_context = editor.map(|e| e.context);
-    let is_command_mode = cur_insert_context == Some(InsertContext::Command);
-    let in_insert = editor.is_some() && !is_command_mode;
-    let show_filter = matches!(&vs.ui.screen, ScreenSnapshot::Inbox(s) if s.search.active);
+    let in_insert = editor.is_some();
 
-    // Build layout constraints
+    // Chip row shows above the content on the inbox whenever chips are
+    // set. Chips are a persistent view filter — make them visible.
+    let chips_visible =
+        matches!(&vs.ui.screen, ScreenSnapshot::Inbox(s) if !s.search.chips.is_empty());
+
+    // Build layout constraints. The status row at the bottom is the
+    // single modal surface for history-search, command line, and
+    // inbox search prompt — they all render at chunks[last].
     let mut constraints = vec![Constraint::Length(1)]; // tab bar
-    if show_filter {
-        constraints.push(Constraint::Length(1)); // filter bar
+    if chips_visible {
+        constraints.push(Constraint::Length(1)); // chip row
     }
     constraints.push(Constraint::Min(1)); // content
     let _input_height = if in_insert {
@@ -71,9 +75,9 @@ pub(crate) fn draw(
     crate::tab_bar::draw_tabs(frame, vs, theme, chunks[idx]);
     idx += 1;
 
-    // Filter bar (if active)
-    if show_filter {
-        crate::inbox_view::draw_filter_bar(frame, vs, theme, chunks[idx]);
+    // Chip row (inbox with filters set)
+    if chips_visible {
+        crate::inbox_view::draw_chip_bar(frame, vs, theme, chunks[idx]);
         idx += 1;
     }
 
@@ -136,10 +140,8 @@ pub(crate) fn draw(
             ""
         };
 
-        // Hide cursor when a modal overlay is active or in search context
-        let show_cursor = vs.approval_pending.is_none()
-            && vs.pending_customize.is_none()
-            && cur_insert_context != Some(InsertContext::Search);
+        // Hide cursor when a modal overlay is active.
+        let show_cursor = vs.approval_pending.is_none() && vs.pending_customize.is_none();
 
         if show_cursor {
             text_input_view.render(frame, input_area, theme.input_border, title);
@@ -155,22 +157,23 @@ pub(crate) fn draw(
         }
     }
 
-    // Status bar / command line / history search
+    // Bottom row: modal status line. Content is picked from the shared
+    // `focus_mode` so renderer and input router never disagree about
+    // which surface is foregrounded. Chips are shown in a dedicated row
+    // up top (see `draw_chip_bar`), so the status row here only carries
+    // transient prompts and the default status bar.
+    use ox_types::Mode;
     let status_area = chunks[idx];
-    if let Some((query, results, selected)) = &vs.history_search {
-        draw_history_search(frame, query, results, *selected, theme, status_area);
-    } else {
-        // The global command line (vs.ui.command_line) wins; legacy
-        // editor-internal command mode is the fallback until the editor
-        // migrates to the same store.
-        let show_command_line = vs.ui.command_line.open
-            || is_command_mode
-            || vs.editor_mode == crate::editor::EditorMode::Command;
-        if show_command_line {
-            draw_command_line(frame, vs, theme, status_area);
-        } else {
-            draw_status_bar(frame, vs, settings, theme, status_area);
+    let focus = vs.focus();
+    match focus {
+        Mode::HistorySearch => {
+            if let Some((query, results, selected)) = &vs.history_search {
+                draw_history_search(frame, query, results, *selected, theme, status_area);
+            }
         }
+        Mode::Command => draw_command_line(frame, vs, theme, status_area),
+        Mode::Search => crate::inbox_view::draw_search_prompt(frame, vs, theme, status_area),
+        _ => draw_status_bar(frame, vs, settings, theme, status_area),
     }
 
     // Modal overlays
@@ -255,16 +258,7 @@ fn draw_command_line(frame: &mut Frame, vs: &ViewState, _theme: &Theme, area: Re
         ":",
         ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::BOLD),
     );
-    // Priority: global command line > legacy editor command mode > legacy
-    // editor-as-command-context fallback. The first two paths will merge
-    // when the editor migrates to CommandLineStore.
-    let text: &str = if vs.ui.command_line.open {
-        vs.ui.command_line.content.as_str()
-    } else if vs.editor_mode == crate::editor::EditorMode::Command {
-        &vs.editor_command_buffer
-    } else {
-        vs.ui.editor().map(|e| e.content.as_str()).unwrap_or("")
-    };
+    let text: &str = vs.ui.command_line.content.as_str();
     let input = Span::raw(text);
     let line = Line::from(vec![prompt, input]);
     frame.render_widget(Paragraph::new(line), area);
@@ -292,8 +286,6 @@ fn draw_status_bar(
         let label = match editor.map(|e| e.context) {
             Some(InsertContext::Compose) => " COMPOSE ",
             Some(InsertContext::Reply) => " REPLY ",
-            Some(InsertContext::Search) => " SEARCH ",
-            Some(InsertContext::Command) => " COMMAND ",
             None => " INSERT ",
         };
         Span::styled(label, theme.insert_badge)
