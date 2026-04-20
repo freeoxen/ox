@@ -1,12 +1,11 @@
 //! Crash-test harness.
 //!
-//! Two modes:
-//! - **In-process "soft crash"** — build an `App`, drive it, drop it, rebuild
-//!   against the same `$HOME/.ox`. The kind of crash that lives at the app
-//!   layer: a panic, a clean `Ctrl+C` shutdown, a dropped tokio runtime.
-//! - **Subprocess `SIGKILL`** — spawn the real `ox` binary against a temp
-//!   `$HOME/.ox`, signal it, verify the exit status, then remount in-process
-//!   for assertions.
+//! Single mode: **in-process "soft crash"** — build an `App`, drive it, drop
+//! it, rebuild against the same `$HOME/.ox`. This covers the kinds of crash
+//! that live at the app layer: a panic, a clean `Ctrl+C` shutdown, a dropped
+//! tokio runtime. Subprocess-and-SIGKILL crash modes are intentionally out of
+//! scope (see the durable-state plan); every assertion in this harness is
+//! reproducible from drop + remount alone.
 //!
 //! The harness asserts on two layers only:
 //! - The ledger JSONL bytes on disk.
@@ -442,113 +441,13 @@ fn entries_as_json(entries: &[LogEntry]) -> Vec<serde_json::Value> {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Subprocess mode (minimal — Task 0 Step 4).
-//
-// Task 0 requires a smoke test that spawns ox-cli as a subprocess and asserts
-// it can be SIGKILL'd cleanly. Driving a scripted transport *in* the
-// subprocess is left to later tasks — the env-var protocol is defined here
-// so Task 1's torn-tail tests can grow it.
-// ---------------------------------------------------------------------------
-
-/// Configuration for a subprocess-mode run.
-pub struct SubprocessHarness {
-    pub inbox_root: PathBuf,
-    pub workspace: PathBuf,
-    _inbox_root_dir: TempDir,
-    _workspace_dir: TempDir,
-}
-
-impl SubprocessHarness {
-    pub fn new() -> Self {
-        let inbox_root_dir = tempfile::Builder::new()
-            .prefix("ox-crash-subprocess-inbox-")
-            .tempdir()
-            .expect("create inbox temp dir");
-        let workspace_dir = tempfile::Builder::new()
-            .prefix("ox-crash-subprocess-workspace-")
-            .tempdir()
-            .expect("create workspace temp dir");
-        let inbox_root = inbox_root_dir.path().to_path_buf();
-        let workspace = workspace_dir.path().to_path_buf();
-        seed_subprocess_config(&inbox_root);
-        Self {
-            inbox_root,
-            workspace,
-            _inbox_root_dir: inbox_root_dir,
-            _workspace_dir: workspace_dir,
-        }
-    }
-
-    /// Spawn the real `ox` binary against this harness's temp dir.
-    ///
-    /// `env("HOME")` is set to `inbox_root.parent()` so the binary's
-    /// `~/.ox` resolution lands in our sandbox. `OX_TEST_FREEZE_AT` and
-    /// `OX_TEST_FAKE_TRANSPORT_SCRIPT` are reserved for future tasks.
-    pub fn spawn(&self) -> std::process::Child {
-        let bin = cargo_bin_path();
-        let home = self
-            .inbox_root
-            .parent()
-            .expect("inbox_root has a parent")
-            .to_path_buf();
-        let mut cmd = std::process::Command::new(&bin);
-        cmd.env("HOME", &home)
-            .env("OX_INBOX_ROOT_OVERRIDE", &self.inbox_root)
-            .env("OX_LOG", "off")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        cmd.spawn()
-            .unwrap_or_else(|e| panic!("spawn {}: {e}", bin.display()))
-    }
-}
-
-fn seed_subprocess_config(inbox_root: &Path) {
-    // Minimal config so `ox` doesn't enter the setup wizard.
-    std::fs::create_dir_all(inbox_root).expect("mk .ox");
-    let config_toml = r#"
-[gate.defaults]
-model = "claude-sonnet-4-20250514"
-account = "anthropic"
-max_tokens = 4096
-
-[gate.accounts.anthropic]
-provider = "anthropic"
-"#;
-    std::fs::write(inbox_root.join("config.toml"), config_toml).expect("write config.toml");
-    let keys_dir = inbox_root.join("keys");
-    std::fs::create_dir_all(&keys_dir).expect("mk keys");
-    std::fs::write(keys_dir.join("anthropic.key"), b"fake-subprocess-key\n").expect("write key");
-}
-
-/// Resolve the path to the compiled `ox` binary. Uses `CARGO_BIN_EXE_ox` when
-/// present (cargo sets this for integration tests linked against a bin
-/// target); falls back to the workspace `target/debug` layout.
-pub fn cargo_bin_path() -> PathBuf {
-    if let Some(p) = std::env::var_os("CARGO_BIN_EXE_ox") {
-        return PathBuf::from(p);
-    }
-    // Fallback for ad-hoc runs (`cargo test --test foo` may not set it if the
-    // test is declared without `required-features`; we keep both paths for
-    // robustness).
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let workspace_target = manifest
-        .parent()
-        .and_then(|p| p.parent())
-        .map(|r| r.join("target"));
-    let workspace_target =
-        workspace_target.unwrap_or_else(|| manifest.join("..").join("..").join("target"));
-    let ext = if cfg!(windows) { ".exe" } else { "" };
-    workspace_target.join("debug").join(format!("ox{ext}"))
-}
-
-// ---------------------------------------------------------------------------
 // LedgerWriter freeze-point hook (Step 5 — scaffolded, inert today).
 //
 // The environment-variable protocol is the test's contract with the
 // `LedgerWriter` thread. When Task 1a introduces `LedgerWriter`, it honors
 // these variables to park before `sync_data()` etc. Today the helpers exist
 // so the crash scenarios can reference them without a second refactor pass.
+// In-process only — no subprocess path needs to read these.
 // ---------------------------------------------------------------------------
 
 /// Freeze points the `LedgerWriter` (Task 1a onwards) can stop at. Passed via
@@ -575,15 +474,6 @@ impl FreezePoint {
 
 /// Name of the environment variable the `LedgerWriter` consults (Task 1a+).
 pub const OX_TEST_FREEZE_AT: &str = "OX_TEST_FREEZE_AT";
-
-/// Name of the environment variable controlling whether a subprocess uses a
-/// fake transport script instead of the real reqwest client (future task).
-pub const OX_TEST_FAKE_TRANSPORT_SCRIPT: &str = "OX_TEST_FAKE_TRANSPORT_SCRIPT";
-
-/// Marker used to drop the current `SharedLog` to a sidecar file. Honored by
-/// the subprocess on startup so tests can read the captured `Vec<LogEntry>`
-/// after kill. Wired in a later task.
-pub const OX_DUMP_SHARED_LOG_ON: &str = "OX_DUMP_SHARED_LOG_ON";
 
 /// Small Arc handle that future components can hold if they need to observe
 /// the active freeze point without an env-var read on a hot path.

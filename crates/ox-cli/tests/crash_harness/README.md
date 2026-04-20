@@ -15,18 +15,19 @@ one of two layers:
 
 Nothing else.
 
-## Two modes
+## One mode: in-process soft crash
 
-| Mode | When to use | Mechanism |
-|------|-------------|-----------|
-| **In-process "soft crash"** | Default. Anything that doesn't actively need OS-level signal semantics. | `Harness::soft_crash()` drops the `App`; worker channels close; `Harness::remount_app()` constructs a fresh `App` against the same temp dir. |
-| **Subprocess `SIGKILL`** | Tests that need fsync-after-kill, kill mid-sync-syscall, or otherwise exercise the OS boundary. | `SubprocessHarness::spawn()` runs the real `ox` binary with `HOME` pointed at a temp dir; the test signals it and remounts in-process for assertions. |
+`Harness::soft_crash()` drops the `App`; worker channels close;
+`Harness::remount_app()` constructs a fresh `App` against the same temp dir.
+The ledger file and `SharedLog` are the entire surface under test, so drop +
+remount is enough to cover the plan's correctness invariants.
 
-Prefer in-process. It's 10× faster, fully deterministic, and catches ~95% of
-the bugs because the ledger file and `SharedLog` are the entire surface.
-Reach for subprocess only when the scenario explicitly involves a syscall.
+Subprocess-and-SIGKILL crash modes are intentionally out of scope. When a
+scenario would otherwise need a signal, route the failure through a
+`LedgerWriter` test hook (`OX_TEST_FREEZE_AT`, below) so the break happens
+deterministically inside the process.
 
-## Writing a new scenario (in-process)
+## Writing a new scenario
 
 ```rust
 mod crash_harness;
@@ -63,44 +64,17 @@ async fn my_crash_scenario() {
 }
 ```
 
-## Writing a new scenario (subprocess)
-
-```rust
-use crash_harness::SubprocessHarness;
-
-#[test]
-fn kill_subprocess_exits_with_signal_9() {
-    let h = SubprocessHarness::new();
-    let mut child = h.spawn();
-    // let the child settle — replace with a state-signaling mechanism when
-    // there's something to wait for.
-    std::thread::sleep(std::time::Duration::from_millis(200));
-    #[cfg(unix)]
-    unsafe {
-        libc::kill(child.id() as i32, libc::SIGKILL);
-    }
-    let status = child.wait().unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::ExitStatusExt;
-        assert_eq!(status.signal(), Some(9));
-    }
-}
-```
-
 ## Freeze-point protocol (Step 5, wired by Task 1a)
 
-Two environment variables let tests park the subprocess at precise points in
-the `LedgerWriter` commit loop:
+One environment variable lets tests park the `LedgerWriter` commit loop at
+precise points:
 
 - `OX_TEST_FREEZE_AT=<point>` — `before_write`, `after_write_before_sync`,
   `after_sync`. The writer blocks on a test-only channel at the named point
-  until the process is killed.
-- `OX_TEST_FAKE_TRANSPORT_SCRIPT=<path>` — reserved for subprocess scripted
-  turns. Today's harness does not honor it (the `LedgerWriter` doesn't exist
-  yet); the name is fixed here so Task 1a doesn't have to re-negotiate.
+  until the test allows it to continue. Used to simulate torn-tail and
+  post-fsync-loss conditions without killing the process.
 
-Both variables are defined as `pub const` strings in `mod.rs` so every scenario
+The variable is defined as a `pub const` in `mod.rs` so every scenario
 references the same name.
 
 ## What's *not* tested here

@@ -7,8 +7,8 @@
 mod crash_harness;
 
 use crash_harness::{
-    HarnessBuilder, SubprocessHarness, append_log_entry, assert_shared_log_matches_pre_kill,
-    create_thread, init_tracing, read_shared_log,
+    HarnessBuilder, append_log_entry, assert_shared_log_matches_pre_kill, create_thread,
+    init_tracing, read_shared_log,
 };
 use ox_kernel::log::LogEntry;
 
@@ -307,108 +307,6 @@ fn walk_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
         }
     }
     out
-}
-
-// ---------------------------------------------------------------------------
-// Step 4 — subprocess spawn + SIGKILL + exit code.
-//
-// The full flow needs a headless mode for the `ox` binary (ratatui's terminal
-// init panics under `stdin=null`, `stdout=null`). That's a separate change —
-// a later task adds `OX_HEADLESS=1` to the binary. Until then, this smoke
-// test exercises just the kill mechanism against a long-lived stand-in
-// process, which is enough to prove the crash harness's SIGKILL+wait
-// machinery is correct. The real `ox`-binary variant is `#[ignore]`-gated
-// and can be enabled when `OX_HEADLESS` lands.
-// ---------------------------------------------------------------------------
-
-#[cfg(unix)]
-#[test]
-fn subprocess_sigkill_exits_with_signal_9() {
-    // Smoke-test the harness's spawn + `kill(2)` + `wait` sequence. Uses
-    // `/bin/sleep` with a short deadline as a self-terminating target: if
-    // the signal is delivered, `wait` returns immediately with signal 9; if
-    // the sandbox blocks `kill`, `wait` returns the natural-exit status after
-    // the sleep elapses, and we skip. Either way the test finishes in
-    // bounded time without a polling sleep in the test body itself.
-    //
-    // The short duration is a backstop for the sandboxed case; the real
-    // assertion is about the kill path. When the ox binary grows an
-    // `OX_HEADLESS` mode, this test's `#[ignore]`d sibling can use a
-    // signal-file to start the kill the instant the target is ready.
-    let spawn_result = std::process::Command::new("/bin/sleep")
-        .arg("2")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
-    let mut child = match spawn_result {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("skipping subprocess SIGKILL test: spawn /bin/sleep failed: {e}");
-            return;
-        }
-    };
-    let pid = child.id();
-
-    let rc = unsafe { libc::kill(pid as i32, libc::SIGKILL) };
-    if rc != 0 {
-        // ESRCH — child already exited (sandboxed exec failure).
-        // EPERM — sandbox blocked the signal.
-        // Either means we can't exercise the real mechanism here; skip.
-        let err = std::io::Error::last_os_error();
-        match err.raw_os_error() {
-            Some(code) if code == libc::ESRCH || code == libc::EPERM => {
-                eprintln!(
-                    "skipping subprocess SIGKILL test: kill returned errno {code} ({err}) \
-                     — sandbox restriction"
-                );
-                let _ = child.wait();
-                return;
-            }
-            _ => panic!("kill(2) returned {rc} (errno: {err})"),
-        }
-    }
-
-    let status = child.wait().expect("wait for child");
-    use std::os::unix::process::ExitStatusExt;
-    assert_eq!(
-        status.signal(),
-        Some(9),
-        "child did not exit from SIGKILL (code={:?} signal={:?})",
-        status.code(),
-        status.signal(),
-    );
-}
-
-#[cfg(unix)]
-#[test]
-#[ignore = "ox binary panics on TTY init under stdio=null; enable once OX_HEADLESS mode lands"]
-fn subprocess_sigkill_on_real_ox_binary() {
-    // Still `#[ignore]` because the ox binary needs a headless mode before it
-    // can survive `stdio=null` long enough to be killed. When that mode lands
-    // (a later task adds `OX_HEADLESS=1`), this test can wait on a
-    // specific startup signal — e.g. the presence of a file under
-    // `inbox_root` that the binary writes after broker setup — instead of a
-    // sleep. Do not reintroduce wall-clock waits here.
-    let bin = crash_harness::cargo_bin_path();
-    if !bin.exists() {
-        eprintln!(
-            "skipping — {} does not exist; run `cargo build -p ox-cli` first",
-            bin.display(),
-        );
-        return;
-    }
-    let h = SubprocessHarness::new();
-    let mut child = h.spawn();
-    // PLACEHOLDER: once OX_HEADLESS lands, wait on a ready-file here.
-    let pid = child.id();
-    unsafe {
-        let rc = libc::kill(pid as i32, libc::SIGKILL);
-        assert_eq!(rc, 0, "kill(2) returned {rc}");
-    }
-    let status = child.wait().expect("wait for child");
-    use std::os::unix::process::ExitStatusExt;
-    assert_eq!(status.signal(), Some(9));
 }
 
 // ---------------------------------------------------------------------------
