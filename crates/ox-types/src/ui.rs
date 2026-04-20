@@ -48,6 +48,8 @@ pub enum Mode {
     Command,
     /// The inbox search input is open.
     Search,
+    /// The thread info modal is open.
+    ThreadInfo,
 }
 
 impl Mode {
@@ -62,6 +64,7 @@ impl Mode {
             Mode::Customize => "customize",
             Mode::Command => "command",
             Mode::Search => "search",
+            Mode::ThreadInfo => "thread_info",
         }
     }
 
@@ -76,6 +79,7 @@ impl Mode {
             "customize" => Some(Mode::Customize),
             "command" => Some(Mode::Command),
             "search" => Some(Mode::Search),
+            "thread_info" => Some(Mode::ThreadInfo),
             _ => None,
         }
     }
@@ -101,6 +105,8 @@ pub enum PendingAction {
     DismissShortcuts,
     DismissUsage,
     ToggleUsage,
+    ToggleThreadInfo,
+    DismissThreadInfo,
     EnterHistorySearch,
     HistorySearchCycle,
     AcceptHistorySearch,

@@ -5,6 +5,76 @@ pub struct ThreadView {
     pub thinking: bool,
 }
 
+// -- Message-count authority ---------------------------------------------
+//
+// Three places in the tree hold a count of user+assistant messages:
+//   1. `inbox.db.threads.message_count` — SQLite rollup, display of record
+//      for the inbox listing. Kept live by `write_save_result_to_inbox`
+//      after each `save_thread_state` and by `reconcile` at startup.
+//   2. Derived by `aggregate_thread_stats` from `threads/{id}/log/entries`
+//      — the source the info modal shows. Includes tool / model / usage
+//      aggregates that the SQLite rollup doesn't carry.
+//   3. `ox_inbox::snapshot::count_messages_in_ledger` — the ground-truth
+//      read from `ledger.jsonl`, used to produce (1) at save time and
+//      reconcile time.
+//
+// Authority hierarchy when they ever disagree: (3) is ground truth, (1)
+// is the cached reflection for listings, (2) is a recompute from the
+// live log with richer structure. They are kept in sync by the fact
+// that `snapshot::save` is the single writer for both the log and the
+// ledger, and (1) is written through from the SaveResult.
+
+/// Inbox-index metadata about a thread. Cheap — read straight from the
+/// SQLite rollup; does not require scanning the log.
+#[derive(Debug, Clone, Default)]
+pub struct ThreadMetadata {
+    pub id: String,
+    pub title: String,
+    pub state: String,
+    pub labels: Vec<String>,
+    /// Aggregate token count from the inbox index (rollup).
+    pub token_count: i64,
+}
+
+/// Stats aggregated from the thread log + turn state. Populated only
+/// when the thread-info modal is open — requires a log scan.
+#[derive(Debug, Clone, Default)]
+pub struct ThreadStats {
+    /// Total number of conversational messages (user + assistant).
+    pub message_count: usize,
+    pub user_messages: usize,
+    pub assistant_messages: usize,
+    /// Distinct tool names used with a call count each (sorted by name).
+    pub tool_uses: Vec<(String, usize)>,
+    /// Distinct models that have appeared in this thread (in the order
+    /// they first appeared).
+    pub models: Vec<String>,
+    /// Most recent model used — the right key for pricing lookup when
+    /// only a single model is in play.
+    pub primary_model: Option<String>,
+    /// Session-scope token usage (cumulative across turns).
+    pub session_tokens: ox_types::TokenUsage,
+    /// Per-model token usage for accurate multi-model cost estimation.
+    pub per_model_usage: Vec<(String, ox_types::TokenUsage)>,
+}
+
+/// Full snapshot the info modal renders: cheap metadata plus the
+/// computed stats. Kept as a product of the two types so each layer's
+/// responsibility stays obvious.
+#[derive(Debug, Clone, Default)]
+pub struct ThreadInfo {
+    pub meta: ThreadMetadata,
+    pub stats: ThreadStats,
+}
+
+impl ThreadInfo {
+    /// Thread id — convenience pass-through so callers can key caches
+    /// without reaching through `meta`.
+    pub fn id(&self) -> &str {
+        &self.meta.id
+    }
+}
+
 /// A message visible in the conversation.
 #[derive(Debug, Clone)]
 pub enum ChatMessage {

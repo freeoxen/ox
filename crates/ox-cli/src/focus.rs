@@ -24,6 +24,7 @@ pub struct DialogFlags {
     pub history_search_active: bool,
     pub show_shortcuts: bool,
     pub show_usage: bool,
+    pub show_thread_info: bool,
     pub has_approval_pending: bool,
 }
 
@@ -40,6 +41,8 @@ pub fn focus_mode(ui: &UiSnapshot, dialog: &DialogFlags) -> Mode {
         Mode::Shortcuts
     } else if dialog.show_usage {
         Mode::Usage
+    } else if dialog.show_thread_info {
+        Mode::ThreadInfo
     } else if ui.command_line.open {
         Mode::Command
     } else if inbox_search_open {
@@ -90,6 +93,7 @@ mod tests {
             history_search_active: false,
             show_shortcuts: false,
             show_usage: false,
+            show_thread_info: false,
             has_approval_pending: false,
         }
     }

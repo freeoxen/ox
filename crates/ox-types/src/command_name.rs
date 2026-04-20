@@ -83,6 +83,8 @@ pub enum CommandName {
     DismissShortcuts,
     DismissUsage,
     ToggleUsage,
+    ToggleThreadInfo,
+    DismissThreadInfo,
 
     // -- History search --
     EnterHistorySearch,
@@ -162,6 +164,8 @@ impl CommandName {
             Self::DismissShortcuts => "dismiss_shortcuts",
             Self::DismissUsage => "dismiss_usage",
             Self::ToggleUsage => "toggle_usage",
+            Self::ToggleThreadInfo => "toggle_thread_info",
+            Self::DismissThreadInfo => "dismiss_thread_info",
             Self::EnterHistorySearch => "enter_history_search",
             Self::HistorySearchCycle => "history_search_cycle",
             Self::AcceptHistorySearch => "accept_history_search",
@@ -235,6 +239,8 @@ impl CommandName {
             "dismiss_shortcuts" => Some(Self::DismissShortcuts),
             "dismiss_usage" => Some(Self::DismissUsage),
             "toggle_usage" => Some(Self::ToggleUsage),
+            "toggle_thread_info" => Some(Self::ToggleThreadInfo),
+            "dismiss_thread_info" => Some(Self::DismissThreadInfo),
             "enter_history_search" => Some(Self::EnterHistorySearch),
             "history_search_cycle" => Some(Self::HistorySearchCycle),
             "accept_history_search" => Some(Self::AcceptHistorySearch),

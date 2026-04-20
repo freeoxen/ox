@@ -377,6 +377,20 @@ static BUILTIN_COMMANDS: &[StaticCommandDef] = &[
         description: "Toggle usage info",
         user_facing: true,
     },
+    StaticCommandDef {
+        name: "toggle_thread_info",
+        target: "ui/toggle_thread_info",
+        params: &[],
+        description: "Toggle thread info modal",
+        user_facing: true,
+    },
+    StaticCommandDef {
+        name: "dismiss_thread_info",
+        target: "ui/dismiss_thread_info",
+        params: &[],
+        description: "Dismiss thread info modal",
+        user_facing: true,
+    },
     // -- History search --
     StaticCommandDef {
         name: "enter_history_search",

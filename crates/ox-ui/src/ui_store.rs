@@ -1497,6 +1497,8 @@ impl Writer for UiStore {
                 "dismiss_shortcuts" => Some(PendingAction::DismissShortcuts),
                 "dismiss_usage" => Some(PendingAction::DismissUsage),
                 "toggle_usage" => Some(PendingAction::ToggleUsage),
+                "toggle_thread_info" => Some(PendingAction::ToggleThreadInfo),
+                "dismiss_thread_info" => Some(PendingAction::DismissThreadInfo),
                 "enter_history_search" => Some(PendingAction::EnterHistorySearch),
                 "history_search_cycle" => Some(PendingAction::HistorySearchCycle),
                 "accept_history_search" => Some(PendingAction::AcceptHistorySearch),
