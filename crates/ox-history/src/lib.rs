@@ -246,7 +246,7 @@ impl Writer for HistoryView {
                                         output,
                                         is_error: false,
                                         scope: None,
-                                    });
+                                    })?;
                                 }
                                 return Ok(to.clone());
                             }
@@ -259,7 +259,7 @@ impl Writer for HistoryView {
                         self.shared.append(LogEntry::User {
                             content,
                             scope: None,
-                        });
+                        })?;
                     }
                     "assistant" => {
                         let content_json = json
@@ -273,7 +273,7 @@ impl Writer for HistoryView {
                             source: None,
                             scope: None,
                             completion_id: 0,
-                        });
+                        })?;
                     }
                     _ => {
                         return Err(StoreError::store(
@@ -392,18 +392,22 @@ mod tests {
     #[test]
     fn history_view_projects_user_and_assistant() {
         let shared = SharedLog::new();
-        shared.append(LogEntry::User {
-            content: "hello".into(),
-            scope: None,
-        });
-        shared.append(LogEntry::Assistant {
-            content: vec![ox_kernel::ContentBlock::Text {
-                text: "hi there".into(),
-            }],
-            source: None,
-            scope: None,
-            completion_id: 0,
-        });
+        shared
+            .append(LogEntry::User {
+                content: "hello".into(),
+                scope: None,
+            })
+            .unwrap();
+        shared
+            .append(LogEntry::Assistant {
+                content: vec![ox_kernel::ContentBlock::Text {
+                    text: "hi there".into(),
+                }],
+                source: None,
+                scope: None,
+                completion_id: 0,
+            })
+            .unwrap();
         let mut hv = HistoryView::new(shared);
         let messages = hv.read(&path!("messages")).unwrap().unwrap();
         let json = value_to_json(unwrap_value(messages));
@@ -417,18 +421,22 @@ mod tests {
     #[test]
     fn history_view_groups_tool_results() {
         let shared = SharedLog::new();
-        shared.append(LogEntry::ToolResult {
-            id: "tc1".into(),
-            output: serde_json::Value::String("result1".into()),
-            is_error: false,
-            scope: None,
-        });
-        shared.append(LogEntry::ToolResult {
-            id: "tc2".into(),
-            output: serde_json::Value::String("result2".into()),
-            is_error: false,
-            scope: None,
-        });
+        shared
+            .append(LogEntry::ToolResult {
+                id: "tc1".into(),
+                output: serde_json::Value::String("result1".into()),
+                is_error: false,
+                scope: None,
+            })
+            .unwrap();
+        shared
+            .append(LogEntry::ToolResult {
+                id: "tc2".into(),
+                output: serde_json::Value::String("result2".into()),
+                is_error: false,
+                scope: None,
+            })
+            .unwrap();
         let mut hv = HistoryView::new(shared);
         let messages = hv.read(&path!("messages")).unwrap().unwrap();
         let json = value_to_json(unwrap_value(messages));
@@ -445,19 +453,25 @@ mod tests {
     #[test]
     fn history_view_skips_tool_call_and_meta() {
         let shared = SharedLog::new();
-        shared.append(LogEntry::User {
-            content: "hello".into(),
-            scope: None,
-        });
-        shared.append(LogEntry::ToolCall {
-            id: "tc1".into(),
-            name: "echo".into(),
-            input: serde_json::json!({}),
-            scope: None,
-        });
-        shared.append(LogEntry::Meta {
-            data: serde_json::json!({"info": "test"}),
-        });
+        shared
+            .append(LogEntry::User {
+                content: "hello".into(),
+                scope: None,
+            })
+            .unwrap();
+        shared
+            .append(LogEntry::ToolCall {
+                id: "tc1".into(),
+                name: "echo".into(),
+                input: serde_json::json!({}),
+                scope: None,
+            })
+            .unwrap();
+        shared
+            .append(LogEntry::Meta {
+                data: serde_json::json!({"info": "test"}),
+            })
+            .unwrap();
         let mut hv = HistoryView::new(shared);
         let messages = hv.read(&path!("messages")).unwrap().unwrap();
         let json = value_to_json(unwrap_value(messages));
@@ -470,16 +484,20 @@ mod tests {
     #[test]
     fn history_view_count() {
         let shared = SharedLog::new();
-        shared.append(LogEntry::User {
-            content: "hello".into(),
-            scope: None,
-        });
-        shared.append(LogEntry::Assistant {
-            content: vec![ox_kernel::ContentBlock::Text { text: "hi".into() }],
-            source: None,
-            scope: None,
-            completion_id: 0,
-        });
+        shared
+            .append(LogEntry::User {
+                content: "hello".into(),
+                scope: None,
+            })
+            .unwrap();
+        shared
+            .append(LogEntry::Assistant {
+                content: vec![ox_kernel::ContentBlock::Text { text: "hi".into() }],
+                source: None,
+                scope: None,
+                completion_id: 0,
+            })
+            .unwrap();
         let mut hv = HistoryView::new(shared);
         let count = hv.read(&path!("count")).unwrap().unwrap();
         assert_eq!(unwrap_value(count), Value::Integer(2));
@@ -603,10 +621,12 @@ mod tests {
     #[test]
     fn history_view_streaming_appears_in_messages() {
         let shared = SharedLog::new();
-        shared.append(LogEntry::User {
-            content: "hello".into(),
-            scope: None,
-        });
+        shared
+            .append(LogEntry::User {
+                content: "hello".into(),
+                scope: None,
+            })
+            .unwrap();
         let mut hv = HistoryView::new(shared);
         hv.write(&path!("turn/thinking"), Record::parsed(Value::Bool(true)))
             .unwrap();
@@ -651,12 +671,14 @@ mod tests {
             .map(|i| format!("line {i}"))
             .collect::<Vec<_>>()
             .join("\n");
-        shared.append(LogEntry::ToolResult {
-            id: "tc_big".into(),
-            output: serde_json::Value::String(big_output),
-            is_error: false,
-            scope: None,
-        });
+        shared
+            .append(LogEntry::ToolResult {
+                id: "tc_big".into(),
+                output: serde_json::Value::String(big_output),
+                is_error: false,
+                scope: None,
+            })
+            .unwrap();
         let mut hv = HistoryView::new(shared);
         let messages = hv.read(&path!("messages")).unwrap().unwrap();
         let json = value_to_json(unwrap_value(messages));
@@ -675,30 +697,38 @@ mod tests {
     #[test]
     fn reconstruct_session_usage_from_log() {
         let shared = SharedLog::new();
-        shared.append(LogEntry::User {
-            content: "hello".into(),
-            scope: None,
-        });
-        shared.append(LogEntry::TurnEnd {
-            scope: Some("root".into()),
-            model: None,
-            input_tokens: 100,
-            output_tokens: 50,
-            cache_creation_input_tokens: 0,
-            cache_read_input_tokens: 0,
-        });
-        shared.append(LogEntry::User {
-            content: "again".into(),
-            scope: None,
-        });
-        shared.append(LogEntry::TurnEnd {
-            scope: Some("root".into()),
-            model: None,
-            input_tokens: 200,
-            output_tokens: 80,
-            cache_creation_input_tokens: 0,
-            cache_read_input_tokens: 0,
-        });
+        shared
+            .append(LogEntry::User {
+                content: "hello".into(),
+                scope: None,
+            })
+            .unwrap();
+        shared
+            .append(LogEntry::TurnEnd {
+                scope: Some("root".into()),
+                model: None,
+                input_tokens: 100,
+                output_tokens: 50,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+            })
+            .unwrap();
+        shared
+            .append(LogEntry::User {
+                content: "again".into(),
+                scope: None,
+            })
+            .unwrap();
+        shared
+            .append(LogEntry::TurnEnd {
+                scope: Some("root".into()),
+                model: None,
+                input_tokens: 200,
+                output_tokens: 80,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+            })
+            .unwrap();
         let mut hv = HistoryView::new(shared);
         hv.reconstruct_session_usage();
         assert_eq!(hv.turn.session_tokens.input_tokens, 300);
@@ -712,12 +742,14 @@ mod tests {
             .map(|i| format!("line {i}"))
             .collect::<Vec<_>>()
             .join("\n");
-        shared.append(LogEntry::ToolResult {
-            id: "tc_small".into(),
-            output: serde_json::Value::String(small_output.clone()),
-            is_error: false,
-            scope: None,
-        });
+        shared
+            .append(LogEntry::ToolResult {
+                id: "tc_small".into(),
+                output: serde_json::Value::String(small_output.clone()),
+                is_error: false,
+                scope: None,
+            })
+            .unwrap();
         let mut hv = HistoryView::new(shared);
         let messages = hv.read(&path!("messages")).unwrap().unwrap();
         let json = value_to_json(unwrap_value(messages));

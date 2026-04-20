@@ -16,9 +16,68 @@ use ox_kernel::log::LogEntry;
 // Step 1 / Step 3 — in-process soft-crash + remount.
 // ---------------------------------------------------------------------------
 
+/// After Task 1a: each append goes through the LedgerWriter before becoming
+/// visible in SharedLog, so soft-crash + remount round-trips the log
+/// **without a save boundary**.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn per_append_durability_survives_soft_crash() {
+    init_tracing();
+    let mut harness = HarnessBuilder::new().build().await;
+    let client = harness.client();
+    let tid = create_thread(&client, "t-durable").await;
+
+    append_log_entry(
+        &client,
+        &tid,
+        LogEntry::User {
+            content: "durable-1".into(),
+            scope: None,
+        },
+    )
+    .await;
+    append_log_entry(
+        &client,
+        &tid,
+        LogEntry::Assistant {
+            content: vec![ox_kernel::ContentBlock::Text {
+                text: "durable-2".into(),
+            }],
+            source: None,
+            scope: None,
+            completion_id: 0,
+        },
+    )
+    .await;
+
+    // No save_thread_state call here — we rely on the LedgerWriter's
+    // per-append durability alone. The snapshot::save path (still present
+    // until Task 1b) is never invoked for this thread.
+    let pre_kill = harness.snapshot_shared_log(&tid).await;
+    assert_eq!(pre_kill.len(), 2);
+
+    // The ledger file must already contain both entries BEFORE we drop the
+    // app. That's the whole point of Task 1a: commit completes before the
+    // append returns.
+    let ledger_path = harness.ledger_path(&tid);
+    let before_drop = crash_harness::read_ledger_entries(&ledger_path);
+    assert_eq!(
+        before_drop.len(),
+        2,
+        "ledger must be up-to-date before soft_crash; got {} entries",
+        before_drop.len(),
+    );
+
+    harness.soft_crash();
+    harness.remount_app().await;
+
+    let post = read_shared_log(&harness.client(), &tid).await;
+    assert_shared_log_matches_pre_kill(&post, &pre_kill);
+}
+
 /// Build a harness, drive a simple turn's worth of log writes, drop the App,
 /// remount, and verify the SharedLog projection is identical. This is the
-/// core guarantee Task 0 exists to support.
+/// core guarantee Task 0 exists to support; per-append durability from
+/// Task 1a supersedes the explicit save path used here.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn soft_crash_roundtrip_preserves_log() {
     init_tracing();

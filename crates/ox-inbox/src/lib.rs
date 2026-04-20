@@ -2,6 +2,7 @@ pub mod file_backing;
 pub use file_backing::JsonFileBacking;
 
 pub mod ledger;
+pub mod ledger_writer;
 pub mod model;
 pub mod pagination;
 mod reader;

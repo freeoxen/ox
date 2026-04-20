@@ -115,26 +115,89 @@ pub enum LogEntry {
     },
 }
 
+/// A durability sink for log entries.
+///
+/// Implementors synchronously commit an entry to stable storage before
+/// returning. When installed via [`SharedLog::with_durability`], the sink is
+/// called from inside `append`'s critical section — the entry becomes visible
+/// to readers only after `commit` has succeeded.
+///
+/// The concrete impl in this workspace is `ox_inbox::ledger_writer::LedgerWriterHandle`;
+/// keeping the type as a trait object here prevents ox-kernel from depending
+/// on ox-inbox (which already depends on ox-kernel).
+pub trait Durability: Send + Sync {
+    fn commit(&self, entry: &LogEntry) -> Result<(), StoreError>;
+}
+
 /// Shared append-only log backing. Both LogStore and HistoryView read
 /// from and write to the same underlying `Vec<LogEntry>`.
+///
+/// Wrapping the Vec and the optional durability handle in a single mutex
+/// preserves the invariant **append-order equals observation-order**: the
+/// commit completes, then the entry is pushed, before any reader can see it.
 #[derive(Clone)]
-pub struct SharedLog(Arc<Mutex<Vec<LogEntry>>>);
+pub struct SharedLog {
+    inner: Arc<Mutex<SharedLogInner>>,
+}
+
+struct SharedLogInner {
+    entries: Vec<LogEntry>,
+    durability: Option<Arc<dyn Durability>>,
+}
 
 impl SharedLog {
     pub fn new() -> Self {
-        Self(Arc::new(Mutex::new(Vec::new())))
+        Self {
+            inner: Arc::new(Mutex::new(SharedLogInner {
+                entries: Vec::new(),
+                durability: None,
+            })),
+        }
     }
 
-    pub fn append(&self, entry: LogEntry) {
-        self.0.lock().unwrap().push(entry);
+    /// Install a durability sink. When set, `append` commits the entry to the
+    /// sink *before* pushing it to the in-memory Vec. Call **after** replay
+    /// has populated the log — replay entries must not be re-persisted.
+    ///
+    /// Returns the previous sink, if any.
+    pub fn with_durability(&self, sink: Arc<dyn Durability>) -> Option<Arc<dyn Durability>> {
+        let mut inner = self.inner.lock().unwrap();
+        inner.durability.replace(sink)
+    }
+
+    /// Uninstall the durability sink. Used by crash-harness tests that need
+    /// to sever per-append durability (e.g. to compare a pre-durability
+    /// snapshot against an ad-hoc replay).
+    pub fn clear_durability(&self) -> Option<Arc<dyn Durability>> {
+        self.inner.lock().unwrap().durability.take()
+    }
+
+    /// Append an entry. When a durability sink is installed, commits to the
+    /// sink first; the entry becomes visible to readers only after a
+    /// successful commit. On commit failure the entry is **not** pushed and
+    /// the error propagates.
+    ///
+    /// The mutex is held across the commit to preserve
+    /// **append-order == observation-order** under concurrent callers. A
+    /// two-lock design (separate durability and entries locks) would let ack
+    /// arrival order diverge from push order. Readers of `entries()` block
+    /// for the commit window (~1–5ms); this is accepted in the plan's design
+    /// properties in exchange for a simple ordering invariant.
+    pub fn append(&self, entry: LogEntry) -> Result<(), StoreError> {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(sink) = inner.durability.as_ref() {
+            sink.commit(&entry)?;
+        }
+        inner.entries.push(entry);
+        Ok(())
     }
 
     pub fn entries(&self) -> Vec<LogEntry> {
-        self.0.lock().unwrap().clone()
+        self.inner.lock().unwrap().entries.clone()
     }
 
     pub fn len(&self) -> usize {
-        self.0.lock().unwrap().len()
+        self.inner.lock().unwrap().entries.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -142,15 +205,15 @@ impl SharedLog {
     }
 
     pub fn last_n(&self, n: usize) -> Vec<LogEntry> {
-        let entries = self.0.lock().unwrap();
-        let start = entries.len().saturating_sub(n);
-        entries[start..].to_vec()
+        let inner = self.inner.lock().unwrap();
+        let start = inner.entries.len().saturating_sub(n);
+        inner.entries[start..].to_vec()
     }
 
     /// Find a tool result by its tool_use_id and return the output.
     pub fn tool_result_output(&self, tool_use_id: &str) -> Option<serde_json::Value> {
-        let entries = self.0.lock().unwrap();
-        for entry in entries.iter().rev() {
+        let inner = self.inner.lock().unwrap();
+        for entry in inner.entries.iter().rev() {
             if let LogEntry::ToolResult { id, output, .. } = entry {
                 if id == tool_use_id {
                     return Some(output.clone());
@@ -336,7 +399,7 @@ impl Writer for LogStore {
                 let entry: LogEntry = serde_json::from_value(json).map_err(|e| {
                     StoreError::store("LogStore", "write", format!("invalid LogEntry: {e}"))
                 })?;
-                self.shared.append(entry);
+                self.shared.append(entry)?;
                 Ok(to.clone())
             }
             _ => Err(StoreError::store(
@@ -470,7 +533,8 @@ mod tests {
             output: serde_json::Value::String("hello world".into()),
             is_error: false,
             scope: None,
-        });
+        })
+        .unwrap();
         let result = log.tool_result_output("tc_abc");
         assert_eq!(
             result,
@@ -484,7 +548,8 @@ mod tests {
         log.append(LogEntry::User {
             content: "hi".into(),
             scope: None,
-        });
+        })
+        .unwrap();
         assert_eq!(log.tool_result_output("tc_missing"), None);
     }
 
@@ -496,13 +561,15 @@ mod tests {
             output: serde_json::Value::String("first".into()),
             is_error: false,
             scope: None,
-        });
+        })
+        .unwrap();
         log.append(LogEntry::ToolResult {
             id: "tc_dup".into(),
             output: serde_json::Value::String("second".into()),
             is_error: false,
             scope: None,
-        });
+        })
+        .unwrap();
         assert_eq!(
             log.tool_result_output("tc_dup"),
             Some(serde_json::Value::String("second".into()))

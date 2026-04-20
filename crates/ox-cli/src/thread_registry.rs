@@ -21,6 +21,12 @@ use crate::agents::SYSTEM_PROMPT;
 // ---------------------------------------------------------------------------
 
 /// Per-thread store collection holding 5 sync stores and 1 async store.
+///
+/// **Field order matters.** `ledger_writer` is declared last so it drops last:
+/// the `log` field drops first (releasing any `LedgerWriterHandle` installed
+/// on its `SharedLog`), and only then does the writer's `Drop` join its
+/// thread. Reordering these fields risks a drop-time deadlock — see
+/// `LedgerWriter`'s struct docs.
 pub struct ThreadNamespace {
     system: SystemProvider,
     history: HistoryView,
@@ -28,10 +34,14 @@ pub struct ThreadNamespace {
     tools: ox_tools::ToolStore,
     pub gate: GateStore,
     pub approval: ApprovalStore,
+    /// Per-thread durable ledger writer. Present after `from_thread_dir`;
+    /// `None` for `new_default()` (used in contexts that don't persist).
+    ledger_writer: Option<ox_inbox::ledger_writer::LedgerWriter>,
 }
 
 impl ThreadNamespace {
-    /// Fresh stores with default values.
+    /// Fresh stores with default values. No durability is installed — callers
+    /// that need per-append persistence should use [`Self::from_thread_dir`].
     pub fn new_default() -> Self {
         let shared_log = SharedLog::new();
         Self {
@@ -41,17 +51,39 @@ impl ThreadNamespace {
             tools: ox_tools::ToolStore::empty(),
             gate: GateStore::new(),
             approval: ApprovalStore::new(),
+            ledger_writer: None,
         }
     }
 
+    /// Shared reference to this thread's `SharedLog`. Used by
+    /// `from_thread_dir` to install a durability handle after replay.
+    fn shared_log(&self) -> SharedLog {
+        self.log.shared().clone()
+    }
+
     /// Create from an on-disk thread directory by restoring a snapshot.
+    ///
+    /// **Mount lifecycle** (Task 2 of the plan pins this sequence):
+    ///   1. Build the namespace with no durability installed.
+    ///   2. Replay `ledger.jsonl` into the in-memory `SharedLog` via
+    ///      `snapshot::restore`. Per P11 this routes through `log/append`, so
+    ///      **durability must not be active yet** — otherwise replay would
+    ///      double-write every entry.
+    ///   3. Spawn the `LedgerWriter` for this ledger path. It seeds its head
+    ///      state from the file on disk, matching what replay just loaded.
+    ///   4. Install the writer's handle on `SharedLog`. Subsequent appends
+    ///      commit-then-publish.
     pub fn from_thread_dir(thread_dir: &std::path::Path) -> Self {
         let mut ns = Self::new_default();
         let has_context = thread_dir.join("context.json").exists();
         let ledger_path = thread_dir.join("ledger.jsonl");
+        let has_ledger = ledger_path.exists();
         let mut loaded = false;
 
-        // Restore from context.json + ledger.jsonl
+        // Restore context.json (system prompt, gate config). `snapshot::restore`
+        // also replays the ledger if `context.json` is present; we invoke it
+        // here for that combined path, and fall through to a ledger-only
+        // replay below when `context.json` is missing.
         if has_context {
             match ox_inbox::snapshot::restore(
                 &mut ns,
@@ -80,9 +112,39 @@ impl ThreadNamespace {
                         .ok();
                 }
             }
+        } else if has_ledger {
+            // With per-append durability (Task 1a) a thread can have a ledger
+            // long before any `save_config_snapshot` boundary writes
+            // `context.json`. Replay directly from the ledger in that case.
+            match ox_inbox::ledger::read_ledger(&ledger_path) {
+                Ok(entries) => {
+                    for entry in &entries {
+                        let value = structfs_serde_store::json_to_value(entry.msg.clone());
+                        if let Err(e) = ns.log.write(
+                            &structfs_core_store::path!("append"),
+                            structfs_core_store::Record::parsed(value),
+                        ) {
+                            tracing::warn!(
+                                path = %ledger_path.display(),
+                                seq = entry.seq,
+                                error = %e,
+                                "ledger replay: failed to replay entry"
+                            );
+                        }
+                    }
+                    loaded = !entries.is_empty();
+                }
+                Err(e) => {
+                    tracing::error!(
+                        path = %ledger_path.display(),
+                        error = %e,
+                        "failed to read ledger on remount"
+                    );
+                }
+            }
         }
 
-        // Try JSONL files if context.json didn't exist or failed
+        // Try JSONL files if neither context.json nor ledger.jsonl carried state.
         if !loaded {
             if let Ok(entries) = std::fs::read_dir(thread_dir) {
                 for entry in entries.flatten() {
@@ -106,9 +168,7 @@ impl ThreadNamespace {
             }
         }
 
-        if !loaded && has_context {
-            // context.json existed but restore failed — error already logged above
-        } else if !loaded {
+        if !loaded && !has_context && !has_ledger {
             tracing::warn!(
                 path = %thread_dir.display(),
                 "no saved state found in thread directory"
@@ -117,6 +177,28 @@ impl ThreadNamespace {
 
         // Reconstruct session token totals from restored log entries.
         ns.history.reconstruct_session_usage();
+
+        // Install the durable ledger writer AFTER replay. Any entry written
+        // through `log/append` from this point forward will be committed to
+        // `ledger.jsonl` before becoming visible in `SharedLog`.
+        match ox_inbox::ledger_writer::LedgerWriter::spawn(ledger_path) {
+            Ok(writer) => {
+                let handle: std::sync::Arc<dyn ox_kernel::log::Durability> =
+                    std::sync::Arc::new(writer.handle());
+                ns.shared_log().with_durability(handle);
+                ns.ledger_writer = Some(writer);
+            }
+            Err(e) => {
+                tracing::error!(
+                    path = %thread_dir.display(),
+                    error = %e,
+                    "LedgerWriter: failed to spawn; per-append durability disabled for this thread"
+                );
+                // Without a writer, this thread falls back to save_thread_state's
+                // incremental ledger append (Task 1b removes that path; until
+                // then both paths co-exist so losing the writer is recoverable).
+            }
+        }
 
         ns
     }
