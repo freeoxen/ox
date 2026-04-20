@@ -10,6 +10,10 @@ authors.workspace = true
 description = "Ratatui-based agentic coding CLI for the ox agent framework"
 publish = false
 
+[lib]
+name = "ox_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "ox"
 path = "src/main.rs"
@@ -47,3 +51,6 @@ tracing-appender = "0.2"
 [dev-dependencies]
 tempfile = "3"
 insta = "1"
+libc = "0.2"
+# Crash-harness #[tokio::test]s need rt-multi-thread + macros.
+tokio = { version = "1", features = ["sync", "time", "rt", "rt-multi-thread", "macros"] }

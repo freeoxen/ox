@@ -100,17 +100,23 @@ pub struct AgentPool {
     inbox_root: PathBuf,
     broker: ox_broker::BrokerStore,
     rt_handle: tokio::runtime::Handle,
+    /// Test-only: when `Some`, workers install this transport into their
+    /// `CompletionModule` instead of the reqwest-backed `CliCompletionTransport`.
+    transport_factory: Option<crate::test_support::TransportFactory>,
 }
 
 impl AgentPool {
-    /// Create a new pool: initializes the Wasm runtime and loads the agent module.
-    pub fn new(
+    /// Create a pool. `transport_factory` is usually `None`; the crash
+    /// harness (`tests/crash_harness/`) passes `Some(...)` to script LLM
+    /// responses without hitting the network.
+    pub fn new_with_transport_factory(
         workspace: PathBuf,
         no_policy: bool,
         inbox: ox_inbox::InboxStore,
         inbox_root: PathBuf,
         broker: ox_broker::BrokerStore,
         rt_handle: tokio::runtime::Handle,
+        transport_factory: Option<crate::test_support::TransportFactory>,
     ) -> Result<Self, String> {
         let runtime = AgentRuntime::new()?;
         let module = runtime.load_module_from_bytes(AGENT_WASM)?;
@@ -123,6 +129,7 @@ impl AgentPool {
             inbox_root,
             broker,
             rt_handle,
+            transport_factory,
         })
     }
 
@@ -200,12 +207,21 @@ impl AgentPool {
         let inbox_root = self.inbox_root.clone();
         let broker = self.broker.clone();
         let rt_handle = self.rt_handle.clone();
+        let transport_factory = self.transport_factory.clone();
 
         thread::spawn(move || {
             tracing::info!(thread_id = %thread_id, title = %title, "agent worker spawned");
             agent_worker(
-                thread_id, title, module, workspace, no_policy, inbox_root, prompt_rx, broker,
+                thread_id,
+                title,
+                module,
+                workspace,
+                no_policy,
+                inbox_root,
+                prompt_rx,
+                broker,
                 rt_handle,
+                transport_factory,
             );
         });
     }
@@ -226,6 +242,7 @@ fn agent_worker(
     prompt_rx: mpsc::Receiver<String>,
     broker: ox_broker::BrokerStore,
     rt_handle: tokio::runtime::Handle,
+    transport_factory: Option<crate::test_support::TransportFactory>,
 ) {
     // Build ToolStore — primary tool execution backend
     let executor = std::env::current_exe()
@@ -350,16 +367,21 @@ fn agent_worker(
     // Inject the CLI completion transport into the CompletionModule.
     // This gives CompletionModule the ability to execute LLM completions
     // end-to-end via StructFS write/read, independent of HostEffects.
-    let cli_transport = CliCompletionTransport {
-        client: reqwest::blocking::Client::new(),
-        config: provider_config.clone(),
-        api_key: api_key_for_transport.clone(),
-        scoped_client: scoped_client.clone(),
-        rt_handle: rt_handle.clone(),
+    //
+    // When a test-only `transport_factory` is supplied, it overrides the
+    // built-in reqwest transport. The provider/api_key reads above are still
+    // performed so the worker's tracing logs continue to describe its intent.
+    let transport: Box<dyn CompletionTransport> = match &transport_factory {
+        Some(factory) => factory(),
+        None => Box::new(CliCompletionTransport {
+            client: reqwest::blocking::Client::new(),
+            config: provider_config.clone(),
+            api_key: api_key_for_transport.clone(),
+            scoped_client: scoped_client.clone(),
+            rt_handle: rt_handle.clone(),
+        }),
     };
-    tool_store
-        .completions_mut()
-        .set_transport(Box::new(cli_transport));
+    tool_store.completions_mut().set_transport(transport);
 
     // Wrap ToolStore in PolicyStore with CliPolicyCheck for permission enforcement.
     let policy_check = crate::policy_check::CliPolicyCheck::new(

@@ -30,9 +30,30 @@ impl App {
         broker: ox_broker::BrokerStore,
         rt_handle: tokio::runtime::Handle,
     ) -> Result<Self, String> {
+        Self::new_with_transport_factory(workspace, inbox_root, no_policy, broker, rt_handle, None)
+    }
+
+    /// Same as [`App::new`], but worker threads are given a test-supplied
+    /// completion transport in place of the built-in reqwest transport.
+    pub fn new_with_transport_factory(
+        workspace: PathBuf,
+        inbox_root: PathBuf,
+        no_policy: bool,
+        broker: ox_broker::BrokerStore,
+        rt_handle: tokio::runtime::Handle,
+        transport_factory: Option<crate::test_support::TransportFactory>,
+    ) -> Result<Self, String> {
         let inbox = ox_inbox::InboxStore::open(&inbox_root).map_err(|e| e.to_string())?;
         let broker_client = broker.client();
-        let pool = AgentPool::new(workspace, no_policy, inbox, inbox_root, broker, rt_handle)?;
+        let pool = AgentPool::new_with_transport_factory(
+            workspace,
+            no_policy,
+            inbox,
+            inbox_root,
+            broker,
+            rt_handle,
+            transport_factory,
+        )?;
 
         Ok(Self {
             pool,

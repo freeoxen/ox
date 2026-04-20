@@ -28,6 +28,8 @@ mod settings_view;
 mod shell;
 mod simple_input;
 mod tab_bar;
+#[allow(dead_code)]
+mod test_support;
 mod text_input_view;
 mod theme;
 pub(crate) mod thread_registry;
