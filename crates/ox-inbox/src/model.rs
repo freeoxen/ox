@@ -40,6 +40,12 @@ pub struct ThreadMetadata {
     pub labels: Vec<String>,
     pub last_seq: i64,
     pub last_hash: Option<String>,
+    /// Count of `user` + `assistant` entries in the thread's log.
+    /// Distinct from `last_seq`: `last_seq` counts every log entry
+    /// (including turn_start, turn_end, tool_call, completion_end, etc.)
+    /// while `message_count` tracks just the conversational messages a
+    /// user would recognize.
+    pub message_count: i64,
 }
 
 impl ThreadMetadata {
@@ -68,6 +74,10 @@ impl ThreadMetadata {
         if let Some(ref h) = self.last_hash {
             map.insert("last_hash".to_string(), Value::String(h.clone()));
         }
+        map.insert(
+            "message_count".to_string(),
+            Value::Integer(self.message_count),
+        );
         map.insert(
             "labels".to_string(),
             Value::Array(
@@ -126,6 +136,7 @@ mod tests {
             labels: vec!["backend".to_string()],
             last_seq: -1,
             last_hash: None,
+            message_count: 0,
         };
         let value = meta.to_value();
         let Value::Map(ref map) = value else {
@@ -168,6 +179,7 @@ mod tests {
             labels: vec![],
             last_seq: -1,
             last_hash: None,
+            message_count: 0,
         };
         let value = meta.to_value();
         let Value::Map(ref map) = value else {

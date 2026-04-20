@@ -77,12 +77,15 @@ pub fn reconcile(conn: &Connection, threads_dir: &Path) -> Result<(), String> {
                 ],
             ).map_err(|e| e.to_string())?;
 
-            // Derive last_seq/last_hash from ledger
+            // Derive last_seq/last_hash/message_count from ledger.
             let ledger_path = dir.join("ledger.jsonl");
             if let Ok(Some(last)) = ledger::read_last_entry(&ledger_path) {
+                let message_count =
+                    crate::snapshot::count_messages_in_ledger(&ledger_path).unwrap_or(0) as i64;
                 conn.execute(
-                    "UPDATE threads SET last_seq = ?1, last_hash = ?2 WHERE id = ?3",
-                    rusqlite::params![last.seq as i64, last.hash, ctx.thread_id],
+                    "UPDATE threads SET last_seq = ?1, last_hash = ?2, \
+                     message_count = ?3 WHERE id = ?4",
+                    rusqlite::params![last.seq as i64, last.hash, message_count, ctx.thread_id],
                 )
                 .map_err(|e| e.to_string())?;
             }
@@ -114,9 +117,12 @@ pub fn reconcile(conn: &Connection, threads_dir: &Path) -> Result<(), String> {
             if actual_hash != cached_hash {
                 // Re-derive from directory
                 if let Ok(Some(last)) = ledger::read_last_entry(&ledger_path) {
+                    let message_count =
+                        crate::snapshot::count_messages_in_ledger(&ledger_path).unwrap_or(0) as i64;
                     conn.execute(
-                        "UPDATE threads SET last_seq = ?1, last_hash = ?2 WHERE id = ?3",
-                        rusqlite::params![last.seq as i64, last.hash, id],
+                        "UPDATE threads SET last_seq = ?1, last_hash = ?2, \
+                         message_count = ?3 WHERE id = ?4",
+                        rusqlite::params![last.seq as i64, last.hash, message_count, id],
                     )
                     .map_err(|e| e.to_string())?;
                 }

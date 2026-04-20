@@ -143,6 +143,10 @@ fn update_thread(db: &Mutex<Connection>, id: &str, data: &Record) -> Result<Path
         params.push(Box::new(*n));
         sets.push(format!("last_seq = ?{}", params.len()));
     }
+    if let Some(Value::Integer(n)) = map.get("message_count") {
+        params.push(Box::new(*n));
+        sets.push(format!("message_count = ?{}", params.len()));
+    }
     if let Some(v) = map.get("last_hash") {
         match v {
             Value::String(s) => {

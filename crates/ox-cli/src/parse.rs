@@ -18,6 +18,11 @@ pub struct InboxThread {
     pub labels: Vec<String>,
     pub token_count: i64,
     pub last_seq: i64,
+    /// Count of user + assistant messages — the number a human would
+    /// recognize as "messages in this thread." Distinct from `last_seq`,
+    /// which is the total log-entry count (including turn markers,
+    /// tool calls/results, completion metadata).
+    pub message_count: i64,
 }
 
 // ---------------------------------------------------------------------------
@@ -171,6 +176,10 @@ pub fn parse_inbox_threads(value: &Value) -> Vec<InboxThread> {
             Some(Value::Integer(n)) => *n,
             _ => -1,
         };
+        let message_count = match map.get("message_count") {
+            Some(Value::Integer(n)) => *n,
+            _ => 0,
+        };
         threads.push(InboxThread {
             id,
             title,
@@ -178,6 +187,7 @@ pub fn parse_inbox_threads(value: &Value) -> Vec<InboxThread> {
             labels,
             token_count,
             last_seq,
+            message_count,
         });
     }
     threads

@@ -97,10 +97,19 @@ pub fn draw_inbox(frame: &mut Frame, vs: &ViewState, theme: &Theme, area: Rect) 
             };
             meta_spans.push(Span::styled(tok_str, theme.tool_meta.patch(base_style)));
         }
-        if thread.last_seq >= 0 {
-            let msg_count = thread.last_seq + 1;
+        // Message count. Prefer the real user+assistant count; fall
+        // back to log-entry count only if message_count hasn't been
+        // populated yet (pre-migration threads before first reconcile).
+        let shown = if thread.message_count > 0 {
+            Some((thread.message_count, "msgs"))
+        } else if thread.last_seq >= 0 {
+            Some((thread.last_seq + 1, "entries"))
+        } else {
+            None
+        };
+        if let Some((count, label)) = shown {
             meta_spans.push(Span::styled(
-                format!(" {msg_count} msgs"),
+                format!(" {count} {label}"),
                 theme.tool_meta.patch(base_style),
             ));
         }

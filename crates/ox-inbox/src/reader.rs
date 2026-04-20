@@ -100,6 +100,7 @@ fn row_to_metadata(row: &rusqlite::Row<'_>) -> rusqlite::Result<ThreadMetadata> 
         labels: Vec::new(),
         last_seq: row.get(9)?,
         last_hash: row.get(10)?,
+        message_count: row.get(11)?,
     })
 }
 
@@ -110,7 +111,8 @@ fn query_threads(
 ) -> Result<Vec<ThreadMetadata>, StoreError> {
     let sql = format!(
         "SELECT id, title, parent_id, inbox_state, thread_state, block_reason, \
-         created_at, updated_at, token_count, last_seq, last_hash FROM threads WHERE {} ORDER BY updated_at DESC",
+         created_at, updated_at, token_count, last_seq, last_hash, message_count \
+         FROM threads WHERE {} ORDER BY updated_at DESC",
         where_clause
     );
     let mut stmt = conn.prepare(&sql).map_err(|e| err("read", e))?;
