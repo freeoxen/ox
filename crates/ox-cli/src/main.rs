@@ -75,7 +75,8 @@ enum Commands {
     Init,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main(flavor = "multi_thread")]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     let workspace =
@@ -160,30 +161,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let theme = theme::Theme::default();
 
-    // Create tokio runtime for broker
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
-
     // Setup broker with stores mounted
     let broker_inbox = ox_inbox::InboxStore::open(&inbox_root)
         .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;
     let broker_bindings = bindings::default_bindings();
-    let broker_handle = rt.block_on(broker_setup::setup(
+    let broker_handle = broker_setup::setup(
         broker_inbox,
         broker_bindings,
         inbox_root.clone(),
         flat_config,
-    ));
+    )
+    .await;
     let client = broker_handle.client();
 
-    // Create App with broker — pass rt handle so AgentPool workers can use it
+    // Create App with broker. `Handle::current()` captures this
+    // runtime so AgentPool workers (which run on their own OS threads
+    // via thread::spawn) can bridge back to the broker via block_on.
     let mut app = app::App::new(
         workspace,
         inbox_root.clone(),
         cli.no_policy,
         broker_handle.broker.clone(),
-        rt.handle().clone(),
+        tokio::runtime::Handle::current(),
     )
     .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
@@ -196,13 +195,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .ok();
 
-    let result = rt.block_on(event_loop::run_async(
-        &mut app,
-        &client,
-        &theme,
-        &mut terminal,
-        needs_setup,
-    ));
+    let result = event_loop::run_async(&mut app, &client, &theme, &mut terminal, needs_setup).await;
 
     crossterm::execute!(
         std::io::stdout(),
@@ -214,11 +207,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ratatui::restore();
 
     // Persist runtime config changes to ~/.ox/config.toml
-    rt.block_on(client.write(
-        &structfs_core_store::path!("config/save"),
-        structfs_core_store::Record::parsed(structfs_core_store::Value::Null),
-    ))
-    .ok();
+    client
+        .write(
+            &structfs_core_store::path!("config/save"),
+            structfs_core_store::Record::parsed(structfs_core_store::Value::Null),
+        )
+        .await
+        .ok();
 
     tracing::info!("ox shutting down");
     result?;

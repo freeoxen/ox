@@ -97,6 +97,26 @@ pub(crate) fn execute(
         PendingAction::ToggleUsage => {
             dialog.show_usage = !dialog.show_usage;
         }
+        PendingAction::ToggleThreadInfo => {
+            dialog.show_thread_info = !dialog.show_thread_info;
+            if !dialog.show_thread_info {
+                dialog.thread_info = None;
+            }
+            tracing::debug!(
+                target: "thread_info",
+                open = dialog.show_thread_info,
+                "modal toggled",
+            );
+        }
+        PendingAction::DismissThreadInfo => {
+            dialog.show_thread_info = false;
+            dialog.thread_info = None;
+            tracing::debug!(
+                target: "thread_info",
+                open = false,
+                "modal dismissed",
+            );
+        }
         PendingAction::EnterHistorySearch => {
             // Results are loaded asynchronously by the caller
             dialog.history_search = Some(HistorySearchState {
@@ -161,6 +181,8 @@ mod tests {
             pending_customize: None,
             show_shortcuts: false,
             show_usage: false,
+            show_thread_info: false,
+            thread_info: None,
             history_search: None,
         }
     }
@@ -464,5 +486,84 @@ mod tests {
             &mut setter,
         );
         assert_eq!(effects.archive_thread.as_deref(), Some("t_99"));
+    }
+
+    // -- Thread info modal + cache -----------------------------------
+
+    fn stub_thread_info_entry(id: &str) -> crate::event_loop::ThreadInfoEntry {
+        crate::event_loop::ThreadInfoEntry {
+            info: crate::types::ThreadInfo {
+                meta: crate::types::ThreadMetadata {
+                    id: id.into(),
+                    title: "Stubbed".into(),
+                    ..Default::default()
+                },
+                stats: crate::types::ThreadStats {
+                    message_count: 42,
+                    user_messages: 21,
+                    assistant_messages: 21,
+                    ..Default::default()
+                },
+            },
+            log_count_at_cache: 99,
+        }
+    }
+
+    #[test]
+    fn toggle_thread_info_flips_flag_and_drops_cache() {
+        // Opening the modal just flips the flag — the event loop
+        // populates the cache on the next tick. Closing must drop the
+        // cached entry so a reopen against a different selection
+        // starts from a clean slate (no stale info, no stale key).
+        let mut dialog = empty_dialog();
+        let mut mode = EditorMode::Insert;
+        let mut setter = None;
+
+        // Prime: open modal + seed cache
+        execute(
+            PendingAction::ToggleThreadInfo,
+            &mut dialog,
+            &mut mode,
+            &inbox_ui(),
+            None,
+            &mut setter,
+        );
+        assert!(dialog.show_thread_info);
+        dialog.thread_info = Some(stub_thread_info_entry("t_cached"));
+
+        // Toggle off: flag clears AND cache entry is dropped.
+        execute(
+            PendingAction::ToggleThreadInfo,
+            &mut dialog,
+            &mut mode,
+            &inbox_ui(),
+            None,
+            &mut setter,
+        );
+        assert!(!dialog.show_thread_info);
+        assert!(
+            dialog.thread_info.is_none(),
+            "cache entry must be dropped on close",
+        );
+    }
+
+    #[test]
+    fn dismiss_thread_info_drops_cache_even_without_prior_toggle() {
+        let mut dialog = empty_dialog();
+        dialog.show_thread_info = true;
+        dialog.thread_info = Some(stub_thread_info_entry("t_stale"));
+        let mut mode = EditorMode::Insert;
+        let mut setter = None;
+
+        execute(
+            PendingAction::DismissThreadInfo,
+            &mut dialog,
+            &mut mode,
+            &inbox_ui(),
+            None,
+            &mut setter,
+        );
+        assert!(!dialog.show_thread_info);
+        assert!(dialog.thread_info.is_none());
     }
 }

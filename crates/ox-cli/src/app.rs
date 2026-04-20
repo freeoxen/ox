@@ -11,7 +11,6 @@ pub struct App {
     pub pool: AgentPool,
     /// Broker client for all store access (inbox, threads, search).
     pub broker_client: ox_broker::ClientHandle,
-    pub rt_handle: tokio::runtime::Handle,
     /// Offset into input history (0 = at the draft, N = Nth entry from newest).
     history_offset: usize,
     input_draft: String,
@@ -19,6 +18,11 @@ pub struct App {
 
 impl App {
     /// Create the App, initializing the AgentPool.
+    ///
+    /// `rt_handle` is forwarded to [`AgentPool`] — the sync OS-thread
+    /// workers it spawns need it to bridge their `block_on` calls
+    /// back to the async broker. App itself has no direct need for a
+    /// runtime handle: its own broker methods are `async fn`.
     pub fn new(
         workspace: PathBuf,
         inbox_root: PathBuf,
@@ -28,19 +32,11 @@ impl App {
     ) -> Result<Self, String> {
         let inbox = ox_inbox::InboxStore::open(&inbox_root).map_err(|e| e.to_string())?;
         let broker_client = broker.client();
-        let pool = AgentPool::new(
-            workspace,
-            no_policy,
-            inbox,
-            inbox_root,
-            broker,
-            rt_handle.clone(),
-        )?;
+        let pool = AgentPool::new(workspace, no_policy, inbox, inbox_root, broker, rt_handle)?;
 
         Ok(Self {
             pool,
             broker_client,
-            rt_handle,
             history_offset: 0,
             input_draft: String::new(),
         })
@@ -51,7 +47,7 @@ impl App {
 
     /// Send input with explicit context from ViewState.
     /// Returns Some(thread_id) if a new thread was composed.
-    pub fn send_input_with_text(
+    pub async fn send_input_with_text(
         &mut self,
         text: String,
         mode: ox_types::Mode,
@@ -66,26 +62,27 @@ impl App {
             (Mode::Insert, Some(InsertContext::Compose)) | (Mode::Normal, None)
                 if active_thread.is_none() =>
             {
-                self.do_compose(text)
+                self.do_compose(text).await
             }
             (Mode::Insert, Some(InsertContext::Reply)) | (Mode::Normal, _)
                 if active_thread.is_some() =>
             {
-                self.do_reply(text, active_thread.unwrap());
+                self.do_reply(text, active_thread.unwrap()).await;
                 None
             }
             _ => None,
         }
     }
 
-    fn do_compose(&mut self, input: String) -> Option<String> {
+    async fn do_compose(&mut self, input: String) -> Option<String> {
         self.history_offset = 0;
         self.input_draft.clear();
 
         let title: String = input.chars().take(40).collect();
         match self.pool.create_thread(&title) {
             Ok(tid) => {
-                self.update_thread_state(&tid, ox_types::ThreadState::Running);
+                self.update_thread_state(&tid, ox_types::ThreadState::Running)
+                    .await;
                 self.pool.send_prompt(&tid, input).ok();
                 Some(tid)
             }
@@ -96,21 +93,22 @@ impl App {
         }
     }
 
-    fn do_reply(&mut self, input: String, thread_id: &str) {
+    async fn do_reply(&mut self, input: String, thread_id: &str) {
         self.history_offset = 0;
         self.input_draft.clear();
 
-        self.update_thread_state(thread_id, ox_types::ThreadState::Running);
+        self.update_thread_state(thread_id, ox_types::ThreadState::Running)
+            .await;
         self.pool.send_prompt(thread_id, input).ok();
     }
 
     /// Navigate input history up (older). Reads from ox.db on demand.
-    pub fn history_up(&mut self, current_input: &str) -> Option<(String, usize)> {
+    pub async fn history_up(&mut self, current_input: &str) -> Option<(String, usize)> {
         if self.history_offset == 0 {
             self.input_draft = current_input.to_string();
         }
         let target_offset = self.history_offset + 1;
-        if let Some(text) = self.read_history_at(target_offset) {
+        if let Some(text) = self.read_history_at(target_offset).await {
             self.history_offset = target_offset;
             let cursor = text.len();
             Some((text, cursor))
@@ -120,7 +118,7 @@ impl App {
     }
 
     /// Navigate input history down (newer). Returns to draft at offset 0.
-    pub fn history_down(&mut self) -> Option<(String, usize)> {
+    pub async fn history_down(&mut self) -> Option<(String, usize)> {
         if self.history_offset == 0 {
             return None;
         }
@@ -129,6 +127,7 @@ impl App {
             self.input_draft.clone()
         } else {
             self.read_history_at(self.history_offset)
+                .await
                 .unwrap_or_default()
         };
         let cursor = text.len();
@@ -136,15 +135,11 @@ impl App {
     }
 
     /// Read the Nth most recent input from ox.db via broker (1-indexed).
-    ///
-    /// Uses `block_in_place` to safely block within an async runtime context.
-    fn read_history_at(&self, offset: usize) -> Option<String> {
+    async fn read_history_at(&self, offset: usize) -> Option<String> {
         use structfs_core_store::Value;
         let path =
             structfs_core_store::Path::parse(&format!("inbox/inputs/recent/{offset}")).ok()?;
-        let record =
-            tokio::task::block_in_place(|| self.rt_handle.block_on(self.broker_client.read(&path)))
-                .ok()??;
+        let record = self.broker_client.read(&path).await.ok()??;
         let arr = match record.as_value() {
             Some(Value::Array(a)) => a,
             _ => return None,
@@ -159,9 +154,7 @@ impl App {
     }
 
     /// Update a thread's state via broker.
-    ///
-    /// Uses `block_in_place` to safely block within an async runtime context.
-    pub fn update_thread_state(&self, thread_id: &str, state: ox_types::ThreadState) {
+    pub async fn update_thread_state(&self, thread_id: &str, state: ox_types::ThreadState) {
         let tid = match ox_kernel::PathComponent::try_new(thread_id) {
             Ok(c) => c,
             Err(e) => {
@@ -177,13 +170,10 @@ impl App {
             updated_at: None,
         };
         let val = structfs_serde_store::to_value(&update).unwrap();
-        tokio::task::block_in_place(|| {
-            self.rt_handle.block_on(
-                self.broker_client
-                    .write(&update_path, structfs_core_store::Record::parsed(val)),
-            )
-        })
-        .ok();
+        self.broker_client
+            .write(&update_path, structfs_core_store::Record::parsed(val))
+            .await
+            .ok();
     }
 }
 

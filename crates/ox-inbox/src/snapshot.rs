@@ -19,6 +19,11 @@ pub const PARTICIPATING_MOUNTS: [&str; 2] = ["system", "gate"];
 pub struct SaveResult {
     pub last_seq: i64,
     pub last_hash: Option<String>,
+    /// Count of `user` + `assistant` entries after this save. The
+    /// indexer writes this through to SQLite so inbox listings show
+    /// real message counts (not raw log-entry counts) and stay fresh
+    /// within a session.
+    pub message_count: i64,
 }
 
 /// Save namespace state to a thread directory.
@@ -95,7 +100,15 @@ pub fn save(
     let mut last_seq: i64 = prev.as_ref().map_or(-1, |e| e.seq as i64);
     let mut last_hash: Option<String> = prev.as_ref().map(|e| e.hash.clone());
 
+    // Message count must reflect all user/assistant entries we've seen,
+    // not just the newly-appended ones — so start from the existing
+    // ledger and add as we go.
+    let mut message_count: i64 = count_messages_in_ledger(&ledger_path).unwrap_or(0) as i64;
+
     for msg in messages.iter().skip(existing_count as usize) {
+        if is_message_entry(msg) {
+            message_count += 1;
+        }
         let entry = ledger::append_entry(&ledger_path, msg, prev.as_ref())?;
         last_seq = entry.seq as i64;
         last_hash = Some(entry.hash.clone());
@@ -105,7 +118,36 @@ pub fn save(
     Ok(SaveResult {
         last_seq,
         last_hash,
+        message_count,
     })
+}
+
+/// True if a raw log entry (as serde_json::Value) is a user or
+/// assistant message — the two types that count toward conversational
+/// message totals.
+///
+/// Single typed deserialization through [`ox_kernel::log::LogEntry`]
+/// — no positional prefilter. The exhaustive agreement test in this
+/// module asserts that any new variant added to `LogEntry` requires
+/// a deliberate decision about whether it counts as a message,
+/// because the test's expectation helper is itself an exhaustive
+/// `match`.
+pub(crate) fn is_message_entry(msg: &serde_json::Value) -> bool {
+    use ox_kernel::log::LogEntry;
+    matches!(
+        serde_json::from_value::<LogEntry>(msg.clone()),
+        Ok(LogEntry::User { .. }) | Ok(LogEntry::Assistant { .. })
+    )
+}
+
+/// Count user/assistant entries in a ledger file. Zero if the file
+/// doesn't exist yet.
+pub(crate) fn count_messages_in_ledger(ledger_path: &Path) -> Result<usize, String> {
+    if !ledger_path.exists() {
+        return Ok(0);
+    }
+    let entries = ledger::read_ledger(ledger_path)?;
+    Ok(entries.iter().filter(|e| is_message_entry(&e.msg)).count())
 }
 
 /// Restore namespace state from a thread directory.
@@ -552,5 +594,96 @@ mod tests {
             hist_count.as_value().unwrap(),
             &structfs_core_store::Value::Integer(1)
         );
+    }
+
+    /// Exhaustive expectation for [`is_message_entry`]. Adding a new
+    /// variant to [`ox_kernel::log::LogEntry`] will not compile here
+    /// until the author decides whether it counts as a "message" —
+    /// the same decision must be made in production. The pair is the
+    /// compiler-enforced seam.
+    fn expected_is_message(entry: &ox_kernel::log::LogEntry) -> bool {
+        use ox_kernel::log::LogEntry;
+        match entry {
+            LogEntry::User { .. } | LogEntry::Assistant { .. } => true,
+            LogEntry::ToolCall { .. }
+            | LogEntry::ToolResult { .. }
+            | LogEntry::Meta { .. }
+            | LogEntry::TurnStart { .. }
+            | LogEntry::TurnEnd { .. }
+            | LogEntry::CompletionEnd { .. }
+            | LogEntry::ApprovalRequested { .. }
+            | LogEntry::ApprovalResolved { .. }
+            | LogEntry::Error { .. } => false,
+        }
+    }
+
+    #[test]
+    fn is_message_entry_matches_exhaustive_expectation() {
+        use ox_kernel::log::LogEntry;
+        let samples: Vec<LogEntry> = vec![
+            LogEntry::User {
+                content: "x".into(),
+                scope: None,
+            },
+            LogEntry::Assistant {
+                content: vec![],
+                source: None,
+                scope: None,
+                completion_id: 0,
+            },
+            LogEntry::ToolCall {
+                id: "1".into(),
+                name: "t".into(),
+                input: serde_json::json!({}),
+                scope: None,
+            },
+            LogEntry::ToolResult {
+                id: "1".into(),
+                output: serde_json::json!({}),
+                is_error: false,
+                scope: None,
+            },
+            LogEntry::Meta {
+                data: serde_json::json!({}),
+            },
+            LogEntry::TurnStart { scope: None },
+            LogEntry::TurnEnd {
+                scope: None,
+                model: None,
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+            },
+            LogEntry::CompletionEnd {
+                scope: "s".into(),
+                model: "m".into(),
+                completion_id: 0,
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+            },
+            LogEntry::ApprovalRequested {
+                tool_name: "t".into(),
+                input_preview: "".into(),
+            },
+            LogEntry::ApprovalResolved {
+                tool_name: "t".into(),
+                decision: ox_types::Decision::AllowOnce,
+            },
+            LogEntry::Error {
+                message: "x".into(),
+                scope: None,
+            },
+        ];
+        for entry in &samples {
+            let json = serde_json::to_value(entry).unwrap();
+            assert_eq!(
+                is_message_entry(&json),
+                expected_is_message(entry),
+                "disagreement on variant: {entry:?}",
+            );
+        }
     }
 }

@@ -76,7 +76,22 @@ pub(crate) struct DialogState {
     pub pending_customize: Option<CustomizeState>,
     pub show_shortcuts: bool,
     pub show_usage: bool,
+    pub show_thread_info: bool,
+    /// Cached thread info, keyed by `(thread_id, log_count_at_cache)`.
+    /// `None` while the modal is closed or a fetch hasn't yet
+    /// populated it on this turn — the renderer treats that as a
+    /// loading state.
+    pub thread_info: Option<ThreadInfoEntry>,
     pub history_search: Option<HistorySearchState>,
+}
+
+/// One snapshot of [`crate::types::ThreadInfo`] keyed by the log
+/// length at the time it was captured. The pair `(info.meta.id,
+/// log_count_at_cache)` is the cache identity — a change in either
+/// invalidates and triggers a refetch.
+pub(crate) struct ThreadInfoEntry {
+    pub info: crate::types::ThreadInfo,
+    pub log_count_at_cache: i64,
 }
 
 /// State for Ctrl+R reverse-incremental search.
@@ -106,6 +121,8 @@ pub async fn run_async(
         pending_customize: None,
         show_shortcuts: false,
         show_usage: false,
+        show_thread_info: false,
+        thread_info: None,
         history_search: None,
     };
     let mut thread = ThreadShell::new();
@@ -141,6 +158,10 @@ pub async fn run_async(
         let mut viewport_height: usize = 0;
         let mut history_hit_map: Option<crate::history_view::HistoryHitMap> = None;
         {
+            // Keep the thread-info cache fresh before building the
+            // view state — fetch_view_state remains a pure reader.
+            refresh_thread_info_cache(client, &mut dialog).await;
+
             let vs = fetch_view_state(client, app, &dialog, thread.input_session.editor_mode).await;
 
             // Editor sync (detects editor appeared/disappeared, flushes edits)
@@ -601,6 +622,181 @@ pub async fn run_async(
 // ---------------------------------------------------------------------------
 
 /// Dispatch a key event through screen-specific handlers, then InputStore.
+/// Populate / invalidate the thread-info cache before rendering.
+///
+/// Runs once per tick while the info modal is open. Resolves the
+/// selected thread by screen (Inbox: row → id; Thread: snapshot id),
+/// reads `threads/{id}/log/count` for a live freshness signal, and
+/// compares `(id, log_count)` to the cache. Hit → return; miss →
+/// `fetch_thread_info` and store the new entry.
+///
+/// ## Concurrency contract
+///
+/// The freshness signal is `log/count`, which reads
+/// [`ox_kernel::log::SharedLog`]'s `Vec<LogEntry>` length under its
+/// `Mutex`. Appends to the log and reads of its count are serialized
+/// — we can never read a partial count relative to an in-flight
+/// append. The log entries themselves, read later by
+/// [`crate::view_state::fetch_thread_info`], see at least the entries
+/// counted; they may see strictly more if an append lands between the
+/// two reads. That's "cache may serve fresher than its key claims,"
+/// which is benign — the next frame sees an even higher `log_count`
+/// and refetches.
+///
+/// Expected RUST_LOG=thread_info=debug narrative for a typical modal
+/// session against a thread with one message, then an append, then a
+/// repeat refresh:
+///
+/// ```text
+///   thread_info: cache miss — fetched thread_id=t_x log_count=2 duration_us=…
+///   thread_info: cache hit thread_id=t_x log_count=2
+///   thread_info: cache miss — fetched thread_id=t_x log_count=3 duration_us=…
+/// ```
+pub(crate) async fn refresh_thread_info_cache(
+    client: &ox_broker::ClientHandle,
+    dialog: &mut DialogState,
+) {
+    use structfs_core_store::Value;
+
+    if !dialog.show_thread_info {
+        return;
+    }
+
+    // 1. Read UiSnapshot once.
+    let ui: UiSnapshot = client
+        .read_typed::<UiSnapshot>(&oxpath!("ui"))
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+
+    // 2. Resolve the selected thread row, screen-aware.
+    let row: Option<crate::parse::InboxThread> = match &ui.screen {
+        ScreenSnapshot::Inbox(s) => {
+            let rows: Vec<crate::parse::InboxThread> = if s.search.active {
+                crate::view_state::fetch_search_results(client, &s.search).await
+            } else {
+                match client.read(&oxpath!("inbox", "threads")).await {
+                    Ok(Some(rec)) => rec
+                        .as_value()
+                        .map(crate::parse::parse_inbox_threads)
+                        .unwrap_or_default(),
+                    _ => Vec::new(),
+                }
+            };
+            rows.into_iter().nth(s.selected_row)
+        }
+        ScreenSnapshot::Thread(s) => {
+            let id_comp = match ox_kernel::PathComponent::try_new(s.thread_id.as_str()) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(
+                        target: "thread_info",
+                        thread_id = %s.thread_id, error = %e,
+                        "invalid thread id; modal will show partial or loading state",
+                    );
+                    return;
+                }
+            };
+            match client
+                .read(&ox_path::oxpath!("inbox", "threads", id_comp))
+                .await
+            {
+                Ok(Some(rec)) => rec
+                    .as_value()
+                    .map(|v| crate::parse::parse_inbox_threads(&Value::Array(vec![v.clone()])))
+                    .and_then(|mut v| v.pop()),
+                Ok(None) => {
+                    tracing::warn!(
+                        target: "thread_info",
+                        thread_id = %s.thread_id,
+                        "thread missing from inbox; modal will show loading state",
+                    );
+                    None
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "thread_info",
+                        thread_id = %s.thread_id, error = %e,
+                        "inbox row read failed; modal will show partial or loading state",
+                    );
+                    return;
+                }
+            }
+        }
+        _ => None,
+    };
+
+    let Some(row) = row else {
+        // No selection (or no row found) — clear cache so the modal
+        // renders the loading placeholder rather than a stale value.
+        dialog.thread_info = None;
+        tracing::debug!(
+            target: "thread_info",
+            "no selected thread row; cache cleared",
+        );
+        return;
+    };
+
+    // 3. Read live freshness signal (`log/count`).
+    let id_comp = match ox_kernel::PathComponent::try_new(row.id.as_str()) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                target: "thread_info",
+                thread_id = %row.id, error = %e,
+                "invalid thread id for log/count read",
+            );
+            return;
+        }
+    };
+    let count_path = ox_path::oxpath!("threads", id_comp, "log", "count");
+    let log_count: i64 = match client.read(&count_path).await {
+        Ok(Some(rec)) => match rec.as_value() {
+            Some(Value::Integer(n)) => *n,
+            _ => 0,
+        },
+        Ok(None) => 0,
+        Err(e) => {
+            tracing::warn!(
+                target: "thread_info",
+                thread_id = %row.id, error = %e,
+                "log/count read failed; modal will show partial or loading state",
+            );
+            return;
+        }
+    };
+
+    // 4. Compare `(id, log_count)` to cache.
+    let is_hit = dialog
+        .thread_info
+        .as_ref()
+        .map(|e| e.info.id() == row.id && e.log_count_at_cache == log_count)
+        .unwrap_or(false);
+    if is_hit {
+        tracing::debug!(
+            target: "thread_info",
+            thread_id = %row.id, log_count,
+            "cache hit",
+        );
+        return;
+    }
+
+    // 5. Miss → fetch and store.
+    let start = std::time::Instant::now();
+    let info = crate::view_state::fetch_thread_info(client, &row).await;
+    tracing::debug!(
+        target: "thread_info",
+        thread_id = %row.id, log_count,
+        duration_us = start.elapsed().as_micros() as u64,
+        "cache miss — fetched",
+    );
+    dialog.thread_info = Some(ThreadInfoEntry {
+        info,
+        log_count_at_cache: log_count,
+    });
+}
+
 ///
 /// Called for all key events that aren't consumed by modal overlays (shortcuts,
 /// customize dialog, approval dialog).
@@ -643,6 +839,7 @@ async fn dispatch_key(
             history_search_active: dialog.history_search.is_some(),
             show_shortcuts: dialog.show_shortcuts,
             show_usage: dialog.show_usage,
+            show_thread_info: dialog.show_thread_info,
             has_approval_pending,
         },
     );

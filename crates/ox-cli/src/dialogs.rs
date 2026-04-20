@@ -908,3 +908,235 @@ pub(crate) fn draw_customize_dialog(
     let content = Paragraph::new(Text::from(lines));
     frame.render_widget(content, inner);
 }
+
+// ---------------------------------------------------------------------------
+// Thread info modal
+// ---------------------------------------------------------------------------
+
+/// Draw the thread-info modal for the selected thread.
+///
+/// Three states:
+/// * `Some(info)` → render the full info card.
+/// * `None` → render a "Loading info…" placeholder. The user sees this
+///   between the modal opening and the cache populating, and again if
+///   the fetch fails (the failure path emits `tracing::warn!`; on
+///   subsequent ticks `refresh_thread_info_cache` re-attempts).
+///
+/// `approval_pending` surfaces a banner when a permission approval
+/// has arrived while the modal was open. The info modal otherwise
+/// masks the approval dialog (modal focus outranks it); the banner
+/// is the user's cue to dismiss the modal (Esc / i) to respond.
+///
+/// `fallback_model` is the pricing key used only when the thread has
+/// no CompletionEnd entries yet (brand-new thread with no completions).
+/// Once a completion exists, the thread's own primary model is used.
+pub(crate) fn draw_thread_info_modal(
+    frame: &mut Frame,
+    info: Option<&crate::types::ThreadInfo>,
+    fallback_model: &str,
+    pricing_overrides: &std::collections::BTreeMap<String, ox_gate::pricing::ModelPricing>,
+    approval_pending: Option<&ox_types::ApprovalRequest>,
+    theme: &Theme,
+) {
+    let Some(info) = info else {
+        draw_thread_info_loading(frame, approval_pending, theme);
+        return;
+    };
+    let mut lines: Vec<Line> = Vec::new();
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    let meta = &info.meta;
+    let stats = &info.stats;
+
+    if let Some(req) = approval_pending {
+        lines.extend(approval_banner_lines(req, theme));
+    }
+
+    // Header: title + id + state
+    let title = if meta.title.is_empty() {
+        "(untitled)".to_string()
+    } else {
+        meta.title.clone()
+    };
+    lines.push(Line::from(vec![
+        Span::styled("  ", Style::default()),
+        Span::styled(title, bold),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  ", Style::default()),
+        Span::styled(meta.id.clone(), theme.tool_meta),
+        Span::raw("   "),
+        Span::styled(format!("[{}]", meta.state), theme.status),
+    ]));
+    if !meta.labels.is_empty() {
+        let mut spans = vec![Span::styled("  Labels: ", Style::default())];
+        for (i, label) in meta.labels.iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::raw(", "));
+            }
+            spans.push(Span::styled(label.clone(), theme.tool_meta));
+        }
+        lines.push(Line::from(spans));
+    }
+    lines.push(Line::from(""));
+
+    // Messages
+    lines.push(Line::from(Span::styled("  Messages", bold)));
+    lines.push(Line::from(format!(
+        "    Total:     {}",
+        stats.message_count
+    )));
+    lines.push(Line::from(format!(
+        "    User:      {}",
+        stats.user_messages
+    )));
+    lines.push(Line::from(format!(
+        "    Assistant: {}",
+        stats.assistant_messages
+    )));
+    lines.push(Line::from(""));
+
+    // Models
+    if !stats.models.is_empty() {
+        lines.push(Line::from(Span::styled("  Models", bold)));
+        for m in &stats.models {
+            lines.push(Line::from(format!("    {m}")));
+        }
+        lines.push(Line::from(""));
+    }
+
+    // Tools
+    if !stats.tool_uses.is_empty() {
+        lines.push(Line::from(Span::styled("  Tools used", bold)));
+        for (name, count) in &stats.tool_uses {
+            lines.push(Line::from(format!("    {name} ×{count}")));
+        }
+        lines.push(Line::from(""));
+    }
+
+    // Usage / cost. Pricing is keyed on the thread's own primary model
+    // when available — falling back to the app default only for threads
+    // that have no completions yet.
+    let pricing_model: &str = stats.primary_model.as_deref().unwrap_or(fallback_model);
+    let st = &stats.session_tokens;
+    let has_session = st.input_tokens > 0 || st.output_tokens > 0;
+    if has_session || !stats.per_model_usage.is_empty() {
+        lines.push(Line::from(Span::styled("  Usage", bold)));
+        if stats.per_model_usage.len() > 1 {
+            for (m, usage) in &stats.per_model_usage {
+                lines.push(Line::from(format!("    {m}")));
+                lines.extend(usage_section_lines(usage, m, pricing_overrides));
+            }
+        } else if has_session {
+            lines.extend(usage_section_lines(st, pricing_model, pricing_overrides));
+        }
+        lines.push(Line::from(""));
+    } else if meta.token_count > 0 {
+        lines.push(Line::from(Span::styled("  Usage", bold)));
+        lines.push(Line::from(format!(
+            "    Indexed tokens: {} (inbox rollup)",
+            meta.token_count
+        )));
+        lines.push(Line::from(""));
+    }
+
+    // Hint
+    lines.push(Line::from(Span::styled(
+        "  i or Esc to close",
+        theme.status,
+    )));
+
+    // Size and center the modal. Clear underneath so the inbox doesn't
+    // bleed through.
+    let area = frame.area();
+    let desired_w: u16 = 60;
+    let desired_h: u16 = (lines.len() as u16 + 2).min(area.height.saturating_sub(4));
+    let w = desired_w.min(area.width.saturating_sub(4));
+    let h = desired_h.max(6).min(area.height);
+    let x = area.x + (area.width.saturating_sub(w)) / 2;
+    let y = area.y + (area.height.saturating_sub(h)) / 2;
+    let rect = Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    };
+    frame.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Thread info ")
+        .border_style(theme.input_border);
+    frame.render_widget(Paragraph::new(Text::from(lines)).block(block), rect);
+}
+
+/// Banner lines surfacing a pending permission approval while the
+/// info modal is open. The modal otherwise masks the approval
+/// dialog — the banner tells the user to dismiss the modal (Esc /
+/// i) to reach it.
+fn approval_banner_lines(req: &ox_types::ApprovalRequest, theme: &Theme) -> Vec<Line<'static>> {
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    let tool = if req.tool_name.is_empty() {
+        "(unknown tool)".to_string()
+    } else {
+        req.tool_name.clone()
+    };
+    vec![
+        Line::from(Span::styled(
+            format!("  ⚠ Approval requested: {tool}"),
+            bold.fg(theme.status.fg.unwrap_or(ratatui::style::Color::Yellow)),
+        )),
+        Line::from(Span::styled(
+            "    Press Esc or i to return and respond.",
+            theme.status,
+        )),
+        Line::from(""),
+    ]
+}
+
+/// Loading placeholder rendered when the thread-info cache is empty
+/// while the modal is open. Populated from
+/// [`crate::event_loop::refresh_thread_info_cache`] on subsequent
+/// ticks; a persistent failure surfaces as a perpetual loading state
+/// (the operator-visible cause is in the `tracing::warn!` events
+/// under target `thread_info`).
+///
+/// The approval-pending banner also surfaces here so the user isn't
+/// blind to an approval request that arrived while the modal is
+/// mid-load.
+pub(crate) fn draw_thread_info_loading(
+    frame: &mut Frame,
+    approval_pending: Option<&ox_types::ApprovalRequest>,
+    theme: &Theme,
+) {
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    let mut lines: Vec<Line> = Vec::new();
+    if let Some(req) = approval_pending {
+        lines.extend(approval_banner_lines(req, theme));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("  Loading info…", bold)));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  i or Esc to close",
+        theme.status,
+    )));
+
+    let area = frame.area();
+    let desired_w: u16 = 60;
+    let desired_h: u16 = (lines.len() as u16 + 2).min(area.height.saturating_sub(4));
+    let w = desired_w.min(area.width.saturating_sub(4));
+    let h = desired_h.max(6).min(area.height);
+    let x = area.x + (area.width.saturating_sub(w)) / 2;
+    let y = area.y + (area.height.saturating_sub(h)) / 2;
+    let rect = Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    };
+    frame.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Thread info ")
+        .border_style(theme.input_border);
+    frame.render_widget(Paragraph::new(Text::from(lines)).block(block), rect);
+}

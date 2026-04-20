@@ -164,7 +164,9 @@ pub(crate) async fn submit_editor_content(
         _ => None,
     };
 
-    let new_tid = app.send_input_with_text(text, mode, insert_context, active_thread.as_deref());
+    let new_tid = app
+        .send_input_with_text(text, mode, insert_context, active_thread.as_deref())
+        .await;
 
     // Dismiss editor on whichever screen is active
     match &ui.screen {
@@ -335,7 +337,7 @@ pub(crate) async fn handle_editor_normal_key(
             let (cur_line, cur_col) = cursor_in_lines(&session.content, session.cursor, &lines);
             if cur_line + 1 < lines.len() {
                 session.cursor = byte_offset_at(&session.content, &lines, cur_line + 1, cur_col);
-            } else if let Some((text, cursor)) = app.history_down() {
+            } else if let Some((text, cursor)) = app.history_down().await {
                 flush_pending_edits(session, client).await;
                 let _ = write_set_input(client, &text, cursor).await;
                 session.init_from(text, cursor);
@@ -346,7 +348,7 @@ pub(crate) async fn handle_editor_normal_key(
             let (cur_line, cur_col) = cursor_in_lines(&session.content, session.cursor, &lines);
             if cur_line > 0 {
                 session.cursor = byte_offset_at(&session.content, &lines, cur_line - 1, cur_col);
-            } else if let Some((text, cursor)) = app.history_up(&session.content) {
+            } else if let Some((text, cursor)) = app.history_up(&session.content).await {
                 flush_pending_edits(session, client).await;
                 let _ = write_set_input(client, &text, cursor).await;
                 session.init_from(text, cursor);

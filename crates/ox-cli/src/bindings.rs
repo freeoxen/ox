@@ -19,6 +19,7 @@ pub fn default_bindings() -> Vec<Binding> {
     approval_mode(&mut b);
     shortcuts_mode(&mut b);
     usage_mode(&mut b);
+    thread_info_mode(&mut b);
     history_search_mode(&mut b);
     command_line_mode(&mut b);
     search_mode(&mut b);
@@ -411,6 +412,20 @@ fn normal_mode(out: &mut Vec<Binding>) {
         Inbox,
         invoke(Cmd::ToggleUsage),
         "Usage info",
+    ));
+    out.push(bind_screen(
+        Normal,
+        &key(Char('i')),
+        Inbox,
+        invoke(Cmd::ToggleThreadInfo),
+        "Thread info",
+    ));
+    out.push(bind_screen(
+        Normal,
+        &key(Char('i')),
+        Thread,
+        invoke(Cmd::ToggleThreadInfo),
+        "Thread info",
     ));
     out.push(bind_screen(
         Normal,
@@ -830,6 +845,37 @@ fn usage_mode(out: &mut Vec<Binding>) {
         Mode::Usage,
         &esc(),
         invoke(Cmd::DismissUsage),
+        "Close",
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// Thread info dialog mode
+// ---------------------------------------------------------------------------
+
+fn thread_info_mode(out: &mut Vec<Binding>) {
+    out.push(bind(
+        Mode::ThreadInfo,
+        &esc(),
+        invoke(Cmd::DismissThreadInfo),
+        "Close",
+    ));
+    out.push(bind(
+        Mode::ThreadInfo,
+        &key(Char('i')),
+        invoke(Cmd::DismissThreadInfo),
+        "Close",
+    ));
+    out.push(bind(
+        Mode::ThreadInfo,
+        &key(Char('q')),
+        invoke(Cmd::DismissThreadInfo),
+        "Close",
+    ));
+    out.push(bind(
+        Mode::ThreadInfo,
+        &ctrl(Char('c')),
+        invoke(Cmd::DismissThreadInfo),
         "Close",
     ));
 }

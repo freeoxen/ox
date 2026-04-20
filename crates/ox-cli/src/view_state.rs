@@ -59,6 +59,8 @@ pub struct ViewState<'a> {
     pub key_hints: Vec<ox_types::KeyHint>,
     pub show_shortcuts: bool,
     pub show_usage: bool,
+    pub show_thread_info: bool,
+    pub thread_info: Option<crate::types::ThreadInfo>,
     pub history_search: Option<(String, Vec<String>, usize)>, // (query, results, selected)
     pub editor_mode: crate::editor::EditorMode,
 }
@@ -73,6 +75,7 @@ impl<'a> ViewState<'a> {
                 history_search_active: self.history_search.is_some(),
                 show_shortcuts: self.show_shortcuts,
                 show_usage: self.show_usage,
+                show_thread_info: self.show_thread_info,
                 has_approval_pending: self.approval_pending.is_some(),
             },
         )
@@ -109,6 +112,7 @@ pub async fn fetch_view_state<'a>(
     let mut approval_pending: Option<ApprovalRequest> = None;
     let mut history_pretty = std::collections::HashSet::new();
     let mut history_full = std::collections::HashSet::new();
+    let mut thread_info: Option<crate::types::ThreadInfo> = None;
 
     match &ui.screen {
         ScreenSnapshot::Inbox(snap) => {
@@ -187,6 +191,14 @@ pub async fn fetch_view_state<'a>(
         ScreenSnapshot::Settings(_) => {}
     }
 
+    // Thread info is cached on the event loop's DialogState; fetching
+    // and cache maintenance live there so this function stays a pure
+    // read. Surfaced on every screen where the modal can open
+    // (currently Inbox + Thread).
+    if dialog.show_thread_info {
+        thread_info = dialog.thread_info.as_ref().map(|e| e.info.clone());
+    }
+
     // Read model and default account from broker ConfigStore
     let model = client
         .read_typed::<String>(&path!("config/gate/defaults/model"))
@@ -250,6 +262,8 @@ pub async fn fetch_view_state<'a>(
         key_hints,
         show_shortcuts: dialog.show_shortcuts,
         show_usage: dialog.show_usage,
+        show_thread_info: dialog.show_thread_info,
+        thread_info,
         history_search: dialog
             .history_search
             .as_ref()
@@ -468,7 +482,141 @@ async fn read_key_hints(client: &ClientHandle, mode: &str, screen: &str) -> Vec<
 /// Writes a search query document to `inbox/search`, gets a handle path back,
 /// reads the first page of results through that handle using the StructFS
 /// pagination protocol.
-async fn fetch_search_results(client: &ClientHandle, search: &SearchSnapshot) -> Vec<InboxThread> {
+/// Build a [`ThreadInfo`] by reading the thread's log + turn state
+/// and aggregating stats. Called lazily — only when the info modal is
+/// visible.
+pub(crate) async fn fetch_thread_info(
+    client: &ClientHandle,
+    row: &InboxThread,
+) -> crate::types::ThreadInfo {
+    use crate::types::{ThreadInfo, ThreadMetadata, ThreadStats};
+    use ox_kernel::log::LogEntry;
+
+    let meta = ThreadMetadata {
+        id: row.id.clone(),
+        title: row.title.clone(),
+        state: row.thread_state.clone(),
+        labels: row.labels.clone(),
+        token_count: row.token_count,
+    };
+
+    let tid = match ox_kernel::PathComponent::try_new(row.id.as_str()) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                target: "thread_info",
+                thread_id = %row.id, error = %e,
+                "invalid thread id; modal will show partial or loading state",
+            );
+            return ThreadInfo {
+                meta,
+                stats: ThreadStats::default(),
+            };
+        }
+    };
+
+    // Typed read of the thread log — same source the thread view uses.
+    // Routing through the typed schema means counts and model names
+    // stay consistent with the display layer.
+    let log_path = ox_path::oxpath!("threads", tid.clone(), "log", "entries");
+    let entries: Vec<LogEntry> = match client.read_typed::<Vec<LogEntry>>(&log_path).await {
+        Ok(Some(v)) => v,
+        Ok(None) => Vec::new(),
+        Err(e) => {
+            tracing::warn!(
+                target: "thread_info",
+                thread_id = %row.id, error = %e,
+                "log read failed; modal will show partial or loading state",
+            );
+            Vec::new()
+        }
+    };
+    let mut stats = aggregate_thread_stats(&entries);
+
+    // Per-model usage + session tokens from the turn state.
+    let turn_path = ox_path::oxpath!("threads", tid, "history", "turn");
+    match client.read_typed::<ox_history::TurnState>(&turn_path).await {
+        Ok(Some(t)) => {
+            stats.session_tokens = t.session_tokens;
+            stats.per_model_usage = t.per_model_usage;
+        }
+        Ok(None) => {}
+        Err(e) => {
+            tracing::warn!(
+                target: "thread_info",
+                thread_id = %row.id, error = %e,
+                "turn read failed; modal will show partial or loading state",
+            );
+        }
+    }
+
+    ThreadInfo { meta, stats }
+}
+
+/// Aggregate counts, tool uses, and models-seen from the typed log
+/// entries.
+///
+/// `LogEntry::ToolCall` is the canonical record of a tool invocation
+/// — the kernel logs one per call (including every `complete()`
+/// invocation, whether root or recursive, and every re-entry of a
+/// recursive frame across tool-execution iterations). Each entry is
+/// counted independently; recursive or looped calls are NOT
+/// collapsed. `ContentBlock::ToolUse` is the LLM's request-side
+/// representation of the same data and is deliberately not counted
+/// here — doing so would double-count every LLM-emitted tool call.
+pub(crate) fn aggregate_thread_stats(
+    entries: &[ox_kernel::log::LogEntry],
+) -> crate::types::ThreadStats {
+    use crate::types::ThreadStats;
+    use ox_kernel::log::LogEntry;
+    use std::collections::BTreeMap;
+
+    let mut stats = ThreadStats::default();
+    let mut tools: BTreeMap<String, usize> = BTreeMap::new();
+    let mut models: Vec<String> = Vec::new();
+    let mut primary_model: Option<String> = None;
+
+    for entry in entries {
+        match entry {
+            LogEntry::User { .. } => {
+                stats.message_count += 1;
+                stats.user_messages += 1;
+            }
+            LogEntry::Assistant { .. } => {
+                stats.message_count += 1;
+                stats.assistant_messages += 1;
+            }
+            LogEntry::ToolCall { name, .. } => {
+                *tools.entry(name.clone()).or_insert(0) += 1;
+            }
+            LogEntry::CompletionEnd { model, .. } => {
+                if !model.is_empty() {
+                    if !models.contains(model) {
+                        models.push(model.clone());
+                    }
+                    primary_model = Some(model.clone());
+                }
+            }
+            LogEntry::TurnEnd { model: Some(m), .. } if !m.is_empty() => {
+                if !models.contains(m) {
+                    models.push(m.clone());
+                }
+                primary_model = Some(m.clone());
+            }
+            _ => {}
+        }
+    }
+
+    stats.tool_uses = tools.into_iter().collect();
+    stats.models = models;
+    stats.primary_model = primary_model;
+    stats
+}
+
+pub(crate) async fn fetch_search_results(
+    client: &ClientHandle,
+    search: &SearchSnapshot,
+) -> Vec<InboxThread> {
     // Build combined query from chips + live query
     let mut terms: Vec<String> = search.chips.clone();
     let live = search.live_query.trim().to_string();
@@ -536,5 +684,208 @@ fn parse_search_page(value: &Value) -> Vec<InboxThread> {
             parse_inbox_threads(value)
         }
         _ => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ox_kernel::ContentBlock;
+    use ox_kernel::log::LogEntry;
+
+    fn user(text: &str) -> LogEntry {
+        LogEntry::User {
+            content: text.into(),
+            scope: None,
+        }
+    }
+
+    fn assistant_text(text: &str) -> LogEntry {
+        LogEntry::Assistant {
+            content: vec![ContentBlock::Text { text: text.into() }],
+            source: None,
+            scope: None,
+            completion_id: 0,
+        }
+    }
+
+    fn tool_call(id: &str, name: &str) -> LogEntry {
+        LogEntry::ToolCall {
+            id: id.into(),
+            name: name.into(),
+            input: serde_json::json!({}),
+            scope: None,
+        }
+    }
+
+    fn assistant_tool(id: &str, name: &str) -> LogEntry {
+        // Assistant content mirrors what the LLM emitted; the kernel
+        // writes a matching LogEntry::ToolCall separately (production
+        // flow), which is what the aggregator actually counts.
+        LogEntry::Assistant {
+            content: vec![ContentBlock::ToolUse(ox_kernel::ToolCall {
+                id: id.into(),
+                name: name.into(),
+                input: serde_json::json!({}),
+            })],
+            source: None,
+            scope: None,
+            completion_id: 0,
+        }
+    }
+
+    fn completion(model: &str) -> LogEntry {
+        LogEntry::CompletionEnd {
+            scope: "main".into(),
+            model: model.into(),
+            completion_id: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        }
+    }
+
+    #[test]
+    fn aggregate_counts_user_and_assistant_messages() {
+        let entries = vec![
+            user("hi"),
+            assistant_text("hello"),
+            user("follow up"),
+            assistant_text("sure"),
+        ];
+        let stats = aggregate_thread_stats(&entries);
+        assert_eq!(stats.user_messages, 2);
+        assert_eq!(stats.assistant_messages, 2);
+        assert_eq!(stats.message_count, 4);
+    }
+
+    #[test]
+    fn aggregate_counts_tool_uses_by_name() {
+        // `LogEntry::ToolCall` is the canonical record — one per
+        // invocation. The aggregator counts them directly.
+        let entries = vec![
+            user("run stuff"),
+            assistant_tool("tu_1", "shell"), // LLM-emitted ToolUse (not counted alone)
+            tool_call("tu_1", "shell"),      // kernel's matching ToolCall log (counted)
+            assistant_tool("tu_2", "shell"),
+            tool_call("tu_2", "shell"),
+            assistant_tool("tu_3", "read_file"),
+            tool_call("tu_3", "read_file"),
+        ];
+        let stats = aggregate_thread_stats(&entries);
+        assert_eq!(stats.assistant_messages, 3);
+        assert_eq!(
+            stats.tool_uses,
+            vec![("read_file".into(), 1), ("shell".into(), 2)]
+        );
+    }
+
+    #[test]
+    fn aggregate_counts_recursive_tool_calls_independently() {
+        // The kernel logs a LogEntry::ToolCall for every complete()
+        // invocation — root, recursive, and re-entries of the same
+        // frame across tool-execution iterations all count
+        // independently. The aggregator must not collapse them.
+        let entries = vec![
+            user("run"),
+            tool_call("complete-root-1", "complete"),
+            tool_call("complete-root-2", "complete"),
+            tool_call("complete-recursive-3", "complete"),
+        ];
+        let stats = aggregate_thread_stats(&entries);
+        assert_eq!(
+            stats.tool_uses,
+            vec![("complete".into(), 3)],
+            "each complete() invocation is an independent tool call",
+        );
+    }
+
+    #[test]
+    fn aggregate_does_not_double_count_from_content_block_tool_use() {
+        // Both representations can exist for the same call, but only
+        // LogEntry::ToolCall is authoritative for the count. A stray
+        // Assistant ContentBlock::ToolUse without a matching
+        // LogEntry::ToolCall contributes zero to tool_uses.
+        let entries = vec![user("run"), assistant_tool("tu_1", "shell")];
+        let stats = aggregate_thread_stats(&entries);
+        assert!(
+            stats.tool_uses.is_empty(),
+            "ContentBlock::ToolUse alone must not inflate counts — the kernel's LogEntry::ToolCall is authoritative",
+        );
+    }
+
+    #[test]
+    fn aggregate_models_come_from_completion_end_not_assistant() {
+        // Assistant entries carry no model field in the log schema —
+        // models must be sourced from CompletionEnd (and TurnEnd).
+        // This is the bug that shipped in the first version.
+        let entries = vec![
+            user("q"),
+            assistant_text("a"),
+            completion("claude-sonnet-4-20250514"),
+            user("q2"),
+            assistant_text("a2"),
+            completion("claude-opus-4-7"),
+        ];
+        let stats = aggregate_thread_stats(&entries);
+        assert_eq!(
+            stats.models,
+            vec![
+                "claude-sonnet-4-20250514".to_string(),
+                "claude-opus-4-7".to_string(),
+            ]
+        );
+        // Primary model = most recently seen; used for pricing.
+        assert_eq!(stats.primary_model.as_deref(), Some("claude-opus-4-7"));
+    }
+
+    #[test]
+    fn aggregate_ignores_non_message_entries() {
+        // turn_start / turn_end / tool_call / meta / approval_* entries
+        // must not count as messages.
+        let entries = vec![
+            LogEntry::TurnStart { scope: None },
+            user("hello"),
+            LogEntry::ToolCall {
+                id: "t1".into(),
+                name: "shell".into(),
+                input: serde_json::json!({}),
+                scope: None,
+            },
+            LogEntry::ToolResult {
+                id: "t1".into(),
+                output: serde_json::json!({}),
+                is_error: false,
+                scope: None,
+            },
+            LogEntry::TurnEnd {
+                scope: None,
+                model: Some("claude-sonnet-4-20250514".into()),
+                input_tokens: 100,
+                output_tokens: 50,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+            },
+        ];
+        let stats = aggregate_thread_stats(&entries);
+        assert_eq!(stats.message_count, 1);
+        assert_eq!(stats.user_messages, 1);
+        assert_eq!(stats.assistant_messages, 0);
+        // TurnEnd's model is also captured — it's the authoritative
+        // model tag when no CompletionEnd is present.
+        assert_eq!(
+            stats.primary_model.as_deref(),
+            Some("claude-sonnet-4-20250514")
+        );
+    }
+
+    #[test]
+    fn aggregate_empty_log_leaves_defaults() {
+        let stats = aggregate_thread_stats(&[]);
+        assert_eq!(stats.message_count, 0);
+        assert!(stats.models.is_empty());
+        assert!(stats.tool_uses.is_empty());
+        assert!(stats.primary_model.is_none());
     }
 }

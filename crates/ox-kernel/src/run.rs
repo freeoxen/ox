@@ -662,6 +662,24 @@ pub fn run_turn(context: &mut dyn Store, emit: &mut dyn FnMut(AgentEvent)) -> Re
             frame.refs.clone()
         };
 
+        // Every call to `complete()` is logged as a LogEntry::ToolCall
+        // — completion IS a tool call, and each invocation is
+        // independent (root turns, recursive frames, and re-entries of
+        // the same frame across tool-execution iterations all count
+        // separately). The id embeds the scope + iteration number to
+        // keep every invocation distinguishable in the log.
+        let complete_tool_id = format!("complete-{}-{}", frame.scope, total_iterations);
+        log_entry(
+            context,
+            serde_json::json!({
+                "type": "tool_call",
+                "id": complete_tool_id,
+                "name": "complete",
+                "input": {"account": &frame.account},
+                "scope": &frame.scope,
+            }),
+        );
+
         let events = complete(context, &frame.account, &refs)?;
 
         // Read per-completion token usage from CompletionModule metadata.
@@ -813,8 +831,15 @@ pub fn run_turn(context: &mut dyn Store, emit: &mut dyn FnMut(AgentEvent)) -> Re
         let (complete_calls, normal_calls): (Vec<&ToolCall>, Vec<&ToolCall>) =
             tool_calls.iter().partition(|tc| tc.name == "complete");
 
-        // Log all tool calls with scope
+        // Log tool calls with scope. Skip "complete" entries: every
+        // `complete()` invocation is already logged at the call site
+        // above (once per iteration), so logging the
+        // Assistant-extracted ToolUse here would be a duplicate for
+        // the same logical call.
         for tc in &tool_calls {
+            if tc.name == "complete" {
+                continue;
+            }
             log_entry(
                 context,
                 serde_json::json!({

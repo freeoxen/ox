@@ -406,7 +406,13 @@ fn agent_worker(
 
         // Save before the agent run so the user's prompt (and any prior history)
         // survives if the process is killed mid-turn.
-        save_thread_state(&mut adapter, &inbox_root, &thread_id, &title);
+        if let Some(result) = save_thread_state(&mut adapter, &inbox_root, &thread_id, &title) {
+            rt_handle.block_on(write_save_result_to_inbox(
+                &broker_client,
+                &thread_id,
+                &result,
+            ));
+        }
 
         // Snapshot session tokens before the run for per-run delta and streaming cost.
         let pre_run_session: ox_types::TokenUsage = adapter
@@ -495,7 +501,13 @@ fn agent_worker(
         adapter.write_typed(&path!("history/turn/clear"), &()).ok();
 
         // Persist conversation state for restart recovery
-        save_thread_state(&mut adapter, &inbox_root, &thread_id, &title);
+        if let Some(result) = save_thread_state(&mut adapter, &inbox_root, &thread_id, &title) {
+            rt_handle.block_on(write_save_result_to_inbox(
+                &broker_client,
+                &thread_id,
+                &result,
+            ));
+        }
 
         // Index conversation content for full-text search
         if let Ok(tid_comp) = ox_kernel::PathComponent::try_new(&thread_id) {
@@ -545,19 +557,22 @@ fn agent_worker(
 }
 
 /// Save the conversation state from the store to the thread directory.
+/// Returns the `SaveResult` so the caller can write it through to the
+/// broker's inbox index (keeping `message_count`/`last_seq` live during
+/// a session, not just at startup reconcile).
 fn save_thread_state(
     store: &mut dyn structfs_core_store::Store,
     inbox_root: &std::path::Path,
     thread_id: &str,
     title: &str,
-) {
+) -> Option<ox_inbox::snapshot::SaveResult> {
     let thread_dir = inbox_root.join("threads").join(thread_id);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
 
-    if let Err(e) = ox_inbox::snapshot::save(
+    match ox_inbox::snapshot::save(
         store,
         &thread_dir,
         thread_id,
@@ -566,22 +581,61 @@ fn save_thread_state(
         now,
         &ox_inbox::snapshot::PARTICIPATING_MOUNTS,
     ) {
-        tracing::error!(
-            thread_id,
-            path = %thread_dir.display(),
-            error = %e,
-            "failed to save thread snapshot — conversation may be lost on restart"
+        Ok(result) => Some(result),
+        Err(e) => {
+            tracing::error!(
+                thread_id,
+                path = %thread_dir.display(),
+                error = %e,
+                "failed to save thread snapshot — conversation may be lost on restart"
+            );
+            // Surface error to the user in the thread view
+            let error_msg = serde_json::json!({
+                "type": "error",
+                "message": format!("Failed to save thread: {e}. Conversation may be lost on restart."),
+            });
+            let val = structfs_serde_store::json_to_value(error_msg);
+            let _ = store.write(
+                &structfs_core_store::Path::parse("log/append").unwrap(),
+                structfs_core_store::Record::parsed(val),
+            );
+            None
+        }
+    }
+}
+
+/// Propagate a `SaveResult` to the broker's inbox index so listings
+/// show live `message_count` / `last_seq` counts instead of the stale
+/// values from last startup reconcile.
+pub(crate) async fn write_save_result_to_inbox(
+    broker_client: &ox_broker::ClientHandle,
+    thread_id: &str,
+    result: &ox_inbox::snapshot::SaveResult,
+) {
+    let mut update = std::collections::BTreeMap::new();
+    update.insert(
+        "last_seq".to_string(),
+        structfs_core_store::Value::Integer(result.last_seq),
+    );
+    if let Some(ref hash) = result.last_hash {
+        update.insert(
+            "last_hash".to_string(),
+            structfs_core_store::Value::String(hash.clone()),
         );
-        // Surface error to the user in the thread view
-        let error_msg = serde_json::json!({
-            "type": "error",
-            "message": format!("Failed to save thread: {e}. Conversation may be lost on restart."),
-        });
-        let val = structfs_serde_store::json_to_value(error_msg);
-        let _ = store.write(
-            &structfs_core_store::Path::parse("log/append").unwrap(),
-            structfs_core_store::Record::parsed(val),
-        );
+    }
+    update.insert(
+        "message_count".to_string(),
+        structfs_core_store::Value::Integer(result.message_count),
+    );
+    let path_str = format!("inbox/threads/{thread_id}");
+    if let Ok(path) = structfs_core_store::Path::parse(&path_str) {
+        broker_client
+            .write(
+                &path,
+                structfs_core_store::Record::parsed(structfs_core_store::Value::Map(update)),
+            )
+            .await
+            .ok();
     }
 }
 

@@ -210,11 +210,14 @@ mod tests {
             "expected 2 history messages (user + assistant)"
         );
 
-        // log/count == 5: user + turn_start + completion_end + assistant + turn_end
+        // log/count == 6: user + turn_start + tool_call(complete) +
+        // completion_end + assistant + turn_end. The tool_call entry
+        // is logged at every complete() invocation so the thread-info
+        // aggregator sees every LLM call as a tool use.
         let log_count = read_count(&mut ns, "log/count");
         assert_eq!(
-            log_count, 5,
-            "expected 5 log entries (user + turn_start + completion_end + assistant + turn_end)"
+            log_count, 6,
+            "expected 6 log entries (user + turn_start + tool_call(complete) + completion_end + assistant + turn_end)",
         );
     }
 

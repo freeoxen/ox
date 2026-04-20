@@ -204,6 +204,15 @@ pub(crate) fn draw(
             &vs.pricing_overrides,
             theme,
         );
+    } else if vs.show_thread_info {
+        crate::dialogs::draw_thread_info_modal(
+            frame,
+            vs.thread_info.as_ref(),
+            &vs.model,
+            &vs.pricing_overrides,
+            vs.approval_pending.as_ref(),
+            theme,
+        );
     } else if let Some(ref ap) = vs.approval_pending {
         crate::dialogs::draw_approval_dialog(
             frame,
