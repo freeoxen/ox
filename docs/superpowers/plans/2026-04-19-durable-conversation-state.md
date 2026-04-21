@@ -89,7 +89,7 @@ Each prerequisite is **verified against current code**. Results recorded below.
 | `crates/ox-history/src/lib.rs` | Project `AssistantProgress` into `turn/streaming` on replay. |
 | `crates/ox-ui/src/approval_store.rs` | Handle `Decision::CancelTurn` arrival on the oneshot. Thread `post_crash_reconfirm` through the runtime `ApprovalRequest` so the UI modal can distinguish. |
 | `crates/ox-cli/src/thread_registry.rs` | `ThreadNamespace::write` (`approval/request` handler at `:281–292`): pass `post_crash_reconfirm` into `LogEntry::ApprovalRequested`. Mount lifecycle per Task 2. Install `LedgerWriterHandle` via `SharedLog::with_durability` *after* replay. |
-| `crates/ox-cli/src/agents.rs` | Remove pre-run save at `:409`; switch post-run save at `:504` to `save_config_snapshot`. `OX_LEGACY_SAVE_BOUNDARIES` fallback path restores full `save_thread_state` at both sites. |
+| `crates/ox-cli/src/agents.rs` | Remove pre-run save at `:409`; switch post-run save at `:504` to `save_config_snapshot`. |
 | `crates/ox-cli/src/history_view.rs` | Render `TurnAborted` / `ToolAborted` as muted markers; ledger-error banners. |
 | `crates/ox-cli/src/theme.rs` | Styles + constant strings for new log variants, post-crash-reconfirm modal copy, synthetic-ToolResult content, ledger-error banners. |
 | `crates/ox-cli/src/<new>` | `CommitDrain` task per mounted thread: receives `CommitResult::Ok { last_seq, last_hash, message_count }` from the `LedgerWriter` and calls `write_save_result_to_inbox` debounced at ~100ms. No config-snapshot observer — `save_config_snapshot` runs at turn boundary. |
@@ -301,11 +301,10 @@ All three states are durable (recorded in `context.json` on mount) so that later
    - The `SaveResult` struct itself goes away from this function; tests that asserted on its fields now assert on the `CommitResult::Ok { last_seq, last_hash, message_count }` from `LedgerWriter` instead.
 - [x] **Step 10:** Wire the drain channel. `LedgerWriter` publishes a `SaveResult { last_seq, last_hash, message_count }` to a latest-wins slot after each commit (separate from the per-request ack). A `CommitDrain` task in `ox-cli` (one `tokio::spawn` per mounted thread) polls the slot at ~100ms cadence and calls `write_save_result_to_inbox` when it changes. Replaces the direct return-value propagation from `save_thread_state`. Unit test: run N commits, assert inbox `message_count` updates within 200ms of the last commit. Assert that a burst of 1000 commits does not queue 1000 drain writes — latest-wins holds.
 - [x] **Step 11:** Remove pre-turn save at `agents.rs:409` entirely. Keep post-turn call at `:504` but switch to `save_config_snapshot`. The ledger part is gone; only config-state persistence remains here.
-- [ ] **Step 12:** Add `OX_LEGACY_SAVE_BOUNDARIES` env-var kill-switch. When set, `SharedLog::with_durability` is never called (durability off); `agents.rs:409,504` restore full pre/post-turn `save_thread_state` calls; `LedgerWriter` is not constructed. Bake-period safety valve, 6-month sunset.
 - [ ] **Step 13:** Audit existing tests. Grep for `save_thread_state`, `snapshot::save`, `count_messages_in_ledger`, `context.json` in test files. Update assertions to match the new model: some tests that counted ledger entries after a save now need to count after the expected append-path commits.
 - [ ] **Step 14:** Happy-path regression: run canonical turn through new code, filter ledger entries through `ox_inbox::snapshot::is_message_entry` (the existing helper at `snapshot.rs:135`), assert semantic equality against the Step 2 golden. **Governance**: `tests/fixtures/REVIEWERS.md` gates changes.
 - [ ] **Step 15:** Crash-harness tests from Step 3 pass.
-- [ ] **Step 16:** Tracing: emit `LedgerCommit { entries, bytes, sync_data_us, message_count }` per commit, `LedgerTailRepaired` / `LedgerDegraded` / `LedgerRepairFailed` / `LedgerMissing` / `LegacySaveBoundariesActive` / `ConfigSnapshotWritten` as appropriate.
+- [ ] **Step 16:** Tracing: emit `LedgerCommit { entries, bytes, sync_data_us, message_count }` per commit, `LedgerTailRepaired` / `LedgerDegraded` / `LedgerRepairFailed` / `LedgerMissing` / `ConfigSnapshotWritten` as appropriate.
 
 ### Success criteria
 
@@ -625,7 +624,6 @@ Tracing events added by this plan, by phase:
 | `LedgerDegraded` | 1 | `thread_id`, `error` |
 | `LedgerRepairFailed` | 1 | `thread_id`, `error` |
 | `LedgerMissing` | 1 | `thread_id` |
-| `LegacySaveBoundariesActive` | 1 | `thread_id` (emitted once per commit while `OX_LEGACY_SAVE_BOUNDARIES=1`) |
 | `ThreadResumeClassified` | 2 | `thread_id`, `state` |
 | `TurnAbortedAppended` | 2 | `thread_id`, `reason` |
 | `ToolAbortedAppended` | 2 | `thread_id`, `tool_use_id`, `reason` |
