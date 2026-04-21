@@ -1,4 +1,14 @@
-//! Snapshot coordinator — saves/restores namespace state to/from thread directories.
+//! Snapshot coordinator — config-state persistence for thread directories.
+//!
+//! This module's sole write responsibility is `context.json`: a snapshot of
+//! the non-ledger stores (`system`, `gate`) plus thread metadata. The ledger
+//! itself is owned by [`crate::ledger_writer::LedgerWriter`], which commits
+//! each `SharedLog::append` synchronously and is the only writer of
+//! `ledger.jsonl`. The old `save()` function wrote both; that conflated
+//! responsibility is now split.
+//!
+//! `restore` still reads both files because remount must rehydrate both the
+//! config snapshot and the log projection.
 
 use crate::ledger;
 use crate::thread_dir::{self, ContextFile};
@@ -14,7 +24,11 @@ use structfs_serde_store::{json_to_value, value_to_json};
 /// Model config is excluded — it's managed by ConfigStore.
 pub const PARTICIPATING_MOUNTS: [&str; 2] = ["system", "gate"];
 
-/// Result from a save operation — used to update SQLite cache.
+/// Result of a ledger commit — reported by [`crate::ledger_writer::LedgerWriter`]
+/// so the inbox index can track live `last_seq`, `last_hash`, and
+/// `message_count` within a session. Preserved here because the ledger
+/// writer publishes it via `latest_save_result()` and callers serialize it
+/// into the broker's inbox rollup.
 #[derive(Debug, Clone)]
 pub struct SaveResult {
     pub last_seq: i64,
@@ -26,12 +40,14 @@ pub struct SaveResult {
     pub message_count: i64,
 }
 
-/// Save namespace state to a thread directory.
+/// Write `context.json` for a thread directory from participating-mount
+/// snapshot state. Does **not** touch `ledger.jsonl` — per-append durability
+/// is the [`LedgerWriter`](crate::ledger_writer::LedgerWriter)'s job.
 ///
-/// - Reads `{mount}/snapshot/state` for each participating mount → writes context.json
-/// - Reads `history/messages` → appends new messages to ledger.jsonl (incremental)
-/// - Creates view.json if it doesn't exist
-pub fn save(
+/// - Reads `{mount}/snapshot/state` for each participating mount → writes
+///   `context.json`.
+/// - Preserves `created_at` from any existing `context.json`.
+pub fn save_config_snapshot(
     namespace: &mut dyn structfs_core_store::Store,
     thread_dir: &Path,
     thread_id: &str,
@@ -39,8 +55,8 @@ pub fn save(
     labels: &[String],
     updated_at: i64,
     mounts: &[&str],
-) -> Result<SaveResult, String> {
-    tracing::info!(thread_id, path = %thread_dir.display(), "saving thread snapshot");
+) -> Result<(), String> {
+    tracing::info!(thread_id, path = %thread_dir.display(), "saving thread config snapshot");
     std::fs::create_dir_all(thread_dir).map_err(|e| e.to_string())?;
 
     // 1. Read snapshot states from participating mounts
@@ -74,52 +90,17 @@ pub fn save(
     };
     thread_dir::write_context(thread_dir, &ctx)?;
 
-    // 4. Write default view.json if it doesn't exist
-    if !thread_dir.join("view.json").exists() {
-        thread_dir::write_default_view(thread_dir)?;
+    Ok(())
+}
+
+/// Write a default `view.json` into `thread_dir` iff one is not already
+/// present. Intended to run once, on thread-mount construction
+/// (`ThreadNamespace::from_thread_dir`), not per turn.
+pub fn write_default_view_if_missing(thread_dir: &Path) -> Result<(), String> {
+    if thread_dir.join("view.json").exists() {
+        return Ok(());
     }
-
-    // 5. Append new log entries to ledger (incremental)
-    let ledger_path = thread_dir.join("ledger.jsonl");
-    let last_entry = ledger::read_last_entry(&ledger_path)?;
-    let existing_count = last_entry.as_ref().map_or(0, |e| e.seq + 1);
-
-    // Read all entries from the structured log (not history/messages projection,
-    // which only includes user/assistant/tool_result — we want the full audit trail).
-    let log_path = structfs_core_store::Path::parse("log/entries").map_err(|e| e.to_string())?;
-    let messages = match namespace.read(&log_path) {
-        Ok(Some(record)) => {
-            let json = value_to_json(record.as_value().ok_or("expected value")?.clone());
-            json.as_array().cloned().unwrap_or_default()
-        }
-        _ => Vec::new(),
-    };
-
-    // Append only messages beyond what's already in the ledger
-    let mut prev = last_entry;
-    let mut last_seq: i64 = prev.as_ref().map_or(-1, |e| e.seq as i64);
-    let mut last_hash: Option<String> = prev.as_ref().map(|e| e.hash.clone());
-
-    // Message count must reflect all user/assistant entries we've seen,
-    // not just the newly-appended ones — so start from the existing
-    // ledger and add as we go.
-    let mut message_count: i64 = count_messages_in_ledger(&ledger_path).unwrap_or(0) as i64;
-
-    for msg in messages.iter().skip(existing_count as usize) {
-        if is_message_entry(msg) {
-            message_count += 1;
-        }
-        let entry = ledger::append_entry(&ledger_path, msg, prev.as_ref())?;
-        last_seq = entry.seq as i64;
-        last_hash = Some(entry.hash.clone());
-        prev = Some(entry);
-    }
-
-    Ok(SaveResult {
-        last_seq,
-        last_hash,
-        message_count,
-    })
+    thread_dir::write_default_view(thread_dir)
 }
 
 /// True if a raw log entry (as serde_json::Value) is a user or
@@ -219,13 +200,42 @@ mod tests {
         ns
     }
 
+    /// Build a namespace whose `SharedLog` has a real `LedgerWriter`
+    /// installed — so `log/append` writes are durable to `ledger.jsonl`.
+    /// Returns the namespace, the writer (must outlive its handle — keep
+    /// it alive for the test body), and the ledger file path.
+    fn build_namespace_with_ledger_writer(
+        ledger_path: std::path::PathBuf,
+    ) -> (Namespace, crate::ledger_writer::LedgerWriter) {
+        let shared_log = SharedLog::new();
+        let writer = crate::ledger_writer::LedgerWriter::spawn(ledger_path)
+            .expect("spawn ledger writer for test");
+        let handle: std::sync::Arc<dyn ox_kernel::log::Durability> =
+            std::sync::Arc::new(writer.handle());
+        shared_log.with_durability(handle);
+
+        let mut ns = Namespace::new();
+        ns.mount(
+            "system",
+            Box::new(SystemProvider::new("You are helpful.".to_string())),
+        );
+        ns.mount("tools", Box::new(ox_tools::ToolStore::empty()));
+        ns.mount("history", Box::new(HistoryView::new(shared_log.clone())));
+        ns.mount(
+            "log",
+            Box::new(ox_kernel::log::LogStore::from_shared(shared_log)),
+        );
+        ns.mount("gate", Box::new(GateStore::new()));
+        (ns, writer)
+    }
+
     #[test]
-    fn save_creates_context_and_view() {
+    fn save_config_snapshot_creates_context_json() {
         let dir = tempfile::tempdir().unwrap();
         let thread_dir = dir.path().join("t_test1");
         let mut ns = build_namespace();
 
-        save(
+        save_config_snapshot(
             &mut ns,
             &thread_dir,
             "t_test1",
@@ -237,7 +247,9 @@ mod tests {
         .unwrap();
 
         assert!(thread_dir.join("context.json").exists());
-        assert!(thread_dir.join("view.json").exists());
+        // view.json is no longer written by save_config_snapshot — that
+        // responsibility moved to ThreadNamespace::from_thread_dir.
+        assert!(!thread_dir.join("view.json").exists());
 
         let ctx = crate::thread_dir::read_context(&thread_dir)
             .unwrap()
@@ -252,16 +264,76 @@ mod tests {
     }
 
     #[test]
+    fn save_config_snapshot_does_not_touch_ledger() {
+        // Regression guard for Task 1b: the function renamed from `save` to
+        // `save_config_snapshot` must not create or mutate `ledger.jsonl`.
+        let dir = tempfile::tempdir().unwrap();
+        let thread_dir = dir.path().join("t_nl");
+        let mut ns = build_namespace();
+
+        // Append a message in memory — under `build_namespace` there's no
+        // LedgerWriter attached, so the ledger file stays absent. That's
+        // fine: the test's purpose is to assert save_config_snapshot on
+        // its own doesn't create one.
+        let msg = serde_json::json!({"role": "user", "content": "hi"});
+        ns.write(&path!("history/append"), Record::parsed(json_to_value(msg)))
+            .unwrap();
+
+        save_config_snapshot(
+            &mut ns,
+            &thread_dir,
+            "t_nl",
+            "No ledger",
+            &[],
+            1712345678,
+            &PARTICIPATING_MOUNTS,
+        )
+        .unwrap();
+
+        assert!(thread_dir.join("context.json").exists());
+        assert!(
+            !thread_dir.join("ledger.jsonl").exists(),
+            "save_config_snapshot must not create ledger.jsonl"
+        );
+    }
+
+    #[test]
+    fn write_default_view_if_missing_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let thread_dir = dir.path().join("t_view");
+        std::fs::create_dir_all(&thread_dir).unwrap();
+
+        write_default_view_if_missing(&thread_dir).unwrap();
+        let view_path = thread_dir.join("view.json");
+        assert!(view_path.exists());
+        let first = std::fs::read_to_string(&view_path).unwrap();
+
+        // Mutate the file, then call again — the second call must leave the
+        // edited content alone (idempotent: "if missing" means exactly that).
+        std::fs::write(&view_path, "custom content").unwrap();
+        write_default_view_if_missing(&thread_dir).unwrap();
+        let second = std::fs::read_to_string(&view_path).unwrap();
+        assert_eq!(second, "custom content");
+        // And a sanity check that the initial write produced a real view.
+        assert!(first.contains("include"));
+    }
+
+    #[test]
     fn save_and_restore_roundtrip() {
+        // Roundtrip covers: save_config_snapshot writes context.json, the
+        // ledger writer commits log entries durably, and `restore` replays
+        // both back into a fresh namespace.
         let dir = tempfile::tempdir().unwrap();
         let thread_dir = dir.path().join("t_test2");
-        let mut ns = build_namespace();
+        std::fs::create_dir_all(&thread_dir).unwrap();
+        let ledger_path = thread_dir.join("ledger.jsonl");
+        let (mut ns, writer) = build_namespace_with_ledger_writer(ledger_path);
 
         let msg = serde_json::json!({"role": "user", "content": "hello"});
         ns.write(&path!("history/append"), Record::parsed(json_to_value(msg)))
             .unwrap();
 
-        save(
+        save_config_snapshot(
             &mut ns,
             &thread_dir,
             "t_test2",
@@ -271,6 +343,12 @@ mod tests {
             &PARTICIPATING_MOUNTS,
         )
         .unwrap();
+
+        // Writer's Drop signals shutdown, so drop order here is cosmetic —
+        // the writer thread exits on the Shutdown message regardless of
+        // how many external handles `ns` is holding.
+        drop(writer);
+        drop(ns);
 
         let mut ns2 = build_namespace();
         restore(&mut ns2, &thread_dir, &PARTICIPATING_MOUNTS).unwrap();
@@ -298,160 +376,6 @@ mod tests {
     }
 
     #[test]
-    fn save_appends_ledger_entries() {
-        let dir = tempfile::tempdir().unwrap();
-        let thread_dir = dir.path().join("t_test3");
-        let mut ns = build_namespace();
-
-        let msg1 = serde_json::json!({"role": "user", "content": "first"});
-        ns.write(
-            &path!("history/append"),
-            Record::parsed(json_to_value(msg1)),
-        )
-        .unwrap();
-        let msg2 = serde_json::json!({"role": "assistant", "content": [{"type": "text", "text": "reply"}]});
-        ns.write(
-            &path!("history/append"),
-            Record::parsed(json_to_value(msg2)),
-        )
-        .unwrap();
-
-        save(
-            &mut ns,
-            &thread_dir,
-            "t_test3",
-            "Ledger test",
-            &[],
-            1712345678,
-            &PARTICIPATING_MOUNTS,
-        )
-        .unwrap();
-
-        let entries = crate::ledger::read_ledger(&thread_dir.join("ledger.jsonl")).unwrap();
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].seq, 0);
-        assert_eq!(entries[1].seq, 1);
-        assert_eq!(entries[1].parent.as_deref(), Some(entries[0].hash.as_str()));
-    }
-
-    #[test]
-    fn incremental_save_appends_new_messages_only() {
-        let dir = tempfile::tempdir().unwrap();
-        let thread_dir = dir.path().join("t_test4");
-        let mut ns = build_namespace();
-
-        let msg1 = serde_json::json!({"role": "user", "content": "first"});
-        ns.write(
-            &path!("history/append"),
-            Record::parsed(json_to_value(msg1)),
-        )
-        .unwrap();
-        save(
-            &mut ns,
-            &thread_dir,
-            "t_test4",
-            "Incremental test",
-            &[],
-            1712345678,
-            &PARTICIPATING_MOUNTS,
-        )
-        .unwrap();
-
-        let entries = crate::ledger::read_ledger(&thread_dir.join("ledger.jsonl")).unwrap();
-        assert_eq!(entries.len(), 1);
-
-        let msg2 = serde_json::json!({"role": "assistant", "content": [{"type": "text", "text": "reply"}]});
-        ns.write(
-            &path!("history/append"),
-            Record::parsed(json_to_value(msg2)),
-        )
-        .unwrap();
-        let msg3 = serde_json::json!({"role": "user", "content": "follow-up"});
-        ns.write(
-            &path!("history/append"),
-            Record::parsed(json_to_value(msg3)),
-        )
-        .unwrap();
-        save(
-            &mut ns,
-            &thread_dir,
-            "t_test4",
-            "Incremental test",
-            &[],
-            1712345678,
-            &PARTICIPATING_MOUNTS,
-        )
-        .unwrap();
-
-        let entries = crate::ledger::read_ledger(&thread_dir.join("ledger.jsonl")).unwrap();
-        assert_eq!(entries.len(), 3);
-        assert_eq!(entries[2].parent.as_deref(), Some(entries[1].hash.as_str()));
-    }
-
-    #[test]
-    fn full_lifecycle_save_mutate_restore() {
-        let dir = tempfile::tempdir().unwrap();
-        let thread_dir = dir.path().join("t_lifecycle");
-        let mut ns = build_namespace();
-
-        // Build initial state
-        let msg1 = serde_json::json!({"role": "user", "content": "hello"});
-        ns.write(
-            &path!("history/append"),
-            Record::parsed(json_to_value(msg1)),
-        )
-        .unwrap();
-        let msg2 = serde_json::json!({"role": "assistant", "content": [{"type": "text", "text": "hi there"}]});
-        ns.write(
-            &path!("history/append"),
-            Record::parsed(json_to_value(msg2)),
-        )
-        .unwrap();
-
-        // Save
-        let result = save(
-            &mut ns,
-            &thread_dir,
-            "t_lifecycle",
-            "Lifecycle test",
-            &["test".to_string()],
-            1712345678,
-            &PARTICIPATING_MOUNTS,
-        )
-        .unwrap();
-        assert_eq!(result.last_seq, 1);
-        assert!(result.last_hash.is_some());
-
-        // Verify thread directory structure
-        assert!(thread_dir.join("context.json").exists());
-        assert!(thread_dir.join("ledger.jsonl").exists());
-        assert!(thread_dir.join("view.json").exists());
-
-        // Restore into fresh namespace
-        let mut ns2 = build_namespace();
-        restore(&mut ns2, &thread_dir, &PARTICIPATING_MOUNTS).unwrap();
-
-        // Verify all state restored
-        let record = ns2.read(&path!("system")).unwrap().unwrap();
-        match record.as_value().unwrap() {
-            structfs_core_store::Value::String(s) => assert_eq!(s, "You are helpful."),
-            _ => panic!("expected string"),
-        }
-
-        let record = ns2.read(&path!("history/count")).unwrap().unwrap();
-        match record.as_value().unwrap() {
-            structfs_core_store::Value::Integer(n) => assert_eq!(*n, 2),
-            _ => panic!("expected integer"),
-        }
-
-        // Verify ledger has proper hash chain
-        let entries = crate::ledger::read_ledger(&thread_dir.join("ledger.jsonl")).unwrap();
-        assert_eq!(entries.len(), 2);
-        assert!(entries[0].parent.is_none());
-        assert_eq!(entries[1].parent.as_deref(), Some(entries[0].hash.as_str()));
-    }
-
-    #[test]
     fn context_json_excludes_api_keys() {
         use ox_store_util::LocalConfig;
         use structfs_core_store::Value;
@@ -476,7 +400,7 @@ mod tests {
         ns.mount("history", Box::new(HistoryView::new(SharedLog::new())));
         ns.mount("gate", Box::new(gate));
 
-        save(
+        save_config_snapshot(
             &mut ns,
             &thread_dir,
             "t_keys",
@@ -497,9 +421,14 @@ mod tests {
 
     #[test]
     fn audit_log_entries_persist_and_restore() {
+        // With per-append durability the ledger is populated by
+        // LedgerWriter, not save_config_snapshot — so drive a real writer
+        // and then verify `restore` rehydrates the full audit trail.
         let dir = tempfile::tempdir().unwrap();
         let thread_dir = dir.path().join("t_audit");
-        let mut ns = build_namespace();
+        std::fs::create_dir_all(&thread_dir).unwrap();
+        let ledger_path = thread_dir.join("ledger.jsonl");
+        let (mut ns, writer) = build_namespace_with_ledger_writer(ledger_path.clone());
 
         // Write a mix of entry types through history/append (converts to LogEntry)
         let user_msg = serde_json::json!({"role": "user", "content": "hello"});
@@ -556,8 +485,8 @@ mod tests {
             &structfs_core_store::Value::Integer(5)
         );
 
-        // Save
-        save(
+        // Save context.json
+        save_config_snapshot(
             &mut ns,
             &thread_dir,
             "t_audit",
@@ -568,8 +497,12 @@ mod tests {
         )
         .unwrap();
 
-        // Verify ledger has 5 entries
-        let ledger_entries = crate::ledger::read_ledger(&thread_dir.join("ledger.jsonl")).unwrap();
+        // Writer's Drop signals shutdown; drop order is cosmetic.
+        drop(writer);
+        drop(ns);
+
+        // Verify ledger has 5 entries (written via LedgerWriter's durability path)
+        let ledger_entries = crate::ledger::read_ledger(&ledger_path).unwrap();
         assert_eq!(ledger_entries.len(), 5);
         assert_eq!(ledger_entries[0].msg["type"], "user");
         assert_eq!(ledger_entries[1].msg["type"], "turn_start");

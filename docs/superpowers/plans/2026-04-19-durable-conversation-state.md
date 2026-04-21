@@ -292,7 +292,7 @@ All three states are durable (recorded in `context.json` on mount) so that later
 - [ ] **Step 6:** Wire the `LedgerWriter` handle into `ThreadNamespace::from_thread_dir` **after** `snapshot::restore` completes. Replay must happen with durability OFF; durability is installed only after the existing ledger is fully loaded. Unit test: replay a ledger, assert no new writes hit the file.
 - [ ] **Step 7:** Implement `LedgerDegraded`, `LedgerRepairFailed`, `LedgerMissing` states. Wire UI banners in `ox-cli` (`history_view.rs` / `theme.rs`). Per Property 11: explicit user-visible surfaces.
 - [ ] **Step 8:** Add torn-tail repair in `snapshot::restore`. On truncation failure, escalate to `LedgerRepairFailed`.
-- [ ] **Step 9:** Narrow `save_thread_state` (per [`docs/architecture/save-and-restore.md`](../../architecture/save-and-restore.md)):
+- [x] **Step 9:** Narrow `save_thread_state` (per [`docs/architecture/save-and-restore.md`](../../architecture/save-and-restore.md)):
    - Rename `ox_inbox::snapshot::save` → `ox_inbox::snapshot::save_config_snapshot` and reduce its body: writes `context.json` from `PARTICIPATING_MOUNTS` state. Does **not** touch the ledger. No `SaveResult` (return `Result<(), String>`).
    - Rename `ox_cli::agents::save_thread_state` → `save_config_snapshot` at the CLI layer too; it becomes a thin wrapper over the inbox function.
    - Extract `write_default_view_if_missing(thread_dir)` — called from `ThreadNamespace::from_thread_dir` on construction (one-shot, not per-turn).

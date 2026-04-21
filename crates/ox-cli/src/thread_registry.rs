@@ -22,11 +22,12 @@ use crate::agents::SYSTEM_PROMPT;
 
 /// Per-thread store collection holding 5 sync stores and 1 async store.
 ///
-/// **Field order matters.** `ledger_writer` is declared last so it drops last:
-/// the `log` field drops first (releasing any `LedgerWriterHandle` installed
-/// on its `SharedLog`), and only then does the writer's `Drop` join its
-/// thread. Reordering these fields risks a drop-time deadlock — see
-/// `LedgerWriter`'s struct docs.
+/// Field order is a cosmetic convention, not a correctness requirement:
+/// `LedgerWriter`'s `Drop` sends an explicit `Shutdown` message so the writer
+/// thread exits regardless of whether `log` (or any other handle holder) has
+/// dropped first. Keeping `log` before `ledger_writer` is still preferred so
+/// in-flight commits from `LogStore::write` land before the writer sees the
+/// shutdown, but reordering is no longer a deadlock hazard.
 pub struct ThreadNamespace {
     system: SystemProvider,
     history: HistoryView,
@@ -79,6 +80,18 @@ impl ThreadNamespace {
         let ledger_path = thread_dir.join("ledger.jsonl");
         let has_ledger = ledger_path.exists();
         let mut loaded = false;
+
+        // Ensure a default `view.json` exists for this thread dir. One-shot,
+        // not per-turn — Task 1b moved this off the `save_config_snapshot`
+        // hot path. Log on failure; remount should not hard-abort just
+        // because view.json couldn't be written.
+        if let Err(e) = ox_inbox::snapshot::write_default_view_if_missing(thread_dir) {
+            tracing::warn!(
+                path = %thread_dir.display(),
+                error = %e,
+                "write_default_view_if_missing failed"
+            );
+        }
 
         // Restore context.json (system prompt, gate config). `snapshot::restore`
         // also replays the ledger if `context.json` is present; we invoke it
@@ -194,9 +207,11 @@ impl ThreadNamespace {
                     error = %e,
                     "LedgerWriter: failed to spawn; per-append durability disabled for this thread"
                 );
-                // Without a writer, this thread falls back to save_thread_state's
-                // incremental ledger append (Task 1b removes that path; until
-                // then both paths co-exist so losing the writer is recoverable).
+                // Post-Task-1b, the ledger is the LedgerWriter's exclusive
+                // responsibility — there is no fallback path. A failed spawn
+                // means this thread's log will only live in memory for this
+                // process lifetime. Surface-the-degradation is a later step
+                // (plan Step 7: `LedgerDegraded` banner).
             }
         }
 
@@ -454,14 +469,25 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let inbox_root = dir.path().to_path_buf();
         let thread_dir = inbox_root.join("threads").join("t_snap");
+        std::fs::create_dir_all(&thread_dir).unwrap();
 
-        // Build a namespace, write a message, save to disk
+        // Build a namespace and install a real LedgerWriter on its
+        // `SharedLog` so `history/append` commits are durable to
+        // `ledger.jsonl` — that's the production lazy-mount path. Then
+        // write `context.json` via `save_config_snapshot`.
         let mut ns = ThreadNamespace::new_default();
+        let ledger_path = thread_dir.join("ledger.jsonl");
+        let writer =
+            ox_inbox::ledger_writer::LedgerWriter::spawn(ledger_path).expect("spawn ledger writer");
+        let handle: std::sync::Arc<dyn ox_kernel::log::Durability> =
+            std::sync::Arc::new(writer.handle());
+        ns.shared_log().with_durability(handle);
+
         let msg = serde_json::json!({"role": "user", "content": "hello from snapshot"});
         ns.write(&path!("history/append"), Record::parsed(json_to_value(msg)))
             .unwrap();
 
-        ox_inbox::snapshot::save(
+        ox_inbox::snapshot::save_config_snapshot(
             &mut ns,
             &thread_dir,
             "t_snap",
@@ -471,6 +497,12 @@ mod tests {
             &ox_inbox::snapshot::PARTICIPATING_MOUNTS,
         )
         .unwrap();
+
+        // Drop the helper namespace (releasing its durability handle) and
+        // then its writer so the ledger is flushed and joined before the
+        // fresh registry re-reads it.
+        drop(ns);
+        drop(writer);
 
         // Fresh registry — should lazy-mount from disk
         let mut reg = ThreadRegistry::new(inbox_root);

@@ -77,7 +77,9 @@ async fn per_append_durability_survives_soft_crash() {
 /// Build a harness, drive a simple turn's worth of log writes, drop the App,
 /// remount, and verify the SharedLog projection is identical. This is the
 /// core guarantee Task 0 exists to support; per-append durability from
-/// Task 1a supersedes the explicit save path used here.
+/// Task 1a carries the log to disk without a save boundary, and Task 1b
+/// removed the `crash_harness_force_save` helper that used to be needed
+/// here.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn soft_crash_roundtrip_preserves_log() {
     init_tracing();
@@ -108,16 +110,11 @@ async fn soft_crash_roundtrip_preserves_log() {
     )
     .await;
 
-    // Force a ledger save (pre-Task-1a there is no per-append durability, so
-    // the harness must drive a save boundary explicitly — same mechanism the
-    // production binary uses today). We reach through the broker rather than
-    // call `save_thread_state` directly to keep the test at the public seam.
-    //
-    // The production call site uses `save_thread_state` in `agents.rs`; we
-    // mirror its effect by asking `ox_inbox::snapshot::save` to run against
-    // the thread's namespace. Once Task 1a lands, this save boundary stops
-    // being necessary for this assertion.
-    crash_harness_force_save(&harness, &tid).await;
+    // No explicit save boundary: Task 1a's LedgerWriter already made every
+    // append durable before it became visible in SharedLog. The test is the
+    // same shape as `per_append_durability_survives_soft_crash` above; this
+    // one is kept as a soft-crash smoke test under the original scenario
+    // name ("roundtrip") so removal is a deliberate git move.
 
     let pre_kill = harness.snapshot_shared_log(&tid).await;
     assert_eq!(
@@ -131,63 +128,6 @@ async fn soft_crash_roundtrip_preserves_log() {
 
     let post = read_shared_log(&harness.client(), &tid).await;
     assert_shared_log_matches_pre_kill(&post, &pre_kill);
-}
-
-// Ad-hoc helper that force-saves the thread by invoking the existing save
-// path directly. This is pre-Task-1a scaffolding: Task 1a makes per-append
-// durability automatic, after which the save_thread_state call goes away and
-// this helper is deleted.
-async fn crash_harness_force_save(harness: &crash_harness::Harness, thread_id: &str) {
-    // Read the thread's full log through the broker, then call
-    // `ox_inbox::snapshot::save` against a temporarily-assembled namespace
-    // seeded with those entries. This keeps the harness's "force a save"
-    // semantics grounded in the same code path production uses, rather than
-    // hand-writing the ledger JSONL.
-    use ox_context::{Namespace, SystemProvider};
-    use ox_gate::GateStore;
-    use ox_history::HistoryView;
-    use ox_inbox::snapshot::{PARTICIPATING_MOUNTS, save};
-    use ox_kernel::log::{LogStore, SharedLog};
-    use structfs_core_store::{Record, Writer};
-    use structfs_serde_store::json_to_value;
-
-    let entries = read_shared_log(&harness.client(), thread_id).await;
-
-    let shared = SharedLog::new();
-    let mut ns = Namespace::new();
-    ns.mount(
-        "system",
-        Box::new(SystemProvider::new("You are helpful.".into())),
-    );
-    ns.mount("tools", Box::new(ox_tools::ToolStore::empty()));
-    ns.mount("history", Box::new(HistoryView::new(shared.clone())));
-    ns.mount("log", Box::new(LogStore::from_shared(shared)));
-    ns.mount("gate", Box::new(GateStore::new()));
-
-    for entry in &entries {
-        let val = json_to_value(serde_json::to_value(entry).unwrap());
-        ns.write(
-            &structfs_core_store::path!("log/append"),
-            Record::parsed(val),
-        )
-        .expect("seed replay log");
-    }
-
-    let thread_dir = harness.thread_dir(thread_id);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    save(
-        &mut ns,
-        &thread_dir,
-        thread_id,
-        "t-roundtrip",
-        &[],
-        now,
-        &PARTICIPATING_MOUNTS,
-    )
-    .expect("snapshot::save");
 }
 
 // ---------------------------------------------------------------------------

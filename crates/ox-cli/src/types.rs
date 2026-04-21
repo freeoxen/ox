@@ -10,19 +10,22 @@ pub struct ThreadView {
 // Three places in the tree hold a count of user+assistant messages:
 //   1. `inbox.db.threads.message_count` — SQLite rollup, display of record
 //      for the inbox listing. Kept live by `write_save_result_to_inbox`
-//      after each `save_thread_state` and by `reconcile` at startup.
+//      invoked from the `LedgerWriter` drain (Task 1c re-wires this) and
+//      by `reconcile` at startup.
 //   2. Derived by `aggregate_thread_stats` from `threads/{id}/log/entries`
 //      — the source the info modal shows. Includes tool / model / usage
 //      aggregates that the SQLite rollup doesn't carry.
 //   3. `ox_inbox::snapshot::count_messages_in_ledger` — the ground-truth
-//      read from `ledger.jsonl`, used to produce (1) at save time and
-//      reconcile time.
+//      read from `ledger.jsonl`, used at startup reconcile and as the
+//      seed for the LedgerWriter's in-memory message counter.
 //
 // Authority hierarchy when they ever disagree: (3) is ground truth, (1)
 // is the cached reflection for listings, (2) is a recompute from the
 // live log with richer structure. They are kept in sync by the fact
-// that `snapshot::save` is the single writer for both the log and the
-// ledger, and (1) is written through from the SaveResult.
+// that `LedgerWriter` is the single writer of `ledger.jsonl` (it alone
+// mutates the hash chain), and (1) is written through from its drain
+// slot. `save_config_snapshot` only touches `context.json` and is not
+// part of the message-count pipeline.
 
 /// Inbox-index metadata about a thread. Cheap — read straight from the
 /// SQLite rollup; does not require scanning the log.

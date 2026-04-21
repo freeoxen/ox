@@ -428,12 +428,17 @@ fn agent_worker(
 
         // Save before the agent run so the user's prompt (and any prior history)
         // survives if the process is killed mid-turn.
-        if let Some(result) = save_thread_state(&mut adapter, &inbox_root, &thread_id, &title) {
-            rt_handle.block_on(write_save_result_to_inbox(
-                &broker_client,
-                &thread_id,
-                &result,
-            ));
+        //
+        // `save_config_snapshot` only writes `context.json` now; per-append
+        // durability (via LedgerWriter on the SharedLog) handles the ledger.
+        // Task 1c will re-introduce propagation to the inbox index via a
+        // CommitDrain task that consumes `LedgerWriter::latest_save_result`.
+        if let Err(e) = save_config_snapshot(&mut adapter, &inbox_root, &thread_id, &title) {
+            tracing::warn!(
+                thread_id = %thread_id,
+                error = %e,
+                "save_config_snapshot (pre-turn) failed"
+            );
         }
 
         // Snapshot session tokens before the run for per-run delta and streaming cost.
@@ -522,13 +527,15 @@ fn agent_worker(
         // The kernel already wrote the assistant message to log/append.
         adapter.write_typed(&path!("history/turn/clear"), &()).ok();
 
-        // Persist conversation state for restart recovery
-        if let Some(result) = save_thread_state(&mut adapter, &inbox_root, &thread_id, &title) {
-            rt_handle.block_on(write_save_result_to_inbox(
-                &broker_client,
-                &thread_id,
-                &result,
-            ));
+        // Persist conversation state for restart recovery. Same caveat as
+        // the pre-turn save above: this only writes context.json; inbox
+        // index freshness is re-wired in Task 1c.
+        if let Err(e) = save_config_snapshot(&mut adapter, &inbox_root, &thread_id, &title) {
+            tracing::warn!(
+                thread_id = %thread_id,
+                error = %e,
+                "save_config_snapshot (post-turn) failed"
+            );
         }
 
         // Index conversation content for full-text search
@@ -578,23 +585,27 @@ fn agent_worker(
     // No explicit unmount needed.
 }
 
-/// Save the conversation state from the store to the thread directory.
-/// Returns the `SaveResult` so the caller can write it through to the
-/// broker's inbox index (keeping `message_count`/`last_seq` live during
-/// a session, not just at startup reconcile).
-fn save_thread_state(
+/// Narrow CLI-side wrapper over [`ox_inbox::snapshot::save_config_snapshot`].
+///
+/// Writes `context.json` for the thread dir; does **not** touch the ledger
+/// — per-append durability via [`ox_inbox::ledger_writer::LedgerWriter`] is
+/// the single writer of `ledger.jsonl`.
+///
+/// On failure, logs an error and writes a `LogEntry::Error` into the thread's
+/// log so the user sees it in the thread view.
+fn save_config_snapshot(
     store: &mut dyn structfs_core_store::Store,
     inbox_root: &std::path::Path,
     thread_id: &str,
     title: &str,
-) -> Option<ox_inbox::snapshot::SaveResult> {
+) -> Result<(), String> {
     let thread_dir = inbox_root.join("threads").join(thread_id);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
 
-    match ox_inbox::snapshot::save(
+    match ox_inbox::snapshot::save_config_snapshot(
         store,
         &thread_dir,
         thread_id,
@@ -603,25 +614,25 @@ fn save_thread_state(
         now,
         &ox_inbox::snapshot::PARTICIPATING_MOUNTS,
     ) {
-        Ok(result) => Some(result),
+        Ok(()) => Ok(()),
         Err(e) => {
             tracing::error!(
                 thread_id,
                 path = %thread_dir.display(),
                 error = %e,
-                "failed to save thread snapshot — conversation may be lost on restart"
+                "failed to save thread config snapshot — conversation config may be lost on restart"
             );
             // Surface error to the user in the thread view
             let error_msg = serde_json::json!({
                 "type": "error",
-                "message": format!("Failed to save thread: {e}. Conversation may be lost on restart."),
+                "message": format!("Failed to save thread config: {e}. Conversation config may be lost on restart."),
             });
             let val = structfs_serde_store::json_to_value(error_msg);
             let _ = store.write(
                 &structfs_core_store::Path::parse("log/append").unwrap(),
                 structfs_core_store::Record::parsed(val),
             );
-            None
+            Err(e)
         }
     }
 }
@@ -629,6 +640,13 @@ fn save_thread_state(
 /// Propagate a `SaveResult` to the broker's inbox index so listings
 /// show live `message_count` / `last_seq` counts instead of the stale
 /// values from last startup reconcile.
+///
+/// Task 1b temporarily removed the callers from `agent_worker`; Task 1c
+/// re-wires them via a `CommitDrain` task that pulls `SaveResult` values
+/// from the `LedgerWriter`. Kept `pub(crate)` and `#[allow(dead_code)]`
+/// for that bridge — the `broker_setup` test continues to exercise this
+/// code path so the plumbing stays honest in the meantime.
+#[allow(dead_code)]
 pub(crate) async fn write_save_result_to_inbox(
     broker_client: &ox_broker::ClientHandle,
     thread_id: &str,
