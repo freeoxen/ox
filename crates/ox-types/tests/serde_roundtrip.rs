@@ -298,6 +298,53 @@ fn approval_response_roundtrip() {
     assert_eq!(back.decision, Decision::AllowOnce);
 }
 
+#[test]
+fn decision_all_variants_roundtrip() {
+    // Every `Decision` variant must serde round-trip, and its wire
+    // form must match `as_str()` exactly. A new variant that forgets
+    // to add itself here fails at compile time via the exhaustive
+    // match below.
+    fn as_wire(d: Decision) -> &'static str {
+        match d {
+            Decision::AllowOnce => "allow_once",
+            Decision::AllowSession => "allow_session",
+            Decision::AllowAlways => "allow_always",
+            Decision::DenyOnce => "deny_once",
+            Decision::DenySession => "deny_session",
+            Decision::DenyAlways => "deny_always",
+            Decision::CancelTurn => "cancel_turn",
+        }
+    }
+
+    for decision in [
+        Decision::AllowOnce,
+        Decision::AllowSession,
+        Decision::AllowAlways,
+        Decision::DenyOnce,
+        Decision::DenySession,
+        Decision::DenyAlways,
+        Decision::CancelTurn,
+    ] {
+        let wire = as_wire(decision);
+        assert_eq!(decision.as_str(), wire);
+        assert_eq!(format!("{decision}"), wire);
+        let json = serde_json::to_string(&decision).unwrap();
+        assert_eq!(json, format!("\"{wire}\""));
+        let back: Decision = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, decision);
+    }
+}
+
+#[test]
+fn decision_cancel_turn_not_allow_not_deny() {
+    // Contract: `CancelTurn` is a third kind. Both predicates return
+    // false. Call sites must match on the variant directly when they
+    // need to distinguish the three kinds.
+    let d = Decision::CancelTurn;
+    assert!(!d.is_allow());
+    assert!(!d.is_deny());
+}
+
 // --- Unchanged types ---
 
 #[test]

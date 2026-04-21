@@ -8,6 +8,14 @@ pub struct ApprovalRequest {
 }
 
 /// The outcome of a tool approval prompt.
+///
+/// `CancelTurn` is a third kind — neither allow nor deny. It is reserved
+/// for the post-crash reconfirm flow (Task 3 of the durable-conversation
+/// plan): the user explicitly aborts the in-flight turn rather than
+/// retrying or skipping the interrupted tool. Kernel wiring that writes
+/// `TurnAborted { reason: UserCanceledAfterCrash }` on this variant is
+/// added in Task 3c; this variant itself exists so every `match` site
+/// can be made exhaustive in one commit (Task 3a).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Decision {
@@ -17,9 +25,11 @@ pub enum Decision {
     DenyOnce,
     DenySession,
     DenyAlways,
+    CancelTurn,
 }
 
 impl Decision {
+    /// `CancelTurn` is **not** an allow — it doesn't authorize the tool.
     pub fn is_allow(self) -> bool {
         matches!(
             self,
@@ -27,8 +37,15 @@ impl Decision {
         )
     }
 
+    /// `CancelTurn` is **not** a deny — a deny feeds a denial result back
+    /// to the model; a cancel aborts the whole turn. `is_allow` and
+    /// `is_deny` both return `false` for `CancelTurn`; callers that need
+    /// to handle all three kinds must match on the variant directly.
     pub fn is_deny(self) -> bool {
-        !self.is_allow()
+        matches!(
+            self,
+            Decision::DenyOnce | Decision::DenySession | Decision::DenyAlways
+        )
     }
 
     pub fn as_str(self) -> &'static str {
@@ -39,6 +56,7 @@ impl Decision {
             Decision::DenyOnce => "deny_once",
             Decision::DenySession => "deny_session",
             Decision::DenyAlways => "deny_always",
+            Decision::CancelTurn => "cancel_turn",
         }
     }
 }

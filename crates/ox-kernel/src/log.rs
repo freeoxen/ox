@@ -126,6 +126,20 @@ pub enum LogEntry {
     ApprovalRequested {
         tool_name: String,
         input_preview: String,
+        /// `true` when the kernel re-requested approval after a crash
+        /// interrupted an in-flight tool dispatch (Task 3c). The UI
+        /// uses this flag to surface a Retry/Skip/Cancel modal instead
+        /// of the normal allow/deny modal; the plan's durability
+        /// contract requires that no tool side effect be re-executed
+        /// without an explicit user confirmation, which this flag
+        /// gates.
+        ///
+        /// Elided from the wire when `false` (the overwhelmingly
+        /// common case) to keep the happy-path JSON unchanged. Missing
+        /// on deserialize → `false`, so ledgers written before Task 3a
+        /// continue to deserialize cleanly.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        post_crash_reconfirm: bool,
     },
 
     #[serde(rename = "approval_resolved")]
@@ -732,6 +746,76 @@ mod tests {
         assert_eq!(arr[0]["tool_name"], "bash");
         assert_eq!(arr[1]["type"], "approval_resolved");
         assert_eq!(arr[1]["decision"], "allow_once");
+    }
+
+    #[test]
+    fn approval_requested_post_crash_reconfirm_elided_when_false() {
+        // The flag must not appear on the wire in the happy path; this
+        // keeps existing ledgers byte-identical and the audit stream
+        // quiet when no crash has happened.
+        let entry = LogEntry::ApprovalRequested {
+            tool_name: "bash".into(),
+            input_preview: "ls".into(),
+            post_crash_reconfirm: false,
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert!(json.get("post_crash_reconfirm").is_none(), "got {json}");
+        assert_eq!(json["type"], "approval_requested");
+    }
+
+    #[test]
+    fn approval_requested_post_crash_reconfirm_emitted_when_true() {
+        let entry = LogEntry::ApprovalRequested {
+            tool_name: "bash".into(),
+            input_preview: "ls".into(),
+            post_crash_reconfirm: true,
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["post_crash_reconfirm"], true);
+    }
+
+    #[test]
+    fn approval_requested_defaults_false_on_legacy_payload() {
+        // Ledgers written pre-Task-3a did not carry the flag. Missing
+        // on the wire must deserialize to `false`.
+        let json = serde_json::json!({
+            "type": "approval_requested",
+            "tool_name": "bash",
+            "input_preview": "ls -la",
+        });
+        let entry: LogEntry = serde_json::from_value(json).unwrap();
+        match entry {
+            LogEntry::ApprovalRequested {
+                post_crash_reconfirm,
+                ..
+            } => {
+                assert!(!post_crash_reconfirm);
+            }
+            other => panic!("expected ApprovalRequested, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn approval_requested_round_trip_with_flag_set() {
+        let entry = LogEntry::ApprovalRequested {
+            tool_name: "bash".into(),
+            input_preview: "rm -rf /".into(),
+            post_crash_reconfirm: true,
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        let back: LogEntry = serde_json::from_value(json).unwrap();
+        match back {
+            LogEntry::ApprovalRequested {
+                tool_name,
+                input_preview,
+                post_crash_reconfirm,
+            } => {
+                assert_eq!(tool_name, "bash");
+                assert_eq!(input_preview, "rm -rf /");
+                assert!(post_crash_reconfirm);
+            }
+            other => panic!("expected ApprovalRequested, got {other:?}"),
+        }
     }
 
     #[test]

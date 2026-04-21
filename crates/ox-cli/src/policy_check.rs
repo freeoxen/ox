@@ -149,6 +149,31 @@ impl CliPolicyCheck {
                 self.guard.persist_deny(tool, &input);
                 PolicyDecision::Deny(format!("denied by user (always): {tool}"))
             }
+            // `CancelTurn` is a post-crash-reconfirm affordance: the
+            // user aborts the in-flight turn rather than retrying or
+            // skipping the interrupted tool. In the normal allow/deny
+            // approval flow this variant should never arrive — the UI
+            // only exposes the Cancel button on the post-crash modal
+            // (wired in Task 3d). The kernel-side semantics
+            // (`TurnAborted { reason: UserCanceledAfterCrash }`) land
+            // in Task 3c.
+            //
+            // For Task 3a we map `CancelTurn` to deny-once: the tool
+            // does not run, the guard state is not mutated, and the
+            // model receives a denial result. This keeps behavior
+            // defensive and forward-compatible — once Task 3c wires
+            // the kernel's post-crash prologue, that path intercepts
+            // `CancelTurn` *before* this check sees it, so this arm
+            // becomes unreachable in the reconfirm flow it's meant to
+            // serve.
+            ox_types::Decision::CancelTurn => {
+                tracing::warn!(
+                    tool,
+                    "CancelTurn arrived on the normal approval path; treating as deny_once \
+                     (Task 3c will route CancelTurn through the kernel prologue instead)",
+                );
+                PolicyDecision::Deny(format!("turn canceled by user: {tool}"))
+            }
         }
     }
 }

@@ -124,10 +124,7 @@ pub fn classify(entries: &[LogEntry]) -> ThreadResumeState {
                 seen_resolved = true;
                 continue;
             }
-            LogEntry::ApprovalRequested {
-                tool_name: _,
-                input_preview: _,
-            } => {
+            LogEntry::ApprovalRequested { .. } => {
                 if seen_resolved {
                     // This request was resolved by an ApprovalResolved we
                     // already walked past; it is not blocking input. Keep
@@ -372,6 +369,7 @@ mod tests {
         LogEntry::ApprovalRequested {
             tool_name: "shell".into(),
             input_preview: "ls".into(),
+            post_crash_reconfirm: false,
         }
     }
 
@@ -599,6 +597,7 @@ mod prop_tests {
             Just(LogEntry::ApprovalRequested {
                 tool_name: "shell".into(),
                 input_preview: "".into(),
+                post_crash_reconfirm: false,
             }),
             Just(LogEntry::ApprovalResolved {
                 tool_name: "shell".into(),

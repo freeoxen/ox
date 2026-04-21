@@ -602,6 +602,7 @@ mod tests {
             LogEntry::ApprovalRequested {
                 tool_name: "t".into(),
                 input_preview: "".into(),
+                post_crash_reconfirm: false,
             },
             LogEntry::ApprovalResolved {
                 tool_name: "t".into(),

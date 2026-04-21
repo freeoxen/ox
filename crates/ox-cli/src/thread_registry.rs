@@ -507,6 +507,18 @@ impl AsyncWriter for ThreadRegistry {
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();
+                        // Normal path: `post_crash_reconfirm` is always
+                        // `false` here. The resume-approval / resume-
+                        // tool-dispatch path in Task 3c will synthesize
+                        // its own `ApprovalRequested` with the flag set
+                        // from inside the kernel prologue. Because
+                        // `false` is elided on the wire (see
+                        // `LogEntry::ApprovalRequested`), omitting the
+                        // key from this payload is equivalent to
+                        // setting `post_crash_reconfirm: false` —
+                        // callers that need to distinguish must match
+                        // on the deserialized `LogEntry`, not the raw
+                        // JSON.
                         let entry = serde_json::json!({
                             "type": "approval_requested",
                             "tool_name": tool_name,
