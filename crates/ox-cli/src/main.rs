@@ -4,6 +4,7 @@ mod app;
 mod bindings;
 mod broker_setup;
 mod clash_sandbox;
+mod commit_drain;
 mod config;
 mod dialogs;
 mod editor;

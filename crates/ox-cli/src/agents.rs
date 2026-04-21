@@ -641,12 +641,11 @@ fn save_config_snapshot(
 /// show live `message_count` / `last_seq` counts instead of the stale
 /// values from last startup reconcile.
 ///
-/// Task 1b temporarily removed the callers from `agent_worker`; Task 1c
-/// re-wires them via a `CommitDrain` task that pulls `SaveResult` values
-/// from the `LedgerWriter`. Kept `pub(crate)` and `#[allow(dead_code)]`
-/// for that bridge — the `broker_setup` test continues to exercise this
-/// code path so the plumbing stays honest in the meantime.
-#[allow(dead_code)]
+/// Called from the per-thread [`crate::commit_drain::CommitDrainHandle`]
+/// task (Task 1c), which observes the `LedgerWriter`'s latest-wins slot
+/// and invokes this helper only when the commit sequence advances. The
+/// `broker_setup::tests::write_save_result_to_inbox_updates_live_counts`
+/// test exercises the same helper directly to pin the rollup contract.
 pub(crate) async fn write_save_result_to_inbox(
     broker_client: &ox_broker::ClientHandle,
     thread_id: &str,

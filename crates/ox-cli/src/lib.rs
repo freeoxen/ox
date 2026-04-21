@@ -25,6 +25,7 @@ pub mod thread_registry;
 // Not exposed externally, but referenced from `crate::…` inside lib sources.
 pub(crate) mod action_executor;
 pub(crate) mod clash_sandbox;
+pub(crate) mod commit_drain;
 pub(crate) mod config;
 pub(crate) mod dialogs;
 pub(crate) mod editor;

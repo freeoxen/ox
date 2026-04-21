@@ -10,8 +10,9 @@ pub struct ThreadView {
 // Three places in the tree hold a count of user+assistant messages:
 //   1. `inbox.db.threads.message_count` — SQLite rollup, display of record
 //      for the inbox listing. Kept live by `write_save_result_to_inbox`
-//      invoked from the `LedgerWriter` drain (Task 1c re-wires this) and
-//      by `reconcile` at startup.
+//      invoked from the `CommitDrain` task (one per mounted thread) that
+//      observes the `LedgerWriter`'s latest-wins slot, and by `reconcile`
+//      at startup.
 //   2. Derived by `aggregate_thread_stats` from `threads/{id}/log/entries`
 //      — the source the info modal shows. Includes tool / model / usage
 //      aggregates that the SQLite rollup doesn't carry.

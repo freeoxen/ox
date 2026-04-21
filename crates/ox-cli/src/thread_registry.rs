@@ -27,7 +27,10 @@ use crate::agents::SYSTEM_PROMPT;
 /// thread exits regardless of whether `log` (or any other handle holder) has
 /// dropped first. Keeping `log` before `ledger_writer` is still preferred so
 /// in-flight commits from `LogStore::write` land before the writer sees the
-/// shutdown, but reordering is no longer a deadlock hazard.
+/// shutdown, but reordering is no longer a deadlock hazard. `commit_drain`
+/// is placed **before** `ledger_writer` so its tokio task terminates before
+/// the writer thread shuts down — cleaner shutdown telemetry, not load-
+/// bearing for correctness.
 pub struct ThreadNamespace {
     system: SystemProvider,
     history: HistoryView,
@@ -35,6 +38,11 @@ pub struct ThreadNamespace {
     tools: ox_tools::ToolStore,
     pub gate: GateStore,
     pub approval: ApprovalStore,
+    /// Per-thread drain task that observes the `LedgerWriter`'s latest-wins
+    /// `SaveResult` slot and writes through to the broker's inbox rollup.
+    /// `None` when there's no broker client at mount time (tests, early
+    /// construction) or no ledger writer (e.g., `new_default()`).
+    commit_drain: Option<crate::commit_drain::CommitDrainHandle>,
     /// Per-thread durable ledger writer. Present after `from_thread_dir`;
     /// `None` for `new_default()` (used in contexts that don't persist).
     ledger_writer: Option<ox_inbox::ledger_writer::LedgerWriter>,
@@ -52,8 +60,38 @@ impl ThreadNamespace {
             tools: ox_tools::ToolStore::empty(),
             gate: GateStore::new(),
             approval: ApprovalStore::new(),
+            commit_drain: None,
             ledger_writer: None,
         }
+    }
+
+    /// Attach a `CommitDrain` task that propagates the `LedgerWriter`'s
+    /// latest-wins `SaveResult` into the broker's inbox rollup.
+    ///
+    /// Idempotent: if a drain is already attached, this is a no-op (we don't
+    /// leak tasks if `ensure_mounted` runs twice for a transient reason). A
+    /// no-op also occurs when there's no `LedgerWriter` (e.g., namespace
+    /// built via `new_default()` for a test context that doesn't persist) —
+    /// the drain has nothing to observe in that case.
+    pub fn attach_commit_drain(
+        &mut self,
+        broker_client: ox_broker::ClientHandle,
+        thread_id: String,
+        rt: tokio::runtime::Handle,
+    ) {
+        if self.commit_drain.is_some() {
+            return;
+        }
+        let Some(writer) = self.ledger_writer.as_ref() else {
+            return;
+        };
+        let drain = crate::commit_drain::CommitDrainHandle::spawn(
+            writer.handle(),
+            broker_client,
+            thread_id,
+            rt,
+        );
+        self.commit_drain = Some(drain);
     }
 
     /// Shared reference to this thread's `SharedLog`. Used by
@@ -300,6 +338,18 @@ impl ThreadRegistry {
                 let thread_overrides = ox_store_util::LocalConfig::new();
                 let cascade = ox_store_util::Cascade::new(thread_overrides, read_only);
                 ns.gate = GateStore::new().with_config(Box::new(cascade));
+
+                // Spawn the CommitDrain in the same broker-gated branch —
+                // no client, no rollup write-through, so the drain would
+                // have nothing useful to do. `attach_commit_drain` is a
+                // no-op when there's no ledger writer (the `new_default`
+                // case), so this is safe to call unconditionally within
+                // this branch.
+                ns.attach_commit_drain(
+                    client.clone(),
+                    thread_id.to_string(),
+                    tokio::runtime::Handle::current(),
+                );
             }
 
             self.threads.insert(thread_id.to_string(), ns);
