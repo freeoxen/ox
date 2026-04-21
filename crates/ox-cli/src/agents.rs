@@ -426,21 +426,6 @@ fn agent_worker(
                 .ok();
         }
 
-        // Save before the agent run so the user's prompt (and any prior history)
-        // survives if the process is killed mid-turn.
-        //
-        // `save_config_snapshot` only writes `context.json` now; per-append
-        // durability (via LedgerWriter on the SharedLog) handles the ledger.
-        // Task 1c will re-introduce propagation to the inbox index via a
-        // CommitDrain task that consumes `LedgerWriter::latest_save_result`.
-        if let Err(e) = save_config_snapshot(&mut adapter, &inbox_root, &thread_id, &title) {
-            tracing::warn!(
-                thread_id = %thread_id,
-                error = %e,
-                "save_config_snapshot (pre-turn) failed"
-            );
-        }
-
         // Snapshot session tokens before the run for per-run delta and streaming cost.
         let pre_run_session: ox_types::TokenUsage = adapter
             .read_typed(&path!("history/turn/session_tokens"))
@@ -527,9 +512,10 @@ fn agent_worker(
         // The kernel already wrote the assistant message to log/append.
         adapter.write_typed(&path!("history/turn/clear"), &()).ok();
 
-        // Persist conversation state for restart recovery. Same caveat as
-        // the pre-turn save above: this only writes context.json; inbox
-        // index freshness is re-wired in Task 1c.
+        // Persist conversation state for restart recovery. This only writes
+        // `context.json`; per-append durability (via LedgerWriter on the
+        // SharedLog) handles the ledger, and the CommitDrain task propagates
+        // inbox index freshness.
         if let Err(e) = save_config_snapshot(&mut adapter, &inbox_root, &thread_id, &title) {
             tracing::warn!(
                 thread_id = %thread_id,
