@@ -25,11 +25,17 @@
 //!
 //! # Shutdown
 //!
-//! When the last `LedgerWriterHandle` drops, the input channel closes. The
-//! writer thread sees `RecvError`, drains any in-flight coalesced batch, and
-//! exits. The `LedgerWriter` owner that was returned from `spawn` joins the
-//! thread on its own `Drop` to avoid detached threads under the crash
-//! harness's `App`-drop path.
+//! The `LedgerWriter` owner's `Drop` sends a `WriterMsg::Shutdown` down the
+//! request channel and then joins the writer thread. FIFO ordering guarantees
+//! that any commits already submitted (including by external handles) are
+//! processed and acked *before* the writer sees the shutdown and exits. After
+//! shutdown, the thread has dropped its `Receiver`; any further `send` from a
+//! surviving handle fails fast with `"writer thread has exited"`.
+//!
+//! This means **drop order between the owner and its handles is cosmetic** —
+//! external handles may outlive the owner without deadlocking the join. The
+//! previous design waited for every `Sender` clone to drop before the writer
+//! thread could exit, which made drop ordering load-bearing; that's fixed.
 
 use std::path::PathBuf;
 use std::sync::{
@@ -58,6 +64,16 @@ const COALESCE_WINDOW: Duration = Duration::from_millis(5);
 pub struct CommitRequest {
     pub msg: LogEntry,
     pub ack: mpsc::SyncSender<CommitResult>,
+}
+
+/// The writer thread's input-channel message type. We wrap [`CommitRequest`]
+/// in an enum so the owner's `Drop` can send an explicit `Shutdown` without
+/// having to rely on all external `Sender` clones being dropped first. FIFO
+/// delivery on the channel means any commits already submitted are drained
+/// and acked before the writer sees the shutdown.
+enum WriterMsg {
+    Commit(CommitRequest),
+    Shutdown,
 }
 
 /// Outcome of a single commit (one entry).
@@ -107,7 +123,7 @@ impl ox_kernel::log::Durability for LedgerWriterHandle {
 /// shared-state `Arc` for the drain slot.
 #[derive(Clone)]
 pub struct LedgerWriterHandle {
-    tx: mpsc::Sender<CommitRequest>,
+    tx: mpsc::Sender<WriterMsg>,
     drain: Arc<DrainState>,
 }
 
@@ -128,7 +144,7 @@ impl LedgerWriterHandle {
             ack: ack_tx,
         };
         self.tx
-            .send(request)
+            .send(WriterMsg::Commit(request))
             .map_err(|_| StoreError::store("LedgerWriter", "commit", "writer thread has exited"))?;
         ack_rx.recv().map_err(|_| {
             StoreError::store(
@@ -156,18 +172,18 @@ impl LedgerWriterHandle {
     }
 }
 
-/// Owns the writer thread. **Must outlive all handles it hands out.**
+/// Owns the writer thread.
 ///
-/// The owner's Drop joins the thread; the thread exits when the last
-/// `Sender` clone drops. Outstanding handles hold their own clones, so if a
-/// handle outlives the owner, `drop` hangs forever. In practice the owner is
-/// `ThreadNamespace`, which keeps the SharedLog (the only place handles are
-/// installed) above the writer in its field-declaration order — so SharedLog
-/// drops first, releases the handle, then the writer drops and joins cleanly.
+/// The owner's `Drop` sends `WriterMsg::Shutdown` and then joins the thread.
+/// FIFO delivery means commits already submitted — including by external
+/// handles — are acked before the writer sees the shutdown and exits. After
+/// `Drop` returns, any surviving handle's `commit_blocking` fails with
+/// `"writer thread has exited"` on the next send. Drop order between this
+/// owner and its handles is **not** load-bearing.
 pub struct LedgerWriter {
-    /// The owner's own Sender clone. Dropped in `Drop` so the writer thread
-    /// can exit once all external handles are also gone.
-    tx: mpsc::Sender<CommitRequest>,
+    /// The owner's own Sender clone. Used by `Drop` to deliver the
+    /// `Shutdown` message in FIFO order behind any queued commits.
+    tx: mpsc::Sender<WriterMsg>,
     /// Drain state shared with handles. Held here so the spawn path can seed
     /// it from the on-disk ledger before any handle is returned.
     drain: Arc<DrainState>,
@@ -179,7 +195,7 @@ impl LedgerWriter {
     /// seeds its head state and message counter by reading the existing
     /// ledger (if any), so commits continue the hash chain correctly.
     pub fn spawn(ledger_path: PathBuf) -> Result<Self, LedgerIoError> {
-        let (tx, rx) = mpsc::channel::<CommitRequest>();
+        let (tx, rx) = mpsc::channel::<WriterMsg>();
         let drain = Arc::new(DrainState {
             last_seq: AtomicU64::new(0),
             last_hash: Mutex::new(None),
@@ -218,9 +234,14 @@ impl LedgerWriter {
 
 impl Drop for LedgerWriter {
     fn drop(&mut self) {
-        // Drop our own Sender so the writer thread sees `RecvError` once the
-        // last external handle has also been released. External handles that
-        // outlive this owner will hang the join — see the struct docs.
+        // Deliver an explicit Shutdown behind any queued commits so the
+        // writer thread exits on its own, regardless of whether external
+        // handles still hold `Sender` clones. Errors on `send` mean the
+        // thread has already exited (previous panic, runtime teardown),
+        // which is fine — the join below reaps whatever state remains.
+        let _ = self.tx.send(WriterMsg::Shutdown);
+        // Replace our own Sender with a disconnected dummy so nothing holds
+        // on to the real channel for longer than necessary.
         let (dummy, _) = mpsc::channel();
         drop(std::mem::replace(&mut self.tx, dummy));
         if let Some(t) = self.thread.take() {
@@ -229,7 +250,7 @@ impl Drop for LedgerWriter {
     }
 }
 
-fn writer_thread(ledger_path: PathBuf, rx: mpsc::Receiver<CommitRequest>, drain: Arc<DrainState>) {
+fn writer_thread(ledger_path: PathBuf, rx: mpsc::Receiver<WriterMsg>, drain: Arc<DrainState>) {
     // Seed head state from disk.
     let mut head = match ledger::read_last_entry(&ledger_path) {
         Ok(h) => h,
@@ -265,7 +286,14 @@ fn writer_thread(ledger_path: PathBuf, rx: mpsc::Receiver<CommitRequest>, drain:
 
     loop {
         let first = match rx.recv() {
-            Ok(req) => req,
+            Ok(WriterMsg::Commit(req)) => req,
+            Ok(WriterMsg::Shutdown) => {
+                tracing::debug!(
+                    path = %ledger_path.display(),
+                    "LedgerWriter: shutdown received with empty queue, exiting"
+                );
+                return;
+            }
             Err(_) => {
                 tracing::debug!(
                     path = %ledger_path.display(),
@@ -277,13 +305,23 @@ fn writer_thread(ledger_path: PathBuf, rx: mpsc::Receiver<CommitRequest>, drain:
 
         let mut batch = vec![first];
         // Brief coalesce window: drain any commits that arrive within
-        // COALESCE_WINDOW so a single `sync_data` covers them.
+        // COALESCE_WINDOW so a single `sync_data` covers them. If Shutdown
+        // arrives mid-batch, finish the current batch (preserves "commits
+        // already submitted are acked before exit") and then exit.
+        let mut should_exit = false;
         let deadline = std::time::Instant::now() + COALESCE_WINDOW;
         while std::time::Instant::now() < deadline {
             match rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())) {
-                Ok(req) => batch.push(req),
+                Ok(WriterMsg::Commit(req)) => batch.push(req),
+                Ok(WriterMsg::Shutdown) => {
+                    should_exit = true;
+                    break;
+                }
                 Err(mpsc::RecvTimeoutError::Timeout) => break,
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    should_exit = true;
+                    break;
+                }
             }
         }
 
@@ -324,6 +362,14 @@ fn writer_thread(ledger_path: PathBuf, rx: mpsc::Receiver<CommitRequest>, drain:
                     let _ = req.ack.send(CommitResult::Err(payload.clone()));
                 }
             }
+        }
+
+        if should_exit {
+            tracing::debug!(
+                path = %ledger_path.display(),
+                "LedgerWriter: shutdown received mid-coalesce, exiting after draining batch"
+            );
+            return;
         }
     }
 }
