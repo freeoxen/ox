@@ -507,23 +507,29 @@ impl AsyncWriter for ThreadRegistry {
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();
-                        // Normal path: `post_crash_reconfirm` is always
-                        // `false` here. The resume-approval / resume-
-                        // tool-dispatch path in Task 3c will synthesize
-                        // its own `ApprovalRequested` with the flag set
-                        // from inside the kernel prologue. Because
-                        // `false` is elided on the wire (see
-                        // `LogEntry::ApprovalRequested`), omitting the
-                        // key from this payload is equivalent to
-                        // setting `post_crash_reconfirm: false` —
-                        // callers that need to distinguish must match
-                        // on the deserialized `LogEntry`, not the raw
-                        // JSON.
-                        let entry = serde_json::json!({
+                        // `post_crash_reconfirm` is read from the
+                        // incoming payload. The kernel resume prologue
+                        // (Task 3b, `ox-kernel::run::run_turn`) sets
+                        // this to `true` when it re-requests approval
+                        // after a crash; the normal policy-check flow
+                        // (`CliPolicyCheck::handle_ask`) omits the
+                        // field and defaults to `false`. Elided on the
+                        // wire when `false` (see
+                        // `LogEntry::ApprovalRequested`), so callers
+                        // that need to distinguish must match on the
+                        // deserialized `LogEntry`, not the raw JSON.
+                        let post_crash_reconfirm = json
+                            .get("post_crash_reconfirm")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        let mut entry = serde_json::json!({
                             "type": "approval_requested",
                             "tool_name": tool_name,
                             "input_preview": input_preview,
                         });
+                        if post_crash_reconfirm {
+                            entry["post_crash_reconfirm"] = serde_json::Value::Bool(true);
+                        }
                         let log_val = structfs_serde_store::json_to_value(entry);
                         ns.log
                             .write(

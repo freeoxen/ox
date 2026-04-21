@@ -3,6 +3,7 @@
 //! These are composable building blocks that operate on StructFS stores
 //! directly — no struct, no mutable state between calls.
 
+use crate::log::{LogEntry, TurnAbortReason};
 use crate::{
     AgentEvent, CompletionRequest, ContentBlock, StreamEvent, ToolCall, ToolResult, ToolSchema,
 };
@@ -587,6 +588,264 @@ pub(crate) const MAX_TOTAL_ITERATIONS_PUB: usize = MAX_TOTAL_ITERATIONS;
 const NUDGE_AFTER_ITERATIONS: usize = 8;
 
 // ---------------------------------------------------------------------------
+// Resume prologue
+// ---------------------------------------------------------------------------
+
+/// The action the `run_turn` prologue wants to take on its first iteration,
+/// based on inspecting the structured log tail.
+///
+/// Normal-path entry (no resume shape detected) yields `Normal` and the
+/// prologue falls through to the existing `TurnStart` emission. The two
+/// resume shapes — an unresolved `ApprovalRequested` or a `ToolAborted`
+/// that interrupted a previously-approved tool dispatch — both route
+/// through the approval flow with `post_crash_reconfirm: true`. The
+/// dispatch after the user's decision is shared across both variants
+/// (see `handle_resume_decision` in `run_turn`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ResumeAction {
+    /// No resume shape detected; proceed with the normal turn path.
+    Normal,
+    /// A pending `ApprovalRequested` or interrupted tool-dispatch was
+    /// detected at the log tail. The full `ToolCall` input (for the
+    /// matching `tool_use_id`) was found in the log and is reconstructed
+    /// here so the kernel can re-issue the approval + dispatch without
+    /// another model round-trip.
+    ///
+    /// `post_crash_reconfirm` is always `true` for resume actions — the
+    /// whole point is to be honest about restarting an approval flow
+    /// after a crash. It's kept as a field (rather than a constant) so
+    /// future detection shapes can reuse the struct.
+    RequestApproval {
+        tool_use_id: String,
+        tool_name: String,
+        tool_input: serde_json::Value,
+        post_crash_reconfirm: bool,
+    },
+}
+
+/// Inspect the structured log tail and decide whether `run_turn` should
+/// execute a post-crash resume prologue instead of starting a fresh turn.
+///
+/// Walks the log backward from the tail (skipping informational variants)
+/// looking for one of two shapes:
+///
+/// 1. **Resume-approval** — the tail contains an `ApprovalRequested` with
+///    no matching `ApprovalResolved`. This means the previous process
+///    wrote an approval request and exited before the user responded.
+/// 2. **Resume-tool-dispatch** — the tail contains a `ToolAborted`
+///    (appended by the mount lifecycle when it classified
+///    `AwaitingToolResult`). The corresponding `ToolCall` exists in the
+///    log and needs re-confirmation before any re-dispatch.
+///
+/// In both cases the matching `ToolCall` is looked up by `tool_use_id` to
+/// reconstruct the full `tool_input`; the `ApprovalRequested`'s
+/// `input_preview` is a display string, not a round-trippable payload
+/// (P6). Returns `ResumeAction::Normal` if neither shape is at the tail
+/// (including when the log is empty, healthy, or already terminal).
+fn inspect_log_for_resume(context: &mut dyn Reader) -> Result<ResumeAction, String> {
+    let entries = match context
+        .read(&path!("log/entries"))
+        .map_err(|e| e.to_string())?
+    {
+        Some(Record::Parsed(v)) => {
+            let json = structfs_serde_store::value_to_json(v);
+            match serde_json::from_value::<Vec<LogEntry>>(json) {
+                Ok(v) => v,
+                Err(_) => return Ok(ResumeAction::Normal),
+            }
+        }
+        // No log mounted, or parse error — no resume shape we can
+        // recognize. Proceed with the normal turn path.
+        _ => return Ok(ResumeAction::Normal),
+    };
+
+    // Walk backward, skipping informational variants. The first
+    // state-changing entry determines the resume shape.
+    for (idx, entry) in entries.iter().enumerate().rev() {
+        match entry {
+            // ---- informational: skip ----
+            LogEntry::User { .. }
+            | LogEntry::Meta { .. }
+            | LogEntry::CompletionEnd { .. }
+            | LogEntry::Error { .. } => continue,
+
+            // ---- terminal-of-turn markers: no resume ----
+            LogEntry::TurnEnd { .. } => return Ok(ResumeAction::Normal),
+
+            // Resume-approval shape: an ApprovalRequested sits at the
+            // tail with no later ApprovalResolved (otherwise we'd have
+            // encountered the resolved entry first walking back).
+            LogEntry::ApprovalRequested { .. } => {
+                let tool_use_id = match nearest_preceding_tool_use_id(&entries, idx) {
+                    Some(id) => id,
+                    // No matching ToolCall anywhere earlier in the log —
+                    // the approval is orphaned. Fall through to normal
+                    // path; the classifier would have noticed.
+                    None => return Ok(ResumeAction::Normal),
+                };
+                let Some((name, input)) = tool_call_input_for(&entries, &tool_use_id) else {
+                    return Ok(ResumeAction::Normal);
+                };
+                return Ok(ResumeAction::RequestApproval {
+                    tool_use_id,
+                    tool_name: name,
+                    tool_input: input,
+                    post_crash_reconfirm: true,
+                });
+            }
+
+            // An ApprovalResolved at the tail means the approval was
+            // settled. Either a ToolResult followed (Idle shape, caught
+            // earlier in the walk) or the tool dispatch was interrupted
+            // (ToolAborted shape, caught by the branch below). Keep
+            // walking; the next state-changing entry decides.
+            LogEntry::ApprovalResolved { .. } => continue,
+
+            // Resume-tool-dispatch shape: the mount lifecycle appended
+            // a ToolAborted marker when it classified
+            // AwaitingToolResult. The corresponding ToolCall is the
+            // side-effect we need to re-confirm before re-dispatching.
+            LogEntry::ToolAborted { tool_use_id, .. } => {
+                let Some((name, input)) = tool_call_input_for(&entries, tool_use_id) else {
+                    return Ok(ResumeAction::Normal);
+                };
+                return Ok(ResumeAction::RequestApproval {
+                    tool_use_id: tool_use_id.clone(),
+                    tool_name: name,
+                    tool_input: input,
+                    post_crash_reconfirm: true,
+                });
+            }
+
+            // A ToolResult, Assistant (with or without a tool_use), or
+            // ToolCall at the tail means the turn progressed past the
+            // last approval. `run_turn`'s existing body handles these
+            // cases by completing normally; the classifier may have
+            // written a ToolAborted if there's a dangling tool, in
+            // which case the branch above catches it earlier in the
+            // walk.
+            LogEntry::ToolResult { .. }
+            | LogEntry::Assistant { .. }
+            | LogEntry::ToolCall { .. } => return Ok(ResumeAction::Normal),
+
+            // An aborted turn is terminal — start fresh.
+            LogEntry::TurnAborted { .. } => return Ok(ResumeAction::Normal),
+
+            // A TurnStart with nothing after it means the kernel had
+            // nothing to resume (Task 2 records this as
+            // InTurnNoProgress → TurnAborted on mount, but we see it
+            // here only if that write didn't happen). Nothing to
+            // resume; proceed normally.
+            LogEntry::TurnStart { .. } => return Ok(ResumeAction::Normal),
+        }
+    }
+
+    Ok(ResumeAction::Normal)
+}
+
+/// Walk `entries` backward from `approval_idx - 1` looking for the
+/// nearest `ToolCall` id or the nearest `Assistant(tool_use)` id. Mirrors
+/// `resume::nearest_preceding_tool_use_id` but is duplicated here
+/// (private) to keep `run::inspect_log_for_resume` self-contained.
+fn nearest_preceding_tool_use_id(entries: &[LogEntry], approval_idx: usize) -> Option<String> {
+    for i in (0..approval_idx).rev() {
+        if let LogEntry::ToolCall { id, .. } = &entries[i] {
+            return Some(id.clone());
+        }
+        if let LogEntry::Assistant { content, .. } = &entries[i] {
+            for block in content.iter().rev() {
+                if let ContentBlock::ToolUse(tc) = block {
+                    return Some(tc.id.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Find the `ToolCall` with the given `id` and return its `(name, input)`.
+/// Falls back to the matching `Assistant(tool_use)` if only the assistant
+/// entry is present (the `ToolCall` is normally written by `run_turn`
+/// immediately after the assistant response; in edge cases only the
+/// assistant block is present).
+fn tool_call_input_for(
+    entries: &[LogEntry],
+    tool_use_id: &str,
+) -> Option<(String, serde_json::Value)> {
+    for entry in entries {
+        if let LogEntry::ToolCall {
+            id, name, input, ..
+        } = entry
+        {
+            if id == tool_use_id {
+                return Some((name.clone(), input.clone()));
+            }
+        }
+    }
+    for entry in entries {
+        if let LogEntry::Assistant { content, .. } = entry {
+            for block in content {
+                if let ContentBlock::ToolUse(tc) = block {
+                    if tc.id == tool_use_id {
+                        return Some((tc.name.clone(), tc.input.clone()));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Submit an `approval/request` payload and block until the decision is
+/// returned by the shell's approval flow.
+///
+/// The approval-flow contract (verified against
+/// `ox-ui::approval_store::ApprovalStore` and
+/// `ox-cli::policy_check::CliPolicyCheck`):
+///
+/// 1. Writing to `approval/request` blocks until the shell's async
+///    layer resolves the deferred future (i.e. until the user responds
+///    via the TUI, the web UI, etc.). In the CLI this write is bridged
+///    from the sync caller by `SyncClientAdapter::write` using
+///    `block_in_place` + `block_on`.
+/// 2. The returned `Path` encodes the decision in its **second
+///    component** (e.g. `request/allow_once`, `request/cancel_turn`).
+/// 3. The log entries (`ApprovalRequested` and `ApprovalResolved`) are
+///    synthesized by the namespace layer (`ThreadNamespace::write`).
+///    The kernel does not write them directly.
+fn submit_approval_and_wait(
+    context: &mut dyn Store,
+    tool_name: &str,
+    tool_input: &serde_json::Value,
+    post_crash_reconfirm: bool,
+) -> Result<ox_types::Decision, String> {
+    // Build the approval/request payload. `post_crash_reconfirm` is
+    // passed through so `ThreadNamespace::write` can set the flag on
+    // the synthesized `LogEntry::ApprovalRequested` — Task 3b extends
+    // that handler to read it from the JSON.
+    let req_json = serde_json::json!({
+        "tool_name": tool_name,
+        "tool_input": tool_input,
+        "post_crash_reconfirm": post_crash_reconfirm,
+    });
+    let req_value = structfs_serde_store::json_to_value(req_json);
+    let returned = context
+        .write(&path!("approval/request"), Record::parsed(req_value))
+        .map_err(|e| e.to_string())?;
+
+    // Decision is encoded in the returned path's second component.
+    // `ApprovalStore` emits `Path::from_components(vec!["request", decision.as_str()])`.
+    if returned.components.len() < 2 {
+        return Err(format!(
+            "approval/request returned malformed path (expected 2+ components): {returned}"
+        ));
+    }
+    let decision_str = returned.components[1].clone();
+    serde_json::from_value::<ox_types::Decision>(serde_json::Value::String(decision_str.clone()))
+        .map_err(|e| format!("decode approval decision '{decision_str}': {e}"))
+}
+
+// ---------------------------------------------------------------------------
 // Full agentic loop (stack-based reactor)
 // ---------------------------------------------------------------------------
 
@@ -622,6 +881,11 @@ pub fn run_turn(context: &mut dyn Store, emit: &mut dyn FnMut(AgentEvent)) -> Re
     let mut run_cache_read: u32 = 0;
     // Per-completion identifier — links CompletionEnd to its Assistant entry.
     let mut completion_counter: u64 = 0;
+    // The prologue runs only on the first loop iteration: it inspects
+    // the log tail for post-crash resume shapes. Subsequent iterations
+    // (inner frames, tool-result continuations) must not re-run it —
+    // the kernel has already committed to a turn.
+    let mut first_iteration = true;
 
     loop {
         total_iterations += 1;
@@ -635,6 +899,105 @@ pub fn run_turn(context: &mut dyn Store, emit: &mut dyn FnMut(AgentEvent)) -> Re
             Some(f) => f.clone(),
             None => return Ok(()), // stack empty — should not happen, but safe
         };
+
+        // Log-inspection prologue — runs once per `run_turn` call.
+        // Detects post-crash resume shapes and routes through the
+        // approval flow with `post_crash_reconfirm: true`. On `Normal`
+        // the prologue is a no-op.
+        if first_iteration {
+            first_iteration = false;
+            let action = inspect_log_for_resume(context)?;
+            if let ResumeAction::RequestApproval {
+                tool_use_id,
+                tool_name,
+                tool_input,
+                post_crash_reconfirm,
+            } = action
+            {
+                tracing::info!(
+                    tool_name = %tool_name,
+                    tool_use_id = %tool_use_id,
+                    post_crash_reconfirm,
+                    "ApprovalReRequested"
+                );
+                let decision = submit_approval_and_wait(
+                    context,
+                    &tool_name,
+                    &tool_input,
+                    post_crash_reconfirm,
+                )?;
+                tracing::info!(
+                    tool_name = %tool_name,
+                    decision = %decision.as_str(),
+                    "PostCrashReconfirmDecision"
+                );
+                match decision {
+                    // Allow → dispatch the tool. Record the result on
+                    // the parent frame's log, then fall through into
+                    // the normal loop body for the *next* completion
+                    // call (the model will respond to the new tool
+                    // result).
+                    ox_types::Decision::AllowOnce
+                    | ox_types::Decision::AllowSession
+                    | ox_types::Decision::AllowAlways => {
+                        let tc = ToolCall {
+                            id: tool_use_id.clone(),
+                            name: tool_name.clone(),
+                            input: tool_input.clone(),
+                        };
+                        let results = execute_tools(context, &[tc], emit)?;
+                        record_tool_results(context, &results)?;
+                        // Fall through: the loop's normal body issues
+                        // the next completion with the new tool result.
+                    }
+                    // Deny → synthetic ToolResult that lets the turn
+                    // continue. Task 3c refines the exact content
+                    // string; for 3b we record a stub so the seam is
+                    // clean and `run_turn` proceeds.
+                    ox_types::Decision::DenyOnce
+                    | ox_types::Decision::DenySession
+                    | ox_types::Decision::DenyAlways => {
+                        // SEAM: Task 3c replaces this content with the
+                        // pinned "[ox-cli: skipped by user after crash
+                        // recovery. ...]" string from the plan. The
+                        // shape (`tool_use_id`, `is_error=false`) is
+                        // already right; only the wording changes.
+                        let results = vec![ToolResult {
+                            tool_use_id: tool_use_id.clone(),
+                            content: serde_json::Value::String(
+                                "[ox-cli: tool skipped by user after crash recovery]".into(),
+                            ),
+                        }];
+                        record_tool_results(context, &results)?;
+                        // Fall through: the loop issues the next
+                        // completion with the denial result.
+                    }
+                    // Cancel → write TurnAborted(UserCanceledAfterCrash)
+                    // and return cleanly. Minimal "write + return"
+                    // per the Task 3b scope note; Task 3c refines the
+                    // emit/visibility plumbing if needed.
+                    ox_types::Decision::CancelTurn => {
+                        let entry = LogEntry::TurnAborted {
+                            reason: TurnAbortReason::UserCanceledAfterCrash,
+                        };
+                        let entry_json = serde_json::to_value(&entry)
+                            .map_err(|e| format!("serialize TurnAborted: {e}"))?;
+                        let entry_val = structfs_serde_store::json_to_value(entry_json);
+                        context
+                            .write(&path!("log/append"), Record::parsed(entry_val))
+                            .map_err(|e| e.to_string())?;
+                        tracing::info!("TurnAbortedUserCanceled");
+                        emit(AgentEvent::TurnEnd);
+                        return Ok(());
+                    }
+                }
+                // Resume dispatch consumed the "already-modeled"
+                // portion of this turn (the assistant response +
+                // tool_use). Fall through to the loop body so the
+                // next pass issues a fresh completion with the
+                // newly-recorded tool result in history.
+            }
+        }
 
         emit(AgentEvent::TurnStart);
 
@@ -956,6 +1319,14 @@ mod tests {
         appended: Vec<(String, Value)>,
         completion_responses: std::sync::Mutex<std::collections::VecDeque<Value>>,
         exec_counter: u64,
+        /// Scripted decisions for `approval/request` writes, in
+        /// submission order. Each `submit_approval_and_wait` call pops
+        /// the next decision and returns it as the 2nd path component.
+        approval_decisions: std::collections::VecDeque<ox_types::Decision>,
+        /// Scripted log entries visible at `log/entries`. Populated
+        /// only by resume-prologue tests (via `set_log_entries`);
+        /// default empty.
+        log_entries: Vec<serde_json::Value>,
     }
 
     impl MockStore {
@@ -965,6 +1336,8 @@ mod tests {
                 appended: Vec::new(),
                 completion_responses: std::sync::Mutex::new(std::collections::VecDeque::new()),
                 exec_counter: 0,
+                approval_decisions: std::collections::VecDeque::new(),
+                log_entries: Vec::new(),
             }
         }
 
@@ -985,11 +1358,32 @@ mod tests {
             self.data.insert(key.clone(), value);
             Path::parse(&key).unwrap()
         }
+
+        /// Script a decision that the next `approval/request` write
+        /// will resolve with.
+        fn push_approval_decision(&mut self, decision: ox_types::Decision) {
+            self.approval_decisions.push_back(decision);
+        }
+
+        /// Seed `log/entries` with a scripted log tail. Each entry is
+        /// JSON-shaped (the same shape `LogEntry` serde produces). The
+        /// resume prologue reads this via the Reader impl.
+        fn set_log_entries(&mut self, entries: Vec<serde_json::Value>) {
+            self.log_entries = entries;
+        }
     }
 
     impl Reader for MockStore {
         fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
             let key = from.to_string();
+            // `log/entries` is synthesized from the scripted list so
+            // resume-prologue tests can set up hand-crafted log tails.
+            if key == "log/entries" {
+                let arr = serde_json::Value::Array(self.log_entries.clone());
+                return Ok(Some(Record::parsed(structfs_serde_store::json_to_value(
+                    arr,
+                ))));
+            }
             Ok(self.data.get(&key).map(|v| Record::parsed(v.clone())))
         }
     }
@@ -1004,7 +1398,68 @@ mod tests {
                 _ => return Err(StoreError::store("mock", "write", "expected parsed")),
             };
             let key = to.to_string();
+
+            // `approval/request` writes simulate the async approval
+            // flow: pop the next scripted decision and return it in
+            // the 2nd path component (the shape ApprovalStore uses).
+            // Also record the synthetic LogEntry::ApprovalRequested
+            // the way ThreadNamespace::write would — the prologue's
+            // callers inspect the log to verify this.
+            if key == "approval/request" {
+                let decision = self.approval_decisions.pop_front().unwrap_or(
+                    // Default deny; tests that care script a decision.
+                    ox_types::Decision::DenyOnce,
+                );
+                let json = structfs_serde_store::value_to_json(value.clone());
+                let tool_name = json
+                    .get("tool_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let input_preview = json
+                    .get("tool_input")
+                    .and_then(|v| v.get("path").or_else(|| v.get("command")))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let post_crash_reconfirm = json
+                    .get("post_crash_reconfirm")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let mut entry = serde_json::json!({
+                    "type": "approval_requested",
+                    "tool_name": tool_name,
+                    "input_preview": input_preview,
+                });
+                if post_crash_reconfirm {
+                    entry["post_crash_reconfirm"] = serde_json::Value::Bool(true);
+                }
+                self.appended
+                    .push(("approval/log_requested".to_string(), value.clone()));
+                self.log_entries.push(entry);
+                // Synthesize an approval_resolved entry for the shell
+                // log, mirroring the "response" path.
+                let resolved = serde_json::json!({
+                    "type": "approval_resolved",
+                    "tool_name": tool_name,
+                    "decision": decision.as_str(),
+                });
+                self.log_entries.push(resolved);
+                return Ok(Path::from_components(vec![
+                    "request".to_string(),
+                    decision.as_str().to_string(),
+                ]));
+            }
+
             self.data.insert(key.clone(), value.clone());
+
+            // Record writes to log/append into the scripted log so
+            // subsequent reads of `log/entries` see them — the
+            // prologue cares about ordering.
+            if key == "log/append" {
+                let json = structfs_serde_store::value_to_json(value.clone());
+                self.log_entries.push(json);
+            }
 
             // Simulate the handle pattern:
             // - Completion writes: pop a canned response and return exec handle
@@ -1793,5 +2248,241 @@ mod tests {
         let result = run_turn(&mut store, &mut |_| {});
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("exceeded"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Resume-prologue tests (Task 3b).
+    //
+    // Seed the log-tail via MockStore::set_log_entries and script an
+    // approval decision via push_approval_decision. The prologue detects
+    // the resume shape on the first loop iteration and routes through
+    // submit_approval_and_wait before falling through (allow/deny) or
+    // returning (cancel_turn).
+    // -----------------------------------------------------------------------
+
+    fn seed_resume_context(store: &mut MockStore) {
+        store.set("gate/defaults/account", Value::String("test".into()));
+        store.set("system", Value::String("You are helpful.".into()));
+        store.set(
+            "history/messages",
+            structfs_serde_store::json_to_value(
+                serde_json::json!([{"role": "user", "content": "hi"}]),
+            ),
+        );
+        store.set(
+            "tools/schemas",
+            structfs_serde_store::json_to_value(serde_json::json!([])),
+        );
+        store.set("gate/defaults/model", Value::String("test-model".into()));
+        store.set("gate/defaults/max_tokens", Value::Integer(100));
+    }
+
+    /// Log tail: TurnStart → User → Assistant(tool_use) → ToolCall →
+    /// ApprovalRequested with no matching ApprovalResolved. Prologue
+    /// should detect resume-approval, submit approval/request with
+    /// `post_crash_reconfirm: true`, receive `AllowOnce`, dispatch the
+    /// tool, then fall through to the next completion.
+    #[test]
+    fn run_turn_resume_approval_allow_dispatches_tool() {
+        let mut store = MockStore::new();
+        seed_resume_context(&mut store);
+        store.set_log_entries(vec![
+            serde_json::json!({"type": "turn_start", "scope": "root"}),
+            serde_json::json!({"type": "user", "content": "please run ls"}),
+            serde_json::json!({
+                "type": "assistant",
+                "content": [{"type": "tool_use", "id": "tu-1", "name": "shell",
+                             "input": {"command": "ls"}}],
+                "scope": "root",
+                "completion_id": 0
+            }),
+            serde_json::json!({
+                "type": "tool_call",
+                "id": "tu-1",
+                "name": "shell",
+                "input": {"command": "ls"},
+                "scope": "root"
+            }),
+            serde_json::json!({
+                "type": "approval_requested",
+                "tool_name": "shell",
+                "input_preview": "ls"
+            }),
+        ]);
+        store.push_approval_decision(ox_types::Decision::AllowOnce);
+        // After the tool dispatches, the loop issues a fresh completion
+        // with the tool result in history. Return text only so the
+        // turn ends cleanly.
+        store.push_completion_response(serde_json::json!([
+            {"type": "text_delta", "text": "Done."},
+            {"type": "message_stop"}
+        ]));
+
+        run_turn(&mut store, &mut |_| {}).unwrap();
+
+        // The prologue wrote approval/request with post_crash_reconfirm=true.
+        let approval_req = store
+            .appended
+            .iter()
+            .find(|(k, _)| k == "approval/request")
+            .expect("prologue must write approval/request");
+        let json = structfs_serde_store::value_to_json(approval_req.1.clone());
+        assert_eq!(json["tool_name"], "shell");
+        assert_eq!(json["post_crash_reconfirm"], true);
+        assert_eq!(json["tool_input"]["command"], "ls");
+
+        // The allow branch dispatched the tool via execute_tools,
+        // which writes to tools/shell.
+        assert!(
+            store.appended.iter().any(|(k, _)| k == "tools/shell"),
+            "allow decision must dispatch the tool via execute_tools"
+        );
+        // And a tool_result was logged.
+        assert!(
+            store.appended.iter().any(|(k, v)| {
+                k == "log/append" && {
+                    let j = structfs_serde_store::value_to_json(v.clone());
+                    j["type"] == "tool_result" && j["id"] == "tu-1"
+                }
+            }),
+            "allow decision must record a ToolResult for the reconstructed tool_call"
+        );
+    }
+
+    /// Log tail: TurnStart → User → Assistant(tool_use) → ToolCall →
+    /// ApprovalResolved(allow) → ToolAborted (Task 2's mount-lifecycle
+    /// dispatch appended this when it saw AwaitingToolResult).
+    /// Prologue should detect resume-tool-dispatch and re-request
+    /// approval with `post_crash_reconfirm: true`.
+    #[test]
+    fn run_turn_resume_tool_dispatch_requests_reconfirm() {
+        let mut store = MockStore::new();
+        seed_resume_context(&mut store);
+        store.set_log_entries(vec![
+            serde_json::json!({"type": "turn_start", "scope": "root"}),
+            serde_json::json!({"type": "user", "content": "rm something"}),
+            serde_json::json!({
+                "type": "assistant",
+                "content": [{"type": "tool_use", "id": "tu-2", "name": "shell",
+                             "input": {"command": "rm foo"}}],
+                "scope": "root",
+                "completion_id": 0
+            }),
+            serde_json::json!({
+                "type": "tool_call",
+                "id": "tu-2",
+                "name": "shell",
+                "input": {"command": "rm foo"},
+                "scope": "root"
+            }),
+            serde_json::json!({
+                "type": "approval_requested",
+                "tool_name": "shell",
+                "input_preview": "rm foo"
+            }),
+            serde_json::json!({
+                "type": "approval_resolved",
+                "tool_name": "shell",
+                "decision": "allow_once"
+            }),
+            serde_json::json!({
+                "type": "tool_aborted",
+                "tool_use_id": "tu-2",
+                "reason": "crash_during_dispatch"
+            }),
+        ]);
+        // User denies the reconfirm (safer default) — 3b records a
+        // stub synthetic ToolResult and continues. 3c refines the text.
+        store.push_approval_decision(ox_types::Decision::DenyOnce);
+        store.push_completion_response(serde_json::json!([
+            {"type": "text_delta", "text": "Acknowledged."},
+            {"type": "message_stop"}
+        ]));
+
+        run_turn(&mut store, &mut |_| {}).unwrap();
+
+        let approval_req = store
+            .appended
+            .iter()
+            .find(|(k, _)| k == "approval/request")
+            .expect("prologue must write approval/request on ToolAborted tail");
+        let json = structfs_serde_store::value_to_json(approval_req.1.clone());
+        assert_eq!(json["tool_name"], "shell");
+        assert_eq!(json["tool_input"]["command"], "rm foo");
+        assert_eq!(json["post_crash_reconfirm"], true);
+
+        // Deny → synthetic ToolResult (3c refines content). tools/shell
+        // must NOT be dispatched.
+        assert!(
+            !store.appended.iter().any(|(k, _)| k == "tools/shell"),
+            "deny decision must not dispatch the tool"
+        );
+        assert!(
+            store.appended.iter().any(|(k, v)| {
+                k == "log/append" && {
+                    let j = structfs_serde_store::value_to_json(v.clone());
+                    j["type"] == "tool_result" && j["id"] == "tu-2"
+                }
+            }),
+            "deny decision must record a synthetic ToolResult"
+        );
+    }
+
+    /// Cancel-turn response writes TurnAborted(UserCanceledAfterCrash)
+    /// and returns cleanly without issuing further completions.
+    #[test]
+    fn run_turn_resume_cancel_writes_turn_aborted() {
+        let mut store = MockStore::new();
+        seed_resume_context(&mut store);
+        store.set_log_entries(vec![
+            serde_json::json!({"type": "turn_start", "scope": "root"}),
+            serde_json::json!({"type": "user", "content": "go"}),
+            serde_json::json!({
+                "type": "assistant",
+                "content": [{"type": "tool_use", "id": "tu-3", "name": "shell",
+                             "input": {"command": "ls"}}],
+                "scope": "root",
+                "completion_id": 0
+            }),
+            serde_json::json!({
+                "type": "tool_call",
+                "id": "tu-3",
+                "name": "shell",
+                "input": {"command": "ls"},
+                "scope": "root"
+            }),
+            serde_json::json!({
+                "type": "approval_requested",
+                "tool_name": "shell",
+                "input_preview": "ls"
+            }),
+        ]);
+        store.push_approval_decision(ox_types::Decision::CancelTurn);
+        // No completion response pushed — cancel must return before
+        // issuing a completion.
+
+        let mut events = vec![];
+        run_turn(&mut store, &mut |e| events.push(format!("{e:?}"))).unwrap();
+
+        assert!(
+            store.appended.iter().any(|(k, v)| {
+                k == "log/append" && {
+                    let j = structfs_serde_store::value_to_json(v.clone());
+                    j["type"] == "turn_aborted" && j["reason"] == "user_canceled_after_crash"
+                }
+            }),
+            "cancel_turn must write TurnAborted(UserCanceledAfterCrash)"
+        );
+        assert!(
+            !store
+                .appended
+                .iter()
+                .any(|(k, _)| k.starts_with("tools/completions/complete")),
+            "cancel_turn must not issue a completion"
+        );
+        assert!(
+            events.iter().any(|e| e.contains("TurnEnd")),
+            "cancel_turn must emit TurnEnd"
+        );
     }
 }

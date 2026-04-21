@@ -524,7 +524,7 @@ This shape is part of the contract for Task 3 Step 6b; changing it is a plan ame
 ### Tasks
 
 - [x] **Step 1:** Add a `post_crash_reconfirm: bool` field to `LogEntry::ApprovalRequested` (`ox-kernel/src/log.rs:98–102`). Default `false` on serialize-elided, round-trip tests per variant. Also extend the `ThreadNamespace::write` writer at `thread_registry.rs:281–292` to pass the flag through (default `false` on normal-path writes).
-- [ ] **Step 2 (the big one — kernel change).** Add a log-inspection prologue to `run_turn` at `ox-kernel/src/run.rs:597`. Before the existing `TurnStart` emission (line 634), scan the log tail for resume shapes:
+- [x] **Step 2 (the big one — kernel change).** Add a log-inspection prologue to `run_turn` at `ox-kernel/src/run.rs:597`. Before the existing `TurnStart` emission (line 634), scan the log tail for resume shapes:
   - `Assistant(tool_use) → ApprovalRequested` with no matching `ApprovalResolved` → resume-approval.
   - `Assistant(tool_use) → ApprovalResolved(allow) → ToolAborted` → resume-tool-dispatch.
   - Otherwise → normal path.
