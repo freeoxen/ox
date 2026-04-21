@@ -25,3 +25,4 @@ structfs-serde-store = { workspace = true }
 
 [dev-dependencies]
 trybuild = "1"
+proptest = "1"

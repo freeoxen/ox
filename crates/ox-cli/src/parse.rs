@@ -714,6 +714,35 @@ pub fn parse_log_entries(values: &[Value]) -> Vec<LogDisplayEntry> {
                         flags: EntryFlags::default(),
                     })
                 }
+                "turn_aborted" => {
+                    let reason = get_string(map, "reason").unwrap_or_default();
+                    let summary = format!("turn aborted ({reason})");
+                    Some(LogDisplayEntry {
+                        index,
+                        entry_type,
+                        summary,
+                        blocks: Vec::new(),
+                        meta: LogEntryMeta::default(),
+                        flags: EntryFlags::default(),
+                    })
+                }
+                "tool_aborted" => {
+                    let reason = get_string(map, "reason").unwrap_or_default();
+                    let id = get_string(map, "tool_use_id");
+                    let summary =
+                        format!("tool aborted ({reason}) {}", id.as_deref().unwrap_or(""));
+                    Some(LogDisplayEntry {
+                        index,
+                        entry_type,
+                        summary,
+                        blocks: Vec::new(),
+                        meta: LogEntryMeta {
+                            tool_use_id: id,
+                            ..Default::default()
+                        },
+                        flags: EntryFlags::default(),
+                    })
+                }
                 _ => None,
             }
         })

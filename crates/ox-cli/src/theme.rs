@@ -111,6 +111,10 @@ pub struct Theme {
     pub history_approval_allow: Style,
     /// History explorer: approval denied badge.
     pub history_approval_deny: Style,
+    /// History explorer: turn-aborted / tool-aborted interrupted marker.
+    /// Muted (not alarming) — indicates post-crash recovery wrote the
+    /// entry, not an error.
+    pub history_aborted_marker: Style,
 }
 
 impl Theme {
@@ -184,6 +188,7 @@ impl Theme {
             history_approval_ask: bold.fg(Color::Yellow),
             history_approval_allow: bold.fg(Color::Green),
             history_approval_deny: bold.fg(Color::Red),
+            history_aborted_marker: dim,
         }
     }
 }

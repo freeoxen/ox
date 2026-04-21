@@ -410,16 +410,16 @@ Inbox-level operations that touch multiple threads (listing, search) only read `
 
 ### Tasks
 
-- [ ] **Step 1:** Add `TurnAborted` and `ToolAborted` variants to `LogEntry`:
+- [x] **Step 1:** Add `TurnAborted` and `ToolAborted` variants to `LogEntry`:
   - `TurnAborted { reason: TurnAbortReason }` where `TurnAbortReason ∈ { CrashDuringStream, CrashBeforeFirstToken, UserCanceledAfterCrash }`.
   - `ToolAborted { tool_use_id: String, reason: ToolAbortReason }` where `ToolAbortReason ∈ { CrashDuringDispatch }`.
   Round-trip test per variant. All read-site `match` over `LogEntry` must be exhaustive (compiler-enforced per Property 4's caveat).
-- [ ] **Step 2:** Write `classify(entries: &[LogEntry]) -> ThreadResumeState` in `ox-inbox/src/resume.rs`. Exhaustive `match` over all 14 variants. Walks tail backward, skipping informational variants (`Meta`, `CompletionEnd`, `Error`, `User`). One unit test per `ThreadResumeState` variant. One unit test per informational variant asserting it is correctly skipped. Golden-file hand-crafted ledgers.
-- [ ] **Step 3:** Property test: generate random valid ledgers from a shape grammar, classify, replay, re-classify — assert idempotence.
-- [ ] **Step 4:** Property test: generate valid ledgers, truncate at random byte offsets, feed through torn-tail repair + classify — assert the result is always a valid `ThreadResumeState`, never a panic.
-- [ ] **Step 5:** Wire `classify` into `ThreadRegistry::from_thread_dir` per the lifecycle sequence. Dispatch `InStreamNoFinal` / `InTurnNoProgress` to append `TurnAborted`. Dispatch `AwaitingToolResult` to append `ToolAborted`.
-- [ ] **Step 6:** Render `TurnAborted` and `ToolAborted` in `history_view.rs` as muted "interrupted" markers (theme entries in `theme.rs`). `ToolAborted` renders inline with its tool call, `TurnAborted` renders at turn boundary.
-- [ ] **Step 7:** Tracing: emit `ThreadResumeClassified { thread_id, state }` on every mount; `ToolAbortedAppended { thread_id, tool_use_id, reason }` on append.
+- [x] **Step 2:** Write `classify(entries: &[LogEntry]) -> ThreadResumeState` in `ox-kernel/src/resume.rs` (deviation: moved from `ox-inbox` to `ox-kernel` so non-CLI shells can share it). Exhaustive `match` over the 13 variants that exist in Task 2 (the 14th, `AssistantProgress`, is Task 4). Walks tail backward, skipping informational variants (`Meta`, `CompletionEnd`, `Error`, `User`). One unit test per `ThreadResumeState` variant. One unit test per informational variant asserting it is correctly skipped. Golden-file hand-crafted ledgers.
+- [x] **Step 3:** Property test: generate random valid ledgers from a shape grammar, classify, replay, re-classify — assert idempotence.
+- [x] **Step 4:** Property test: generate valid ledgers, truncate at random byte offsets, feed through torn-tail repair + classify — assert the result is always a valid `ThreadResumeState`, never a panic.
+- [x] **Step 5:** Wire `classify` into `ThreadRegistry::from_thread_dir` per the lifecycle sequence. Dispatch `InStreamNoFinal` / `InTurnNoProgress` to append `TurnAborted`. Dispatch `AwaitingToolResult` to append `ToolAborted`.
+- [x] **Step 6:** Render `TurnAborted` and `ToolAborted` in `history_view.rs` as muted "interrupted" markers (theme entries in `theme.rs`). `ToolAborted` renders inline with its tool call, `TurnAborted` renders at turn boundary.
+- [x] **Step 7:** Tracing: emit `ThreadResumeClassified { thread_id, state }` on every mount; `ToolAbortedAppended { thread_id, tool_use_id, reason }` on append.
 
 ### Success criteria
 

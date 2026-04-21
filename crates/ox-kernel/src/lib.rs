@@ -36,6 +36,9 @@ pub use backing::StoreBacking;
 
 pub mod log;
 
+pub mod resume;
+pub use resume::{ThreadResumeState, classify};
+
 pub mod run;
 pub use run::{
     ContextRef, ResolvedContext, accumulate_response, agent_event_to_json, complete, default_refs,

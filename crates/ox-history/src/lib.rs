@@ -152,9 +152,12 @@ impl HistoryView {
                 | LogEntry::CompletionEnd { .. }
                 | LogEntry::ApprovalRequested { .. }
                 | LogEntry::ApprovalResolved { .. }
-                | LogEntry::Error { .. } => {
+                | LogEntry::Error { .. }
+                | LogEntry::TurnAborted { .. }
+                | LogEntry::ToolAborted { .. } => {
                     // Skip: tool calls are embedded in assistant content,
-                    // non-message entries are not conversation messages
+                    // non-message entries (including abort markers) are
+                    // not conversation messages
                     i += 1;
                 }
             }

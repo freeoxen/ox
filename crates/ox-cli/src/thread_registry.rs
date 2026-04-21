@@ -10,7 +10,8 @@ use ox_broker::async_store::{AsyncReader, AsyncWriter, BoxFuture};
 use ox_context::SystemProvider;
 use ox_gate::GateStore;
 use ox_history::HistoryView;
-use ox_kernel::log::{LogStore, SharedLog};
+use ox_kernel::ThreadResumeState;
+use ox_kernel::log::{LogEntry, LogStore, SharedLog, ToolAbortReason, TurnAbortReason};
 use ox_ui::ApprovalStore;
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Store, Writer};
 
@@ -232,12 +233,13 @@ impl ThreadNamespace {
         // Install the durable ledger writer AFTER replay. Any entry written
         // through `log/append` from this point forward will be committed to
         // `ledger.jsonl` before becoming visible in `SharedLog`.
-        match ox_inbox::ledger_writer::LedgerWriter::spawn(ledger_path) {
+        let durability_installed = match ox_inbox::ledger_writer::LedgerWriter::spawn(ledger_path) {
             Ok(writer) => {
                 let handle: std::sync::Arc<dyn ox_kernel::log::Durability> =
                     std::sync::Arc::new(writer.handle());
                 ns.shared_log().with_durability(handle);
                 ns.ledger_writer = Some(writer);
+                true
             }
             Err(e) => {
                 tracing::error!(
@@ -250,6 +252,86 @@ impl ThreadNamespace {
                 // means this thread's log will only live in memory for this
                 // process lifetime. Surface-the-degradation is a later step
                 // (plan Step 7: `LedgerDegraded` banner).
+                false
+            }
+        };
+
+        // Task 2 Step 5: classify the replayed log tail and dispatch the
+        // post-crash recovery append. Runs AFTER durability is installed so
+        // the `TurnAborted` / `ToolAborted` entries are per-append-durable
+        // just like everything else. Skipped if durability isn't installed —
+        // there's nothing to make the abort entry durable against, so we'd
+        // only be writing to in-memory state.
+        if durability_installed {
+            let entries = ns.shared_log().entries();
+            let state = ox_kernel::resume::classify(&entries);
+            tracing::info!(
+                path = %thread_dir.display(),
+                state = ?state,
+                "ThreadResumeClassified"
+            );
+            match state {
+                ThreadResumeState::Idle | ThreadResumeState::InStreamNoFinal => {
+                    // InStreamNoFinal is reachable only after Task 4 lands;
+                    // Task 2's classifier folds it into InTurnNoProgress.
+                    // Accept both arms here so the dispatch is future-proof.
+                    if matches!(state, ThreadResumeState::InStreamNoFinal) {
+                        let reason = TurnAbortReason::CrashDuringStream;
+                        if let Err(e) = ns.shared_log().append(LogEntry::TurnAborted { reason }) {
+                            tracing::error!(error = %e, "failed to append TurnAborted on mount");
+                        } else {
+                            tracing::info!(
+                                reason = ?reason,
+                                "TurnAbortedAppended"
+                            );
+                        }
+                    }
+                }
+                ThreadResumeState::InTurnNoProgress => {
+                    let reason = TurnAbortReason::CrashBeforeFirstToken;
+                    if let Err(e) = ns.shared_log().append(LogEntry::TurnAborted { reason }) {
+                        tracing::error!(error = %e, "failed to append TurnAborted on mount");
+                    } else {
+                        tracing::info!(
+                            reason = ?reason,
+                            "TurnAbortedAppended"
+                        );
+                    }
+                }
+                ThreadResumeState::AwaitingApproval { tool_use_id } => {
+                    // Phase 2 stance: leave state intact. The UI will render
+                    // the replayed ApprovalRequested; no interaction is
+                    // possible until Phase 3's kernel prologue lands.
+                    tracing::info!(
+                        tool_use_id,
+                        "thread mounted AwaitingApproval; Phase 3 wiring pending"
+                    );
+                }
+                ThreadResumeState::AwaitingToolResult {
+                    tool_use_id,
+                    was_approved: _,
+                } => {
+                    let reason = ToolAbortReason::CrashDuringDispatch;
+                    match ns.shared_log().append(LogEntry::ToolAborted {
+                        tool_use_id: tool_use_id.clone(),
+                        reason,
+                    }) {
+                        Ok(()) => {
+                            tracing::info!(
+                                tool_use_id,
+                                reason = ?reason,
+                                "ToolAbortedAppended"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                error = %e,
+                                tool_use_id,
+                                "failed to append ToolAborted on mount"
+                            );
+                        }
+                    }
+                }
             }
         }
 

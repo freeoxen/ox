@@ -129,6 +129,12 @@ pub fn draw_history(
             "meta" => {
                 render_meta(entry, cursor, theme, &mut lines);
             }
+            "turn_aborted" => {
+                render_turn_aborted(entry, cursor, theme, &mut lines);
+            }
+            "tool_aborted" => {
+                render_tool_aborted(entry, cursor, theme, &mut lines);
+            }
             _ => {
                 render_message_entry(
                     entry,
@@ -329,6 +335,40 @@ fn render_meta(entry: &LogDisplayEntry, cursor: &str, theme: &Theme, out: &mut V
         Span::styled(format!("#{:<4} ", entry.index), theme.history_index),
         Span::styled("[meta] ", theme.history_meta),
         Span::styled(entry.summary.clone(), theme.history_summary),
+    ]));
+}
+
+/// Render a `turn_aborted` entry as a muted "interrupted" marker at the
+/// turn boundary. Visually similar to `turn_boundary`, but tagged so the
+/// user can see when a turn was cut short rather than completed.
+fn render_turn_aborted(entry: &LogDisplayEntry, cursor: &str, theme: &Theme, out: &mut Vec<Line>) {
+    let label = format!(" ── {} ──", entry.summary);
+    out.push(Line::from(vec![
+        Span::styled(format!("{cursor} "), theme.history_meta),
+        Span::styled(format!("#{:<4} ", entry.index), theme.history_index),
+        Span::styled("[interrupted] ", theme.history_aborted_marker),
+        Span::styled(label, theme.history_aborted_marker),
+    ]));
+}
+
+/// Render a `tool_aborted` entry as a muted inline marker next to the
+/// tool call it aborts (paired by `tool_use_id`). The actual visual
+/// "pairing" is left to adjacency in the log — renderer only emits the
+/// marker here; the user already sees the prior `tool_call` or
+/// `tool_use` block in the same region.
+fn render_tool_aborted(entry: &LogDisplayEntry, cursor: &str, theme: &Theme, out: &mut Vec<Line>) {
+    let id_hint = entry
+        .meta
+        .tool_use_id
+        .as_deref()
+        .map(|s| truncate_id(s, 16))
+        .unwrap_or_default();
+    out.push(Line::from(vec![
+        Span::styled(format!("{cursor} "), theme.history_meta),
+        Span::styled(format!("#{:<4} ", entry.index), theme.history_index),
+        Span::styled("[tool interrupted] ", theme.history_aborted_marker),
+        Span::styled(id_hint, theme.history_aborted_marker),
+        Span::styled(format!(" {}", entry.summary), theme.history_aborted_marker),
     ]));
 }
 

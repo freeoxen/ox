@@ -577,6 +577,11 @@ struct CompletionFrame {
 /// Maximum total iterations across all frames to prevent runaway loops.
 const MAX_TOTAL_ITERATIONS: usize = 25;
 
+/// Public constant form of [`MAX_TOTAL_ITERATIONS`] — used by
+/// `crate::resume::classify` to bound its walk in terms of a kernel
+/// invariant, not a magic number.
+pub(crate) const MAX_TOTAL_ITERATIONS_PUB: usize = MAX_TOTAL_ITERATIONS;
+
 /// After this many iterations, inject a nudge into the system prompt
 /// reminding the model to wrap up.
 const NUDGE_AFTER_ITERATIONS: usize = 8;

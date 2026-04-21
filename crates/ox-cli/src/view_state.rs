@@ -603,7 +603,21 @@ pub(crate) fn aggregate_thread_stats(
                 }
                 primary_model = Some(m.clone());
             }
-            _ => {}
+            // Exhaustive no-op branches: these variants do not contribute
+            // to any aggregated stat. Keeping them listed (instead of a
+            // catch-all `_`) forces a deliberate decision here whenever a
+            // new LogEntry variant is added — matching the plan's
+            // "exhaustive match on LogEntry at all read sites" contract.
+            LogEntry::TurnEnd { model: None, .. }
+            | LogEntry::TurnEnd { model: Some(_), .. }
+            | LogEntry::TurnStart { .. }
+            | LogEntry::ToolResult { .. }
+            | LogEntry::Meta { .. }
+            | LogEntry::ApprovalRequested { .. }
+            | LogEntry::ApprovalResolved { .. }
+            | LogEntry::Error { .. }
+            | LogEntry::TurnAborted { .. }
+            | LogEntry::ToolAborted { .. } => {}
         }
     }
 

@@ -17,6 +17,33 @@ pub struct LogSource {
     pub model: Option<String>,
 }
 
+/// Why a turn was aborted. See [`LogEntry::TurnAborted`].
+///
+/// `CrashDuringStream` — the assistant was mid-stream when the process
+/// exited (full detection lands alongside `AssistantProgress` in Task 4).
+/// `CrashBeforeFirstToken` — a `TurnStart` was written but no progress
+/// was ever observed before the crash.
+/// `UserCanceledAfterCrash` — the user explicitly aborted a turn during
+/// the post-crash reconfirm flow (reserved for Task 3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnAbortReason {
+    CrashDuringStream,
+    CrashBeforeFirstToken,
+    UserCanceledAfterCrash,
+}
+
+/// Why a tool dispatch was aborted. See [`LogEntry::ToolAborted`].
+///
+/// `CrashDuringDispatch` — the process exited after `Assistant(tool_use)`
+/// (and optionally `ApprovalResolved(allow)`) but before the matching
+/// `ToolResult` was written. The tool's side effect may be partial.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolAbortReason {
+    CrashDuringDispatch,
+}
+
 /// A single entry in the structured log.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -112,6 +139,24 @@ pub enum LogEntry {
         message: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scope: Option<String>,
+    },
+
+    /// A turn was aborted — written by the mount lifecycle when the log
+    /// tail indicates a crash mid-turn, or (future) by `run_turn` when
+    /// the user cancels during post-crash reconfirm.
+    ///
+    /// See [`TurnAbortReason`].
+    #[serde(rename = "turn_aborted")]
+    TurnAborted { reason: TurnAbortReason },
+
+    /// A tool dispatch was aborted — written by the mount lifecycle
+    /// when an `Assistant(tool_use)` has no matching `ToolResult` on
+    /// restart. See [`ToolAbortReason`]. The `tool_use_id` pairs this
+    /// entry with the original `ToolCall` / `Assistant(tool_use)`.
+    #[serde(rename = "tool_aborted")]
+    ToolAborted {
+        tool_use_id: String,
+        reason: ToolAbortReason,
     },
 }
 
@@ -704,6 +749,60 @@ mod tests {
         let entry = &json.as_array().unwrap()[0];
         assert_eq!(entry["type"], "error");
         assert_eq!(entry["message"], "connection failed");
+    }
+
+    #[test]
+    fn turn_aborted_entry_round_trip() {
+        let mut log = LogStore::new();
+        log.write(
+            &path!("append"),
+            Record::parsed(structfs_serde_store::json_to_value(
+                serde_json::json!({"type": "turn_aborted", "reason": "crash_during_stream"}),
+            )),
+        )
+        .unwrap();
+        log.write(
+            &path!("append"),
+            Record::parsed(structfs_serde_store::json_to_value(
+                serde_json::json!({"type": "turn_aborted", "reason": "crash_before_first_token"}),
+            )),
+        )
+        .unwrap();
+        log.write(
+            &path!("append"),
+            Record::parsed(structfs_serde_store::json_to_value(
+                serde_json::json!({"type": "turn_aborted", "reason": "user_canceled_after_crash"}),
+            )),
+        )
+        .unwrap();
+        let record = log.read(&path!("entries")).unwrap().unwrap();
+        let json = structfs_serde_store::value_to_json(record.as_value().unwrap().clone());
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 3);
+        assert_eq!(arr[0]["type"], "turn_aborted");
+        assert_eq!(arr[0]["reason"], "crash_during_stream");
+        assert_eq!(arr[1]["reason"], "crash_before_first_token");
+        assert_eq!(arr[2]["reason"], "user_canceled_after_crash");
+    }
+
+    #[test]
+    fn tool_aborted_entry_round_trip() {
+        let mut log = LogStore::new();
+        log.write(
+            &path!("append"),
+            Record::parsed(structfs_serde_store::json_to_value(serde_json::json!({
+                "type": "tool_aborted",
+                "tool_use_id": "tc_xyz",
+                "reason": "crash_during_dispatch",
+            }))),
+        )
+        .unwrap();
+        let record = log.read(&path!("entries")).unwrap().unwrap();
+        let json = structfs_serde_store::value_to_json(record.as_value().unwrap().clone());
+        let entry = &json.as_array().unwrap()[0];
+        assert_eq!(entry["type"], "tool_aborted");
+        assert_eq!(entry["tool_use_id"], "tc_xyz");
+        assert_eq!(entry["reason"], "crash_during_dispatch");
     }
 
     #[test]

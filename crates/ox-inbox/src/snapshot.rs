@@ -546,7 +546,9 @@ mod tests {
             | LogEntry::CompletionEnd { .. }
             | LogEntry::ApprovalRequested { .. }
             | LogEntry::ApprovalResolved { .. }
-            | LogEntry::Error { .. } => false,
+            | LogEntry::Error { .. }
+            | LogEntry::TurnAborted { .. }
+            | LogEntry::ToolAborted { .. } => false,
         }
     }
 
@@ -608,6 +610,13 @@ mod tests {
             LogEntry::Error {
                 message: "x".into(),
                 scope: None,
+            },
+            LogEntry::TurnAborted {
+                reason: ox_kernel::log::TurnAbortReason::CrashDuringStream,
+            },
+            LogEntry::ToolAborted {
+                tool_use_id: "t1".into(),
+                reason: ox_kernel::log::ToolAbortReason::CrashDuringDispatch,
             },
         ];
         for entry in &samples {
