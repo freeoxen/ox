@@ -1,5 +1,26 @@
 use ratatui::style::{Color, Modifier, Style};
 
+/// Synthetic `ToolResult` content that ox-cli writes into the structured log
+/// when a user chooses **Skip** on the post-crash re-confirm modal.
+///
+/// The text is pinned by the plan (see
+/// `docs/superpowers/plans/2026-04-19-durable-conversation-state.md`,
+/// "Skip-path `ToolResult` shape (pinned)"). Changing this string is a plan
+/// amendment, not a drive-by edit: the `[ox-cli:` marker prefix makes the
+/// synthetic origin recognizable in transcripts, and the "Do not retry"
+/// directive is load-bearing — it's the only signal the model has that
+/// re-calling the tool is explicitly unwanted.
+///
+/// The shell seeds this constant onto the namespace at
+/// `shell/post_crash_skip_content` during mount (see
+/// `ThreadNamespace::new_default` and `from_thread_dir`). The kernel reads it
+/// from that path on the Deny branch of the post-crash re-confirm resume
+/// prologue (`ox-kernel::run::post_crash_skip_content`) and falls back to a
+/// kernel-neutral `[ox: …]` default when the path is unset — which keeps
+/// `ox-kernel` free of any shell-specific strings.
+pub const POST_CRASH_SKIP_CONTENT: &str = "[ox-cli: skipped by user after crash recovery. \
+    The tool was not re-executed. Do not retry this tool in this turn.]";
+
 /// Semantic theme for the TUI. Every styled element references a named slot.
 ///
 /// The default theme uses terminal-relative styling (DIM, BOLD, REVERSED)

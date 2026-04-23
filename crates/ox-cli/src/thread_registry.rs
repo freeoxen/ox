@@ -3,7 +3,7 @@
 //! Mounted at `threads/` in the broker. Routes `{id}/{store}/{path}` internally,
 //! lazy-mounts thread stores from disk on first access.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 use ox_broker::async_store::{AsyncReader, AsyncWriter, BoxFuture};
@@ -13,9 +13,68 @@ use ox_history::HistoryView;
 use ox_kernel::ThreadResumeState;
 use ox_kernel::log::{LogEntry, LogStore, SharedLog, ToolAbortReason, TurnAbortReason};
 use ox_ui::ApprovalStore;
-use structfs_core_store::{Error as StoreError, Path, Reader, Record, Store, Writer};
+use structfs_core_store::{Error as StoreError, Path, Reader, Record, Store, Value, Writer};
 
 use crate::agents::SYSTEM_PROMPT;
+use crate::theme;
+
+// ---------------------------------------------------------------------------
+// ShellConfigStore — shell→kernel config seam
+// ---------------------------------------------------------------------------
+
+/// A tiny in-memory key/value store mounted at `shell/` in the per-thread
+/// namespace. It exists so the shell (ox-cli) can seed shell-specific
+/// strings and settings that the surface-neutral kernel reads during a turn,
+/// without introducing a dependency edge from `ox-kernel` back to `ox-cli`.
+///
+/// The first (and currently only) consumer is the post-crash re-confirm
+/// "Skip" branch of the kernel's resume prologue
+/// (`ox-kernel::run::run_turn`), which reads the synthetic-`ToolResult`
+/// content string from `shell/post_crash_skip_content`. The kernel falls
+/// back to a kernel-neutral default when the path is unset, so non-CLI
+/// shells (tests, wasm, etc.) don't need to write anything here.
+///
+/// Storage is a single-level flat map keyed by the joined sub-path, which is
+/// enough for config-style reads: one owner, no structured sub-trees, no
+/// snapshot semantics. If a future need grows past that, promote this to a
+/// proper store type in its own module.
+#[derive(Default)]
+struct ShellConfigStore {
+    data: BTreeMap<String, Value>,
+}
+
+impl ShellConfigStore {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn set(&mut self, key: &str, value: Value) {
+        self.data.insert(key.to_string(), value);
+    }
+}
+
+impl Reader for ShellConfigStore {
+    fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
+        let key = from.to_string();
+        Ok(self.data.get(&key).cloned().map(Record::parsed))
+    }
+}
+
+impl Writer for ShellConfigStore {
+    fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
+        match data {
+            Record::Parsed(v) => {
+                self.data.insert(to.to_string(), v);
+                Ok(to.clone())
+            }
+            _ => Err(StoreError::store(
+                "shell",
+                "write",
+                "expected parsed record",
+            )),
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // ThreadNamespace — per-thread store collection
@@ -39,6 +98,9 @@ pub struct ThreadNamespace {
     tools: ox_tools::ToolStore,
     pub gate: GateStore,
     pub approval: ApprovalStore,
+    /// Shell-owned config seam the kernel reads through `&mut dyn Store`.
+    /// Seeded in `new_default` / `from_thread_dir`; see `ShellConfigStore`.
+    shell: ShellConfigStore,
     /// Per-thread drain task that observes the `LedgerWriter`'s latest-wins
     /// `SaveResult` slot and writes through to the broker's inbox rollup.
     /// `None` when there's no broker client at mount time (tests, early
@@ -54,6 +116,15 @@ impl ThreadNamespace {
     /// that need per-append persistence should use [`Self::from_thread_dir`].
     pub fn new_default() -> Self {
         let shared_log = SharedLog::new();
+        let mut shell = ShellConfigStore::new();
+        // Seed shell→kernel config strings at mount. The kernel resume
+        // prologue reads `post_crash_skip_content` on the "Skip" branch
+        // after a post-crash re-confirm; wiring the const here avoids a
+        // dependency edge from `ox-kernel` back to `ox-cli`.
+        shell.set(
+            "post_crash_skip_content",
+            Value::String(theme::POST_CRASH_SKIP_CONTENT.to_string()),
+        );
         Self {
             system: SystemProvider::new(SYSTEM_PROMPT.to_string()),
             history: HistoryView::new(shared_log.clone()),
@@ -61,6 +132,7 @@ impl ThreadNamespace {
             tools: ox_tools::ToolStore::empty(),
             gate: GateStore::new(),
             approval: ApprovalStore::new(),
+            shell,
             commit_drain: None,
             ledger_writer: None,
         }
@@ -230,6 +302,17 @@ impl ThreadNamespace {
         // Reconstruct session token totals from restored log entries.
         ns.history.reconstruct_session_usage();
 
+        // Re-seed shell→kernel config AFTER replay. Belt-and-braces: today
+        // replay routes through `log/` and `history/append`, never `shell/`,
+        // so the `new_default()` seed would survive untouched. Re-seeding
+        // here is a cheap idempotent overwrite that makes the invariant
+        // "this value is the shell's authoritative const after mount"
+        // robust to any future replay-path change.
+        ns.shell.set(
+            "post_crash_skip_content",
+            Value::String(theme::POST_CRASH_SKIP_CONTENT.to_string()),
+        );
+
         // Install the durable ledger writer AFTER replay. Any entry written
         // through `log/append` from this point forward will be committed to
         // `ledger.jsonl` before becoming visible in `SharedLog`.
@@ -352,6 +435,7 @@ impl ThreadNamespace {
             "log" => Some((&mut self.log as &mut dyn Store, sub)),
             "tools" => Some((&mut self.tools as &mut dyn Store, sub)),
             "gate" => Some((&mut self.gate as &mut dyn Store, sub)),
+            "shell" => Some((&mut self.shell as &mut dyn Store, sub)),
             _ => None,
         }
     }

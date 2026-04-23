@@ -845,6 +845,33 @@ fn submit_approval_and_wait(
         .map_err(|e| format!("decode approval decision '{decision_str}': {e}"))
 }
 
+/// Fetch the synthetic `ToolResult` content string used on the Deny branch
+/// of the post-crash re-confirm resume prologue.
+///
+/// The string is shell-specific (transcripts identify the origin by a
+/// marker prefix like `[ox-cli:`), and `ox-kernel` is surface-neutral —
+/// it cannot hard-code one shell's wording. The kernel reads the string
+/// from the namespace instead, at the shell-owned path
+/// `shell/post_crash_skip_content`. The shell seeds it during mount (see
+/// `ox-cli::thread_registry::ThreadNamespace`). When no shell has written
+/// the path (tests, wasm shells without a crash-recovery UX, etc.), the
+/// kernel falls back to a neutral `[ox: …]` default so the synthetic
+/// result remains well-formed and the model is still told "do not retry".
+fn post_crash_skip_content(context: &mut dyn Reader) -> String {
+    /// Kernel-neutral default. Mirrors the shell's wording so the model
+    /// still receives the "do not retry" directive even in a shell that
+    /// hasn't populated `shell/post_crash_skip_content`.
+    const DEFAULT: &str = "[ox: skipped by user after crash recovery. \
+        The tool was not re-executed. Do not retry this tool in this turn.]";
+    match context.read(&path!("shell/post_crash_skip_content")) {
+        Ok(Some(Record::Parsed(Value::String(s)))) if !s.is_empty() => s,
+        // Any other shape (missing, wrong type, empty) → neutral default.
+        // The path is a single convention point — we do not silently
+        // accept non-string values.
+        _ => DEFAULT.to_string(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Full agentic loop (stack-based reactor)
 // ---------------------------------------------------------------------------
@@ -951,22 +978,22 @@ pub fn run_turn(context: &mut dyn Store, emit: &mut dyn FnMut(AgentEvent)) -> Re
                         // the next completion with the new tool result.
                     }
                     // Deny → synthetic ToolResult that lets the turn
-                    // continue. Task 3c refines the exact content
-                    // string; for 3b we record a stub so the seam is
-                    // clean and `run_turn` proceeds.
+                    // continue. The content string is sourced from the
+                    // shell-owned `shell/post_crash_skip_content` path
+                    // (see `post_crash_skip_content`) so the kernel
+                    // stays free of shell-specific wording. Falls back
+                    // to a kernel-neutral default when the path is
+                    // unset. `is_error: false` is implicit in the
+                    // `ToolResult` shape — ox-kernel currently only
+                    // carries `tool_use_id` + `content`, and consumers
+                    // treat a present `ToolResult` as success.
                     ox_types::Decision::DenyOnce
                     | ox_types::Decision::DenySession
                     | ox_types::Decision::DenyAlways => {
-                        // SEAM: Task 3c replaces this content with the
-                        // pinned "[ox-cli: skipped by user after crash
-                        // recovery. ...]" string from the plan. The
-                        // shape (`tool_use_id`, `is_error=false`) is
-                        // already right; only the wording changes.
+                        let content = post_crash_skip_content(context);
                         let results = vec![ToolResult {
                             tool_use_id: tool_use_id.clone(),
-                            content: serde_json::Value::String(
-                                "[ox-cli: tool skipped by user after crash recovery]".into(),
-                            ),
+                            content: serde_json::Value::String(content),
                         }];
                         record_tool_results(context, &results)?;
                         // Fall through: the loop issues the next
@@ -2391,8 +2418,12 @@ mod tests {
                 "reason": "crash_during_dispatch"
             }),
         ]);
-        // User denies the reconfirm (safer default) — 3b records a
-        // stub synthetic ToolResult and continues. 3c refines the text.
+        // User denies the reconfirm (safer default): the kernel records a
+        // synthetic ToolResult with the content sourced from the
+        // shell-owned `shell/post_crash_skip_content` path, falling back
+        // to a neutral `[ox: …]` default when the path is unset. This
+        // test exercises the *default* branch (no override set on the
+        // mock store); the shell-override branch is covered below.
         store.push_approval_decision(ox_types::Decision::DenyOnce);
         store.push_completion_response(serde_json::json!([
             {"type": "text_delta", "text": "Acknowledged."},
@@ -2411,20 +2442,113 @@ mod tests {
         assert_eq!(json["tool_input"]["command"], "rm foo");
         assert_eq!(json["post_crash_reconfirm"], true);
 
-        // Deny → synthetic ToolResult (3c refines content). tools/shell
-        // must NOT be dispatched.
+        // Deny → synthetic ToolResult. tools/shell must NOT be dispatched.
         assert!(
             !store.appended.iter().any(|(k, _)| k == "tools/shell"),
             "deny decision must not dispatch the tool"
         );
-        assert!(
-            store.appended.iter().any(|(k, v)| {
+        // The kernel-neutral default must match this exact wording. The
+        // shell (ox-cli) overrides it via `shell/post_crash_skip_content`
+        // — covered by `run_turn_resume_tool_dispatch_deny_uses_shell_override`.
+        let tool_result = store
+            .appended
+            .iter()
+            .find(|(k, v)| {
                 k == "log/append" && {
                     let j = structfs_serde_store::value_to_json(v.clone());
                     j["type"] == "tool_result" && j["id"] == "tu-2"
                 }
+            })
+            .expect("deny decision must record a synthetic ToolResult");
+        let tr_json = structfs_serde_store::value_to_json(tool_result.1.clone());
+        assert_eq!(tr_json["is_error"], false);
+        assert_eq!(
+            tr_json["output"].as_str().expect("output is a string"),
+            "[ox: skipped by user after crash recovery. \
+             The tool was not re-executed. Do not retry this tool in this turn.]",
+            "default content must match the kernel-neutral `[ox: …]` wording \
+             verbatim — any change is a plan amendment"
+        );
+    }
+
+    /// Deny branch of the resume prologue must prefer the shell-provided
+    /// content at `shell/post_crash_skip_content` over the kernel-neutral
+    /// default. This is the path ox-cli exercises: the `[ox-cli: …]`
+    /// marker prefix makes the synthetic origin recognizable in
+    /// transcripts without requiring any shell-specific code in the
+    /// kernel.
+    #[test]
+    fn run_turn_resume_tool_dispatch_deny_uses_shell_override() {
+        let mut store = MockStore::new();
+        seed_resume_context(&mut store);
+        // Shell writes its preferred wording at mount time. The kernel
+        // reads from this path on Deny; anything truthy-stringly here
+        // wins over the default.
+        store.set(
+            "shell/post_crash_skip_content",
+            Value::String("[ox-cli: TEST OVERRIDE]".into()),
+        );
+        store.set_log_entries(vec![
+            serde_json::json!({"type": "turn_start", "scope": "root"}),
+            serde_json::json!({"type": "user", "content": "rm something"}),
+            serde_json::json!({
+                "type": "assistant",
+                "content": [{"type": "tool_use", "id": "tu-4", "name": "shell",
+                             "input": {"command": "rm foo"}}],
+                "scope": "root",
+                "completion_id": 0
             }),
-            "deny decision must record a synthetic ToolResult"
+            serde_json::json!({
+                "type": "tool_call",
+                "id": "tu-4",
+                "name": "shell",
+                "input": {"command": "rm foo"},
+                "scope": "root"
+            }),
+            serde_json::json!({
+                "type": "approval_requested",
+                "tool_name": "shell",
+                "input_preview": "rm foo"
+            }),
+            serde_json::json!({
+                "type": "approval_resolved",
+                "tool_name": "shell",
+                "decision": "allow_once"
+            }),
+            serde_json::json!({
+                "type": "tool_aborted",
+                "tool_use_id": "tu-4",
+                "reason": "crash_during_dispatch"
+            }),
+        ]);
+        store.push_approval_decision(ox_types::Decision::DenyOnce);
+        store.push_completion_response(serde_json::json!([
+            {"type": "text_delta", "text": "Acknowledged."},
+            {"type": "message_stop"}
+        ]));
+
+        run_turn(&mut store, &mut |_| {}).unwrap();
+
+        let tool_result = store
+            .appended
+            .iter()
+            .find(|(k, v)| {
+                k == "log/append" && {
+                    let j = structfs_serde_store::value_to_json(v.clone());
+                    j["type"] == "tool_result" && j["id"] == "tu-4"
+                }
+            })
+            .expect("deny decision must record a synthetic ToolResult");
+        let tr_json = structfs_serde_store::value_to_json(tool_result.1.clone());
+        assert_eq!(
+            tr_json["output"].as_str().unwrap(),
+            "[ox-cli: TEST OVERRIDE]",
+            "shell-provided content must win over the kernel-neutral default"
+        );
+        assert_eq!(
+            tr_json["is_error"], false,
+            "synthetic ToolResult from Deny must carry is_error: false \
+             regardless of whether the shell overrode the content"
         );
     }
 
