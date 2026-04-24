@@ -45,6 +45,64 @@ impl HistoryView {
         }
     }
 
+    /// Project the latest unsuperseded `AssistantProgress` entry into
+    /// `turn/streaming` so a replayed thread shows the partial text the
+    /// user was watching pre-crash. Called by the shell's mount
+    /// lifecycle after `snapshot::restore` has populated the log.
+    ///
+    /// "Unsuperseded" means: the most-recent `AssistantProgress` whose
+    /// `epoch` has no later `LogEntry::Assistant` with matching
+    /// `completion_id`. A completed completion writes an `Assistant`
+    /// final alongside the same `completion_id` the progress entries
+    /// carry; when that final is present, the progress snapshots have
+    /// been superseded and no streaming text remains visible.
+    ///
+    /// When no unsuperseded progress exists (no crash, or crash before
+    /// any text), this is a no-op and `turn/streaming` stays empty.
+    /// `turn.thinking` is also set when progress is projected — an
+    /// in-flight turn should show the thinking indicator until a turn
+    /// boundary clears it.
+    pub fn reconstruct_turn_streaming(&mut self) {
+        let entries = self.shared.entries();
+        // Walk from the tail to find the latest `AssistantProgress`.
+        // Track the set of completion ids that have an `Assistant`
+        // final after (or at) that position — those progress epochs
+        // are superseded. Budget is bounded by one turn's worth of
+        // entries in practice (a `TurnEnd` terminates the walk).
+        let mut superseded: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        for entry in entries.iter().rev() {
+            match entry {
+                LogEntry::TurnEnd { .. } | LogEntry::TurnAborted { .. } => {
+                    // A turn terminator past the latest progress means
+                    // the progress was cleaned up at turn end — nothing
+                    // to project into streaming.
+                    return;
+                }
+                LogEntry::Assistant { completion_id, .. } => {
+                    superseded.insert(*completion_id);
+                }
+                LogEntry::AssistantProgress { accumulated, epoch } => {
+                    if !superseded.contains(epoch) {
+                        self.turn.streaming = accumulated.clone();
+                        self.turn.thinking = true;
+                        return;
+                    }
+                }
+                // Informational / non-terminal entries — keep walking.
+                LogEntry::User { .. }
+                | LogEntry::ToolCall { .. }
+                | LogEntry::ToolResult { .. }
+                | LogEntry::Meta { .. }
+                | LogEntry::TurnStart { .. }
+                | LogEntry::CompletionEnd { .. }
+                | LogEntry::ApprovalRequested { .. }
+                | LogEntry::ApprovalResolved { .. }
+                | LogEntry::Error { .. }
+                | LogEntry::ToolAborted { .. } => {}
+            }
+        }
+    }
+
     /// Reconstruct session token totals from existing log entries.
     ///
     /// Call this after restoring a thread from disk. Scans all `TurnEnd`
@@ -154,10 +212,15 @@ impl HistoryView {
                 | LogEntry::ApprovalResolved { .. }
                 | LogEntry::Error { .. }
                 | LogEntry::TurnAborted { .. }
-                | LogEntry::ToolAborted { .. } => {
+                | LogEntry::ToolAborted { .. }
+                | LogEntry::AssistantProgress { .. } => {
                     // Skip: tool calls are embedded in assistant content,
-                    // non-message entries (including abort markers) are
-                    // not conversation messages
+                    // non-message entries (including abort markers and
+                    // mid-stream progress snapshots) are not conversation
+                    // messages. `AssistantProgress` is projected into
+                    // `turn/streaming` in `reconstruct_turn_streaming`,
+                    // not here — a progress snapshot is not a durable
+                    // Anthropic-format message.
                     i += 1;
                 }
             }

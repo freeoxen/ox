@@ -86,7 +86,16 @@ pub fn classify(entries: &[LogEntry]) -> ThreadResumeState {
     // allowed, no result yet) or `Idle` (tool ran, `ToolResult` present).
     // Only an `ApprovalRequested` with no later resolution is still
     // blocking user input.
+    //
+    // `saw_progress` records whether we have walked past an
+    // `AssistantProgress` entry without having first seen a
+    // state-changing terminator. If we subsequently reach a `TurnStart`
+    // with nothing state-changing after it, the tail shape is
+    // `TurnStart + AssistantProgress*` — an interrupted stream —
+    // and we emit `InStreamNoFinal`. Task 4 of the
+    // durable-conversation-state plan produces this variant.
     let mut seen_resolved = false;
+    let mut saw_progress = false;
     for (offset, entry) in entries.iter().rev().enumerate() {
         if offset >= CLASSIFIER_WALK_CAP {
             tracing::warn!(
@@ -181,14 +190,34 @@ pub fn classify(entries: &[LogEntry]) -> ThreadResumeState {
                 return ThreadResumeState::Idle;
             }
 
+            // `AssistantProgress` is a mid-stream snapshot; on its own
+            // it does not determine the tail state. Record that we
+            // walked past one and keep scanning. If we reach a
+            // `TurnStart` without finding a state-changing entry in
+            // between, the tail shape is `TurnStart +
+            // AssistantProgress*` — the `TurnStart` branch below uses
+            // `saw_progress` to distinguish `InStreamNoFinal` from
+            // `InTurnNoProgress`.
+            LogEntry::AssistantProgress { .. } => {
+                saw_progress = true;
+                continue;
+            }
+
             // ---- turn boundary ----
             LogEntry::TurnStart { .. } => {
                 // Reached a TurnStart without encountering any
-                // state-changing content after it. A Task 4-era
-                // classifier would inspect `AssistantProgress` here
-                // to choose between `InStreamNoFinal` and
-                // `InTurnNoProgress`; with Task 2's alphabet the
-                // only signal is that progress ran out.
+                // state-changing content after it. If we saw any
+                // `AssistantProgress` on the way back, the tail was
+                // `TurnStart + AssistantProgress*` — a stream that
+                // produced text but never finalized. That's an
+                // interrupted stream (`InStreamNoFinal`). Otherwise the
+                // turn never produced anything and we return
+                // `InTurnNoProgress`. This is the Task 4 refinement;
+                // prior to Task 4 the classifier always returned
+                // `InTurnNoProgress` here.
+                if saw_progress {
+                    return ThreadResumeState::InStreamNoFinal;
+                }
                 return ThreadResumeState::InTurnNoProgress;
             }
         }
@@ -393,6 +422,13 @@ mod tests {
         }
     }
 
+    fn assistant_progress(text: &str, epoch: u64) -> LogEntry {
+        LogEntry::AssistantProgress {
+            accumulated: text.into(),
+            epoch,
+        }
+    }
+
     // ---- one unit test per ThreadResumeState variant ----
 
     #[test]
@@ -447,11 +483,84 @@ mod tests {
     }
 
     #[test]
-    fn in_stream_no_final_variant_exists() {
-        // Task 2 does not produce this variant (see module docs), but
-        // the variant must exist so downstream dispatch can match on it
-        // without an API break once Task 4 lands.
-        let _: ThreadResumeState = ThreadResumeState::InStreamNoFinal;
+    fn in_stream_no_final_when_turn_start_then_progress() {
+        // Task 4 shape: `TurnStart + AssistantProgress*` with no
+        // `Assistant` final or other state-changing entry after the
+        // TurnStart. The classifier returns `InStreamNoFinal` and the
+        // mount lifecycle appends `TurnAborted { CrashDuringStream }`.
+        let entries = vec![
+            u("hi"),
+            ts(),
+            assistant_progress("Hell", 0),
+            assistant_progress("Hello, world", 0),
+        ];
+        assert_eq!(classify(&entries), ThreadResumeState::InStreamNoFinal);
+    }
+
+    #[test]
+    fn in_stream_no_final_survives_interleaved_informational() {
+        // Meta / CompletionEnd / Error between the `TurnStart` and the
+        // trailing progress must not confuse the classifier — they are
+        // informational and the shape is still interrupted-stream.
+        let entries = vec![
+            ts(),
+            ce(),
+            assistant_progress("x", 0),
+            meta(),
+            err(),
+            assistant_progress("xy", 0),
+        ];
+        assert_eq!(classify(&entries), ThreadResumeState::InStreamNoFinal);
+    }
+
+    #[test]
+    fn in_stream_no_final_prefers_state_change_over_progress() {
+        // A successful stream emits progress then writes `Assistant`
+        // as the final. The `Assistant` (text-only) branch fires first
+        // walking back from the tail, producing `Idle`; the progress
+        // entries never matter.
+        let entries = vec![
+            ts(),
+            u("hi"),
+            assistant_progress("Hell", 0),
+            assistant_progress("Hello", 0),
+            assistant_text("Hello"),
+            te(),
+        ];
+        assert_eq!(classify(&entries), ThreadResumeState::Idle);
+    }
+
+    #[test]
+    fn awaiting_tool_result_with_preceding_progress() {
+        // When the stream produced both text and a tool_use, the
+        // Assistant final (with ToolUse) is a state change that wins
+        // over any leading progress. `was_approved=false` because no
+        // ApprovalResolved is present.
+        let entries = vec![
+            ts(),
+            u("hi"),
+            assistant_progress("thinking", 0),
+            assistant_tool_use("t1"),
+        ];
+        match classify(&entries) {
+            ThreadResumeState::AwaitingToolResult {
+                tool_use_id,
+                was_approved,
+            } => {
+                assert_eq!(tool_use_id, "t1");
+                assert!(!was_approved);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn in_turn_no_progress_still_possible_without_any_progress() {
+        // Regression: a TurnStart with nothing after it (no progress,
+        // no assistant final, nothing) must still classify as
+        // InTurnNoProgress — not folded into InStreamNoFinal.
+        let entries = vec![u("hi"), ts()];
+        assert_eq!(classify(&entries), ThreadResumeState::InTurnNoProgress);
     }
 
     // ---- one unit test per informational variant: correctly skipped ----
@@ -625,6 +734,16 @@ mod prop_tests {
             "[a-z0-9]{1,6}".prop_map(|id| LogEntry::ToolAborted {
                 tool_use_id: id,
                 reason: crate::log::ToolAbortReason::CrashDuringDispatch,
+            }),
+            // Task 4: AssistantProgress — mid-stream snapshot. The
+            // `accumulated` grammar is intentionally small (short
+            // ASCII). The generator leans on `epoch ∈ 0..4` so
+            // multiple progress entries sharing an epoch appear
+            // often enough that the classifier's tail walk exercises
+            // the `saw_progress` path.
+            ("[a-z ]{0,16}", 0u64..4u64).prop_map(|(s, epoch)| LogEntry::AssistantProgress {
+                accumulated: s,
+                epoch,
             }),
         ]
     }

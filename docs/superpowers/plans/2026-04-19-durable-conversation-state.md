@@ -572,11 +572,11 @@ Budget: ~5–10 extra appends/sec during streaming. With group-commit `File::syn
 
 ### Tasks
 
-- [ ] **Step 1:** Add `AssistantProgress` variant with round-trip tests.
-- [ ] **Step 2:** In `ox-kernel::run.rs`, emit `AssistantProgress` at repaint cadence during streaming. Guard behind `OX_DURABLE_STREAM=1` initially to allow A/B comparison.
-- [ ] **Step 3:** Update `HistoryView` to project the latest `AssistantProgress` into `turn/streaming` on replay. Verify existing `turn/streaming` consumers keep working.
-- [ ] **Step 4:** Update classification: `InStreamNoFinal` tail is identified by `TurnStart + AssistantProgress*, no Assistant final`. Emit `TurnAborted { reason: CrashDuringStream }` on mount and render the partial text followed by the abort marker.
-- [ ] **Step 5:** Crash-harness test: start a turn with a slow-streaming fake transport, drop the `App` mid-stream (soft crash, optionally paired with the `LedgerWriter` freeze hook to park between `write_all` and `sync_data`), remount, assert the partial text visible pre-crash is visible post-remount.
+- [x] **Step 1:** Add `AssistantProgress` variant with round-trip tests.
+- [x] **Step 2:** In `ox-kernel::run.rs`, emit `AssistantProgress` at repaint cadence during streaming. Guard behind `OX_DURABLE_STREAM=1` initially to allow A/B comparison.
+- [x] **Step 3:** Update `HistoryView` to project the latest `AssistantProgress` into `turn/streaming` on replay. Verify existing `turn/streaming` consumers keep working.
+- [x] **Step 4:** Update classification: `InStreamNoFinal` tail is identified by `TurnStart + AssistantProgress*, no Assistant final`. Emit `TurnAborted { reason: CrashDuringStream }` on mount and render the partial text followed by the abort marker.
+- [x] **Step 5:** Crash-harness test: start a turn with a slow-streaming fake transport, drop the `App` mid-stream (soft crash, optionally paired with the `LedgerWriter` freeze hook to park between `write_all` and `sync_data`), remount, assert the partial text visible pre-crash is visible post-remount.
 - [ ] **Step 6:** Flip `OX_DURABLE_STREAM` default to on when all of the following are true, measured against the Phase 3 baseline from the Task 0 harness:
   - p99 `LogStore::append` commit latency regression ≤ 10% (absolute: under 20ms on dev SSD).
   - No new failing tests in `cargo test` over two consecutive weeks of daily runs.
@@ -587,6 +587,12 @@ Budget: ~5–10 extra appends/sec during streaming. With group-commit `File::syn
 
 - Crash mid-stream → relaunch shows the partial text the user was watching, followed by a `TurnAborted` marker.
 - Per-turn p99 commit latency remains under 20ms.
+
+**Task 4 deviation — cadence mechanism.** The plan pins `~100–200ms` wall-clock cadence via `Instant::now()`-based timing. That call panics inside the ox-runtime Wasm module, which has no WASI clock import wired today. Task 4 switches the cadence to an **event count** (`STREAM_PROGRESS_CADENCE_EVENTS = 20` `TextDelta` events per emission), calibrated to match the plan's `~5–10 appends/sec` budget at typical streaming rates. Trade-off: at low streaming throughput the cadence becomes sparser than wall-clock would be; at high throughput it becomes slightly denser. Neither departs meaningfully from the budget. When a WASI clock import or equivalent lands, swapping to wall-clock is a localized change inside `accumulate_response_durable`.
+
+**Task 4 deviation — emission seam + epoch source.** The plan's design note assumed a per-event `on_event` callback threaded from the kernel to the transport. The current architecture buffers events into a `Vec<StreamEvent>` at the `CompletionModule::write` → transport boundary before returning to the kernel, so true per-event emission during the transport's `send()` would require plumbing a callback across a `Writer::write` seam that only carries StructFS `Value` payloads — a substantial cross-crate refactor. Task 4 takes the smaller path: a new kernel-internal `accumulate_response_durable` wraps the existing event-reduction loop with cadence-gated `AssistantProgress` appends via `context.write(&path!("log/append"), …)`. The public `accumulate_response` stays pure for ox-web and other async callers. Consequences: (a) for the current transport, progress entries cluster in the short window between the transport returning and `record_turn_scoped` writing the `Assistant` final — still durable, still visible on remount if a crash lands in that window; (b) a future on-event-threaded transport will see the cadence gate throttle per-event appends correctly without any further kernel change. The opt-in is `OX_DURABLE_STREAM=1`, read once at `run_turn` entry into a local bool. Epoch is the kernel's existing `completion_counter`; progress entries for an `epoch` are superseded by the matching `Assistant { completion_id: epoch, .. }` on clean stream end.
+
+**Task 4 test deviation — direct-injection crash scenario.** The Step 5 crash-harness test (`crates/ox-cli/tests/crash_harness_durable_stream.rs`) injects `TurnStart + AssistantProgress` entries directly into the thread's log via the broker (the same pattern `crash_harness_approval_resume.rs` uses for the approval-resume scenario) rather than driving a transport that pauses mid-stream. Reason: a "slow streaming" fake transport that stalls between `on_event` callbacks would require `tokio::time::sleep` or a cross-thread barrier to achieve the mid-stream crash window — the former is banned by this plan's testing posture, the latter adds scaffolding that buys nothing over direct injection since the assertion is about ledger shape post-remount, not the crash mechanism itself. The test still exercises the full mount-lifecycle path: classifier → `InStreamNoFinal` → `TurnAborted(CrashDuringStream)` append → `HistoryView::reconstruct_turn_streaming` projection.
 
 ---
 

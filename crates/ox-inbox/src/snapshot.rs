@@ -548,7 +548,8 @@ mod tests {
             | LogEntry::ApprovalResolved { .. }
             | LogEntry::Error { .. }
             | LogEntry::TurnAborted { .. }
-            | LogEntry::ToolAborted { .. } => false,
+            | LogEntry::ToolAborted { .. }
+            | LogEntry::AssistantProgress { .. } => false,
         }
     }
 
@@ -618,6 +619,10 @@ mod tests {
             LogEntry::ToolAborted {
                 tool_use_id: "t1".into(),
                 reason: ox_kernel::log::ToolAbortReason::CrashDuringDispatch,
+            },
+            LogEntry::AssistantProgress {
+                accumulated: "partial".into(),
+                epoch: 0,
             },
         ];
         for entry in &samples {

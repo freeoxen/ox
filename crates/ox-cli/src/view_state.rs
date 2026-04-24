@@ -617,7 +617,8 @@ pub(crate) fn aggregate_thread_stats(
             | LogEntry::ApprovalResolved { .. }
             | LogEntry::Error { .. }
             | LogEntry::TurnAborted { .. }
-            | LogEntry::ToolAborted { .. } => {}
+            | LogEntry::ToolAborted { .. }
+            | LogEntry::AssistantProgress { .. } => {}
         }
     }
 

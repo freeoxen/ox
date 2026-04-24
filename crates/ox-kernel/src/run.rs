@@ -10,6 +10,30 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use structfs_core_store::{Path, Reader, Record, Store, Value, Writer, path};
 
+/// How many `TextDelta` events elapse between `AssistantProgress`
+/// appends during a streaming completion.
+///
+/// The plan describes the cadence as "~100–200ms" — wall-clock time.
+/// ox-kernel runs inside a Wasm module under ox-runtime, where
+/// `std::time::Instant::now()` panics (no WASI clock import is wired
+/// on our engine). Using an event-count cadence instead keeps the
+/// kernel free of a platform-specific time source and is still
+/// faithful to the plan's budget: typical streaming speeds are
+/// ~30–60 tokens/sec, so 20 TextDelta events ≈ 300–700ms of
+/// wall-clock progress, and the resulting append rate stays under
+/// the plan's "~5–10 appends/sec" budget. Tight-loop tests (where
+/// all events arrive in microseconds) produce deterministic counts
+/// without depending on timers — which is exactly what the unit
+/// tests assert on.
+const STREAM_PROGRESS_CADENCE_EVENTS: u32 = 20;
+
+/// Name of the opt-in environment variable. Read once at `run_turn`
+/// entry into a local `bool` so the hot path (per-event check) doesn't
+/// hit the process env on every `TextDelta`. The plan flips the default
+/// to "on" in a follow-up commit gated on latency metrics (Task 4
+/// Step 6 — explicitly out of scope for Task 4's first commit).
+const DURABLE_STREAM_ENV: &str = "OX_DURABLE_STREAM";
+
 // ---------------------------------------------------------------------------
 // ContextRef types
 // ---------------------------------------------------------------------------
@@ -308,6 +332,11 @@ pub fn synthesize(context: &mut dyn Reader) -> Result<CompletionRequest, String>
 ///
 /// This is a pure function — no store access. The caller provides an emit
 /// callback for observability.
+///
+/// Kept pure because `ox-web` (async fetch boundary) and the kernel's
+/// internal [`accumulate_response_durable`] both rely on the same event
+/// reduction. The durable variant wraps this logic with per-event
+/// progress appends; this stays a strict, context-free projection.
 pub fn accumulate_response(
     events: Vec<StreamEvent>,
     emit: &mut dyn FnMut(AgentEvent),
@@ -353,6 +382,142 @@ pub fn accumulate_response(
     flush_tool(&mut blocks, &mut current_tool);
 
     Ok(blocks)
+}
+
+/// Kernel-internal variant of [`accumulate_response`] that appends
+/// [`LogEntry::AssistantProgress`] snapshots to `log/append` on a
+/// [`STREAM_PROGRESS_CADENCE_EVENTS`]-count cadence when
+/// `durable_stream_enabled` is true. Behaves exactly like
+/// `accumulate_response` when the flag is false (no progress entries
+/// written, no store mutation).
+///
+/// `epoch` is the kernel's `completion_counter` at the time the
+/// completion was dispatched — stored alongside each progress entry so
+/// replay can distinguish which progress entries belong to which
+/// completion frame (relevant for multi-iteration turns and nested
+/// completions). On a clean stream end, `record_turn_scoped` writes an
+/// `Assistant` entry with the same `completion_id`; `HistoryView`'s
+/// projection prefers the `Assistant` final over any trailing
+/// `AssistantProgress` for the same epoch.
+///
+/// Cadence is event-count based (every
+/// [`STREAM_PROGRESS_CADENCE_EVENTS`] `TextDelta` events) rather than
+/// wall-clock, because ox-kernel runs inside a Wasm module where
+/// `std::time::Instant::now()` panics on the ox-runtime engine — see
+/// the cadence const docs. The count is chosen so the append rate
+/// matches the plan's wall-clock budget for typical streaming speeds.
+/// In the current codebase, transports buffer events into a
+/// `Vec<StreamEvent>` before returning, so this function iterates them
+/// in a tight loop and cadence snapshots cluster near the end of
+/// iteration — still durable against a crash between this function
+/// returning and the `Assistant` final being appended by
+/// `record_turn_scoped`. When a future transport calls back in real
+/// time, the count-based gate still bounds per-turn appends.
+///
+/// The final `TextDelta` flush (at `MessageStop` or natural end of the
+/// event stream) does **not** write a terminal progress entry — the
+/// caller is about to write the canonical `Assistant` entry, and any
+/// extra progress append at that instant is redundant (and would show
+/// up as a duplicate in the replayed `turn/streaming`).
+fn accumulate_response_durable(
+    events: Vec<StreamEvent>,
+    context: &mut dyn Writer,
+    epoch: u64,
+    durable_stream_enabled: bool,
+    emit: &mut dyn FnMut(AgentEvent),
+) -> Result<Vec<ContentBlock>, String> {
+    let mut blocks: Vec<ContentBlock> = Vec::new();
+    let mut current_text = String::new();
+    let mut current_tool: Option<(String, String, String)> = None;
+    // Track the accumulated visible text across the whole stream, not
+    // just the currently-open text block. `ToolUseStart` flushes
+    // `current_text` into a `ContentBlock::Text` but the text already
+    // rendered to the UI is still visible until the next repaint.
+    let mut visible_accumulated = String::new();
+    let mut events_since_last_progress: u32 = 0;
+    let mut progress_written = false;
+
+    for event in events {
+        match event {
+            StreamEvent::TextDelta(text) => {
+                flush_tool(&mut blocks, &mut current_tool);
+                current_text.push_str(&text);
+                visible_accumulated.push_str(&text);
+                emit(AgentEvent::TextDelta(text));
+                events_since_last_progress = events_since_last_progress.saturating_add(1);
+
+                if durable_stream_enabled
+                    && events_since_last_progress >= STREAM_PROGRESS_CADENCE_EVENTS
+                {
+                    append_progress(context, &visible_accumulated, epoch)?;
+                    progress_written = true;
+                    events_since_last_progress = 0;
+                }
+            }
+            StreamEvent::ToolUseStart { id, name } => {
+                flush_text(&mut blocks, &mut current_text);
+                flush_tool(&mut blocks, &mut current_tool);
+                current_tool = Some((id, name, String::new()));
+                // A ToolUseStart ends the assistant's free text run for
+                // this message. If we never hit the cadence gate during
+                // the text (very short or fast-arriving), force one
+                // snapshot so crash-recovery has a progress entry to
+                // project. Skipped when there is no visible text yet
+                // (pure tool-only assistant messages).
+                if durable_stream_enabled && !progress_written && !visible_accumulated.is_empty() {
+                    append_progress(context, &visible_accumulated, epoch)?;
+                    progress_written = true;
+                    events_since_last_progress = 0;
+                }
+            }
+            StreamEvent::ToolUseInputDelta(delta) => {
+                if let Some((_, _, ref mut input_json)) = current_tool {
+                    input_json.push_str(&delta);
+                }
+            }
+            StreamEvent::MessageStop => {
+                break;
+            }
+            StreamEvent::Error(e) => {
+                flush_text(&mut blocks, &mut current_text);
+                flush_tool(&mut blocks, &mut current_tool);
+                emit(AgentEvent::Error(e.clone()));
+                return Err(e);
+            }
+        }
+    }
+
+    flush_text(&mut blocks, &mut current_text);
+    flush_tool(&mut blocks, &mut current_tool);
+
+    Ok(blocks)
+}
+
+/// Append a single `AssistantProgress` entry to `log/append`.
+///
+/// Isolated so the three emission sites in `accumulate_response_durable`
+/// (cadence-gated mid-stream, flush-before-tool-use, never a terminal
+/// one) share a single serialization path. Errors bubble — a failed
+/// progress append is a durability failure the same as any other, and
+/// the caller (and ultimately `SharedLog::append`) will propagate it.
+fn append_progress(context: &mut dyn Writer, accumulated: &str, epoch: u64) -> Result<(), String> {
+    let entry = serde_json::json!({
+        "type": "assistant_progress",
+        "accumulated": accumulated,
+        "epoch": epoch,
+    });
+    context
+        .write(
+            &path!("log/append"),
+            Record::parsed(structfs_serde_store::json_to_value(entry)),
+        )
+        .map_err(|e| e.to_string())?;
+    tracing::trace!(
+        epoch,
+        accumulated_len = accumulated.len(),
+        "AssistantProgressAppended"
+    );
+    Ok(())
 }
 
 /// Write the assistant message to the log and extract tool calls.
@@ -661,13 +826,21 @@ fn inspect_log_for_resume(context: &mut dyn Reader) -> Result<ResumeAction, Stri
 
     // Walk backward, skipping informational variants. The first
     // state-changing entry determines the resume shape.
+    //
+    // `AssistantProgress` is informational for resume-shape detection:
+    // it carries streaming text but does not by itself encode whether
+    // an approval or tool dispatch is outstanding. If the tail is only
+    // progress + TurnStart, the mount lifecycle's `TurnAborted`
+    // (written by the classifier dispatch) is the terminal marker and
+    // we fall through to `Normal` via the `TurnStart` branch below.
     for (idx, entry) in entries.iter().enumerate().rev() {
         match entry {
             // ---- informational: skip ----
             LogEntry::User { .. }
             | LogEntry::Meta { .. }
             | LogEntry::CompletionEnd { .. }
-            | LogEntry::Error { .. } => continue,
+            | LogEntry::Error { .. }
+            | LogEntry::AssistantProgress { .. } => continue,
 
             // ---- terminal-of-turn markers: no resume ----
             LogEntry::TurnEnd { .. } => return Ok(ResumeAction::Normal),
@@ -889,6 +1062,16 @@ pub fn run_turn(context: &mut dyn Store, emit: &mut dyn FnMut(AgentEvent)) -> Re
     let account = read_default_account(context)?;
     let (run_model, _) = read_model_config(context)?;
     let refs = default_refs();
+
+    // Read the durable-streaming opt-in once at turn entry and pass it
+    // down. Per-event env lookups would be on the hot path of a
+    // streaming completion; one read per turn is free. Any value other
+    // than `"1"` is treated as off (unset, empty, mistyped). The plan
+    // flips the default on in a follow-up commit gated on latency
+    // metrics (Task 4 Step 6); this commit ships it off by default.
+    let durable_stream_enabled = std::env::var(DURABLE_STREAM_ENV)
+        .map(|v| v == "1")
+        .unwrap_or(false);
 
     let mut stack: Vec<CompletionFrame> = vec![CompletionFrame {
         account,
@@ -1144,9 +1327,19 @@ pub fn run_turn(context: &mut dyn Store, emit: &mut dyn FnMut(AgentEvent)) -> Re
             }),
         );
 
-        let content = accumulate_response(events, emit)?;
+        let content = accumulate_response_durable(
+            events,
+            context,
+            completion_counter,
+            durable_stream_enabled,
+            emit,
+        )?;
 
-        // Record assistant message to log with scope + completion_id
+        // Record assistant message to log with scope + completion_id.
+        // The Assistant entry carries the same `completion_id` as any
+        // `AssistantProgress` entries written above; the classifier and
+        // `HistoryView` use that pairing to supersede progress with the
+        // final assistant message.
         record_turn_scoped(context, &content, &frame.scope, completion_counter)?;
         completion_counter += 1;
 
@@ -1626,6 +1819,124 @@ mod tests {
             }
             _ => panic!("expected ToolUse block"),
         }
+    }
+
+    #[test]
+    fn accumulate_response_durable_writes_progress_when_enabled() {
+        // When `durable_stream_enabled=true`, a stream that emits text
+        // followed by a tool_use must flush at least one
+        // `AssistantProgress` append before the `ToolUseStart` resets
+        // the text run — otherwise the mid-stream text would not be
+        // durable if the process exited between the last TextDelta and
+        // `record_turn_scoped`.
+        let events = vec![
+            StreamEvent::TextDelta("Let me check".into()),
+            StreamEvent::ToolUseStart {
+                id: "t1".into(),
+                name: "get_weather".into(),
+            },
+            StreamEvent::ToolUseInputDelta("{}".into()),
+            StreamEvent::MessageStop,
+        ];
+        let mut store = MockStore::new();
+        let mut emitted: Vec<AgentEvent> = Vec::new();
+        let blocks =
+            accumulate_response_durable(events, &mut store, 7, true, &mut |e| emitted.push(e))
+                .unwrap();
+        assert_eq!(blocks.len(), 2);
+        // Exactly one progress entry is appended: the flush-before-tool
+        // path. The cadence gate (150ms wall-clock) doesn't fire in this
+        // tight test loop.
+        let progress: Vec<&(String, Value)> = store
+            .appended
+            .iter()
+            .filter(|(p, _)| p == "log/append")
+            .filter(|(_, v)| {
+                let j = structfs_serde_store::value_to_json(v.clone());
+                j.get("type").and_then(|t| t.as_str()) == Some("assistant_progress")
+            })
+            .collect();
+        assert_eq!(
+            progress.len(),
+            1,
+            "expected exactly one AssistantProgress append; got {:?}",
+            store
+                .appended
+                .iter()
+                .map(|(p, _)| p.as_str())
+                .collect::<Vec<_>>(),
+        );
+        let json = structfs_serde_store::value_to_json(progress[0].1.clone());
+        assert_eq!(json["type"], "assistant_progress");
+        assert_eq!(json["accumulated"], "Let me check");
+        assert_eq!(json["epoch"], 7);
+    }
+
+    #[test]
+    fn accumulate_response_durable_noop_when_disabled() {
+        // With `durable_stream_enabled=false`, behaviour is identical
+        // to `accumulate_response`: no progress entries written.
+        let events = vec![
+            StreamEvent::TextDelta("Hello".into()),
+            StreamEvent::ToolUseStart {
+                id: "t1".into(),
+                name: "t".into(),
+            },
+            StreamEvent::MessageStop,
+        ];
+        let mut store = MockStore::new();
+        let mut emitted = Vec::new();
+        let blocks =
+            accumulate_response_durable(events, &mut store, 0, false, &mut |e| emitted.push(e))
+                .unwrap();
+        assert_eq!(blocks.len(), 2);
+        let progress_count = store
+            .appended
+            .iter()
+            .filter(|(p, _)| p == "log/append")
+            .filter(|(_, v)| {
+                let j = structfs_serde_store::value_to_json(v.clone());
+                j.get("type").and_then(|t| t.as_str()) == Some("assistant_progress")
+            })
+            .count();
+        assert_eq!(
+            progress_count, 0,
+            "no progress appends expected when disabled",
+        );
+    }
+
+    #[test]
+    fn accumulate_response_durable_text_only_no_terminal_progress() {
+        // A text-only stream that never hits `ToolUseStart` (so the
+        // flush-before-tool branch doesn't fire) and fits entirely
+        // under one cadence window should produce zero progress
+        // entries — the caller is about to write the `Assistant`
+        // final via `record_turn_scoped`. Adding a terminal progress
+        // here would duplicate the final text as a superseded
+        // snapshot.
+        let events = vec![
+            StreamEvent::TextDelta("Hi".into()),
+            StreamEvent::MessageStop,
+        ];
+        let mut store = MockStore::new();
+        let mut emitted = Vec::new();
+        let blocks =
+            accumulate_response_durable(events, &mut store, 3, true, &mut |e| emitted.push(e))
+                .unwrap();
+        assert_eq!(blocks.len(), 1);
+        let progress_count = store
+            .appended
+            .iter()
+            .filter(|(p, _)| p == "log/append")
+            .filter(|(_, v)| {
+                let j = structfs_serde_store::value_to_json(v.clone());
+                j.get("type").and_then(|t| t.as_str()) == Some("assistant_progress")
+            })
+            .count();
+        assert_eq!(
+            progress_count, 0,
+            "no progress expected when stream is text-only and fits under cadence",
+        );
     }
 
     #[test]

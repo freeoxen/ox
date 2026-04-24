@@ -302,6 +302,18 @@ impl ThreadNamespace {
         // Reconstruct session token totals from restored log entries.
         ns.history.reconstruct_session_usage();
 
+        // Task 4 Step 3: project the latest unsuperseded
+        // `AssistantProgress` into `turn/streaming` so a crash that
+        // interrupted a streaming completion shows the partial text the
+        // user was watching pre-crash. The projection supersedes
+        // progress against any matching `Assistant` final in the log,
+        // so a clean-replay thread (no crash) remains visually empty.
+        // Runs BEFORE the mount-lifecycle `TurnAborted` append so the
+        // streaming text is visible at the moment the classifier
+        // decides `InStreamNoFinal`; the subsequent `TurnAborted`
+        // renders as the abort marker after the partial text.
+        ns.history.reconstruct_turn_streaming();
+
         // Re-seed shell→kernel config AFTER replay. Belt-and-braces: today
         // replay routes through `log/` and `history/append`, never `shell/`,
         // so the `new_default()` seed would survive untouched. Re-seeding

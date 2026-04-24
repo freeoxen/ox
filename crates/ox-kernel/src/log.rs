@@ -172,6 +172,38 @@ pub enum LogEntry {
         tool_use_id: String,
         reason: ToolAbortReason,
     },
+
+    /// A mid-stream snapshot of the assistant's accumulated text for the
+    /// current completion frame. Written on a per-event cadence
+    /// (`STREAM_PROGRESS_CADENCE_EVENTS` TextDelta events per emission in
+    /// `run.rs`), calibrated to the plan's ~5–10 appends/sec budget; see
+    /// the cadence constant for the full calibration rationale and the
+    /// `Instant::now()`-on-Wasm deviation. Only emitted when the
+    /// `OX_DURABLE_STREAM=1` opt-in is set at turn start. See Task 4 of
+    /// the durable-conversation-state plan.
+    ///
+    /// On replay, `HistoryView` projects the latest `AssistantProgress`
+    /// entry (whose `epoch` has no later `Assistant` or state-changing
+    /// entry superseding it) into `turn/streaming` so the UI shows the
+    /// partial text the user saw pre-crash. The classifier uses a tail
+    /// shape of `TurnStart + AssistantProgress*` (no `Assistant` final)
+    /// to emit [`ThreadResumeState::InStreamNoFinal`], which the mount
+    /// lifecycle converts to a `TurnAborted { CrashDuringStream }`
+    /// marker.
+    ///
+    /// `epoch` is the kernel's per-turn `completion_counter` at the
+    /// time of emission. It lets replay distinguish which progress
+    /// entries belong to which completion frame (relevant for nested
+    /// completions and multi-iteration turns). An `Assistant` entry
+    /// written by `record_turn_scoped` carries the same
+    /// `completion_id`; a later `Assistant` with matching epoch
+    /// supersedes all progress entries for that epoch.
+    #[serde(rename = "assistant_progress")]
+    AssistantProgress {
+        accumulated: String,
+        #[serde(default)]
+        epoch: u64,
+    },
 }
 
 /// A durability sink for log entries.
@@ -887,6 +919,63 @@ mod tests {
         assert_eq!(entry["type"], "tool_aborted");
         assert_eq!(entry["tool_use_id"], "tc_xyz");
         assert_eq!(entry["reason"], "crash_during_dispatch");
+    }
+
+    #[test]
+    fn assistant_progress_entry_round_trip() {
+        let mut log = LogStore::new();
+        log.write(
+            &path!("append"),
+            Record::parsed(structfs_serde_store::json_to_value(serde_json::json!({
+                "type": "assistant_progress",
+                "accumulated": "Hello wor",
+                "epoch": 3,
+            }))),
+        )
+        .unwrap();
+        let record = log.read(&path!("entries")).unwrap().unwrap();
+        let json = structfs_serde_store::value_to_json(record.as_value().unwrap().clone());
+        let entry = &json.as_array().unwrap()[0];
+        assert_eq!(entry["type"], "assistant_progress");
+        assert_eq!(entry["accumulated"], "Hello wor");
+        assert_eq!(entry["epoch"], 3);
+    }
+
+    #[test]
+    fn assistant_progress_epoch_defaults_zero_when_missing() {
+        // Forward-compat: ledgers written by shells that only carry
+        // `accumulated` (e.g. a minimal embedded shell) must still
+        // deserialize cleanly with `epoch == 0`.
+        let json = serde_json::json!({
+            "type": "assistant_progress",
+            "accumulated": "partial",
+        });
+        let entry: LogEntry = serde_json::from_value(json).unwrap();
+        match entry {
+            LogEntry::AssistantProgress { accumulated, epoch } => {
+                assert_eq!(accumulated, "partial");
+                assert_eq!(epoch, 0);
+            }
+            other => panic!("expected AssistantProgress, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn assistant_progress_round_trip_via_serde() {
+        let entry = LogEntry::AssistantProgress {
+            accumulated: "The file contains".to_string(),
+            epoch: 7,
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["type"], "assistant_progress");
+        let back: LogEntry = serde_json::from_value(json).unwrap();
+        match back {
+            LogEntry::AssistantProgress { accumulated, epoch } => {
+                assert_eq!(accumulated, "The file contains");
+                assert_eq!(epoch, 7);
+            }
+            other => panic!("expected AssistantProgress, got {other:?}"),
+        }
     }
 
     #[test]
