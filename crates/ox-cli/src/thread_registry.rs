@@ -382,12 +382,19 @@ impl ThreadNamespace {
                     }
                 }
                 ThreadResumeState::AwaitingApproval { tool_use_id } => {
-                    // Phase 2 stance: leave state intact. The UI will render
-                    // the replayed ApprovalRequested; no interaction is
-                    // possible until Phase 3's kernel prologue lands.
+                    // Phase 3 wiring (Task 3d): signal the agent worker that
+                    // it should call `run_turn()` once on first contact so
+                    // the kernel's resume prologue (see
+                    // `ox-kernel::run::inspect_log_for_resume`) can
+                    // re-request approval with `post_crash_reconfirm:
+                    // true`. The flag is one-shot — the worker clears it
+                    // before invoking `module.run`. A crash between set
+                    // and clear is safe: the next mount re-classifies
+                    // and re-sets.
+                    ns.shell.set("resume_needed", Value::Bool(true));
                     tracing::info!(
                         tool_use_id,
-                        "thread mounted AwaitingApproval; Phase 3 wiring pending"
+                        "ThreadResumeSignal AwaitingApproval — set shell/resume_needed"
                     );
                 }
                 ThreadResumeState::AwaitingToolResult {
@@ -414,6 +421,33 @@ impl ThreadNamespace {
                             );
                         }
                     }
+                    // Phase 3 wiring (Task 3d): the mount already appended
+                    // the ToolAborted marker above; the classifier would
+                    // now see `Idle` if re-run. A one-shot flag routed via
+                    // the namespace tells the worker to drive one
+                    // `run_turn()` call so the kernel's resume prologue
+                    // sees `Assistant(tool_use) → (ApprovalResolved?) →
+                    // ToolAborted` at the tail and issues the
+                    // post-crash-reconfirm approval request.
+                    //
+                    // Weaker-than-claimed guarantee: these two writes are
+                    // not atomic. If the process dies between the durable
+                    // `ToolAborted` append above and this in-memory flag
+                    // write, the next mount classifies the new tail as
+                    // `Idle` and does not re-set the flag. The user's
+                    // post-crash-reconfirm modal then fires on the next
+                    // user prompt rather than immediately on remount —
+                    // the kernel's own `inspect_log_for_resume` catches
+                    // the `...+ToolAborted` tail shape at run_turn entry.
+                    // No data loss, just a later surface. Tightening this
+                    // would move the signal into the classifier itself
+                    // (make `...+ToolAborted` classify as resumable
+                    // rather than `Idle`); deferred — it changes
+                    // classifier semantics used elsewhere.
+                    ns.shell.set("resume_needed", Value::Bool(true));
+                    tracing::info!(
+                        "ThreadResumeSignal AwaitingToolResult — set shell/resume_needed"
+                    );
                 }
             }
         }

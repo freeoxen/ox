@@ -43,9 +43,34 @@ impl App {
         rt_handle: tokio::runtime::Handle,
         transport_factory: Option<crate::test_support::TransportFactory>,
     ) -> Result<Self, String> {
+        Self::new_with_test_hooks(
+            workspace,
+            inbox_root,
+            no_policy,
+            broker,
+            rt_handle,
+            transport_factory,
+            None,
+        )
+    }
+
+    /// Test-only constructor that additionally accepts a
+    /// [`crate::test_support::ToolInjector`] so the crash harness can wire
+    /// counter-backed native tools for the Task 3d post-crash-reconfirm
+    /// E2E suite. Production callers should use [`App::new`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_test_hooks(
+        workspace: PathBuf,
+        inbox_root: PathBuf,
+        no_policy: bool,
+        broker: ox_broker::BrokerStore,
+        rt_handle: tokio::runtime::Handle,
+        transport_factory: Option<crate::test_support::TransportFactory>,
+        tool_injector: Option<crate::test_support::ToolInjector>,
+    ) -> Result<Self, String> {
         let inbox = ox_inbox::InboxStore::open(&inbox_root).map_err(|e| e.to_string())?;
         let broker_client = broker.client();
-        let pool = AgentPool::new_with_transport_factory(
+        let pool = AgentPool::new_with_test_hooks(
             workspace,
             no_policy,
             inbox,
@@ -53,6 +78,7 @@ impl App {
             broker,
             rt_handle,
             transport_factory,
+            tool_injector,
         )?;
 
         Ok(Self {

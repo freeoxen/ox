@@ -158,3 +158,14 @@ where
 {
     Arc::new(move || Box::new(transport.clone()))
 }
+
+/// Test-only tool injector — registered tools are inserted into each
+/// spawned worker's `ToolStore` before the worker services its first
+/// turn. Task 3d's post-crash-reconfirm E2E tests use this to wire a
+/// counter-incrementing tool whose side effect can be asserted across a
+/// crash/remount cycle.
+///
+/// The factory is invoked once per worker (via `Arc::clone` + call),
+/// yielding a fresh `Vec` of boxed `NativeTool`s. Each tool is
+/// installed via `ToolStore::register_native`.
+pub type ToolInjector = Arc<dyn Fn() -> Vec<Box<dyn ox_tools::native::NativeTool>> + Send + Sync>;

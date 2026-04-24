@@ -103,12 +103,17 @@ pub struct AgentPool {
     /// Test-only: when `Some`, workers install this transport into their
     /// `CompletionModule` instead of the reqwest-backed `CliCompletionTransport`.
     transport_factory: Option<crate::test_support::TransportFactory>,
+    /// Test-only: when `Some`, workers install these native tools into
+    /// their `ToolStore` before the prompt loop starts. See
+    /// `test_support::ToolInjector`.
+    tool_injector: Option<crate::test_support::ToolInjector>,
 }
 
 impl AgentPool {
     /// Create a pool. `transport_factory` is usually `None`; the crash
     /// harness (`tests/crash_harness/`) passes `Some(...)` to script LLM
     /// responses without hitting the network.
+    #[allow(dead_code)]
     pub fn new_with_transport_factory(
         workspace: PathBuf,
         no_policy: bool,
@@ -117,6 +122,33 @@ impl AgentPool {
         broker: ox_broker::BrokerStore,
         rt_handle: tokio::runtime::Handle,
         transport_factory: Option<crate::test_support::TransportFactory>,
+    ) -> Result<Self, String> {
+        Self::new_with_test_hooks(
+            workspace,
+            no_policy,
+            inbox,
+            inbox_root,
+            broker,
+            rt_handle,
+            transport_factory,
+            None,
+        )
+    }
+
+    /// Test-only constructor that also accepts a `ToolInjector` so the
+    /// crash harness can register counter-backed tools for the
+    /// post-crash-reconfirm suite (Task 3d Step 6). Not used by the
+    /// production binary.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_test_hooks(
+        workspace: PathBuf,
+        no_policy: bool,
+        inbox: ox_inbox::InboxStore,
+        inbox_root: PathBuf,
+        broker: ox_broker::BrokerStore,
+        rt_handle: tokio::runtime::Handle,
+        transport_factory: Option<crate::test_support::TransportFactory>,
+        tool_injector: Option<crate::test_support::ToolInjector>,
     ) -> Result<Self, String> {
         let runtime = AgentRuntime::new()?;
         let module = runtime.load_module_from_bytes(AGENT_WASM)?;
@@ -130,6 +162,7 @@ impl AgentPool {
             broker,
             rt_handle,
             transport_factory,
+            tool_injector,
         })
     }
 
@@ -155,6 +188,26 @@ impl AgentPool {
 
         self.spawn_worker(thread_id.clone(), title.to_string());
         Ok(thread_id)
+    }
+
+    /// Ensure a worker is spawned for this thread without sending any
+    /// prompt. The spawned worker will inspect the mount-time
+    /// `shell/resume_needed` signal and drive one `run_turn` invocation
+    /// if the flag is set, then block on `prompt_rx` for further input.
+    ///
+    /// Used by post-crash remount paths (tests and, in the future, the
+    /// production startup reconcile) where threads classified as
+    /// `AwaitingApproval` / `AwaitingToolResult` must pick up their
+    /// paused turn without a synthetic user message.
+    #[allow(dead_code)]
+    pub fn ensure_worker(&mut self, thread_id: &str) {
+        if self.threads.contains_key(thread_id) {
+            return;
+        }
+        let title = self
+            .read_thread_title(thread_id)
+            .unwrap_or_else(|| "Thread".to_string());
+        self.spawn_worker(thread_id.to_string(), title);
     }
 
     /// Send a prompt to a thread. Spawns a worker if one doesn't exist
@@ -208,9 +261,19 @@ impl AgentPool {
         let broker = self.broker.clone();
         let rt_handle = self.rt_handle.clone();
         let transport_factory = self.transport_factory.clone();
+        let tool_injector = self.tool_injector.clone();
 
         thread::spawn(move || {
-            tracing::info!(thread_id = %thread_id, title = %title, "agent worker spawned");
+            // Attach a `thread_id`-scoped span so every tracing event
+            // emitted from the worker (including kernel-side events like
+            // `ApprovalReRequested`, `PostCrashReconfirmDecision`, and
+            // `TurnAbortedUserCanceled` — plan Task 3 Step 7) inherits
+            // the thread_id as an attribute. The kernel is
+            // surface-neutral and does not know its thread id; the span
+            // is where the correlation lives.
+            let span = tracing::info_span!("agent_worker", thread_id = %thread_id);
+            let _enter = span.enter();
+            tracing::info!(title = %title, "agent worker spawned");
             agent_worker(
                 thread_id,
                 title,
@@ -222,6 +285,7 @@ impl AgentPool {
                 broker,
                 rt_handle,
                 transport_factory,
+                tool_injector,
             );
         });
     }
@@ -243,6 +307,7 @@ fn agent_worker(
     broker: ox_broker::BrokerStore,
     rt_handle: tokio::runtime::Handle,
     transport_factory: Option<crate::test_support::TransportFactory>,
+    tool_injector: Option<crate::test_support::ToolInjector>,
 ) {
     // Build ToolStore — primary tool execution backend
     let executor = std::env::current_exe()
@@ -303,6 +368,15 @@ fn agent_worker(
             }
         }),
     });
+
+    // Test-only: inject native tools supplied by the crash harness
+    // BEFORE the tool schemas get written to the adapter below.
+    // Production workers pass `None` here.
+    if let Some(injector) = &tool_injector {
+        for tool in injector() {
+            tool_store.register_native(tool);
+        }
+    }
 
     let policy = if no_policy {
         crate::policy::PolicyGuard::permissive()
@@ -401,6 +475,53 @@ fn agent_worker(
         "agent worker ready"
     );
 
+    // ---- Resume-signal check ---------------------------------------------
+    //
+    // The `tools/schemas` write above is the first adapter hit, which
+    // triggers lazy-mount inside `ThreadRegistry::ensure_mounted`. If the
+    // mount classifier detected `AwaitingApproval` or `AwaitingToolResult`,
+    // the `ShellConfigStore` at `shell/resume_needed` now holds `true`. We
+    // drive a single `run_turn` invocation so the kernel's resume prologue
+    // (see `ox-kernel::run::inspect_log_for_resume`) can re-request
+    // approval with `post_crash_reconfirm: true` before any user input.
+    //
+    // The flag is cleared *before* `run_turn` is invoked (one-shot
+    // semantics). A crash between clear and run is safe: the next mount's
+    // classifier re-sets it. A crash *during* run is also safe: the flag
+    // is already cleared, and the ledger tail (with the Assistant
+    // tool_use and/or the mount's ToolAborted marker) still produces a
+    // valid resume shape that the next mount will re-detect and re-set.
+    let resume_needed = adapter
+        .read_typed::<bool>(&path!("shell/resume_needed"))
+        .ok()
+        .flatten()
+        .unwrap_or(false);
+    if resume_needed {
+        // Clear first, then run. `ShellConfigStore` accepts `Value::Bool`
+        // writes and the signal toggles the worker's behavior — the flag
+        // is allowed to race with the run, but not with another mount.
+        adapter
+            .write_typed(&path!("shell/resume_needed"), &false)
+            .ok();
+        tracing::info!(
+            thread_id = %thread_id,
+            "resume signal observed — driving one run_turn for post-crash re-approval"
+        );
+        let (ret_adapter, ret_gated, _result) = run_one_turn(
+            &module,
+            adapter,
+            gated_store,
+            &thread_id,
+            &title,
+            &inbox_root,
+            &scoped_client,
+            &broker_client,
+            &rt_handle,
+        );
+        adapter = ret_adapter;
+        gated_store = ret_gated;
+    }
+
     while let Ok(input) = prompt_rx.recv() {
         tracing::debug!(thread_id = %thread_id, input_len = input.len(), "prompt received");
 
@@ -426,149 +547,194 @@ fn agent_worker(
                 .ok();
         }
 
-        // Snapshot session tokens before the run for per-run delta and streaming cost.
-        let pre_run_session: ox_types::TokenUsage = adapter
-            .read_typed(&path!("history/turn/session_tokens"))
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        adapter
-            .write_typed(&path!("history/turn/run_start"), &pre_run_session)
-            .ok();
-
-        let effects = CliEffects {
-            thread_id: thread_id.clone(),
+        let (ret_adapter, ret_gated, _result) = run_one_turn(
+            &module,
+            adapter,
             gated_store,
-            scoped_client: scoped_client.clone(),
-            rt_handle: rt_handle.clone(),
-            stats: PolicyStats::default(),
-        };
-
-        let host_store = HostStore::new(adapter, effects);
-        tracing::debug!(thread_id = %thread_id, "running wasm module");
-        let (returned_store, result) = module.run(host_store);
-
-        adapter = returned_store.backend;
-        gated_store = returned_store.effects.gated_store;
-
-        match &result {
-            Ok(()) => tracing::debug!(thread_id = %thread_id, "agent run complete"),
-            Err(e) => tracing::error!(thread_id = %thread_id, error = %e, "agent run failed"),
-        }
-
-        if let Err(e) = &result {
-            // Write error to history before commit
-            let msg = serde_json::json!({"role": "assistant", "content": [{"type": "text", "text": format!("error: {e}")}]});
-            adapter.write_typed(&path!("history/append"), &msg).ok();
-        }
-
-        // Read model for per-model tracking (may differ from worker-init if changed mid-session).
-        let run_model: String = adapter
-            .read_typed(&path!("gate/defaults/model"))
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-
-        // Compute per-run token usage and write to turn state.
-        let post_run_session: ox_types::TokenUsage = adapter
-            .read_typed(&path!("history/turn/session_tokens"))
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        let last_run = ox_types::TokenUsage {
-            input_tokens: post_run_session
-                .input_tokens
-                .saturating_sub(pre_run_session.input_tokens),
-            output_tokens: post_run_session
-                .output_tokens
-                .saturating_sub(pre_run_session.output_tokens),
-            cache_creation_input_tokens: post_run_session
-                .cache_creation_input_tokens
-                .saturating_sub(pre_run_session.cache_creation_input_tokens),
-            cache_read_input_tokens: post_run_session
-                .cache_read_input_tokens
-                .saturating_sub(pre_run_session.cache_read_input_tokens),
-        };
-        adapter
-            .write_typed(&path!("history/turn/last_run"), &last_run)
-            .ok();
-
-        // Accumulate per-model usage for the dialog breakdown.
-        if last_run.input_tokens > 0 || last_run.output_tokens > 0 {
-            let per_model_entry = serde_json::json!({
-                "model": run_model,
-                "usage": last_run,
-            });
-            let val = structfs_serde_store::json_to_value(per_model_entry);
-            adapter
-                .write(
-                    &path!("history/turn/per_model_add"),
-                    structfs_core_store::Record::parsed(val),
-                )
-                .ok();
-        }
-
-        // Clear all ephemeral turn state (streaming text, thinking, tool status).
-        // The kernel already wrote the assistant message to log/append.
-        adapter.write_typed(&path!("history/turn/clear"), &()).ok();
-
-        // Persist conversation state for restart recovery. This only writes
-        // `context.json`; per-append durability (via LedgerWriter on the
-        // SharedLog) handles the ledger, and the CommitDrain task propagates
-        // inbox index freshness.
-        if let Err(e) = save_config_snapshot(&mut adapter, &inbox_root, &thread_id, &title) {
-            tracing::warn!(
-                thread_id = %thread_id,
-                error = %e,
-                "save_config_snapshot (post-turn) failed"
-            );
-        }
-
-        // Index conversation content for full-text search
-        if let Ok(tid_comp) = ox_kernel::PathComponent::try_new(&thread_id) {
-            rt_handle
-                .block_on(broker_client.write(
-                    &ox_path::oxpath!("inbox", "index", tid_comp),
-                    Record::parsed(Value::Null),
-                ))
-                .ok();
-        }
-
-        // Write inbox metadata updates through broker
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        {
-            let new_state = if result.is_ok() {
-                ox_types::ThreadState::WaitingForInput
-            } else {
-                ox_types::ThreadState::Errored
-            };
-            let tid_comp = match ox_kernel::PathComponent::try_new(&thread_id) {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!(error = %e, "invalid thread id for state update path");
-                    continue;
-                }
-            };
-            let update = ox_types::UpdateThread {
-                id: None,
-                thread_state: Some(new_state),
-                inbox_state: None,
-                updated_at: Some(now),
-            };
-            rt_handle
-                .block_on(
-                    broker_client
-                        .write_typed(&ox_path::oxpath!("inbox", "threads", tid_comp), &update),
-                )
-                .ok();
-        }
+            &thread_id,
+            &title,
+            &inbox_root,
+            &scoped_client,
+            &broker_client,
+            &rt_handle,
+        );
+        adapter = ret_adapter;
+        gated_store = ret_gated;
     }
 
     // Worker exit — ThreadRegistry retains thread state in memory until process exit.
     // No explicit unmount needed.
+}
+
+/// Drive one `module.run(host_store)` invocation plus its per-run
+/// bookkeeping (token accounting, config snapshot, inbox state).
+///
+/// Takes the `adapter` and `gated_store` by ownership so they can be
+/// moved into `CliEffects` + `HostStore`, and returns them back so the
+/// caller can keep using them for subsequent turns. The third tuple
+/// element is the run result (propagated so callers can log on failure;
+/// most flows ignore it because errors are already surfaced to history
+/// by this helper).
+///
+/// Factored out of `agent_worker` so the post-crash resume turn
+/// (driven from a one-shot `shell/resume_needed` flag before the
+/// prompt loop) goes through the same bookkeeping as a user-initiated
+/// turn — including the `save_config_snapshot` write that captures the
+/// post-resume `context.json`.
+#[allow(clippy::too_many_arguments)]
+fn run_one_turn(
+    module: &AgentModule,
+    mut adapter: ox_broker::SyncClientAdapter,
+    gated_store: ox_tools::policy_store::PolicyStore<
+        ox_tools::ToolStore,
+        crate::policy_check::CliPolicyCheck,
+    >,
+    thread_id: &str,
+    title: &str,
+    inbox_root: &std::path::Path,
+    scoped_client: &ox_broker::ClientHandle,
+    broker_client: &ox_broker::ClientHandle,
+    rt_handle: &tokio::runtime::Handle,
+) -> (
+    ox_broker::SyncClientAdapter,
+    ox_tools::policy_store::PolicyStore<ox_tools::ToolStore, crate::policy_check::CliPolicyCheck>,
+    Result<(), String>,
+) {
+    // Snapshot session tokens before the run for per-run delta and streaming cost.
+    let pre_run_session: ox_types::TokenUsage = adapter
+        .read_typed(&path!("history/turn/session_tokens"))
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    adapter
+        .write_typed(&path!("history/turn/run_start"), &pre_run_session)
+        .ok();
+
+    let effects = CliEffects {
+        thread_id: thread_id.to_string(),
+        gated_store,
+        scoped_client: scoped_client.clone(),
+        rt_handle: rt_handle.clone(),
+        stats: PolicyStats::default(),
+    };
+
+    let host_store = HostStore::new(adapter, effects);
+    tracing::debug!(thread_id = %thread_id, "running wasm module");
+    let (returned_store, result) = module.run(host_store);
+
+    let mut adapter = returned_store.backend;
+    let gated_store = returned_store.effects.gated_store;
+
+    match &result {
+        Ok(()) => tracing::debug!(thread_id = %thread_id, "agent run complete"),
+        Err(e) => tracing::error!(thread_id = %thread_id, error = %e, "agent run failed"),
+    }
+
+    if let Err(e) = &result {
+        // Write error to history before commit
+        let msg = serde_json::json!({"role": "assistant", "content": [{"type": "text", "text": format!("error: {e}")}]});
+        adapter.write_typed(&path!("history/append"), &msg).ok();
+    }
+
+    // Read model for per-model tracking (may differ from worker-init if changed mid-session).
+    let run_model: String = adapter
+        .read_typed(&path!("gate/defaults/model"))
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+
+    // Compute per-run token usage and write to turn state.
+    let post_run_session: ox_types::TokenUsage = adapter
+        .read_typed(&path!("history/turn/session_tokens"))
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let last_run = ox_types::TokenUsage {
+        input_tokens: post_run_session
+            .input_tokens
+            .saturating_sub(pre_run_session.input_tokens),
+        output_tokens: post_run_session
+            .output_tokens
+            .saturating_sub(pre_run_session.output_tokens),
+        cache_creation_input_tokens: post_run_session
+            .cache_creation_input_tokens
+            .saturating_sub(pre_run_session.cache_creation_input_tokens),
+        cache_read_input_tokens: post_run_session
+            .cache_read_input_tokens
+            .saturating_sub(pre_run_session.cache_read_input_tokens),
+    };
+    adapter
+        .write_typed(&path!("history/turn/last_run"), &last_run)
+        .ok();
+
+    // Accumulate per-model usage for the dialog breakdown.
+    if last_run.input_tokens > 0 || last_run.output_tokens > 0 {
+        let per_model_entry = serde_json::json!({
+            "model": run_model,
+            "usage": last_run,
+        });
+        let val = structfs_serde_store::json_to_value(per_model_entry);
+        adapter
+            .write(
+                &path!("history/turn/per_model_add"),
+                structfs_core_store::Record::parsed(val),
+            )
+            .ok();
+    }
+
+    // Clear all ephemeral turn state (streaming text, thinking, tool status).
+    // The kernel already wrote the assistant message to log/append.
+    adapter.write_typed(&path!("history/turn/clear"), &()).ok();
+
+    // Persist conversation state for restart recovery. This only writes
+    // `context.json`; per-append durability (via LedgerWriter on the
+    // SharedLog) handles the ledger, and the CommitDrain task propagates
+    // inbox index freshness.
+    if let Err(e) = save_config_snapshot(&mut adapter, inbox_root, thread_id, title) {
+        tracing::warn!(
+            thread_id = %thread_id,
+            error = %e,
+            "save_config_snapshot (post-turn) failed"
+        );
+    }
+
+    // Index conversation content for full-text search
+    if let Ok(tid_comp) = ox_kernel::PathComponent::try_new(thread_id) {
+        rt_handle
+            .block_on(broker_client.write(
+                &ox_path::oxpath!("inbox", "index", tid_comp),
+                Record::parsed(Value::Null),
+            ))
+            .ok();
+    }
+
+    // Write inbox metadata updates through broker
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    if let Ok(tid_comp) = ox_kernel::PathComponent::try_new(thread_id) {
+        let new_state = if result.is_ok() {
+            ox_types::ThreadState::WaitingForInput
+        } else {
+            ox_types::ThreadState::Errored
+        };
+        let update = ox_types::UpdateThread {
+            id: None,
+            thread_state: Some(new_state),
+            inbox_state: None,
+            updated_at: Some(now),
+        };
+        rt_handle
+            .block_on(
+                broker_client.write_typed(&ox_path::oxpath!("inbox", "threads", tid_comp), &update),
+            )
+            .ok();
+    } else {
+        tracing::warn!("invalid thread id for state update path");
+    }
+
+    (adapter, gated_store, result)
 }
 
 /// Narrow CLI-side wrapper over [`ox_inbox::snapshot::save_config_snapshot`].
