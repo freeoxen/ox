@@ -21,82 +21,13 @@ mod crash_harness;
 
 use std::time::Duration;
 
-use crash_harness::{HarnessBuilder, append_log_entry, create_thread, init_tracing};
-use ox_broker::ClientHandle;
+use crash_harness::{
+    HarnessBuilder, append_log_entry, create_thread, init_tracing, respond_to_approval,
+    wait_for_log_entry, wait_for_pending_approval,
+};
 use ox_cli::test_support::FakeTransport;
 use ox_kernel::ContentBlock;
 use ox_kernel::log::LogEntry;
-use ox_types::ApprovalRequest;
-
-/// Poll the broker for a pending approval request on `thread_id`, yielding
-/// control to tokio between attempts. Bounded by `timeout`. Returns the
-/// pending request as soon as it appears.
-///
-/// No wall-clock `sleep`: we `yield_now()` so the worker thread's
-/// blocking `block_on` gets progress ticks from the runtime.
-async fn wait_for_pending_approval(
-    client: &ClientHandle,
-    thread_id: &str,
-    timeout: Duration,
-) -> ApprovalRequest {
-    let tid = ox_kernel::PathComponent::try_new(thread_id).expect("valid thread id");
-    let pending_path = ox_path::oxpath!("threads", tid, "approval", "pending");
-    tokio::time::timeout(timeout, async {
-        loop {
-            if let Ok(Some(record)) = client.read(&pending_path).await {
-                if let Some(value) = record.as_value() {
-                    // Null means "no pending" — keep polling.
-                    if !matches!(value, structfs_core_store::Value::Null) {
-                        let json = structfs_serde_store::value_to_json(value.clone());
-                        if let Ok(req) = serde_json::from_value::<ApprovalRequest>(json) {
-                            return req;
-                        }
-                    }
-                }
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("approval did not appear within timeout")
-}
-
-/// Poll the broker for a tail log-entry matching `predicate`. Returns
-/// when `predicate` returns `true` for *any* entry in the snapshot. Used
-/// to detect turn-end (the kernel writes `TurnEnd` after the last
-/// completion).
-async fn wait_for_log_entry<F>(
-    client: &ClientHandle,
-    thread_id: &str,
-    timeout: Duration,
-    predicate: F,
-) where
-    F: Fn(&LogEntry) -> bool,
-{
-    tokio::time::timeout(timeout, async {
-        loop {
-            let entries = crash_harness::read_shared_log(client, thread_id).await;
-            if entries.iter().any(&predicate) {
-                return;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("expected log entry did not appear within timeout");
-}
-
-/// Write an `approval/response` through the broker, simulating a user
-/// click. Mirrors the path/payload shape `ApprovalStore` expects.
-async fn respond_to_approval(client: &ClientHandle, thread_id: &str, decision: ox_types::Decision) {
-    let tid = ox_kernel::PathComponent::try_new(thread_id).expect("valid thread id");
-    let resp_path = ox_path::oxpath!("threads", tid, "approval", "response");
-    let response = ox_types::ApprovalResponse { decision };
-    client
-        .write_typed(&resp_path, &response)
-        .await
-        .expect("approval/response write");
-}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn awaiting_approval_resume_completes_turn_without_second_llm_call() {

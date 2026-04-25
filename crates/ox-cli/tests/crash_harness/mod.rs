@@ -390,7 +390,11 @@ pub fn assert_shared_log_matches_pre_kill(actual: &[LogEntry], pre_kill: &[LogEn
 }
 
 pub fn assert_no_dangling_turn_start(entries: &[LogEntry]) {
-    // A dangling TurnStart has no matching TurnEnd later.
+    // A dangling TurnStart has no matching TurnEnd or TurnAborted later.
+    // A `TurnAborted` written by the mount lifecycle counts as a closer:
+    // it terminates the open turn just like a clean `TurnEnd` would, and
+    // the classifier treats it the same way (returns `Idle` after
+    // walking past one).
     let mut open: i32 = 0;
     let mut last_open: Option<usize> = None;
     for (i, e) in entries.iter().enumerate() {
@@ -399,7 +403,7 @@ pub fn assert_no_dangling_turn_start(entries: &[LogEntry]) {
                 open += 1;
                 last_open = Some(i);
             }
-            LogEntry::TurnEnd { .. } => {
+            LogEntry::TurnEnd { .. } | LogEntry::TurnAborted { .. } => {
                 if open > 0 {
                     open -= 1;
                 }
@@ -430,15 +434,88 @@ fn entries_as_json(entries: &[LogEntry]) -> Vec<serde_json::Value> {
 }
 
 // ---------------------------------------------------------------------------
-// Waiting helpers — intentionally absent.
+// Waiting helpers — yield-based polling (no wall-clock sleeps).
 //
 // A previous draft had a `wait_for_turn_settled` that polled the broker with
 // `tokio::time::sleep`. Wall-clock polling is the wrong primitive for tests:
 // flaky, slow, and it encodes a bug (the turn may finish before the first
-// poll). When Task 3+ actually needs to wait on a turn, the right shape is a
-// broker subscription or a `oneshot` signaled by the worker on turn
-// completion. Build that when it's needed — don't ship a sleep-loop today.
+// poll). The helpers below use `tokio::task::yield_now()` instead, bounded by
+// `tokio::time::timeout` — the worker thread's blocking `block_on` gets
+// progress ticks from the runtime without us pinning to any clock.
+//
+// These were duplicated across `crash_harness_approval_resume.rs`,
+// `crash_harness_post_crash_reconfirm.rs`, and `crash_harness_cross_phase.rs`
+// before being promoted here in Task 5 — the third copy is the line.
 // ---------------------------------------------------------------------------
+
+/// Poll the broker for a pending approval request on `thread_id`, yielding
+/// to tokio between attempts. Bounded by `timeout`; returns the pending
+/// request as soon as it appears.
+pub async fn wait_for_pending_approval(
+    client: &ClientHandle,
+    thread_id: &str,
+    timeout: std::time::Duration,
+) -> ox_types::ApprovalRequest {
+    let tid = ox_kernel::PathComponent::try_new(thread_id).expect("valid thread id");
+    let pending_path = ox_path::oxpath!("threads", tid, "approval", "pending");
+    tokio::time::timeout(timeout, async {
+        loop {
+            if let Ok(Some(record)) = client.read(&pending_path).await {
+                if let Some(value) = record.as_value() {
+                    // Null means "no pending" — keep polling.
+                    if !matches!(value, structfs_core_store::Value::Null) {
+                        let json = structfs_serde_store::value_to_json(value.clone());
+                        if let Ok(req) = serde_json::from_value::<ox_types::ApprovalRequest>(json) {
+                            return req;
+                        }
+                    }
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("approval did not appear within timeout")
+}
+
+/// Poll the broker until any entry in the thread's log matches `predicate`.
+/// Returns when the predicate is satisfied; panics on `timeout`.
+pub async fn wait_for_log_entry<F>(
+    client: &ClientHandle,
+    thread_id: &str,
+    timeout: std::time::Duration,
+    predicate: F,
+) where
+    F: Fn(&LogEntry) -> bool,
+{
+    tokio::time::timeout(timeout, async {
+        loop {
+            let entries = read_shared_log(client, thread_id).await;
+            if entries.iter().any(&predicate) {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("expected log entry did not appear within timeout");
+}
+
+/// Write an `approval/response` through the broker, simulating a user
+/// click. Mirrors the path/payload shape `ApprovalStore` expects.
+pub async fn respond_to_approval(
+    client: &ClientHandle,
+    thread_id: &str,
+    decision: ox_types::Decision,
+) {
+    let tid = ox_kernel::PathComponent::try_new(thread_id).expect("valid thread id");
+    let resp_path = ox_path::oxpath!("threads", tid, "approval", "response");
+    let response = ox_types::ApprovalResponse { decision };
+    client
+        .write_typed(&resp_path, &response)
+        .await
+        .expect("approval/response write");
+}
 
 // ---------------------------------------------------------------------------
 // LedgerWriter freeze-point hook (Step 5 — scaffolded, inert today).

@@ -25,7 +25,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use crash_harness::{append_log_entry, create_thread, init_tracing};
+use crash_harness::{
+    append_log_entry, create_thread, init_tracing, respond_to_approval, wait_for_log_entry,
+    wait_for_pending_approval,
+};
 use ox_broker::ClientHandle;
 use ox_cli::app::App;
 use ox_cli::broker_setup::{BrokerHandle, setup as broker_setup};
@@ -34,7 +37,6 @@ use ox_inbox::InboxStore;
 use ox_kernel::ContentBlock;
 use ox_kernel::log::LogEntry;
 use ox_tools::native::FnTool;
-use ox_types::ApprovalRequest;
 
 // ---------------------------------------------------------------------------
 // Local harness — a lightweight variant with tool-injector support.
@@ -178,65 +180,9 @@ fn counter_tool_injector(counter: Arc<AtomicU64>) -> ToolInjector {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers mirrored from crash_harness_approval_resume.rs
+// Helpers — `wait_for_pending_approval`, `wait_for_log_entry`, and
+// `respond_to_approval` were promoted into `crash_harness::mod` in Task 5.
 // ---------------------------------------------------------------------------
-
-async fn wait_for_pending_approval(
-    client: &ClientHandle,
-    thread_id: &str,
-    timeout: Duration,
-) -> ApprovalRequest {
-    let tid = ox_kernel::PathComponent::try_new(thread_id).expect("valid thread id");
-    let pending_path = ox_path::oxpath!("threads", tid, "approval", "pending");
-    tokio::time::timeout(timeout, async {
-        loop {
-            if let Ok(Some(record)) = client.read(&pending_path).await {
-                if let Some(value) = record.as_value() {
-                    if !matches!(value, structfs_core_store::Value::Null) {
-                        let json = structfs_serde_store::value_to_json(value.clone());
-                        if let Ok(req) = serde_json::from_value::<ApprovalRequest>(json) {
-                            return req;
-                        }
-                    }
-                }
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("approval did not appear within timeout")
-}
-
-async fn wait_for_log_entry<F>(
-    client: &ClientHandle,
-    thread_id: &str,
-    timeout: Duration,
-    predicate: F,
-) where
-    F: Fn(&LogEntry) -> bool,
-{
-    tokio::time::timeout(timeout, async {
-        loop {
-            let entries = crash_harness::read_shared_log(client, thread_id).await;
-            if entries.iter().any(&predicate) {
-                return;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("expected log entry did not appear within timeout");
-}
-
-async fn respond_to_approval(client: &ClientHandle, thread_id: &str, decision: ox_types::Decision) {
-    let tid = ox_kernel::PathComponent::try_new(thread_id).expect("valid thread id");
-    let resp_path = ox_path::oxpath!("threads", tid, "approval", "response");
-    let response = ox_types::ApprovalResponse { decision };
-    client
-        .write_typed(&resp_path, &response)
-        .await
-        .expect("approval/response write");
-}
 
 /// Hand-craft the pre-crash log tail for an `AwaitingToolResult` scenario:
 /// `TurnStart → User → Assistant(tool_use) → ToolCall → ApprovalResolved(allow_once)`.

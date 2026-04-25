@@ -602,22 +602,28 @@ Budget: ~5–10 extra appends/sec during streaming. With group-commit `File::syn
 
 Individual-phase tests cover one mechanism at a time. This task covers the interactions.
 
+### Scope (reframed during implementation)
+
+Original plan listed S1–S6 as PR-CI and S7 as nightly. During Task 5 execution it became clear that S4 and S5 are not cross-phase scenarios — they're Phase 1 ledger-layer failure-injection tests. Both depend on infrastructure (`LedgerWriter` freeze hook, disk-full injection) that is **Task 1 Step 3's** scope (currently deferred alongside the rest of Task 1 hardening). S4 and S5 have been **moved to the Task 1 hardening commit**; they live there as naturally as the torn-tail repair and `LedgerDegraded` state-machine they exercise. "Cross-phase" now means what it claims: a scenario that cannot be written until multiple phases have landed together.
+
+S2 ("crash with approval pending mid-stream") is a non-reachable shape — approval gates tool dispatch, which happens after stream finalization. It was always described as a property-test assertion ("classifier handles this shape defensively, never panics"), not a standalone scenario. Task 2 Step 4 already runs a property test exercising classifier non-panic over truncated/randomized ledgers; S2's defensive-non-panic property is covered there. No separate test needed; no code change needed.
+
 ### Scenarios
 
 Each scenario is a single crash-harness test asserting the exact relaunch state.
 
-- [ ] **S1. Crash mid-stream with no approval pending.** Tests Phase 1 + Phase 4 interaction. Drop the `App` (in-process soft crash) while `AssistantProgress` is being appended, optionally with the `LedgerWriter` parked at `after_write_before_sync`. Remount: partial text visible, `TurnAborted(CrashDuringStream)` marker follows.
-- [ ] **S2. Crash with approval pending mid-stream.** Cannot actually happen (approval gates tool dispatch, which happens after stream finalization) — but assert the classifier handles this shape defensively and never panics. Property test covers this.
-- [ ] **S3. Crash between tool result write and next LLM call.** `ToolResult` durably committed, kernel about to call model again, soft-crash. Remount: classification is `Idle` (or similar — the turn is mid-agentic-loop but has no outstanding tool). Kernel on spawn continues the loop: re-prompts model with full history. No user-visible oddity.
-- [ ] **S4. Crash during torn-tail repair.** Use a `LedgerWriter` freeze hook placed inside the repair path so the test can drop the `App` mid-truncate in-process. Remount: second repair attempt succeeds, no data loss beyond the original torn tail.
-- [ ] **S5. Crash while `LedgerDegraded` state is being written.** Simulate a disk-full error via a `LedgerWriter` test hook (`ErrorKind::StorageFull` on the Nth call, same mechanism as `OX_TEST_FREEZE_AT`); drop the `App` before the degraded state is persisted. Remount: torn-tail repair triggers, then the first append attempt re-enters `LedgerDegraded`. User sees the banner either way. We do not use real disk-full simulation (tmpfs quota, `libfiu`) because test-hook injection is deterministic and portable across developer OSes.
-- [ ] **S6. Back-to-back crashes.** Three successive in-process drop+remount cycles during the same turn at different script points. Final remount still produces a valid, classifiable ledger.
-- [ ] **S7. Long-running random-drop soak.** Nightly CI job (not in-PR). Runs for a wall-clock budget of **30 minutes** against a `proptest`-generated space of turn shapes and in-process crash points (combinations of `App` drop, `OX_TEST_FREEZE_AT`, and injected write/sync failures). Each iteration: pick a turn shape, run it under the harness, crash at a uniformly-random script point, remount, classify, assert no panic / ledger valid / every committed entry present. Results posted to a shared dashboard; a failed iteration saves a minimized reproduction via `proptest`'s shrinking into `tests/fixtures/crash_repros/` and opens an issue automatically. This is not "fuzz" in the `cargo-fuzz` sense (no sanitizer-driven coverage guidance); it's a large-sample deterministic-under-seed soak. Real-signal (`SIGKILL`) soak coverage is a separate plan.
+- [x] **S1. Crash mid-stream with no approval pending.** Tests Phase 1 + Phase 4 interaction. Drop the `App` (in-process soft crash) while `AssistantProgress` has been appended. Remount: partial text projected into `turn/streaming` via `HistoryView::reconstruct_turn_streaming`, `TurnAborted(CrashDuringStream)` marker follows. (The plan's original note about pairing with `LedgerWriter freeze hook at after_write_before_sync` is folded into the Task 1 hardening commit — the hook isn't wired yet.)
+- [ ] ~~**S2.**~~ **Covered by Task 2 Step 4 property test** — see "Scope" above.
+- [x] **S3. Crash between tool result write and next LLM call.** `ToolResult` durably committed, kernel about to call model again, soft-crash. Remount: classifier returns `AwaitingToolResult` (the Phase-2 classifier's `ToolCall` arm short-circuits without forward-scanning for matching `ToolResult` — defensible: re-confirms the tool's effect after a crash); mount lifecycle appends `ToolAborted(CrashDuringDispatch)`. Test asserts the actual classifier behavior (see code comment in `crash_harness_cross_phase.rs`). User-prompt-continuation path is covered by existing kernel tests.
+- [ ] ~~**S4.**~~ **Moved to Task 1 hardening** (needs freeze-hook + mid-truncate injection).
+- [ ] ~~**S5.**~~ **Moved to Task 1 hardening** (needs disk-full injection via `LedgerWriter` test hook).
+- [x] **S6. Back-to-back crashes.** Three successive in-process drop+remount cycles during the same turn at different script points. Final remount still produces a valid, classifiable ledger.
+- [ ] **S7. Long-running random-drop soak.** Nightly CI job (not in-PR). Runs for a wall-clock budget of **30 minutes** against a `proptest`-generated space of turn shapes and in-process crash points (combinations of `App` drop, `OX_TEST_FREEZE_AT`, and injected write/sync failures). Each iteration: pick a turn shape, run it under the harness, crash at a uniformly-random script point, remount, classify, assert no panic / ledger valid / every committed entry present. Results posted to a shared dashboard; a failed iteration saves a minimized reproduction via `proptest`'s shrinking into `tests/fixtures/crash_repros/` and opens an issue automatically. This is not "fuzz" in the `cargo-fuzz` sense (no sanitizer-driven coverage guidance); it's a large-sample deterministic-under-seed soak. Real-signal (`SIGKILL`) soak coverage is a separate plan. **Deferred** — depends on the freeze-hook + failure-injection infrastructure that's Task 1 hardening scope.
 
 ### Success criteria
 
-- S1–S6 pass deterministically in PR CI.
-- S7 (nightly) produces zero panics and zero unrecoverable states over its wall-clock budget for seven consecutive nights before Phase 4 is considered stable.
+- S1, S3, S6 pass deterministically in PR CI.
+- S4, S5 (folded into Task 1 hardening) + S7 (nightly, deferred) tracked separately.
 
 ### Commit
 
