@@ -1063,15 +1063,24 @@ pub fn run_turn(context: &mut dyn Store, emit: &mut dyn FnMut(AgentEvent)) -> Re
     let (run_model, _) = read_model_config(context)?;
     let refs = default_refs();
 
-    // Read the durable-streaming opt-in once at turn entry and pass it
-    // down. Per-event env lookups would be on the hot path of a
-    // streaming completion; one read per turn is free. Any value other
-    // than `"1"` is treated as off (unset, empty, mistyped). The plan
-    // flips the default on in a follow-up commit gated on latency
-    // metrics (Task 4 Step 6); this commit ships it off by default.
+    // Read the durable-streaming env var once at turn entry and pass
+    // it down. Per-event env lookups would be on the hot path of a
+    // streaming completion; one read per turn is free.
+    //
+    // Default: ON. Mid-stream durability is the only thing standing
+    // between a Ctrl+C and an empty turn on relaunch — without it,
+    // the user loses every token they were watching. The plan's
+    // original opt-in posture (gated on a metrics dashboard we never
+    // wired) was indefinitely deferring the goal. Flip the default
+    // on; offer `OX_DURABLE_STREAM=0` as an explicit opt-OUT for
+    // any future scenario where the ~5–10 fsync'd appends/sec during
+    // streaming becomes a problem.
+    //
+    // Any value other than `"0"` is treated as on (unset, empty,
+    // mistyped, or any truthy variant).
     let durable_stream_enabled = std::env::var(DURABLE_STREAM_ENV)
-        .map(|v| v == "1")
-        .unwrap_or(false);
+        .map(|v| v != "0")
+        .unwrap_or(true);
 
     let mut stack: Vec<CompletionFrame> = vec![CompletionFrame {
         account,

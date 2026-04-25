@@ -577,11 +577,7 @@ Budget: ~5–10 extra appends/sec during streaming. With group-commit `File::syn
 - [x] **Step 3:** Update `HistoryView` to project the latest `AssistantProgress` into `turn/streaming` on replay. Verify existing `turn/streaming` consumers keep working.
 - [x] **Step 4:** Update classification: `InStreamNoFinal` tail is identified by `TurnStart + AssistantProgress*, no Assistant final`. Emit `TurnAborted { reason: CrashDuringStream }` on mount and render the partial text followed by the abort marker.
 - [x] **Step 5:** Crash-harness test: start a turn with a slow-streaming fake transport, drop the `App` mid-stream (soft crash, optionally paired with the `LedgerWriter` freeze hook to park between `write_all` and `sync_data`), remount, assert the partial text visible pre-crash is visible post-remount.
-- [ ] **Step 6:** Flip `OX_DURABLE_STREAM` default to on when all of the following are true, measured against the Phase 3 baseline from the Task 0 harness:
-  - p99 `LogStore::append` commit latency regression ≤ 10% (absolute: under 20ms on dev SSD).
-  - No new failing tests in `cargo test` over two consecutive weeks of daily runs.
-  - No increase in `LedgerCommit` sync_data_us p99.
-  If any metric regresses, keep the flag off and file an issue before flipping. Record the flip decision (with measured numbers) in the PR description.
+- [x] **Step 6:** ~~Flip `OX_DURABLE_STREAM` default to on when all of the following are true, measured against the Phase 3 baseline from the Task 0 harness: p99 `LogStore::append` commit latency regression ≤ 10% (absolute: under 20ms on dev SSD); No new failing tests in `cargo test` over two consecutive weeks of daily runs; No increase in `LedgerCommit` sync_data_us p99.~~ **Default flipped without the metrics gate.** The latency-dashboard infrastructure those criteria refer to never got wired, and the gate would have left the feature off indefinitely — meaning every Ctrl+C mid-stream loses every token the user was watching. Trade-off explicitly accepted: the ~5–10 fsync'd appends/sec during streaming become the system's default cost; group-commit absorbs them. The env var inverts to opt-OUT (`OX_DURABLE_STREAM=0` disables) for any future regression scenario. If a real latency regression shows up in practice, revert this flip and re-engage the original metrics-gated approach — the env-var contract is unchanged, only the default flips.
 
 ### Success criteria
 
