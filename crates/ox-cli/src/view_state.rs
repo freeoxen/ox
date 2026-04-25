@@ -63,6 +63,12 @@ pub struct ViewState<'a> {
     pub thread_info: Option<crate::types::ThreadInfo>,
     pub history_search: Option<(String, Vec<String>, usize)>, // (query, results, selected)
     pub editor_mode: crate::editor::EditorMode,
+
+    /// Optional ledger-health banner string for the active thread, taken
+    /// from `shell/ledger_health` set by `ThreadNamespace::from_thread_dir`.
+    /// `None` when the ledger mounted clean (`ok`) or the read failed —
+    /// either way the renderer skips the banner.
+    pub ledger_banner: Option<&'static str>,
 }
 
 impl<'a> ViewState<'a> {
@@ -113,6 +119,7 @@ pub async fn fetch_view_state<'a>(
     let mut history_pretty = std::collections::HashSet::new();
     let mut history_full = std::collections::HashSet::new();
     let mut thread_info: Option<crate::types::ThreadInfo> = None;
+    let mut ledger_banner: Option<&'static str> = None;
 
     match &ui.screen {
         ScreenSnapshot::Inbox(snap) => {
@@ -146,17 +153,21 @@ pub async fn fetch_view_state<'a>(
                 }
 
                 // Read approval/pending (typed)
-                let approval_path = ox_path::oxpath!("threads", tid, "approval", "pending");
+                let approval_path = ox_path::oxpath!("threads", tid.clone(), "approval", "pending");
                 if let Ok(Some(ap)) = client.read_typed::<ApprovalRequest>(&approval_path).await {
                     // Only treat as pending if the tool_name is non-empty
                     if !ap.tool_name.is_empty() {
                         approval_pending = Some(ap);
                     }
                 }
+
+                // Read ledger health for banner (Task 1 Step 7).
+                ledger_banner = read_ledger_banner(client, &tid).await;
             }
         }
         ScreenSnapshot::History(snap) => {
             if let Ok(tid) = ox_kernel::PathComponent::try_new(snap.thread_id.as_str()) {
+                ledger_banner = read_ledger_banner(client, &tid).await;
                 let log_path = ox_path::oxpath!("threads", tid.clone(), "log", "entries");
                 if let Ok(Some(record)) = client.read(&log_path).await {
                     if let Some(Value::Array(arr)) = record.as_value() {
@@ -269,7 +280,20 @@ pub async fn fetch_view_state<'a>(
             .as_ref()
             .map(|s| (s.query.clone(), s.results.clone(), s.selected)),
         editor_mode,
+        ledger_banner,
     }
+}
+
+/// Read `threads/{tid}/shell/ledger_health` and translate it to the
+/// banner copy. Set on mount by `ThreadNamespace::from_thread_dir`; used
+/// by both Thread and History views.
+async fn read_ledger_banner(
+    client: &ClientHandle,
+    tid: &ox_kernel::PathComponent,
+) -> Option<&'static str> {
+    let path = ox_path::oxpath!("threads", tid.clone(), "shell", "ledger_health");
+    let wire = client.read_typed::<String>(&path).await.ok().flatten()?;
+    crate::theme::ledger_health_banner(&wire)
 }
 
 /// Read pricing overrides from config/pricing.

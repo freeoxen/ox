@@ -64,6 +64,11 @@ impl HistoryHitMap {
 ///
 /// `selected` and `expanded` come from the UiSnapshot (UiStore owns these).
 /// Everything else comes from `explorer` (event loop owns this).
+///
+/// `ledger_banner` is `Some(text)` when the thread mounted with a
+/// non-`Ok` ledger health. Rendered above the header with the muted
+/// `theme.ledger_banner` style; placement is intentional so the user
+/// sees the warning before scrolling into the entry list.
 pub fn draw_history(
     frame: &mut Frame,
     explorer: &mut HistoryExplorer,
@@ -74,6 +79,7 @@ pub fn draw_history(
     full: &std::collections::HashSet<usize>,
     thinking: bool,
     theme: &Theme,
+    ledger_banner: Option<&str>,
     area: Rect,
 ) -> HistoryHitMap {
     let total = explorer.entry_count();
@@ -87,6 +93,14 @@ pub fn draw_history(
     let mut lines: Vec<Line> = Vec::new();
     let content_scroll = explorer.content_scroll();
     let mut hit_map = HistoryHitMap::new(area, content_scroll);
+
+    if let Some(text) = ledger_banner {
+        lines.push(Line::from(Span::styled(
+            format!(" ! {text}"),
+            theme.ledger_banner,
+        )));
+        lines.push(Line::from(""));
+    }
 
     // Header
     lines.push(Line::from(vec![

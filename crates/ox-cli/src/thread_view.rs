@@ -9,14 +9,28 @@ use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarStat
 ///
 /// Returns the total content height in rendered lines (after wrapping)
 /// so the caller can set scroll_max on UiStore.
+///
+/// `ledger_banner` is `Some(text)` when the thread mounted with a
+/// non-`Ok` ledger health (Missing / RepairFailed / Degraded). Rendered
+/// once at the very top of the transcript with the muted-accent
+/// `theme.ledger_banner` style.
 pub fn draw_thread(
     frame: &mut Frame,
     view: &ThreadView,
     scroll: u16,
     theme: &Theme,
+    ledger_banner: Option<&str>,
     area: Rect,
 ) -> usize {
     let mut lines: Vec<Line> = Vec::new();
+
+    if let Some(text) = ledger_banner {
+        lines.push(Line::from(Span::styled(
+            format!(" ! {text}"),
+            theme.ledger_banner,
+        )));
+        lines.push(Line::from(""));
+    }
 
     for msg in &view.messages {
         match msg {

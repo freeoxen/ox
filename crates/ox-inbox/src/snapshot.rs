@@ -134,12 +134,21 @@ pub(crate) fn count_messages_in_ledger(ledger_path: &Path) -> Result<usize, Stri
 /// Restore namespace state from a thread directory.
 ///
 /// - Reads context.json → writes `{mount}/snapshot/state` for each store
-/// - Reads ledger.jsonl → replays all messages through `history/append`
+/// - Reads ledger.jsonl → replays all messages through `log/append`
+///
+/// Returns the [`LedgerHealth`] observed during replay. The shell uses
+/// this to render a terminal-state banner at the top of the thread view
+/// when the ledger could not be fully restored. `Ok` is the no-banner
+/// case (clean ledger present, or absent on a brand-new thread).
+///
+/// Internal errors (context.json read failure, namespace write failure)
+/// still propagate as `Err(String)` — those are wiring bugs, not user-
+/// visible "your log is damaged" surfaces.
 pub fn restore(
     namespace: &mut dyn structfs_core_store::Store,
     thread_dir: &Path,
     mounts: &[&str],
-) -> Result<(), String> {
+) -> Result<ledger::LedgerHealth, String> {
     // 1. Restore context (non-history stores)
     let ctx = thread_dir::read_context(thread_dir)?.ok_or("no context.json in thread directory")?;
 
@@ -157,21 +166,57 @@ pub fn restore(
         }
     }
 
-    // 2. Replay ledger through log/append
+    // 2. Replay ledger through log/append, with torn-tail repair.
+    //
+    // Three terminal-health outcomes:
+    //   * file absent           → LedgerHealth::Missing (banner)
+    //   * interior corruption /
+    //     truncate failure      → LedgerHealth::RepairFailed (banner)
+    //   * clean or torn-then-
+    //     repaired               → LedgerHealth::Ok (no banner)
+    //
+    // We do not propagate replay-time write errors as RepairFailed —
+    // those are surface-internal (namespace plumbing), not data
+    // damage; bubble them up as Err(String) like before.
     let ledger_path = thread_dir.join("ledger.jsonl");
-    let entries = ledger::read_ledger(&ledger_path)?;
+    let outcome = match ledger::read_ledger_with_repair(&ledger_path) {
+        Ok(outcome) => outcome,
+        Err(ledger::MountError::Missing) => {
+            tracing::warn!(
+                path = %ledger_path.display(),
+                thread_id = %ctx.thread_id,
+                "LedgerMissing"
+            );
+            return Ok(ledger::LedgerHealth::Missing);
+        }
+        Err(ledger::MountError::RepairFailed { reason }) => {
+            tracing::error!(
+                path = %ledger_path.display(),
+                thread_id = %ctx.thread_id,
+                reason,
+                "LedgerRepairFailed"
+            );
+            return Ok(ledger::LedgerHealth::RepairFailed);
+        }
+    };
+
     let log_path = structfs_core_store::Path::parse("log/append").map_err(|e| e.to_string())?;
 
-    for entry in &entries {
+    for entry in &outcome.entries {
         let value = json_to_value(entry.msg.clone());
         namespace
             .write(&log_path, Record::parsed(value))
             .map_err(|e| e.to_string())?;
     }
 
-    tracing::info!(thread_id = %ctx.thread_id, message_count = entries.len(), "thread snapshot restored");
+    tracing::info!(
+        thread_id = %ctx.thread_id,
+        message_count = outcome.entries.len(),
+        repaired_bytes = ?outcome.repaired_bytes,
+        "thread snapshot restored"
+    );
 
-    Ok(())
+    Ok(ledger::LedgerHealth::Ok)
 }
 
 #[cfg(test)]
@@ -351,7 +396,8 @@ mod tests {
         drop(ns);
 
         let mut ns2 = build_namespace();
-        restore(&mut ns2, &thread_dir, &PARTICIPATING_MOUNTS).unwrap();
+        let health = restore(&mut ns2, &thread_dir, &PARTICIPATING_MOUNTS).unwrap();
+        assert_eq!(health, ledger::LedgerHealth::Ok);
 
         // Verify system prompt
         let record = ns2.read(&path!("system")).unwrap().unwrap();
@@ -550,6 +596,140 @@ mod tests {
             | LogEntry::TurnAborted { .. }
             | LogEntry::ToolAborted { .. }
             | LogEntry::AssistantProgress { .. } => false,
+        }
+    }
+
+    #[test]
+    fn restore_reports_missing_when_ledger_absent() {
+        // A thread directory with `context.json` but no `ledger.jsonl` —
+        // the user-visible "log is missing" surface. `restore` returns
+        // `LedgerHealth::Missing`, not an error.
+        let dir = tempfile::tempdir().unwrap();
+        let thread_dir = dir.path().join("t_missing");
+        std::fs::create_dir_all(&thread_dir).unwrap();
+
+        // Write a context.json the normal way, then *do not* create a
+        // ledger.
+        let mut ns_seed = build_namespace();
+        save_config_snapshot(
+            &mut ns_seed,
+            &thread_dir,
+            "t_missing",
+            "missing-ledger thread",
+            &[],
+            1712345678,
+            &PARTICIPATING_MOUNTS,
+        )
+        .unwrap();
+        assert!(thread_dir.join("context.json").exists());
+        assert!(!thread_dir.join("ledger.jsonl").exists());
+
+        let mut ns2 = build_namespace();
+        let health = restore(&mut ns2, &thread_dir, &PARTICIPATING_MOUNTS).unwrap();
+        assert_eq!(health, ledger::LedgerHealth::Missing);
+    }
+
+    #[test]
+    fn restore_reports_repair_failed_on_interior_corruption() {
+        let dir = tempfile::tempdir().unwrap();
+        let thread_dir = dir.path().join("t_corrupt");
+        std::fs::create_dir_all(&thread_dir).unwrap();
+
+        // Seed a context.json so `restore` reaches the ledger phase.
+        let mut ns_seed = build_namespace();
+        save_config_snapshot(
+            &mut ns_seed,
+            &thread_dir,
+            "t_corrupt",
+            "corrupt thread",
+            &[],
+            1712345678,
+            &PARTICIPATING_MOUNTS,
+        )
+        .unwrap();
+
+        // Hand-write a ledger with a corrupt interior line.
+        let path = thread_dir.join("ledger.jsonl");
+        let l1 = serde_json::json!({
+            "seq": 0u64, "hash": "h0", "parent": null,
+            "msg": {"role": "user", "content": "a"},
+        });
+        let l3 = serde_json::json!({
+            "seq": 1u64, "hash": "h1", "parent": "h0",
+            "msg": {"role": "user", "content": "c"},
+        });
+        let raw = format!(
+            "{}\n{}\n{}\n",
+            serde_json::to_string(&l1).unwrap(),
+            "definitely not json",
+            serde_json::to_string(&l3).unwrap(),
+        );
+        std::fs::write(&path, raw).unwrap();
+
+        let mut ns2 = build_namespace();
+        let health = restore(&mut ns2, &thread_dir, &PARTICIPATING_MOUNTS).unwrap();
+        assert_eq!(health, ledger::LedgerHealth::RepairFailed);
+    }
+
+    #[test]
+    fn restore_repairs_torn_tail_and_replays_prior_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let thread_dir = dir.path().join("t_torn");
+        std::fs::create_dir_all(&thread_dir).unwrap();
+        let ledger_path = thread_dir.join("ledger.jsonl");
+
+        // Seed two real entries through a LedgerWriter so the file is
+        // properly hash-chained.
+        let (mut ns, writer) = build_namespace_with_ledger_writer(ledger_path.clone());
+        let m1 = serde_json::json!({"role": "user", "content": "first"});
+        ns.write(&path!("history/append"), Record::parsed(json_to_value(m1)))
+            .unwrap();
+        let m2 = serde_json::json!({"role": "user", "content": "second"});
+        ns.write(&path!("history/append"), Record::parsed(json_to_value(m2)))
+            .unwrap();
+        save_config_snapshot(
+            &mut ns,
+            &thread_dir,
+            "t_torn",
+            "torn-tail thread",
+            &[],
+            1712345678,
+            &PARTICIPATING_MOUNTS,
+        )
+        .unwrap();
+        drop(writer);
+        drop(ns);
+
+        // Append a partial line (no newline) — the natural shape of a
+        // crash between `write_all` and `sync_data`.
+        let pre_len = std::fs::metadata(&ledger_path).unwrap().len();
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&ledger_path)
+                .unwrap();
+            f.write_all(b"{\"seq\":2,\"hash\":\"abc\",\"parent\":\"def\",\"msg\":{\"role\":\"user\",\"content\":\"par")
+                .unwrap();
+        }
+        assert!(std::fs::metadata(&ledger_path).unwrap().len() > pre_len);
+
+        let mut ns2 = build_namespace();
+        let health = restore(&mut ns2, &thread_dir, &PARTICIPATING_MOUNTS).unwrap();
+        assert_eq!(
+            health,
+            ledger::LedgerHealth::Ok,
+            "torn tail repaired in place"
+        );
+
+        // The on-disk file should now match the pre-torn length.
+        assert_eq!(std::fs::metadata(&ledger_path).unwrap().len(), pre_len);
+
+        // History should reflect the two pre-tear messages, not three.
+        let record = ns2.read(&path!("history/count")).unwrap().unwrap();
+        match record.as_value().unwrap() {
+            structfs_core_store::Value::Integer(n) => assert_eq!(*n, 2),
+            other => panic!("expected count 2, got {other:?}"),
         }
     }
 

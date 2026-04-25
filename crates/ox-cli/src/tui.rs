@@ -103,6 +103,7 @@ pub(crate) fn draw(
                 &view,
                 snap.scroll as u16,
                 theme,
+                vs.ledger_banner,
                 content_area,
             ));
         }
@@ -122,6 +123,7 @@ pub(crate) fn draw(
                 &vs.history_full,
                 vs.turn.thinking,
                 theme,
+                vs.ledger_banner,
                 content_area,
             ));
         }

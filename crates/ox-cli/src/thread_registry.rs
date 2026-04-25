@@ -77,6 +77,30 @@ impl Writer for ShellConfigStore {
 }
 
 // ---------------------------------------------------------------------------
+// Ledger health: shell→view wire format
+// ---------------------------------------------------------------------------
+
+/// Stable wire-format strings for [`ox_inbox::ledger::LedgerHealth`]
+/// as published on `shell/ledger_health`.
+///
+/// The view layer reads these by string comparison so it does not have
+/// to depend on `ox_inbox` types directly. They are also the keys the
+/// banner-copy lookup in `theme::ledger_health_banner` matches on.
+pub const LEDGER_HEALTH_OK: &str = "ok";
+pub const LEDGER_HEALTH_MISSING: &str = "missing";
+pub const LEDGER_HEALTH_REPAIR_FAILED: &str = "repair_failed";
+pub const LEDGER_HEALTH_DEGRADED: &str = "degraded";
+
+fn ledger_health_wire_str(h: ox_inbox::ledger::LedgerHealth) -> &'static str {
+    match h {
+        ox_inbox::ledger::LedgerHealth::Ok => LEDGER_HEALTH_OK,
+        ox_inbox::ledger::LedgerHealth::Missing => LEDGER_HEALTH_MISSING,
+        ox_inbox::ledger::LedgerHealth::RepairFailed => LEDGER_HEALTH_REPAIR_FAILED,
+        ox_inbox::ledger::LedgerHealth::Degraded => LEDGER_HEALTH_DEGRADED,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ThreadNamespace — per-thread store collection
 // ---------------------------------------------------------------------------
 
@@ -208,14 +232,21 @@ impl ThreadNamespace {
         // also replays the ledger if `context.json` is present; we invoke it
         // here for that combined path, and fall through to a ledger-only
         // replay below when `context.json` is missing.
+        //
+        // `snapshot::restore` returns a `LedgerHealth` describing the
+        // outcome of the replay so the shell can render the matching
+        // mount-time banner (Task 1 Step 7). Default is `Ok` (no banner)
+        // until something proves otherwise.
+        let mut ledger_health = ox_inbox::ledger::LedgerHealth::Ok;
         if has_context {
             match ox_inbox::snapshot::restore(
                 &mut ns,
                 thread_dir,
                 &ox_inbox::snapshot::PARTICIPATING_MOUNTS,
             ) {
-                Ok(()) => {
+                Ok(health) => {
                     loaded = true;
+                    ledger_health = health;
                 }
                 Err(e) => {
                     tracing::error!(
@@ -240,9 +271,11 @@ impl ThreadNamespace {
             // With per-append durability (Task 1a) a thread can have a ledger
             // long before any `save_config_snapshot` boundary writes
             // `context.json`. Replay directly from the ledger in that case.
-            match ox_inbox::ledger::read_ledger(&ledger_path) {
-                Ok(entries) => {
-                    for entry in &entries {
+            // Use the repair-aware reader so a torn tail (the natural
+            // crash-between-write-and-fsync shape) is healed in place.
+            match ox_inbox::ledger::read_ledger_with_repair(&ledger_path) {
+                Ok(outcome) => {
+                    for entry in &outcome.entries {
                         let value = structfs_serde_store::json_to_value(entry.msg.clone());
                         if let Err(e) = ns.log.write(
                             &structfs_core_store::path!("append"),
@@ -256,13 +289,24 @@ impl ThreadNamespace {
                             );
                         }
                     }
-                    loaded = !entries.is_empty();
+                    loaded = !outcome.entries.is_empty();
                 }
-                Err(e) => {
+                Err(ox_inbox::ledger::MountError::Missing) => {
+                    // The earlier `has_ledger = ledger_path.exists()` check
+                    // raced with someone removing the file. Treat as Missing
+                    // for banner purposes and continue.
+                    ledger_health = ox_inbox::ledger::LedgerHealth::Missing;
+                    tracing::warn!(
+                        path = %ledger_path.display(),
+                        "LedgerMissing (raced)"
+                    );
+                }
+                Err(ox_inbox::ledger::MountError::RepairFailed { reason }) => {
+                    ledger_health = ox_inbox::ledger::LedgerHealth::RepairFailed;
                     tracing::error!(
                         path = %ledger_path.display(),
-                        error = %e,
-                        "failed to read ledger on remount"
+                        reason,
+                        "LedgerRepairFailed"
                     );
                 }
             }
@@ -289,6 +333,15 @@ impl ThreadNamespace {
                         }
                     }
                 }
+            }
+            // If a legacy `.jsonl` fallback recovered state for a thread
+            // whose `ledger.jsonl` was absent, clear the provisional
+            // `Missing` banner — the conversation wasn't actually lost,
+            // we just don't have the primary ledger for it. Leave
+            // `RepairFailed` / `Degraded` alone; those are authoritative
+            // about the ledger itself being corrupt or unwritable.
+            if loaded && matches!(ledger_health, ox_inbox::ledger::LedgerHealth::Missing) {
+                ledger_health = ox_inbox::ledger::LedgerHealth::Ok;
             }
         }
 
@@ -325,31 +378,55 @@ impl ThreadNamespace {
             Value::String(theme::POST_CRASH_SKIP_CONTENT.to_string()),
         );
 
-        // Install the durable ledger writer AFTER replay. Any entry written
-        // through `log/append` from this point forward will be committed to
-        // `ledger.jsonl` before becoming visible in `SharedLog`.
-        let durability_installed = match ox_inbox::ledger_writer::LedgerWriter::spawn(ledger_path) {
-            Ok(writer) => {
-                let handle: std::sync::Arc<dyn ox_kernel::log::Durability> =
-                    std::sync::Arc::new(writer.handle());
-                ns.shared_log().with_durability(handle);
-                ns.ledger_writer = Some(writer);
-                true
+        // Install the durable ledger writer AFTER replay — but only when
+        // the ledger health is `Ok`. For `Missing` or `RepairFailed` we
+        // mount read-only (no writer, no per-append durability). The
+        // shell renders the matching banner via `shell/ledger_health`
+        // below; future appends would be unsafe (RepairFailed) or would
+        // lie about durability (Missing — no file to fsync to a meaningful
+        // location).
+        let durability_installed = if matches!(ledger_health, ox_inbox::ledger::LedgerHealth::Ok) {
+            match ox_inbox::ledger_writer::LedgerWriter::spawn(ledger_path) {
+                Ok(writer) => {
+                    let handle: std::sync::Arc<dyn ox_kernel::log::Durability> =
+                        std::sync::Arc::new(writer.handle());
+                    ns.shared_log().with_durability(handle);
+                    ns.ledger_writer = Some(writer);
+                    true
+                }
+                Err(e) => {
+                    tracing::error!(
+                        path = %thread_dir.display(),
+                        error = %e,
+                        "LedgerWriter: failed to spawn; per-append durability disabled for this thread"
+                    );
+                    // Spawn failure = post-mount write path is broken.
+                    // Treat as `Degraded` so the banner explains why the
+                    // conversation is frozen for this process lifetime.
+                    ledger_health = ox_inbox::ledger::LedgerHealth::Degraded;
+                    false
+                }
             }
-            Err(e) => {
-                tracing::error!(
-                    path = %thread_dir.display(),
-                    error = %e,
-                    "LedgerWriter: failed to spawn; per-append durability disabled for this thread"
-                );
-                // Post-Task-1b, the ledger is the LedgerWriter's exclusive
-                // responsibility — there is no fallback path. A failed spawn
-                // means this thread's log will only live in memory for this
-                // process lifetime. Surface-the-degradation is a later step
-                // (plan Step 7: `LedgerDegraded` banner).
-                false
-            }
+        } else {
+            tracing::warn!(
+                path = %thread_dir.display(),
+                health = ?ledger_health,
+                "LedgerWriter: not installed (ledger health is not Ok); thread mounted read-only"
+            );
+            false
         };
+
+        // Publish the terminal-state ledger health on the shell→view
+        // seam so the renderer can pick the right banner. The `shell/`
+        // namespace is already the agreed-upon channel for shell→kernel
+        // and shell→view config (see `post_crash_skip_content`,
+        // `resume_needed`). Stored as a stable wire string so both the
+        // CLI and any future shell can read it without depending on
+        // `ox_inbox::ledger::LedgerHealth` directly.
+        ns.shell.set(
+            "ledger_health",
+            Value::String(ledger_health_wire_str(ledger_health).to_string()),
+        );
 
         // Task 2 Step 5: classify the replayed log tail and dispatch the
         // post-crash recovery append. Runs AFTER durability is installed so
