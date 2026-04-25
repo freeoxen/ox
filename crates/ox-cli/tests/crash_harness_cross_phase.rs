@@ -21,7 +21,7 @@ use crash_harness::{
 };
 use ox_broker::ClientHandle;
 use ox_kernel::ContentBlock;
-use ox_kernel::log::{LogEntry, ToolAbortReason, TurnAbortReason};
+use ox_kernel::log::{LogEntry, TurnAbortReason};
 use ox_kernel::resume::{ThreadResumeState, classify};
 
 // ---------------------------------------------------------------------------
@@ -164,32 +164,18 @@ async fn s1_crash_mid_stream_no_approval() {
 // `Assistant` — the kernel had completed the tool and was about to
 // re-issue a completion when the process exited.
 //
-// **Expected behavior diverges from the original Task 5 plan note.** The
-// plan asserted "Classifier returns `Idle`" because the tool already
-// wrote a `ToolResult`. In practice the classifier short-circuits on
-// the first `ToolCall` it walks past (see `resume.rs` line ~168: the
-// `LogEntry::ToolCall` arm returns `AwaitingToolResult` without
-// scanning forward for a matching `ToolResult`). This is a known
-// limitation of the Phase-2 classifier — joining tool calls to
-// results requires a forward scan that the current `rev()` walk does
-// not perform.
+// The tool's result is durable on disk. Classifier returns `Idle`:
+// the `ToolCall` arm forward-scans via `has_terminal_for_tool` and
+// skips past its matching `ToolResult`. Mount lifecycle appends no
+// abort marker. On the next user prompt, the kernel re-prompts the
+// model with full history and continues naturally — no spurious
+// post-crash-reconfirm modal.
 //
-// What the test asserts, given the actual classifier:
-//   1. Classifier returns `AwaitingToolResult { tool_use_id, was_approved: true }`.
-//   2. The mount lifecycle appends a `ToolAborted { CrashDuringDispatch }`
-//      entry for that `tool_use_id` (per `from_thread_dir`'s
-//      `AwaitingToolResult` arm). On the next user prompt, the kernel's
-//      resume prologue will fire a post-crash reconfirm modal.
+// Test asserts:
+//   1. Classifier on the pre-kill tail returns `Idle`.
+//   2. Mount lifecycle appends no `TurnAborted` and no `ToolAborted`.
 //   3. The pre-kill log entries survive verbatim and in order; the
-//      mount adds exactly one `ToolAborted` on top.
-//
-// This is a defensible outcome: even though a `ToolResult` is on
-// record, the user can't tell whether the kernel's *next* completion
-// landed before the crash (it didn't, in this scenario, but the
-// classifier doesn't know that), so re-confirming the tool's effect
-// before silently continuing is conservative. Tightening the
-// classifier to detect "tool-already-resulted" via a forward scan is
-// noted in the plan's classifier limitations and is not part of Task 5.
+//      post-remount log is byte-identical to the pre-kill log.
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -271,23 +257,24 @@ async fn s3_crash_between_tool_result_and_next_completion() {
     let pre_kill = harness.snapshot_shared_log(&tid).await;
     // (1) The classifier walks the tail backward: `ToolResult` (skip),
     // `ApprovalResolved` (mark seen, skip), `ApprovalRequested`
-    // (resolved, skip), `ToolCall` (returns AwaitingToolResult — does
-    // NOT forward-scan for matching ToolResult, see classifier note
-    // above). `was_approved=true` because the AllowOnce resolution
-    // was found between the ToolCall and the tail.
-    match classify(&pre_kill) {
-        ThreadResumeState::AwaitingToolResult {
-            tool_use_id,
-            was_approved,
-        } => {
-            assert_eq!(tool_use_id, "tu-s3-1");
-            assert!(was_approved, "AllowOnce must reflect through was_approved");
-        }
-        other => panic!(
-            "pre-kill `... + ToolResult` tail expected AwaitingToolResult; \
-             got {other:?}; log={pre_kill:?}"
-        ),
-    }
+    // (resolved, skip), `ToolCall` (forward-scans via
+    // `has_terminal_for_tool` and finds the `ToolResult` — skips).
+    // Further back: `Assistant(tool_use)` (forward-scans too — same
+    // result, skips), `User` (informational), `TurnStart` (no progress
+    // seen → but there IS no state-changing tail, so walk completes
+    // to `Idle`).
+    //
+    // Actually: the walk reaches `Assistant(tool_use)` and returns
+    // `Idle` there because `last_unresolved_tool_use` finds no
+    // unresolved tool_use in the content. Either way, the classifier
+    // result is `Idle` — the durable `ToolResult` ends the pending
+    // dispatch.
+    assert_eq!(
+        classify(&pre_kill),
+        ThreadResumeState::Idle,
+        "pre-kill tail with durable ToolResult must classify as Idle; \
+         log={pre_kill:?}",
+    );
 
     harness.soft_crash();
     harness.remount_app().await;
@@ -295,51 +282,40 @@ async fn s3_crash_between_tool_result_and_next_completion() {
     let client = harness.client();
     let post_log = read_shared_log(&client, &tid).await;
 
-    // (3) The pre-kill entries are preserved verbatim; the mount
-    // lifecycle's `AwaitingToolResult` arm appends exactly one
-    // `ToolAborted` on top.
+    // (2+3) The pre-kill entries are preserved verbatim; the mount
+    // lifecycle appends nothing (Idle arm is a no-op for the post-
+    // ToolResult case). No `TurnAborted`, no `ToolAborted`.
     assert_eq!(
         post_log.len(),
-        pre_kill.len() + 1,
-        "post-remount log must equal pre-kill + one ToolAborted; \
+        pre_kill.len(),
+        "post-remount log must equal pre-kill length; Idle mount adds no entries; \
          pre={pre_kill:?} post={post_log:?}",
     );
-    assert_shared_log_matches_pre_kill(&post_log[..pre_kill.len()], &pre_kill);
+    assert_shared_log_matches_pre_kill(&post_log, &pre_kill);
 
-    // (2) The mount lifecycle wrote `ToolAborted { CrashDuringDispatch }`
-    // for the same tool_use_id. No `TurnAborted` appears — only the
-    // `Idle`/`InStreamNoFinal`/`InTurnNoProgress` arms produce that.
-    let last = post_log.last().expect("non-empty post log");
-    assert!(
-        matches!(
-            last,
-            LogEntry::ToolAborted {
-                tool_use_id,
-                reason: ToolAbortReason::CrashDuringDispatch,
-            } if tool_use_id == "tu-s3-1"
-        ),
-        "post-remount tail must be ToolAborted(CrashDuringDispatch) for tu-s3-1; \
-         got {last:?}; log={post_log:?}",
-    );
     let turn_aborts = post_log
         .iter()
         .filter(|e| matches!(e, LogEntry::TurnAborted { .. }))
         .count();
+    let tool_aborts = post_log
+        .iter()
+        .filter(|e| matches!(e, LogEntry::ToolAborted { .. }))
+        .count();
     assert_eq!(
         turn_aborts, 0,
-        "no TurnAborted expected on AwaitingToolResult classification; log={post_log:?}",
+        "no TurnAborted expected on Idle classification; log={post_log:?}",
+    );
+    assert_eq!(
+        tool_aborts, 0,
+        "no ToolAborted expected when the tool's result is durable; \
+         classifier must not treat `... + ToolResult` as AwaitingToolResult; \
+         log={post_log:?}",
     );
 
-    // After the ToolAborted append, the classifier is now Idle (the
-    // ToolAborted arm short-circuits to Idle on the next walk). The
-    // worker's resume_needed flag was set by the lifecycle and would
-    // drive the post-crash reconfirm modal on first contact — not
-    // part of this test's surface, but verified by
-    // `crash_harness_post_crash_reconfirm.rs`.
     assert_eq!(
         classify(&post_log),
         ThreadResumeState::Idle,
-        "post-remount log (after ToolAborted append) must classify as Idle; \
+        "post-remount log must classify as Idle (unchanged from pre-kill); \
          log={post_log:?}",
     );
 }

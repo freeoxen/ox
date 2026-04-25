@@ -166,8 +166,21 @@ pub fn classify(entries: &[LogEntry]) -> ThreadResumeState {
                 return ThreadResumeState::Idle;
             }
             LogEntry::ToolCall { id, .. } => {
-                // A tool_call with no later ToolResult / ToolAborted
-                // means the dispatch is pending.
+                // A tool_call whose matching ToolResult / ToolAborted
+                // already exists later in the log is NOT pending —
+                // dispatch completed before the crash. Keep scanning
+                // back; mirrors the forward-scan the `Assistant` arm
+                // performs via `has_terminal_for_tool` below.
+                //
+                // Without this check the classifier returns
+                // `AwaitingToolResult` for a tail like
+                // `...+ToolResult` even though the result is durable,
+                // and mount-lifecycle would spuriously append
+                // `ToolAborted` and re-fire the post-crash-reconfirm
+                // modal for a tool that already ran cleanly.
+                if has_terminal_for_tool(entries, id) {
+                    continue;
+                }
                 let tool_use_id = id.clone();
                 let was_approved = resolves_allow_for(entries, &tool_use_id);
                 return ThreadResumeState::AwaitingToolResult {
@@ -640,6 +653,44 @@ mod tests {
             }
             other => panic!("unexpected: {other:?}"),
         }
+    }
+
+    #[test]
+    fn completed_tool_without_turn_end_is_idle() {
+        // S3 shape: the tool has completed (approval resolved, result
+        // durably written) but the turn hasn't wrapped up yet — no
+        // `TurnEnd`, no subsequent `Assistant`. The classifier MUST
+        // NOT treat this as `AwaitingToolResult`: the result is on
+        // disk. Regression against the prior `ToolCall` arm which
+        // returned `AwaitingToolResult` unconditionally, causing
+        // mount-lifecycle to append a spurious `ToolAborted` and
+        // re-fire the post-crash-reconfirm modal for a tool that
+        // already ran cleanly.
+        let entries = vec![
+            ts(),
+            u("hi"),
+            assistant_tool_use("t1"),
+            tool_call("t1"),
+            approval_req(),
+            approval_res_allow(),
+            tool_result("t1"),
+        ];
+        assert_eq!(classify(&entries), ThreadResumeState::Idle);
+    }
+
+    #[test]
+    fn completed_tool_without_turn_end_or_approval_is_idle() {
+        // Auto-approved variant of the S3 shape: no ApprovalRequested /
+        // ApprovalResolved entries, but the result is still durable.
+        // Classifier still returns `Idle`.
+        let entries = vec![
+            ts(),
+            u("hi"),
+            assistant_tool_use("t1"),
+            tool_call("t1"),
+            tool_result("t1"),
+        ];
+        assert_eq!(classify(&entries), ThreadResumeState::Idle);
     }
 }
 
