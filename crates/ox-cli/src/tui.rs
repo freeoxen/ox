@@ -104,6 +104,8 @@ pub(crate) fn draw(
                 snap.scroll as u16,
                 theme,
                 vs.ledger_banner,
+                vs.approval_pending.as_ref(),
+                vs.approval_selected,
                 content_area,
             ));
         }
@@ -142,8 +144,10 @@ pub(crate) fn draw(
             ""
         };
 
-        // Hide cursor when a modal overlay is active.
-        let show_cursor = vs.approval_pending.is_none() && vs.pending_customize.is_none();
+        // Hide cursor only when a true blocking modal is active. The
+        // pending-approval card is inline (not a modal), so the editor
+        // cursor stays visible while a permission decision is pending.
+        let show_cursor = vs.pending_customize.is_none();
 
         if show_cursor {
             text_input_view.render(frame, input_area, theme.input_border, title);
@@ -215,16 +219,10 @@ pub(crate) fn draw(
             vs.approval_pending.as_ref(),
             theme,
         );
-    } else if let Some(ref ap) = vs.approval_pending {
-        crate::dialogs::draw_approval_dialog(
-            frame,
-            &ap.tool_name,
-            &ap.tool_input,
-            vs.approval_selected,
-            vs.approval_preview_scroll,
-            theme,
-        );
     }
+    // Pending-approval is no longer a modal — it renders inline as the
+    // tail of the conversation in `draw_thread`. See
+    // `dialogs::build_approval_card_lines`.
 
     (
         content_height,

@@ -273,113 +273,49 @@ struct ShortcutGroup {
     alt_keys: Vec<String>,
 }
 
-pub(crate) fn draw_approval_dialog(
-    frame: &mut Frame,
+/// Build the inline-card rendering of the pending approval, for embedding
+/// at the tail of the conversation transcript. The card is non-blocking
+/// — the user can scroll the conversation freely; submit is the only
+/// thing gated until the approval is resolved.
+///
+/// Visual treatment: a left-bar (`▎`) gutter in `theme.approval_border`
+/// marks the card as a distinct unit. All affordances of the previous
+/// modal are preserved: header (`[tool] primary_info`), structured
+/// detail body (file content / diff / pretty-printed JSON), the six
+/// option list with `> ` selection cursor and per-option color, the
+/// `(c)ustomize` entry-point and `Esc deny once` footer hint.
+pub(crate) fn build_approval_card_lines(
     tool: &str,
     tool_input: &serde_json::Value,
     selected: usize,
-    preview_scroll: usize,
     theme: &Theme,
-) {
-    let area = frame.area();
-
-    // Build tool-specific preview from structured input.
+) -> Vec<Line<'static>> {
     let (header, detail) = build_approval_preview(tool, tool_input);
+    let bar = || Span::styled("▎ ".to_string(), theme.approval_border);
 
-    let prefix = format!("[{tool}] ");
-    let header_width = prefix.len() + header.len();
-    let detail_width = detail.iter().map(|l| l.text.len() + 2).max().unwrap_or(0);
-    let content_width = header_width.max(detail_width);
-    let min_width = 50u16;
-    let max_width = area.width.saturating_sub(4);
-    let dialog_width = (content_width as u16 + 4).clamp(min_width, max_width);
-    let inner_width = dialog_width.saturating_sub(2) as usize;
+    let mut lines: Vec<Line<'static>> = Vec::new();
 
-    // Wrap header if needed.
-    let first_avail = inner_width.saturating_sub(prefix.len());
-    let wrapped_first: Vec<&str> = if first_avail > 0 && header.len() > first_avail {
-        header
-            .as_bytes()
-            .chunks(first_avail)
-            .map(|chunk| std::str::from_utf8(chunk).unwrap_or(""))
-            .collect()
-    } else {
-        vec![&header]
-    };
-
-    // Reserve room for chrome: header + blank + 6 options + blank + footer + borders.
-    let chrome_lines = wrapped_first.len() + 11;
-    let max_detail = (area.height as usize).saturating_sub(chrome_lines + 4);
-    let total_detail = detail.len();
-    let scroll = preview_scroll.min(total_detail.saturating_sub(max_detail.max(1)));
-    let shown_end = (scroll + max_detail).min(total_detail);
-    let visible_detail = if max_detail > 0 && !detail.is_empty() {
-        &detail[scroll..shown_end]
-    } else {
-        &[]
-    };
-
-    let dialog_height =
-        (chrome_lines as u16 + visible_detail.len() as u16 + 2).min(area.height.saturating_sub(4));
-    let x = (area.width.saturating_sub(dialog_width)) / 2;
-    let y = (area.height.saturating_sub(dialog_height)) / 2;
-    let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
-
-    frame.render_widget(Clear, dialog_area);
-
-    let mut title_parts = vec![Span::styled(" Permission Required ", theme.approval_title)];
-    if total_detail > max_detail {
-        title_parts.push(Span::styled(
-            format!(
-                " {}/{} ",
-                scroll + 1,
-                total_detail.saturating_sub(max_detail) + 1
-            ),
-            theme.tool_meta,
-        ));
-    }
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(theme.approval_border)
-        .title(Line::from(title_parts));
-    let inner = block.inner(dialog_area);
-    frame.render_widget(block, dialog_area);
-
-    let mut lines = Vec::new();
-
-    // Header: [tool] primary_info
-    if let Some(first) = wrapped_first.first() {
-        lines.push(Line::from(vec![
-            Span::styled(&prefix, theme.approval_tool),
-            Span::styled((*first).to_string(), theme.approval_preview),
-        ]));
-    }
-    let indent = " ".repeat(prefix.len());
-    for continuation in wrapped_first.iter().skip(1) {
-        lines.push(Line::from(vec![
-            Span::raw(indent.clone()),
-            Span::styled((*continuation).to_string(), theme.approval_preview),
-        ]));
-    }
-
-    // Detail lines (scrollable)
-    if !detail.is_empty() {
-        for pl in visible_detail {
-            lines.push(Line::from(Span::styled(
-                format!("  {}", pl.text),
-                pl.style(theme),
-            )));
-        }
-        if shown_end < total_detail {
-            lines.push(Line::from(Span::styled(
-                format!("  ↓ {} more (C-j/C-k scroll)", total_detail - shown_end),
-                theme.tool_meta,
-            )));
-        }
-    }
-
+    // Blank separator above the card so it doesn't visually fuse with
+    // the preceding tool call.
     lines.push(Line::from(""));
+
+    // Title row: ▎ ⚠ PERMISSION REQUIRED — [tool] header
+    lines.push(Line::from(vec![
+        bar(),
+        Span::styled("⚠ PERMISSION REQUIRED  ".to_string(), theme.approval_title),
+        Span::styled(format!("[{tool}] "), theme.approval_tool),
+        Span::styled(header, theme.approval_preview),
+    ]));
+
+    // Detail lines (no scroll cap — conversation scroll handles overflow).
+    for pl in &detail {
+        lines.push(Line::from(vec![
+            bar(),
+            Span::styled(format!("  {}", pl.text), pl.style(theme)),
+        ]));
+    }
+
+    lines.push(Line::from(bar()));
 
     for (i, (label, decision)) in APPROVAL_OPTIONS.iter().enumerate() {
         let base_style = if decision.is_allow() {
@@ -394,20 +330,22 @@ pub(crate) fn draw_approval_dialog(
         };
         let marker = if i == selected { "> " } else { "  " };
         let num = i + 1;
-        lines.push(Line::from(Span::styled(
-            format!("{marker}{num}. {label}"),
-            style,
-        )));
+        lines.push(Line::from(vec![
+            bar(),
+            Span::styled(format!("{marker}{num}. {label}"), style),
+        ]));
     }
 
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "  (c)ustomize rule | C-j/C-k scroll | Esc deny once",
-        theme.approval_option,
-    )));
+    lines.push(Line::from(bar()));
+    lines.push(Line::from(vec![
+        bar(),
+        Span::styled(
+            "(c)ustomize rule | g/G/Ctrl+d/Ctrl+u scroll | Esc deny once".to_string(),
+            theme.approval_option,
+        ),
+    ]));
 
-    let content = Paragraph::new(Text::from(lines));
-    frame.render_widget(content, inner);
+    lines
 }
 
 /// A styled line in the approval preview.

@@ -56,13 +56,30 @@ pub async fn setup(
         servers.push(broker.mount(path!("command"), command_store).await);
     }
 
-    // Mount InputStore with broker-connected dispatcher
+    // Mount InputStore with broker-connected dispatcher + mode resolver.
+    //
+    // The mode resolver computes the dispatch mode authoritatively from
+    // live broker state (`ui` snapshot + active thread's
+    // `approval/pending`) plus the client's local modal flags. This
+    // closes the snapshot-vs-dispatch race that would otherwise drop
+    // keypresses during the brief window after thread re-entry where
+    // the kernel prologue hasn't yet republished the pending approval.
     let dispatch_client = broker.client();
+    let resolver_client = broker.client();
     let mut input = InputStore::new(bindings);
     input.set_dispatcher(Box::new(move |target, data| {
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(dispatch_client.write(target, data))
         })
+    }));
+    input.set_mode_resolver(Box::new(move |req_map, _screen| {
+        let inputs = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(crate::focus::FocusInputs::from_broker(
+                &resolver_client,
+                req_map,
+            ))
+        });
+        Ok(crate::focus::focus_mode(&inputs).as_str().to_string())
     }));
     servers.push(broker.mount(path!("input"), input).await);
 
@@ -559,11 +576,11 @@ mod tests {
             .unwrap();
 
         // Dispatch "j" on inbox screen
-        let event = ox_types::InputKeyEvent {
-            mode: ox_types::Mode::Normal,
-            key: "j".to_string(),
-            screen: ox_types::Screen::Inbox,
-        };
+        let event = ox_types::InputKeyEvent::with_explicit_mode(
+            ox_types::Mode::Normal,
+            "j".to_string(),
+            ox_types::Screen::Inbox,
+        );
         client
             .write_typed(&path!("input/key"), &event)
             .await
@@ -607,11 +624,11 @@ mod tests {
 
         // Dispatch "j" on thread screen — should trigger scroll_down (thread-specific),
         // NOT select_next (inbox-specific)
-        let event = ox_types::InputKeyEvent {
-            mode: ox_types::Mode::Normal,
-            key: "j".to_string(),
-            screen: ox_types::Screen::Thread,
-        };
+        let event = ox_types::InputKeyEvent::with_explicit_mode(
+            ox_types::Mode::Normal,
+            "j".to_string(),
+            ox_types::Screen::Thread,
+        );
         client
             .write_typed(&path!("input/key"), &event)
             .await
@@ -1197,11 +1214,11 @@ mod tests {
         let handle = test_setup().await;
         let client = handle.client();
 
-        let event = ox_types::InputKeyEvent {
-            mode: ox_types::Mode::Normal,
-            key: "i".into(),
-            screen: ox_types::Screen::Inbox,
-        };
+        let event = ox_types::InputKeyEvent::with_explicit_mode(
+            ox_types::Mode::Normal,
+            "i",
+            ox_types::Screen::Inbox,
+        );
         client
             .write_typed(&path!("input/key"), &event)
             .await
@@ -1291,11 +1308,11 @@ mod tests {
             .unwrap();
 
         // Seed two chips by typing and hitting Enter twice via Search mode.
-        let slash = ox_types::InputKeyEvent {
-            mode: ox_types::Mode::Normal,
-            key: "/".into(),
-            screen: ox_types::Screen::Inbox,
-        };
+        let slash = ox_types::InputKeyEvent::with_explicit_mode(
+            ox_types::Mode::Normal,
+            "/",
+            ox_types::Screen::Inbox,
+        );
         client
             .write_typed(&path!("input/key"), &slash)
             .await
@@ -1307,11 +1324,11 @@ mod tests {
             )
             .await;
         }
-        let enter = ox_types::InputKeyEvent {
-            mode: ox_types::Mode::Search,
-            key: "Enter".into(),
-            screen: ox_types::Screen::Inbox,
-        };
+        let enter = ox_types::InputKeyEvent::with_explicit_mode(
+            ox_types::Mode::Search,
+            "Enter",
+            ox_types::Screen::Inbox,
+        );
         client
             .write_typed(&path!("input/key"), &enter)
             .await
@@ -1329,11 +1346,11 @@ mod tests {
             .await
             .unwrap();
         // Esc out of Search mode
-        let esc = ox_types::InputKeyEvent {
-            mode: ox_types::Mode::Search,
-            key: "Esc".into(),
-            screen: ox_types::Screen::Inbox,
-        };
+        let esc = ox_types::InputKeyEvent::with_explicit_mode(
+            ox_types::Mode::Search,
+            "Esc",
+            ox_types::Screen::Inbox,
+        );
         client.write_typed(&path!("input/key"), &esc).await.unwrap();
 
         // Sanity: two chips
@@ -1348,11 +1365,11 @@ mod tests {
         }
 
         // Press `1` in Normal mode on inbox → dismiss chip 0 (first).
-        let one = ox_types::InputKeyEvent {
-            mode: ox_types::Mode::Normal,
-            key: "1".into(),
-            screen: ox_types::Screen::Inbox,
-        };
+        let one = ox_types::InputKeyEvent::with_explicit_mode(
+            ox_types::Mode::Normal,
+            "1",
+            ox_types::Screen::Inbox,
+        );
         client.write_typed(&path!("input/key"), &one).await.unwrap();
 
         let chips = client
@@ -1378,11 +1395,11 @@ mod tests {
         let client = handle.client();
 
         // Press `/` on inbox — Normal mode
-        let slash = ox_types::InputKeyEvent {
-            mode: ox_types::Mode::Normal,
-            key: "/".to_string(),
-            screen: ox_types::Screen::Inbox,
-        };
+        let slash = ox_types::InputKeyEvent::with_explicit_mode(
+            ox_types::Mode::Normal,
+            "/".to_string(),
+            ox_types::Screen::Inbox,
+        );
         client
             .write_typed(&path!("input/key"), &slash)
             .await
@@ -1416,11 +1433,11 @@ mod tests {
         assert_eq!(live.as_value().unwrap(), &Value::String("foo".into()));
 
         // Enter → SearchSaveChip via Search-mode binding
-        let enter = ox_types::InputKeyEvent {
-            mode: ox_types::Mode::Search,
-            key: "Enter".to_string(),
-            screen: ox_types::Screen::Inbox,
-        };
+        let enter = ox_types::InputKeyEvent::with_explicit_mode(
+            ox_types::Mode::Search,
+            "Enter".to_string(),
+            ox_types::Screen::Inbox,
+        );
         client
             .write_typed(&path!("input/key"), &enter)
             .await
@@ -1455,11 +1472,11 @@ mod tests {
             )
             .await;
         }
-        let esc = ox_types::InputKeyEvent {
-            mode: ox_types::Mode::Search,
-            key: "Esc".to_string(),
-            screen: ox_types::Screen::Inbox,
-        };
+        let esc = ox_types::InputKeyEvent::with_explicit_mode(
+            ox_types::Mode::Search,
+            "Esc".to_string(),
+            ox_types::Screen::Inbox,
+        );
         client.write_typed(&path!("input/key"), &esc).await.unwrap();
 
         let mode = client.read(&path!("ui/mode")).await.unwrap().unwrap();
@@ -1591,11 +1608,11 @@ mod tests {
         let handle = test_setup().await;
         let client = handle.client();
 
-        let event = ox_types::InputKeyEvent {
-            mode: ox_types::Mode::Normal,
-            key: ":".to_string(),
-            screen: ox_types::Screen::Inbox,
-        };
+        let event = ox_types::InputKeyEvent::with_explicit_mode(
+            ox_types::Mode::Normal,
+            ":".to_string(),
+            ox_types::Screen::Inbox,
+        );
         client
             .write_typed(&path!("input/key"), &event)
             .await
@@ -1607,6 +1624,241 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(open.as_value().unwrap(), &Value::Bool(true));
+    }
+
+    /// Regression: `Enter` on a thread with a pending approval must
+    /// resolve to `ApprovalConfirm` even when the client omits `mode`
+    /// and the snapshot it would have computed from says "no approval
+    /// pending."
+    ///
+    /// The bug this guards against: after thread re-entry, the agent
+    /// worker republishes `threads/{tid}/approval/pending`
+    /// asynchronously. A client that ships its locally-computed
+    /// (snapshot-based) mode would dispatch `Mode::Normal+Thread+Enter`
+    /// during the gap and the keypress would be silently dropped.
+    /// With the server-side resolver, the broker reads its own live
+    /// state and routes correctly on the very first press.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn enter_with_pending_approval_resolves_to_approval_confirm_via_resolver() {
+        use ox_types::{ApprovalRequest, GlobalCommand, UiCommand};
+
+        let handle = test_setup().await;
+        let client = handle.client();
+
+        // Open a thread.
+        client
+            .write_typed(
+                &path!("ui"),
+                &UiCommand::Global(GlobalCommand::Open {
+                    thread_id: "t_race".to_string(),
+                }),
+            )
+            .await
+            .unwrap();
+
+        // Simulate the worker-side write: post an `approval/request`.
+        // This sets `pending` synchronously inside the store and the
+        // returned future blocks until a response arrives — exactly
+        // the shape the agent code uses. We spawn it so the test
+        // thread keeps running.
+        let req = ApprovalRequest {
+            tool_name: "shell".to_string(),
+            tool_input: serde_json::json!({"command": "ls"}),
+        };
+        let req_client = client.clone();
+        let req_payload = req.clone();
+        let request_task = tokio::spawn(async move {
+            req_client
+                .write_typed(&path!("threads/t_race/approval/request"), &req_payload)
+                .await
+        });
+
+        // Wait for `approval/pending` to become observable. This is the
+        // moment a real client would otherwise race against — the
+        // broker-side resolver MUST see the pending state on the very
+        // next key event, regardless of whether the client's snapshot
+        // has caught up.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            // ApprovalStore returns `Value::Null` when no pending — that
+            // round-trips through `read_typed::<ApprovalRequest>` as a
+            // decode error (`invalid type: null`), so swallow with
+            // `.ok().flatten()` and treat absence as "keep polling."
+            let pending = client
+                .read_typed::<ApprovalRequest>(&path!("threads/t_race/approval/pending"))
+                .await
+                .ok()
+                .flatten();
+            if pending.is_some_and(|r| !r.tool_name.is_empty()) {
+                break;
+            }
+            if std::time::Instant::now() > deadline {
+                panic!("approval/pending never became visible");
+            }
+            tokio::task::yield_now().await;
+        }
+
+        // Send the key event the way the TUI dispatches now: no mode,
+        // just screen + modal flags. The broker's mode resolver should
+        // observe approval/pending and route the binding lookup as
+        // `Mode::Approval+Enter`, NOT `Mode::Normal+Thread+Enter`.
+        let event = ox_types::InputKeyEvent {
+            mode: None,
+            key: "Enter".to_string(),
+            screen: ox_types::Screen::Thread,
+            flags: ox_types::ClientModalFlags::default(),
+        };
+        client
+            .write_typed(&path!("input/key"), &event)
+            .await
+            .unwrap();
+
+        // The Approval+Enter binding fires `ApprovalConfirm`, which
+        // sets pending_action. Verify directly.
+        let pa = client
+            .read(&path!("ui/pending_action"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            pa.as_value().unwrap(),
+            &Value::String("approval_confirm".to_string()),
+            "Enter on thread with pending approval must resolve to ApprovalConfirm"
+        );
+
+        // Unblock the spawned request task so it can complete.
+        client
+            .write_typed(
+                &path!("threads/t_race/approval/response"),
+                &ox_types::ApprovalResponse {
+                    decision: ox_types::Decision::AllowOnce,
+                },
+            )
+            .await
+            .unwrap();
+        let _ = request_task.await;
+    }
+
+    /// `Enter` on a thread without a pending approval falls through
+    /// to the new `Normal+Thread+Enter` binding (`Reply`). This kills
+    /// the dead zone that previously dropped the keypress in this
+    /// state and made the race look worse than it was.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn enter_on_thread_without_approval_opens_reply_editor() {
+        use ox_types::{GlobalCommand, UiCommand};
+
+        let handle = test_setup().await;
+        let client = handle.client();
+
+        client
+            .write_typed(
+                &path!("ui"),
+                &UiCommand::Global(GlobalCommand::Open {
+                    thread_id: "t_reply".to_string(),
+                }),
+            )
+            .await
+            .unwrap();
+
+        let event = ox_types::InputKeyEvent {
+            mode: None,
+            key: "Enter".to_string(),
+            screen: ox_types::Screen::Thread,
+            flags: ox_types::ClientModalFlags::default(),
+        };
+        client
+            .write_typed(&path!("input/key"), &event)
+            .await
+            .unwrap();
+
+        // Reply opens the thread editor — observable via the typed UI
+        // snapshot.
+        let ui: ox_types::UiSnapshot = client
+            .read_typed::<ox_types::UiSnapshot>(&path!("ui"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            ui.editor().is_some(),
+            "Enter on thread (no approval) must open the reply editor; got {ui:?}"
+        );
+    }
+
+    /// Step 2 of `local/plans/focus-resolution.md`: when no binding
+    /// matches, the broker reports the resolved mode back via the
+    /// returned `Path` (`unbound/<mode>`), so the client doesn't have
+    /// to recompute mode from a stale snapshot. Here: no editor open,
+    /// no approval, on inbox — the resolver should say `Mode::Normal`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unbound_key_returns_resolved_mode_normal_on_inbox() {
+        let handle = test_setup().await;
+        let client = handle.client();
+
+        // Pick a key that has no binding anywhere — `Z` is unbound.
+        let event = ox_types::InputKeyEvent {
+            mode: None,
+            key: "Z".to_string(),
+            screen: ox_types::Screen::Inbox,
+            flags: ox_types::ClientModalFlags::default(),
+        };
+        let path = client
+            .write_typed(&path!("input/key"), &event)
+            .await
+            .expect("unbound key is Ok with `unbound/<mode>` path");
+        assert_eq!(path.components.len(), 2);
+        assert_eq!(path.components[0].as_str(), "unbound");
+        assert_eq!(
+            path.components[1].as_str(),
+            "normal",
+            "unbound key on plain inbox must resolve to Mode::Normal"
+        );
+    }
+
+    /// Step 2 (continued): when broker state would resolve to Insert
+    /// (an editor is open), the unbound-key outcome carries
+    /// `Mode::Insert` — even when the client never told the broker
+    /// what mode it thought it was in. This proves the server is the
+    /// authority for mode, not the client.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unbound_key_returns_insert_when_editor_is_open() {
+        use ox_types::{GlobalCommand, ThreadCommand, UiCommand};
+
+        let handle = test_setup().await;
+        let client = handle.client();
+
+        // Open a thread and open its reply editor — broker state now
+        // says "editor is open."
+        client
+            .write_typed(
+                &path!("ui"),
+                &UiCommand::Global(GlobalCommand::Open {
+                    thread_id: "t_unbound_insert".to_string(),
+                }),
+            )
+            .await
+            .unwrap();
+        client
+            .write_typed(&path!("ui"), &UiCommand::Thread(ThreadCommand::Reply))
+            .await
+            .unwrap();
+
+        // Send an unbound key with no client-side mode.
+        let event = ox_types::InputKeyEvent {
+            mode: None,
+            key: "Z".to_string(),
+            screen: ox_types::Screen::Thread,
+            flags: ox_types::ClientModalFlags::default(),
+        };
+        let path = client
+            .write_typed(&path!("input/key"), &event)
+            .await
+            .expect("unbound key is Ok with `unbound/<mode>` path");
+        assert_eq!(path.components[0].as_str(), "unbound");
+        assert_eq!(
+            path.components[1].as_str(),
+            "insert",
+            "unbound key with editor open must resolve to Mode::Insert"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

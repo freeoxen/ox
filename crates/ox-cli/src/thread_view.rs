@@ -14,12 +14,20 @@ use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarStat
 /// non-`Ok` ledger health (Missing / RepairFailed / Degraded). Rendered
 /// once at the very top of the transcript with the muted-accent
 /// `theme.ledger_banner` style.
+///
+/// `approval` is `Some(req)` when a tool-call permission decision is
+/// pending. The card is appended at the tail of the transcript using
+/// [`crate::dialogs::build_approval_card_lines`] — non-blocking, so the
+/// user can scroll to read prior context before deciding.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_thread(
     frame: &mut Frame,
     view: &ThreadView,
     scroll: u16,
     theme: &Theme,
     ledger_banner: Option<&str>,
+    approval: Option<&ox_types::ApprovalRequest>,
+    approval_selected: usize,
     area: Rect,
 ) -> usize {
     let mut lines: Vec<Line> = Vec::new();
@@ -120,6 +128,17 @@ pub fn draw_thread(
     // Thinking indicator
     if view.thinking && !matches!(view.messages.last(), Some(ChatMessage::AssistantChunk(_))) {
         lines.push(Line::from(Span::styled("  ...", theme.thinking)));
+    }
+
+    // Pending-approval card. Appended last so it sits at the bottom of
+    // the transcript; conversation scrolling continues to work above it.
+    if let Some(req) = approval {
+        lines.extend(crate::dialogs::build_approval_card_lines(
+            &req.tool_name,
+            &req.tool_input,
+            approval_selected,
+            theme,
+        ));
     }
 
     // Count rendered lines after wrapping

@@ -7,6 +7,7 @@ mod clash_sandbox;
 mod commit_drain;
 mod config;
 mod dialogs;
+mod dispatch;
 mod editor;
 #[cfg(test)]
 mod editor_snapshots;

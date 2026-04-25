@@ -75,16 +75,14 @@ impl<'a> ViewState<'a> {
     /// Current modal focus. Single source of truth shared with the
     /// input dispatcher so rendering and key routing never drift.
     pub fn focus(&self) -> Mode {
-        crate::focus::focus_mode(
-            &self.ui,
-            &crate::focus::DialogFlags {
-                history_search_active: self.history_search.is_some(),
-                show_shortcuts: self.show_shortcuts,
-                show_usage: self.show_usage,
-                show_thread_info: self.show_thread_info,
-                has_approval_pending: self.approval_pending.is_some(),
-            },
-        )
+        let flags = crate::focus::DialogFlags {
+            history_search_active: self.history_search.is_some(),
+            show_shortcuts: self.show_shortcuts,
+            show_usage: self.show_usage,
+            show_thread_info: self.show_thread_info,
+            has_approval_pending: self.approval_pending.is_some(),
+        };
+        crate::focus::focus_mode(&crate::focus::FocusInputs::from_snapshot(&self.ui, &flags))
     }
 }
 

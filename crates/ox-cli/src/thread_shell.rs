@@ -179,9 +179,14 @@ pub(crate) async fn dispatch_global_mouse(
     use ox_path::oxpath;
     use ox_types::{InboxCommand, ThreadCommand, UiCommand};
 
-    if has_pending_approval || has_pending_customize {
+    // Pending approval no longer blocks scroll — the approval card is
+    // inline and the user is expected to be able to scroll the
+    // conversation while deciding. Customize is still a true blocking
+    // modal.
+    if has_pending_customize {
         return;
     }
+    let _ = has_pending_approval;
 
     match kind {
         MouseEventKind::ScrollUp => {

@@ -60,9 +60,25 @@ pub struct Binding {
 
 use crate::command::Dispatcher;
 
+/// Server-side resolver that computes the dispatch mode from the
+/// client-supplied modal flags (carried in the request map) and the
+/// broker's own live state. Returns the mode as a string matching
+/// `Mode::as_str`. Configured at broker-setup time.
+///
+/// Why this exists: the alternative is for the client to compute mode
+/// from a (possibly stale) view-state snapshot and ship it. That loses
+/// any state change that happened between snapshot and dispatch — most
+/// painfully `approval/pending` arriving from the kernel prologue
+/// after thread re-entry. Resolving server-side closes the race for
+/// every broker-owned field at once.
+pub type ModeResolver = Box<
+    dyn FnMut(&BTreeMap<String, Value>, Option<&str>) -> Result<String, StoreError> + Send + Sync,
+>;
+
 pub struct InputStore {
     bindings: Vec<Binding>,
     dispatcher: Option<Dispatcher>,
+    mode_resolver: Option<ModeResolver>,
 }
 
 impl InputStore {
@@ -70,12 +86,21 @@ impl InputStore {
         InputStore {
             bindings,
             dispatcher: None,
+            mode_resolver: None,
         }
     }
 
     /// Set the command dispatcher.
     pub fn set_dispatcher(&mut self, dispatcher: Dispatcher) {
         self.dispatcher = Some(dispatcher);
+    }
+
+    /// Set the mode resolver. When configured, key writes that omit
+    /// `mode` will route through the resolver instead of erroring.
+    /// Key writes that include `mode` continue to use it directly
+    /// (legacy back-compat for tests and macros).
+    pub fn set_mode_resolver(&mut self, resolver: ModeResolver) {
+        self.mode_resolver = Some(resolver);
     }
 
     // -- Binding resolution --
@@ -394,20 +419,60 @@ impl Writer for InputStore {
 
         match action {
             "key" => {
-                // Key event dispatch: data is {mode, key, screen?, ...context}
+                // Key event dispatch: data is {mode?, key, screen?, ...flags}.
+                // When `mode` is present we use it directly (legacy
+                // back-compat: tests and macros still ship explicit mode).
+                // When absent, we route through the configured
+                // `mode_resolver`, which combines the request's
+                // client-local modal flags with the broker's own live
+                // state. This is the path that closes
+                // snapshot-vs-dispatch races for the TUI client.
                 let map = match value {
                     Value::Map(m) => m,
                     _ => return Err(StoreError::store("input", "key", "key event must be a Map")),
                 };
-                let mode = extract_str(map, "mode")
-                    .ok_or_else(|| StoreError::store("input", "key", "missing mode"))?;
                 let key = extract_str(map, "key")
                     .ok_or_else(|| StoreError::store("input", "key", "missing key"))?;
                 let screen = extract_str(map, "screen");
 
-                let binding = self
-                    .resolve(&mode, &key, screen.as_deref())
-                    .ok_or_else(|| StoreError::store("input", "key", "no binding for key"))?;
+                let mode = match extract_str(map, "mode") {
+                    Some(m) => m,
+                    None => {
+                        let resolver = self.mode_resolver.as_mut().ok_or_else(|| {
+                            StoreError::store(
+                                "input",
+                                "key",
+                                "missing mode and no mode_resolver configured",
+                            )
+                        })?;
+                        resolver(map, screen.as_deref())?
+                    }
+                };
+
+                // Encode the dispatch outcome in the returned Path so
+                // the client can route unbound keys without recomputing
+                // mode locally:
+                //   `Ok("unbound/<mode>")` → no binding matched; the
+                //                            client routes the key
+                //                            through its mode-specific
+                //                            text-input fallback using
+                //                            the mode the broker
+                //                            resolved (NOT the client's
+                //                            stale snapshot).
+                //   `Ok(<dispatcher path>)` → binding fired, dispatched
+                //                             through the action chain.
+                //   `Err(...)`              → genuine error (bad
+                //                             request, dispatcher
+                //                             failure).
+                //
+                // This keeps every focus decision on the server side.
+                // See `local/plans/focus-resolution.md`.
+                let binding = match self.resolve(&mode, &key, screen.as_deref()) {
+                    Some(b) => b,
+                    None => {
+                        return Ok(Path::from_components(vec!["unbound".to_string(), mode]));
+                    }
+                };
                 let action = binding.action.clone();
 
                 self.execute_action(&action, map)
@@ -595,13 +660,21 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_no_binding_returns_error() {
+    fn dispatch_no_binding_returns_unbound_with_resolved_mode() {
+        // Unbound keys are not errors — they return a Path encoding
+        // the resolved mode so the client can route through its
+        // mode-specific text-input fallback. See `crate::InputStore`
+        // doc on the "key" write action.
         let mut store = InputStore::new(vec![]);
         let (dispatcher, _) = mock_dispatcher();
         store.set_dispatcher(dispatcher);
 
-        let result = store.write(&path!("key"), key_event("normal", "z", "inbox"));
-        assert!(result.is_err());
+        let path = store
+            .write(&path!("key"), key_event("normal", "z", "inbox"))
+            .expect("unbound is Ok with an `unbound/<mode>` path");
+        assert_eq!(path.components.len(), 2);
+        assert_eq!(path.components[0].as_str(), "unbound");
+        assert_eq!(path.components[1].as_str(), "normal");
     }
 
     // -- Macro tests --

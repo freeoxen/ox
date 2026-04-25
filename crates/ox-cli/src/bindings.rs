@@ -237,6 +237,20 @@ fn normal_mode(out: &mut Vec<Binding>) {
         invoke(Cmd::Reply),
         "Reply",
     ));
+    // Enter on a thread row also opens the reply composer. Without this
+    // binding `Normal+Thread+Enter` is a dead zone: any window where the
+    // focus mode hasn't yet flipped to `Approval` (e.g. immediately after
+    // re-entering a thread blocked on a tool-call decision) would
+    // silently drop the keypress. The new `Approval` binding still wins
+    // when an approval is actually pending — it sits higher in the focus
+    // priority chain and therefore matches first.
+    out.push(bind_screen(
+        Normal,
+        &enter(),
+        Thread,
+        invoke(Cmd::Reply),
+        "Reply",
+    ));
     out.push(hint(
         Normal,
         &key(Char('/')),
@@ -737,18 +751,58 @@ fn approval_mode(out: &mut Vec<Binding>) {
         invoke(Cmd::ApprovalSelectPrev),
         "Previous option",
     ));
-    // Preview scroll
+    // Conversation scroll — the approval card is now inline at the
+    // bottom of the transcript, so the user can scroll the whole
+    // conversation (including the card body) before deciding. We
+    // mirror the Normal/Thread scroll bindings here so they keep
+    // working while focus is in Approval mode.
     out.push(bind(
         Approval,
         &ctrl(Char('j')),
-        invoke(Cmd::ApprovalScrollDown),
-        "Scroll preview down",
+        invoke(Cmd::ScrollDown),
+        "Scroll down",
     ));
     out.push(bind(
         Approval,
         &ctrl(Char('k')),
-        invoke(Cmd::ApprovalScrollUp),
-        "Scroll preview up",
+        invoke(Cmd::ScrollUp),
+        "Scroll up",
+    ));
+    out.push(bind(
+        Approval,
+        &ctrl(Char('d')),
+        invoke(Cmd::ScrollHalfPageDown),
+        "Half page down",
+    ));
+    out.push(bind(
+        Approval,
+        &ctrl(Char('u')),
+        invoke(Cmd::ScrollHalfPageUp),
+        "Half page up",
+    ));
+    out.push(bind(
+        Approval,
+        &ctrl(Char('f')),
+        invoke(Cmd::ScrollPageDown),
+        "Page down",
+    ));
+    out.push(bind(
+        Approval,
+        &ctrl(Char('b')),
+        invoke(Cmd::ScrollPageUp),
+        "Page up",
+    ));
+    out.push(bind(
+        Approval,
+        &key(Char('g')),
+        invoke(Cmd::ScrollToTop),
+        "Scroll to top",
+    ));
+    out.push(bind(
+        Approval,
+        &key(Char('G')),
+        invoke(Cmd::ScrollToBottom),
+        "Scroll to bottom",
     ));
 
     out.push(bind(

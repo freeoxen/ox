@@ -5,14 +5,14 @@ use crate::settings_state::SettingsFocus;
 use crate::shell::Outcome;
 use crate::theme::Theme;
 use crate::thread_shell::{ThreadShell, dispatch_global_mouse};
-use crate::types::{APPROVAL_OPTIONS, CustomizeState};
+use crate::types::CustomizeState;
 use crate::view_state::fetch_view_state;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
 use ox_kernel::PathComponent;
 use ox_path::oxpath;
 use ox_types::{
-    GlobalCommand, HistoryCommand, InboxCommand, InputKeyEvent, Mode, PendingAction, Screen,
-    ScreenSnapshot, ThreadCommand, UiCommand, UiSnapshot,
+    GlobalCommand, HistoryCommand, InboxCommand, Mode, PendingAction, Screen, ScreenSnapshot,
+    ThreadCommand, UiCommand, UiSnapshot,
 };
 use ox_ui::text_input_store::EditSource;
 use std::time::Duration;
@@ -152,8 +152,6 @@ pub async fn run_async(
         let ui: UiSnapshot;
         let selected_thread_id: Option<String>;
         let has_approval_pending: bool;
-        let approval_preview_len: usize;
-        let approval_tool_len: usize;
         let mut content_height: Option<usize> = None;
         let mut viewport_height: usize = 0;
         let mut history_hit_map: Option<crate::history_view::HistoryHitMap> = None;
@@ -277,26 +275,6 @@ pub async fn run_async(
                 _ => None,
             };
             has_approval_pending = vs.approval_pending.is_some();
-            // Stash preview info for approval dialog mouse hit-testing
-            approval_preview_len = vs
-                .approval_pending
-                .as_ref()
-                .map(|ap| {
-                    // Use the primary field (path or command) for width calculation
-                    let input = &ap.tool_input;
-                    input
-                        .get("path")
-                        .or_else(|| input.get("command"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .len()
-                })
-                .unwrap_or(0);
-            approval_tool_len = vs
-                .approval_pending
-                .as_ref()
-                .map(|ap| ap.tool_name.len())
-                .unwrap_or(0);
             ui = vs.ui.clone();
         }
         // vs is now dropped — safe to mutate app
@@ -487,42 +465,6 @@ pub async fn run_async(
                                 && settings_shell.state.editing.is_some() =>
                         {
                             settings_shell.handle_mouse(mouse);
-                        }
-                        // Approval dialog click
-                        ScreenSnapshot::Thread(snap)
-                            if has_approval_pending
-                                && matches!(mouse.kind, MouseEventKind::Down(_)) =>
-                        {
-                            let (term_w, term_h) = crossterm::terminal::size().unwrap_or((80, 24));
-                            // Compute dialog dimensions matching draw_approval_dialog
-                            let prefix_len = approval_tool_len + 3; // "[tool] "
-                            let dialog_width = ((prefix_len + approval_preview_len + 4) as u16)
-                                .clamp(50, term_w.saturating_sub(4));
-                            let inner_width = dialog_width.saturating_sub(2) as usize;
-                            let preview_avail = inner_width.saturating_sub(prefix_len);
-                            let wrapped_count =
-                                if preview_avail > 0 && approval_preview_len > preview_avail {
-                                    approval_preview_len.div_ceil(preview_avail)
-                                } else {
-                                    1
-                                };
-                            let dialog_h =
-                                (2 + wrapped_count as u16 + 9).min(term_h.saturating_sub(4));
-                            let dialog_top = term_h.saturating_sub(dialog_h) / 2;
-                            // Options start after: border(1) + wrapped lines + blank(1)
-                            let first_option_row = dialog_top + 1 + wrapped_count as u16 + 1;
-                            if mouse.row >= first_option_row
-                                && mouse.row < first_option_row + APPROVAL_OPTIONS.len() as u16
-                            {
-                                let idx = (mouse.row - first_option_row) as usize;
-                                let active_thread_id = Some(snap.thread_id.clone());
-                                crate::key_handlers::send_approval_response(
-                                    client,
-                                    &active_thread_id,
-                                    APPROVAL_OPTIONS[idx].1,
-                                )
-                                .await;
-                            }
                         }
                         // History screen: click-to-expand + content scroll
                         ScreenSnapshot::History(_) => match mouse.kind {
@@ -846,39 +788,40 @@ async fn dispatch_key(
         }
     }
 
-    // Single source of truth for modal focus — see `focus::focus_mode`.
-    let mode = crate::focus::focus_mode(
-        ui,
-        &crate::focus::DialogFlags {
+    // The binding-lookup path is delegated to `crate::dispatch::send_key`,
+    // a function whose signature deliberately excludes `&UiSnapshot`
+    // and `&ViewState`. This is the structural enforcement of the
+    // "snapshots are render-only across the dispatch boundary" rule —
+    // see `crate::dispatch` module doc and
+    // `local/plans/focus-resolution.md`.
+    //
+    // `has_approval_pending` and `ui` are still inspected *here* for
+    // legitimate non-binding reasons: the screen tag (informational,
+    // not a focus decision), the settings-key bypass, and the
+    // Insert-fallback's editor-context lookup (text routing, not
+    // binding lookup).
+    let _ = has_approval_pending;
+
+    let input_screen = match &ui.screen {
+        ScreenSnapshot::Inbox(_) => Screen::Inbox,
+        ScreenSnapshot::Thread(_) => Screen::Thread,
+        ScreenSnapshot::Settings(_) => Screen::Settings,
+        ScreenSnapshot::History(_) => Screen::History,
+    };
+    let outcome = crate::dispatch::send_key(
+        client,
+        key_str,
+        input_screen,
+        ox_types::ClientModalFlags {
             history_search_active: dialog.history_search.is_some(),
             show_shortcuts: dialog.show_shortcuts,
             show_usage: dialog.show_usage,
             show_thread_info: dialog.show_thread_info,
-            has_approval_pending,
         },
-    );
+    )
+    .await;
 
-    // InputStore dispatch
-    let (input_mode, input_screen) = match &ui.screen {
-        ScreenSnapshot::Inbox(_) => (mode, Screen::Inbox),
-        ScreenSnapshot::Thread(_) => (mode, Screen::Thread),
-        ScreenSnapshot::Settings(_) => (Mode::Normal, Screen::Settings),
-        ScreenSnapshot::History(_) => (mode, Screen::History),
-    };
-    let result = client
-        .write_typed(
-            &oxpath!("input", "key"),
-            &InputKeyEvent {
-                mode: input_mode,
-                key: key_str.to_string(),
-                screen: input_screen,
-            },
-        )
-        .await;
-
-    // Unbound-key fallback routes to the focused surface — the same
-    // `mode` the binding system resolved against.
-    if result.is_err() {
+    if let crate::dispatch::KeyDispatchOutcome::Unbound { mode } = outcome {
         match mode {
             Mode::Command => handle_unbound_command_line_key(client, ui, code).await,
             Mode::Search => handle_unbound_search_key(client, code).await,

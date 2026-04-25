@@ -28,6 +28,7 @@ pub(crate) mod clash_sandbox;
 pub(crate) mod commit_drain;
 pub(crate) mod config;
 pub(crate) mod dialogs;
+pub(crate) mod dispatch;
 pub(crate) mod editor;
 pub(crate) mod event_loop;
 pub(crate) mod focus;

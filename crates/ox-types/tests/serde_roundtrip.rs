@@ -274,16 +274,46 @@ fn ui_snapshot_inbox_with_search_roundtrip() {
 
 #[test]
 fn input_key_event_roundtrip() {
-    let event = InputKeyEvent {
-        mode: Mode::Normal,
-        key: "j".to_string(),
-        screen: Screen::Inbox,
-    };
+    let event = InputKeyEvent::with_explicit_mode(Mode::Normal, "j", Screen::Inbox);
     let json = serde_json::to_string(&event).unwrap();
     let back: InputKeyEvent = serde_json::from_str(&json).unwrap();
     assert_eq!(back.key, "j");
     assert_eq!(back.screen, Screen::Inbox);
-    assert_eq!(back.mode, Mode::Normal);
+    assert_eq!(back.mode, Some(Mode::Normal));
+}
+
+/// Server-resolution mode: `mode` is omitted entirely. The broker's
+/// `InputStore` mode resolver is responsible for computing it from
+/// live state + the carried modal flags.
+#[test]
+fn input_key_event_resolver_mode_roundtrip() {
+    let event = InputKeyEvent {
+        mode: None,
+        key: "Enter".to_string(),
+        screen: Screen::Thread,
+        flags: ox_types::ClientModalFlags {
+            show_shortcuts: true,
+            ..Default::default()
+        },
+    };
+    let json = serde_json::to_string(&event).unwrap();
+    let back: InputKeyEvent = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.mode, None);
+    assert_eq!(back.key, "Enter");
+    assert!(back.flags.show_shortcuts);
+}
+
+/// Old wire format (mode + key + screen, no flags) decodes to the new
+/// struct with default flags. Guards back-compat for any persisted /
+/// in-flight events from earlier builds.
+#[test]
+fn input_key_event_legacy_wire_decodes() {
+    let json = r#"{"mode":"normal","key":"j","screen":"inbox"}"#;
+    let back: InputKeyEvent = serde_json::from_str(json).unwrap();
+    assert_eq!(back.mode, Some(Mode::Normal));
+    assert_eq!(back.key, "j");
+    assert_eq!(back.screen, Screen::Inbox);
+    assert!(!back.flags.show_shortcuts);
 }
 
 // --- ApprovalResponse ---
