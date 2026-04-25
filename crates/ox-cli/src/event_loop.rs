@@ -362,6 +362,20 @@ pub async fn run_async(
                         }),
                     )
                     .await;
+                // Ensure the agent worker is spawned for this thread.
+                // First-access lazy mount runs the resume classifier and
+                // sets `shell/resume_needed` for `AwaitingApproval` /
+                // `AwaitingToolResult` tails (Task 3d), but the flag only
+                // gets consumed when an `agent_worker` is alive to read
+                // it. In production we previously spawned workers only
+                // on `send_prompt`, which meant a user opening a thread
+                // that was blocked on an approval at exit would NOT see
+                // the modal reappear until they typed something —
+                // breaking the resume promise. Calling `ensure_worker`
+                // here closes that gap. The worker reads the flag, the
+                // kernel prologue re-requests approval, the modal
+                // appears.
+                app.pool.ensure_worker(id);
             }
             if let Some(id) = &effects.archive_thread {
                 if let Ok(id_comp) = PathComponent::try_new(id.as_str()) {

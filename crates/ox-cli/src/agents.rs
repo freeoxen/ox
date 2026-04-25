@@ -195,11 +195,12 @@ impl AgentPool {
     /// `shell/resume_needed` signal and drive one `run_turn` invocation
     /// if the flag is set, then block on `prompt_rx` for further input.
     ///
-    /// Used by post-crash remount paths (tests and, in the future, the
-    /// production startup reconcile) where threads classified as
-    /// `AwaitingApproval` / `AwaitingToolResult` must pick up their
-    /// paused turn without a synthetic user message.
-    #[allow(dead_code)]
+    /// Called from the production thread-open hook (`event_loop` open
+    /// handler) and from tests. A user opening a thread that was
+    /// blocked on an approval at exit must see the modal reappear
+    /// without typing — that requires the worker to be alive to read
+    /// the resume flag the mount lifecycle wrote, which requires
+    /// spawning here even though no prompt has been sent.
     pub fn ensure_worker(&mut self, thread_id: &str) {
         if self.threads.contains_key(thread_id) {
             return;

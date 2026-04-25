@@ -138,10 +138,25 @@ pub fn reconcile(conn: &Connection, threads_dir: &Path) -> Result<(), String> {
         }
     }
 
-    // 6. Sweep stale active states — any thread that was "running" or
-    //    "blocked_on_approval" at startup was interrupted by a previous exit.
+    // 6. Sweep stale active states. A thread that was "running" at exit
+    //    didn't finish its turn; mount-lifecycle will append a TurnAborted
+    //    or ToolAborted marker when the user next opens it, but until
+    //    then the inbox should reflect that the turn was cut short. So
+    //    "running" → "interrupted" stays.
+    //
+    //    "blocked_on_approval" used to also flip to "interrupted" — that
+    //    was correct before Task 3 of the durable-conversation-state plan
+    //    landed. Now that approval resumption is wired (mount lifecycle
+    //    sets `shell/resume_needed` for `AwaitingApproval` shapes; the
+    //    agent worker invokes `run_turn`; the kernel prologue re-requests
+    //    the same approval with `post_crash_reconfirm: false` so the user
+    //    sees the modal again on reopen), a `blocked_on_approval` thread
+    //    is genuinely *resumable*, not interrupted. Leave it alone — the
+    //    inbox badge stays "BLOCKED" until the user opens the thread,
+    //    and the post-turn `agent_worker` updates the state when the
+    //    approval flow concludes.
     conn.execute(
-        "UPDATE threads SET thread_state = 'interrupted' WHERE thread_state IN ('running', 'blocked_on_approval')",
+        "UPDATE threads SET thread_state = 'interrupted' WHERE thread_state = 'running'",
         [],
     )
     .map_err(|e| e.to_string())?;
@@ -235,7 +250,7 @@ mod tests {
     }
 
     #[test]
-    fn reconcile_sweeps_stale_running_to_interrupted() {
+    fn reconcile_sweeps_stale_running_but_preserves_blocked_on_approval() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("inbox.db");
         let threads_dir = dir.path().join("threads");
@@ -284,9 +299,15 @@ mod tests {
             .unwrap()
         };
 
-        // Running and blocked should become interrupted
+        // Running becomes interrupted (turn was cut short, mount-lifecycle
+        // will append a TurnAborted/ToolAborted marker on next open).
         assert_eq!(get_state("t_run"), "interrupted");
-        assert_eq!(get_state("t_block"), "interrupted");
+        // Blocked-on-approval stays blocked — Task 3 of the
+        // durable-conversation-state plan made these resumable.
+        // The mount lifecycle re-requests approval and the user sees
+        // the modal again. Showing "INTERRUPTED" pre-emptively misled
+        // the user into thinking the conversation was lost.
+        assert_eq!(get_state("t_block"), "blocked_on_approval");
         // Idle and errored should be unchanged
         assert_eq!(get_state("t_idle"), "waiting_for_input");
         assert_eq!(get_state("t_err"), "errored");
