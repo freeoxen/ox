@@ -36,6 +36,10 @@ pub struct ProviderEntry {
     pub endpoint: String,
     #[serde(default)]
     pub version: String,
+    /// Auth scheme. `None` (i.e. field absent in TOML) means
+    /// "default for dialect" — see `AuthScheme::default_for_dialect`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<ox_gate::AuthScheme>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -137,6 +141,12 @@ impl OxConfig {
                     dialect,
                     endpoint,
                     version: String::new(),
+                    // Migration can't tell whether the original endpoint
+                    // was authenticated; leave `None` so resolved_auth()
+                    // falls back to the dialect default. Users who set up
+                    // an unauthenticated provider via the new dialog get
+                    // `AuthScheme::None` written explicitly.
+                    auth: None,
                 });
             if let Some(entry) = self.gate.accounts.get_mut(&acct_name) {
                 entry.provider = provider_name;
@@ -161,6 +171,17 @@ impl OxConfig {
                 format!("gate/providers/{name}/version"),
                 Value::String(prov.version.clone()),
             );
+            if let Some(ref auth) = prov.auth {
+                let auth_str = match auth {
+                    ox_gate::AuthScheme::XApiKey => "x-api-key",
+                    ox_gate::AuthScheme::BearerToken => "bearer-token",
+                    ox_gate::AuthScheme::None => "none",
+                };
+                map.insert(
+                    format!("gate/providers/{name}/auth"),
+                    Value::String(auth_str.into()),
+                );
+            }
         }
 
         for (name, entry) in &self.gate.accounts {

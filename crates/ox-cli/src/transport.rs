@@ -1,4 +1,4 @@
-use ox_gate::{ProviderConfig, completion_url, models_url};
+use ox_gate::{AuthScheme, ProviderConfig, completion_url, models_url};
 #[cfg(test)]
 use ox_gate::codec::anthropic as anthropic_codec;
 use ox_gate::codec::{UsageInfo, openai as openai_codec};
@@ -16,31 +16,38 @@ pub fn build_request(
     request: &CompletionRequest,
 ) -> Result<RequestParts, String> {
     let url = completion_url(config);
-    match config.dialect.as_str() {
+
+    // Body is keyed off the wire dialect (Anthropic Messages vs OpenAI
+    // Chat Completions are different shapes).
+    let body_str = match config.dialect.as_str() {
         "openai" => {
             let body = openai_codec::translate_request(request);
-            let body_str = serde_json::to_string(&body).map_err(|e| e.to_string())?;
-            Ok((
-                url,
-                vec![
-                    ("Content-Type".into(), "application/json".into()),
-                    ("Authorization".into(), format!("Bearer {api_key}")),
-                ],
-                body_str,
-            ))
+            serde_json::to_string(&body).map_err(|e| e.to_string())?
         }
-        _ => {
-            let body_str = serde_json::to_string(request).map_err(|e| e.to_string())?;
-            let mut headers = vec![
-                ("Content-Type".into(), "application/json".into()),
-                ("x-api-key".into(), api_key.to_string()),
-            ];
-            if !config.version.is_empty() {
-                headers.push(("anthropic-version".into(), config.version.clone()));
-            }
-            Ok((url, headers, body_str))
+        _ => serde_json::to_string(request).map_err(|e| e.to_string())?,
+    };
+
+    // Headers come from the auth scheme — independent of dialect, so
+    // OpenAI-compatible servers with no auth (LM Studio, Ollama) and
+    // OpenAI-compatible servers with custom auth (Azure, corporate
+    // gateways) can share the dialect without sharing the auth.
+    let mut headers = vec![("Content-Type".into(), "application/json".into())];
+    match config.resolved_auth() {
+        AuthScheme::BearerToken => {
+            headers.push(("Authorization".into(), format!("Bearer {api_key}")));
+        }
+        AuthScheme::XApiKey => {
+            headers.push(("x-api-key".into(), api_key.to_string()));
+        }
+        AuthScheme::None => {
+            // No auth header. Server (or upstream proxy) must not require one.
         }
     }
+    if config.dialect == "anthropic" && !config.version.is_empty() {
+        headers.push(("anthropic-version".into(), config.version.clone()));
+    }
+
+    Ok((url, headers, body_str))
 }
 
 /// Parse an SSE response body using the appropriate dialect codec.
@@ -561,16 +568,17 @@ pub async fn fetch_model_catalog_async(
         };
 
         let mut req = client.get(&url);
-        match config.dialect.as_str() {
-            "openai" => {
+        match config.resolved_auth() {
+            AuthScheme::BearerToken => {
                 req = req.header("Authorization", format!("Bearer {api_key}"));
             }
-            _ => {
+            AuthScheme::XApiKey => {
                 req = req.header("x-api-key", api_key);
-                if !config.version.is_empty() {
-                    req = req.header("anthropic-version", &config.version);
-                }
             }
+            AuthScheme::None => {}
+        }
+        if config.dialect == "anthropic" && !config.version.is_empty() {
+            req = req.header("anthropic-version", &config.version);
         }
 
         let resp = req
@@ -671,6 +679,7 @@ mod tests {
             dialect: "openai".into(),
             endpoint: "http://localhost:8080".into(),
             version: String::new(),
+            auth: None,
         };
         let (url, _, _) = build_request(&config, "key", &sample_request()).unwrap();
         assert_eq!(url, "http://localhost:8080/v1/chat/completions");
@@ -684,9 +693,81 @@ mod tests {
             dialect: "openai".into(),
             endpoint: "http://localhost:8080/v1/chat/completions".into(),
             version: String::new(),
+            auth: None,
         };
         let (url, _, _) = build_request(&config, "key", &sample_request()).unwrap();
         assert_eq!(url, "http://localhost:8080/v1/chat/completions");
+    }
+
+    // -- AuthScheme decision matrix on build_request -----------------------
+
+    #[test]
+    fn unauthenticated_provider_omits_auth_header() {
+        // LM Studio shape: openai dialect, AuthScheme::None.
+        let config = ProviderConfig {
+            dialect: "openai".into(),
+            endpoint: "http://127.0.0.1:1234".into(),
+            version: String::new(),
+            auth: Some(ox_gate::AuthScheme::None),
+        };
+        let (_, headers, _) = build_request(&config, "ignored", &sample_request()).unwrap();
+        assert!(
+            !headers.iter().any(|(k, _)| k == "Authorization" || k == "x-api-key"),
+            "unauthenticated provider must not send an auth header; got {headers:?}"
+        );
+    }
+
+    #[test]
+    fn bearer_provider_sends_authorization_bearer() {
+        let config = ProviderConfig {
+            dialect: "openai".into(),
+            endpoint: "https://api.openai.com".into(),
+            version: String::new(),
+            auth: Some(ox_gate::AuthScheme::BearerToken),
+        };
+        let (_, headers, _) = build_request(&config, "sk-test", &sample_request()).unwrap();
+        assert!(headers.iter().any(|(k, v)| k == "Authorization" && v == "Bearer sk-test"));
+    }
+
+    #[test]
+    fn xapikey_provider_sends_x_api_key() {
+        let config = ProviderConfig {
+            dialect: "anthropic".into(),
+            endpoint: "https://api.anthropic.com".into(),
+            version: "2023-06-01".into(),
+            auth: Some(ox_gate::AuthScheme::XApiKey),
+        };
+        let (_, headers, _) = build_request(&config, "sk-test", &sample_request()).unwrap();
+        assert!(headers.iter().any(|(k, v)| k == "x-api-key" && v == "sk-test"));
+    }
+
+    #[test]
+    fn legacy_anthropic_config_without_auth_still_sends_xapikey() {
+        // Backwards-compat: a user's TOML predating AuthScheme has no
+        // `auth` field. resolved_auth derives x-api-key from dialect.
+        let config = ProviderConfig {
+            dialect: "anthropic".into(),
+            endpoint: "https://api.anthropic.com".into(),
+            version: "2023-06-01".into(),
+            auth: None,
+        };
+        let (_, headers, _) = build_request(&config, "sk-legacy", &sample_request()).unwrap();
+        assert!(headers.iter().any(|(k, v)| k == "x-api-key" && v == "sk-legacy"));
+    }
+
+    #[test]
+    fn auth_and_dialect_are_independent() {
+        // An OpenAI-dialect server with no auth is a legitimate combination
+        // (LM Studio). The auth axis must not be tied to dialect.
+        let config = ProviderConfig {
+            dialect: "openai".into(),
+            endpoint: "http://127.0.0.1:1234".into(),
+            version: String::new(),
+            auth: Some(ox_gate::AuthScheme::None),
+        };
+        let (url, headers, _) = build_request(&config, "", &sample_request()).unwrap();
+        assert_eq!(url, "http://127.0.0.1:1234/v1/chat/completions");
+        assert!(!headers.iter().any(|(k, _)| k == "Authorization" || k == "x-api-key"));
     }
 
     #[test]

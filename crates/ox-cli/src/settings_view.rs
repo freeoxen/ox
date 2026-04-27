@@ -320,7 +320,7 @@ pub(crate) fn draw_account_edit_dialog(
     status_scroll: u16,
     theme: &Theme,
 ) {
-    use crate::settings_state::{DIALECTS, TestStatus};
+    use crate::settings_state::TestStatus;
     use ratatui::widgets::Clear;
 
     // 14 rows: 4 fields, 1 spacer, ~6 rows for a wrapped multi-line
@@ -347,7 +347,7 @@ pub(crate) fn draw_account_edit_dialog(
         return;
     }
 
-    let dialect_str = DIALECTS.get(editing.dialect).unwrap_or(&"anthropic");
+    let preset = editing.preset();
 
     let test_display = match test_status {
         TestStatus::Idle => String::new(),
@@ -380,22 +380,30 @@ pub(crate) fn draw_account_edit_dialog(
         .name
         .render_inline(frame, field0, Style::default(), focus == 0, false);
 
-    // Row 1: API dialect (not a text field)
+    // Row 1: Provider preset selector. The label name shifts from "API"
+    // to "Provider" because users now pick a preset (Anthropic / OpenAI /
+    // LM Studio / Ollama / Custom…) rather than a wire dialect.
     let row1 = Rect::new(inner.x, inner.y + 1, inner.width, 1);
     frame.render_widget(
         Paragraph::new(Line::from(format!(
-            "  API:      {}{} (\u{2190}/\u{2192} to change)",
+            "  Provider: {}{} (\u{2190}/\u{2192} to change)",
             if focus == 1 { cursor } else { no_cursor },
-            dialect_str
+            preset.label
         ))),
         row1,
     );
 
-    // Row 2: Endpoint
+    // Row 2: URL. Editable only when preset is Custom. For built-in
+    // presets the URL is shown dim and can't be edited — the user
+    // shouldn't be telling Anthropic where its own API lives.
     let row2 = Rect::new(inner.x, inner.y + 2, inner.width, 1);
     let label2 = format!(
-        "  Endpoint: {}",
-        if focus == 2 { cursor } else { no_cursor }
+        "  URL:      {}",
+        if focus == 2 && preset.custom {
+            cursor
+        } else {
+            no_cursor
+        }
     );
     frame.render_widget(Paragraph::new(Span::raw(&label2)), row2);
     let field2 = Rect::new(
@@ -404,30 +412,43 @@ pub(crate) fn draw_account_edit_dialog(
         inner.width.saturating_sub(label_w),
         1,
     );
-    if editing.endpoint.is_empty() && focus != 2 {
-        let placeholder = match *dialect_str {
-            "anthropic" => "(api.anthropic.com)",
-            "openai" => "(api.openai.com)",
-            _ => "(default)",
-        };
+    if preset.custom {
+        if editing.endpoint.is_empty() && focus != 2 {
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    "(http://host:port)",
+                    Style::default().add_modifier(Modifier::DIM),
+                )),
+                field2,
+            );
+        } else {
+            editing
+                .endpoint
+                .render_inline(frame, field2, Style::default(), focus == 2, false);
+        }
+    } else {
+        // Locked to the preset; show dim so the user knows it's not editable.
         frame.render_widget(
             Paragraph::new(Span::styled(
-                placeholder,
+                preset.endpoint,
                 Style::default().add_modifier(Modifier::DIM),
             )),
             field2,
         );
-    } else {
-        editing
-            .endpoint
-            .render_inline(frame, field2, Style::default(), focus == 2, false);
     }
 
-    // Row 3: API Key (masked)
+    // Row 3: API Key. Hidden/disabled when the preset's auth is None.
+    // A field that pretends to accept input but is ignored at save time
+    // is worse than no field at all — it's a footgun.
     let row3 = Rect::new(inner.x, inner.y + 3, inner.width, 1);
+    let needs_key = preset.auth.requires_key();
     let label3 = format!(
         "  API Key:  {}",
-        if focus == 3 { cursor } else { no_cursor }
+        if focus == 3 && needs_key {
+            cursor
+        } else {
+            no_cursor
+        }
     );
     frame.render_widget(Paragraph::new(Span::raw(&label3)), row3);
     let field3 = Rect::new(
@@ -436,7 +457,19 @@ pub(crate) fn draw_account_edit_dialog(
         inner.width.saturating_sub(label_w),
         1,
     );
-    if editing.key.is_empty() && focus != 3 {
+    if !needs_key {
+        let auth_label = match preset.auth {
+            ox_gate::AuthScheme::None => "— not required —",
+            _ => "",
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                auth_label,
+                Style::default().add_modifier(Modifier::DIM),
+            )),
+            field3,
+        );
+    } else if editing.key.is_empty() && focus != 3 {
         frame.render_widget(
             Paragraph::new(Span::styled(
                 "(empty)",

@@ -13,7 +13,8 @@ pub mod provider;
 pub use account::AccountConfig;
 pub use codec::UsageInfo;
 pub use provider::{
-    ProviderConfig, completion_url, dialect_paths, models_url, validate_endpoint,
+    AuthScheme, Preset, ProviderConfig, completion_url, dialect_paths, models_url, presets,
+    validate_endpoint,
 };
 
 use ox_kernel::{ModelInfo, ToolSchema};
@@ -163,11 +164,19 @@ impl GateStore {
                 let version = self
                     .config_string(&format!("gate/providers/{name}/version"))
                     .unwrap_or_default();
+                let auth_str = self.config_string(&format!("gate/providers/{name}/auth"));
+                let auth = auth_str.and_then(|s| match s.as_str() {
+                    "x-api-key" => Some(crate::AuthScheme::XApiKey),
+                    "bearer-token" => Some(crate::AuthScheme::BearerToken),
+                    "none" => Some(crate::AuthScheme::None),
+                    _ => None,
+                });
                 tracing::debug!(name, "provider resolved from config-handle leaves");
                 return Some(ProviderConfig {
                     dialect,
                     endpoint,
                     version,
+                    auth,
                 });
             }
         }

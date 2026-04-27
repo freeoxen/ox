@@ -3,7 +3,7 @@
 //! `SettingsShell` wraps `SettingsState` and adds poll / ensure helpers that
 //! were previously inlined in `event_loop.rs`.
 
-use crate::settings_state::{DIALECTS, SettingsFocus, SettingsState, TestStatus};
+use crate::settings_state::{SettingsFocus, SettingsState, TestStatus};
 use crate::shell::Outcome;
 use crate::simple_input::SimpleInput;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -26,6 +26,7 @@ fn resolve_provider_config(
             dialect: entry.dialect.clone(),
             endpoint: entry.endpoint.clone(),
             version: entry.version.clone(),
+            auth: entry.auth.clone(),
         };
     }
     match provider_ref {
@@ -170,17 +171,92 @@ pub(crate) async fn handle_key(
 enum EditAction {
     None,
     Cancel,
-    Save {
-        name: String,
-        provider: String,
-        endpoint: Option<String>,
-        key: String,
-    },
+    Save(SaveSpec),
     /// Stay in the dialog and surface a validation error on the status line.
     /// Used in place of silent `Handled` rejections so the user always sees
     /// why a key (typically Enter) didn't do what they expected.
     Reject(String),
     Handled,
+}
+
+/// Validated payload for a save. Built by `save_action_from_editing` so the
+/// post-match dispatcher receives a fully-resolved spec — provider id, the
+/// concrete `ProviderConfig` to write (only when `custom`), and a key whose
+/// presence-or-absence already matches the auth scheme.
+struct SaveSpec {
+    name: String,
+    /// What to write at `gate.accounts.{name}.provider` — either a built-in
+    /// preset id ("anthropic", "openai", "lm-studio", …) or the account
+    /// name when the user picked Custom (a per-account provider is
+    /// synthesized).
+    provider_ref: String,
+    /// `Some` only for the Custom preset — the user-entered provider
+    /// definition that needs to be written to `gate.providers.{name}`.
+    custom_provider: Option<ox_gate::ProviderConfig>,
+    /// Auth scheme of the chosen preset. Used by the post-match dispatcher
+    /// to decide whether to write a key file at all (LM Studio: skip).
+    auth: ox_gate::AuthScheme,
+    key: String,
+}
+
+/// Validate the dialog state and produce a `SaveSpec`, or a `Reject` with
+/// a specific reason. Single point of save-time validation so every
+/// rejection path produces a status the user can read.
+fn save_action_from_editing(editing: &crate::settings_state::AccountEditFields) -> EditAction {
+    if editing.name.is_empty() {
+        return EditAction::Reject("Name is required.".into());
+    }
+
+    let preset = editing.preset();
+    let auth = preset.auth.clone();
+    let key = editing.key.content().to_owned();
+
+    if auth.requires_key() && key.is_empty() {
+        return EditAction::Reject(format!(
+            "An API key is required for {}.",
+            preset.label
+        ));
+    }
+
+    if preset.custom {
+        let endpoint = editing.endpoint.content().to_owned();
+        if let Err(msg) = ox_gate::validate_endpoint(&endpoint) {
+            return EditAction::Reject(msg);
+        }
+        // Custom: account points at a synthesized provider named after
+        // the account; write a fresh ProviderConfig with the user-supplied
+        // endpoint and the preset's auth (Custom defaults to None — the
+        // user can't change auth from the dialog yet; that's a follow-up).
+        return EditAction::Save(SaveSpec {
+            name: editing.name.content().to_owned(),
+            provider_ref: editing.name.content().to_owned(),
+            custom_provider: Some(ox_gate::ProviderConfig {
+                dialect: preset.dialect.to_string(),
+                endpoint,
+                version: preset.version.to_string(),
+                auth: Some(auth.clone()),
+            }),
+            auth,
+            key,
+        });
+    }
+
+    // Non-custom preset: account points at the preset's canonical id.
+    // The provider entry is written too so the runtime resolves it
+    // through the ConfigStore (without relying on built-in `anthropic` /
+    // `openai` defaults, which lack auth metadata in older configs).
+    EditAction::Save(SaveSpec {
+        name: editing.name.content().to_owned(),
+        provider_ref: preset.id.to_string(),
+        custom_provider: Some(ox_gate::ProviderConfig {
+            dialect: preset.dialect.to_string(),
+            endpoint: preset.endpoint.to_string(),
+            version: preset.version.to_string(),
+            auth: Some(auth.clone()),
+        }),
+        auth,
+        key,
+    })
 }
 
 async fn handle_edit_dialog_key(
@@ -220,45 +296,28 @@ async fn handle_edit_dialog_key(
                 EditAction::Handled
             }
             "Esc" => EditAction::Cancel,
-            "Enter" => {
-                // Validate up-front and surface specific reasons. Empty-name
-                // is the most common silent-failure case; explicit rejection
-                // tells the user what to fix.
-                if editing.name.is_empty() {
-                    EditAction::Reject("Name is required.".into())
-                } else if !editing.endpoint.is_empty() {
-                    match ox_gate::validate_endpoint(editing.endpoint.content()) {
-                        Ok(()) => EditAction::Save {
-                            name: editing.name.content().to_owned(),
-                            provider: DIALECTS[editing.dialect].to_string(),
-                            endpoint: Some(editing.endpoint.content().to_owned()),
-                            key: editing.key.content().to_owned(),
-                        },
-                        Err(msg) => EditAction::Reject(msg),
-                    }
-                } else {
-                    EditAction::Save {
-                        name: editing.name.content().to_owned(),
-                        provider: DIALECTS[editing.dialect].to_string(),
-                        endpoint: None,
-                        key: editing.key.content().to_owned(),
-                    }
-                }
-            }
+            "Enter" => save_action_from_editing(editing),
             "Left" if editing.focus == 1 => {
-                editing.dialect = if editing.dialect == 0 {
-                    DIALECTS.len() - 1
+                let n = ox_gate::presets().len();
+                editing.preset_idx = if editing.preset_idx == 0 {
+                    n - 1
                 } else {
-                    editing.dialect - 1
+                    editing.preset_idx - 1
                 };
+                // When switching to a non-custom preset, refill the
+                // endpoint field with the preset's URL so the user sees
+                // what'll be used. Custom preset keeps whatever was typed.
+                if !editing.preset().custom {
+                    editing.endpoint = SimpleInput::from(editing.preset().endpoint);
+                }
                 EditAction::Handled
             }
             "Right" if editing.focus == 1 => {
-                editing.dialect = if editing.dialect >= DIALECTS.len() - 1 {
-                    0
-                } else {
-                    editing.dialect + 1
-                };
+                let n = ox_gate::presets().len();
+                editing.preset_idx = (editing.preset_idx + 1) % n;
+                if !editing.preset().custom {
+                    editing.endpoint = SimpleInput::from(editing.preset().endpoint);
+                }
                 EditAction::Handled
             }
             "Ctrl+t" => {
@@ -292,32 +351,20 @@ async fn handle_edit_dialog_key(
             settings.set_status(TestStatus::Failed(msg));
             return Outcome::Handled;
         }
-        EditAction::Save {
-            name,
-            provider: dialect,
-            endpoint,
-            key,
-        } => {
-            // The dialog's "provider" field is really the wire dialect.
-            // - No endpoint → account points at the built-in provider whose
-            //   name matches the dialect ("anthropic" / "openai") — those are
-            //   seeded by GateStore::new().
-            // - With endpoint → synthesize a per-account provider entry under
-            //   gate.providers.{name} carrying (dialect, endpoint, version="")
-            //   and point the account at it. This is the same shape the
-            //   legacy-config migration produces.
-            let provider_ref = if endpoint.is_some() {
-                name.clone()
-            } else {
-                dialect.clone()
-            };
+        EditAction::Save(spec) => {
+            let SaveSpec {
+                name,
+                provider_ref,
+                custom_provider,
+                auth,
+                key,
+            } = spec;
 
             tracing::info!(
                 name = %name,
-                dialect = %dialect,
                 provider_ref = %provider_ref,
-                synthesizes_provider = endpoint.is_some(),
-                has_key = !key.is_empty(),
+                synthesizes_provider = custom_provider.is_some(),
+                requires_key = auth.requires_key(),
                 "saving account via ConfigStore"
             );
 
@@ -328,28 +375,58 @@ async fn handle_edit_dialog_key(
                     return Outcome::Handled;
                 }
             };
+            // Provider id (used as path component): either the canonical
+            // preset id ("anthropic", "lm-studio", …) or the account name
+            // (custom). Both are validated as identifiers via PathComponent.
+            let provider_comp = match ox_kernel::PathComponent::try_new(provider_ref.as_str()) {
+                Ok(c) => c,
+                Err(e) => {
+                    settings.set_status(TestStatus::Failed(format!(
+                        "Invalid provider name '{provider_ref}': {e}"
+                    )));
+                    return Outcome::Handled;
+                }
+            };
 
-            if let Some(ep) = endpoint {
+            if let Some(prov) = custom_provider {
                 let dialect_path = ox_path::oxpath!(
-                    "config", "gate", "providers", name_comp.clone(), "dialect"
+                    "config", "gate", "providers", provider_comp.clone(), "dialect"
                 );
-                client.write_typed(&dialect_path, &dialect).await.ok();
+                client.write_typed(&dialect_path, &prov.dialect).await.ok();
                 let endpoint_path = ox_path::oxpath!(
-                    "config", "gate", "providers", name_comp.clone(), "endpoint"
+                    "config", "gate", "providers", provider_comp.clone(), "endpoint"
                 );
-                client.write_typed(&endpoint_path, &ep).await.ok();
+                client.write_typed(&endpoint_path, &prov.endpoint).await.ok();
                 let version_path = ox_path::oxpath!(
-                    "config", "gate", "providers", name_comp.clone(), "version"
+                    "config", "gate", "providers", provider_comp.clone(), "version"
                 );
-                client.write_typed(&version_path, &String::new()).await.ok();
+                client.write_typed(&version_path, &prov.version).await.ok();
+                // Auth scheme as a kebab-case string. GateStore's
+                // resolve_provider parses these back. None means "use
+                // the dialect default"; we always write an explicit value
+                // here so the wire shape is unambiguous.
+                let auth_str = match auth {
+                    ox_gate::AuthScheme::XApiKey => "x-api-key",
+                    ox_gate::AuthScheme::BearerToken => "bearer-token",
+                    ox_gate::AuthScheme::None => "none",
+                };
+                let auth_path = ox_path::oxpath!(
+                    "config", "gate", "providers", provider_comp.clone(), "auth"
+                );
+                client
+                    .write_typed(&auth_path, &auth_str.to_string())
+                    .await
+                    .ok();
             }
 
             let provider_path =
                 ox_path::oxpath!("config", "gate", "accounts", name_comp.clone(), "provider");
             client.write_typed(&provider_path, &provider_ref).await.ok();
 
-            // Write key to ConfigStore + key file
-            if !key.is_empty() {
+            // Write the key only if the auth scheme actually uses one.
+            // Skipping the file write for unauthenticated providers means
+            // a stray empty key file isn't created for LM Studio / Ollama.
+            if auth.requires_key() && !key.is_empty() {
                 let key_path = ox_path::oxpath!("config", "gate", "accounts", name_comp, "key");
                 client.write_typed(&key_path, &key).await.ok();
                 crate::config::write_key_file(&keys_dir, &name, &key).ok();
@@ -416,31 +493,44 @@ async fn handle_edit_dialog_key(
         EditAction::None => {}
     }
 
-    // Handle Ctrl+t for test connection in edit dialog
+    // Handle Ctrl+t for test connection in edit dialog. Builds a transient
+    // ProviderConfig from the chosen preset (with the endpoint substituted
+    // for Custom) and an empty key when auth=None — same shape the save
+    // flow will produce.
     if key_str == "Ctrl+t" {
         if let Some(ref editing) = settings.editing {
-            // Validate the endpoint before issuing a request — surfaces a
-            // clear message instead of a reqwest "builder error" downstream.
-            if !editing.endpoint.is_empty() {
+            let preset = editing.preset();
+
+            // Endpoint check fires only for Custom — preset endpoints are
+            // already valid by construction.
+            let endpoint = if preset.custom {
                 if let Err(msg) = ox_gate::validate_endpoint(editing.endpoint.content()) {
                     settings.set_status(TestStatus::Failed(msg));
                     return Outcome::Handled;
                 }
+                editing.endpoint.content().to_owned()
+            } else {
+                preset.endpoint.to_string()
+            };
+
+            if preset.auth.requires_key() && editing.key.is_empty() {
+                settings.set_status(TestStatus::Failed(format!(
+                    "An API key is required for {}.",
+                    preset.label
+                )));
+                return Outcome::Handled;
             }
 
-            // Empty key is fine for unauthenticated providers.
-            let dialect = DIALECTS[editing.dialect];
-            let mut provider_config = match dialect {
-                "openai" => ox_gate::ProviderConfig::openai(),
-                _ => ox_gate::ProviderConfig::anthropic(),
+            let provider_config = ox_gate::ProviderConfig {
+                dialect: preset.dialect.to_string(),
+                endpoint,
+                version: preset.version.to_string(),
+                auth: Some(preset.auth.clone()),
             };
-            let provider_label = if !editing.endpoint.is_empty() {
-                provider_config.endpoint = editing.endpoint.content().to_owned();
-                // Provider name in errors mirrors what the save flow
-                // would synthesize: a per-account provider entry.
+            let provider_label = if preset.custom {
                 editing.name.content().to_owned()
             } else {
-                dialect.to_string()
+                preset.id.to_string()
             };
             let api_key_for_test = editing.key.content().to_owned();
 
@@ -606,10 +696,11 @@ async fn handle_navigation_key(
         }
         "a" => {
             if settings.focus == SettingsFocus::Accounts {
+                let presets = ox_gate::presets();
                 settings.editing = Some(crate::settings_state::AccountEditFields {
                     name: SimpleInput::new(),
-                    dialect: 0,
-                    endpoint: SimpleInput::new(),
+                    preset_idx: 0,
+                    endpoint: SimpleInput::from(presets[0].endpoint),
                     key: SimpleInput::new(),
                     focus: 0,
                     is_new: true,
@@ -621,10 +712,6 @@ async fn handle_navigation_key(
         "e" => {
             if settings.focus == SettingsFocus::Accounts {
                 if let Some(acct) = settings.accounts.get(settings.selected_account) {
-                    let dialect_idx = DIALECTS
-                        .iter()
-                        .position(|d| *d == acct.dialect)
-                        .unwrap_or(0);
                     let keys_dir = inbox_root.join("keys");
                     let key_val =
                         crate::config::read_key_file(&keys_dir, &acct.name).unwrap_or_default();
@@ -632,30 +719,36 @@ async fn handle_navigation_key(
                         inbox_root,
                         &crate::config::CliOverrides::default(),
                     );
-                    // Endpoint to prefill the dialog comes from the provider
-                    // the account points at — but only when that's a custom
-                    // (non-builtin) provider. Built-ins ("anthropic" /
-                    // "openai") leave the endpoint blank so the placeholder
-                    // hint shows instead of the canonical URL.
                     let provider_ref = config
                         .gate
                         .accounts
                         .get(&acct.name)
                         .map(|e| e.provider.clone())
                         .unwrap_or_default();
-                    let endpoint = if provider_ref == "anthropic" || provider_ref == "openai" {
-                        String::new()
-                    } else {
+                    // Map the existing account onto a preset by id when
+                    // possible. If the account points at a per-account or
+                    // unknown provider, fall back to the Custom preset and
+                    // prefill the endpoint from the provider entry.
+                    let presets = ox_gate::presets();
+                    let preset_idx = presets
+                        .iter()
+                        .position(|p| !p.custom && p.id == provider_ref)
+                        .unwrap_or_else(|| {
+                            presets.iter().position(|p| p.custom).unwrap_or(0)
+                        });
+                    let endpoint = if presets[preset_idx].custom {
                         config
                             .gate
                             .providers
                             .get(&provider_ref)
                             .map(|p| p.endpoint.clone())
                             .unwrap_or_default()
+                    } else {
+                        presets[preset_idx].endpoint.to_string()
                     };
                     settings.editing = Some(crate::settings_state::AccountEditFields {
                         name: SimpleInput::from(&acct.name),
-                        dialect: dialect_idx,
+                        preset_idx,
                         endpoint: SimpleInput::from(&endpoint),
                         key: SimpleInput::from(&key_val),
                         focus: 0,

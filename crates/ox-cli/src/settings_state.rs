@@ -27,30 +27,57 @@ pub enum WizardStep {
 }
 
 /// Fields for the account add/edit dialog.
+///
+/// The user picks a `preset_idx` from `ox_gate::presets()`. Non-custom
+/// presets pin dialect/endpoint/version/auth to known values; the user
+/// only types the account name and (when auth requires it) a key. Picking
+/// the `Custom…` preset unlocks all four fields for direct editing.
 #[derive(Debug, Clone)]
 pub struct AccountEditFields {
     pub name: SimpleInput,
-    pub dialect: usize, // 0=anthropic, 1=openai
+    /// Index into `ox_gate::presets()`.
+    pub preset_idx: usize,
+    /// Editable view of the preset's endpoint. Visible always; editable
+    /// only when the current preset is `Custom`.
     pub endpoint: SimpleInput,
     pub key: SimpleInput,
-    pub focus: usize, // 0=name, 1=dialect, 2=endpoint, 3=key
+    /// 0 = name, 1 = preset, 2 = endpoint (custom only), 3 = key.
+    pub focus: usize,
     pub is_new: bool,
 }
 
 impl AccountEditFields {
-    /// Return a mutable reference to the SimpleInput for the currently focused
-    /// text field, or None if the focused field is not a text field (e.g. dialect).
+    /// Mutable reference to the focused text field, or None if the focus
+    /// is on a selector (preset) or a disabled field (endpoint when the
+    /// preset isn't Custom; key when auth is None).
     pub fn focused_input(&mut self) -> Option<&mut SimpleInput> {
         match self.focus {
             0 => Some(&mut self.name),
-            2 => Some(&mut self.endpoint),
-            3 => Some(&mut self.key),
+            2 => {
+                if self.preset().custom {
+                    Some(&mut self.endpoint)
+                } else {
+                    None
+                }
+            }
+            3 => {
+                if self.preset().auth.requires_key() {
+                    Some(&mut self.key)
+                } else {
+                    None
+                }
+            }
             _ => None,
         }
     }
+
+    /// The currently selected preset.
+    pub fn preset(&self) -> &'static ox_gate::Preset {
+        let presets = ox_gate::presets();
+        &presets[self.preset_idx.min(presets.len() - 1)]
+    }
 }
 
-pub const DIALECTS: [&str; 2] = ["anthropic", "openai"];
 
 /// Test connection status.
 #[derive(Debug, Clone)]
@@ -186,8 +213,8 @@ impl SettingsState {
         s.wizard = Some(WizardStep::AddAccount);
         s.editing = Some(AccountEditFields {
             name: SimpleInput::new(),
-            dialect: 0,
-            endpoint: SimpleInput::new(),
+            preset_idx: 0,
+            endpoint: SimpleInput::from(ox_gate::presets()[0].endpoint),
             key: SimpleInput::new(),
             focus: 0,
             is_new: true,

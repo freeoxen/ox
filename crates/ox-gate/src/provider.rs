@@ -3,8 +3,48 @@
 //! `endpoint` is the **base URL** the dialect dispatches against; the request
 //! path (`/v1/messages`, `/v1/chat/completions`, `/v1/models`, …) is owned by
 //! the dialect, not the user. See [`dialect_paths`].
+//!
+//! Authentication is modeled explicitly on `ProviderConfig` via [`AuthScheme`]
+//! rather than inferred from the dialect or the host. That way the question
+//! "does this provider need an API key?" has one answer (the field), not many
+//! (heuristics scattered across UI / startup / transport that drift apart).
 
 use serde::{Deserialize, Serialize};
+
+/// How a provider authenticates.
+///
+/// Modeled as data on the provider so every code path that asks "does this
+/// require a key?" (UI dialog, startup gate, request builder, test
+/// connection) reads the same authoritative answer. Adding a new auth shape
+/// (Azure's `api-key`, Vertex's bearer-with-prefix, …) is a new variant.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum AuthScheme {
+    /// `x-api-key: {key}` — Anthropic.
+    XApiKey,
+    /// `Authorization: Bearer {key}` — OpenAI and most cloud OpenAI-compat.
+    BearerToken,
+    /// No auth header — local servers (LM Studio, Ollama, vLLM by default).
+    None,
+}
+
+impl AuthScheme {
+    /// `true` if a key is required for this scheme. Used by validation
+    /// at the Settings save boundary and at startup.
+    pub fn requires_key(&self) -> bool {
+        !matches!(self, AuthScheme::None)
+    }
+
+    /// Default for a dialect when no explicit scheme is set in config.
+    /// Old configs missing the `auth` field deserialize to `None` and then
+    /// resolve to this — keeps existing user data working without a write.
+    pub fn default_for_dialect(dialect: &str) -> Self {
+        match dialect {
+            "openai" => AuthScheme::BearerToken,
+            _ => AuthScheme::XApiKey,
+        }
+    }
+}
 
 /// Configuration for an LLM provider endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,6 +56,13 @@ pub struct ProviderConfig {
     pub endpoint: String,
     /// API version header (e.g. `"2023-06-01"` for Anthropic; empty for OpenAI).
     pub version: String,
+    /// Auth scheme. `None` here means "not specified" → `resolved_auth()`
+    /// derives from dialect. Concrete `Some(AuthScheme::None)` means the
+    /// provider explicitly takes no auth (LM Studio, Ollama). The
+    /// distinction matters for backwards-compatible deserialization of
+    /// configs written before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<AuthScheme>,
 }
 
 impl ProviderConfig {
@@ -25,6 +72,7 @@ impl ProviderConfig {
             dialect: "anthropic".to_string(),
             endpoint: "https://api.anthropic.com".to_string(),
             version: "2023-06-01".to_string(),
+            auth: Some(AuthScheme::XApiKey),
         }
     }
 
@@ -34,8 +82,94 @@ impl ProviderConfig {
             dialect: "openai".to_string(),
             endpoint: "https://api.openai.com".to_string(),
             version: String::new(),
+            auth: Some(AuthScheme::BearerToken),
         }
     }
+
+    /// The effective auth scheme, falling back to the dialect default when
+    /// no explicit `auth` is set. Always prefer this over reading `auth`
+    /// directly so legacy configs work uniformly.
+    pub fn resolved_auth(&self) -> AuthScheme {
+        self.auth
+            .clone()
+            .unwrap_or_else(|| AuthScheme::default_for_dialect(&self.dialect))
+    }
+}
+
+/// A user-facing provider preset. Bundles the four knobs (dialect,
+/// endpoint, version, auth) so a user picks one name and gets a
+/// fully-formed configuration. `Custom` is the escape hatch — when chosen,
+/// the Settings UI exposes all four fields for direct editing.
+#[derive(Debug, Clone)]
+pub struct Preset {
+    /// User-facing label.
+    pub label: &'static str,
+    /// Canonical id used as the `gate.providers.{id}` key when this preset
+    /// is the basis for a synthesized provider entry. Empty for `Custom`.
+    pub id: &'static str,
+    pub dialect: &'static str,
+    pub endpoint: &'static str,
+    pub version: &'static str,
+    pub auth: AuthScheme,
+    /// Whether selecting this preset should leave fields editable in the UI.
+    /// `true` only for `Custom`; everything else is preset-locked unless the
+    /// user explicitly picks `Custom`.
+    pub custom: bool,
+}
+
+/// Built-in provider presets, in display order. Order matters: the first
+/// is the default selection in the Add Account dialog.
+pub fn presets() -> &'static [Preset] {
+    // Function rather than `const` because `AuthScheme` is not `Copy` for
+    // forward-compat (e.g. a future `Custom { header, prefix }` variant
+    // could carry owned strings).
+    &[
+        Preset {
+            label: "Anthropic",
+            id: "anthropic",
+            dialect: "anthropic",
+            endpoint: "https://api.anthropic.com",
+            version: "2023-06-01",
+            auth: AuthScheme::XApiKey,
+            custom: false,
+        },
+        Preset {
+            label: "OpenAI",
+            id: "openai",
+            dialect: "openai",
+            endpoint: "https://api.openai.com",
+            version: "",
+            auth: AuthScheme::BearerToken,
+            custom: false,
+        },
+        Preset {
+            label: "LM Studio (local)",
+            id: "lm-studio",
+            dialect: "openai",
+            endpoint: "http://127.0.0.1:1234",
+            version: "",
+            auth: AuthScheme::None,
+            custom: false,
+        },
+        Preset {
+            label: "Ollama (local)",
+            id: "ollama",
+            dialect: "openai",
+            endpoint: "http://127.0.0.1:11434",
+            version: "",
+            auth: AuthScheme::None,
+            custom: false,
+        },
+        Preset {
+            label: "Custom…",
+            id: "",
+            dialect: "openai",
+            endpoint: "",
+            version: "",
+            auth: AuthScheme::None,
+            custom: true,
+        },
+    ]
 }
 
 /// Per-dialect URL paths. `endpoint + completion_path` forms the completion
@@ -158,6 +292,7 @@ mod tests {
             dialect: "openai".into(),
             endpoint: "http://127.0.0.1:1234/".into(),
             version: String::new(),
+            auth: None,
         };
         assert_eq!(
             completion_url(&pc),
@@ -172,6 +307,7 @@ mod tests {
             dialect: "openai".into(),
             endpoint: "http://127.0.0.1:1234/v1/chat/completions".into(),
             version: String::new(),
+            auth: None,
         };
         assert_eq!(
             completion_url(&pc),
@@ -193,6 +329,7 @@ mod tests {
             dialect: "openai".into(),
             endpoint: "http://127.0.0.1:1234/v1/chat/completions".into(),
             version: String::new(),
+            auth: None,
         };
         assert_eq!(models_url(&pc), "http://127.0.0.1:1234/v1/models");
     }
@@ -220,5 +357,108 @@ mod tests {
     fn validate_rejects_missing_host() {
         assert!(validate_endpoint("http://").is_err());
         assert!(validate_endpoint("https:///path").is_err());
+    }
+
+    // -- AuthScheme ----------------------------------------------------------
+
+    #[test]
+    fn auth_scheme_requires_key_matches_intent() {
+        assert!(AuthScheme::XApiKey.requires_key());
+        assert!(AuthScheme::BearerToken.requires_key());
+        assert!(!AuthScheme::None.requires_key());
+    }
+
+    #[test]
+    fn auth_scheme_default_by_dialect() {
+        assert_eq!(
+            AuthScheme::default_for_dialect("anthropic"),
+            AuthScheme::XApiKey
+        );
+        assert_eq!(
+            AuthScheme::default_for_dialect("openai"),
+            AuthScheme::BearerToken
+        );
+        // Unknown dialects fall back to anthropic — same shape as the rest
+        // of the codebase. Better to fail loud at request time than to
+        // silently default to "no auth".
+        assert_eq!(
+            AuthScheme::default_for_dialect("mystery"),
+            AuthScheme::XApiKey
+        );
+    }
+
+    #[test]
+    fn provider_resolved_auth_uses_explicit_when_set() {
+        let pc = ProviderConfig {
+            dialect: "openai".into(),
+            endpoint: "http://localhost:1234".into(),
+            version: String::new(),
+            auth: Some(AuthScheme::None),
+        };
+        assert_eq!(pc.resolved_auth(), AuthScheme::None);
+    }
+
+    #[test]
+    fn provider_resolved_auth_falls_back_to_dialect_default() {
+        // Legacy config: no `auth` field. resolved_auth derives from dialect.
+        let pc = ProviderConfig {
+            dialect: "anthropic".into(),
+            endpoint: "https://api.anthropic.com".into(),
+            version: "2023-06-01".into(),
+            auth: None,
+        };
+        assert_eq!(pc.resolved_auth(), AuthScheme::XApiKey);
+
+        let pc = ProviderConfig {
+            dialect: "openai".into(),
+            endpoint: "https://api.openai.com".into(),
+            version: String::new(),
+            auth: None,
+        };
+        assert_eq!(pc.resolved_auth(), AuthScheme::BearerToken);
+    }
+
+    #[test]
+    fn provider_config_deserializes_legacy_without_auth_field() {
+        // A TOML/JSON config written before AuthScheme existed must still
+        // deserialize cleanly and resolve to a sensible default.
+        let json = serde_json::json!({
+            "dialect": "anthropic",
+            "endpoint": "https://api.anthropic.com",
+            "version": "2023-06-01",
+        });
+        let pc: ProviderConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(pc.auth, None);
+        assert_eq!(pc.resolved_auth(), AuthScheme::XApiKey);
+    }
+
+    // -- Presets -------------------------------------------------------------
+
+    #[test]
+    fn presets_includes_local_servers() {
+        let labels: Vec<&str> = presets().iter().map(|p| p.label).collect();
+        assert!(labels.contains(&"Anthropic"));
+        assert!(labels.contains(&"OpenAI"));
+        assert!(labels.contains(&"LM Studio (local)"));
+        assert!(labels.contains(&"Ollama (local)"));
+        assert!(labels.iter().any(|l| l.starts_with("Custom")));
+    }
+
+    #[test]
+    fn local_presets_have_no_auth() {
+        for p in presets() {
+            if p.label.contains("local") {
+                assert_eq!(p.auth, AuthScheme::None, "{} should be unauthenticated", p.label);
+            }
+        }
+    }
+
+    #[test]
+    fn cloud_presets_require_auth() {
+        for p in presets() {
+            if matches!(p.id, "anthropic" | "openai") {
+                assert!(p.auth.requires_key(), "{} must require a key", p.label);
+            }
+        }
     }
 }
