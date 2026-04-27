@@ -23,6 +23,11 @@ struct CliCompletionTransport {
     client: reqwest::blocking::Client,
     config: ProviderConfig,
     api_key: String,
+    /// Account name routed through this transport — surfaced in error
+    /// messages so users see which account a failing call belonged to.
+    account: String,
+    /// Provider the account points at (e.g. "anthropic", "lm-studio").
+    provider: String,
     scoped_client: ox_broker::ClientHandle,
     rt_handle: tokio::runtime::Handle,
 }
@@ -35,11 +40,13 @@ impl CompletionTransport for CliCompletionTransport {
     ) -> Result<ox_tools::completion::CompletionOutput, String> {
         let scoped = self.scoped_client.clone();
         let handle = self.rt_handle.clone();
+        let ctx = crate::transport::CallContext::new(&self.provider).with_account(&self.account);
         let (events, usage) = crate::transport::streaming_fetch(
             &self.client,
             &self.config,
             &self.api_key,
             request,
+            &ctx,
             &|event| {
                 on_event(event);
                 if let StreamEvent::TextDelta(text) = event {
@@ -408,7 +415,7 @@ fn agent_worker(
         .ok()
         .flatten()
         .unwrap_or_else(|| "anthropic".to_string());
-    let (provider, api_key_for_transport, endpoint_override) =
+    let (provider, api_key_for_transport) =
         match ox_kernel::PathComponent::try_new(default_account.as_str()) {
             Ok(acct_comp) => {
                 let prov = adapter
@@ -422,39 +429,39 @@ fn agent_worker(
                     .flatten()
                     .unwrap_or_else(|| "anthropic".to_string());
                 let key = adapter
-                    .read_typed::<String>(&ox_path::oxpath!(
-                        "gate",
-                        "accounts",
-                        acct_comp.clone(),
-                        "key"
-                    ))
+                    .read_typed::<String>(&ox_path::oxpath!("gate", "accounts", acct_comp, "key"))
                     .ok()
                     .flatten()
                     .unwrap_or_default();
-                let ep = adapter
-                    .read_typed::<String>(&ox_path::oxpath!(
-                        "gate",
-                        "accounts",
-                        acct_comp,
-                        "endpoint"
-                    ))
-                    .ok()
-                    .flatten()
-                    .filter(|s| !s.is_empty());
-                (prov, key, ep)
+                (prov, key)
             }
             Err(e) => {
                 tracing::warn!(error = %e, account = %default_account, "invalid account name for path");
-                ("anthropic".to_string(), String::new(), None)
+                ("anthropic".to_string(), String::new())
             }
         };
-    let mut provider_config = match provider.as_str() {
-        "openai" => ProviderConfig::openai(),
-        _ => ProviderConfig::anthropic(),
+
+    // Resolve dialect/endpoint/version from gate/providers/{provider}. GateStore
+    // is the source of truth — built-in providers (anthropic, openai) are seeded
+    // there at construction; user-defined providers (e.g. lm-studio) live there
+    // too. Falls back to ProviderConfig::anthropic() only when the lookup fails.
+    let provider_config = match ox_kernel::PathComponent::try_new(provider.as_str()) {
+        Ok(prov_comp) => adapter
+            .read_typed::<ProviderConfig>(&ox_path::oxpath!("gate", "providers", prov_comp))
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    provider = %provider,
+                    "no gate/providers entry; falling back to anthropic defaults"
+                );
+                ProviderConfig::anthropic()
+            }),
+        Err(e) => {
+            tracing::warn!(error = %e, provider = %provider, "invalid provider name for path");
+            ProviderConfig::anthropic()
+        }
     };
-    if let Some(ep) = endpoint_override {
-        provider_config.endpoint = ep;
-    }
 
     // Inject the CLI completion transport into the CompletionModule.
     // This gives CompletionModule the ability to execute LLM completions
@@ -469,6 +476,8 @@ fn agent_worker(
             client: reqwest::blocking::Client::new(),
             config: provider_config.clone(),
             api_key: api_key_for_transport.clone(),
+            account: default_account.clone(),
+            provider: provider.clone(),
             scoped_client: scoped_client.clone(),
             rt_handle: rt_handle.clone(),
         }),

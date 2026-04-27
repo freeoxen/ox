@@ -30,6 +30,7 @@ mod settings_view;
 mod shell;
 mod simple_input;
 mod tab_bar;
+mod text_pane;
 #[allow(dead_code)]
 mod test_support;
 mod text_input_view;
@@ -124,7 +125,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "config resolved"
     );
 
-    // Validate config: catch mismatches that would silently cause 401s
+    // Validate that the default account actually exists. Missing-key is no
+    // longer a hard error — unauthenticated providers (LM Studio, Ollama) are
+    // valid, and authenticated providers now surface a precise 401 message at
+    // request time that names the URL, account, provider, and dialect.
     if !needs_setup {
         let default_acct = &resolved.gate.defaults.account;
         if !resolved.gate.accounts.contains_key(default_acct) {
@@ -148,16 +152,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(1);
         }
         if !resolved_keys.contains_key(default_acct) {
-            tracing::error!(
+            tracing::info!(
                 default_account = %default_acct,
-                "no API key found for default account"
+                "no API key for default account — assuming an unauthenticated provider; \
+                 if the provider does require auth, the request will surface a 401"
             );
-            eprintln!(
-                "error: no API key for account '{}'.\n\
-                 Run `ox init` to reconfigure, or add key to ~/.ox/keys/{}.key",
-                default_acct, default_acct
-            );
-            std::process::exit(1);
         }
     }
 

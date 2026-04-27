@@ -1,5 +1,13 @@
 //! Config resolution via figment — defaults → TOML file → env vars → CLI flags.
-//! Config shape: gate.accounts.{name}.{provider,endpoint} + gate.defaults.{account,model,max_tokens}
+//!
+//! Config shape mirrors ox-gate's namespace:
+//! - `gate.providers.{name}.{dialect, endpoint, version}` — provider definitions
+//! - `gate.accounts.{name}.provider` — account points at a provider
+//! - `gate.defaults.{account, model, max_tokens}` — selection
+//!
+//! Legacy `gate.accounts.{name}.endpoint` is migrated on load: a provider entry
+//! named after the account is synthesized and the account is rewritten to point
+//! at it. This preserves user data through the schema split.
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -15,15 +23,27 @@ pub struct OxConfig {
 #[derive(Debug, Deserialize, Serialize, Default, Clone)]
 pub struct GateConfig {
     #[serde(default)]
+    pub providers: HashMap<String, ProviderEntry>,
+    #[serde(default)]
     pub accounts: HashMap<String, AccountEntry>,
     #[serde(default)]
     pub defaults: DefaultsConfig,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ProviderEntry {
+    pub dialect: String,
+    pub endpoint: String,
+    #[serde(default)]
+    pub version: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct AccountEntry {
     pub provider: String,
-    #[serde(default)]
+    /// Deprecated. Present only to migrate older config files; never emitted
+    /// by `to_flat_map`. Use `gate.providers.{name}` instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
 }
 
@@ -77,19 +97,77 @@ impl OxConfig {
         }
     }
 
+    /// One-shot migration of legacy `gate.accounts.{name}.endpoint` fields:
+    /// for each account that carries an inline endpoint, synthesize a
+    /// `gate.providers.{name}` entry (dialect inherited from the account's
+    /// `provider` string when it matches a known dialect, defaulted to
+    /// "anthropic" otherwise) and rewrite the account to point at it.
+    ///
+    /// Idempotent: a second run on already-migrated config is a no-op.
+    pub fn migrate_legacy_account_endpoints(&mut self) {
+        let legacy: Vec<(String, String, String)> = self
+            .gate
+            .accounts
+            .iter()
+            .filter_map(|(name, entry)| {
+                entry
+                    .endpoint
+                    .as_ref()
+                    .filter(|s| !s.is_empty())
+                    .map(|ep| (name.clone(), entry.provider.clone(), ep.clone()))
+            })
+            .collect();
+
+        for (acct_name, prev_provider, endpoint) in legacy {
+            let dialect = match prev_provider.as_str() {
+                "openai" => "openai".to_string(),
+                "anthropic" => "anthropic".to_string(),
+                _ => prev_provider.clone(),
+            };
+            let provider_name = acct_name.clone();
+            tracing::warn!(
+                account = %acct_name,
+                provider = %provider_name,
+                "migrating legacy accounts.{{name}}.endpoint into gate.providers"
+            );
+            self.gate
+                .providers
+                .entry(provider_name.clone())
+                .or_insert(ProviderEntry {
+                    dialect,
+                    endpoint,
+                    version: String::new(),
+                });
+            if let Some(entry) = self.gate.accounts.get_mut(&acct_name) {
+                entry.provider = provider_name;
+                entry.endpoint = None;
+            }
+        }
+    }
+
     pub fn to_flat_map(&self) -> BTreeMap<String, Value> {
         let mut map = BTreeMap::new();
+
+        for (name, prov) in &self.gate.providers {
+            map.insert(
+                format!("gate/providers/{name}/dialect"),
+                Value::String(prov.dialect.clone()),
+            );
+            map.insert(
+                format!("gate/providers/{name}/endpoint"),
+                Value::String(prov.endpoint.clone()),
+            );
+            map.insert(
+                format!("gate/providers/{name}/version"),
+                Value::String(prov.version.clone()),
+            );
+        }
+
         for (name, entry) in &self.gate.accounts {
             map.insert(
                 format!("gate/accounts/{name}/provider"),
                 Value::String(entry.provider.clone()),
             );
-            if let Some(ref ep) = entry.endpoint {
-                map.insert(
-                    format!("gate/accounts/{name}/endpoint"),
-                    Value::String(ep.clone()),
-                );
-            }
         }
         map.insert(
             "gate/defaults/account".into(),
@@ -133,8 +211,10 @@ pub fn resolve_config(config_dir: &std::path::Path, overrides: &CliOverrides) ->
         .merge(Env::prefixed("OX_").split("__"));
 
     let mut config: OxConfig = figment.extract().unwrap_or_default();
+    config.migrate_legacy_account_endpoints();
     config.apply_overrides(overrides);
     tracing::debug!(
+        providers = config.gate.providers.len(),
         accounts = config.gate.accounts.len(),
         account_names = ?config.gate.accounts.keys().collect::<Vec<_>>(),
         default_account = %config.gate.defaults.account,
@@ -262,12 +342,15 @@ mod tests {
         std::fs::write(
             dir.path().join("config.toml"),
             r#"
+[gate.providers.lm-studio]
+dialect = "openai"
+endpoint = "http://127.0.0.1:1234"
+
 [gate.accounts.personal]
 provider = "anthropic"
 
-[gate.accounts.openai]
-provider = "openai"
-endpoint = "https://custom.openai.example/v1/chat/completions"
+[gate.accounts.local]
+provider = "lm-studio"
 
 [gate.defaults]
 account = "personal"
@@ -282,16 +365,47 @@ max_tokens = 8192
         assert_eq!(config.gate.defaults.max_tokens, 8192);
         assert_eq!(config.gate.accounts.len(), 2);
         assert_eq!(config.gate.accounts["personal"].provider, "anthropic");
-        assert!(config.gate.accounts["personal"].endpoint.is_none());
+        assert_eq!(config.gate.accounts["local"].provider, "lm-studio");
+        assert_eq!(config.gate.providers["lm-studio"].dialect, "openai");
         assert_eq!(
-            config.gate.accounts["openai"].endpoint.as_deref(),
-            Some("https://custom.openai.example/v1/chat/completions")
+            config.gate.providers["lm-studio"].endpoint,
+            "http://127.0.0.1:1234"
         );
 
         let flat = config.to_flat_map();
         assert!(flat.contains_key("gate/accounts/personal/provider"));
-        assert!(!flat.contains_key("gate/accounts/personal/endpoint"));
-        assert!(flat.contains_key("gate/accounts/openai/endpoint"));
+        assert!(flat.contains_key("gate/accounts/local/provider"));
+        assert!(flat.contains_key("gate/providers/lm-studio/dialect"));
+        assert!(flat.contains_key("gate/providers/lm-studio/endpoint"));
+        assert!(!flat.keys().any(|k| k.ends_with("/accounts/local/endpoint")));
+    }
+
+    #[test]
+    fn legacy_account_endpoint_is_migrated_to_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            r#"
+[gate.accounts.local]
+provider = "openai"
+endpoint = "http://127.0.0.1:1234/v1/chat/completions"
+"#,
+        )
+        .unwrap();
+        let config = resolve_config(dir.path(), &CliOverrides::default());
+
+        // Account no longer carries an inline endpoint…
+        assert!(config.gate.accounts["local"].endpoint.is_none());
+        // …it now points at a synthesized provider named after the account.
+        let provider_name = &config.gate.accounts["local"].provider;
+        let prov = &config.gate.providers[provider_name];
+        assert_eq!(prov.dialect, "openai");
+        assert_eq!(prov.endpoint, "http://127.0.0.1:1234/v1/chat/completions");
+
+        // Flat map carries the provider entry, not the legacy account endpoint.
+        let flat = config.to_flat_map();
+        assert!(flat.contains_key(&format!("gate/providers/{provider_name}/endpoint")));
+        assert!(!flat.keys().any(|k| k.ends_with("accounts/local/endpoint")));
     }
 
     #[test]

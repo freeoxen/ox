@@ -15,7 +15,7 @@
 use ox_context::{Namespace, SystemProvider};
 use ox_core::{AgentEvent, CompletionRequest, ContentBlock};
 use ox_gate::codec::{anthropic as anthropic_codec, openai as openai_codec};
-use ox_gate::{AccountConfig, GateStore, ProviderConfig};
+use ox_gate::{AccountConfig, GateStore, ProviderConfig, completion_url, models_url};
 use ox_history::HistoryView;
 use ox_kernel::ModelInfo;
 use ox_kernel::log::{LogStore, SharedLog};
@@ -529,9 +529,9 @@ async fn fetch_completion(
     opts.set_body(&JsValue::from_str(&request_body));
     opts.set_headers(&headers);
 
-    let endpoint = &config.endpoint;
-    let request =
-        web_sys::Request::new_with_str_and_init(endpoint, &opts).map_err(|e| format!("{e:?}"))?;
+    let endpoint = completion_url(config);
+    let request = web_sys::Request::new_with_str_and_init(&endpoint, &opts)
+        .map_err(|e| format!("{e:?}"))?;
 
     let resp_value = wasm_bindgen_futures::JsFuture::from(window.fetch_with_request(&request))
         .await
@@ -600,15 +600,9 @@ async fn fetch_model_catalog(
         }
     }
 
-    // Derive the models list endpoint from the completion endpoint.
-    // "https://api.anthropic.com/v1/messages" → "https://api.anthropic.com/v1/models"
-    // "https://api.openai.com/v1/chat/completions" → "https://api.openai.com/v1/models"
-    let base = config
-        .endpoint
-        .rfind("/v1/")
-        .map(|i| &config.endpoint[..i + 4])
-        .unwrap_or(&config.endpoint);
-    let models_base = format!("{base}models");
+    // Models URL is derived by the dialect (`models_url(config)`); the user's
+    // `endpoint` carries only the base host.
+    let models_base = models_url(config);
 
     let mut all_models: Vec<ModelInfo> = Vec::new();
     let mut after_id: Option<String> = None;

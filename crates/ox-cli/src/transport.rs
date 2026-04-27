@@ -1,4 +1,4 @@
-use ox_gate::ProviderConfig;
+use ox_gate::{ProviderConfig, completion_url, models_url};
 #[cfg(test)]
 use ox_gate::codec::anthropic as anthropic_codec;
 use ox_gate::codec::{UsageInfo, openai as openai_codec};
@@ -15,12 +15,13 @@ pub fn build_request(
     api_key: &str,
     request: &CompletionRequest,
 ) -> Result<RequestParts, String> {
+    let url = completion_url(config);
     match config.dialect.as_str() {
         "openai" => {
             let body = openai_codec::translate_request(request);
             let body_str = serde_json::to_string(&body).map_err(|e| e.to_string())?;
             Ok((
-                config.endpoint.clone(),
+                url,
                 vec![
                     ("Content-Type".into(), "application/json".into()),
                     ("Authorization".into(), format!("Bearer {api_key}")),
@@ -37,7 +38,7 @@ pub fn build_request(
             if !config.version.is_empty() {
                 headers.push(("anthropic-version".into(), config.version.clone()));
             }
-            Ok((config.endpoint.clone(), headers, body_str))
+            Ok((url, headers, body_str))
         }
     }
 }
@@ -235,6 +236,170 @@ impl SseParser {
     }
 }
 
+/// Identifying context for HTTP errors so the user-facing message names the
+/// account, provider, and URL the request actually hit. `account` is `None`
+/// during one-shot test connections from the Settings dialog (no saved
+/// account yet); `provider` is the provider name (e.g. "anthropic",
+/// "lm-studio") that the account points at.
+#[derive(Debug, Clone)]
+pub struct CallContext<'a> {
+    pub account: Option<&'a str>,
+    pub provider: &'a str,
+}
+
+impl<'a> CallContext<'a> {
+    pub fn new(provider: &'a str) -> Self {
+        Self {
+            account: None,
+            provider,
+        }
+    }
+    pub fn with_account(mut self, account: &'a str) -> Self {
+        self.account = Some(account);
+        self
+    }
+}
+
+/// Format an HTTP failure into a multi-line message that names every piece
+/// of context the user needs to debug it: account, provider, dialect, URL,
+/// status, and (when we can guess) a one-line hint.
+fn format_http_error(
+    config: &ProviderConfig,
+    ctx: &CallContext<'_>,
+    url: &str,
+    status: u16,
+    body: &str,
+) -> String {
+    let account = ctx.account.unwrap_or("(test)");
+    let mut msg = format!(
+        "HTTP {status} from {url}\n  \
+         account=\"{account}\" provider=\"{provider}\" dialect={dialect}",
+        provider = ctx.provider,
+        dialect = config.dialect,
+    );
+    if let Some(hint) = http_error_hint(config, status, body) {
+        msg.push_str("\n  ");
+        msg.push_str(hint);
+    }
+    if !body.is_empty() {
+        let trimmed = body.trim();
+        let body_line = if trimmed.len() > 400 {
+            format!("{}…", &trimmed[..400])
+        } else {
+            trimmed.to_string()
+        };
+        msg.push_str("\n  ");
+        msg.push_str(&body_line);
+    }
+    msg
+}
+
+/// Format a network-layer failure (`reqwest::Error` and friends) for the
+/// user. `reqwest::Error::to_string()` returns the outer wrapper ("error
+/// sending request for url …") and discards the actual cause; walking the
+/// `source()` chain surfaces messages like `Connection refused`,
+/// `operation timed out`, or `no route to host` that tell the user what to
+/// fix. A connection-refused on a local address gets a "is your server
+/// running?" hint, since that's the most common version of this failure.
+pub fn format_network_error(
+    url: &str,
+    ctx: &CallContext<'_>,
+    err: &(dyn std::error::Error + 'static),
+) -> String {
+    let chain = error_chain(err);
+    let mut msg = format!(
+        "network error reaching {url}\n  \
+         account=\"{account}\" provider=\"{provider}\"\n  {chain}",
+        account = ctx.account.unwrap_or("(test)"),
+        provider = ctx.provider,
+    );
+    if let Some(hint) = network_error_hint(url, &chain) {
+        msg.push_str("\n  ");
+        msg.push_str(hint);
+    }
+    msg
+}
+
+fn error_chain(err: &(dyn std::error::Error + 'static)) -> String {
+    let mut parts: Vec<String> = vec![err.to_string()];
+    let mut src = err.source();
+    while let Some(e) = src {
+        let s = e.to_string();
+        // Avoid duplicating the message reqwest already inlined into its
+        // outer wrapper — common for "error sending request for url …" → "…".
+        if !parts.last().map(|p| p.contains(&s)).unwrap_or(false) {
+            parts.push(s);
+        }
+        src = e.source();
+    }
+    parts.join(": ")
+}
+
+fn network_error_hint(url: &str, chain: &str) -> Option<&'static str> {
+    let lower = chain.to_ascii_lowercase();
+    let is_local = url.contains("127.0.0.1")
+        || url.contains("localhost")
+        || url.contains("://10.")
+        || url.contains("://192.168.")
+        || url.contains("://172.");
+    if lower.contains("connection refused") {
+        if is_local {
+            return Some(
+                "no server is listening on that port. \
+                 Start the local model server (e.g. `lms server start` for LM Studio) \
+                 or check the port number in Settings.",
+            );
+        }
+        return Some("the server refused the connection — it may be down or unreachable.");
+    }
+    if lower.contains("timed out") || lower.contains("timeout") {
+        return Some("request timed out. The server may be overloaded or the network slow.");
+    }
+    if lower.contains("dns") || lower.contains("resolve") || lower.contains("name resolution") {
+        return Some(
+            "DNS lookup failed. Check that the host is spelled correctly and your network is up.",
+        );
+    }
+    if lower.contains("certificate") || lower.contains("tls") || lower.contains("ssl") {
+        return Some(
+            "TLS handshake failed. The server's certificate may be invalid or the URL may need http:// instead of https://.",
+        );
+    }
+    None
+}
+
+fn http_error_hint(config: &ProviderConfig, status: u16, body: &str) -> Option<&'static str> {
+    match status {
+        401 | 403 => {
+            // The Anthropic API mints `request_id` values on every response,
+            // including failures, in the form `req_01...`. If the user sees
+            // one of those when they thought they were hitting a local
+            // server, that's strong evidence of a dialect/endpoint mismatch.
+            if body.contains("\"request_id\":\"req_01") && config.endpoint.contains("127.0.0.1") {
+                Some(
+                    "this 401 came back with an Anthropic request_id but your \
+                     endpoint is a local address — your request was rerouted \
+                     or the endpoint is wrong. Check the account's provider.",
+                )
+            } else if status == 401 {
+                Some(
+                    "the server rejected the API key. \
+                     Run `t` in Settings to retest, or verify the key file in ~/.ox/keys.",
+                )
+            } else {
+                Some("the server refused the request — your key may not have access to this resource.")
+            }
+        }
+        404 => Some(
+            "endpoint not found. The dialect appends its own path \
+             (e.g. /v1/chat/completions); make sure your endpoint is the base host only.",
+        ),
+        429 => Some("rate limited."),
+        500..=599 => Some("server-side error; this often resolves on retry."),
+        _ => None,
+    }
+}
+
 /// Stream an HTTP completion request with retry on transient errors.
 /// Emits events in real-time via callback. Returns all events + usage for kernel processing.
 pub fn streaming_fetch(
@@ -242,6 +407,7 @@ pub fn streaming_fetch(
     config: &ProviderConfig,
     api_key: &str,
     request: &CompletionRequest,
+    ctx: &CallContext<'_>,
     on_event: &dyn Fn(&StreamEvent),
 ) -> Result<(Vec<StreamEvent>, UsageInfo), String> {
     let (url, headers, body) = build_request(config, api_key, request)?;
@@ -249,6 +415,8 @@ pub fn streaming_fetch(
     tracing::debug!(
         url = %url,
         dialect = %config.dialect,
+        provider = %ctx.provider,
+        account = ctx.account.unwrap_or("(test)"),
         model = %request.model,
         messages = request.messages.len(),
         tools = request.tools.len(),
@@ -270,21 +438,22 @@ pub fn streaming_fetch(
         let resp = match req.send() {
             Ok(r) => r,
             Err(e) => {
-                last_err = format!("network error: {e}");
+                last_err = format_network_error(&url, ctx, &e);
                 continue;
             }
         };
 
         let status = resp.status();
         if status.as_u16() == 429 || status.is_server_error() {
-            last_err = format!("HTTP {status}");
+            let text = resp.text().unwrap_or_default();
+            last_err = format_http_error(config, ctx, &url, status.as_u16(), &text);
             tracing::warn!(status = %status, "transient HTTP error");
             continue;
         }
         if !status.is_success() {
             let text = resp.text().unwrap_or_default();
             tracing::error!(status = %status, body = %text, "HTTP request failed");
-            return Err(format!("HTTP {status}: {text}"));
+            return Err(format_http_error(config, ctx, &url, status.as_u16(), &text));
         }
 
         // Success — stream line-by-line
@@ -310,17 +479,23 @@ pub fn streaming_fetch(
     }
 
     tracing::error!(last_err = %last_err, "streaming fetch exhausted retries");
-    Err(format!("{last_err} (after 3 attempts)"))
+    Err(format!("{last_err}\n  (gave up after 3 attempts)"))
 }
 
 /// Test an API connection with a minimal completion request (async).
 /// Returns (dialect, elapsed_ms).
+///
+/// The `provider` argument names the provider the dialog is testing — it
+/// flows into error messages so users see which provider their dialect+URL
+/// belongs to even before the account is saved.
 pub async fn test_connection_async(
     config: &ProviderConfig,
     api_key: &str,
+    provider: &str,
 ) -> Result<(String, u128), String> {
     let client = reqwest::Client::new();
     let dialect = config.dialect.clone();
+    let ctx = CallContext::new(provider);
 
     let model = match dialect.as_str() {
         "openai" => "gpt-4o-mini",
@@ -344,11 +519,14 @@ pub async fn test_connection_async(
         req = req.header(k, v);
     }
 
-    let resp = req.send().await.map_err(|e| e.to_string())?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format_network_error(&url, &ctx, &e))?;
     if !resp.status().is_success() {
         let status = resp.status().as_u16();
         let text = resp.text().await.unwrap_or_default();
-        return Err(format!("HTTP {status}: {text}"));
+        return Err(format_http_error(config, &ctx, &url, status, &text));
     }
     // Consume body to complete the request
     let _ = resp.text().await;
@@ -359,21 +537,16 @@ pub async fn test_connection_async(
 
 /// Fetch available models from a provider's API (async).
 ///
-/// Derives the models endpoint from the completion endpoint:
-/// - "https://api.anthropic.com/v1/messages" → "https://api.anthropic.com/v1/models"
-/// - "https://api.openai.com/v1/chat/completions" → "https://api.openai.com/v1/models"
+/// The models URL is derived by the dialect (`models_url(config)`); the user's
+/// `endpoint` carries only the base host.
 pub async fn fetch_model_catalog_async(
     config: &ProviderConfig,
     api_key: &str,
+    provider: &str,
 ) -> Result<Vec<ox_kernel::ModelInfo>, String> {
     let client = reqwest::Client::new();
-
-    let base = config
-        .endpoint
-        .rfind("/v1/")
-        .map(|i| &config.endpoint[..i + 4])
-        .unwrap_or(&config.endpoint);
-    let models_base = format!("{base}models");
+    let ctx = CallContext::new(provider);
+    let models_base = models_url(config);
 
     let mut all_models: Vec<ox_kernel::ModelInfo> = Vec::new();
     let mut after_id: Option<String> = None;
@@ -400,11 +573,14 @@ pub async fn fetch_model_catalog_async(
             }
         }
 
-        let resp = req.send().await.map_err(|e| e.to_string())?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| format_network_error(&url, &ctx, &e))?;
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            return Err(format!("HTTP {status}: {body}"));
+            return Err(format_http_error(config, &ctx, &url, status, &body));
         }
 
         let body = resp.text().await.map_err(|e| e.to_string())?;
@@ -491,6 +667,19 @@ mod tests {
 
     #[test]
     fn build_custom_endpoint() {
+        let config = ProviderConfig {
+            dialect: "openai".into(),
+            endpoint: "http://localhost:8080".into(),
+            version: String::new(),
+        };
+        let (url, _, _) = build_request(&config, "key", &sample_request()).unwrap();
+        assert_eq!(url, "http://localhost:8080/v1/chat/completions");
+    }
+
+    #[test]
+    fn build_custom_endpoint_tolerates_legacy_full_url() {
+        // Older configs still carry the full URL — composer trims and
+        // re-appends so the request still hits the right path.
         let config = ProviderConfig {
             dialect: "openai".into(),
             endpoint: "http://localhost:8080/v1/chat/completions".into(),

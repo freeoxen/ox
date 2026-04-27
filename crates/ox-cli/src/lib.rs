@@ -50,6 +50,7 @@ pub(crate) mod shell;
 pub(crate) mod simple_input;
 pub(crate) mod tab_bar;
 pub(crate) mod text_input_view;
+pub(crate) mod text_pane;
 pub(crate) mod theme;
 
 /// Re-export of the post-crash Skip synthetic-`ToolResult` content string

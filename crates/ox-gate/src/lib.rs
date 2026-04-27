@@ -12,7 +12,9 @@ pub mod provider;
 
 pub use account::AccountConfig;
 pub use codec::UsageInfo;
-pub use provider::ProviderConfig;
+pub use provider::{
+    ProviderConfig, completion_url, dialect_paths, models_url, validate_endpoint,
+};
 
 use ox_kernel::{ModelInfo, ToolSchema};
 use std::collections::{BTreeMap, HashMap};
@@ -109,6 +111,67 @@ impl GateStore {
             }
             _ => None,
         }
+    }
+
+    /// Resolve an account by name: config handle first (user-defined), then
+    /// the local hardcoded built-ins.
+    fn resolve_account(&mut self, name: &str) -> Option<AccountConfig> {
+        if let Some(config) = self.config.as_mut() {
+            let map_path = format!("gate/accounts/{name}");
+            if let Ok(path) = Path::parse(&map_path) {
+                if let Ok(Some(record)) = config.read(&path) {
+                    if let Some(value) = record.as_value() {
+                        if let Ok(parsed) = from_value::<AccountConfig>(value.clone()) {
+                            tracing::debug!(name, "account resolved from config handle");
+                            return Some(parsed);
+                        }
+                    }
+                }
+            }
+            if let Some(provider) =
+                self.config_string(&format!("gate/accounts/{name}/provider"))
+            {
+                tracing::debug!(name, "account resolved from config-handle leaf");
+                return Some(AccountConfig { provider });
+            }
+        }
+        self.accounts.get(name).cloned()
+    }
+
+    /// Resolve a provider by name: config handle first (user-defined), then
+    /// the local hardcoded built-ins.
+    ///
+    /// The config handle is expected to expose either a parsed
+    /// `ProviderConfig` map at `gate/providers/{name}` or the three string
+    /// leaves `dialect`/`endpoint`/`version` directly under it.
+    fn resolve_provider(&mut self, name: &str) -> Option<ProviderConfig> {
+        if let Some(config) = self.config.as_mut() {
+            let map_path = format!("gate/providers/{name}");
+            if let Ok(path) = Path::parse(&map_path) {
+                if let Ok(Some(record)) = config.read(&path) {
+                    if let Some(value) = record.as_value() {
+                        if let Ok(parsed) = from_value::<ProviderConfig>(value.clone()) {
+                            tracing::debug!(name, "provider resolved from config handle");
+                            return Some(parsed);
+                        }
+                    }
+                }
+            }
+            let dialect = self.config_string(&format!("gate/providers/{name}/dialect"));
+            let endpoint = self.config_string(&format!("gate/providers/{name}/endpoint"));
+            if let (Some(dialect), Some(endpoint)) = (dialect, endpoint) {
+                let version = self
+                    .config_string(&format!("gate/providers/{name}/version"))
+                    .unwrap_or_default();
+                tracing::debug!(name, "provider resolved from config-handle leaves");
+                return Some(ProviderConfig {
+                    dialect,
+                    endpoint,
+                    version,
+                });
+            }
+        }
+        self.providers.get(name).cloned()
     }
 
     /// Read an integer value from the config handle at the given path.
@@ -336,24 +399,29 @@ impl Reader for GateStore {
                 if from.components.len() < 2 {
                     return Ok(None);
                 }
-                let name = from.components[1].as_str();
-                let Some(config) = self.providers.get(name) else {
+                let name = from.components[1].as_str().to_string();
+
+                // Resolve provider config: prefer config handle (user-defined
+                // providers seeded from OxConfig/TOML), fall back to local
+                // hardcoded built-ins. Mirrors the same pattern keys use.
+                let resolved = self.resolve_provider(&name);
+                let Some(config) = resolved else {
                     return Ok(None);
                 };
 
                 if from.components.len() == 2 {
-                    let value = to_value(config)
+                    let value = to_value(&config)
                         .map_err(|e| StoreError::store("gate", "read", e.to_string()))?;
                     return Ok(Some(Record::parsed(value)));
                 }
 
                 let field = from.components[2].as_str();
                 match field {
-                    "dialect" => Ok(Some(Record::parsed(Value::String(config.dialect.clone())))),
-                    "endpoint" => Ok(Some(Record::parsed(Value::String(config.endpoint.clone())))),
-                    "version" => Ok(Some(Record::parsed(Value::String(config.version.clone())))),
+                    "dialect" => Ok(Some(Record::parsed(Value::String(config.dialect)))),
+                    "endpoint" => Ok(Some(Record::parsed(Value::String(config.endpoint)))),
+                    "version" => Ok(Some(Record::parsed(Value::String(config.version)))),
                     "models" => {
-                        let catalog = self.catalogs.get(name).cloned().unwrap_or_default();
+                        let catalog = self.catalogs.get(&name).cloned().unwrap_or_default();
                         let value = to_value(&catalog)
                             .map_err(|e| StoreError::store("gate", "read", e.to_string()))?;
                         Ok(Some(Record::parsed(value)))
@@ -366,31 +434,37 @@ impl Reader for GateStore {
                 if from.components.len() < 2 {
                     return Ok(None);
                 }
-                let name = from.components[1].as_str();
+                let name = from.components[1].as_str().to_string();
 
                 // Keys come from config handle only (key files/env vars injected there)
                 if from.components.len() > 2 && from.components[2].as_str() == "key" {
                     if let Some(k) = self.config_string(&format!("gate/accounts/{name}/key")) {
-                        tracing::debug!(account = name, "account key read (present)");
+                        tracing::debug!(account = %name, "account key read (present)");
                         return Ok(Some(Record::parsed(Value::String(k))));
                     }
-                    tracing::debug!(account = name, "account key read (empty)");
+                    tracing::debug!(account = %name, "account key read (empty)");
                     return Ok(Some(Record::parsed(Value::String(String::new()))));
                 }
 
-                let Some(config) = self.accounts.get(name) else {
+                // Resolve account: prefer config handle (user-defined accounts
+                // seeded from OxConfig/TOML via the ConfigStore), fall back to
+                // local hardcoded built-ins. Same indirection shape providers
+                // and keys already use — without this, accounts the user
+                // creates are invisible to running threads.
+                let resolved = self.resolve_account(&name);
+                let Some(config) = resolved else {
                     return Ok(None);
                 };
 
                 if from.components.len() == 2 {
-                    let value = to_value(config)
+                    let value = to_value(&config)
                         .map_err(|e| StoreError::store("gate", "read", e.to_string()))?;
                     return Ok(Some(Record::parsed(value)));
                 }
 
                 let field = from.components[2].as_str();
                 match field {
-                    "provider" => Ok(Some(Record::parsed(Value::String(config.provider.clone())))),
+                    "provider" => Ok(Some(Record::parsed(Value::String(config.provider)))),
                     _ => Ok(None),
                 }
             }
@@ -644,7 +718,7 @@ mod tests {
             _ => panic!("expected parsed"),
         };
         assert_eq!(json["dialect"], "anthropic");
-        assert_eq!(json["endpoint"], "https://api.anthropic.com/v1/messages");
+        assert_eq!(json["endpoint"], "https://api.anthropic.com");
 
         // OpenAI provider exists
         let record = gate.read(&path!("providers/openai")).unwrap().unwrap();

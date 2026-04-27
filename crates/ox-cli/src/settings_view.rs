@@ -46,7 +46,7 @@ pub(crate) fn draw_settings(frame: &mut Frame, state: &SettingsState, theme: &Th
     draw_defaults_section(frame, state, theme, chunks[idx]);
 
     if let Some(ref editing) = state.editing {
-        draw_account_edit_dialog(frame, editing, &state.test_status, theme);
+        draw_account_edit_dialog(frame, editing, &state.test_status, state.status_scroll, theme);
     }
 }
 
@@ -128,7 +128,10 @@ fn draw_accounts_section(frame: &mut Frame, state: &SettingsState, theme: &Theme
         frame.render_widget(Paragraph::new(Span::styled(line_str, style)), line_area);
     }
 
-    // Show test status below the account rows (only when no edit dialog is open)
+    // Show test status below the account rows (only when no edit dialog is
+    // open). Routed through `TextPane` so a long failure message — typically
+    // a multi-line 401/connection error from the transport — wraps instead
+    // of getting clipped at the right edge.
     if state.editing.is_none() {
         let test_line = match &state.test_status {
             TestStatus::Idle => None,
@@ -144,13 +147,28 @@ fn draw_accounts_section(frame: &mut Frame, state: &SettingsState, theme: &Theme
                     .len()
                     .min(inner.height.saturating_sub(2) as usize) as u16;
             if y < inner.y + inner.height {
+                let remaining = (inner.y + inner.height).saturating_sub(y);
+                // Reserve the status block bigger than before — long
+                // network errors are 5–6 wrapped rows. Scroll handles any
+                // overflow without growing further.
                 let status_area = Rect {
                     x: inner.x,
                     y,
                     width: inner.width,
-                    height: 1,
+                    height: remaining.min(6),
                 };
-                frame.render_widget(Paragraph::new(Span::raw(text)), status_area);
+                let style = match &state.test_status {
+                    TestStatus::Failed(_) => Style::default().fg(ratatui::style::Color::Red),
+                    TestStatus::Success(_) => Style::default().fg(ratatui::style::Color::Green),
+                    _ => Style::default(),
+                };
+                crate::text_pane::TextPane::new(&text)
+                    .style(style)
+                    .h_overflow(crate::text_pane::HorizontalOverflow::Wrap)
+                    .v_overflow(crate::text_pane::VerticalOverflow::Scroll {
+                        offset: state.status_scroll,
+                    })
+                    .render(frame, status_area);
             }
         }
     }
@@ -299,12 +317,17 @@ pub(crate) fn draw_account_edit_dialog(
     frame: &mut Frame,
     editing: &crate::settings_state::AccountEditFields,
     test_status: &crate::settings_state::TestStatus,
+    status_scroll: u16,
     theme: &Theme,
 ) {
     use crate::settings_state::{DIALECTS, TestStatus};
     use ratatui::widgets::Clear;
 
-    let area = centered_rect(60, 10, frame.area());
+    // 14 rows: 4 fields, 1 spacer, ~6 rows for a wrapped multi-line
+    // transport error (header / account+provider / cause / hint), 1 spacer,
+    // 1 row help, 2 rows border. Long errors past the visible window are
+    // reachable via PageUp/PageDown — TextPane handles scroll + indicators.
+    let area = centered_rect(60, 14, frame.area());
     frame.render_widget(Clear, area);
 
     let title = if editing.is_new {
@@ -427,13 +450,36 @@ pub(crate) fn draw_account_edit_dialog(
             .render_inline(frame, field3, Style::default(), focus == 3, true);
     }
 
-    // Row 5: Help + test status
-    if inner.height > 5 {
-        let help_row = Rect::new(inner.x, inner.y + 5, inner.width, 1);
+    // Status block: starts at row 5 (one spacer below the key field) and
+    // grows to fill every remaining row above the bottom-anchored help line.
+    // Multi-line error messages from the transport (header / context / cause
+    // / hint) want at least 5–6 rows; an arbitrary cap clips them.
+    if inner.height > 6 && !test_display.is_empty() {
+        // Reserve one row at the bottom for the help line.
+        let status_height = inner.height.saturating_sub(5).saturating_sub(1);
+        let status_area = Rect::new(inner.x, inner.y + 5, inner.width, status_height);
+        let style = match test_status {
+            TestStatus::Failed(_) => Style::default().fg(ratatui::style::Color::Red),
+            TestStatus::Success(_) => Style::default().fg(ratatui::style::Color::Green),
+            _ => Style::default(),
+        };
+        crate::text_pane::TextPane::new(&test_display)
+            .style(style)
+            .h_overflow(crate::text_pane::HorizontalOverflow::Wrap)
+            .v_overflow(crate::text_pane::VerticalOverflow::Scroll {
+                offset: status_scroll,
+            })
+            .render(frame, status_area);
+    }
+
+    // Help line: anchored to the bottom of the dialog so the variable-height
+    // status block above never overlaps it.
+    if inner.height > 0 {
+        let help_row = Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1);
         frame.render_widget(
-            Paragraph::new(Line::from(format!(
-                "  Tab/\u{2193} next | Shift+Tab/\u{2191} prev | Ctrl+t test | Enter save | Esc cancel{test_display}"
-            ))),
+            Paragraph::new(Line::from(
+                "  Tab next | Shift+Tab prev | Ctrl+t test | PgUp/PgDn scroll msg | Enter save | Esc cancel",
+            )),
             help_row,
         );
     }

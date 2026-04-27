@@ -88,9 +88,21 @@ pub struct SettingsState {
     pub pending_test: Option<oneshot::Receiver<TestResult>>,
     pub delete_confirming: bool,
     pub save_flash_until: Option<std::time::Instant>,
+    /// Scroll offset (in rows) for the status `TextPane`. Reset whenever
+    /// `test_status` transitions so a new error always starts visible.
+    /// Bumped by PageUp/PageDown / Ctrl+u / Ctrl+d while a status is shown.
+    pub status_scroll: u16,
 }
 
 impl SettingsState {
+    /// Replace `test_status` and reset the scroll offset, so a new message
+    /// is always rendered from the top regardless of how the user had
+    /// scrolled the previous one.
+    pub fn set_status(&mut self, status: TestStatus) {
+        self.test_status = status;
+        self.status_scroll = 0;
+    }
+
     pub fn new() -> Self {
         Self {
             focus: SettingsFocus::Accounts,
@@ -108,6 +120,7 @@ impl SettingsState {
             pending_test: None,
             delete_confirming: false,
             save_flash_until: None,
+            status_scroll: 0,
         }
     }
 
@@ -125,26 +138,31 @@ impl SettingsState {
             .accounts
             .iter()
             .map(|(name, entry)| {
-                let endpoint_display = entry
-                    .endpoint
-                    .as_ref()
-                    .map(|ep| {
-                        ep.split("://")
-                            .nth(1)
-                            .unwrap_or(ep)
-                            .split('/')
-                            .next()
-                            .unwrap_or(ep)
-                            .to_string()
-                    })
+                // Resolve the provider this account points at. Endpoint and
+                // dialect both come from the provider table; "anthropic" and
+                // "openai" are the built-in defaults when no entry exists.
+                let provider_entry = config.gate.providers.get(&entry.provider);
+                let dialect = provider_entry
+                    .map(|p| p.dialect.clone())
+                    .unwrap_or_else(|| entry.provider.clone());
+                let endpoint = provider_entry
+                    .map(|p| p.endpoint.clone())
                     .unwrap_or_else(|| match entry.provider.as_str() {
-                        "anthropic" => "api.anthropic.com".to_string(),
-                        "openai" => "api.openai.com".to_string(),
-                        _ => "default".to_string(),
+                        "anthropic" => "https://api.anthropic.com".into(),
+                        "openai" => "https://api.openai.com".into(),
+                        _ => String::new(),
                     });
+                let endpoint_display = endpoint
+                    .split("://")
+                    .nth(1)
+                    .unwrap_or(&endpoint)
+                    .split('/')
+                    .next()
+                    .unwrap_or(&endpoint)
+                    .to_string();
                 AccountSummary {
                     name: name.clone(),
-                    dialect: entry.provider.clone(),
+                    dialect,
                     endpoint_display,
                     has_key: keys.contains_key(name),
                     is_default: name == default_account,

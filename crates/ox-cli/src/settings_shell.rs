@@ -11,6 +11,29 @@ use ox_path::oxpath;
 use ox_types::{GlobalCommand, UiCommand};
 use structfs_core_store::{Record, Value};
 
+/// Resolve the `ProviderConfig` an account points at.
+///
+/// Looks up `gate.providers.{provider_ref}` in the loaded config; falls back
+/// to the matching built-in (`anthropic` or `openai`) when no entry exists,
+/// so accounts that simply name a built-in dialect keep working without
+/// requiring an explicit provider table entry.
+fn resolve_provider_config(
+    config: &crate::config::OxConfig,
+    provider_ref: &str,
+) -> ox_gate::ProviderConfig {
+    if let Some(entry) = config.gate.providers.get(provider_ref) {
+        return ox_gate::ProviderConfig {
+            dialect: entry.dialect.clone(),
+            endpoint: entry.endpoint.clone(),
+            version: entry.version.clone(),
+        };
+    }
+    match provider_ref {
+        "openai" => ox_gate::ProviderConfig::openai(),
+        _ => ox_gate::ProviderConfig::anthropic(),
+    }
+}
+
 // -----------------------------------------------------------------------
 // SettingsShell — event-loop-owned wrapper
 // -----------------------------------------------------------------------
@@ -40,11 +63,12 @@ impl SettingsShell {
                 Ok(result) => {
                     match result.test {
                         Ok((dialect, ms)) => {
-                            self.state.test_status =
-                                TestStatus::Success(format!("Connected ({dialect}, {ms}ms)"));
+                            self.state.set_status(TestStatus::Success(format!(
+                                "Connected ({dialect}, {ms}ms)"
+                            )));
                         }
                         Err(e) => {
-                            self.state.test_status = TestStatus::Failed(e);
+                            self.state.set_status(TestStatus::Failed(e));
                         }
                     }
                     match result.models {
@@ -62,7 +86,7 @@ impl SettingsShell {
                     // Still in progress — will check next frame
                 }
                 Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                    self.state.test_status = TestStatus::Failed("Test cancelled".into());
+                    self.state.set_status(TestStatus::Failed("Test cancelled".into()));
                     self.state.pending_test = None;
                 }
             }
@@ -152,6 +176,10 @@ enum EditAction {
         endpoint: Option<String>,
         key: String,
     },
+    /// Stay in the dialog and surface a validation error on the status line.
+    /// Used in place of silent `Handled` rejections so the user always sees
+    /// why a key (typically Enter) didn't do what they expected.
+    Reject(String),
     Handled,
 }
 
@@ -164,6 +192,18 @@ async fn handle_edit_dialog_key(
     inbox_root: &std::path::Path,
 ) -> Outcome {
     let keys_dir = inbox_root.join("keys");
+
+    // Status scrolling — works in the edit dialog regardless of which field
+    // is focused. PageDown/PageUp scroll one row at a time so a multi-line
+    // transport error can be read without expanding the status block.
+    if matches!(key_str, "PageDown" | "Ctrl+d") {
+        settings.status_scroll = settings.status_scroll.saturating_add(1);
+        return Outcome::Handled;
+    }
+    if matches!(key_str, "PageUp" | "Ctrl+u") {
+        settings.status_scroll = settings.status_scroll.saturating_sub(1);
+        return Outcome::Handled;
+    }
 
     let action = if let Some(ref mut editing) = settings.editing {
         match key_str {
@@ -181,19 +221,28 @@ async fn handle_edit_dialog_key(
             }
             "Esc" => EditAction::Cancel,
             "Enter" => {
-                if !editing.name.is_empty() {
+                // Validate up-front and surface specific reasons. Empty-name
+                // is the most common silent-failure case; explicit rejection
+                // tells the user what to fix.
+                if editing.name.is_empty() {
+                    EditAction::Reject("Name is required.".into())
+                } else if !editing.endpoint.is_empty() {
+                    match ox_gate::validate_endpoint(editing.endpoint.content()) {
+                        Ok(()) => EditAction::Save {
+                            name: editing.name.content().to_owned(),
+                            provider: DIALECTS[editing.dialect].to_string(),
+                            endpoint: Some(editing.endpoint.content().to_owned()),
+                            key: editing.key.content().to_owned(),
+                        },
+                        Err(msg) => EditAction::Reject(msg),
+                    }
+                } else {
                     EditAction::Save {
                         name: editing.name.content().to_owned(),
                         provider: DIALECTS[editing.dialect].to_string(),
-                        endpoint: if editing.endpoint.is_empty() {
-                            None
-                        } else {
-                            Some(editing.endpoint.content().to_owned())
-                        },
+                        endpoint: None,
                         key: editing.key.content().to_owned(),
                     }
-                } else {
-                    EditAction::Handled
                 }
             }
             "Left" if editing.focus == 1 => {
@@ -236,24 +285,42 @@ async fn handle_edit_dialog_key(
     match action {
         EditAction::Cancel => {
             settings.editing = None;
-            settings.test_status = TestStatus::Idle;
+            settings.set_status(TestStatus::Idle);
+            return Outcome::Handled;
+        }
+        EditAction::Reject(msg) => {
+            settings.set_status(TestStatus::Failed(msg));
             return Outcome::Handled;
         }
         EditAction::Save {
             name,
-            provider,
+            provider: dialect,
             endpoint,
             key,
         } => {
+            // The dialog's "provider" field is really the wire dialect.
+            // - No endpoint → account points at the built-in provider whose
+            //   name matches the dialect ("anthropic" / "openai") — those are
+            //   seeded by GateStore::new().
+            // - With endpoint → synthesize a per-account provider entry under
+            //   gate.providers.{name} carrying (dialect, endpoint, version="")
+            //   and point the account at it. This is the same shape the
+            //   legacy-config migration produces.
+            let provider_ref = if endpoint.is_some() {
+                name.clone()
+            } else {
+                dialect.clone()
+            };
+
             tracing::info!(
                 name = %name,
-                provider = %provider,
-                has_endpoint = endpoint.is_some(),
+                dialect = %dialect,
+                provider_ref = %provider_ref,
+                synthesizes_provider = endpoint.is_some(),
                 has_key = !key.is_empty(),
                 "saving account via ConfigStore"
             );
 
-            // Write account through ConfigStore (not direct file)
             let name_comp = match ox_kernel::PathComponent::try_new(name.as_str()) {
                 Ok(c) => c,
                 Err(e) => {
@@ -261,14 +328,25 @@ async fn handle_edit_dialog_key(
                     return Outcome::Handled;
                 }
             };
+
+            if let Some(ep) = endpoint {
+                let dialect_path = ox_path::oxpath!(
+                    "config", "gate", "providers", name_comp.clone(), "dialect"
+                );
+                client.write_typed(&dialect_path, &dialect).await.ok();
+                let endpoint_path = ox_path::oxpath!(
+                    "config", "gate", "providers", name_comp.clone(), "endpoint"
+                );
+                client.write_typed(&endpoint_path, &ep).await.ok();
+                let version_path = ox_path::oxpath!(
+                    "config", "gate", "providers", name_comp.clone(), "version"
+                );
+                client.write_typed(&version_path, &String::new()).await.ok();
+            }
+
             let provider_path =
                 ox_path::oxpath!("config", "gate", "accounts", name_comp.clone(), "provider");
-            client.write_typed(&provider_path, &provider).await.ok();
-            if let Some(ep) = endpoint {
-                let ep_path =
-                    ox_path::oxpath!("config", "gate", "accounts", name_comp.clone(), "endpoint");
-                client.write_typed(&ep_path, &ep).await.ok();
-            }
+            client.write_typed(&provider_path, &provider_ref).await.ok();
 
             // Write key to ConfigStore + key file
             if !key.is_empty() {
@@ -318,7 +396,7 @@ async fn handle_edit_dialog_key(
                 .ok();
 
             settings.editing = None;
-            settings.test_status = TestStatus::Idle;
+            settings.set_status(TestStatus::Idle);
             let config =
                 crate::config::resolve_config(inbox_root, &crate::config::CliOverrides::default());
             settings.refresh_accounts(&config, &keys_dir);
@@ -341,35 +419,48 @@ async fn handle_edit_dialog_key(
     // Handle Ctrl+t for test connection in edit dialog
     if key_str == "Ctrl+t" {
         if let Some(ref editing) = settings.editing {
-            if editing.key.is_empty() {
-                settings.test_status = TestStatus::Failed("No API key entered".into());
-            } else {
-                let dialect = DIALECTS[editing.dialect];
-                let mut provider_config = match dialect {
-                    "openai" => ox_gate::ProviderConfig::openai(),
-                    _ => ox_gate::ProviderConfig::anthropic(),
-                };
-                if !editing.endpoint.is_empty() {
-                    provider_config.endpoint = editing.endpoint.content().to_owned();
+            // Validate the endpoint before issuing a request — surfaces a
+            // clear message instead of a reqwest "builder error" downstream.
+            if !editing.endpoint.is_empty() {
+                if let Err(msg) = ox_gate::validate_endpoint(editing.endpoint.content()) {
+                    settings.set_status(TestStatus::Failed(msg));
+                    return Outcome::Handled;
                 }
-                let api_key_for_test = editing.key.content().to_owned();
-
-                settings.test_status = TestStatus::Testing;
-                let (tx, rx) = tokio::sync::oneshot::channel();
-                settings.pending_test = Some(rx);
-
-                let pc = provider_config;
-                let key = api_key_for_test;
-                tokio::spawn(async move {
-                    let test = crate::transport::test_connection_async(&pc, &key).await;
-                    let models = if test.is_ok() {
-                        crate::transport::fetch_model_catalog_async(&pc, &key).await
-                    } else {
-                        Err("skipped".into())
-                    };
-                    let _ = tx.send(crate::settings_state::TestResult { test, models });
-                });
             }
+
+            // Empty key is fine for unauthenticated providers.
+            let dialect = DIALECTS[editing.dialect];
+            let mut provider_config = match dialect {
+                "openai" => ox_gate::ProviderConfig::openai(),
+                _ => ox_gate::ProviderConfig::anthropic(),
+            };
+            let provider_label = if !editing.endpoint.is_empty() {
+                provider_config.endpoint = editing.endpoint.content().to_owned();
+                // Provider name in errors mirrors what the save flow
+                // would synthesize: a per-account provider entry.
+                editing.name.content().to_owned()
+            } else {
+                dialect.to_string()
+            };
+            let api_key_for_test = editing.key.content().to_owned();
+
+            settings.set_status(TestStatus::Testing);
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            settings.pending_test = Some(rx);
+
+            let pc = provider_config;
+            let key = api_key_for_test;
+            let provider_name = provider_label;
+            tokio::spawn(async move {
+                let test =
+                    crate::transport::test_connection_async(&pc, &key, &provider_name).await;
+                let models = if test.is_ok() {
+                    crate::transport::fetch_model_catalog_async(&pc, &key, &provider_name).await
+                } else {
+                    Err("skipped".into())
+                };
+                let _ = tx.send(crate::settings_state::TestResult { test, models });
+            });
         }
         return Outcome::Handled;
     }
@@ -407,17 +498,31 @@ async fn handle_delete_confirm_key(
                 .write(&provider_path, Record::parsed(Value::Null))
                 .await
                 .ok();
-            let ep_path =
-                ox_path::oxpath!("config", "gate", "accounts", name_comp.clone(), "endpoint");
-            client
-                .write(&ep_path, Record::parsed(Value::Null))
-                .await
-                .ok();
-            let key_path = ox_path::oxpath!("config", "gate", "accounts", name_comp, "key");
+            let key_path =
+                ox_path::oxpath!("config", "gate", "accounts", name_comp.clone(), "key");
             client
                 .write(&key_path, Record::parsed(Value::Null))
                 .await
                 .ok();
+
+            // If the account had a synthesized per-account provider (UI flow
+            // creates one at gate.providers.{name} when an endpoint was set),
+            // tear it down too. Built-in providers ("anthropic", "openai")
+            // share the namespace and must not be deleted; a name collision
+            // with a built-in is benign because we only nuke a provider
+            // entry that was authored under the same name as the account.
+            let prov_dialect = ox_path::oxpath!(
+                "config", "gate", "providers", name_comp.clone(), "dialect"
+            );
+            client.write(&prov_dialect, Record::parsed(Value::Null)).await.ok();
+            let prov_endpoint = ox_path::oxpath!(
+                "config", "gate", "providers", name_comp.clone(), "endpoint"
+            );
+            client.write(&prov_endpoint, Record::parsed(Value::Null)).await.ok();
+            let prov_version = ox_path::oxpath!(
+                "config", "gate", "providers", name_comp.clone(), "version"
+            );
+            client.write(&prov_version, Record::parsed(Value::Null)).await.ok();
 
             // Update default if deleted account was default
             if acct.is_default {
@@ -461,6 +566,19 @@ async fn handle_navigation_key(
     client: &ox_broker::ClientHandle,
     inbox_root: &std::path::Path,
 ) -> Outcome {
+    // Status scrolling — applies on the accounts list path too, so a long
+    // test failure shown below the list is reachable. PageDown/PageUp move
+    // one row at a time; the caller-managed offset is clamped at render time
+    // by the `TextPane`.
+    if matches!(key_str, "PageDown" | "Ctrl+d") {
+        settings.status_scroll = settings.status_scroll.saturating_add(1);
+        return Outcome::Handled;
+    }
+    if matches!(key_str, "PageUp" | "Ctrl+u") {
+        settings.status_scroll = settings.status_scroll.saturating_sub(1);
+        return Outcome::Handled;
+    }
+
     let handled = match key_str {
         "j" | "Down" => {
             if settings.focus == SettingsFocus::Accounts && !settings.accounts.is_empty() {
@@ -496,7 +614,7 @@ async fn handle_navigation_key(
                     focus: 0,
                     is_new: true,
                 });
-                settings.test_status = TestStatus::Idle;
+                settings.set_status(TestStatus::Idle);
             }
             true
         }
@@ -514,12 +632,27 @@ async fn handle_navigation_key(
                         inbox_root,
                         &crate::config::CliOverrides::default(),
                     );
-                    let endpoint = config
+                    // Endpoint to prefill the dialog comes from the provider
+                    // the account points at — but only when that's a custom
+                    // (non-builtin) provider. Built-ins ("anthropic" /
+                    // "openai") leave the endpoint blank so the placeholder
+                    // hint shows instead of the canonical URL.
+                    let provider_ref = config
                         .gate
                         .accounts
                         .get(&acct.name)
-                        .and_then(|e| e.endpoint.clone())
+                        .map(|e| e.provider.clone())
                         .unwrap_or_default();
+                    let endpoint = if provider_ref == "anthropic" || provider_ref == "openai" {
+                        String::new()
+                    } else {
+                        config
+                            .gate
+                            .providers
+                            .get(&provider_ref)
+                            .map(|p| p.endpoint.clone())
+                            .unwrap_or_default()
+                    };
                     settings.editing = Some(crate::settings_state::AccountEditFields {
                         name: SimpleInput::from(&acct.name),
                         dialect: dialect_idx,
@@ -528,7 +661,7 @@ async fn handle_navigation_key(
                         focus: 0,
                         is_new: false,
                     });
-                    settings.test_status = TestStatus::Idle;
+                    settings.set_status(TestStatus::Idle);
                 }
             }
             true
@@ -676,41 +809,41 @@ async fn handle_navigation_key(
             if settings.focus == SettingsFocus::Accounts {
                 if let Some(acct) = settings.accounts.get(settings.selected_account) {
                     let keys_dir = inbox_root.join("keys");
+                    // Empty key is fine: unauthenticated providers (LM Studio,
+                    // Ollama) accept anything. The server's response is more
+                    // informative than a local file check would be.
                     let key =
                         crate::config::read_key_file(&keys_dir, &acct.name).unwrap_or_default();
-                    if key.is_empty() {
-                        settings.test_status = TestStatus::Failed("No key file found".into());
-                    } else {
-                        let config = crate::config::resolve_config(
-                            inbox_root,
-                            &crate::config::CliOverrides::default(),
-                        );
-                        let entry = config.gate.accounts.get(&acct.name);
-                        let dialect = entry.map(|e| e.provider.as_str()).unwrap_or("anthropic");
-                        let mut provider_config = match dialect {
-                            "openai" => ox_gate::ProviderConfig::openai(),
-                            _ => ox_gate::ProviderConfig::anthropic(),
+                    let config = crate::config::resolve_config(
+                        inbox_root,
+                        &crate::config::CliOverrides::default(),
+                    );
+                    let provider_ref = config
+                        .gate
+                        .accounts
+                        .get(&acct.name)
+                        .map(|e| e.provider.clone())
+                        .unwrap_or_else(|| "anthropic".to_string());
+                    let provider_config = resolve_provider_config(&config, &provider_ref);
+
+                    settings.set_status(TestStatus::Testing);
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    settings.pending_test = Some(rx);
+
+                    let pc = provider_config;
+                    let k = key;
+                    let provider_name = provider_ref;
+                    tokio::spawn(async move {
+                        let test =
+                            crate::transport::test_connection_async(&pc, &k, &provider_name).await;
+                        let models = if test.is_ok() {
+                            crate::transport::fetch_model_catalog_async(&pc, &k, &provider_name)
+                                .await
+                        } else {
+                            Err("skipped".into())
                         };
-                        if let Some(ep) = entry.and_then(|e| e.endpoint.as_ref()) {
-                            provider_config.endpoint = ep.clone();
-                        }
-
-                        settings.test_status = TestStatus::Testing;
-                        let (tx, rx) = tokio::sync::oneshot::channel();
-                        settings.pending_test = Some(rx);
-
-                        let pc = provider_config;
-                        let k = key;
-                        tokio::spawn(async move {
-                            let test = crate::transport::test_connection_async(&pc, &k).await;
-                            let models = if test.is_ok() {
-                                crate::transport::fetch_model_catalog_async(&pc, &k).await
-                            } else {
-                                Err("skipped".into())
-                            };
-                            let _ = tx.send(crate::settings_state::TestResult { test, models });
-                        });
-                    }
+                        let _ = tx.send(crate::settings_state::TestResult { test, models });
+                    });
                 }
             }
             true
