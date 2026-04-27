@@ -423,16 +423,6 @@ pub async fn fetch_model_catalog_async(
                     .unwrap_or(&id)
                     .to_string();
 
-                // OpenAI returns everything — filter to chat models
-                if config.dialect == "openai"
-                    && !(id.contains("gpt")
-                        || id.contains("o1")
-                        || id.contains("o3")
-                        || id.contains("o4"))
-                {
-                    continue;
-                }
-
                 all_models.push(ox_kernel::ModelInfo { id, display_name });
             }
         }

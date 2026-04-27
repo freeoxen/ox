@@ -344,7 +344,7 @@ fn writer_thread(ledger_path: PathBuf, rx: mpsc::Receiver<WriterMsg>, drain: Arc
                 drain.message_count.store(message_count, Ordering::Release);
                 drain.has_value.store(true, Ordering::Release);
                 // Resolve each caller's ack.
-                for (req, result) in batch.into_iter().zip(results.into_iter()) {
+                for (req, result) in batch.into_iter().zip(results) {
                     let _ = req.ack.send(result);
                 }
             }

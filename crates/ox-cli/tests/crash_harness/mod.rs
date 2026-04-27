@@ -403,10 +403,8 @@ pub fn assert_no_dangling_turn_start(entries: &[LogEntry]) {
                 open += 1;
                 last_open = Some(i);
             }
-            LogEntry::TurnEnd { .. } | LogEntry::TurnAborted { .. } => {
-                if open > 0 {
-                    open -= 1;
-                }
+            LogEntry::TurnEnd { .. } | LogEntry::TurnAborted { .. } if open > 0 => {
+                open -= 1;
             }
             _ => {}
         }

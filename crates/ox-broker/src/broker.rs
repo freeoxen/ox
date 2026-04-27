@@ -44,7 +44,7 @@ impl BrokerInner {
         let (tx, rx) = mpsc::channel(64);
         self.servers.push(MountEntry { prefix, tx });
         self.servers
-            .sort_by(|a, b| b.prefix.len().cmp(&a.prefix.len()));
+            .sort_by_key(|entry| std::cmp::Reverse(entry.prefix.len()));
         rx
     }
 

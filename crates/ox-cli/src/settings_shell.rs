@@ -543,28 +543,24 @@ async fn handle_navigation_key(
         }
         "Left" if settings.focus == SettingsFocus::Defaults => {
             match settings.defaults_focus {
-                0 => {
-                    if !settings.accounts.is_empty() {
-                        settings.default_account_idx = if settings.default_account_idx == 0 {
-                            settings.accounts.len() - 1
-                        } else {
-                            settings.default_account_idx - 1
-                        };
-                    }
+                0 if !settings.accounts.is_empty() => {
+                    settings.default_account_idx = if settings.default_account_idx == 0 {
+                        settings.accounts.len() - 1
+                    } else {
+                        settings.default_account_idx - 1
+                    };
                 }
-                1 => {
-                    if !settings.discovered_models.is_empty() {
-                        let idx = settings.model_picker_idx.unwrap_or(0);
-                        let new_idx = if idx == 0 {
-                            settings.discovered_models.len() - 1
-                        } else {
-                            idx - 1
-                        };
-                        settings.model_picker_idx = Some(new_idx);
-                        settings
-                            .default_model
-                            .set(&settings.discovered_models[new_idx].id);
-                    }
+                1 if !settings.discovered_models.is_empty() => {
+                    let idx = settings.model_picker_idx.unwrap_or(0);
+                    let new_idx = if idx == 0 {
+                        settings.discovered_models.len() - 1
+                    } else {
+                        idx - 1
+                    };
+                    settings.model_picker_idx = Some(new_idx);
+                    settings
+                        .default_model
+                        .set(&settings.discovered_models[new_idx].id);
                 }
                 _ => {}
             }
@@ -572,21 +568,17 @@ async fn handle_navigation_key(
         }
         "Right" if settings.focus == SettingsFocus::Defaults => {
             match settings.defaults_focus {
-                0 => {
-                    if !settings.accounts.is_empty() {
-                        settings.default_account_idx =
-                            (settings.default_account_idx + 1) % settings.accounts.len();
-                    }
+                0 if !settings.accounts.is_empty() => {
+                    settings.default_account_idx =
+                        (settings.default_account_idx + 1) % settings.accounts.len();
                 }
-                1 => {
-                    if !settings.discovered_models.is_empty() {
-                        let idx = settings.model_picker_idx.unwrap_or(0);
-                        let new_idx = (idx + 1) % settings.discovered_models.len();
-                        settings.model_picker_idx = Some(new_idx);
-                        settings
-                            .default_model
-                            .set(&settings.discovered_models[new_idx].id);
-                    }
+                1 if !settings.discovered_models.is_empty() => {
+                    let idx = settings.model_picker_idx.unwrap_or(0);
+                    let new_idx = (idx + 1) % settings.discovered_models.len();
+                    settings.model_picker_idx = Some(new_idx);
+                    settings
+                        .default_model
+                        .set(&settings.discovered_models[new_idx].id);
                 }
                 _ => {}
             }
@@ -723,13 +715,12 @@ async fn handle_navigation_key(
             }
             true
         }
-        _ if settings.focus == SettingsFocus::Defaults && settings.defaults_focus == 1 => {
-            if settings.default_model.handle_key(modifiers, code) {
-                settings.model_picker_idx = None;
-                true
-            } else {
-                false
-            }
+        _ if settings.focus == SettingsFocus::Defaults
+            && settings.defaults_focus == 1
+            && settings.default_model.handle_key(modifiers, code) =>
+        {
+            settings.model_picker_idx = None;
+            true
         }
         _ if settings.focus == SettingsFocus::Defaults && settings.defaults_focus == 2 => {
             // Only allow digits for max_tokens

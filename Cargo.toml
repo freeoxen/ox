@@ -20,6 +20,29 @@ members = [
     "crates/ox-tools",
     "crates/ox-types",
 ]
+# ox-wasm is wasm32-only (its host imports are unresolved on native targets)
+# and is built explicitly by ox-cli's build.rs against wasm32-unknown-unknown.
+# Excluding it from default-members keeps `cargo build`/`cargo test` at the
+# workspace root from trying to link it for the host.
+default-members = [
+    "crates/ox-core",
+    "crates/ox-context",
+    "crates/ox-dev-server",
+    "crates/ox-emscripten",
+    "crates/ox-gate",
+    "crates/ox-history",
+    "crates/ox-kernel",
+    "crates/ox-web",
+    "crates/ox-cli",
+    "crates/ox-inbox",
+    "crates/ox-runtime",
+    "crates/ox-broker",
+    "crates/ox-ui",
+    "crates/ox-store-util",
+    "crates/ox-path",
+    "crates/ox-tools",
+    "crates/ox-types",
+]
 
 [workspace.package]
 version = "0.1.0"

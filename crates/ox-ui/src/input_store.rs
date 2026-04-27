@@ -121,10 +121,8 @@ impl InputStore {
                 // Exact screen match — highest priority, return immediately
                 (Some(bs), Some(s)) if bs.as_str() == s => return Some(b),
                 // Binding has no screen constraint — matches any screen
-                (None, _) => {
-                    if best.is_none() {
-                        best = Some(b);
-                    }
+                (None, _) if best.is_none() => {
+                    best = Some(b);
                 }
                 // Binding has screen constraint but doesn't match — skip
                 _ => {}

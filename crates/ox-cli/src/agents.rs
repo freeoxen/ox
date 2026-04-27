@@ -408,36 +408,53 @@ fn agent_worker(
         .ok()
         .flatten()
         .unwrap_or_else(|| "anthropic".to_string());
-    let (provider, api_key_for_transport) = match ox_kernel::PathComponent::try_new(
-        default_account.as_str(),
-    ) {
-        Ok(acct_comp) => {
-            let prov = adapter
-                .read_typed::<String>(&ox_path::oxpath!(
-                    "gate",
-                    "accounts",
-                    acct_comp.clone(),
-                    "provider"
-                ))
-                .ok()
-                .flatten()
-                .unwrap_or_else(|| "anthropic".to_string());
-            let key = adapter
-                .read_typed::<String>(&ox_path::oxpath!("gate", "accounts", acct_comp, "key"))
-                .ok()
-                .flatten()
-                .unwrap_or_default();
-            (prov, key)
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, account = %default_account, "invalid account name for path");
-            ("anthropic".to_string(), String::new())
-        }
-    };
-    let provider_config = match provider.as_str() {
+    let (provider, api_key_for_transport, endpoint_override) =
+        match ox_kernel::PathComponent::try_new(default_account.as_str()) {
+            Ok(acct_comp) => {
+                let prov = adapter
+                    .read_typed::<String>(&ox_path::oxpath!(
+                        "gate",
+                        "accounts",
+                        acct_comp.clone(),
+                        "provider"
+                    ))
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| "anthropic".to_string());
+                let key = adapter
+                    .read_typed::<String>(&ox_path::oxpath!(
+                        "gate",
+                        "accounts",
+                        acct_comp.clone(),
+                        "key"
+                    ))
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default();
+                let ep = adapter
+                    .read_typed::<String>(&ox_path::oxpath!(
+                        "gate",
+                        "accounts",
+                        acct_comp,
+                        "endpoint"
+                    ))
+                    .ok()
+                    .flatten()
+                    .filter(|s| !s.is_empty());
+                (prov, key, ep)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, account = %default_account, "invalid account name for path");
+                ("anthropic".to_string(), String::new(), None)
+            }
+        };
+    let mut provider_config = match provider.as_str() {
         "openai" => ProviderConfig::openai(),
         _ => ProviderConfig::anthropic(),
     };
+    if let Some(ep) = endpoint_override {
+        provider_config.endpoint = ep;
+    }
 
     // Inject the CLI completion transport into the CompletionModule.
     // This gives CompletionModule the ability to execute LLM completions
@@ -472,6 +489,7 @@ fn agent_worker(
         thread_id = %thread_id,
         default_account = %default_account,
         provider = %provider,
+        endpoint = %provider_config.endpoint,
         has_key = !api_key_for_transport.is_empty(),
         "agent worker ready"
     );

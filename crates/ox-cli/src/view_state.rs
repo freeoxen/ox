@@ -439,10 +439,8 @@ fn build_thread_from_log(log_entries: &[Value]) -> Vec<ChatMessage> {
 /// Parse assistant content blocks into ChatMessages.
 fn parse_assistant_content_into(content: &Value, out: &mut Vec<ChatMessage>) {
     match content {
-        Value::String(s) => {
-            if !s.is_empty() {
-                out.push(ChatMessage::AssistantChunk(s.clone()));
-            }
+        Value::String(s) if !s.is_empty() => {
+            out.push(ChatMessage::AssistantChunk(s.clone()));
         }
         Value::Array(arr) => {
             for block in arr {
