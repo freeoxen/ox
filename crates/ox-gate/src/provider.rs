@@ -119,6 +119,13 @@ pub struct Preset {
 
 /// Built-in provider presets, in display order. Order matters: the first
 /// is the default selection in the Add Account dialog.
+///
+/// A preset represents an **API shape** — dialect + endpoint pattern +
+/// auth — not a runtime. Local model runtimes like LM Studio and Ollama
+/// each expose multiple API shapes (Anthropic-compatible, OpenAI-compatible,
+/// their own native), and the user picks which to use; the preset list
+/// must not collapse those choices into a single "LM Studio" option.
+/// Custom is the escape hatch for any URL the user wants to point at.
 pub fn presets() -> &'static [Preset] {
     // Function rather than `const` because `AuthScheme` is not `Copy` for
     // forward-compat (e.g. a future `Custom { header, prefix }` variant
@@ -140,24 +147,6 @@ pub fn presets() -> &'static [Preset] {
             endpoint: "https://api.openai.com",
             version: "",
             auth: AuthScheme::BearerToken,
-            custom: false,
-        },
-        Preset {
-            label: "LM Studio (local)",
-            id: "lm-studio",
-            dialect: "openai",
-            endpoint: "http://127.0.0.1:1234",
-            version: "",
-            auth: AuthScheme::None,
-            custom: false,
-        },
-        Preset {
-            label: "Ollama (local)",
-            id: "ollama",
-            dialect: "openai",
-            endpoint: "http://127.0.0.1:11434",
-            version: "",
-            auth: AuthScheme::None,
             custom: false,
         },
         Preset {
@@ -435,22 +424,16 @@ mod tests {
     // -- Presets -------------------------------------------------------------
 
     #[test]
-    fn presets_includes_local_servers() {
+    fn presets_lists_real_apis_and_a_custom_escape_hatch() {
         let labels: Vec<&str> = presets().iter().map(|p| p.label).collect();
         assert!(labels.contains(&"Anthropic"));
         assert!(labels.contains(&"OpenAI"));
-        assert!(labels.contains(&"LM Studio (local)"));
-        assert!(labels.contains(&"Ollama (local)"));
         assert!(labels.iter().any(|l| l.starts_with("Custom")));
-    }
-
-    #[test]
-    fn local_presets_have_no_auth() {
-        for p in presets() {
-            if p.label.contains("local") {
-                assert_eq!(p.auth, AuthScheme::None, "{} should be unauthenticated", p.label);
-            }
-        }
+        // Local runtimes (LM Studio, Ollama, …) expose multiple API shapes;
+        // "the runtime" is not a preset. Pinning the absence so a future
+        // change has to make a deliberate choice.
+        assert!(!labels.iter().any(|l| l.contains("LM Studio")));
+        assert!(!labels.iter().any(|l| l.contains("Ollama")));
     }
 
     #[test]
@@ -459,6 +442,27 @@ mod tests {
             if matches!(p.id, "anthropic" | "openai") {
                 assert!(p.auth.requires_key(), "{} must require a key", p.label);
             }
+        }
+    }
+
+    #[test]
+    fn every_preset_id_is_a_valid_path_component() {
+        // Preset ids become StructFS path components at save time
+        // (gate/providers/{id}). PathComponent's identifier rules are
+        // stricter than what reads naturally as kebab-case, so this
+        // pins every preset against the same validator the runtime uses.
+        // `Custom` carries an empty id (it synthesizes a per-account
+        // provider named after the account) and is exempt.
+        for p in presets() {
+            if p.custom {
+                continue;
+            }
+            ox_kernel::PathComponent::try_new(p.id).unwrap_or_else(|e| {
+                panic!(
+                    "preset {:?} has id {:?} that is not a valid PathComponent: {e}",
+                    p.label, p.id
+                )
+            });
         }
     }
 }

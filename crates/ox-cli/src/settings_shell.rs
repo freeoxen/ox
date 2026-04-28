@@ -87,7 +87,8 @@ impl SettingsShell {
                     // Still in progress — will check next frame
                 }
                 Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                    self.state.set_status(TestStatus::Failed("Test cancelled".into()));
+                    self.state
+                        .set_status(TestStatus::Failed("Test cancelled".into()));
                     self.state.pending_test = None;
                 }
             }
@@ -202,55 +203,58 @@ struct SaveSpec {
 /// Validate the dialog state and produce a `SaveSpec`, or a `Reject` with
 /// a specific reason. Single point of save-time validation so every
 /// rejection path produces a status the user can read.
+///
+/// The endpoint axis is independent of preset selection: preset chooses
+/// the wire dialect, auth scheme, and version; endpoint chooses where
+/// the API is served from. A user-edited endpoint diverges from the
+/// preset default — when that happens we synthesize a per-account
+/// provider entry rather than mutating the canonical preset id, so two
+/// accounts on the same preset with different endpoints don't collide.
 fn save_action_from_editing(editing: &crate::settings_state::AccountEditFields) -> EditAction {
     if editing.name.is_empty() {
         return EditAction::Reject("Name is required.".into());
     }
 
     let preset = editing.preset();
-    let auth = preset.auth.clone();
+    // Auth comes from the dialog's auth field, not the preset. Protocol
+    // selection only suggests an auth default at first selection — the
+    // user owns the final choice. This is what lets "OpenAI protocol +
+    // local server + no auth" be expressible: pick OpenAI, set auth to
+    // None, type the local endpoint.
+    let auth = editing.auth();
     let key = editing.key.content().to_owned();
+    let endpoint = editing.endpoint.content().to_owned();
 
     if auth.requires_key() && key.is_empty() {
         return EditAction::Reject(format!(
-            "An API key is required for {}.",
-            preset.label
+            "Selected auth ({}) requires an API key.",
+            crate::settings_state::auth_label(&auth)
         ));
     }
 
-    if preset.custom {
-        let endpoint = editing.endpoint.content().to_owned();
-        if let Err(msg) = ox_gate::validate_endpoint(&endpoint) {
-            return EditAction::Reject(msg);
-        }
-        // Custom: account points at a synthesized provider named after
-        // the account; write a fresh ProviderConfig with the user-supplied
-        // endpoint and the preset's auth (Custom defaults to None — the
-        // user can't change auth from the dialog yet; that's a follow-up).
-        return EditAction::Save(SaveSpec {
-            name: editing.name.content().to_owned(),
-            provider_ref: editing.name.content().to_owned(),
-            custom_provider: Some(ox_gate::ProviderConfig {
-                dialect: preset.dialect.to_string(),
-                endpoint,
-                version: preset.version.to_string(),
-                auth: Some(auth.clone()),
-            }),
-            auth,
-            key,
-        });
+    if let Err(msg) = ox_gate::validate_endpoint(&endpoint) {
+        return EditAction::Reject(msg);
     }
 
-    // Non-custom preset: account points at the preset's canonical id.
-    // The provider entry is written too so the runtime resolves it
-    // through the ConfigStore (without relying on built-in `anthropic` /
-    // `openai` defaults, which lack auth metadata in older configs).
+    // If the user kept the preset's defaults end-to-end (endpoint AND
+    // auth), point the account at the canonical preset id — multiple
+    // accounts on the same preset share one provider entry. Any
+    // divergence (custom endpoint, switched auth, custom preset)
+    // synthesizes a per-account provider entry so the override doesn't
+    // bleed into other accounts on the same preset.
+    let preset_default = !preset.custom && endpoint == preset.endpoint && auth == preset.auth;
+    let provider_ref = if preset_default {
+        preset.id.to_string()
+    } else {
+        editing.name.content().to_owned()
+    };
+
     EditAction::Save(SaveSpec {
         name: editing.name.content().to_owned(),
-        provider_ref: preset.id.to_string(),
+        provider_ref,
         custom_provider: Some(ox_gate::ProviderConfig {
             dialect: preset.dialect.to_string(),
-            endpoint: preset.endpoint.to_string(),
+            endpoint,
             version: preset.version.to_string(),
             auth: Some(auth.clone()),
         }),
@@ -284,12 +288,12 @@ async fn handle_edit_dialog_key(
     let action = if let Some(ref mut editing) = settings.editing {
         match key_str {
             "Tab" | "Down" => {
-                editing.focus = (editing.focus + 1) % 4;
+                editing.focus = (editing.focus + 1) % 5;
                 EditAction::Handled
             }
             "Shift+Tab" | "Up" => {
                 editing.focus = if editing.focus == 0 {
-                    3
+                    4
                 } else {
                     editing.focus - 1
                 };
@@ -304,12 +308,13 @@ async fn handle_edit_dialog_key(
                 } else {
                     editing.preset_idx - 1
                 };
-                // When switching to a non-custom preset, refill the
-                // endpoint field with the preset's URL so the user sees
-                // what'll be used. Custom preset keeps whatever was typed.
+                // Switching protocol re-seeds endpoint and auth from the
+                // preset's defaults, but the user can still override
+                // either independently after.
                 if !editing.preset().custom {
                     editing.endpoint = SimpleInput::from(editing.preset().endpoint);
                 }
+                editing.auth_idx = crate::settings_state::auth_idx_for(&editing.preset().auth);
                 EditAction::Handled
             }
             "Right" if editing.focus == 1 => {
@@ -318,6 +323,21 @@ async fn handle_edit_dialog_key(
                 if !editing.preset().custom {
                     editing.endpoint = SimpleInput::from(editing.preset().endpoint);
                 }
+                editing.auth_idx = crate::settings_state::auth_idx_for(&editing.preset().auth);
+                EditAction::Handled
+            }
+            "Left" if editing.focus == 3 => {
+                let n = crate::settings_state::AUTH_CHOICES.len();
+                editing.auth_idx = if editing.auth_idx == 0 {
+                    n - 1
+                } else {
+                    editing.auth_idx - 1
+                };
+                EditAction::Handled
+            }
+            "Right" if editing.focus == 3 => {
+                let n = crate::settings_state::AUTH_CHOICES.len();
+                editing.auth_idx = (editing.auth_idx + 1) % n;
                 EditAction::Handled
             }
             "Ctrl+t" => {
@@ -390,15 +410,30 @@ async fn handle_edit_dialog_key(
 
             if let Some(prov) = custom_provider {
                 let dialect_path = ox_path::oxpath!(
-                    "config", "gate", "providers", provider_comp.clone(), "dialect"
+                    "config",
+                    "gate",
+                    "providers",
+                    provider_comp.clone(),
+                    "dialect"
                 );
                 client.write_typed(&dialect_path, &prov.dialect).await.ok();
                 let endpoint_path = ox_path::oxpath!(
-                    "config", "gate", "providers", provider_comp.clone(), "endpoint"
+                    "config",
+                    "gate",
+                    "providers",
+                    provider_comp.clone(),
+                    "endpoint"
                 );
-                client.write_typed(&endpoint_path, &prov.endpoint).await.ok();
+                client
+                    .write_typed(&endpoint_path, &prov.endpoint)
+                    .await
+                    .ok();
                 let version_path = ox_path::oxpath!(
-                    "config", "gate", "providers", provider_comp.clone(), "version"
+                    "config",
+                    "gate",
+                    "providers",
+                    provider_comp.clone(),
+                    "version"
                 );
                 client.write_typed(&version_path, &prov.version).await.ok();
                 // Auth scheme as a kebab-case string. GateStore's
@@ -410,9 +445,8 @@ async fn handle_edit_dialog_key(
                     ox_gate::AuthScheme::BearerToken => "bearer-token",
                     ox_gate::AuthScheme::None => "none",
                 };
-                let auth_path = ox_path::oxpath!(
-                    "config", "gate", "providers", provider_comp.clone(), "auth"
-                );
+                let auth_path =
+                    ox_path::oxpath!("config", "gate", "providers", provider_comp.clone(), "auth");
                 client
                     .write_typed(&auth_path, &auth_str.to_string())
                     .await
@@ -500,37 +534,38 @@ async fn handle_edit_dialog_key(
     if key_str == "Ctrl+t" {
         if let Some(ref editing) = settings.editing {
             let preset = editing.preset();
+            let auth = editing.auth();
 
-            // Endpoint check fires only for Custom — preset endpoints are
-            // already valid by construction.
-            let endpoint = if preset.custom {
-                if let Err(msg) = ox_gate::validate_endpoint(editing.endpoint.content()) {
-                    settings.set_status(TestStatus::Failed(msg));
-                    return Outcome::Handled;
-                }
-                editing.endpoint.content().to_owned()
-            } else {
-                preset.endpoint.to_string()
-            };
+            let endpoint = editing.endpoint.content().to_owned();
+            if let Err(msg) = ox_gate::validate_endpoint(&endpoint) {
+                settings.set_status(TestStatus::Failed(msg));
+                return Outcome::Handled;
+            }
 
-            if preset.auth.requires_key() && editing.key.is_empty() {
+            if auth.requires_key() && editing.key.is_empty() {
                 settings.set_status(TestStatus::Failed(format!(
-                    "An API key is required for {}.",
-                    preset.label
+                    "Selected auth ({}) requires an API key.",
+                    crate::settings_state::auth_label(&auth)
                 )));
                 return Outcome::Handled;
             }
 
             let provider_config = ox_gate::ProviderConfig {
                 dialect: preset.dialect.to_string(),
-                endpoint,
+                endpoint: endpoint.clone(),
                 version: preset.version.to_string(),
-                auth: Some(preset.auth.clone()),
+                auth: Some(auth.clone()),
             };
-            let provider_label = if preset.custom {
-                editing.name.content().to_owned()
-            } else {
+            // Provider label in the test result mirrors what save would
+            // synthesize — preset id when the endpoint and auth both
+            // match the preset's defaults, account name when either
+            // diverges.
+            let preset_default =
+                !preset.custom && endpoint == preset.endpoint && auth == preset.auth;
+            let provider_label = if preset_default {
                 preset.id.to_string()
+            } else {
+                editing.name.content().to_owned()
             };
             let api_key_for_test = editing.key.content().to_owned();
 
@@ -542,8 +577,7 @@ async fn handle_edit_dialog_key(
             let key = api_key_for_test;
             let provider_name = provider_label;
             tokio::spawn(async move {
-                let test =
-                    crate::transport::test_connection_async(&pc, &key, &provider_name).await;
+                let test = crate::transport::test_connection_async(&pc, &key, &provider_name).await;
                 let models = if test.is_ok() {
                     crate::transport::fetch_model_catalog_async(&pc, &key, &provider_name).await
                 } else {
@@ -588,8 +622,7 @@ async fn handle_delete_confirm_key(
                 .write(&provider_path, Record::parsed(Value::Null))
                 .await
                 .ok();
-            let key_path =
-                ox_path::oxpath!("config", "gate", "accounts", name_comp.clone(), "key");
+            let key_path = ox_path::oxpath!("config", "gate", "accounts", name_comp.clone(), "key");
             client
                 .write(&key_path, Record::parsed(Value::Null))
                 .await
@@ -601,18 +634,24 @@ async fn handle_delete_confirm_key(
             // share the namespace and must not be deleted; a name collision
             // with a built-in is benign because we only nuke a provider
             // entry that was authored under the same name as the account.
-            let prov_dialect = ox_path::oxpath!(
-                "config", "gate", "providers", name_comp.clone(), "dialect"
-            );
-            client.write(&prov_dialect, Record::parsed(Value::Null)).await.ok();
-            let prov_endpoint = ox_path::oxpath!(
-                "config", "gate", "providers", name_comp.clone(), "endpoint"
-            );
-            client.write(&prov_endpoint, Record::parsed(Value::Null)).await.ok();
-            let prov_version = ox_path::oxpath!(
-                "config", "gate", "providers", name_comp.clone(), "version"
-            );
-            client.write(&prov_version, Record::parsed(Value::Null)).await.ok();
+            let prov_dialect =
+                ox_path::oxpath!("config", "gate", "providers", name_comp.clone(), "dialect");
+            client
+                .write(&prov_dialect, Record::parsed(Value::Null))
+                .await
+                .ok();
+            let prov_endpoint =
+                ox_path::oxpath!("config", "gate", "providers", name_comp.clone(), "endpoint");
+            client
+                .write(&prov_endpoint, Record::parsed(Value::Null))
+                .await
+                .ok();
+            let prov_version =
+                ox_path::oxpath!("config", "gate", "providers", name_comp.clone(), "version");
+            client
+                .write(&prov_version, Record::parsed(Value::Null))
+                .await
+                .ok();
 
             // Update default if deleted account was default
             if acct.is_default {
@@ -701,6 +740,7 @@ async fn handle_navigation_key(
                     name: SimpleInput::new(),
                     preset_idx: 0,
                     endpoint: SimpleInput::from(presets[0].endpoint),
+                    auth_idx: crate::settings_state::auth_idx_for(&presets[0].auth),
                     key: SimpleInput::new(),
                     focus: 0,
                     is_new: true,
@@ -725,31 +765,40 @@ async fn handle_navigation_key(
                         .get(&acct.name)
                         .map(|e| e.provider.clone())
                         .unwrap_or_default();
-                    // Map the existing account onto a preset by id when
-                    // possible. If the account points at a per-account or
-                    // unknown provider, fall back to the Custom preset and
-                    // prefill the endpoint from the provider entry.
+                    let provider_entry = config.gate.providers.get(&provider_ref);
+                    // Map an existing account back onto its protocol preset:
+                    // by name first (the canonical match), then by dialect
+                    // (a custom-named provider that happens to speak openai
+                    // is still the "OpenAI" protocol). Fall back to Custom
+                    // if neither lookup resolves.
                     let presets = ox_gate::presets();
                     let preset_idx = presets
                         .iter()
                         .position(|p| !p.custom && p.id == provider_ref)
-                        .unwrap_or_else(|| {
-                            presets.iter().position(|p| p.custom).unwrap_or(0)
-                        });
-                    let endpoint = if presets[preset_idx].custom {
-                        config
-                            .gate
-                            .providers
-                            .get(&provider_ref)
-                            .map(|p| p.endpoint.clone())
-                            .unwrap_or_default()
-                    } else {
-                        presets[preset_idx].endpoint.to_string()
-                    };
+                        .or_else(|| {
+                            provider_entry.and_then(|e| {
+                                presets
+                                    .iter()
+                                    .position(|p| !p.custom && p.dialect == e.dialect)
+                            })
+                        })
+                        .unwrap_or_else(|| presets.iter().position(|p| p.custom).unwrap_or(0));
+                    let endpoint = provider_entry
+                        .map(|p| p.endpoint.clone())
+                        .unwrap_or_else(|| presets[preset_idx].endpoint.to_string());
+                    let resolved_auth = provider_entry
+                        .map(|p| {
+                            p.auth.clone().unwrap_or_else(|| {
+                                ox_gate::AuthScheme::default_for_dialect(&p.dialect)
+                            })
+                        })
+                        .unwrap_or_else(|| presets[preset_idx].auth.clone());
+                    let auth_idx = crate::settings_state::auth_idx_for(&resolved_auth);
                     settings.editing = Some(crate::settings_state::AccountEditFields {
                         name: SimpleInput::from(&acct.name),
                         preset_idx,
                         endpoint: SimpleInput::from(&endpoint),
+                        auth_idx,
                         key: SimpleInput::from(&key_val),
                         focus: 0,
                         is_new: false,

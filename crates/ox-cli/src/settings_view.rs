@@ -46,7 +46,13 @@ pub(crate) fn draw_settings(frame: &mut Frame, state: &SettingsState, theme: &Th
     draw_defaults_section(frame, state, theme, chunks[idx]);
 
     if let Some(ref editing) = state.editing {
-        draw_account_edit_dialog(frame, editing, &state.test_status, state.status_scroll, theme);
+        draw_account_edit_dialog(
+            frame,
+            editing,
+            &state.test_status,
+            state.status_scroll,
+            theme,
+        );
     }
 }
 
@@ -323,11 +329,11 @@ pub(crate) fn draw_account_edit_dialog(
     use crate::settings_state::TestStatus;
     use ratatui::widgets::Clear;
 
-    // 14 rows: 4 fields, 1 spacer, ~6 rows for a wrapped multi-line
-    // transport error (header / account+provider / cause / hint), 1 spacer,
-    // 1 row help, 2 rows border. Long errors past the visible window are
-    // reachable via PageUp/PageDown — TextPane handles scroll + indicators.
-    let area = centered_rect(60, 14, frame.area());
+    // 15 rows: 5 fields (name, protocol, endpoint, auth, key), 1 spacer,
+    // ~6 rows for a wrapped multi-line transport error, 1 row help, 2
+    // rows border. Long errors past the visible window are reachable via
+    // PageUp/PageDown — TextPane handles scroll + indicators.
+    let area = centered_rect(60, 15, frame.area());
     frame.render_widget(Clear, area);
 
     let title = if editing.is_new {
@@ -393,17 +399,14 @@ pub(crate) fn draw_account_edit_dialog(
         row1,
     );
 
-    // Row 2: URL. Editable only when preset is Custom. For built-in
-    // presets the URL is shown dim and can't be edited — the user
-    // shouldn't be telling Anthropic where its own API lives.
+    // Row 2: Endpoint — where the API is served from (host, no path).
+    // Always editable: preset seeds the default but the user owns the
+    // where-axis (corporate proxies, mirrored regions, local servers
+    // exposing a cloud-compatible API, …).
     let row2 = Rect::new(inner.x, inner.y + 2, inner.width, 1);
     let label2 = format!(
-        "  URL:      {}",
-        if focus == 2 && preset.custom {
-            cursor
-        } else {
-            no_cursor
-        }
+        "  Endpoint: {}",
+        if focus == 2 { cursor } else { no_cursor }
     );
     frame.render_widget(Paragraph::new(Span::raw(&label2)), row2);
     let field2 = Rect::new(
@@ -412,85 +415,82 @@ pub(crate) fn draw_account_edit_dialog(
         inner.width.saturating_sub(label_w),
         1,
     );
-    if preset.custom {
-        if editing.endpoint.is_empty() && focus != 2 {
-            frame.render_widget(
-                Paragraph::new(Span::styled(
-                    "(http://host:port)",
-                    Style::default().add_modifier(Modifier::DIM),
-                )),
-                field2,
-            );
-        } else {
-            editing
-                .endpoint
-                .render_inline(frame, field2, Style::default(), focus == 2, false);
-        }
-    } else {
-        // Locked to the preset; show dim so the user knows it's not editable.
+    if editing.endpoint.is_empty() && focus != 2 {
         frame.render_widget(
             Paragraph::new(Span::styled(
-                preset.endpoint,
+                "(http://host:port)",
                 Style::default().add_modifier(Modifier::DIM),
             )),
             field2,
         );
+    } else {
+        editing
+            .endpoint
+            .render_inline(frame, field2, Style::default(), focus == 2, false);
     }
 
-    // Row 3: API Key. Hidden/disabled when the preset's auth is None.
-    // A field that pretends to accept input but is ignored at save time
-    // is worse than no field at all — it's a footgun.
+    // Row 3: Auth. User-controlled, with ←/→ cycling. Independent of
+    // protocol selection — picking OpenAI protocol does not require
+    // sending a Bearer token (LM Studio on localhost is the canonical
+    // counter-example).
     let row3 = Rect::new(inner.x, inner.y + 3, inner.width, 1);
-    let needs_key = preset.auth.requires_key();
-    let label3 = format!(
+    let auth_now = editing.auth();
+    frame.render_widget(
+        Paragraph::new(Line::from(format!(
+            "  Auth:     {}{} (\u{2190}/\u{2192} to change)",
+            if focus == 3 { cursor } else { no_cursor },
+            crate::settings_state::auth_label(&auth_now),
+        ))),
+        row3,
+    );
+
+    // Row 4: API Key. Disabled when the chosen auth is None — a field
+    // that pretends to accept input but is ignored at save time is worse
+    // than no field at all.
+    let row4 = Rect::new(inner.x, inner.y + 4, inner.width, 1);
+    let needs_key = auth_now.requires_key();
+    let label4 = format!(
         "  API Key:  {}",
-        if focus == 3 && needs_key {
+        if focus == 4 && needs_key {
             cursor
         } else {
             no_cursor
         }
     );
-    frame.render_widget(Paragraph::new(Span::raw(&label3)), row3);
-    let field3 = Rect::new(
+    frame.render_widget(Paragraph::new(Span::raw(&label4)), row4);
+    let field4 = Rect::new(
         inner.x + label_w,
-        inner.y + 3,
+        inner.y + 4,
         inner.width.saturating_sub(label_w),
         1,
     );
     if !needs_key {
-        let auth_label = match preset.auth {
-            ox_gate::AuthScheme::None => "— not required —",
-            _ => "",
-        };
         frame.render_widget(
             Paragraph::new(Span::styled(
-                auth_label,
+                "— not required for auth=none —",
                 Style::default().add_modifier(Modifier::DIM),
             )),
-            field3,
+            field4,
         );
-    } else if editing.key.is_empty() && focus != 3 {
+    } else if editing.key.is_empty() && focus != 4 {
         frame.render_widget(
             Paragraph::new(Span::styled(
                 "(empty)",
                 Style::default().add_modifier(Modifier::DIM),
             )),
-            field3,
+            field4,
         );
     } else {
         editing
             .key
-            .render_inline(frame, field3, Style::default(), focus == 3, true);
+            .render_inline(frame, field4, Style::default(), focus == 4, true);
     }
 
-    // Status block: starts at row 5 (one spacer below the key field) and
+    // Status block: starts at row 6 (one spacer below the key field) and
     // grows to fill every remaining row above the bottom-anchored help line.
-    // Multi-line error messages from the transport (header / context / cause
-    // / hint) want at least 5–6 rows; an arbitrary cap clips them.
-    if inner.height > 6 && !test_display.is_empty() {
-        // Reserve one row at the bottom for the help line.
-        let status_height = inner.height.saturating_sub(5).saturating_sub(1);
-        let status_area = Rect::new(inner.x, inner.y + 5, inner.width, status_height);
+    if inner.height > 7 && !test_display.is_empty() {
+        let status_height = inner.height.saturating_sub(6).saturating_sub(1);
+        let status_area = Rect::new(inner.x, inner.y + 6, inner.width, status_height);
         let style = match test_status {
             TestStatus::Failed(_) => Style::default().fg(ratatui::style::Color::Red),
             TestStatus::Success(_) => Style::default().fg(ratatui::style::Color::Green),

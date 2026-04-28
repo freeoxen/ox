@@ -30,10 +30,10 @@ mod settings_view;
 mod shell;
 mod simple_input;
 mod tab_bar;
-mod text_pane;
 #[allow(dead_code)]
 mod test_support;
 mod text_input_view;
+mod text_pane;
 mod theme;
 pub(crate) mod thread_registry;
 mod thread_shell;
@@ -113,7 +113,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let keys_dir = inbox_root.join("keys");
     let resolved_keys = config::resolve_keys(&keys_dir, &resolved);
     let force_wizard = matches!(cli.command, Some(Commands::Init));
-    let needs_setup = force_wizard || !config::has_any_key(&keys_dir, &resolved);
+    // Setup wizard fires only when the user hasn't yet configured a usable
+    // account. "Usable" includes unauthenticated providers (LM Studio,
+    // Ollama) — they have no key file and never will, so a key-presence
+    // check would re-trigger setup every launch.
+    let needs_setup = force_wizard || !config::has_any_usable_account(&resolved);
 
     tracing::info!(
         force_wizard,

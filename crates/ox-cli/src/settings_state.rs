@@ -28,40 +28,60 @@ pub enum WizardStep {
 
 /// Fields for the account add/edit dialog.
 ///
-/// The user picks a `preset_idx` from `ox_gate::presets()`. Non-custom
-/// presets pin dialect/endpoint/version/auth to known values; the user
-/// only types the account name and (when auth requires it) a key. Picking
-/// the `Custom…` preset unlocks all four fields for direct editing.
+/// Three independent axes:
+///
+/// - **Protocol** (`preset_idx`): the wire format. Anthropic, OpenAI, or
+///   Custom. Locks dialect/version, *suggests* an endpoint and an auth
+///   scheme but never imposes them.
+/// - **Endpoint**: where the server lives. Always user-editable —
+///   protocol does not own this. LM Studio serving the OpenAI protocol on
+///   `http://127.0.0.1:1234` is the canonical example: same protocol as
+///   api.openai.com, totally different server policy.
+/// - **Auth** (`auth_idx`): how the request is authenticated. Always
+///   user-editable. Pre-seeded from the protocol on first selection, then
+///   the user owns it. `None` for unauthenticated local servers,
+///   `BearerToken` / `XApiKey` otherwise.
 #[derive(Debug, Clone)]
 pub struct AccountEditFields {
     pub name: SimpleInput,
     /// Index into `ox_gate::presets()`.
     pub preset_idx: usize,
-    /// Editable view of the preset's endpoint. Visible always; editable
-    /// only when the current preset is `Custom`.
     pub endpoint: SimpleInput,
+    /// Auth scheme: 0 = None, 1 = BearerToken, 2 = XApiKey.
+    pub auth_idx: usize,
     pub key: SimpleInput,
-    /// 0 = name, 1 = preset, 2 = endpoint (custom only), 3 = key.
+    /// 0 = name, 1 = protocol, 2 = endpoint, 3 = auth, 4 = key.
     pub focus: usize,
     pub is_new: bool,
 }
 
+/// Fixed list of selectable auth schemes, in display order. Index 0 is
+/// `None` so unauthenticated providers (LM Studio, Ollama on default
+/// ports) are the easy default after the user clears the field.
+pub const AUTH_CHOICES: [ox_gate::AuthScheme; 3] = [
+    ox_gate::AuthScheme::None,
+    ox_gate::AuthScheme::BearerToken,
+    ox_gate::AuthScheme::XApiKey,
+];
+
+pub fn auth_label(scheme: &ox_gate::AuthScheme) -> &'static str {
+    match scheme {
+        ox_gate::AuthScheme::None => "none",
+        ox_gate::AuthScheme::BearerToken => "Authorization: Bearer",
+        ox_gate::AuthScheme::XApiKey => "x-api-key",
+    }
+}
+
 impl AccountEditFields {
     /// Mutable reference to the focused text field, or None if the focus
-    /// is on a selector (preset) or a disabled field (endpoint when the
-    /// preset isn't Custom; key when auth is None).
+    /// is on a selector (preset / auth) or a disabled field (key when
+    /// the chosen auth is None).
     pub fn focused_input(&mut self) -> Option<&mut SimpleInput> {
         match self.focus {
             0 => Some(&mut self.name),
-            2 => {
-                if self.preset().custom {
-                    Some(&mut self.endpoint)
-                } else {
-                    None
-                }
-            }
-            3 => {
-                if self.preset().auth.requires_key() {
+            2 => Some(&mut self.endpoint),
+            4 => {
+                if self.auth().requires_key() {
                     Some(&mut self.key)
                 } else {
                     None
@@ -71,13 +91,17 @@ impl AccountEditFields {
         }
     }
 
-    /// The currently selected preset.
+    /// The currently selected protocol preset.
     pub fn preset(&self) -> &'static ox_gate::Preset {
         let presets = ox_gate::presets();
         &presets[self.preset_idx.min(presets.len() - 1)]
     }
-}
 
+    /// The currently selected auth scheme.
+    pub fn auth(&self) -> ox_gate::AuthScheme {
+        AUTH_CHOICES[self.auth_idx.min(AUTH_CHOICES.len() - 1)].clone()
+    }
+}
 
 /// Test connection status.
 #[derive(Debug, Clone)]
@@ -211,14 +235,22 @@ impl SettingsState {
     pub fn new_wizard() -> Self {
         let mut s = Self::new();
         s.wizard = Some(WizardStep::AddAccount);
+        let preset = &ox_gate::presets()[0];
         s.editing = Some(AccountEditFields {
             name: SimpleInput::new(),
             preset_idx: 0,
-            endpoint: SimpleInput::from(ox_gate::presets()[0].endpoint),
+            endpoint: SimpleInput::from(preset.endpoint),
+            auth_idx: auth_idx_for(&preset.auth),
             key: SimpleInput::new(),
             focus: 0,
             is_new: true,
         });
         s
     }
+}
+
+/// Index in `AUTH_CHOICES` matching the given scheme. Used to seed the
+/// dialog's auth field from a preset's suggested default.
+pub fn auth_idx_for(scheme: &ox_gate::AuthScheme) -> usize {
+    AUTH_CHOICES.iter().position(|c| c == scheme).unwrap_or(0)
 }

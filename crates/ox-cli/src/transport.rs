@@ -1,7 +1,7 @@
-use ox_gate::{AuthScheme, ProviderConfig, completion_url, models_url};
 #[cfg(test)]
 use ox_gate::codec::anthropic as anthropic_codec;
 use ox_gate::codec::{UsageInfo, openai as openai_codec};
+use ox_gate::{AuthScheme, ProviderConfig, completion_url, models_url};
 use ox_kernel::{CompletionRequest, StreamEvent};
 use std::collections::HashSet;
 use std::io::BufRead;
@@ -394,7 +394,9 @@ fn http_error_hint(config: &ProviderConfig, status: u16, body: &str) -> Option<&
                      Run `t` in Settings to retest, or verify the key file in ~/.ox/keys.",
                 )
             } else {
-                Some("the server refused the request — your key may not have access to this resource.")
+                Some(
+                    "the server refused the request — your key may not have access to this resource.",
+                )
             }
         }
         404 => Some(
@@ -712,7 +714,9 @@ mod tests {
         };
         let (_, headers, _) = build_request(&config, "ignored", &sample_request()).unwrap();
         assert!(
-            !headers.iter().any(|(k, _)| k == "Authorization" || k == "x-api-key"),
+            !headers
+                .iter()
+                .any(|(k, _)| k == "Authorization" || k == "x-api-key"),
             "unauthenticated provider must not send an auth header; got {headers:?}"
         );
     }
@@ -726,7 +730,11 @@ mod tests {
             auth: Some(ox_gate::AuthScheme::BearerToken),
         };
         let (_, headers, _) = build_request(&config, "sk-test", &sample_request()).unwrap();
-        assert!(headers.iter().any(|(k, v)| k == "Authorization" && v == "Bearer sk-test"));
+        assert!(
+            headers
+                .iter()
+                .any(|(k, v)| k == "Authorization" && v == "Bearer sk-test")
+        );
     }
 
     #[test]
@@ -738,7 +746,11 @@ mod tests {
             auth: Some(ox_gate::AuthScheme::XApiKey),
         };
         let (_, headers, _) = build_request(&config, "sk-test", &sample_request()).unwrap();
-        assert!(headers.iter().any(|(k, v)| k == "x-api-key" && v == "sk-test"));
+        assert!(
+            headers
+                .iter()
+                .any(|(k, v)| k == "x-api-key" && v == "sk-test")
+        );
     }
 
     #[test]
@@ -752,7 +764,11 @@ mod tests {
             auth: None,
         };
         let (_, headers, _) = build_request(&config, "sk-legacy", &sample_request()).unwrap();
-        assert!(headers.iter().any(|(k, v)| k == "x-api-key" && v == "sk-legacy"));
+        assert!(
+            headers
+                .iter()
+                .any(|(k, v)| k == "x-api-key" && v == "sk-legacy")
+        );
     }
 
     #[test]
@@ -767,7 +783,11 @@ mod tests {
         };
         let (url, headers, _) = build_request(&config, "", &sample_request()).unwrap();
         assert_eq!(url, "http://127.0.0.1:1234/v1/chat/completions");
-        assert!(!headers.iter().any(|(k, _)| k == "Authorization" || k == "x-api-key"));
+        assert!(
+            !headers
+                .iter()
+                .any(|(k, _)| k == "Authorization" || k == "x-api-key")
+        );
     }
 
     #[test]

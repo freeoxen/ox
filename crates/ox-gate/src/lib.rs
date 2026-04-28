@@ -129,9 +129,7 @@ impl GateStore {
                     }
                 }
             }
-            if let Some(provider) =
-                self.config_string(&format!("gate/accounts/{name}/provider"))
-            {
+            if let Some(provider) = self.config_string(&format!("gate/accounts/{name}/provider")) {
                 tracing::debug!(name, "account resolved from config-handle leaf");
                 return Some(AccountConfig { provider });
             }

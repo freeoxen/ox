@@ -530,8 +530,8 @@ async fn fetch_completion(
     opts.set_headers(&headers);
 
     let endpoint = completion_url(config);
-    let request = web_sys::Request::new_with_str_and_init(&endpoint, &opts)
-        .map_err(|e| format!("{e:?}"))?;
+    let request =
+        web_sys::Request::new_with_str_and_init(&endpoint, &opts).map_err(|e| format!("{e:?}"))?;
 
     let resp_value = wasm_bindgen_futures::JsFuture::from(window.fetch_with_request(&request))
         .await

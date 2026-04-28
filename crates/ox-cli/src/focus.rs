@@ -175,21 +175,32 @@ impl FocusInputs {
             false
         };
 
+        // `ClientModalFlags` is a non-flattened field on
+        // `InputKeyEvent`, so the serialized request map nests them
+        // under "flags". A previous version read the flags at the top
+        // level and silently saw every modal as closed — `Esc` in the
+        // thread-info modal then resolved to `Mode::Normal` and went
+        // unbound, making the modal undismissable.
+        let flags = req_map.get("flags").and_then(|v| match v {
+            Value::Map(m) => Some(m),
+            _ => None,
+        });
+
         FocusInputs {
             command_line_open: ui.command_line.open,
             editor_open: ui.editor().is_some(),
             inbox_search_open,
             has_approval_pending,
-            history_search_active: bool_flag(req_map, "history_search_active"),
-            show_shortcuts: bool_flag(req_map, "show_shortcuts"),
-            show_usage: bool_flag(req_map, "show_usage"),
-            show_thread_info: bool_flag(req_map, "show_thread_info"),
+            history_search_active: bool_flag(flags, "history_search_active"),
+            show_shortcuts: bool_flag(flags, "show_shortcuts"),
+            show_usage: bool_flag(flags, "show_usage"),
+            show_thread_info: bool_flag(flags, "show_thread_info"),
         }
     }
 }
 
-fn bool_flag(map: &BTreeMap<String, Value>, key: &str) -> bool {
-    matches!(map.get(key), Some(Value::Bool(true)))
+fn bool_flag(map: Option<&BTreeMap<String, Value>>, key: &str) -> bool {
+    matches!(map.and_then(|m| m.get(key)), Some(Value::Bool(true)))
 }
 
 #[cfg(test)]
@@ -361,5 +372,39 @@ mod tests {
         let i = FocusInputs::from_snapshot(&ui(false, false, false), &f);
         assert!(i.show_shortcuts);
         assert_eq!(focus_mode(&i), Mode::Shortcuts);
+    }
+
+    // -- request-map flag extraction -----------------------------
+    //
+    // Modal flags ride on `InputKeyEvent` as a nested `flags` field.
+    // The resolver must look there, not at the top level, or every
+    // modal will appear closed and Esc inside the thread-info /
+    // shortcuts / usage / history-search overlays will fall through
+    // to `Mode::Normal` and go unbound.
+
+    #[test]
+    fn bool_flag_reads_from_nested_flags_map() {
+        use ox_types::{ClientModalFlags, InputKeyEvent, Screen};
+        let event = InputKeyEvent {
+            mode: None,
+            key: "esc".to_string(),
+            screen: Screen::Inbox,
+            flags: ClientModalFlags {
+                show_thread_info: true,
+                ..Default::default()
+            },
+        };
+        let req_map = match structfs_serde_store::to_value(&event).unwrap() {
+            Value::Map(m) => m,
+            other => panic!("expected map, got {other:?}"),
+        };
+        let flags = req_map.get("flags").and_then(|v| match v {
+            Value::Map(m) => Some(m),
+            _ => None,
+        });
+        assert!(bool_flag(flags, "show_thread_info"));
+        assert!(!bool_flag(flags, "show_shortcuts"));
+        // Sanity: the field is genuinely nested, not at top level.
+        assert!(!req_map.contains_key("show_thread_info"));
     }
 }

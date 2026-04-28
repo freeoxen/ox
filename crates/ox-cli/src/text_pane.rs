@@ -103,7 +103,9 @@ impl<'a> TextPane<'a> {
             return 0;
         }
         match self.h_overflow {
-            HorizontalOverflow::Clip => self.text.lines().count().max(1).min(u16::MAX as usize) as u16,
+            HorizontalOverflow::Clip => {
+                self.text.lines().count().max(1).min(u16::MAX as usize) as u16
+            }
             HorizontalOverflow::Wrap => {
                 let w = width as usize;
                 let rows: usize = self
@@ -193,12 +195,7 @@ fn draw_scroll_indicators(frame: &mut Frame, area: Rect, offset: u16, max_offset
 /// signal the cut. Operates on character counts, which is fine for the
 /// status-message domain (ASCII / mostly-narrow text). For East Asian
 /// width-2 glyphs the `…` may land one column early; acceptable.
-fn truncate_to_fit(
-    text: &str,
-    width: u16,
-    height: u16,
-    h_overflow: HorizontalOverflow,
-) -> String {
+fn truncate_to_fit(text: &str, width: u16, height: u16, h_overflow: HorizontalOverflow) -> String {
     let w = width as usize;
     let h = height as usize;
     if w == 0 || h == 0 {
@@ -210,11 +207,7 @@ fn truncate_to_fit(
             // Take the first (height - 1) full lines, then a clipped final line
             // that ends with `…`.
             let keep = h.saturating_sub(1);
-            let mut lines: Vec<String> = text
-                .lines()
-                .take(keep)
-                .map(|s| clip_line(s, w))
-                .collect();
+            let mut lines: Vec<String> = text.lines().take(keep).map(|s| clip_line(s, w)).collect();
             if let Some(rest) = text.lines().nth(keep) {
                 lines.push(clip_line_with_ellipsis(rest, w));
             }
@@ -224,15 +217,7 @@ fn truncate_to_fit(
             // Budget chars-per-row × (height - 1) for the visible body, then
             // one row's worth ending in `…`.
             let budget = w * h.saturating_sub(1);
-            let mut taken = String::with_capacity(budget);
-            let mut count = 0usize;
-            for ch in text.chars() {
-                if count >= budget {
-                    break;
-                }
-                taken.push(ch);
-                count += 1;
-            }
+            let mut taken: String = text.chars().take(budget).collect();
             // Replace the last char with `…` so the truncation is visible.
             // If we didn't take anything, just emit `…`.
             if taken.is_empty() {

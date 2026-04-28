@@ -305,9 +305,21 @@ pub fn delete_key_file(keys_dir: &Path, name: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Check if any account has a usable key (from key files or env vars).
-pub fn has_any_key(keys_dir: &Path, config: &OxConfig) -> bool {
-    !resolve_keys(keys_dir, config).is_empty()
+/// Returns `true` when the user has completed initial setup.
+///
+/// "Setup is complete" means: at least one account exists in the config.
+/// The wizard's job is first-run guidance, not recovery — an account
+/// that exists but has a broken auth shape is a Settings problem, and
+/// runtime errors (key rejected, server unreachable, …) now surface with
+/// precise URL/account/provider context. Sending the user back through
+/// the wizard every launch because a key file is missing is wrong:
+///   - LM Studio / Ollama accounts never need a key file.
+///   - A pre-existing account written before the AuthScheme refactor
+///     may not yet have its auth field populated; deriving auth from
+///     dialect would re-trigger setup for unauthenticated local
+///     providers, which is the bug this function fixes.
+pub fn has_any_usable_account(config: &OxConfig) -> bool {
+    !config.gate.accounts.is_empty()
 }
 
 #[cfg(test)]
@@ -527,10 +539,50 @@ endpoint = "http://127.0.0.1:1234/v1/chat/completions"
     }
 
     #[test]
-    fn has_any_key_false_when_empty() {
-        let dir = tempfile::tempdir().unwrap();
+    fn has_any_usable_account_true_when_lm_studio_account_present() {
+        // An LM Studio account has no key file and never will. The wizard
+        // must not re-fire on every launch in that case — even when the
+        // provider entry predates the AuthScheme field.
+        let mut config = OxConfig::default();
+        config.gate.providers.insert(
+            "lm-studio".into(),
+            ProviderEntry {
+                dialect: "openai".into(),
+                endpoint: "http://127.0.0.1:1234".into(),
+                version: String::new(),
+                auth: None, // legacy: written before AuthScheme existed
+            },
+        );
+        config.gate.accounts.insert(
+            "local".into(),
+            AccountEntry {
+                provider: "lm-studio".into(),
+                endpoint: None,
+            },
+        );
+        assert!(has_any_usable_account(&config));
+    }
+
+    #[test]
+    fn has_any_usable_account_true_when_authenticated_account_present_without_key() {
+        // An Anthropic account exists but has no key resolved yet. The
+        // wizard does NOT fire — setup is complete; the missing key is a
+        // Settings-screen / runtime concern, surfaced at request time.
+        let mut config = OxConfig::default();
+        config.gate.accounts.insert(
+            "personal".into(),
+            AccountEntry {
+                provider: "anthropic".into(),
+                endpoint: None,
+            },
+        );
+        assert!(has_any_usable_account(&config));
+    }
+
+    #[test]
+    fn has_any_usable_account_false_for_empty_config() {
         let config = OxConfig::default();
-        assert!(!has_any_key(&dir.path().join("keys"), &config));
+        assert!(!has_any_usable_account(&config));
     }
 
     #[test]
