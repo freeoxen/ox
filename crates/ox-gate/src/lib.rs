@@ -6,11 +6,13 @@
 //! via the StructFS Reader/Writer interface.
 
 pub mod account;
+pub mod api_key;
 pub mod codec;
 pub mod pricing;
 pub mod provider;
 
 pub use account::AccountConfig;
+pub use api_key::ApiKey;
 pub use codec::UsageInfo;
 pub use provider::{
     AuthScheme, Preset, ProviderConfig, completion_url, dialect_paths, models_url, presets,
@@ -47,7 +49,8 @@ impl Defaults {
 /// - `providers/{name}` — ProviderConfig (dialect, endpoint, version)
 /// - `providers/{name}/models` — model catalog for provider
 /// - `accounts/{name}` — AccountConfig (provider)
-/// - `accounts/{name}/key` — API key (read-only, from config handle)
+/// - `accounts/{name}/key` — API key (read-only; resolved from the secrets
+///   handle at `keys/{name}`, i.e. `secret/keys/{name}` at broker root)
 /// - `accounts/{name}/provider` — provider name
 /// - `defaults/account` — name of the default account
 /// - `defaults/model` — default model ID (falls back to config handle)
@@ -58,6 +61,11 @@ pub struct GateStore {
     defaults: Defaults,
     catalogs: HashMap<String, Vec<ModelInfo>>,
     config: Option<Box<dyn Store + Send + Sync>>,
+    /// Secrets handle. Reads `keys/{name}: ApiKey` for the
+    /// `accounts/{name}/key` synthetic read path. Wired separately from
+    /// `config` so secrets can persist to a different file (`keys.json`,
+    /// `chmod 0600`) without touching the config TOML.
+    secrets: Option<Box<dyn Store + Send + Sync>>,
 }
 
 impl GateStore {
@@ -88,15 +96,27 @@ impl GateStore {
             defaults: Defaults::new(),
             catalogs: HashMap::new(),
             config: None,
+            secrets: None,
         }
     }
 
     /// Attach a config handle for config-aware reads.
     ///
-    /// When reading defaults and account keys, GateStore checks the config
-    /// handle first, falling back to local fields.
+    /// When reading defaults and account-shape fields, GateStore checks the
+    /// config handle first, falling back to local fields. API keys come from
+    /// the *secrets* handle — see [`with_secrets`].
     pub fn with_config(mut self, config: Box<dyn Store + Send + Sync>) -> Self {
         self.config = Some(config);
+        self
+    }
+
+    /// Attach a secrets handle for API-key reads.
+    ///
+    /// Expected to expose `keys/{name}: ApiKey` (i.e. `secret/keys/{name}` at
+    /// broker root, scoped to the `secret` mount). When unset, all account
+    /// key reads return an empty string.
+    pub fn with_secrets(mut self, secrets: Box<dyn Store + Send + Sync>) -> Self {
+        self.secrets = Some(secrets);
         self
     }
 
@@ -181,6 +201,27 @@ impl GateStore {
         self.providers.get(name).cloned()
     }
 
+    /// Read the API key for an account via the secrets handle.
+    ///
+    /// Returns the wrapped string when present and non-empty, `None`
+    /// otherwise. The path read is `keys/{name}` on the secrets handle,
+    /// which resolves to `secret/keys/{name}` at broker root.
+    fn account_key(&mut self, name: &str) -> Option<String> {
+        let secrets = self.secrets.as_mut()?;
+        let path_str = format!("keys/{name}");
+        let path = Path::parse(&path_str).ok()?;
+        let record = secrets.read(&path).ok()??;
+        let value = record.as_value()?;
+        let key: ApiKey = from_value(value.clone()).ok()?;
+        if key.is_empty() {
+            tracing::debug!(account = %name, "account key read (empty)");
+            None
+        } else {
+            tracing::debug!(account = %name, "account key read (present)");
+            Some(key.0)
+        }
+    }
+
     /// Read an integer value from the config handle at the given path.
     fn config_integer(&mut self, path_str: &str) -> Option<i64> {
         let config = self.config.as_mut()?;
@@ -205,9 +246,7 @@ impl GateStore {
         names
             .iter()
             .filter_map(|name| {
-                let has_key = self
-                    .config_string(&format!("gate/accounts/{name}/key"))
-                    .is_some();
+                let has_key = self.account_key(name).is_some();
                 if !has_key {
                     return None;
                 }
@@ -443,14 +482,14 @@ impl Reader for GateStore {
                 }
                 let name = from.components[1].as_str().to_string();
 
-                // Keys come from config handle only (key files/env vars injected there)
+                // Keys come from the secrets handle (`secret/keys/{name}: ApiKey`).
+                // Synthetic read shape — the underlying storage is a typed
+                // `ApiKey` record at a path that has nothing to do with the
+                // gate's namespace; the gate just exposes it under the
+                // `accounts/{name}/key` shape callers already know.
                 if from.components.len() > 2 && from.components[2].as_str() == "key" {
-                    if let Some(k) = self.config_string(&format!("gate/accounts/{name}/key")) {
-                        tracing::debug!(account = %name, "account key read (present)");
-                        return Ok(Some(Record::parsed(Value::String(k))));
-                    }
-                    tracing::debug!(account = %name, "account key read (empty)");
-                    return Ok(Some(Record::parsed(Value::String(String::new()))));
+                    let key = self.account_key(&name).unwrap_or_default();
+                    return Ok(Some(Record::parsed(Value::String(key))));
                 }
 
                 // Resolve account: prefer config handle (user-defined accounts
@@ -736,17 +775,24 @@ mod tests {
         assert_eq!(json["dialect"], "openai");
     }
 
-    #[test]
-    fn test_account_key_from_config_handle() {
-        use ox_store_util::LocalConfig;
-        let mut config = LocalConfig::new();
-        config.set(
-            "gate/accounts/anthropic/key",
-            Value::String("sk-test-123".into()),
-        );
-        let mut gate = GateStore::new().with_config(Box::new(config));
+    /// Helper: build a `LocalConfig`-backed secrets handle pre-populated
+    /// with the given account/key pairs at `keys/{name}: ApiKey`.
+    fn secrets_with(pairs: &[(&str, &str)]) -> ox_store_util::LocalConfig {
+        let mut secrets = ox_store_util::LocalConfig::new();
+        for (name, key) in pairs {
+            let v = to_value(&ApiKey::new(*key)).expect("ApiKey serializes");
+            secrets.set(&format!("keys/{name}"), v);
+        }
+        secrets
+    }
 
-        // Read key back — comes from config handle
+    #[test]
+    fn test_account_key_from_secrets_handle() {
+        let secrets = secrets_with(&[("anthropic", "sk-test-123")]);
+        let mut gate = GateStore::new().with_secrets(Box::new(secrets));
+
+        // Read key back — comes from secrets handle, surfaced as String
+        // for backward-compatible read shape under accounts/{name}/key.
         let record = gate
             .read(&path!("accounts/anthropic/key"))
             .unwrap()
@@ -903,13 +949,8 @@ mod tests {
 
     #[test]
     fn test_tools_schemas_with_keys() {
-        use ox_store_util::LocalConfig;
-        let mut config = LocalConfig::new();
-        config.set(
-            "gate/accounts/anthropic/key",
-            Value::String("sk-test".into()),
-        );
-        let mut gate = GateStore::new().with_config(Box::new(config));
+        let secrets = secrets_with(&[("anthropic", "sk-test")]);
+        let mut gate = GateStore::new().with_secrets(Box::new(secrets));
 
         let record = gate.read(&path!("tools/schemas")).unwrap().unwrap();
         let json = match record {
@@ -992,13 +1033,8 @@ mod tests {
 
     #[test]
     fn snapshot_excludes_api_keys() {
-        use ox_store_util::LocalConfig;
-        let mut config = LocalConfig::new();
-        config.set(
-            "gate/accounts/anthropic/key",
-            Value::String("sk-secret".into()),
-        );
-        let mut gate = GateStore::new().with_config(Box::new(config));
+        let secrets = secrets_with(&[("anthropic", "sk-secret")]);
+        let mut gate = GateStore::new().with_secrets(Box::new(secrets));
 
         let val = unwrap_value(gate.read(&path!("snapshot/state")).unwrap().unwrap());
         let json = value_to_json(val);
@@ -1162,14 +1198,9 @@ mod tests {
     }
 
     #[test]
-    fn config_handle_overrides_any_account_key() {
-        use ox_store_util::LocalConfig;
-        let mut config = LocalConfig::new();
-        config.set(
-            "gate/accounts/anthropic/key",
-            Value::String("config-key-123".into()),
-        );
-        let mut gate = GateStore::new().with_config(Box::new(config));
+    fn secrets_handle_provides_any_account_key() {
+        let secrets = secrets_with(&[("anthropic", "config-key-123")]);
+        let mut gate = GateStore::new().with_secrets(Box::new(secrets));
         let record = gate
             .read(&path!("accounts/anthropic/key"))
             .unwrap()
@@ -1181,34 +1212,39 @@ mod tests {
     }
 
     #[test]
-    fn config_handle_overrides_non_bootstrap_account_key() {
-        use ox_store_util::LocalConfig;
-        let mut config = LocalConfig::new();
-        config.set(
-            "gate/accounts/openai/key",
-            Value::String("sk-openai-config".into()),
-        );
-        let mut gate = GateStore::new().with_config(Box::new(config));
-        // defaults.account is "anthropic", but config provides openai key
+    fn secrets_handle_overrides_non_bootstrap_account_key() {
+        let secrets = secrets_with(&[("openai", "sk-openai-secret")]);
+        let mut gate = GateStore::new().with_secrets(Box::new(secrets));
+        // defaults.account is "anthropic", but secrets provides openai key
         let record = gate.read(&path!("accounts/openai/key")).unwrap().unwrap();
         match record {
-            Record::Parsed(Value::String(s)) => assert_eq!(s, "sk-openai-config"),
+            Record::Parsed(Value::String(s)) => assert_eq!(s, "sk-openai-secret"),
             _ => panic!("expected string"),
         }
     }
 
     #[test]
-    fn config_key_populates_completion_schemas_any_account() {
-        use ox_store_util::LocalConfig;
-        let mut config = LocalConfig::new();
-        config.set(
-            "gate/accounts/openai/key",
-            Value::String("sk-from-config".into()),
-        );
-        let mut gate = GateStore::new().with_config(Box::new(config));
+    fn secrets_handle_populates_completion_schemas_any_account() {
+        let secrets = secrets_with(&[("openai", "sk-from-secrets")]);
+        let mut gate = GateStore::new().with_secrets(Box::new(secrets));
         let schemas = gate.completion_tool_schemas();
         assert_eq!(schemas.len(), 1);
         assert_eq!(schemas[0].name, "complete_openai");
+    }
+
+    #[test]
+    fn empty_api_key_in_secrets_treated_as_absent() {
+        // An empty `ApiKey` at `secret/keys/{name}` must NOT show up as a
+        // schema-eligible account. Without this guard, the migration could
+        // round-trip an empty key file into an "account ready to call" lie.
+        let secrets = secrets_with(&[("openai", "")]);
+        let mut gate = GateStore::new().with_secrets(Box::new(secrets));
+        let schemas = gate.completion_tool_schemas();
+        assert!(
+            schemas.is_empty(),
+            "empty ApiKey should not enable a completion schema, got: {:?}",
+            schemas.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
     }
 
     #[test]

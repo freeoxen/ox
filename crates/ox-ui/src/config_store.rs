@@ -54,7 +54,9 @@ impl ConfigStore {
     }
 
     /// Persist effective config (base + runtime) to backing.
-    /// API keys and null-deleted entries are excluded.
+    /// Null-deleted entries are excluded. API keys live in a separate
+    /// `secret/` mount with its own `JsonFileBacking` (chmod 0600); they
+    /// don't reach this code path at all.
     pub fn save_runtime(&self) -> Result<(), StoreError> {
         let Some(ref backing) = self.backing else {
             return Ok(());
@@ -71,10 +73,10 @@ impl ConfigStore {
                 }
             }
         }
-        // Remove entries with Null values and API keys
+        // Drop any leftover Null sentinels from the base layer.
         let filtered: BTreeMap<String, Value> = effective
             .into_iter()
-            .filter(|(k, v)| !k.ends_with("/key") && *v != Value::Null)
+            .filter(|(_, v)| *v != Value::Null)
             .collect();
         tracing::info!(key_count = filtered.len(), "saving runtime config");
         backing.save(&Value::Map(filtered))
@@ -216,18 +218,20 @@ mod tests {
     }
 
     #[test]
-    fn api_key_not_masked() {
+    fn writes_pass_through_unfiltered() {
+        // ConfigStore is not opinionated about its key shape — anything
+        // its consumer writes can be read back, and (since A0) is also
+        // saved as-is. Keys belong to the secrets store at `secret/`.
         let mut store = store_with_defaults();
         store
             .write(
-                &path!("gate/accounts/anthropic/key"),
-                Record::parsed(Value::String("sk-secret".into())),
+                &path!("gate/custom/path"),
+                Record::parsed(Value::String("anything".into())),
             )
             .unwrap();
-        // ConfigStore no longer masks — masking is the consumer's job
         assert_eq!(
-            read_val(&mut store, "gate/accounts/anthropic/key"),
-            Some(Value::String("sk-secret".into()))
+            read_val(&mut store, "gate/custom/path"),
+            Some(Value::String("anything".into()))
         );
     }
 
@@ -273,7 +277,10 @@ mod tests {
     }
 
     #[test]
-    fn save_runtime_excludes_api_key() {
+    fn save_runtime_drops_null_sentinels() {
+        // A Null write means "delete" — the persisted map must not carry
+        // it through to disk, even if a base value existed under the
+        // same path.
         use std::sync::{Arc, Mutex};
 
         #[derive(Default)]
@@ -294,13 +301,12 @@ mod tests {
         let backing = CaptureBacking {
             saved: saved.clone(),
         };
-        let mut config = ConfigStore::new(BTreeMap::new());
+        let mut base = BTreeMap::new();
+        base.insert("gate/old".to_string(), Value::String("kept".into()));
+        let mut config = ConfigStore::new(base);
         config.set_backing(Box::new(backing));
         config
-            .write(
-                &path!("gate/accounts/anthropic/key"),
-                Record::parsed(Value::String("sk-secret".into())),
-            )
+            .write(&path!("gate/old"), Record::parsed(Value::Null))
             .unwrap();
         config
             .write(
@@ -312,7 +318,7 @@ mod tests {
         let saved_val = saved.lock().unwrap().clone().unwrap();
         match saved_val {
             Value::Map(m) => {
-                assert!(!m.contains_key("gate/accounts/anthropic/key"));
+                assert!(!m.contains_key("gate/old"));
                 assert!(m.contains_key("gate/model"));
             }
             _ => panic!("expected map"),

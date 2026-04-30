@@ -175,13 +175,19 @@ impl SettingsState {
         }
     }
 
-    /// Refresh the account list from config and resolved keys.
+    /// Refresh the account list from config plus a pre-resolved set of
+    /// account names that currently have a non-empty API key in the
+    /// secrets namespace (`secret/keys/{name}: ApiKey`).
+    ///
+    /// The presence map is a parameter rather than a filesystem read so
+    /// that the source of truth stays the broker — callers do an async
+    /// `read_typed::<ApiKey>` per account before dispatching this sync
+    /// refresh. Empty `ApiKey` is treated as absent, matching the gate.
     pub fn refresh_accounts(
         &mut self,
         config: &crate::config::OxConfig,
-        keys_dir: &std::path::Path,
+        accounts_with_keys: &std::collections::HashSet<String>,
     ) {
-        let keys = crate::config::resolve_keys(keys_dir, config);
         let default_account = &config.gate.defaults.account;
 
         self.accounts = config
@@ -215,7 +221,7 @@ impl SettingsState {
                     name: name.clone(),
                     dialect,
                     endpoint_display,
-                    has_key: keys.contains_key(name),
+                    has_key: accounts_with_keys.contains(name),
                     is_default: name == default_account,
                 }
             })

@@ -17,8 +17,10 @@ mod history_state;
 mod history_view;
 mod inbox_shell;
 mod inbox_view;
+mod json_backing;
 mod key_encode;
 mod key_handlers;
+mod key_migration;
 mod parse;
 mod policy;
 mod policy_check;
@@ -111,7 +113,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let resolved = config::resolve_config(&inbox_root, &overrides);
 
     let keys_dir = inbox_root.join("keys");
-    let resolved_keys = config::resolve_keys(&keys_dir, &resolved);
     let force_wizard = matches!(cli.command, Some(Commands::Init));
     // Setup wizard fires only when the user hasn't yet configured a usable
     // account. "Usable" includes unauthenticated providers (LM Studio,
@@ -123,7 +124,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         force_wizard,
         needs_setup,
         accounts = resolved.gate.accounts.len(),
-        keys = resolved_keys.len(),
         default_account = %resolved.gate.defaults.account,
         model = %resolved.gate.defaults.model,
         "config resolved"
@@ -155,16 +155,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             std::process::exit(1);
         }
-        if !resolved_keys.contains_key(default_acct) {
-            tracing::info!(
-                default_account = %default_acct,
-                "no API key for default account — assuming an unauthenticated provider; \
-                 if the provider does require auth, the request will surface a 401"
-            );
-        }
     }
 
-    let flat_config = resolved.to_flat_map_with_keys(&resolved_keys);
+    // Keys never enter the flat config map any more — they're written
+    // through the broker into `secret/keys/{name}: ApiKey` either by the
+    // settings UI or by the one-shot startup migration of legacy `*.key`
+    // files (see `migrate_legacy_keys` below).
+    let flat_config = resolved.to_flat_map();
 
     let theme = theme::Theme::default();
 
@@ -202,6 +199,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .ok();
 
+    // One-shot migration of legacy `keys/*.key` files (and matching env
+    // vars) into the broker's secrets namespace at `secret/keys/{name}:
+    // ApiKey`. Idempotent: skips entirely when `secret/keys/*` is already
+    // populated (post-migration runs see the JSON file load up front via
+    // `ConfigStore::with_backing`). On a fresh install with no files and
+    // no env vars set, this is a no-op.
+    if let Err(e) = migrate_legacy_keys(&client, &keys_dir).await {
+        tracing::warn!(error = %e, "legacy key migration encountered an error");
+    }
+
     let result = event_loop::run_async(&mut app, &client, &theme, &mut terminal, needs_setup).await;
 
     crossterm::execute!(
@@ -226,6 +233,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     result?;
     Ok(())
 }
+
+use crate::key_migration::migrate_legacy_keys;
 
 /// Set up tracing with a per-run log file under `{inbox_root}/logs/`.
 ///

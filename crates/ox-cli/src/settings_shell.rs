@@ -35,6 +35,45 @@ fn resolve_provider_config(
     }
 }
 
+/// Read the API key for a single account from the broker's secrets namespace.
+///
+/// Returns `Some(key)` only when the underlying `ApiKey` is non-empty;
+/// `None` when missing, empty, or unreadable. The path read is
+/// `secret/keys/{name}` — the broker's typed home for keys after A0.
+async fn read_account_key(
+    client: &ox_broker::ClientHandle,
+    name: &str,
+) -> Option<String> {
+    let name_comp = ox_kernel::PathComponent::try_new(name).ok()?;
+    let key: ox_gate::ApiKey = client
+        .read_typed(&ox_path::oxpath!("secret", "keys", name_comp))
+        .await
+        .ok()
+        .flatten()?;
+    if key.is_empty() {
+        None
+    } else {
+        Some(key.expose().to_string())
+    }
+}
+
+/// For each account in `config`, look up `secret/keys/{name}: ApiKey` in the
+/// broker and produce the set of account names whose key is present and
+/// non-empty. Used to populate `AccountSummary::has_key` without mixing
+/// async broker reads into the sync `refresh_accounts` path.
+async fn accounts_with_keys(
+    client: &ox_broker::ClientHandle,
+    config: &crate::config::OxConfig,
+) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    for name in config.gate.accounts.keys() {
+        if read_account_key(client, name).await.is_some() {
+            out.insert(name.clone());
+        }
+    }
+    out
+}
+
 // -----------------------------------------------------------------------
 // SettingsShell — event-loop-owned wrapper
 // -----------------------------------------------------------------------
@@ -122,13 +161,18 @@ impl SettingsShell {
     }
 
     /// Populate accounts from config if the list is empty and we are on the
-    /// Settings screen.
-    pub fn ensure_accounts(&mut self, inbox_root: &std::path::Path) {
+    /// Settings screen. Reads `secret/keys/{name}: ApiKey` per account from
+    /// the broker to populate `has_key`.
+    pub async fn ensure_accounts(
+        &mut self,
+        inbox_root: &std::path::Path,
+        client: &ox_broker::ClientHandle,
+    ) {
         if self.state.accounts.is_empty() {
             let config =
                 crate::config::resolve_config(inbox_root, &crate::config::CliOverrides::default());
-            self.state
-                .refresh_accounts(&config, &inbox_root.join("keys"));
+            let with_keys = accounts_with_keys(client, &config).await;
+            self.state.refresh_accounts(&config, &with_keys);
         }
     }
 }
@@ -271,8 +315,6 @@ async fn handle_edit_dialog_key(
     client: &ox_broker::ClientHandle,
     inbox_root: &std::path::Path,
 ) -> Outcome {
-    let keys_dir = inbox_root.join("keys");
-
     // Status scrolling — works in the edit dialog regardless of which field
     // is focused. PageDown/PageUp scroll one row at a time so a multi-line
     // transport error can be read without expanding the status block.
@@ -458,12 +500,15 @@ async fn handle_edit_dialog_key(
             client.write_typed(&provider_path, &provider_ref).await.ok();
 
             // Write the key only if the auth scheme actually uses one.
-            // Skipping the file write for unauthenticated providers means
-            // a stray empty key file isn't created for LM Studio / Ollama.
+            // Skipping the write for unauthenticated providers keeps
+            // `secret/keys/{name}` clean for LM Studio / Ollama.
             if auth.requires_key() && !key.is_empty() {
-                let key_path = ox_path::oxpath!("config", "gate", "accounts", name_comp, "key");
-                client.write_typed(&key_path, &key).await.ok();
-                crate::config::write_key_file(&keys_dir, &name, &key).ok();
+                let secret_path =
+                    ox_path::oxpath!("secret", "keys", name_comp.clone());
+                client
+                    .write_typed(&secret_path, &ox_gate::ApiKey::new(key.clone()))
+                    .await
+                    .ok();
             }
 
             // If default account doesn't exist, set it to this one
@@ -500,9 +545,15 @@ async fn handle_edit_dialog_key(
                     .ok();
             }
 
-            // Persist config to disk
+            // Persist config and secrets to disk. Both stores observe their
+            // respective `save` magic write — config to TOML, secrets to
+            // `keys.json` (chmod 0600).
             client
                 .write(&oxpath!("config", "save"), Record::parsed(Value::Null))
+                .await
+                .ok();
+            client
+                .write(&oxpath!("secret", "save"), Record::parsed(Value::Null))
                 .await
                 .ok();
 
@@ -510,7 +561,8 @@ async fn handle_edit_dialog_key(
             settings.set_status(TestStatus::Idle);
             let config =
                 crate::config::resolve_config(inbox_root, &crate::config::CliOverrides::default());
-            settings.refresh_accounts(&config, &keys_dir);
+            let with_keys = accounts_with_keys(client, &config).await;
+            settings.refresh_accounts(&config, &with_keys);
             // Advance wizard after first account save
             if let Some(ref mut step) = settings.wizard {
                 use crate::settings_state::WizardStep;
@@ -605,7 +657,6 @@ async fn handle_delete_confirm_key(
     if key_str == "y" {
         if let Some(acct) = settings.accounts.get(settings.selected_account) {
             let name = acct.name.clone();
-            let keys_dir = inbox_root.join("keys");
 
             // Delete account through ConfigStore (Null = delete)
             let name_comp = match ox_kernel::PathComponent::try_new(name.as_str()) {
@@ -622,9 +673,11 @@ async fn handle_delete_confirm_key(
                 .write(&provider_path, Record::parsed(Value::Null))
                 .await
                 .ok();
-            let key_path = ox_path::oxpath!("config", "gate", "accounts", name_comp.clone(), "key");
+            // Delete the key from the secrets namespace (typed delete via Null).
+            let secret_key_path =
+                ox_path::oxpath!("secret", "keys", name_comp.clone());
             client
-                .write(&key_path, Record::parsed(Value::Null))
+                .write(&secret_key_path, Record::parsed(Value::Null))
                 .await
                 .ok();
 
@@ -667,16 +720,21 @@ async fn handle_delete_confirm_key(
                     .ok();
             }
 
-            // Persist and delete key file
+            // Persist config + secrets to disk (the key has been removed
+            // from the secrets namespace via the typed-Null write above).
             client
                 .write(&oxpath!("config", "save"), Record::parsed(Value::Null))
                 .await
                 .ok();
-            crate::config::delete_key_file(&keys_dir, &name).ok();
+            client
+                .write(&oxpath!("secret", "save"), Record::parsed(Value::Null))
+                .await
+                .ok();
 
             let config =
                 crate::config::resolve_config(inbox_root, &crate::config::CliOverrides::default());
-            settings.refresh_accounts(&config, &keys_dir);
+            let with_keys = accounts_with_keys(client, &config).await;
+            settings.refresh_accounts(&config, &with_keys);
         }
     }
     settings.delete_confirming = false;
@@ -752,9 +810,9 @@ async fn handle_navigation_key(
         "e" => {
             if settings.focus == SettingsFocus::Accounts {
                 if let Some(acct) = settings.accounts.get(settings.selected_account) {
-                    let keys_dir = inbox_root.join("keys");
-                    let key_val =
-                        crate::config::read_key_file(&keys_dir, &acct.name).unwrap_or_default();
+                    let key_val = read_account_key(client, &acct.name)
+                        .await
+                        .unwrap_or_default();
                     let config = crate::config::resolve_config(
                         inbox_root,
                         &crate::config::CliOverrides::default(),
@@ -942,7 +1000,8 @@ async fn handle_navigation_key(
                         inbox_root,
                         &crate::config::CliOverrides::default(),
                     );
-                    settings.refresh_accounts(&config, &inbox_root.join("keys"));
+                    let with_keys = accounts_with_keys(client, &config).await;
+                    settings.refresh_accounts(&config, &with_keys);
                 }
             }
             true
@@ -950,12 +1009,10 @@ async fn handle_navigation_key(
         "t" | "Ctrl+t" => {
             if settings.focus == SettingsFocus::Accounts {
                 if let Some(acct) = settings.accounts.get(settings.selected_account) {
-                    let keys_dir = inbox_root.join("keys");
                     // Empty key is fine: unauthenticated providers (LM Studio,
                     // Ollama) accept anything. The server's response is more
-                    // informative than a local file check would be.
-                    let key =
-                        crate::config::read_key_file(&keys_dir, &acct.name).unwrap_or_default();
+                    // informative than a local check would be.
+                    let key = read_account_key(client, &acct.name).await.unwrap_or_default();
                     let config = crate::config::resolve_config(
                         inbox_root,
                         &crate::config::CliOverrides::default(),

@@ -616,7 +616,9 @@ impl ThreadRegistry {
                 ThreadNamespace::new_default()
             };
 
-            // Wire config handle into GateStore if broker client is available
+            // Wire config + secrets handles into GateStore if broker client is available.
+            // Config (cascade with thread-local overrides) sources providers/accounts/defaults;
+            // the secrets handle is a separate read-only view over `secret/keys/{name}: ApiKey`.
             if let Some(client) = &self.broker_client {
                 let config_client = client.scoped("config");
                 let config_adapter = ox_broker::SyncClientAdapter::new(
@@ -626,7 +628,17 @@ impl ThreadRegistry {
                 let read_only = ox_store_util::ReadOnly::new(config_adapter);
                 let thread_overrides = ox_store_util::LocalConfig::new();
                 let cascade = ox_store_util::Cascade::new(thread_overrides, read_only);
-                ns.gate = GateStore::new().with_config(Box::new(cascade));
+
+                let secrets_client = client.scoped("secret");
+                let secrets_adapter = ox_broker::SyncClientAdapter::new(
+                    secrets_client,
+                    tokio::runtime::Handle::current(),
+                );
+                let secrets_read_only = ox_store_util::ReadOnly::new(secrets_adapter);
+
+                ns.gate = GateStore::new()
+                    .with_config(Box::new(cascade))
+                    .with_secrets(Box::new(secrets_read_only));
 
                 // Spawn the CommitDrain in the same broker-gated branch —
                 // no client, no rollup write-through, so the drain would

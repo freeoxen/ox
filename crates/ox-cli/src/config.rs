@@ -204,21 +204,6 @@ impl OxConfig {
         );
         map
     }
-
-    /// Produce the flat config map with resolved keys injected.
-    pub fn to_flat_map_with_keys(
-        &self,
-        keys: &BTreeMap<String, String>,
-    ) -> BTreeMap<String, Value> {
-        let mut map = self.to_flat_map();
-        for (name, key) in keys {
-            map.insert(
-                format!("gate/accounts/{name}/key"),
-                Value::String(key.clone()),
-            );
-        }
-        map
-    }
 }
 
 pub fn resolve_config(config_dir: &std::path::Path, overrides: &CliOverrides) -> OxConfig {
@@ -246,63 +231,68 @@ pub fn resolve_config(config_dir: &std::path::Path, overrides: &CliOverrides) ->
     config
 }
 
-/// Resolve API keys from key files and env vars.
+/// Read legacy on-disk API keys from `{keys_dir}/*.key` and the matching
+/// env var `OX_GATE__ACCOUNTS__{NAME}__KEY`, returning a map of
+/// `account name → raw key`.
 ///
-/// For each account in config, checks:
-/// 1. Env var `OX_GATE__ACCOUNTS__{NAME}__KEY` (highest priority)
-/// 2. Key file `{keys_dir}/{name}.key`
-pub fn resolve_keys(keys_dir: &Path, config: &OxConfig) -> BTreeMap<String, String> {
+/// The env var takes precedence over the file (matches the pre-A0
+/// behaviour of `resolve_keys`). Empty values are filtered. The function
+/// reads everything in the keys directory, not just accounts in `config`,
+/// so an orphan `*.key` file still migrates — better to land it once than
+/// silently lose it.
+///
+/// Used by the one-shot startup migration (`migrate_legacy_keys`) and
+/// nowhere else; kept here so the filesystem-touching code that hands
+/// out raw key bytes lives at exactly one path.
+pub fn read_legacy_key_sources(keys_dir: &Path) -> BTreeMap<String, String> {
     let mut keys = BTreeMap::new();
-    for name in config.gate.accounts.keys() {
-        let env_var = format!("OX_GATE__ACCOUNTS__{}__KEY", name.to_uppercase());
-        if let Ok(k) = std::env::var(&env_var) {
-            if !k.is_empty() {
-                keys.insert(name.clone(), k);
+
+    // Env vars first — collect all `OX_GATE__ACCOUNTS__{NAME}__KEY` set
+    // in the environment. Pre-A0 only checked vars for accounts in
+    // config; we relax that since the migration's job is to suck up
+    // every key the user has supplied via either channel before the
+    // namespace becomes the only source of truth.
+    for (var, val) in std::env::vars() {
+        let Some(rest) = var.strip_prefix("OX_GATE__ACCOUNTS__") else {
+            continue;
+        };
+        let Some(name_upper) = rest.strip_suffix("__KEY") else {
+            continue;
+        };
+        let trimmed = val.trim().to_string();
+        if !trimmed.is_empty() {
+            keys.insert(name_upper.to_lowercase(), trimmed);
+        }
+    }
+
+    // Then the on-disk key files. Existing entries (env wins) are not
+    // overwritten.
+    if let Ok(read_dir) = std::fs::read_dir(keys_dir) {
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            let Some(name) = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            if path.extension().and_then(|s| s.to_str()) != Some("key") {
                 continue;
             }
-        }
-        if let Ok(contents) = std::fs::read_to_string(keys_dir.join(format!("{name}.key"))) {
-            let trimmed = contents.trim().to_string();
-            if !trimmed.is_empty() {
-                keys.insert(name.clone(), trimmed);
+            if keys.contains_key(&name) {
+                continue;
+            }
+            if let Ok(contents) = std::fs::read_to_string(&path) {
+                let trimmed = contents.trim().to_string();
+                if !trimmed.is_empty() {
+                    keys.insert(name, trimmed);
+                }
             }
         }
     }
+
     keys
-}
-
-/// Write an API key to a key file, creating the keys directory if needed.
-pub fn write_key_file(keys_dir: &Path, name: &str, key: &str) -> std::io::Result<()> {
-    tracing::info!(name, keys_dir = %keys_dir.display(), "writing key file");
-    if !keys_dir.exists() {
-        std::fs::create_dir_all(keys_dir)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(keys_dir, std::fs::Permissions::from_mode(0o700))?;
-        }
-    }
-    std::fs::write(keys_dir.join(format!("{name}.key")), key)
-}
-
-/// Read an API key from a key file.
-pub fn read_key_file(keys_dir: &Path, name: &str) -> Option<String> {
-    let contents = std::fs::read_to_string(keys_dir.join(format!("{name}.key"))).ok()?;
-    let trimmed = contents.trim().to_string();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed)
-    }
-}
-
-/// Delete a key file.
-pub fn delete_key_file(keys_dir: &Path, name: &str) -> std::io::Result<()> {
-    let path = keys_dir.join(format!("{name}.key"));
-    if path.exists() {
-        std::fs::remove_file(path)?;
-    }
-    Ok(())
 }
 
 /// Returns `true` when the user has completed initial setup.
@@ -478,64 +468,45 @@ endpoint = "http://127.0.0.1:1234/v1/chat/completions"
     }
 
     #[test]
-    fn resolve_keys_from_files() {
+    fn read_legacy_key_sources_picks_up_key_files() {
         let dir = tempfile::tempdir().unwrap();
         let keys_dir = dir.path().join("keys");
         std::fs::create_dir_all(&keys_dir).unwrap();
         std::fs::write(keys_dir.join("anthropic.key"), "sk-test-key\n").unwrap();
+        std::fs::write(keys_dir.join("openai.key"), "  sk-other  \n").unwrap();
+        // Non-`.key` extension is ignored.
+        std::fs::write(keys_dir.join("notes.txt"), "something else").unwrap();
 
-        let mut config = OxConfig::default();
-        config.gate.accounts.insert(
-            "anthropic".into(),
-            AccountEntry {
-                provider: "anthropic".into(),
-                endpoint: None,
-            },
-        );
-
-        let keys = resolve_keys(&keys_dir, &config);
+        let keys = read_legacy_key_sources(&keys_dir);
         assert_eq!(keys.get("anthropic").unwrap(), "sk-test-key");
+        assert_eq!(keys.get("openai").unwrap(), "sk-other");
+        assert!(!keys.contains_key("notes"));
     }
 
     #[test]
-    fn resolve_keys_env_beats_file() {
+    fn read_legacy_key_sources_env_beats_file() {
         let dir = tempfile::tempdir().unwrap();
         let keys_dir = dir.path().join("keys");
         std::fs::create_dir_all(&keys_dir).unwrap();
         std::fs::write(keys_dir.join("testacct2.key"), "from-file").unwrap();
 
-        let mut config = OxConfig::default();
-        config.gate.accounts.insert(
-            "testacct2".into(),
-            AccountEntry {
-                provider: "anthropic".into(),
-                endpoint: None,
-            },
-        );
-
         unsafe {
             std::env::set_var("OX_GATE__ACCOUNTS__TESTACCT2__KEY", "from-env");
         }
-        let keys = resolve_keys(&keys_dir, &config);
-        assert_eq!(keys.get("testacct2").unwrap(), "from-env");
+        let keys = read_legacy_key_sources(&keys_dir);
         unsafe {
             std::env::remove_var("OX_GATE__ACCOUNTS__TESTACCT2__KEY");
         }
+        assert_eq!(keys.get("testacct2").unwrap(), "from-env");
     }
 
     #[test]
-    fn write_and_read_key_file() {
+    fn read_legacy_key_sources_missing_dir_is_ok() {
+        // The keys directory may not exist on a fresh install — return the
+        // env-only set rather than erroring.
         let dir = tempfile::tempdir().unwrap();
-        let keys_dir = dir.path().join("keys");
-        write_key_file(&keys_dir, "test", "sk-12345").unwrap();
-        assert_eq!(read_key_file(&keys_dir, "test").unwrap(), "sk-12345");
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::metadata(&keys_dir).unwrap().permissions();
-            assert_eq!(perms.mode() & 0o777, 0o700);
-        }
+        let keys = read_legacy_key_sources(&dir.path().join("nonexistent"));
+        assert!(keys.is_empty());
     }
 
     #[test]
@@ -586,7 +557,9 @@ endpoint = "http://127.0.0.1:1234/v1/chat/completions"
     }
 
     #[test]
-    fn to_flat_map_with_keys_injects_keys() {
+    fn to_flat_map_does_not_emit_account_keys() {
+        // After A0, API keys never enter the flat config map. They live at
+        // `secret/keys/{name}: ApiKey`, not `gate/accounts/{name}/key`.
         let mut config = OxConfig::default();
         config.gate.accounts.insert(
             "anthropic".into(),
@@ -595,12 +568,11 @@ endpoint = "http://127.0.0.1:1234/v1/chat/completions"
                 endpoint: None,
             },
         );
-        let mut keys = BTreeMap::new();
-        keys.insert("anthropic".into(), "sk-injected".into());
-        let flat = config.to_flat_map_with_keys(&keys);
-        assert_eq!(
-            flat.get("gate/accounts/anthropic/key").unwrap(),
-            &Value::String("sk-injected".into())
+        let flat = config.to_flat_map();
+        assert!(
+            !flat.keys().any(|k| k.ends_with("/key")),
+            "flat config must not carry account keys, got: {:?}",
+            flat.keys().collect::<Vec<_>>()
         );
     }
 }

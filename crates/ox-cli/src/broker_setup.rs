@@ -86,13 +86,28 @@ pub async fn setup(
     // Mount InboxStore
     servers.push(broker.mount(path!("inbox"), inbox).await);
 
-    // Mount ConfigStore with figment-resolved values + TOML file backing
+    // Mount ConfigStore with figment-resolved values + TOML file backing.
     {
         let toml_path = inbox_root.join("config.toml");
         let backing = crate::toml_backing::TomlFileBacking::new(toml_path);
         let config = ox_ui::ConfigStore::with_backing(config_values, Box::new(backing));
 
         servers.push(broker.mount(path!("config"), config).await);
+    }
+
+    // Mount a separate ConfigStore at `secret/` for API keys, backed by
+    // `keys.json` (chmod 0600). The split is at persistence — same store
+    // implementation, different file. Keys live exclusively under
+    // `secret/keys/{name}: ApiKey` after A0; nothing else lives under
+    // `secret/` yet.
+    {
+        let keys_path = inbox_root.join("keys.json");
+        let backing = crate::json_backing::JsonFileBacking::new(keys_path);
+        let secrets = ox_ui::ConfigStore::with_backing(
+            std::collections::BTreeMap::new(),
+            Box::new(backing),
+        );
+        servers.push(broker.mount(path!("secret"), secrets).await);
     }
 
     // Mount ThreadRegistry at threads/ — lazy-mounts per-thread stores from disk
@@ -140,10 +155,10 @@ mod tests {
             "gate/accounts/anthropic/provider".to_string(),
             Value::String("anthropic".into()),
         );
-        config.insert(
-            "gate/accounts/anthropic/key".to_string(),
-            Value::String("test-key".into()),
-        );
+        // API keys never enter the flat config map after A0. The few tests
+        // here that need an authenticated account would seed
+        // `secret/keys/{name}: ApiKey` through the broker — none currently
+        // exercise key resolution, so no fixture is wired here.
         setup(test_inbox(), bindings, test_inbox_root(), config).await
     }
 
@@ -660,12 +675,22 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn thread_gate_reads_api_key_from_config() {
+    async fn thread_gate_reads_api_key_from_secret_namespace() {
         let handle = test_setup().await;
         let client = handle.client();
 
-        // The thread's GateStore should read the API key from ConfigStore
-        // via its config handle (bootstrap account = anthropic)
+        // Seed `secret/keys/anthropic` with an `ApiKey`. The per-thread
+        // GateStore is wired with a secrets handle scoped to `secret/`,
+        // so it should surface that key under
+        // `threads/{tid}/gate/accounts/anthropic/key`.
+        client
+            .write_typed(
+                &ox_path::oxpath!("secret", "keys", "anthropic"),
+                &ox_gate::ApiKey::new("test-key"),
+            )
+            .await
+            .unwrap();
+
         let key = client
             .read(&path!("threads/t_gate/gate/accounts/anthropic/key"))
             .await

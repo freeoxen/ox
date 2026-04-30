@@ -229,7 +229,9 @@ pub async fn run_async(
 
             // Populate settings accounts when on settings screen
             if matches!(&vs.ui.screen, ScreenSnapshot::Settings(_)) {
-                settings_shell.ensure_accounts(app.pool.inbox_root());
+                settings_shell
+                    .ensure_accounts(app.pool.inbox_root(), client)
+                    .await;
             }
 
             // Draw
