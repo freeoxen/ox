@@ -126,9 +126,7 @@ impl Writer for ConfigStore {
             return self.save_runtime().map(|()| to.clone());
         }
 
-        if !key.ends_with("/key") {
-            tracing::debug!(key = %key, "config write");
-        }
+        tracing::debug!(key = %key, "config write");
 
         let value = data
             .as_value()
