@@ -8,6 +8,7 @@
 pub mod account;
 pub mod api_key;
 pub mod codec;
+pub mod completion_role;
 pub mod model_info;
 pub mod pricing;
 pub mod provider;
@@ -15,6 +16,7 @@ pub mod provider;
 pub use account::AccountConfig;
 pub use api_key::ApiKey;
 pub use codec::UsageInfo;
+pub use completion_role::CompletionRole;
 pub use model_info::{ModelInfo, ModelInfoSource};
 pub use provider::{
     AuthScheme, Preset, ProviderConfig, completion_url, dialect_paths, models_url, presets,
