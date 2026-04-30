@@ -6,6 +6,7 @@
 //! via the StructFS Reader/Writer interface.
 
 pub mod account;
+pub mod account_test_status;
 pub mod api_key;
 pub mod codec;
 pub mod completion_role;
@@ -14,6 +15,7 @@ pub mod pricing;
 pub mod provider;
 
 pub use account::AccountConfig;
+pub use account_test_status::AccountTestStatus;
 pub use api_key::ApiKey;
 pub use codec::UsageInfo;
 pub use completion_role::CompletionRole;
