@@ -11,6 +11,7 @@ pub mod api_key;
 pub mod catalog_refresh_status;
 pub mod codec;
 pub mod completion_role;
+pub mod known_family;
 pub mod model_info;
 pub mod pricing;
 pub mod provider;
@@ -21,6 +22,7 @@ pub use api_key::ApiKey;
 pub use catalog_refresh_status::CatalogRefreshStatus;
 pub use codec::UsageInfo;
 pub use completion_role::CompletionRole;
+pub use known_family::{KnownFamilyEntry, known_family_metadata};
 pub use model_info::{ModelInfo, ModelInfoSource};
 pub use provider::{
     AuthScheme, Preset, ProviderConfig, completion_url, dialect_paths, models_url, presets,
