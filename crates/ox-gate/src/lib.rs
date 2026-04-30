@@ -8,18 +8,20 @@
 pub mod account;
 pub mod api_key;
 pub mod codec;
+pub mod model_info;
 pub mod pricing;
 pub mod provider;
 
 pub use account::AccountConfig;
 pub use api_key::ApiKey;
 pub use codec::UsageInfo;
+pub use model_info::{ModelInfo, ModelInfoSource};
 pub use provider::{
     AuthScheme, Preset, ProviderConfig, completion_url, dialect_paths, models_url, presets,
     validate_endpoint,
 };
 
-use ox_kernel::{ModelInfo, ToolSchema};
+use ox_kernel::ToolSchema;
 use std::collections::{BTreeMap, HashMap};
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Store, Value, Writer};
 use structfs_serde_store::{from_value, to_value};
@@ -898,10 +900,16 @@ mod tests {
             ModelInfo {
                 id: "claude-sonnet-4-20250514".to_string(),
                 display_name: "Claude Sonnet 4".to_string(),
+                max_context_size: None,
+                max_output_tokens: None,
+                source: ModelInfoSource::Server,
             },
             ModelInfo {
                 id: "claude-haiku-4-5-20251001".to_string(),
                 display_name: "Claude Haiku 4.5".to_string(),
+                max_context_size: None,
+                max_output_tokens: None,
+                source: ModelInfoSource::Server,
             },
         ];
         let value = to_value(&models).unwrap();

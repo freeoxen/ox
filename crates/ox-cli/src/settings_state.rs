@@ -8,7 +8,7 @@ use tokio::sync::oneshot;
 /// Result of an async test connection + model fetch.
 pub struct TestResult {
     pub test: Result<(String, u128), String>, // (dialect, elapsed_ms) or error
-    pub models: Result<Vec<ox_kernel::ModelInfo>, String>,
+    pub models: Result<Vec<ox_gate::ModelInfo>, String>,
 }
 
 /// Which section of settings has focus.
@@ -134,7 +134,7 @@ pub struct SettingsState {
     pub default_model: SimpleInput,
     pub default_max_tokens: SimpleInput,
     pub defaults_focus: usize,
-    pub discovered_models: Vec<ox_kernel::ModelInfo>,
+    pub discovered_models: Vec<ox_gate::ModelInfo>,
     pub model_picker_idx: Option<usize>,
     pub pending_test: Option<oneshot::Receiver<TestResult>>,
     pub delete_confirming: bool,

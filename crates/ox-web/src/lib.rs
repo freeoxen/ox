@@ -15,9 +15,11 @@
 use ox_context::{Namespace, SystemProvider};
 use ox_core::{AgentEvent, CompletionRequest, ContentBlock};
 use ox_gate::codec::{anthropic as anthropic_codec, openai as openai_codec};
-use ox_gate::{AccountConfig, GateStore, ProviderConfig, completion_url, models_url};
+use ox_gate::{
+    AccountConfig, GateStore, ModelInfo, ModelInfoSource, ProviderConfig, completion_url,
+    models_url,
+};
 use ox_history::HistoryView;
-use ox_kernel::ModelInfo;
 use ox_kernel::log::{LogStore, SharedLog};
 use ox_kernel::{PathComponent, Reader, Record, ToolResult, Value, Writer, oxpath, path};
 use std::cell::RefCell;
@@ -686,7 +688,13 @@ async fn fetch_model_catalog(
                     continue;
                 }
 
-                all_models.push(ModelInfo { id, display_name });
+                all_models.push(ModelInfo {
+                    id,
+                    display_name,
+                    max_context_size: None,
+                    max_output_tokens: None,
+                    source: ModelInfoSource::Server,
+                });
             }
         }
 

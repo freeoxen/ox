@@ -552,12 +552,12 @@ pub async fn fetch_model_catalog_async(
     config: &ProviderConfig,
     api_key: &str,
     provider: &str,
-) -> Result<Vec<ox_kernel::ModelInfo>, String> {
+) -> Result<Vec<ox_gate::ModelInfo>, String> {
     let client = reqwest::Client::new();
     let ctx = CallContext::new(provider);
     let models_base = models_url(config);
 
-    let mut all_models: Vec<ox_kernel::ModelInfo> = Vec::new();
+    let mut all_models: Vec<ox_gate::ModelInfo> = Vec::new();
     let mut after_id: Option<String> = None;
 
     loop {
@@ -609,7 +609,13 @@ pub async fn fetch_model_catalog_async(
                     .unwrap_or(&id)
                     .to_string();
 
-                all_models.push(ox_kernel::ModelInfo { id, display_name });
+                all_models.push(ox_gate::ModelInfo {
+                    id,
+                    display_name,
+                    max_context_size: None,
+                    max_output_tokens: None,
+                    source: ox_gate::ModelInfoSource::Server,
+                });
             }
         }
 
