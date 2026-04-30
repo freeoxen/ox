@@ -8,6 +8,7 @@
 pub mod account;
 pub mod account_test_status;
 pub mod api_key;
+pub mod catalog_refresh_status;
 pub mod codec;
 pub mod completion_role;
 pub mod model_info;
@@ -17,6 +18,7 @@ pub mod provider;
 pub use account::AccountConfig;
 pub use account_test_status::AccountTestStatus;
 pub use api_key::ApiKey;
+pub use catalog_refresh_status::CatalogRefreshStatus;
 pub use codec::UsageInfo;
 pub use completion_role::CompletionRole;
 pub use model_info::{ModelInfo, ModelInfoSource};
