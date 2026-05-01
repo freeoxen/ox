@@ -9,6 +9,7 @@
 //! subscriptions are exposed for tests and for direct registration when
 //! callers want a curated subset.
 
+pub mod account_create;
 pub mod account_delete;
 pub mod account_test;
 pub mod catalog_refresh;

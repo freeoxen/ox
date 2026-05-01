@@ -9,12 +9,10 @@
 //! Phase N pick up the request paths (`…/_create_now`, `…/delete_now`,
 //! `…/test_now`, `…/refresh_now`, `config/save`) and do the I/O.
 
-use serde::{Deserialize, Serialize};
-
 use ox_path::oxpath;
 use ox_types::Screen;
 use ox_types::key_chord::KeyCodeRepr;
-use ox_types::settings::{AccountField, ModelField, ModelKey};
+use ox_types::settings::{AccountField, CreateAccountRequest, ModelField, ModelKey};
 use ox_types::subscription::Write;
 use structfs_core_store::{Path, Reader, Record, Value};
 use structfs_serde_store::to_value;
@@ -27,19 +25,6 @@ use crate::settings::renderers::util::read_typed;
 #[allow(unused_imports)]
 use super::command;
 use super::navigation::path_to_value;
-
-// ---------------------------------------------------------------------------
-// Shared payload types
-// ---------------------------------------------------------------------------
-
-/// Request payload for the account-create subscription. Phase N6
-/// (`AccountCreateSubscription`) will deserialize this from
-/// `config/gate/accounts/_create_now` and validate `name` as a
-/// `PathComponent` before allocating the account.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CreateAccountRequest {
-    pub name: String,
-}
 
 // ---------------------------------------------------------------------------
 // Cursor-shuffle commands (overlays)

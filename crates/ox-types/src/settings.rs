@@ -84,6 +84,18 @@ pub enum GlobalBanner {
     Info { message: String, set_at_ms: u64 },
 }
 
+/// Request payload for the account-create subscription. Phase N6
+/// deserializes this from `config/gate/accounts/_create_now` and
+/// validates `name` as a `PathComponent` before allocating the account.
+///
+/// The CLI commands write this on user action (see
+/// `accounts.create` in `ox-cli/src/settings/commands/account_model.rs`)
+/// and the broker subscription consumes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateAccountRequest {
+    pub name: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,5 +233,20 @@ mod tests {
             message: "saved".to_string(),
             set_at_ms: 1_700_000_000_000,
         });
+    }
+
+    #[test]
+    fn create_account_request_roundtrip() {
+        json_roundtrip(CreateAccountRequest {
+            name: "alpha".to_string(),
+        });
+    }
+
+    #[test]
+    fn create_account_request_serializes_to_object_with_name() {
+        let req = CreateAccountRequest {
+            name: "alpha".to_string(),
+        };
+        assert_eq!(serde_json::to_string(&req).unwrap(), r#"{"name":"alpha"}"#);
     }
 }
