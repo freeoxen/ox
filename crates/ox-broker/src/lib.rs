@@ -225,6 +225,16 @@ impl BrokerStore {
     /// Create a new broker with the given default timeout. The dispatcher
     /// is created with an empty subscription registry, a `TokioSpawnHandle`
     /// for spawning, and the default cascade bound (64).
+    ///
+    /// **Multi-threaded runtime required when subscriptions are registered.**
+    /// Subscription dispatch reads `before`/`after` records via
+    /// `tokio::task::block_in_place`, which panics on a `current_thread`
+    /// runtime. With no registered subscriptions the dispatcher's empty-match
+    /// fast path skips those reads, so single-thread runtimes work fine for
+    /// brokers that never register subscriptions. Production wiring uses
+    /// `#[tokio::main]` (multi-thread by default), so this only bites
+    /// `#[tokio::test]` callers — annotate with
+    /// `#[tokio::test(flavor = "multi_thread")]`.
     pub fn new(default_timeout: Duration) -> Self {
         Self::with_components(
             default_timeout,
@@ -234,9 +244,9 @@ impl BrokerStore {
         )
     }
 
-    /// Create a broker with explicit subscription components. Useful for
-    /// tests that supply a `MockSpawn` or a pre-populated registry.
-    pub fn with_components(
+    /// Create a broker with explicit subscription components. Used by
+    /// in-crate tests that need a `MockSpawn` or pre-populated registry.
+    pub(crate) fn with_components(
         default_timeout: Duration,
         subs: Arc<StdRwLock<SubscriptionRegistry>>,
         spawn: Arc<dyn SpawnHandle>,

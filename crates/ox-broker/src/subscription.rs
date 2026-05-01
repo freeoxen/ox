@@ -42,26 +42,40 @@ pub trait Subscription: Send + Sync {
     fn id(&self) -> &SubscriptionId;
 
     /// Patterns this subscription watches. May be multiple; the registry
-    /// indexes one entry per pattern, but a write that matches multiple
-    /// of the same subscription's patterns invokes the handler once.
+    /// indexes one entry per pattern. If a single write matches more than
+    /// one of this subscription's patterns, `handle` fires *once per
+    /// matching pattern* — the dispatcher does not deduplicate by id.
+    /// Authors who want at-most-once semantics should ensure their pattern
+    /// set is disjoint, or guard inside `handle` (e.g. early-return when
+    /// the path doesn't match the specific shape they care about).
     fn watches(&self) -> &[PathPattern];
 
-    /// Called once after the watched write commits. Returns additional
-    /// writes for the dispatcher to apply (cascade-bounded). Errors and
-    /// panics are caught at the dispatcher boundary.
+    /// Invoked after the watched write commits, once per matching pattern
+    /// per write (see `watches`). Returns additional writes for the
+    /// dispatcher to apply (cascade-bounded). Errors and panics are
+    /// caught at the dispatcher boundary.
     fn handle(&self, ctx: SubCtx<'_>) -> Vec<Write>;
 }
 
-/// Context passed to `Subscription::handle`. The snapshot is pinned at
-/// the post-write state; the change carries `before`/`after`. `spawn`
-/// hands a future to the runtime and returns an `AbortHandle` so the
-/// subscription can supersede prior tasks; `writer` is the back-channel
-/// the spawned future writes through (this is the dispatcher itself, so
-/// spawned writes re-enter the protocol as new logical events).
+/// Context passed to `Subscription::handle`. The `change` carries the
+/// pre-/post-write `Record`s; `spawn` hands a future to the runtime and
+/// returns an `AbortHandle` so the subscription can supersede prior tasks;
+/// `writer` is the back-channel the spawned future writes through (this is
+/// the dispatcher itself, so spawned writes re-enter the protocol as new
+/// logical events).
 ///
-/// The spec literal is `snapshot: &'a dyn Reader` but `Reader::read`
-/// takes `&mut self`, so we use `&mut dyn Reader` here. The handler can
-/// still only read (no write surface on the trait).
+/// **`snapshot` is a *live broker reader*, not a pinned point-in-time
+/// snapshot.** Successive `read` calls may observe writes that landed after
+/// the triggering one. This deviates from the spec's "snapshot pinned at
+/// post-write state" wording — the broker has no global version to pin
+/// against, so we expose the live reader and let handlers reason about
+/// concurrent visibility. Most handlers read a single path and don't care;
+/// handlers that read multiple paths and reason about cross-path
+/// consistency must do their own coordination.
+///
+/// The spec literal is `snapshot: &'a dyn Reader` but `Reader::read` takes
+/// `&mut self`, so we use `&mut dyn Reader` here. Handlers can still only
+/// read (no write surface on the trait).
 pub struct SubCtx<'a> {
     pub snapshot: &'a mut dyn Reader,
     pub change: &'a PathChange,
