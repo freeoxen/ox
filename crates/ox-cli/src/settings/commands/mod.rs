@@ -77,3 +77,4 @@ macro_rules! command {
 pub(crate) use command;
 
 pub mod highlight;
+pub mod navigation;
