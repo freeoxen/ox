@@ -16,12 +16,15 @@ categories = ["api-bindings"]
 tracing = { workspace = true }
 ox-kernel = { path = "../ox-kernel" }
 ox-types = { path = "../ox-types" }
+ox-path = { path = "../ox-path" }
+ox-broker = { path = "../ox-broker" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 structfs-core-store = { workspace = true }
 structfs-serde-store = { workspace = true }
 reqwest = { version = "0.12", features = ["blocking"] }
 async-trait = "0.1"
+tokio = { workspace = true }
 
 [dev-dependencies]
 ox-store-util = { path = "../ox-store-util" }

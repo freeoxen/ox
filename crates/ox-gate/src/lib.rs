@@ -15,6 +15,7 @@ pub mod known_family;
 pub mod model_info;
 pub mod pricing;
 pub mod provider;
+pub mod subscriptions;
 pub mod transport;
 pub mod validation;
 
