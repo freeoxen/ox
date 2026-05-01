@@ -13,6 +13,7 @@
 //! the source of truth for the eventual layout — keep it in sync with the
 //! actual `mod` declarations as work progresses.
 
+pub(crate) mod binding_registry;
 pub(crate) mod command_registry;
 pub(crate) mod registry;
 // pub(crate) mod renderers;            // Phase J/K
