@@ -11,6 +11,7 @@ use tokio::sync::Mutex;
 use structfs_core_store::{Error as StoreError, Path, Record};
 
 use crate::broker::BrokerInner;
+use crate::dispatching_store::DispatchingStore;
 
 /// An async handle for reading and writing through the broker.
 ///
@@ -23,6 +24,12 @@ pub struct ClientHandle {
     scope: Option<Path>,
     /// Timeout for operations.
     timeout: Duration,
+    /// Optional subscription dispatcher. When set, writes go through it
+    /// (which applies the substrate write and dispatches subscriptions);
+    /// when None (e.g. legacy direct construction in unit tests), writes
+    /// go straight to the broker. Production `BrokerStore::client()` always
+    /// installs a dispatcher (with possibly-empty registry).
+    dispatcher: Option<Arc<DispatchingStore>>,
 }
 
 impl ClientHandle {
@@ -31,7 +38,15 @@ impl ClientHandle {
             inner,
             scope: None,
             timeout,
+            dispatcher: None,
         }
+    }
+
+    /// Attach a subscription dispatcher. All writes after this go through
+    /// it. Called by `BrokerStore::client()`.
+    pub(crate) fn with_dispatcher(mut self, dispatcher: Arc<DispatchingStore>) -> Self {
+        self.dispatcher = Some(dispatcher);
+        self
     }
 
     /// Return a clone with a different timeout.
@@ -40,6 +55,7 @@ impl ClientHandle {
             inner: self.inner.clone(),
             scope: self.scope.clone(),
             timeout,
+            dispatcher: self.dispatcher.clone(),
         }
     }
 
@@ -59,6 +75,7 @@ impl ClientHandle {
             inner: self.inner.clone(),
             scope: Some(new_scope),
             timeout: self.timeout,
+            dispatcher: self.dispatcher.clone(),
         }
     }
 
@@ -133,8 +150,19 @@ impl ClientHandle {
     }
 
     /// Async write to the broker.
+    ///
+    /// When a subscription dispatcher is attached (the production path —
+    /// `BrokerStore::client()` always attaches one), writes go through it.
+    /// The dispatcher applies the substrate write and then runs matching
+    /// subscriptions; the public return value mirrors the substrate write.
     pub async fn write(&self, path: &Path, data: Record) -> Result<Path, StoreError> {
         let full_path = self.resolve_path(path);
+        if let Some(dispatcher) = &self.dispatcher {
+            return dispatcher.write(&full_path, data).await;
+        }
+
+        // Direct path — used by unit tests that build a ClientHandle
+        // without a BrokerStore. No subscription dispatch.
         let rx = {
             let mut inner = self.inner.lock().await;
             inner.submit_write(&full_path, data)?

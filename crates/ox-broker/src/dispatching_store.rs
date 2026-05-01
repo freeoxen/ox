@@ -18,15 +18,15 @@
 //! is testable in isolation.
 
 use std::panic::AssertUnwindSafe;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use structfs_core_store::{Error as StoreError, Path, Reader, Record};
 use tracing::error;
 
 use crate::async_store::BoxFuture;
-use crate::subscription::{
-    AsyncWriter, PathChange, SubCtx, Subscription, SubscriptionRegistry,
-};
+use crate::subscription::{AsyncWriter, PathChange, SubCtx, SubscriptionRegistry};
+#[cfg(test)]
+use crate::subscription::Subscription;
 
 /// Read access for the dispatcher. The dispatcher uses this to compute
 /// `before`/`after` snapshots and to hand a fresh `Reader` to handlers.
@@ -65,7 +65,10 @@ impl crate::subscription::SpawnHandle for TokioSpawnHandle {
 pub struct DispatchingStore {
     substrate: Arc<dyn AsyncWriter>,
     reader: Arc<dyn SnapshotReader>,
-    subs: Arc<SubscriptionRegistry>,
+    /// Registry behind a RwLock so the broker can register subscriptions
+    /// at runtime (after dispatcher construction). The dispatcher takes
+    /// a brief read lock per write; registration takes a brief write lock.
+    subs: Arc<RwLock<SubscriptionRegistry>>,
     spawn: Arc<dyn crate::subscription::SpawnHandle>,
     cascade_bound: usize,
 }
@@ -74,7 +77,7 @@ impl DispatchingStore {
     pub fn new(
         substrate: Arc<dyn AsyncWriter>,
         reader: Arc<dyn SnapshotReader>,
-        subs: Arc<SubscriptionRegistry>,
+        subs: Arc<RwLock<SubscriptionRegistry>>,
         spawn: Arc<dyn crate::subscription::SpawnHandle>,
         cascade_bound: usize,
     ) -> Self {
@@ -85,6 +88,11 @@ impl DispatchingStore {
             spawn,
             cascade_bound,
         }
+    }
+
+    /// Access the registry for runtime registration.
+    pub fn registry(&self) -> Arc<RwLock<SubscriptionRegistry>> {
+        self.subs.clone()
     }
 
     /// Apply `record` at `path`, then dispatch matching subscriptions.
@@ -102,6 +110,25 @@ impl DispatchingStore {
     ) -> BoxFuture<Result<Path, StoreError>> {
         let me = self.clone();
         Box::pin(async move {
+            // Compute the matching subscriptions BEFORE the write — so
+            // we can skip the before/after reads entirely when no
+            // subscriptions match. This is the common case for production
+            // brokers where most paths have no listeners; it also keeps
+            // existing single-threaded tokio runtimes working (the
+            // `block_in_place` bridge in `BrokerSnapshotReader` requires
+            // a multi-threaded runtime, which we only enter when we
+            // actually have a sub to feed).
+            let matched = me
+                .subs
+                .read()
+                .expect("registry lock poisoned")
+                .matching(&path);
+
+            if matched.is_empty() {
+                // Fast path: just apply the substrate write and return.
+                return me.substrate.write(path, record).await;
+            }
+
             // Read `before` (best-effort — surface read errors as None).
             let before = me.reader.read_path(&path).ok().flatten();
 
@@ -120,9 +147,6 @@ impl DispatchingStore {
             // Build the back-channel writer (the dispatcher itself,
             // reentered at depth 0 — spawned writes are new logical events).
             let back_writer: Arc<dyn AsyncWriter> = Arc::new(SelfWriter { inner: me.clone() });
-
-            // Find matching subscriptions.
-            let matched = me.subs.matching(&path);
 
             // Collect writes to recurse on, in registration order.
             let mut queued: Vec<crate::subscription::Write> = Vec::new();
@@ -395,7 +419,7 @@ mod tests {
         let dispatcher = Arc::new(DispatchingStore::new(
             substrate,
             reader,
-            Arc::new(subs),
+            Arc::new(RwLock::new(subs)),
             spawn.clone(),
             cascade_bound,
         ));
@@ -417,7 +441,7 @@ mod tests {
         let dispatcher = Arc::new(DispatchingStore::new(
             substrate,
             reader,
-            Arc::new(subs),
+            Arc::new(RwLock::new(subs)),
             spawn.clone(),
             cascade_bound,
         ));

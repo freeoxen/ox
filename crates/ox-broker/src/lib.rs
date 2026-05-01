@@ -56,11 +56,154 @@ pub use client::ClientHandle;
 pub use sync_adapter::SyncClientAdapter;
 pub use types::Request;
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock as StdRwLock};
 use std::time::Duration;
 use tokio::sync::Mutex;
 
-use structfs_core_store::{Reader, Writer};
+use structfs_core_store::{Error as StoreError, Path, Record, Reader, Writer};
+
+use crate::async_store::BoxFuture;
+use crate::dispatching_store::{DispatchingStore, SnapshotReader, TokioSpawnHandle};
+use crate::subscription::{AsyncWriter as SubAsyncWriter, SpawnHandle, Subscription, SubscriptionRegistry};
+
+/// Default cascade bound — the maximum depth of subscription-triggered
+/// recursive writes. Per spec §3.3, default 64.
+const DEFAULT_CASCADE_BOUND: usize = 64;
+
+/// Substrate that writes through the broker's `BrokerInner::submit_write`,
+/// bypassing the dispatcher (this is the "below" layer the dispatcher
+/// applies writes onto). Held inside the dispatcher.
+struct BrokerSubstrate {
+    inner: Arc<Mutex<broker::BrokerInner>>,
+    timeout: Duration,
+}
+
+impl SubAsyncWriter for BrokerSubstrate {
+    fn write(&self, path: Path, record: Record) -> BoxFuture<Result<Path, StoreError>> {
+        let inner = self.inner.clone();
+        let timeout = self.timeout;
+        Box::pin(async move {
+            let rx = {
+                let mut guard = inner.lock().await;
+                guard.submit_write(&path, record)?
+            };
+            tokio::time::timeout(timeout, rx)
+                .await
+                .map_err(|_| {
+                    StoreError::store(
+                        "broker",
+                        "write",
+                        format!("timeout writing '{}'", path),
+                    )
+                })?
+                .map_err(|_| {
+                    StoreError::store(
+                        "broker",
+                        "write",
+                        format!("server dropped for '{}'", path),
+                    )
+                })?
+        })
+    }
+}
+
+/// SnapshotReader for the broker. Reads use `BrokerInner::submit_read`.
+/// `snapshot()` returns a `Reader` that issues reads through the same
+/// path on demand — there is no point-in-time freezing because the
+/// broker has no global "version" we can pin against. This is the
+/// honest semantic: the snapshot reads the current state at each call,
+/// which is fine for sub handlers that read just a few paths.
+struct BrokerSnapshotReader {
+    inner: Arc<Mutex<broker::BrokerInner>>,
+    timeout: Duration,
+}
+
+impl BrokerSnapshotReader {
+    fn read_now(&self, path: &Path) -> Result<Option<Record>, StoreError> {
+        // Synchronous read against an async substrate. Use
+        // `block_in_place` + `block_on` to bridge — this is the same
+        // pattern the existing ProxyStore uses (see lib.rs).
+        let inner = self.inner.clone();
+        let timeout = self.timeout;
+        let path = path.clone();
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async move {
+                let rx = {
+                    let mut guard = inner.lock().await;
+                    guard.submit_read(&path)?
+                };
+                tokio::time::timeout(timeout, rx)
+                    .await
+                    .map_err(|_| {
+                        StoreError::store(
+                            "broker",
+                            "read",
+                            format!("timeout reading '{}'", path),
+                        )
+                    })?
+                    .map_err(|_| {
+                        StoreError::store(
+                            "broker",
+                            "read",
+                            format!("server dropped for '{}'", path),
+                        )
+                    })?
+            })
+        })
+    }
+}
+
+impl SnapshotReader for BrokerSnapshotReader {
+    fn snapshot(&self) -> Box<dyn Reader> {
+        Box::new(LiveReader {
+            inner: self.inner.clone(),
+            timeout: self.timeout,
+        })
+    }
+    fn read_path(&self, path: &Path) -> Result<Option<Record>, StoreError> {
+        self.read_now(path)
+    }
+}
+
+/// Reader returned by `BrokerSnapshotReader::snapshot`. Each `read` issues
+/// a fresh broker read — no point-in-time freezing (see comment on
+/// `BrokerSnapshotReader`).
+struct LiveReader {
+    inner: Arc<Mutex<broker::BrokerInner>>,
+    timeout: Duration,
+}
+
+impl Reader for LiveReader {
+    fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
+        let inner = self.inner.clone();
+        let timeout = self.timeout;
+        let path = from.clone();
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async move {
+                let rx = {
+                    let mut guard = inner.lock().await;
+                    guard.submit_read(&path)?
+                };
+                tokio::time::timeout(timeout, rx)
+                    .await
+                    .map_err(|_| {
+                        StoreError::store(
+                            "broker",
+                            "read",
+                            format!("timeout reading '{}'", path),
+                        )
+                    })?
+                    .map_err(|_| {
+                        StoreError::store(
+                            "broker",
+                            "read",
+                            format!("server dropped for '{}'", path),
+                        )
+                    })?
+            })
+        })
+    }
+}
 
 /// The top-level BrokerStore — creates the shared routing state and
 /// provides methods for mounting stores and minting client handles.
@@ -68,20 +211,87 @@ use structfs_core_store::{Reader, Writer};
 pub struct BrokerStore {
     inner: Arc<Mutex<broker::BrokerInner>>,
     default_timeout: Duration,
+    /// The dispatcher writes go through. Always present (empty registry
+    /// by default = no-op dispatch). Cloning the BrokerStore shares the
+    /// dispatcher Arc, so handles minted from a single broker share one
+    /// subscription set.
+    dispatcher: Arc<DispatchingStore>,
+    /// Registry handle — exposed via `register_subscription`. Same Arc
+    /// the dispatcher reads from.
+    subs: Arc<StdRwLock<SubscriptionRegistry>>,
 }
 
 impl BrokerStore {
-    /// Create a new broker with the given default timeout for operations.
+    /// Create a new broker with the given default timeout. The dispatcher
+    /// is created with an empty subscription registry, a `TokioSpawnHandle`
+    /// for spawning, and the default cascade bound (64).
     pub fn new(default_timeout: Duration) -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(broker::BrokerInner::new())),
+        Self::with_components(
             default_timeout,
+            Arc::new(StdRwLock::new(SubscriptionRegistry::new())),
+            Arc::new(TokioSpawnHandle),
+            DEFAULT_CASCADE_BOUND,
+        )
+    }
+
+    /// Create a broker with explicit subscription components. Useful for
+    /// tests that supply a `MockSpawn` or a pre-populated registry.
+    pub fn with_components(
+        default_timeout: Duration,
+        subs: Arc<StdRwLock<SubscriptionRegistry>>,
+        spawn: Arc<dyn SpawnHandle>,
+        cascade_bound: usize,
+    ) -> Self {
+        let inner = Arc::new(Mutex::new(broker::BrokerInner::new()));
+        let substrate: Arc<dyn SubAsyncWriter> = Arc::new(BrokerSubstrate {
+            inner: inner.clone(),
+            timeout: default_timeout,
+        });
+        let reader: Arc<dyn SnapshotReader> = Arc::new(BrokerSnapshotReader {
+            inner: inner.clone(),
+            timeout: default_timeout,
+        });
+        let dispatcher = Arc::new(DispatchingStore::new(
+            substrate,
+            reader,
+            subs.clone(),
+            spawn,
+            cascade_bound,
+        ));
+        Self {
+            inner,
+            default_timeout,
+            dispatcher,
+            subs,
+        }
+    }
+
+    /// Register a subscription. Subsequent writes whose path matches one
+    /// of the subscription's `watches()` patterns invoke its `handle`.
+    pub fn register_subscription(&self, sub: Arc<dyn Subscription>) {
+        self.subs
+            .write()
+            .expect("registry lock poisoned")
+            .register(sub);
+    }
+
+    /// Convenience: register multiple subscriptions in one call. Order
+    /// of iteration is the registration order (relevant when multiple
+    /// subs match the same write — see spec §3.3).
+    pub fn register_subscriptions<I>(&self, subs: I)
+    where
+        I: IntoIterator<Item = Arc<dyn Subscription>>,
+    {
+        let mut guard = self.subs.write().expect("registry lock poisoned");
+        for sub in subs {
+            guard.register(sub);
         }
     }
 
     /// Create a client handle for reading/writing through the broker.
     pub fn client(&self) -> ClientHandle {
         ClientHandle::new(self.inner.clone(), self.default_timeout)
+            .with_dispatcher(self.dispatcher.clone())
     }
 
     /// Mount a synchronous Store at the given prefix and spawn its
@@ -504,5 +714,69 @@ mod integration_tests {
 
         // Now the block write should resolve
         block_fut.await.unwrap().unwrap();
+    }
+
+    // ---- Subscription dispatch through the broker (F4) ----
+
+    use crate::subscription::{
+        PathPattern, SubCtx, Subscription, SubscriptionId, Write as SubWrite,
+    };
+
+    /// Test subscription that, on every matching write, returns one
+    /// extra write to a fixed status path. The handler clones an Arc
+    /// indicator so the test can assert it actually ran.
+    struct StatusSub {
+        id: SubscriptionId,
+        watches: Vec<PathPattern>,
+        fired: Arc<std::sync::Mutex<u32>>,
+    }
+
+    impl Subscription for StatusSub {
+        fn id(&self) -> &SubscriptionId {
+            &self.id
+        }
+        fn watches(&self) -> &[PathPattern] {
+            &self.watches
+        }
+        fn handle(&self, _ctx: SubCtx<'_>) -> Vec<SubWrite> {
+            *self.fired.lock().unwrap() += 1;
+            vec![SubWrite {
+                path: path!("status/last"),
+                record: Record::parsed(Value::String("ok".to_string())),
+            }]
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn registered_subscription_fires_on_write() {
+        let broker = BrokerStore::default();
+        let _h = broker.mount(path!("status"), MemoryStore::new()).await;
+        let _t = broker.mount(path!("trigger"), MemoryStore::new()).await;
+
+        let fired = Arc::new(std::sync::Mutex::new(0));
+        broker.register_subscription(Arc::new(StatusSub {
+            id: SubscriptionId("status-writer".to_string()),
+            watches: vec![PathPattern::Exact(path!("trigger"))],
+            fired: fired.clone(),
+        }));
+
+        let client = broker.client();
+        client
+            .write(&path!("trigger"), Record::parsed(Value::Integer(1)))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            *fired.lock().unwrap(),
+            1,
+            "subscription handler should have fired once"
+        );
+
+        // The status path should now hold "ok".
+        let status = client.read(&path!("status/last")).await.unwrap().unwrap();
+        assert_eq!(
+            status.as_value().unwrap(),
+            &Value::String("ok".to_string()),
+        );
     }
 }
