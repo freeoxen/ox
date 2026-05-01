@@ -79,3 +79,91 @@ pub(crate) use command;
 pub mod account_model;
 pub mod highlight;
 pub mod navigation;
+
+use super::command_registry::CommandRegistry;
+
+/// Register every day-one command into `reg`.
+///
+/// Order is unimportant — `CommandRegistry::register` is keyed by id and
+/// later registrations replace earlier ones with the same id. We register
+/// the three buckets in alphabetical order purely as a readability cue.
+pub fn register_all(reg: &mut CommandRegistry) {
+    account_model::register(reg);
+    highlight::register(reg);
+    navigation::register(reg);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ox_types::CommandId;
+
+    fn populated() -> CommandRegistry {
+        let mut reg = CommandRegistry::new();
+        register_all(&mut reg);
+        reg
+    }
+
+    #[test]
+    fn register_all_populates_without_panic() {
+        let reg = populated();
+        assert!(reg.iter().count() > 0);
+    }
+
+    #[test]
+    fn register_all_includes_nav_ascend() {
+        let reg = populated();
+        assert!(reg.lookup(&CommandId(String::from("nav.ascend"))).is_some());
+    }
+
+    #[test]
+    fn register_all_includes_highlight_index_next() {
+        let reg = populated();
+        assert!(
+            reg.lookup(&CommandId(String::from("highlight.index.next")))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn register_all_includes_accounts_add() {
+        let reg = populated();
+        assert!(
+            reg.lookup(&CommandId(String::from("accounts.add")))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn register_all_includes_app_save() {
+        let reg = populated();
+        assert!(reg.lookup(&CommandId(String::from("app.save"))).is_some());
+    }
+
+    #[test]
+    fn register_all_includes_field_insert() {
+        let reg = populated();
+        assert!(
+            reg.lookup(&CommandId(String::from("field.insert")))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn register_all_includes_selector_cycle_protocol() {
+        let reg = populated();
+        assert!(
+            reg.lookup(&CommandId(String::from("selector.cycle.protocol")))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn register_all_total_count() {
+        // Six highlight + four navigation + seventeen account/model = 27.
+        // Pin this so a future drop-without-replacement gets caught.
+        let reg = populated();
+        assert_eq!(reg.iter().count(), 27);
+    }
+}
+
