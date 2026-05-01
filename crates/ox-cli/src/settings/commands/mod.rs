@@ -76,5 +76,6 @@ macro_rules! command {
 
 pub(crate) use command;
 
+pub mod account_model;
 pub mod highlight;
 pub mod navigation;
