@@ -1,0 +1,19 @@
+[package]
+name = "ox-view"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Curated, ratatui-agnostic View tree — the typed output of every renderer"
+publish = false
+
+# Hygiene: no `serde` and no `ratatui`. The View tree is in-memory only in v1;
+# serializing it is forward-compat work for v2 (Rio at the widget level).
+# Keeping the crate dep-free makes the build graph cleaner and prevents
+# accidental wire-protocol coupling. structfs-core-store is foundational
+# (path types, not serialization) so it is permitted.
+[dependencies]
+structfs-core-store = { workspace = true }
