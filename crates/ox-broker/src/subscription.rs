@@ -87,9 +87,57 @@ pub trait AsyncWriter: Send + Sync {
     fn write(&self, path: Path, record: Record) -> BoxFuture<Result<Path, StoreError>>;
 }
 
+/// Linear list of `(pattern, subscription)` entries. Registration appends
+/// one entry per pattern in `sub.watches()`, cloning the `Arc`. `matching`
+/// is a linear scan that returns subscriptions in registration order;
+/// fine for tens of subscriptions, which is the expected scale.
+///
+/// A subscription whose multiple patterns all match the same path is
+/// returned multiple times (once per matching pattern). Dispatch
+/// dedup-by-id is the dispatcher's responsibility, not the registry's.
+#[derive(Default)]
+pub struct SubscriptionRegistry {
+    entries: Vec<(PathPattern, Arc<dyn Subscription>)>,
+}
+
+impl SubscriptionRegistry {
+    pub fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    /// Append one entry per pattern in `sub.watches()`, cloning the Arc.
+    pub fn register(&mut self, sub: Arc<dyn Subscription>) {
+        for pattern in sub.watches() {
+            self.entries.push((pattern.clone(), sub.clone()));
+        }
+    }
+
+    /// Subscriptions whose pattern matches `path`. Order matches
+    /// registration order (FIFO across the entire registry).
+    pub fn matching(&self, path: &Path) -> Vec<Arc<dyn Subscription>> {
+        self.entries
+            .iter()
+            .filter(|(pat, _)| pat.matches(path))
+            .map(|(_, sub)| sub.clone())
+            .collect()
+    }
+
+    /// Number of `(pattern, sub)` entries — for tests and diagnostics.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ox_path::oxpath;
 
     /// Trivial subscription that watches nothing and returns no writes.
     /// Sanity-checks that the trait shape compiles and is object-safe.
@@ -110,6 +158,13 @@ mod tests {
         }
     }
 
+    fn sub(id: &str, watches: Vec<PathPattern>) -> Arc<dyn Subscription> {
+        Arc::new(NoOpSubscription {
+            id: SubscriptionId(id.to_string()),
+            watches,
+        })
+    }
+
     #[test]
     fn noop_subscription_is_object_safe() {
         let sub: Arc<dyn Subscription> = Arc::new(NoOpSubscription {
@@ -126,5 +181,83 @@ mod tests {
         let cloned = id.clone();
         assert_eq!(id, cloned);
         assert_eq!(id.0, "test");
+    }
+
+    // ----- SubscriptionRegistry -----
+
+    #[test]
+    fn register_indexes_each_pattern() {
+        let mut reg = SubscriptionRegistry::new();
+        let s = sub(
+            "two-pattern",
+            vec![
+                PathPattern::Exact(oxpath!("a")),
+                PathPattern::Prefix(oxpath!("b")),
+            ],
+        );
+        reg.register(s);
+        assert_eq!(reg.len(), 2);
+    }
+
+    #[test]
+    fn matching_returns_subs_whose_pattern_matches() {
+        let mut reg = SubscriptionRegistry::new();
+        let a = sub("A", vec![PathPattern::Exact(oxpath!("p"))]);
+        let b = sub("B", vec![PathPattern::Prefix(oxpath!("q"))]);
+        reg.register(a);
+        reg.register(b);
+
+        let m = reg.matching(&oxpath!("p"));
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].id().0, "A");
+
+        let m = reg.matching(&oxpath!("q", "x"));
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].id().0, "B");
+
+        let m = reg.matching(&oxpath!("unrelated"));
+        assert!(m.is_empty());
+    }
+
+    #[test]
+    fn registration_order_is_stable() {
+        let mut reg = SubscriptionRegistry::new();
+        // Both subs match `p/x` via Prefix(p).
+        let a = sub("A", vec![PathPattern::Prefix(oxpath!("p"))]);
+        let b = sub("B", vec![PathPattern::Prefix(oxpath!("p"))]);
+        reg.register(a);
+        reg.register(b);
+
+        let m = reg.matching(&oxpath!("p", "x"));
+        assert_eq!(m.len(), 2);
+        assert_eq!(m[0].id().0, "A");
+        assert_eq!(m[1].id().0, "B");
+    }
+
+    #[test]
+    fn unique_subscription_returned_when_pattern_overlaps() {
+        // A single subscription registered with two patterns that both
+        // match the same path. Documented behavior: registry returns the
+        // subscription once per matching pattern — dispatcher dedups by id
+        // if it cares (F3 does not, per spec). This test pins the
+        // current behavior so the next maintainer knows what to expect.
+        let mut reg = SubscriptionRegistry::new();
+        let s = sub(
+            "multi",
+            vec![
+                PathPattern::Prefix(oxpath!("p")),
+                PathPattern::PrefixSuffix {
+                    prefix: oxpath!("p"),
+                    suffix: oxpath!("suffix"),
+                },
+            ],
+        );
+        reg.register(s);
+
+        // Path matches both Prefix(p) AND PrefixSuffix{p, suffix}.
+        let m = reg.matching(&oxpath!("p", "x", "suffix"));
+        assert_eq!(m.len(), 2, "two patterns match → two entries");
+        assert_eq!(m[0].id().0, "multi");
+        assert_eq!(m[1].id().0, "multi");
     }
 }
