@@ -31,6 +31,7 @@ ox-ui = { path = "../ox-ui" }
 ox-store-util = { path = "../ox-store-util" }
 ox-tools = { path = "../ox-tools" }
 ox-types = { path = "../ox-types" }
+ox-view = { path = "../ox-view" }
 tokio = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.28"

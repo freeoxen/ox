@@ -1,0 +1,10 @@
+---
+source: crates/ox-cli/src/view_render.rs
+expression: out
+---
+┌accounts────────────────────┐
+│personal [default]          │
+│  anthropic                 │
+│work                        │
+│  openai                    │
+└────────────────────────────┘

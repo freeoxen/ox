@@ -70,4 +70,5 @@ pub(crate) mod toml_backing;
 pub(crate) mod transport;
 pub(crate) mod tui;
 pub(crate) mod types;
+pub(crate) mod view_render;
 pub(crate) mod view_state;
