@@ -16,6 +16,7 @@ pub mod model_info;
 pub mod pricing;
 pub mod provider;
 pub mod transport;
+pub mod validation;
 
 pub use account::AccountConfig;
 pub use account_test_status::AccountTestStatus;
