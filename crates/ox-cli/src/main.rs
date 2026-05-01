@@ -26,6 +26,8 @@ mod policy;
 mod policy_check;
 #[allow(dead_code)]
 mod session;
+#[allow(dead_code)]
+mod settings;
 mod settings_shell;
 mod settings_state;
 mod settings_view;
