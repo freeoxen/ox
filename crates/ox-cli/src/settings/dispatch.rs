@@ -23,6 +23,12 @@ use super::registry::RendererRegistry;
 /// Resolve `(screen, cursor, mode, key)` to a sequence of writes by
 /// looking up the binding, then the command, then running it. Returns
 /// `vec![]` (inert) on any miss.
+//
+// 8-parameter signature is spec-prescribed (settings-screen-redesign
+// plan, Phase H Task H3). Each argument is independently varied by
+// callers, so packing them into a struct would be ceremony without
+// information gain.
+#[allow(clippy::too_many_arguments)]
 pub fn dispatch_settings_key(
     snapshot: &mut dyn Reader,
     screen: Screen,
