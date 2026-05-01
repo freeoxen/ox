@@ -5,6 +5,7 @@ pub mod async_store;
 mod broker;
 mod client;
 mod server;
+pub mod subscription;
 mod sync_adapter;
 mod types;
 
