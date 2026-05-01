@@ -10,4 +10,5 @@
 //! callers want a curated subset.
 
 pub mod account_test;
+pub mod catalog_refresh;
 pub mod util;
