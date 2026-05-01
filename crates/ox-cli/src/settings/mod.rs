@@ -17,8 +17,8 @@ pub(crate) mod binding_registry;
 pub(crate) mod command_registry;
 pub(crate) mod dispatch;
 pub(crate) mod registry;
+pub(crate) mod renderers;
 pub(crate) mod snapshot;
-// pub(crate) mod renderers;            // Phase J/K
 // pub(crate) mod commands;             // Phase L
 // pub(crate) mod bindings;             // Phase M
 // pub(crate) mod subscription_install; // Phase N
