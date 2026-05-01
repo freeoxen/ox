@@ -129,6 +129,29 @@ pub fn null_write(path: Path) -> Write {
     }
 }
 
+/// Encode a `Path` as a `Value::Array` of `Value::String` segments — the
+/// wire shape used by `ox_types::path_serde` and by the existing CLI
+/// command helpers (see `crates/ox-cli/src/settings/commands/navigation.rs`).
+/// Path itself doesn't implement `Serialize`, so callers writing `Path`
+/// values into the broker go through this encoder.
+pub fn path_to_value(p: &Path) -> structfs_core_store::Value {
+    structfs_core_store::Value::Array(
+        p.components
+            .iter()
+            .map(|c| structfs_core_store::Value::String(c.clone()))
+            .collect(),
+    )
+}
+
+/// Build a `Write` that puts the encoded `Path` at `at`. Pairs with
+/// `path_to_value` for the cursor / target_cursor shape.
+pub fn write_path(at: &Path, value: &Path) -> Write {
+    Write {
+        path: at.clone(),
+        record: Record::parsed(path_to_value(value)),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Time
 // ---------------------------------------------------------------------------
