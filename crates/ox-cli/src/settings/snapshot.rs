@@ -50,7 +50,14 @@ impl Reader for SettingsSnapshot {
     }
 }
 
-/// The six prefixes the settings UI reads (per spec §6).
+/// The prefixes the settings UI reads (per spec §6).
+///
+/// `secret/keys` is included so renderers can drive the per-account
+/// "key present?" indicator without an out-of-band sync read (the broker
+/// resolves `secret/*` from the same `JsonFileBacking` mounts as `config/*`).
+/// Renderers themselves never deserialize the wrapped key body — they only
+/// observe presence — but `read_subtree` returns the typed `ApiKey` value
+/// and the snapshot stores it verbatim.
 const PREFIXES: &[&str] = &[
     "config/gate/accounts",
     "config/gate/providers",
@@ -58,6 +65,7 @@ const PREFIXES: &[&str] = &[
     "ui/settings",
     "ui/global",
     "settings/index/entries",
+    "secret/keys",
 ];
 
 /// Build a snapshot by walking every prefix the settings UI reads.
