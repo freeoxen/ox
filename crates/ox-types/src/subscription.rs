@@ -33,6 +33,10 @@ pub struct SubscriptionId(pub String);
 /// Matching is **component-level**, never byte-level: a `Prefix` matching
 /// `config/gate/accounts` does not match `config/gate/accounts_other` —
 /// the boundary lives between path components, not between characters.
+//
+// Externally-tagged on purpose: `#[serde(with = "path_serde")]` on inline
+// `Path` fields doesn't compose with `#[serde(tag = "kind")]` because
+// internal tagging can't see through field-level adapters.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PathPattern {

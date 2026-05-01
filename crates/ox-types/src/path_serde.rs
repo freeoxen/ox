@@ -20,7 +20,6 @@ pub fn deserialize<'de, D: Deserializer<'de>>(de: D) -> Result<Path, D::Error> {
 }
 
 /// Adapter for `Option<Path>` fields.
-#[allow(dead_code)]
 pub mod option {
     use super::*;
 
