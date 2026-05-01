@@ -261,8 +261,9 @@ impl View {
 mod tests {
     use super::*;
 
+    // Sanity: D1's original test, preserved as the canonical Text example.
     #[test]
-    fn build_a_text_view_and_compare_for_equality() {
+    fn view_text_via_constructor() {
         let v = View::text("hello");
         let expected = View::Text {
             spans: vec![Span {
@@ -272,5 +273,313 @@ mod tests {
             align: Align::Left,
         };
         assert_eq!(v, expected);
+    }
+
+    #[test]
+    fn view_empty_equals_empty() {
+        assert_eq!(View::Empty, View::Empty);
+    }
+
+    #[test]
+    fn view_stack_v_constructor() {
+        let v = View::stack_v(vec![
+            (View::text("a"), Sizing::Fill),
+            (View::text("b"), Sizing::Fixed(3)),
+        ]);
+        let expected = View::Stack {
+            dir: Direction::Vertical,
+            children: vec![
+                (View::text("a"), Sizing::Fill),
+                (View::text("b"), Sizing::Fixed(3)),
+            ],
+        };
+        assert_eq!(v, expected);
+    }
+
+    #[test]
+    fn view_stack_h_constructor() {
+        let v = View::stack_h(vec![
+            (View::text("left"), Sizing::Min(4)),
+            (View::text("right"), Sizing::Fill),
+        ]);
+        let expected = View::Stack {
+            dir: Direction::Horizontal,
+            children: vec![
+                (View::text("left"), Sizing::Min(4)),
+                (View::text("right"), Sizing::Fill),
+            ],
+        };
+        assert_eq!(v, expected);
+    }
+
+    #[test]
+    fn view_list_with_title_and_items() {
+        let v = View::List {
+            title: Some("accounts".into()),
+            items: vec![
+                ListItem {
+                    primary: "personal".into(),
+                    secondary: Some("anthropic".into()),
+                    badge: Some("default".into()),
+                },
+                ListItem {
+                    primary: "work".into(),
+                    secondary: Some("openai".into()),
+                    badge: None,
+                },
+            ],
+            selected: Some(1),
+        };
+        let expected = View::List {
+            title: Some("accounts".into()),
+            items: vec![
+                ListItem {
+                    primary: "personal".into(),
+                    secondary: Some("anthropic".into()),
+                    badge: Some("default".into()),
+                },
+                ListItem {
+                    primary: "work".into(),
+                    secondary: Some("openai".into()),
+                    badge: None,
+                },
+            ],
+            selected: Some(1),
+        };
+        assert_eq!(v, expected);
+    }
+
+    #[test]
+    fn view_form_with_focused_row() {
+        let v = View::Form {
+            title: Some("provider".into()),
+            rows: vec![
+                FormRow {
+                    label: "endpoint".into(),
+                    value: FormValue::Text {
+                        value: "https://api.example.com".into(),
+                        cursor: 23,
+                        masked: false,
+                    },
+                    error: None,
+                    hint: Some("HTTPS URL".into()),
+                },
+                FormRow {
+                    label: "api_key".into(),
+                    value: FormValue::Text {
+                        value: "sk-secret".into(),
+                        cursor: 9,
+                        masked: true,
+                    },
+                    error: Some("required".into()),
+                    hint: None,
+                },
+                FormRow {
+                    label: "scheme".into(),
+                    value: FormValue::Selector {
+                        options: vec!["bearer".into(), "apikey".into()],
+                        current: 0,
+                    },
+                    error: None,
+                    hint: None,
+                },
+                FormRow {
+                    label: "id".into(),
+                    value: FormValue::ReadOnly("personal".into()),
+                    error: None,
+                    hint: None,
+                },
+            ],
+            focused: Some(1),
+        };
+
+        // Spot-check: the view equals itself after a clone (covers Clone +
+        // PartialEq across every embedded variant).
+        assert_eq!(v.clone(), v);
+
+        // Inspect the focused row by destructuring.
+        if let View::Form { focused, rows, .. } = &v {
+            assert_eq!(*focused, Some(1));
+            assert_eq!(rows.len(), 4);
+        } else {
+            panic!("expected Form");
+        }
+    }
+
+    #[test]
+    fn view_modal_composes_two_views() {
+        // Non-trivial background: a vertical stack of two children.
+        let background = View::stack_v(vec![
+            (View::text("status"), Sizing::Min(1)),
+            (
+                View::List {
+                    title: Some("accounts".into()),
+                    items: vec![ListItem {
+                        primary: "personal".into(),
+                        secondary: None,
+                        badge: None,
+                    }],
+                    selected: Some(0),
+                },
+                Sizing::Fill,
+            ),
+        ]);
+
+        // Non-trivial foreground: a Form with one row.
+        let foreground = View::Form {
+            title: Some("edit".into()),
+            rows: vec![FormRow {
+                label: "name".into(),
+                value: FormValue::Text {
+                    value: "personal".into(),
+                    cursor: 8,
+                    masked: false,
+                },
+                error: None,
+                hint: None,
+            }],
+            focused: Some(0),
+        };
+
+        let v = View::Modal {
+            background: Box::new(background.clone()),
+            foreground: Box::new(foreground.clone()),
+            dim: true,
+        };
+
+        let expected = View::Modal {
+            background: Box::new(background),
+            foreground: Box::new(foreground),
+            dim: true,
+        };
+        assert_eq!(v, expected);
+    }
+
+    #[test]
+    fn view_banner_info_and_error() {
+        let info = View::Banner {
+            kind: BannerKind::Info,
+            content: "saved".into(),
+        };
+        let err = View::Banner {
+            kind: BannerKind::Error,
+            content: "failed".into(),
+        };
+        assert_eq!(
+            info,
+            View::Banner {
+                kind: BannerKind::Info,
+                content: "saved".into()
+            }
+        );
+        assert_eq!(
+            err,
+            View::Banner {
+                kind: BannerKind::Error,
+                content: "failed".into()
+            }
+        );
+        // The two banners are distinct because BannerKind differs.
+        assert_ne!(info, err);
+    }
+
+    #[test]
+    fn view_status_block_with_scroll_offset() {
+        let v = View::StatusBlock {
+            title: "log".into(),
+            lines: vec![
+                StyledLine(vec![Span::plain("line 1")]),
+                StyledLine(vec![
+                    Span::plain("prefix "),
+                    Span {
+                        text: "EMPHASIS".into(),
+                        style: Style {
+                            fg: Some(Color::Red),
+                            bg: None,
+                            modifiers: ModifierSet {
+                                bold: true,
+                                ..ModifierSet::default()
+                            },
+                        },
+                    },
+                ]),
+            ],
+            scroll_offset: 5,
+        };
+        let expected = View::StatusBlock {
+            title: "log".into(),
+            lines: vec![
+                StyledLine(vec![Span::plain("line 1")]),
+                StyledLine(vec![
+                    Span::plain("prefix "),
+                    Span {
+                        text: "EMPHASIS".into(),
+                        style: Style {
+                            fg: Some(Color::Red),
+                            bg: None,
+                            modifiers: ModifierSet {
+                                bold: true,
+                                ..ModifierSet::default()
+                            },
+                        },
+                    },
+                ]),
+            ],
+            scroll_offset: 5,
+        };
+        assert_eq!(v, expected);
+    }
+
+    #[test]
+    fn view_pad_via_constructor() {
+        let v = View::pad(
+            View::text("inside"),
+            Padding {
+                top: 1,
+                right: 2,
+                bottom: 1,
+                left: 2,
+            },
+        );
+        let expected = View::Pad {
+            padding: Padding {
+                top: 1,
+                right: 2,
+                bottom: 1,
+                left: 2,
+            },
+            child: Box::new(View::text("inside")),
+        };
+        assert_eq!(v, expected);
+    }
+
+    #[test]
+    fn unknown_cursor_fallback_renders_a_stack_with_error_banner() {
+        let cursor = Path::parse("gate/accounts/missing").unwrap();
+        let v = View::unknown_cursor_fallback(&cursor);
+
+        // Structural shape check: Stack { Vertical, [Banner(Error, "..."),
+        // Text("press Esc...")] }.
+        match &v {
+            View::Stack { dir, children } => {
+                assert_eq!(*dir, Direction::Vertical);
+                assert_eq!(children.len(), 2);
+                match &children[0].0 {
+                    View::Banner { kind, content } => {
+                        assert_eq!(*kind, BannerKind::Error);
+                        assert!(content.contains("unknown cursor"));
+                        assert!(content.contains("gate/accounts/missing"));
+                    }
+                    other => panic!("expected Banner, got {other:?}"),
+                }
+                match &children[1].0 {
+                    View::Text { spans, .. } => {
+                        assert!(spans[0].text.contains("Esc"));
+                    }
+                    other => panic!("expected Text, got {other:?}"),
+                }
+            }
+            other => panic!("expected Stack, got {other:?}"),
+        }
     }
 }
