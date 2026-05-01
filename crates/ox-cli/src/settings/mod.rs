@@ -15,6 +15,7 @@
 
 pub(crate) mod binding_registry;
 pub(crate) mod command_registry;
+pub(crate) mod dispatch;
 pub(crate) mod registry;
 // pub(crate) mod renderers;            // Phase J/K
 // pub(crate) mod commands;             // Phase L
