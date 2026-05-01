@@ -4,11 +4,12 @@
 //! requests through it. The request blocks (async await) until the
 //! server fulfills it.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
-use structfs_core_store::{Error as StoreError, Path, Record};
+use structfs_core_store::{Error as StoreError, Path, Record, Value};
 
 use crate::broker::BrokerInner;
 use crate::dispatching_store::DispatchingStore;
@@ -149,6 +150,98 @@ impl ClientHandle {
         }
     }
 
+    /// Enumerate every leaf under `prefix` as `(full_path, record)` pairs.
+    ///
+    /// **Why this is broker-aware code, not "read once and filter":** the
+    /// `Reader` trait has no `list` operation, and the convention adopted
+    /// by stores like `LocalConfig` and `ConfigStore` is "reading at the
+    /// mount root returns a flat `Value::Map` keyed by sub-paths." Reading
+    /// at a non-root sub-prefix (e.g. `config/gate/accounts` when only
+    /// `config` is mounted) returns `None` because the store's `read`
+    /// only matches exact keys.
+    ///
+    /// To enumerate a sub-subtree we walk **back** from `prefix` toward the
+    /// empty path, calling `read` at each ancestor. The first ancestor that
+    /// returns `Some(Record)` whose `Value` is a `Map` is presumed to be a
+    /// mount root; its keys (relative to that ancestor) are then filtered
+    /// to retain only those that share the original `prefix`'s suffix
+    /// after the ancestor. Each surviving entry is inserted into the result
+    /// map under its full reconstituted path.
+    ///
+    /// If `read(prefix)` itself returns a non-Map leaf (a single value
+    /// stored at exactly the prefix), the result is a one-entry map.
+    ///
+    /// If no ancestor (including root) returns a Map and the prefix itself
+    /// is missing, returns an empty map — the subtree is empty or unmounted.
+    ///
+    /// Returns `Err` only on broker / store errors; missing data is `Ok`
+    /// with an empty map.
+    pub async fn read_subtree(&self, prefix: &Path) -> Result<BTreeMap<Path, Record>, StoreError> {
+        // Try the prefix itself first. If it resolves to a leaf (non-Map)
+        // value, that's the entire subtree.
+        match self.read(prefix).await {
+            Ok(Some(record)) => match record.as_value() {
+                Some(Value::Map(map)) => {
+                    // Reading at the prefix yielded a Map directly — the
+                    // prefix is a mount root. Reconstitute full paths.
+                    return Ok(reconstitute(
+                        prefix,
+                        map.iter().map(|(k, v)| (k.as_str(), v)),
+                    ));
+                }
+                Some(_) => {
+                    // Leaf at exactly this prefix. Single-entry result.
+                    let mut out = BTreeMap::new();
+                    out.insert(prefix.clone(), record);
+                    return Ok(out);
+                }
+                None => {} // Raw record without parsed value; fall through.
+            },
+            Ok(None) => {} // Fall through to ancestor-walk.
+            Err(StoreError::NoRoute { .. }) => return Ok(BTreeMap::new()),
+            Err(e) => return Err(e),
+        }
+
+        // Walk back toward root, looking for an ancestor that returns a Map.
+        // `prefix.len()` decreasing to 0 covers everything from "drop one
+        // component" down to the empty root path.
+        for end in (0..prefix.len()).rev() {
+            let ancestor = prefix.slice(0, end);
+            let read_result = self.read(&ancestor).await;
+            match read_result {
+                Ok(Some(record)) => {
+                    if let Some(Value::Map(map)) = record.as_value() {
+                        // Filter to keys whose ancestor-relative path has
+                        // the remaining suffix as prefix.
+                        let suffix = prefix
+                            .strip_prefix(&ancestor)
+                            .expect("ancestor is a prefix of prefix by construction");
+                        let suffix_str = suffix.to_string();
+                        let prefix_match = if suffix_str.is_empty() {
+                            String::new()
+                        } else {
+                            format!("{}/", suffix_str)
+                        };
+                        let filtered = map.iter().filter_map(|(k, v)| {
+                            if k == &suffix_str || k.starts_with(&prefix_match) {
+                                Some((k.as_str(), v))
+                            } else {
+                                None
+                            }
+                        });
+                        return Ok(reconstitute(&ancestor, filtered));
+                    }
+                    // Ancestor exists but isn't a Map; keep walking up.
+                }
+                Ok(None) => continue,
+                Err(StoreError::NoRoute { .. }) => return Ok(BTreeMap::new()),
+                Err(e) => return Err(e),
+            }
+        }
+
+        Ok(BTreeMap::new())
+    }
+
     /// Async write to the broker.
     ///
     /// When a subscription dispatcher is attached (the production path —
@@ -185,6 +278,32 @@ impl ClientHandle {
                 )
             })?
     }
+}
+
+/// Reconstitute full paths from `(relative_key, value)` pairs by prepending
+/// `base` to each key. Used by `read_subtree` to convert a mount-relative
+/// `Value::Map` into absolute-path entries.
+fn reconstitute<'a, I>(base: &Path, entries: I) -> BTreeMap<Path, Record>
+where
+    I: IntoIterator<Item = (&'a str, &'a Value)>,
+{
+    let mut out = BTreeMap::new();
+    for (rel_key, val) in entries {
+        // Skip keys that don't parse as paths — defensive; broker stores
+        // produce well-formed keys, but a malformed one shouldn't crash
+        // a snapshot build.
+        let Ok(rel_path) = Path::parse(rel_key) else {
+            tracing::warn!(rel_key, "read_subtree: skipping malformed key");
+            continue;
+        };
+        let full_path = if base.is_empty() {
+            rel_path
+        } else {
+            base.join(&rel_path)
+        };
+        out.insert(full_path, Record::parsed(val.clone()));
+    }
+    out
 }
 
 #[cfg(test)]

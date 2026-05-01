@@ -559,6 +559,121 @@ mod integration_tests {
         assert!(result.is_none());
     }
 
+    // ---- read_subtree tests ----
+
+    /// Store that returns a `Value::Map` of all entries when read at the
+    /// empty (mount-root) path, and exact lookups otherwise. Models the
+    /// convention used by `LocalConfig` and `ConfigStore`.
+    struct RootMapStore {
+        data: std::collections::BTreeMap<String, Value>,
+    }
+
+    impl RootMapStore {
+        fn new() -> Self {
+            Self {
+                data: std::collections::BTreeMap::new(),
+            }
+        }
+        fn with(entries: &[(&str, Value)]) -> Self {
+            let mut s = Self::new();
+            for (k, v) in entries {
+                s.data.insert((*k).to_string(), v.clone());
+            }
+            s
+        }
+    }
+
+    impl Reader for RootMapStore {
+        fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
+            if from.is_empty() {
+                let mut m = std::collections::BTreeMap::new();
+                for (k, v) in &self.data {
+                    m.insert(k.clone(), v.clone());
+                }
+                return Ok(Some(Record::parsed(Value::Map(m))));
+            }
+            Ok(self
+                .data
+                .get(&from.to_string())
+                .map(|v| Record::parsed(v.clone())))
+        }
+    }
+
+    impl Writer for RootMapStore {
+        fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
+            if let Some(value) = data.as_value() {
+                self.data.insert(to.to_string(), value.clone());
+            }
+            Ok(to.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn read_subtree_filters_entries_under_prefix() {
+        // Mount a RootMapStore at `config`, populate three keys; ask for
+        // the `gate/accounts` sub-subtree. The walker's ancestor traversal
+        // (mount root returns Map; sub-prefix returns None) should kick in
+        // and reconstitute filtered entries with full paths.
+        let broker = BrokerStore::default();
+        let store = RootMapStore::with(&[
+            (
+                "gate/accounts/alpha/endpoint",
+                Value::String("https://alpha".into()),
+            ),
+            (
+                "gate/accounts/beta/endpoint",
+                Value::String("https://beta".into()),
+            ),
+            ("completions/primary", Value::String("alpha".into())),
+        ]);
+        let _h = broker.mount(path!("config"), store).await;
+        let client = broker.client();
+
+        let entries = client
+            .read_subtree(&path!("config/gate/accounts"))
+            .await
+            .expect("read_subtree");
+
+        assert_eq!(entries.len(), 2);
+        assert!(entries.contains_key(&path!("config/gate/accounts/alpha/endpoint")));
+        assert!(entries.contains_key(&path!("config/gate/accounts/beta/endpoint")));
+        assert!(!entries.contains_key(&path!("config/completions/primary")));
+    }
+
+    #[tokio::test]
+    async fn read_subtree_leaf_at_exact_prefix() {
+        // When the prefix itself is a leaf (non-Map value), the result is
+        // a one-entry map with that exact path.
+        let broker = BrokerStore::default();
+        let store = MemoryStore::with("primary", Value::String("alpha".into()));
+        let _h = broker.mount(path!("config/completions"), store).await;
+        let client = broker.client();
+
+        let entries = client
+            .read_subtree(&path!("config/completions/primary"))
+            .await
+            .expect("read_subtree");
+
+        assert_eq!(entries.len(), 1);
+        let record = entries.get(&path!("config/completions/primary")).unwrap();
+        assert_eq!(
+            record.as_value().unwrap(),
+            &Value::String("alpha".into()),
+        );
+    }
+
+    #[tokio::test]
+    async fn read_subtree_no_route_yields_empty() {
+        // No mount covers the prefix → empty map (not an error).
+        let broker = BrokerStore::default();
+        let client = broker.client();
+        let entries = client
+            .read_subtree(&path!("nope/anywhere"))
+            .await
+            .expect("read_subtree");
+        assert!(entries.is_empty());
+    }
+
     // ---- AsyncReader / AsyncWriter tests ----
 
     use crate::async_store::{AsyncReader, AsyncWriter, BoxFuture};
