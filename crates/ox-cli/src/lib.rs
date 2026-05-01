@@ -68,7 +68,6 @@ pub mod test_theme_exports {
 pub(crate) mod thread_shell;
 pub(crate) mod thread_view;
 pub(crate) mod toml_backing;
-pub(crate) mod transport;
 pub(crate) mod tui;
 pub(crate) mod types;
 pub(crate) mod view_render;

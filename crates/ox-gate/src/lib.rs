@@ -15,6 +15,7 @@ pub mod known_family;
 pub mod model_info;
 pub mod pricing;
 pub mod provider;
+pub mod transport;
 
 pub use account::AccountConfig;
 pub use account_test_status::AccountTestStatus;
@@ -28,6 +29,7 @@ pub use provider::{
     AuthScheme, Preset, ProviderConfig, completion_url, dialect_paths, models_url, presets,
     validate_endpoint,
 };
+pub use transport::{HttpTransport, Transport};
 
 use ox_kernel::ToolSchema;
 use std::collections::{BTreeMap, HashMap};

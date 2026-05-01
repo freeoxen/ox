@@ -43,7 +43,6 @@ pub(crate) mod thread_registry;
 mod thread_shell;
 mod thread_view;
 mod toml_backing;
-mod transport;
 mod tui;
 mod types;
 pub(crate) mod view_state;

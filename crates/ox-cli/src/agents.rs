@@ -14,7 +14,7 @@ use crate::policy::PolicyStats;
 // CliCompletionTransport — reqwest-based CompletionTransport for the CLI
 // ---------------------------------------------------------------------------
 
-/// Native HTTP transport that wraps [`crate::transport::streaming_fetch`].
+/// Native HTTP transport that wraps [`ox_gate::transport::streaming_fetch`].
 ///
 /// Holds the reqwest client, provider config, and API key. Also holds a broker
 /// handle so streaming text deltas and token usage can be written to the TUI
@@ -40,8 +40,8 @@ impl CompletionTransport for CliCompletionTransport {
     ) -> Result<ox_tools::completion::CompletionOutput, String> {
         let scoped = self.scoped_client.clone();
         let handle = self.rt_handle.clone();
-        let ctx = crate::transport::CallContext::new(&self.provider).with_account(&self.account);
-        let (events, usage) = crate::transport::streaming_fetch(
+        let ctx = ox_gate::transport::CallContext::new(&self.provider).with_account(&self.account);
+        let (events, usage) = ox_gate::transport::streaming_fetch(
             &self.client,
             &self.config,
             &self.api_key,

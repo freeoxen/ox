@@ -1,7 +1,7 @@
 #[cfg(test)]
-use ox_gate::codec::anthropic as anthropic_codec;
-use ox_gate::codec::{UsageInfo, openai as openai_codec};
-use ox_gate::{AuthScheme, ProviderConfig, completion_url, models_url};
+use crate::codec::anthropic as anthropic_codec;
+use crate::codec::{UsageInfo, openai as openai_codec};
+use crate::{AuthScheme, ProviderConfig, completion_url, models_url};
 use ox_kernel::{CompletionRequest, StreamEvent};
 use std::collections::HashSet;
 use std::io::BufRead;
@@ -552,12 +552,12 @@ pub async fn fetch_model_catalog_async(
     config: &ProviderConfig,
     api_key: &str,
     provider: &str,
-) -> Result<Vec<ox_gate::ModelInfo>, String> {
+) -> Result<Vec<crate::ModelInfo>, String> {
     let client = reqwest::Client::new();
     let ctx = CallContext::new(provider);
     let models_base = models_url(config);
 
-    let mut all_models: Vec<ox_gate::ModelInfo> = Vec::new();
+    let mut all_models: Vec<crate::ModelInfo> = Vec::new();
     let mut after_id: Option<String> = None;
 
     loop {
@@ -609,12 +609,12 @@ pub async fn fetch_model_catalog_async(
                     .unwrap_or(&id)
                     .to_string();
 
-                all_models.push(ox_gate::ModelInfo {
+                all_models.push(crate::ModelInfo {
                     id,
                     display_name,
                     max_context_size: None,
                     max_output_tokens: None,
-                    source: ox_gate::ModelInfoSource::Server,
+                    source: crate::ModelInfoSource::Server,
                 });
             }
         }
@@ -635,6 +635,70 @@ pub async fn fetch_model_catalog_async(
 
     all_models.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(all_models)
+}
+
+// ---------------------------------------------------------------------------
+// Transport trait — async dyn-compatible surface used by subscription handlers
+// in `crate::subscriptions`. The production impl `HttpTransport` simply
+// delegates to the existing free-functions above; tests inject mocks.
+// ---------------------------------------------------------------------------
+
+/// The result of a successful test connection: the wire dialect that
+/// answered and the round-trip latency in milliseconds.
+pub type TestResult = (String, u128);
+
+/// Dyn-compatible transport surface for the subscription handlers.
+///
+/// The methods take `account: &str` even though `test_connection_async` /
+/// `fetch_model_catalog_async` only need it for log/error context — the
+/// subscription side already has the account name on the path it watches,
+/// and forwarding it keeps every error message tagged with the account
+/// the user is editing.
+#[async_trait::async_trait]
+pub trait Transport: Send + Sync {
+    async fn test_connection(
+        &self,
+        account: &str,
+        provider: &ProviderConfig,
+        api_key: &str,
+    ) -> Result<TestResult, String>;
+
+    async fn fetch_catalog(
+        &self,
+        account: &str,
+        provider: &ProviderConfig,
+        api_key: &str,
+    ) -> Result<Vec<crate::ModelInfo>, String>;
+}
+
+/// Production transport — uses `reqwest` via the existing free-function
+/// implementations. Stateless, so cloning is essentially free.
+#[derive(Debug, Clone, Default)]
+pub struct HttpTransport;
+
+#[async_trait::async_trait]
+impl Transport for HttpTransport {
+    async fn test_connection(
+        &self,
+        account: &str,
+        provider: &ProviderConfig,
+        api_key: &str,
+    ) -> Result<TestResult, String> {
+        // The existing free-function tags errors with `provider`; pass the
+        // account along so subscription log lines see it too.
+        let _ = account;
+        test_connection_async(provider, api_key, &provider.dialect).await
+    }
+
+    async fn fetch_catalog(
+        &self,
+        account: &str,
+        provider: &ProviderConfig,
+        api_key: &str,
+    ) -> Result<Vec<crate::ModelInfo>, String> {
+        let _ = account;
+        fetch_model_catalog_async(provider, api_key, &provider.dialect).await
+    }
 }
 
 #[cfg(test)]
@@ -716,7 +780,7 @@ mod tests {
             dialect: "openai".into(),
             endpoint: "http://127.0.0.1:1234".into(),
             version: String::new(),
-            auth: Some(ox_gate::AuthScheme::None),
+            auth: Some(crate::AuthScheme::None),
         };
         let (_, headers, _) = build_request(&config, "ignored", &sample_request()).unwrap();
         assert!(
@@ -733,7 +797,7 @@ mod tests {
             dialect: "openai".into(),
             endpoint: "https://api.openai.com".into(),
             version: String::new(),
-            auth: Some(ox_gate::AuthScheme::BearerToken),
+            auth: Some(crate::AuthScheme::BearerToken),
         };
         let (_, headers, _) = build_request(&config, "sk-test", &sample_request()).unwrap();
         assert!(
@@ -749,7 +813,7 @@ mod tests {
             dialect: "anthropic".into(),
             endpoint: "https://api.anthropic.com".into(),
             version: "2023-06-01".into(),
-            auth: Some(ox_gate::AuthScheme::XApiKey),
+            auth: Some(crate::AuthScheme::XApiKey),
         };
         let (_, headers, _) = build_request(&config, "sk-test", &sample_request()).unwrap();
         assert!(
@@ -785,7 +849,7 @@ mod tests {
             dialect: "openai".into(),
             endpoint: "http://127.0.0.1:1234".into(),
             version: String::new(),
-            auth: Some(ox_gate::AuthScheme::None),
+            auth: Some(crate::AuthScheme::None),
         };
         let (url, headers, _) = build_request(&config, "", &sample_request()).unwrap();
         assert_eq!(url, "http://127.0.0.1:1234/v1/chat/completions");

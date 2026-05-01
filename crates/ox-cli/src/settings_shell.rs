@@ -629,9 +629,9 @@ async fn handle_edit_dialog_key(
             let key = api_key_for_test;
             let provider_name = provider_label;
             tokio::spawn(async move {
-                let test = crate::transport::test_connection_async(&pc, &key, &provider_name).await;
+                let test = ox_gate::transport::test_connection_async(&pc, &key, &provider_name).await;
                 let models = if test.is_ok() {
-                    crate::transport::fetch_model_catalog_async(&pc, &key, &provider_name).await
+                    ox_gate::transport::fetch_model_catalog_async(&pc, &key, &provider_name).await
                 } else {
                     Err("skipped".into())
                 };
@@ -1034,9 +1034,9 @@ async fn handle_navigation_key(
                     let provider_name = provider_ref;
                     tokio::spawn(async move {
                         let test =
-                            crate::transport::test_connection_async(&pc, &k, &provider_name).await;
+                            ox_gate::transport::test_connection_async(&pc, &k, &provider_name).await;
                         let models = if test.is_ok() {
-                            crate::transport::fetch_model_catalog_async(&pc, &k, &provider_name)
+                            ox_gate::transport::fetch_model_catalog_async(&pc, &k, &provider_name)
                                 .await
                         } else {
                             Err("skipped".into())
