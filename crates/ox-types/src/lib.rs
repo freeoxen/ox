@@ -1,5 +1,6 @@
 pub mod approval;
 pub mod command;
+pub mod command_binding;
 pub mod command_name;
 pub mod editor;
 pub mod inbox;
@@ -14,6 +15,7 @@ pub mod ui;
 
 pub use approval::*;
 pub use command::*;
+pub use command_binding::*;
 pub use command_name::*;
 pub use editor::*;
 pub use inbox::*;
