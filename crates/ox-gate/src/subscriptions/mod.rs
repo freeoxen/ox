@@ -13,4 +13,5 @@ pub mod account_create;
 pub mod account_delete;
 pub mod account_test;
 pub mod catalog_refresh;
+pub mod config_save;
 pub mod util;
