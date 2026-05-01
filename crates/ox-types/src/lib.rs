@@ -10,6 +10,7 @@ pub mod key_hint;
 pub(crate) mod path_serde;
 pub mod settings;
 pub mod snapshot;
+pub mod subscription;
 pub mod turn;
 pub mod ui;
 
@@ -24,5 +25,6 @@ pub use key_chord::*;
 pub use key_hint::*;
 pub use settings::*;
 pub use snapshot::*;
+pub use subscription::*;
 pub use turn::*;
 pub use ui::*;
