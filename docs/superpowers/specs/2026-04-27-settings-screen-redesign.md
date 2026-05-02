@@ -153,6 +153,8 @@ Runtime contract (broker-side):
 
 **Runtime requirement.** The dispatcher's production `SnapshotReader` bridges sync `Reader::read` calls to async broker reads via `tokio::task::block_in_place`, which requires a multi-threaded tokio runtime. Callers on a `current_thread` runtime will panic on the first triggered subscription. The fast-path that skips snapshot reads when no subscription matches keeps `current_thread` callers working in the no-listener case (subscriptions only kick in when a registered listener actually exists). v1 ships multi-threaded; a future single-threaded variant would need an async `Reader` trait or a different bridging strategy.
 
+**Fast-path.** When no registered subscription matches the written path, the dispatcher skips the snapshot read and returns immediately after the substrate write. This bounds the no-listener case at one substrate write per call (no extra round-trips) and keeps `current_thread` callers functional in the no-subscription case (the `block_in_place` bridge is only entered when a handler will actually run). The fast-path is a load-bearing design property, not an incidental optimization — implementations that re-derive this dispatcher should preserve it.
+
 Subscriptions subsume:
 
 - Long-running actions: `test_now → test_status` is a subscription on `PrefixSuffix { prefix: config/gate/accounts, suffix: test_now }` whose `handle` writes `Testing { started_at_ms }` synchronously and spawns a task that writes `Success`/`Failed` later.
