@@ -8,10 +8,13 @@
 //! - `NavDescendModels` — write `ui/settings/cursor ←
 //!   settings/models/_detail`.
 //! - `NavAscend` — consult `ctx.registry.ascend(&cursor)`. On
-//!   `Some(parent)` write parent to cursor; on `None`
-//!   (`AscendRule::ExitScreen`), write `true` to
-//!   `ui/settings/_request_exit` so the dispatch loop
-//!   can react in the next tick (per plan §L2).
+//!   `Some(parent)` write parent to cursor; on `None` (any rule that
+//!   resolves to no parent — `ExitScreen`, an unregistered `Fallback`
+//!   target, or `NearestRegistered` at the root), write `true` to
+//!   `ui/settings/_request_exit` so the dispatch loop can react in the
+//!   next tick (per plan §L2). The "top-level page → settings/index"
+//!   behavior lives in the renderer's `AscendRule::Fallback(target)`,
+//!   not in this command's body.
 //!
 //! Per spec §6 binding tables.
 
@@ -148,22 +151,10 @@ fn ascend(
         Some(c) => c,
         None => return Vec::new(),
     };
-    let index = oxpath!("settings", "index");
-    // Resolution order:
-    //   1. Registry-defined parent (`AscendRule::NearestRegistered`).
-    //   2. Top-level fallback to `settings/index` (spec §4.1 + §6 binding
-    //      tables — Esc on `settings/accounts` and `settings/models`
-    //      should land on the index, not exit the screen).
-    //   3. From the index itself (or any cursor with no registered
-    //      renderer), exit the settings screen via `_request_exit`.
     match ctx.registry.ascend(&cursor) {
         Some(parent) => vec![Write {
             path: oxpath!("ui", "settings", "cursor"),
             record: Record::parsed(path_to_value(&parent)),
-        }],
-        None if cursor != index => vec![Write {
-            path: oxpath!("ui", "settings", "cursor"),
-            record: Record::parsed(path_to_value(&index)),
         }],
         None => vec![Write {
             path: oxpath!("ui", "settings", "_request_exit"),
@@ -317,8 +308,8 @@ mod tests {
 
     #[test]
     fn ascend_top_level_page_falls_back_to_settings_index() {
-        // Cursor at `settings/accounts` (a top-level page) with NearestRegistered;
-        // no registered ancestor in the chain. Per spec §4.1 + §6.2, Esc here
+        // Cursor at `settings/accounts` (a top-level page) whose renderer
+        // declares `Fallback(settings/index)`. Per spec §4.1 + §6.2, Esc here
         // should land on `settings/index`, not exit the screen.
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
@@ -328,8 +319,14 @@ mod tests {
 
         let mut registry = RendererRegistry::new();
         registry.register(
+            oxpath!("settings", "index"),
+            Box::new(FakeRenderer(AscendRule::ExitScreen)),
+        );
+        registry.register(
             oxpath!("settings", "accounts"),
-            Box::new(FakeRenderer(AscendRule::NearestRegistered)),
+            Box::new(FakeRenderer(AscendRule::Fallback(oxpath!(
+                "settings", "index"
+            )))),
         );
 
         let writes = run_with_registry(&NavAscend::new(), &mut snap, &registry);
