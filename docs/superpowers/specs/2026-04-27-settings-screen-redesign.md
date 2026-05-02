@@ -151,6 +151,8 @@ Runtime contract (broker-side):
 4. A subscription handler that panics or returns an error is contained: log via `tracing::error!` with the subscription id; siblings still run; original `write()` returns Ok.
 5. **Ordering across multiple subscriptions on a single write.** When multiple subscriptions match the same write, they fire in registration order; their returned writes are queued FIFO and applied in that order. Authors who care about ordering control it through registration sequence at startup.
 
+**Runtime requirement.** The dispatcher's production `SnapshotReader` bridges sync `Reader::read` calls to async broker reads via `tokio::task::block_in_place`, which requires a multi-threaded tokio runtime. Callers on a `current_thread` runtime will panic on the first triggered subscription. The fast-path that skips snapshot reads when no subscription matches keeps `current_thread` callers working in the no-listener case (subscriptions only kick in when a registered listener actually exists). v1 ships multi-threaded; a future single-threaded variant would need an async `Reader` trait or a different bridging strategy.
+
 Subscriptions subsume:
 
 - Long-running actions: `test_now → test_status` is a subscription on `PrefixSuffix { prefix: config/gate/accounts, suffix: test_now }` whose `handle` writes `Testing { started_at_ms }` synchronously and spawns a task that writes `Success`/`Failed` later.
