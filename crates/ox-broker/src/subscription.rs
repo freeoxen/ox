@@ -43,17 +43,17 @@ pub trait Subscription: Send + Sync {
 
     /// Patterns this subscription watches. May be multiple; the registry
     /// indexes one entry per pattern. If a single write matches more than
-    /// one of this subscription's patterns, `handle` fires *once per
-    /// matching pattern* — the dispatcher does not deduplicate by id.
-    /// Authors who want at-most-once semantics should ensure their pattern
-    /// set is disjoint, or guard inside `handle` (e.g. early-return when
-    /// the path doesn't match the specific shape they care about).
+    /// one of this subscription's patterns, the dispatcher invokes `handle`
+    /// *exactly once per write* (dedup-by-id). Authors can think of
+    /// `watches()` as a union of paths the subscription cares about;
+    /// overlap is safe.
     fn watches(&self) -> &[PathPattern];
 
-    /// Invoked after the watched write commits, once per matching pattern
-    /// per write (see `watches`). Returns additional writes for the
-    /// dispatcher to apply (cascade-bounded). Errors and panics are
-    /// caught at the dispatcher boundary.
+    /// Invoked after the watched write commits, exactly once per
+    /// triggering write regardless of how many of this subscription's
+    /// patterns matched. Returns additional writes for the dispatcher to
+    /// apply (cascade-bounded). Errors and panics are caught at the
+    /// dispatcher boundary.
     fn handle(&self, ctx: SubCtx<'_>) -> Vec<Write>;
 }
 
@@ -251,10 +251,11 @@ mod tests {
     #[test]
     fn unique_subscription_returned_when_pattern_overlaps() {
         // A single subscription registered with two patterns that both
-        // match the same path. Documented behavior: registry returns the
-        // subscription once per matching pattern — dispatcher dedups by id
-        // if it cares (F3 does not, per spec). This test pins the
-        // current behavior so the next maintainer knows what to expect.
+        // match the same path. Registry behavior: returns the subscription
+        // once per matching pattern. The *dispatcher* then dedups by id
+        // (Arc::ptr_eq) so handlers fire exactly once per write — see
+        // `dispatching_store::tests::overlapping_patterns_invoke_handler_once`.
+        // This test pins the registry-level behavior; dedup is layered above.
         let mut reg = SubscriptionRegistry::new();
         let s = sub(
             "multi",

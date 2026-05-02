@@ -118,11 +118,23 @@ impl DispatchingStore {
             // `block_in_place` bridge in `BrokerSnapshotReader` requires
             // a multi-threaded runtime, which we only enter when we
             // actually have a sub to feed).
-            let matched = me
+            let mut matched = me
                 .subs
                 .read()
                 .expect("registry lock poisoned")
                 .matching(&path);
+            // Dedup-by-id (Arc::ptr_eq): a subscription whose `watches()`
+            // lists multiple patterns that overlap on this path is returned
+            // once per matching pattern by the registry. Authors think of
+            // `watches()` as a union; the handler should fire once per
+            // triggering write. Vec::dedup_by removes only consecutive
+            // duplicates, which is correct here because `matching` returns
+            // entries in registration order and a single subscription's
+            // patterns are inserted contiguously by `register`. If the
+            // registry's iteration order ever changes (e.g. interleaving
+            // patterns across subscriptions), this dedup needs to switch
+            // to a HashSet keyed by Arc pointer.
+            matched.dedup_by(|a, b| Arc::ptr_eq(a, b));
 
             if matched.is_empty() {
                 // Fast path: just apply the substrate write and return.
@@ -584,6 +596,47 @@ mod tests {
         let map = data.lock().unwrap();
         // B applied last, so it wins.
         assert_eq!(map.get("shared"), Some(&Value::String("B".to_string())));
+    }
+
+    #[tokio::test]
+    async fn overlapping_patterns_invoke_handler_once() {
+        // A subscription with two patterns that both match the same path.
+        // The handler should fire exactly once per write, not once per
+        // matching pattern. This dedup-by-id is the dispatcher's job
+        // (the registry still returns one entry per matching pattern;
+        // see `subscription::tests::unique_subscription_returned_when_pattern_overlaps`).
+        let fire_count = Arc::new(Mutex::new(0u32));
+        let fire2 = fire_count.clone();
+        let mut reg = SubscriptionRegistry::new();
+        reg.register(closure_sub(
+            "multi-pattern",
+            vec![
+                PathPattern::Prefix(oxpath!("p")),
+                PathPattern::PrefixSuffix {
+                    prefix: oxpath!("p"),
+                    suffix: oxpath!("suffix"),
+                },
+            ],
+            Box::new(move |_c, _w, _s| {
+                *fire2.lock().unwrap() += 1;
+                vec![]
+            }),
+        ));
+        let (disp, _data, _spawn) = build(reg, 64);
+
+        // Path matches BOTH patterns.
+        disp.write(
+            &oxpath!("p", "x", "suffix"),
+            Record::parsed(Value::Integer(1)),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            *fire_count.lock().unwrap(),
+            1,
+            "handler must fire once per write, not per matching pattern"
+        );
     }
 
     #[tokio::test]
