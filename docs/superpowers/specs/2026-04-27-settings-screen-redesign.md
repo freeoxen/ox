@@ -288,7 +288,7 @@ There is **no on-the-wire effect DSL.** No `PathTemplate`, no `PayloadSource`, n
 
 `CommandCtx`'s growth bound is the second category alone. New per-dispatch non-data inputs (a future "search query buffer," a "modifier register") may join. New ambient services do not — they're closed-over at registration. New data inputs do not — they go in the namespace.
 
-A command that "sets primary" reads `ui/settings/models/selected: ModelKey`, builds a `CompletionRole`, returns one write to `config/completions/primary`. Eight lines of Rust.
+A command that "sets primary" reads `ui/settings/models/selected: ModelKey`, builds a `CompletionRole`, returns one write to `config/gate/completions/primary`. Eight lines of Rust.
 
 The `j`/`k` keystroke is a `HighlightArea(Area::Accounts)` command whose `run` reads the current selection pointer and the live row count, computes the next index, returns one write. No broker round-trip; no path-template DSL.
 
@@ -370,7 +370,7 @@ pub struct CompletionRole {
 }
 ```
 
-Field name `model_id` matches `ModelKey.model_id` so a Models selection lifts directly into a primary tag. Stored at `config/completions/{role_name}`. Day-one role: `primary`.
+Field name `model_id` matches `ModelKey.model_id` so a Models selection lifts directly into a primary tag. Stored at `config/gate/completions/{role_name}`. Day-one role: `primary`.
 
 ### 5.4 Action statuses
 
@@ -422,7 +422,7 @@ pub enum BadgeSource {
     None,
     Static(String),
     SubtreeCount(Path),
-    PrimaryReference,    // resolves to "{account} / {model}" from config/completions/primary
+    PrimaryReference,    // resolves to "{account} / {model}" from config/gate/completions/primary
 }
 
 pub struct ValidationDiagnostics {
@@ -535,7 +535,7 @@ The legacy on-disk key files are read once at startup if `secret/keys/*` is empt
 
 | Path / type                                                 | Replacement                                                              |
 |-------------------------------------------------------------|-------------------------------------------------------------------------|
-| `gate/defaults/{account, model, max_tokens}`                | `config/completions/primary` (typed `CompletionRole`); `max_output_tokens` per-request from `ModelInfo` with kernel fallback |
+| `gate/defaults/{account, model, max_tokens}`                | `config/gate/completions/primary` (typed `CompletionRole`); `max_output_tokens` per-request from `ModelInfo` with kernel fallback |
 | `gate/providers/{name}/models`                              | `config/gate/accounts/{name}/models` (per-account)                      |
 | `SettingsFocus`, `SettingsState`, `WizardStep`              | Cursor + selection pointers + (wizard out of scope)                     |
 | `Defaults` arm in `GateStore`                               | Removed; kernel reads from new paths                                    |
@@ -636,14 +636,14 @@ Account names are immutable post-creation in v1; rename = delete + recreate.
 ### 6.6 Models — `settings/models`
 
 **View:** `View::List` of one row per `(account, model_id)`.
-**Reads:** all account catalogs, `config/completions/primary`, per-account `refresh_status`.
+**Reads:** all account catalogs, `config/gate/completions/primary`, per-account `refresh_status`.
 **Selection pointer:** `ui/settings/models/selected: Option<ModelKey>`.
 
 | Key       | Command id                    | Effect                                                                                           |
 |-----------|-------------------------------|--------------------------------------------------------------------------------------------------|
 | `j` / `k` | `highlight.models.next/prev`  | Pure: cycle through (account, model) pairs                                                       |
 | `Enter`   | `nav.descend.models`          | Write `ui/settings/cursor ← settings/models/_detail`                                              |
-| `P`       | `models.set_primary`          | Pure: read `selected: ModelKey` → write `config/completions/primary: CompletionRole`              |
+| `P`       | `models.set_primary`          | Pure: read `selected: ModelKey` → write `config/gate/completions/primary: CompletionRole`              |
 | `r`       | `account.refresh`             | Pure read of `selected.account` → write `Null` to `…/{account}/refresh_now`                      |
 | `Esc`     | `nav.ascend`                  | Write `ui/settings/cursor ← settings/index`                                                       |
 
@@ -830,7 +830,7 @@ Detailed plan: `docs/superpowers/plans/2026-04-27-settings-screen-redesign.md`.
 9. **Settings renderers** (Index, Accounts, AccountDetail, Models, ModelDetail) — return `View`.
 10. **Day-one commands and bindings** — Rust `impl Command` blocks; `BindingEntry` constants.
 11. **Day-one subscriptions** — test, refresh, delete, create, save in `ox-gate`. Transport relocates from `ox-cli` to `ox-gate`.
-12. **Kernel resolution path.** Update `read_model_config` to use `config/completions/primary` + per-account catalog.
+12. **Kernel resolution path.** Update `read_model_config` to use `config/gate/completions/primary` + per-account catalog.
 13. **Wire dispatch and remove the bypass.** Settings flows through the regular binding mechanism.
 14. **Index entries population at startup.**
 15. **End-to-end integration tests.**
@@ -839,7 +839,7 @@ Detailed plan: `docs/superpowers/plans/2026-04-27-settings-screen-redesign.md`.
 ## 11. Out of scope
 
 - **First-run wizard.** First-run lands the user on `settings/accounts/_new` over an empty list; the regular pages do the job. No separate wizard module in v1.
-- **Per-thread completion overrides.** Forward-compatible: the kernel reads `config/completions/primary` through the thread's `Cascade<thread_overlay, base>` mount.
+- **Per-thread completion overrides.** Forward-compatible: the kernel reads `config/gate/completions/primary` through the thread's `Cascade<thread_overlay, base>` mount.
 - **User-customizable bindings.** `BindingEntry` is data-shaped; v1 registers built-ins from Rust constants. A future feature reads/writes the same records to namespace paths.
 - **User-customizable commands.** Requires a v2 expression DSL above `Command`. Separate design.
 - **Widget-level Rio (View as namespace records).** `View` is in-memory only in v1; a future evolution serializes View to namespace paths and ships a generic interpreter. The View enum's shape is forward-compatible.
