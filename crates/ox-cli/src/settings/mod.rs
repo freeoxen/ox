@@ -15,6 +15,7 @@
 
 pub(crate) mod binding_registry;
 pub(crate) mod bindings;
+pub(crate) mod bootstrap;
 pub(crate) mod command_registry;
 pub(crate) mod commands;
 pub(crate) mod dispatch;

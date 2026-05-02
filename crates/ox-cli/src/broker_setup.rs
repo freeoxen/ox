@@ -110,6 +110,16 @@ pub async fn setup(
         servers.push(broker.mount(path!("secret"), secrets).await);
     }
 
+    // Mount an in-memory store at `settings/` for the index entries
+    // (and any future settings-namespace metadata). The renderer's
+    // snapshot fetch walks `settings/index/entries`; bootstrap writes
+    // the day-one entries here at startup. No persistence — entries
+    // are repopulated each launch.
+    {
+        let settings_store = ox_store_util::local_config::LocalConfig::new();
+        servers.push(broker.mount(path!("settings"), settings_store).await);
+    }
+
     // Mount ThreadRegistry at threads/ — lazy-mounts per-thread stores from disk
     let mut registry = crate::thread_registry::ThreadRegistry::new(inbox_root);
     registry.set_broker_client(broker.client());

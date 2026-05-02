@@ -223,6 +223,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::warn!(error = %e, "legacy key migration encountered an error");
     }
 
+    // Bootstrap the settings index entries and (when this is a fresh
+    // install) seed the cursor at the new-account overlay. Both are
+    // idempotent: re-running them on each launch is fine and keeps the
+    // index in sync with day-one entries.
+    if let Err(e) = settings::bootstrap::populate_index_entries(&client).await {
+        tracing::warn!(error = %e, "failed to populate settings index entries");
+    }
+    match settings::bootstrap::maybe_first_run_cursor(&client).await {
+        Ok(true) => tracing::info!("first-run: settings cursor seeded at _new overlay"),
+        Ok(false) => {}
+        Err(e) => tracing::warn!(error = %e, "first-run cursor seeding failed"),
+    }
+
+    // One-line log if the user's on-disk config still carries legacy
+    // schema sections the new code no longer reads. Prevents support
+    // questions of the form "where did my config go?".
+    settings::bootstrap::log_legacy_settings_if_present(&inbox_root);
+
     let result = event_loop::run_async(&mut app, &client, &theme, &mut terminal, needs_setup).await;
 
     crossterm::execute!(
