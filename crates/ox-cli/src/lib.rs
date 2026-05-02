@@ -37,6 +37,8 @@ pub(crate) mod history_view;
 pub(crate) mod inbox_shell;
 pub(crate) mod inbox_view;
 pub(crate) mod json_backing;
+#[cfg(test)]
+pub(crate) mod key_chord_canonical;
 pub(crate) mod key_encode;
 pub(crate) mod key_handlers;
 pub(crate) mod key_migration;

@@ -18,6 +18,8 @@ mod history_view;
 mod inbox_shell;
 mod inbox_view;
 mod json_backing;
+#[cfg(test)]
+mod key_chord_canonical;
 mod key_encode;
 mod key_handlers;
 mod key_migration;
