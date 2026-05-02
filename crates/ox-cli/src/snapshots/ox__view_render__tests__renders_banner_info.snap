@@ -1,0 +1,8 @@
+---
+source: crates/ox-cli/src/view_render.rs
+assertion_line: 580
+expression: out
+---
+┌────────────────────────────┐
+│saved                       │
+└────────────────────────────┘

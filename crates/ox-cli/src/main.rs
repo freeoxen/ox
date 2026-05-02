@@ -45,6 +45,7 @@ mod thread_view;
 mod toml_backing;
 mod tui;
 mod types;
+pub(crate) mod view_render;
 pub(crate) mod view_state;
 
 use clap::{Parser, Subcommand};

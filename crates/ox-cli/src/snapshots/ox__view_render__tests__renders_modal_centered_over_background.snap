@@ -1,0 +1,17 @@
+---
+source: crates/ox-cli/src/view_render.rs
+assertion_line: 558
+expression: out
+---
+status
+┌items─────────────────────────────────┐
+│alpha                                 │
+│       ┌edit──────────────────┐       │
+│       │name: personal        │       │
+│       │                      │       │
+│       │                      │       │
+│       │                      │       │
+│       └──────────────────────┘       │
+│                                      │
+│                                      │
+└──────────────────────────────────────┘

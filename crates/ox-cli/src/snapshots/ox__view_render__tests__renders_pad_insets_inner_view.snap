@@ -1,0 +1,7 @@
+---
+source: crates/ox-cli/src/view_render.rs
+assertion_line: 616
+expression: out
+---
+
+  inside

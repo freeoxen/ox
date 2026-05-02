@@ -1,8 +1,11 @@
 use crate::app::App;
 use crate::editor::flush_pending_edits;
-use crate::settings_shell::SettingsShell;
-use crate::settings_state::SettingsFocus;
-use crate::shell::Outcome;
+use crate::settings::binding_registry::BindingRegistry;
+use crate::settings::command_registry::CommandRegistry;
+use crate::settings::commands::navigation::path_from_value;
+use crate::settings::registry::{RenderCtx, RendererRegistry};
+use crate::settings::snapshot::{SettingsSnapshot, fetch_settings_view_state};
+use crate::settings_state::SettingsState;
 use crate::theme::Theme;
 use crate::thread_shell::{ThreadShell, dispatch_global_mouse};
 use crate::types::CustomizeState;
@@ -15,7 +18,9 @@ use ox_types::{
     ThreadCommand, UiCommand, UiSnapshot,
 };
 use ox_ui::text_input_store::EditSource;
+use ox_view::View;
 use std::time::Duration;
+use structfs_core_store::{Path, Reader};
 
 // ---------------------------------------------------------------------------
 // Scroll momentum — exponential boost for fast scrolling, decay for slow
@@ -128,8 +133,13 @@ pub async fn run_async(
     let mut thread = ThreadShell::new();
     let mut history_explorer = crate::history_state::HistoryExplorer::new();
     let mut scroll_momentum = ScrollMomentum::new();
-    let mut settings_shell = if needs_setup {
-        // Navigate to settings screen via broker
+
+    // First-run still routes to the settings screen; the new pipeline
+    // takes over from there. The wizard's first-run cursor placement
+    // (land on `_new` overlay) is Phase Q2's responsibility — for P2 we
+    // just navigate to the settings screen and let the cursor default
+    // (set just below) place us on `settings/index`.
+    if needs_setup {
         client
             .write_typed(
                 &oxpath!("ui"),
@@ -137,14 +147,29 @@ pub async fn run_async(
             )
             .await
             .ok();
-        SettingsShell::new_wizard()
-    } else {
-        SettingsShell::new()
-    };
+    }
+
+    // Settings registries: built once at startup, reused every frame.
+    // The renderer registry indexes pure `&mut dyn Reader -> View` impls
+    // by cursor `Path`; the command registry indexes `Command` impls by
+    // `CommandId`; the binding registry maps `(screen, cursor, mode, key)`
+    // tuples to `CommandId`. Together with `dispatch::send_key`, these
+    // three replace the bespoke `settings_shell::handle_key` bypass.
+    let mut settings_renderers = RendererRegistry::new();
+    let mut settings_commands = CommandRegistry::new();
+    let mut settings_bindings = BindingRegistry::new();
+    crate::settings::renderers::register_all(&mut settings_renderers);
+    crate::settings::commands::register_all(&mut settings_commands);
+    crate::settings::bindings::register(&mut settings_bindings);
+
+    // The legacy `SettingsState` is no longer driven by P2 — the bespoke
+    // shell is dead. We keep an empty default value here purely so the
+    // status-bar hint helper in `tui::draw` (which still consumes a
+    // `&SettingsState`) compiles. Phase P3 deletes the legacy modules
+    // and threads the hints out of the new pipeline.
+    let legacy_settings_state = SettingsState::new();
 
     loop {
-        // Poll pending async test connection
-        settings_shell.poll();
 
         // -----------------------------------------------------------------
         // 1. Fetch, draw, extract what we need — scope ViewState tightly
@@ -227,11 +252,25 @@ pub async fn run_async(
             // Prepare TextInputView from InputSession
             thread.prepare_view();
 
-            // Populate settings accounts when on settings screen
+            // Settings: pre-build the View from a fresh snapshot. The
+            // snapshot is consumed once for rendering here. The dispatch
+            // path below builds its own snapshot per keypress so reads
+            // there see writes that landed since the frame began. This
+            // is the heart of the registry pipeline (snapshot fetch →
+            // cursor read → renderer render → translator draw).
+            let mut settings_view: Option<View> = None;
             if matches!(&vs.ui.screen, ScreenSnapshot::Settings(_)) {
-                settings_shell
-                    .ensure_accounts(app.pool.inbox_root(), client)
-                    .await;
+                let mut snap = fetch_settings_view_state(client).await;
+                let cursor = read_settings_cursor(&mut snap)
+                    .unwrap_or_else(|| oxpath!("settings", "index"));
+                let area = terminal.get_frame().area();
+                let mut ctx = RenderCtx {
+                    area,
+                    data: &mut snap,
+                    registry: &settings_renderers,
+                    theme,
+                };
+                settings_view = Some(settings_renderers.render(&cursor, &mut ctx));
             }
 
             // Draw
@@ -240,7 +279,8 @@ pub async fn run_async(
                 let (ch, vh, hm, hl) = crate::tui::draw(
                     frame,
                     &vs,
-                    &settings_shell.state,
+                    &legacy_settings_state,
+                    settings_view.as_ref(),
                     theme,
                     &mut thread.text_input_view,
                     &mut history_explorer,
@@ -440,7 +480,9 @@ pub async fn run_async(
                             has_approval_pending,
                             &mut dialog,
                             &mut thread,
-                            &mut settings_shell,
+                            &settings_renderers,
+                            &settings_commands,
+                            &settings_bindings,
                             app,
                             client,
                             terminal,
@@ -461,13 +503,11 @@ pub async fn run_async(
                                 )
                                 .await;
                         }
-                        // Settings: edit dialog click-to-focus
-                        ScreenSnapshot::Settings(_)
-                            if matches!(mouse.kind, MouseEventKind::Down(_))
-                                && settings_shell.state.editing.is_some() =>
-                        {
-                            settings_shell.handle_mouse(mouse);
-                        }
+                        // Settings: mouse handling is not yet wired into the
+                        // new pipeline. The bespoke click-to-focus path
+                        // operated on the legacy `SettingsState` which P2
+                        // retired. Future phases reintroduce focus-driven
+                        // mouse handling against the snapshot/registry.
                         // History screen: click-to-expand + content scroll
                         ScreenSnapshot::History(_) => match mouse.kind {
                             MouseEventKind::Down(_) => {
@@ -536,30 +576,13 @@ pub async fn run_async(
                     // Normalize line endings: \r\n → \n, bare \r → \n.
                     // Some clipboard sources (macOS) may use \r or \r\n.
                     let text = text.replace("\r\n", "\n").replace('\r', "\n");
-                    if matches!(&ui.screen, ScreenSnapshot::Settings(_)) {
-                        // Paste into the focused settings field
-                        if let Some(ref mut editing) = settings_shell.state.editing {
-                            if let Some(input) = editing.focused_input() {
-                                input.insert_str(&text);
-                            }
-                        } else if settings_shell.state.focus == SettingsFocus::Defaults {
-                            match settings_shell.state.defaults_focus {
-                                1 => {
-                                    settings_shell.state.default_model.insert_str(&text);
-                                    settings_shell.state.model_picker_idx = None;
-                                }
-                                2 => {
-                                    // Only paste digits for max_tokens
-                                    let digits: String =
-                                        text.chars().filter(|c| c.is_ascii_digit()).collect();
-                                    if !digits.is_empty() {
-                                        settings_shell.state.default_max_tokens.insert_str(&digits);
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                    } else if ui.editor().is_some() {
+                    // Settings paste is not yet wired into the new
+                    // registry pipeline (would need a per-cursor
+                    // text-paste command). The bespoke path that lived
+                    // here is gone with the rest of the legacy shell.
+                    if !matches!(&ui.screen, ScreenSnapshot::Settings(_))
+                        && ui.editor().is_some()
+                    {
                         thread.input_session.insert(&text, EditSource::Paste);
                     }
                 }
@@ -573,6 +596,23 @@ pub async fn run_async(
             flush_pending_edits(&mut thread.input_session, client).await;
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Settings cursor helper
+// ---------------------------------------------------------------------------
+
+/// Read `ui/settings/cursor` from a settings snapshot. The cursor is
+/// stored as a `Value::Array` of `Value::String` segments by
+/// `path_to_value` in the navigation commands; we hand-decode the same
+/// shape because `Path` does not implement `Deserialize`.
+fn read_settings_cursor(snap: &mut SettingsSnapshot) -> Option<Path> {
+    let record = snap
+        .read(&oxpath!("ui", "settings", "cursor"))
+        .ok()
+        .flatten()?;
+    let value = record.as_value()?;
+    path_from_value(value)
 }
 
 // ---------------------------------------------------------------------------
@@ -758,6 +798,14 @@ pub(crate) async fn refresh_thread_info_cache(
 ///
 /// Called for all key events that aren't consumed by modal overlays (shortcuts,
 /// customize dialog, approval dialog).
+///
+/// On the settings screen, `dispatch_key` builds a fresh per-keystroke
+/// snapshot, reads the cursor from it, and threads
+/// `(cursor, snapshot, bindings, commands, renderers)` through to
+/// `dispatch::send_key`. The bespoke `settings_shell::handle_key` bypass
+/// has been retired (Phase P2). After dispatch, an `_request_exit` flag
+/// at `ui/settings/_request_exit` signals "leave the settings screen";
+/// we consume it here and route to the inbox.
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_key(
     ui: &UiSnapshot,
@@ -767,29 +815,13 @@ async fn dispatch_key(
     has_approval_pending: bool,
     dialog: &mut DialogState,
     thread: &mut ThreadShell,
-    settings_shell: &mut SettingsShell,
+    settings_renderers: &RendererRegistry,
+    settings_commands: &CommandRegistry,
+    settings_bindings: &BindingRegistry,
     app: &mut App,
     client: &ox_broker::ClientHandle,
     terminal: &mut ratatui::DefaultTerminal,
 ) {
-    // Settings screen still has its own key handler (complex widget state).
-    // All other screen-specific handling is now in bindings.
-    if let ScreenSnapshot::Settings(_) = &ui.screen {
-        let inbox_root = app.pool.inbox_root().to_path_buf();
-        if let Outcome::Handled = crate::settings_shell::handle_key(
-            &mut settings_shell.state,
-            key_str,
-            modifiers,
-            code,
-            client,
-            &inbox_root,
-        )
-        .await
-        {
-            return;
-        }
-    }
-
     // The binding-lookup path is delegated to `crate::dispatch::send_key`,
     // a function whose signature deliberately excludes `&UiSnapshot`
     // and `&ViewState`. This is the structural enforcement of the
@@ -799,9 +831,8 @@ async fn dispatch_key(
     //
     // `has_approval_pending` and `ui` are still inspected *here* for
     // legitimate non-binding reasons: the screen tag (informational,
-    // not a focus decision), the settings-key bypass, and the
-    // Insert-fallback's editor-context lookup (text routing, not
-    // binding lookup).
+    // not a focus decision) and the Insert-fallback's editor-context
+    // lookup (text routing, not binding lookup).
     let _ = has_approval_pending;
 
     let input_screen = match &ui.screen {
@@ -810,28 +841,86 @@ async fn dispatch_key(
         ScreenSnapshot::Settings(_) => Screen::Settings,
         ScreenSnapshot::History(_) => Screen::History,
     };
-    let outcome = crate::dispatch::send_key(
-        client,
-        key_str,
-        input_screen,
-        ox_types::ClientModalFlags {
-            history_search_active: dialog.history_search.is_some(),
-            show_shortcuts: dialog.show_shortcuts,
-            show_usage: dialog.show_usage,
-            show_thread_info: dialog.show_thread_info,
-        },
-        // Settings cursor scoping (Phase P1). The legacy event-loop
-        // call site does not yet thread the settings registries +
-        // snapshot through; that wiring is part of Phase P2. Until
-        // then, pass `None` for each — `send_key` falls through to the
-        // input-store path unchanged.
-        None,
-        None,
-        None,
-        None,
-        None,
-    )
-    .await;
+
+    // Settings: build a per-keystroke snapshot + read the cursor so
+    // `send_key` can look up bindings under `(screen, cursor, mode, key)`
+    // and run the matched command against a fresh Reader. The snapshot
+    // built for rendering above is one frame stale by the time keys
+    // arrive — re-fetching here keeps reads consistent with writes that
+    // landed during the same iteration.
+    let mut settings_snap_holder: Option<SettingsSnapshot> = None;
+    let mut settings_cursor_holder: Option<Path> = None;
+    if input_screen == Screen::Settings {
+        let mut snap = fetch_settings_view_state(client).await;
+        let cursor =
+            read_settings_cursor(&mut snap).unwrap_or_else(|| oxpath!("settings", "index"));
+        settings_snap_holder = Some(snap);
+        settings_cursor_holder = Some(cursor);
+    }
+
+    let outcome = {
+        // The borrow of `settings_snap_holder` lives only for this call.
+        let cursor_ref = settings_cursor_holder.as_ref();
+        let snap_ref: Option<&mut dyn Reader> =
+            settings_snap_holder.as_mut().map(|s| s as &mut dyn Reader);
+        let bindings_ref = if input_screen == Screen::Settings {
+            Some(settings_bindings)
+        } else {
+            None
+        };
+        let commands_ref = if input_screen == Screen::Settings {
+            Some(settings_commands)
+        } else {
+            None
+        };
+        let renderers_ref = if input_screen == Screen::Settings {
+            Some(settings_renderers)
+        } else {
+            None
+        };
+        crate::dispatch::send_key(
+            client,
+            key_str,
+            input_screen,
+            ox_types::ClientModalFlags {
+                history_search_active: dialog.history_search.is_some(),
+                show_shortcuts: dialog.show_shortcuts,
+                show_usage: dialog.show_usage,
+                show_thread_info: dialog.show_thread_info,
+            },
+            cursor_ref,
+            snap_ref,
+            bindings_ref,
+            commands_ref,
+            renderers_ref,
+        )
+        .await
+    };
+
+    // After settings dispatch, react to a `_request_exit` write from
+    // `nav.ascend` at the top-level cursor: clear the flag and route to
+    // the inbox via `GoToInbox`. Settings keeps its own `ui/settings/*`
+    // sub-state (cursor, etc.) so reopening the screen returns to where
+    // the user left off.
+    if input_screen == Screen::Settings {
+        let exit_path = oxpath!("ui", "settings", "_request_exit");
+        let want_exit = client
+            .read_typed::<bool>(&exit_path)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(false);
+        if want_exit {
+            // Clear the flag first so we don't loop on the next frame.
+            let _ = client.write_typed(&exit_path, &false).await;
+            let _ = client
+                .write_typed(
+                    &oxpath!("ui"),
+                    &UiCommand::Global(GlobalCommand::GoToInbox),
+                )
+                .await;
+        }
+    }
 
     if let crate::dispatch::KeyDispatchOutcome::Unbound { mode } = outcome {
         match mode {

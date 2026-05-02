@@ -1,0 +1,10 @@
+---
+source: crates/ox-cli/src/view_render.rs
+assertion_line: 599
+expression: out
+---
+┌log───────────────┐
+│line 3            │
+│line 4            │
+│line 5            │
+└──────────────────┘

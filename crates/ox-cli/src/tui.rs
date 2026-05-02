@@ -2,6 +2,7 @@ use crate::text_input_view::desired_input_height;
 use crate::theme::Theme;
 use crate::view_state::ViewState;
 use ox_types::{InsertContext, ScreenSnapshot};
+use ox_view::View;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span};
@@ -26,6 +27,7 @@ pub(crate) fn draw(
     frame: &mut Frame,
     vs: &ViewState,
     settings: &crate::settings_state::SettingsState,
+    settings_view: Option<&View>,
     theme: &Theme,
     text_input_view: &mut crate::text_input_view::TextInputView,
     history_explorer: &mut crate::history_state::HistoryExplorer,
@@ -90,7 +92,18 @@ pub(crate) fn draw(
 
     match &vs.ui.screen {
         ScreenSnapshot::Settings(_) => {
-            crate::settings_view::draw_settings(frame, settings, theme, content_area);
+            // P2: settings is rendered through the new pipeline. The
+            // event loop pre-builds a `View` from the snapshot + renderer
+            // registry and hands it in via `settings_view`. Falling back
+            // to the legacy bespoke renderer here would only happen if
+            // the caller forgot to pass the View, which we treat as an
+            // empty draw.
+            if let Some(view) = settings_view {
+                crate::view_render::render_to_frame(view, frame, content_area, theme);
+            }
+            // `settings` is still consumed by the status-bar hints below;
+            // suppress the unused warning when the new path runs.
+            let _ = settings;
         }
         ScreenSnapshot::Thread(snap) => {
             // Build a ThreadView from broker-sourced data
