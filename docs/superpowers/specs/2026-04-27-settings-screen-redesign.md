@@ -335,7 +335,7 @@ The `*_now` / `*_status` convention is implemented as subscriptions:
 
 All cross-boundary records are `serde`-derived. No `#[serde(default)]` for backward compatibility — we don't carry compat.
 
-### 5.1 `ModelInfo` (extended; moves to `ox-gate`)
+### 5.1 `ModelInfo` (extended; lives in `ox-types`)
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -360,7 +360,7 @@ Resolution order at request time: codec-fetch → known-family table → user-ov
 
 `config/gate/accounts/{name}/models` holds a single `Vec<ModelInfo>` record per account. Independent per account because (endpoint, auth-key, dialect) varies.
 
-### 5.3 `CompletionRole` (in `ox-gate`)
+### 5.3 `CompletionRole` (in `ox-types`)
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -549,13 +549,15 @@ We don't carry backward compatibility. Old paths sit orphaned in users' configs;
 | Crate         | Types                                                                                                        |
 |---------------|-------------------------------------------------------------------------------------------------------------|
 | `ox-kernel`   | (no settings-redesign types; reads `(account, model_id, max_output_tokens)` as primitives via paths)         |
-| `ox-gate`     | `ModelInfo`, `ModelInfoSource`, `ApiKey`, `AccountTestStatus`, `CatalogRefreshStatus`, `CompletionRole`, `KnownFamilyEntry`, `known_family_metadata()`, settings subscription impls, transport (relocated from `ox-cli`) |
-| `ox-types`    | `SettingsIndexEntry`, `BadgeSource`, `AccountField`, `ModelField`, `ModelKey`, `BindingEntry`, `KeyChord`/`KeyModifierSet`/`KeyCodeRepr`, `CommandId`, `CommandDisplay`, `CommandScope`, `SubscriptionId`, `PathPattern`, `PathChange`, `Write`, `ValidationDiagnostics`, `GlobalBanner` |
+| `ox-gate`     | `ApiKey`, `AccountTestStatus`, `CatalogRefreshStatus`, `KnownFamilyEntry`, `known_family_metadata()`, settings subscription impls, transport (relocated from `ox-cli`) |
+| `ox-types`    | `AccountField`, `BadgeSource`, `BindingEntry`, `CommandDisplay`, `CommandId`, `CommandScope`, `CompletionRole`, `GlobalBanner`, `KeyChord`/`KeyModifierSet`/`KeyCodeRepr`, `ModelField`, `ModelInfo`, `ModelInfoSource`, `ModelKey`, `PathChange`, `PathPattern`, `SettingsIndexEntry`, `SubscriptionId`, `ValidationDiagnostics`, `Write` |
 | `ox-view`     | `View`, `ListItem`, `FormRow`, `FormValue`, `Style`, `Span`, `Direction`, `Sizing`, `Padding`, `Align`, `BannerKind`, `Color`, `ModifierSet` |
 | `ox-broker`   | `Subscription` trait, `SubscriptionRegistry`, `DispatchingStore`, `SpawnHandle`, `AsyncWriter` impls         |
 | `ox-cli`      | `Renderer` trait, `RendererRegistry`, `RenderCtx`, `AscendRule`, settings renderers, `Command` trait + `CommandCtx` + impls, `CommandRegistry`, `BindingRegistry`, View→ratatui translator, snapshot builder |
 
-Moving `ModelInfo` from `ox-kernel` to `ox-gate` is a one-time refactor at the start of implementation.
+_`ModelInfo` and `CompletionRole` live in `ox-types` (not `ox-gate`) so the kernel can read them without introducing a `kernel → gate` dependency cycle._
+
+Moving `ModelInfo` out of `ox-kernel` and into `ox-types` is a one-time refactor at the start of implementation.
 
 ## 6. The settings namespace (concrete pages)
 
@@ -819,7 +821,7 @@ Subscribers can't carry an `&dyn Store` across an async boundary easily; `Arc<dy
 
 Detailed plan: `docs/superpowers/plans/2026-04-27-settings-screen-redesign.md`.
 
-1. **Type relocation.** Move `ModelInfo` from `ox-kernel` to `ox-gate`.
+1. **Type relocation.** Move `ModelInfo` from `ox-kernel` to `ox-types` (kernel needs to read it without depending on `ox-gate`).
 2. **Add new typed records** in `ox-gate` and `ox-types`.
 3. **Add `ox-view` crate** with the `View` enum and supporting types.
 4. **Add View → ratatui translator** in `ox-cli`.
