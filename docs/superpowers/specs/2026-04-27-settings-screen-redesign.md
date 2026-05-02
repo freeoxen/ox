@@ -94,14 +94,18 @@ pub trait Subscription: Send + Sync {
     fn watches(&self) -> &[PathPattern];
 
     /// Called synchronously after the watched write commits. Returns
-    /// additional writes to be applied (cascade-bound). May also spawn
-    /// long-running work via ctx.spawn; spawned tasks write back through
-    /// ctx.writer. Errors and panics are caught at the dispatcher boundary.
+    /// additional writes to be applied (cascade-bound). The reader handed to
+    /// the handler is *live* (not pinned to the post-write state) — successive
+    /// reads inside one handler may observe concurrent writes; handlers that
+    /// reason about cross-path consistency must coordinate themselves.
+    /// May also spawn long-running work via ctx.spawn; spawned tasks write
+    /// back through ctx.writer. Errors and panics are caught at the
+    /// dispatcher boundary.
     fn handle(&self, ctx: SubCtx<'_>) -> Vec<Write>;
 }
 
 pub struct SubCtx<'a> {
-    pub snapshot: &'a dyn Reader,        // pinned at post-write state
+    pub snapshot: &'a mut dyn Reader,    // live broker reader (NOT pinned)
     pub change:   &'a PathChange,
     pub spawn:    &'a dyn SpawnHandle,   // for long-running tasks
     pub writer:   Arc<dyn AsyncWriter>,  // back-channel for spawned tasks
@@ -142,7 +146,7 @@ pub trait AsyncWriter: Send + Sync {
 Runtime contract (broker-side):
 
 1. At startup, every Subscription is registered against the broker (`Broker::register_subscription`). The runtime indexes them by `PathPattern`.
-2. On every successful write, the runtime computes the `PathChange`, looks up matching subscriptions, and calls each one's `handle` with a snapshot pinned at the post-write state. Writes returned from `handle` are queued and applied through the same dispatcher (re-triggering subscriptions, fixpoint, with a cascade depth bound — default 64).
+2. On every successful write, the runtime computes the `PathChange`, looks up matching subscriptions, and calls each one's `handle` with a *live* broker reader (not a pinned snapshot — the broker has no global version to pin against). Successive reads inside a handler may observe writes that landed after the trigger; handlers reading multiple paths and reasoning about cross-path consistency must coordinate themselves (e.g. read everything they need into local variables before any await). Writes returned from `handle` are queued and applied through the same dispatcher (re-triggering subscriptions, fixpoint, with a cascade depth bound — default 64).
 3. Subscriptions whose `handle` spawns long-running async tasks return immediately after spawning. Spawned tasks write back through `Arc<dyn AsyncWriter>`. Subsequent writes to the same trigger path can abort prior tasks via an `AbortHandle` the subscription holds.
 4. A subscription handler that panics or returns an error is contained: log via `tracing::error!` with the subscription id; siblings still run; original `write()` returns Ok.
 5. **Ordering across multiple subscriptions on a single write.** When multiple subscriptions match the same write, they fire in registration order; their returned writes are queued FIFO and applied in that order. Authors who care about ordering control it through registration sequence at startup.
@@ -799,7 +803,7 @@ Renderers as `&Reader -> View` enforce purity, get free testability (struct equa
 
 ### 9.7 Why subscriptions as a protocol, not a StructFS primitive?
 
-StructFS is the storage. Subscriptions are an interpretation — "when the value here changes, do that." Pushing them into StructFS would mix storage with reactivity. Keeping them separate means a non-broker Reader (e.g. a `LocalConfig` snapshot in a unit test) doesn't need a subscription runtime to function; the protocol activates only inside the broker process. It also means subscription policy (cascade bounds, supersession, ordering) is centralized in one place rather than scattered through the storage layer.
+StructFS is the storage. Subscriptions are an interpretation — "when the value here changes, do that." Pushing them into StructFS would mix storage with reactivity. Keeping them separate means a non-broker Reader (e.g. a `LocalConfig` snapshot in a unit test) doesn't need a subscription runtime to function; the protocol activates only inside the broker process. It also means subscription policy (cascade bounds, supersession, ordering) is centralized in one place rather than scattered through the storage layer. v1 also doesn't model snapshot pinning: handlers see a live reader. Strict pinning would require either MVCC in the substrate or a per-handler clone; both are v2 design questions.
 
 ### 9.8 Why are renderers re-run every frame instead of incrementally?
 
