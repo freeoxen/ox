@@ -5,7 +5,6 @@ use crate::settings::command_registry::CommandRegistry;
 use crate::settings::commands::navigation::path_from_value;
 use crate::settings::registry::{RenderCtx, RendererRegistry};
 use crate::settings::snapshot::{SettingsSnapshot, fetch_settings_view_state};
-use crate::settings_state::SettingsState;
 use crate::theme::Theme;
 use crate::thread_shell::{ThreadShell, dispatch_global_mouse};
 use crate::types::CustomizeState;
@@ -162,13 +161,6 @@ pub async fn run_async(
     crate::settings::commands::register_all(&mut settings_commands);
     crate::settings::bindings::register(&mut settings_bindings);
 
-    // The legacy `SettingsState` is no longer driven by P2 — the bespoke
-    // shell is dead. We keep an empty default value here purely so the
-    // status-bar hint helper in `tui::draw` (which still consumes a
-    // `&SettingsState`) compiles. Phase P3 deletes the legacy modules
-    // and threads the hints out of the new pipeline.
-    let legacy_settings_state = SettingsState::new();
-
     loop {
 
         // -----------------------------------------------------------------
@@ -279,7 +271,6 @@ pub async fn run_async(
                 let (ch, vh, hm, hl) = crate::tui::draw(
                     frame,
                     &vs,
-                    &legacy_settings_state,
                     settings_view.as_ref(),
                     theme,
                     &mut thread.text_input_view,

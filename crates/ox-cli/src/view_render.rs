@@ -377,9 +377,7 @@ fn map_sizing(s: &Sizing) -> Constraint {
 
 /// Compute a centered sub-rect occupying `percent_x` / `percent_y` of `r`.
 ///
-/// A local helper rather than a reuse of `settings_view::centered_rect`
-/// because that one takes an *absolute* height (rows) rather than a
-/// percentage; the translator wants percentage-based centering for `Modal`.
+/// The translator wants percentage-based centering for `Modal` overlays.
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
     let popup_w = r.width.saturating_mul(percent_x) / 100;
     let popup_h = r.height.saturating_mul(percent_y) / 100;

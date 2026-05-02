@@ -28,9 +28,6 @@ mod policy_check;
 mod session;
 #[allow(dead_code)]
 mod settings;
-mod settings_shell;
-mod settings_state;
-mod settings_view;
 mod shell;
 mod simple_input;
 mod tab_bar;

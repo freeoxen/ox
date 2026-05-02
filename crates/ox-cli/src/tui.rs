@@ -26,7 +26,6 @@ pub(crate) struct PendingHyperlink {
 pub(crate) fn draw(
     frame: &mut Frame,
     vs: &ViewState,
-    settings: &crate::settings_state::SettingsState,
     settings_view: Option<&View>,
     theme: &Theme,
     text_input_view: &mut crate::text_input_view::TextInputView,
@@ -101,9 +100,6 @@ pub(crate) fn draw(
             if let Some(view) = settings_view {
                 crate::view_render::render_to_frame(view, frame, content_area, theme);
             }
-            // `settings` is still consumed by the status-bar hints below;
-            // suppress the unused warning when the new path runs.
-            let _ = settings;
         }
         ScreenSnapshot::Thread(snap) => {
             // Build a ThreadView from broker-sourced data
@@ -192,7 +188,7 @@ pub(crate) fn draw(
         }
         Mode::Command => draw_command_line(frame, vs, theme, status_area),
         Mode::Search => crate::inbox_view::draw_search_prompt(frame, vs, theme, status_area),
-        _ => draw_status_bar(frame, vs, settings, theme, status_area),
+        _ => draw_status_bar(frame, vs, theme, status_area),
     }
 
     // Modal overlays
@@ -295,13 +291,7 @@ fn draw_command_line(frame: &mut Frame, vs: &ViewState, _theme: &Theme, area: Re
 // Status bar
 // ---------------------------------------------------------------------------
 
-fn draw_status_bar(
-    frame: &mut Frame,
-    vs: &ViewState,
-    settings: &crate::settings_state::SettingsState,
-    theme: &Theme,
-    area: Rect,
-) {
+fn draw_status_bar(frame: &mut Frame, vs: &ViewState, theme: &Theme, area: Rect) {
     let editor = vs.ui.editor();
     let has_editor = editor.is_some();
     let mode_badge = if has_editor {
@@ -398,7 +388,20 @@ fn draw_status_bar(
     };
 
     let hints: String = if matches!(&vs.ui.screen, ScreenSnapshot::Settings(_)) {
-        settings_hints(settings)
+        // P3: hints derive from the new pipeline's key_hints stream like
+        // every other screen. Until the settings pipeline emits hints
+        // explicitly, fall through to the generic `key_hints` rendering.
+        let mut s = String::new();
+        for h in &vs.key_hints {
+            if h.status_hint {
+                s.push_str(" | ");
+                s.push_str(&h.key);
+                s.push(' ');
+                s.push_str(&h.description);
+            }
+        }
+        s.push_str(" | Esc back");
+        s
     } else {
         let mut s = String::new();
         for h in &vs.key_hints {
@@ -436,25 +439,3 @@ fn format_tokens(n: u32) -> String {
     }
 }
 
-fn settings_hints(settings: &crate::settings_state::SettingsState) -> String {
-    use crate::settings_state::SettingsFocus;
-    if settings.delete_confirming {
-        let name = settings
-            .accounts
-            .get(settings.selected_account)
-            .map(|a| a.name.as_str())
-            .unwrap_or("?");
-        format!(" Delete \"{name}\"? y to confirm \u{00b7} any key to cancel")
-    } else if settings.editing.is_some() {
-        String::new()
-    } else {
-        match settings.focus {
-            SettingsFocus::Accounts => {
-                " | a add | e edit | d del | t test | * default | Tab \u{2193} | Esc back".into()
-            }
-            SettingsFocus::Defaults => {
-                " | \u{2191}/\u{2193} field | \u{2190}/\u{2192} value | Enter save | Tab \u{2191} | Esc back".into()
-            }
-        }
-    }
-}

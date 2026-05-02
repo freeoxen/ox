@@ -46,9 +46,6 @@ pub(crate) mod policy_check;
 #[allow(dead_code)]
 pub(crate) mod session;
 pub(crate) mod settings;
-pub(crate) mod settings_shell;
-pub(crate) mod settings_state;
-pub(crate) mod settings_view;
 pub(crate) mod shell;
 pub(crate) mod simple_input;
 pub(crate) mod tab_bar;
