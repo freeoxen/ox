@@ -77,7 +77,7 @@ impl Renderer for AccountsListRenderer {
     }
 
     fn ascend_to(&self) -> AscendRule {
-        AscendRule::NearestRegistered
+        AscendRule::Fallback(oxpath!("settings", "index"))
     }
 }
 
@@ -225,10 +225,10 @@ mod tests {
     }
 
     #[test]
-    fn ascend_rule_is_nearest_registered() {
+    fn ascend_rule_is_fallback_to_settings_index() {
         assert_eq!(
             AccountsListRenderer.ascend_to(),
-            AscendRule::NearestRegistered
+            AscendRule::Fallback(oxpath!("settings", "index"))
         );
     }
 }
