@@ -7,3 +7,4 @@ node_modules
 .svelte-kit
 site/dist
 .superpowers
+.claude/scheduled_tasks.lock
