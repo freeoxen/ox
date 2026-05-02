@@ -530,4 +530,65 @@ mod tests {
             .expect("should match");
         assert_eq!(hit, &cmd("field.model.next"));
     }
+
+    #[test]
+    fn every_registered_binding_round_trips_through_lookup() {
+        // Every registered `BindingEntry` must resolve to *some* command via
+        // `lookup`, exercised under its own `(screen, cursor, mode, key)`.
+        // For the dominant case (most entries) lookup returns the entry's
+        // own `command_id` — a strict round-trip. A small number of entries
+        // are intentionally shadowed by an earlier-registered binding with
+        // the same scope+key (e.g. `account.test` shadows the text-editing
+        // `field.insert` for `t` on `_detail`); those lookup to the
+        // shadowing command instead. Both outcomes are acceptable; a `None`
+        // is not — that would mean the entry is structurally orphaned.
+        let reg = populated();
+        let entries = reg.entries();
+        let empty_path = oxpath!();
+
+        let mut directly_reachable = 0usize;
+        let mut shadowed: Vec<(BindingEntry, CommandId)> = Vec::new();
+        for entry in entries {
+            let resolved = reg
+                .lookup(
+                    entry.screen,
+                    entry.cursor_path.as_ref().unwrap_or(&empty_path),
+                    entry.mode,
+                    &entry.key,
+                )
+                .unwrap_or_else(|| {
+                    panic!(
+                        "binding {entry:?} resolved to None — structurally unreachable"
+                    )
+                });
+            if resolved == &entry.command_id {
+                directly_reachable += 1;
+            } else {
+                shadowed.push((entry.clone(), resolved.clone()));
+            }
+        }
+        // Shadowing should be rare and the cause obvious: an earlier-
+        // registered binding with the same scope+key wins. Anything
+        // unexpected here means a registration ordering bug.
+        for (entry, winner) in &shadowed {
+            // The text-editing helper binds every printable ASCII char to
+            // `field.insert`; a same-scope earlier binding (e.g. `t` →
+            // `account.test`) shadows that entry. Anything *not* of that
+            // shape is a real surprise.
+            assert_eq!(
+                entry.command_id.0, "field.insert",
+                "unexpected shadowing: {entry:?} shadowed by {winner:?}"
+            );
+        }
+        // Sanity: at least the bulk of day-one bindings round-trip directly.
+        assert!(
+            directly_reachable >= entries.len() - shadowed.len(),
+            "internal counting mismatch"
+        );
+        assert!(
+            directly_reachable > 100,
+            "expected most entries to be directly reachable; got {directly_reachable} of {}",
+            entries.len()
+        );
+    }
 }

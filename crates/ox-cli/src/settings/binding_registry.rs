@@ -39,6 +39,13 @@ impl BindingRegistry {
         self.entries.sort_by_key(specificity_class);
     }
 
+    /// All registered entries in resolution order (most-specific first;
+    /// registration order preserved within a specificity class). Exposed
+    /// for property tests that exercise every binding via `lookup`.
+    pub fn entries(&self) -> &[BindingEntry] {
+        &self.entries
+    }
+
     /// Find the binding matching all four selectors, in specificity order.
     /// Returns the `CommandId` of the first match, or `None`.
     pub fn lookup(
