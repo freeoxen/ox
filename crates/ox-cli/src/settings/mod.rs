@@ -13,13 +13,13 @@
 //! the source of truth for the eventual layout — keep it in sync with the
 //! actual `mod` declarations as work progresses.
 
-pub(crate) mod binding_registry;
-pub(crate) mod bindings;
-pub(crate) mod bootstrap;
-pub(crate) mod command_registry;
-pub(crate) mod commands;
-pub(crate) mod dispatch;
-pub(crate) mod registry;
-pub(crate) mod renderers;
-pub(crate) mod snapshot;
+pub mod binding_registry;
+pub mod bindings;
+pub mod bootstrap;
+pub mod command_registry;
+pub mod commands;
+pub mod dispatch;
+pub mod registry;
+pub mod renderers;
+pub mod snapshot;
 // pub(crate) mod subscription_install; // Phase N

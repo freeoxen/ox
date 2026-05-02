@@ -28,7 +28,7 @@ pub(crate) mod clash_sandbox;
 pub(crate) mod commit_drain;
 pub(crate) mod config;
 pub(crate) mod dialogs;
-pub(crate) mod dispatch;
+pub mod dispatch;
 pub(crate) mod editor;
 pub(crate) mod event_loop;
 pub(crate) mod focus;
@@ -45,7 +45,7 @@ pub(crate) mod policy;
 pub(crate) mod policy_check;
 #[allow(dead_code)]
 pub(crate) mod session;
-pub(crate) mod settings;
+pub mod settings;
 pub(crate) mod shell;
 pub(crate) mod simple_input;
 pub(crate) mod tab_bar;

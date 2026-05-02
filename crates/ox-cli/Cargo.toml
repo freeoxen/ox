@@ -54,3 +54,4 @@ tempfile = "3"
 insta = "1"
 # Crash-harness #[tokio::test]s need rt-multi-thread + macros.
 tokio = { version = "1", features = ["sync", "time", "rt", "rt-multi-thread", "macros"] }
+async-trait = "0.1"

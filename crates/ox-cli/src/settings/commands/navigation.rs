@@ -27,7 +27,7 @@ use crate::settings::renderers::util::{child_names_under, read_typed};
 /// Encode a `Path` as a `Value` matching the wire shape used by
 /// `ox_types::path_serde` (a `Value::Array` of `Value::String` segments).
 /// `Path` itself doesn't implement `Serialize`, so we hand-roll the encoding.
-pub(crate) fn path_to_value(p: &Path) -> Value {
+pub fn path_to_value(p: &Path) -> Value {
     Value::Array(p.components.iter().map(|c| Value::String(c.clone())).collect())
 }
 
