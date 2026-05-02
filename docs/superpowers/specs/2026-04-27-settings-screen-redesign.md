@@ -832,7 +832,7 @@ Subscribers can't carry an `&dyn Store` across an async boundary easily; `Arc<dy
 
 ### 9.12 Why three `AscendRule` variants instead of two?
 
-v0 of this design had two — `NearestRegistered` (strict-ancestor walk) and `ExitScreen`. Top-level pages fell into a gap: their parent in the display tree is the screen's index, but the index isn't an ancestor of `settings/accounts` (they're siblings under `settings/`). The `Fallback(Path)` variant lets the renderer declare its ascent target explicitly, keeping the routing decision in the renderer where it belongs rather than in `NavAscend`'s body.
+v0 of this design had two — `NearestRegistered` (strict-ancestor walk) and `ExitScreen`. Top-level pages fell into a gap: their parent in the display tree is the screen's index, but the index isn't an ancestor of `settings/accounts` (they're siblings under `settings/`). The `AscendRule::Fallback(Path)` variant lets the renderer declare its ascent target explicitly, keeping the routing decision in the renderer where it belongs rather than in `NavAscend`'s body.
 
 ## 10. Implementation sketch
 

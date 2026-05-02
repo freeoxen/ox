@@ -42,9 +42,7 @@ pub fn canonical_chords() -> Vec<KeyChord> {
     }
 
     // ---- Common symbols (subset of what the encoder can round-trip) ----
-    for &c in &[
-        '/', ',', '.', ';', '\'', '[', ']', '\\', '=', '-', '`', ' ',
-    ] {
+    for &c in &['/', ',', '.', ';', '\'', '[', ']', '\\', '=', '-', '`', ' '] {
         out.push(plain(KeyCodeRepr::Char(c)));
     }
 

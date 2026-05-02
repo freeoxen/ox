@@ -557,9 +557,7 @@ mod tests {
                     &entry.key,
                 )
                 .unwrap_or_else(|| {
-                    panic!(
-                        "binding {entry:?} resolved to None — structurally unreachable"
-                    )
+                    panic!("binding {entry:?} resolved to None — structurally unreachable")
                 });
             if resolved == &entry.command_id {
                 directly_reachable += 1;
