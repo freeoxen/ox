@@ -65,7 +65,13 @@ check_toolchains() {
         echo -e "${DIM}Install with: cargo install cargo-llvm-cov${NC}" >&2
     fi
 
-    if command -v bun &> /dev/null && [[ -d "$TS_UI_DIR/src" ]]; then
+    # Match quality_gates.sh's bun resolution: prefer PATH, fall back to ~/.bun/bin
+    BUN_BIN="$(command -v bun 2>/dev/null || true)"
+    if [[ -z "$BUN_BIN" && -x "${HOME}/.bun/bin/bun" ]]; then
+        BUN_BIN="${HOME}/.bun/bin/bun"
+        export PATH="${HOME}/.bun/bin:$PATH"
+    fi
+    if [[ -n "$BUN_BIN" ]] && [[ -d "$TS_UI_DIR/src" ]]; then
         HAS_BUN="true"
     else
         echo -e "${YELLOW}bun not found or no TS source — skipping TypeScript coverage${NC}" >&2
