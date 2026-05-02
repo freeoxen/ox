@@ -208,19 +208,18 @@ pub async fn fetch_view_state<'a>(
         thread_info = dialog.thread_info.as_ref().map(|e| e.info.clone());
     }
 
-    // Read model and default account from broker ConfigStore
-    let model = client
-        .read_typed::<String>(&path!("config/gate/defaults/model"))
+    // Read model and default account from the broker ConfigStore via
+    // the primary CompletionRole — the post-O2 replacement for the
+    // retired `config/gate/defaults/{model, account}` reads.
+    let role = client
+        .read_typed::<ox_types::CompletionRole>(&path!("config/gate/completions/primary"))
         .await
         .ok()
-        .flatten()
-        .unwrap_or_default();
-    let provider = client
-        .read_typed::<String>(&path!("config/gate/defaults/account"))
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_default();
+        .flatten();
+    let (model, provider) = match role {
+        Some(r) => (r.model_id, r.account),
+        None => (String::new(), String::new()),
+    };
 
     // Read bindings for current mode+screen to build key hints
     let (mode_str, screen_str) = match &ui.screen {

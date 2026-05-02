@@ -160,10 +160,6 @@ async fn build_broker(inbox_root: &std::path::Path) -> BrokerHandle {
     );
 
     cfg.insert(
-        "gate/defaults/account".into(),
-        Value::String("anthropic".into()),
-    );
-    cfg.insert(
         "gate/accounts/anthropic/provider".into(),
         Value::String("anthropic".into()),
     );

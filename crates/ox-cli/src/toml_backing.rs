@@ -114,6 +114,14 @@ mod tests {
     use super::*;
     use ox_store_util::StoreBacking;
 
+    // The fixtures below exercise the TOML round-trip mechanism — flat
+    // path keys <-> nested TOML tables — not the gate's specific
+    // namespace. Pre-sweep they reused the (now retired) `gate/defaults`
+    // surface as a stand-in. `gate/providers/{name}/{dialect, endpoint}`
+    // is the equivalent post-O2 surface that survives as scalar-valued
+    // entries (the new `gate/completions/primary` is a Map and round-trips
+    // through ox-config's serde plumbing instead of this flat-key backing).
+
     #[test]
     fn roundtrip_save_load() {
         let dir = tempfile::tempdir().unwrap();
@@ -122,12 +130,15 @@ mod tests {
         assert!(backing.load().unwrap().is_none());
         let mut map = BTreeMap::new();
         map.insert(
-            "gate/defaults/model".to_string(),
-            Value::String("gpt-4o".into()),
+            "gate/providers/openai/dialect".to_string(),
+            Value::String("openai".into()),
         );
-        map.insert("gate/defaults/max_tokens".to_string(), Value::Integer(8192));
         map.insert(
-            "gate/defaults/account".to_string(),
+            "gate/providers/openai/endpoint".to_string(),
+            Value::String("https://api.openai.com/v1/chat/completions".into()),
+        );
+        map.insert(
+            "gate/accounts/personal/provider".to_string(),
             Value::String("openai".into()),
         );
         backing.save(&Value::Map(map)).unwrap();
@@ -136,15 +147,15 @@ mod tests {
         match loaded {
             Value::Map(m) => {
                 assert_eq!(
-                    m.get("gate/defaults/model").unwrap(),
-                    &Value::String("gpt-4o".into())
+                    m.get("gate/providers/openai/dialect").unwrap(),
+                    &Value::String("openai".into())
                 );
                 assert_eq!(
-                    m.get("gate/defaults/max_tokens").unwrap(),
-                    &Value::Integer(8192)
+                    m.get("gate/providers/openai/endpoint").unwrap(),
+                    &Value::String("https://api.openai.com/v1/chat/completions".into())
                 );
                 assert_eq!(
-                    m.get("gate/defaults/account").unwrap(),
+                    m.get("gate/accounts/personal/provider").unwrap(),
                     &Value::String("openai".into())
                 );
             }
@@ -159,16 +170,15 @@ mod tests {
         let backing = TomlFileBacking::new(path.clone());
         let mut map = BTreeMap::new();
         map.insert(
-            "gate/defaults/model".to_string(),
-            Value::String("gpt-4o".into()),
+            "gate/providers/openai/endpoint".to_string(),
+            Value::String("https://api.openai.com/v1/chat/completions".into()),
         );
-        map.insert("gate/defaults/max_tokens".to_string(), Value::Integer(8192));
         backing.save(&Value::Map(map)).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(
-            content.contains("[gate.defaults]"),
-            "expected [gate.defaults] section, got:\n{content}"
+            content.contains("[gate.providers.openai]"),
+            "expected [gate.providers.openai] section, got:\n{content}"
         );
-        assert!(content.contains("gpt-4o"));
+        assert!(content.contains("api.openai.com"));
     }
 }

@@ -409,11 +409,15 @@ fn agent_worker(
         )
         .ok();
 
-    // Read provider and API key from thread's GateStore (resolves through config handle)
+    // Read provider and API key from thread's GateStore (resolves through config handle).
+    // The default account flows out of the primary CompletionRole at
+    // `gate/completions/primary` — pre-O2 this was a separate
+    // `gate/defaults/account` read.
     let default_account = adapter
-        .read_typed::<String>(&path!("gate/defaults/account"))
+        .read_typed::<ox_types::CompletionRole>(&path!("gate/completions/primary"))
         .ok()
         .flatten()
+        .map(|r| r.account)
         .unwrap_or_else(|| "anthropic".to_string());
     let (provider, api_key_for_transport) = match ox_kernel::PathComponent::try_new(
         default_account.as_str(),
@@ -665,11 +669,15 @@ fn run_one_turn(
         adapter.write_typed(&path!("history/append"), &msg).ok();
     }
 
-    // Read model for per-model tracking (may differ from worker-init if changed mid-session).
+    // Read model for per-model tracking (may differ from worker-init if
+    // changed mid-session). Sourced from the primary CompletionRole's
+    // `model_id` — the post-O2 replacement for the retired
+    // `gate/defaults/model` path.
     let run_model: String = adapter
-        .read_typed(&path!("gate/defaults/model"))
+        .read_typed::<ox_types::CompletionRole>(&path!("gate/completions/primary"))
         .ok()
         .flatten()
+        .map(|r| r.model_id)
         .unwrap_or_default();
 
     // Compute per-run token usage and write to turn state.

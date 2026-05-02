@@ -142,15 +142,17 @@ mod tests {
     async fn test_setup() -> BrokerHandle {
         let bindings = crate::bindings::default_bindings();
         let mut config = BTreeMap::new();
+        // Seed the primary CompletionRole — the post-O2 replacement for
+        // the retired `gate/defaults/{account, model}` pair. `max_tokens`
+        // no longer enters the namespace at all.
+        let role = ox_types::CompletionRole {
+            account: "anthropic".to_string(),
+            model_id: "claude-sonnet-4-20250514".to_string(),
+        };
         config.insert(
-            "gate/defaults/model".to_string(),
-            Value::String("claude-sonnet-4-20250514".into()),
+            "gate/completions/primary".to_string(),
+            structfs_serde_store::to_value(&role).expect("CompletionRole serializes"),
         );
-        config.insert(
-            "gate/defaults/account".to_string(),
-            Value::String("anthropic".into()),
-        );
-        config.insert("gate/defaults/max_tokens".to_string(), Value::Integer(4096));
         config.insert(
             "gate/accounts/anthropic/provider".to_string(),
             Value::String("anthropic".into()),
@@ -1909,24 +1911,16 @@ mod tests {
         let handle = test_setup().await;
         let client = handle.client();
 
-        let model = client
-            .read(&path!("config/gate/defaults/model"))
+        // The broker config is seeded with `gate/completions/primary`
+        // (post-O2 replacement for the retired `gate/defaults/{account,
+        // model}` pair). It must round-trip back through the ConfigStore
+        // mount as a typed CompletionRole.
+        let role: ox_types::CompletionRole = client
+            .read_typed(&path!("config/gate/completions/primary"))
             .await
             .unwrap()
-            .unwrap();
-        assert_eq!(
-            model.as_value().unwrap(),
-            &Value::String("claude-sonnet-4-20250514".into())
-        );
-
-        let account = client
-            .read(&path!("config/gate/defaults/account"))
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            account.as_value().unwrap(),
-            &Value::String("anthropic".into())
-        );
+            .expect("primary CompletionRole must be seeded");
+        assert_eq!(role.account, "anthropic");
+        assert_eq!(role.model_id, "claude-sonnet-4-20250514");
     }
 }

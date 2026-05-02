@@ -98,7 +98,6 @@ impl OxAgent {
     #[wasm_bindgen(constructor)]
     pub fn new(system_prompt: &str, api_key: &str) -> Self {
         let model = "claude-sonnet-4-20250514".to_string();
-        let max_tokens = 4096;
 
         let executor = std::path::PathBuf::from("ox-tool-exec"); // stub on wasm
         let policy: std::sync::Arc<dyn ox_tools::sandbox::SandboxPolicy> =
@@ -137,18 +136,19 @@ impl OxAgent {
         context.mount("gate", Box::new(gate));
         context.mount("log", Box::new(LogStore::from_shared(shared_log)));
 
-        context
-            .write(
-                &path!("gate/defaults/model"),
-                Record::parsed(Value::String(model)),
-            )
-            .ok();
-        context
-            .write(
-                &path!("gate/defaults/max_tokens"),
-                Record::parsed(Value::Integer(max_tokens as i64)),
-            )
-            .ok();
+        // Seed the primary CompletionRole — the post-O2 replacement for
+        // the retired `gate/defaults/{model, max_tokens}` writes.
+        // `max_tokens` no longer enters the namespace at all; the kernel
+        // reads it from the per-account model catalog.
+        let primary = ox_gate::CompletionRole {
+            account: "anthropic".to_string(),
+            model_id: model,
+        };
+        if let Ok(value) = to_value(&primary) {
+            context
+                .write(&path!("gate/completions/primary"), Record::parsed(value))
+                .ok();
+        }
 
         Self {
             context: Rc::new(RefCell::new(context)),
@@ -208,15 +208,10 @@ impl OxAgent {
         }
     }
 
-    /// Set the active provider (writes default account name).
+    /// Set the active provider (updates the primary CompletionRole's
+    /// `account` field; the model is preserved).
     pub fn set_provider(&self, provider: &str) -> Result<(), JsValue> {
-        self.context
-            .borrow_mut()
-            .write(
-                &path!("gate/defaults/account"),
-                Record::parsed(Value::String(provider.to_string())),
-            )
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        write_primary_role(&self.context, Some(provider), None)?;
         if let Some(ref cb) = self.event_callback {
             emit_js(Some(cb), "context_changed", "");
         }
@@ -225,17 +220,18 @@ impl OxAgent {
 
     /// Get the current active provider.
     pub fn get_provider(&self) -> String {
-        let mut ctx = self.context.borrow_mut();
-        // Read default account name, then read that account's provider
-        let default_account = match ctx.read(&path!("gate/defaults/account")) {
-            Ok(Some(Record::Parsed(Value::String(s)))) => s,
-            _ => return "anthropic".to_string(),
+        // Resolve the active account from the primary CompletionRole, then
+        // look up that account's provider name.
+        let default_account = match read_primary_role(&self.context) {
+            Some(role) => role.account,
+            None => return "anthropic".to_string(),
         };
         let account_comp = match PathComponent::try_new(&default_account) {
             Ok(c) => c,
             Err(_) => return "anthropic".to_string(),
         };
         let provider_path = oxpath!("gate", "accounts", account_comp, "provider");
+        let mut ctx = self.context.borrow_mut();
         match ctx.read(&provider_path) {
             Ok(Some(Record::Parsed(Value::String(s)))) => s,
             _ => "anthropic".to_string(),
@@ -286,20 +282,13 @@ impl OxAgent {
     /// Read the full namespace state for debugging.
     /// Returns a JSON string with system, model, tools, and history.
     pub fn debug_context(&self) -> String {
-        let mut ctx = self.context.borrow_mut();
+        // Resolve role first so we can release the borrow before the
+        // `system`/`tools`/`history` reads below acquire it.
+        let role = read_primary_role(&self.context);
 
+        let mut ctx = self.context.borrow_mut();
         let system = ctx
             .read(&path!("system"))
-            .ok()
-            .flatten()
-            .map(record_to_json);
-        let model_id = ctx
-            .read(&path!("gate/defaults/model"))
-            .ok()
-            .flatten()
-            .map(record_to_json);
-        let model_max_tokens = ctx
-            .read(&path!("gate/defaults/max_tokens"))
             .ok()
             .flatten()
             .map(record_to_json);
@@ -318,18 +307,20 @@ impl OxAgent {
             .ok()
             .flatten()
             .map(record_to_json);
+        drop(ctx);
 
-        let gate_account = ctx
-            .read(&path!("gate/defaults/account"))
-            .ok()
-            .flatten()
-            .map(record_to_json);
+        let (model_id, gate_account) = match role {
+            Some(r) => (
+                Some(serde_json::Value::String(r.model_id)),
+                Some(serde_json::Value::String(r.account)),
+            ),
+            None => (None, None),
+        };
 
         let snapshot = serde_json::json!({
             "system": system,
             "model": {
                 "id": model_id,
-                "max_tokens": model_max_tokens,
             },
             "tools": tools,
             "history": {
@@ -356,13 +347,10 @@ impl OxAgent {
         Ok(())
     }
 
-    /// Change the model used for completions.
+    /// Change the model used for completions (updates the primary
+    /// CompletionRole's `model_id` field; the account is preserved).
     pub fn set_model(&self, model_id: &str) -> Result<(), JsValue> {
-        let record = Record::parsed(Value::String(model_id.to_string()));
-        self.context
-            .borrow_mut()
-            .write(&path!("gate/defaults/model"), record)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        write_primary_role(&self.context, None, Some(model_id))?;
         if let Some(ref cb) = self.event_callback {
             emit_js(Some(cb), "context_changed", "");
         }
@@ -372,11 +360,11 @@ impl OxAgent {
     /// Read the model catalog from the namespace.
     /// Returns a JSON array of `{id, display_name}` objects.
     pub fn list_models(&self) -> String {
-        let mut ctx = self.context.borrow_mut();
-        let provider = match ctx.read(&path!("gate/defaults/account")) {
-            Ok(Some(Record::Parsed(Value::String(s)))) => s,
-            _ => "anthropic".to_string(),
+        let provider = match read_primary_role(&self.context) {
+            Some(role) => role.account,
+            None => "anthropic".to_string(),
         };
+        let mut ctx = self.context.borrow_mut();
         let provider_comp = match PathComponent::try_new(&provider) {
             Ok(c) => c,
             Err(_) => return serde_json::Value::Array(vec![]).to_string(),
@@ -449,6 +437,47 @@ fn read_api_key(context: &Rc<RefCell<Namespace>>, account: &str) -> String {
         Ok(Some(Record::Parsed(Value::String(s)))) => s,
         _ => String::new(),
     }
+}
+
+/// Read the primary `CompletionRole` from the gate store.
+///
+/// Replaces the pre-O2 split reads of `gate/defaults/{account, model}`.
+/// Returns `None` when no role has been written yet (a fresh agent before
+/// any `set_provider`/`set_model` call); callers fall back to neutral
+/// defaults at each call site.
+fn read_primary_role(context: &Rc<RefCell<Namespace>>) -> Option<ox_gate::CompletionRole> {
+    let mut ctx = context.borrow_mut();
+    let record = ctx.read(&path!("gate/completions/primary")).ok().flatten()?;
+    match record.as_value() {
+        Some(value) => structfs_serde_store::from_value(value.clone()).ok(),
+        None => None,
+    }
+}
+
+/// Write the primary `CompletionRole` to the gate store, preserving
+/// whichever field the caller didn't supply. Replaces the pre-O2 split
+/// writes to `gate/defaults/{account, model}`.
+fn write_primary_role(
+    context: &Rc<RefCell<Namespace>>,
+    account: Option<&str>,
+    model_id: Option<&str>,
+) -> Result<(), JsValue> {
+    let mut role = read_primary_role(context).unwrap_or_else(|| ox_gate::CompletionRole {
+        account: "anthropic".to_string(),
+        model_id: "claude-sonnet-4-20250514".to_string(),
+    });
+    if let Some(a) = account {
+        role.account = a.to_string();
+    }
+    if let Some(m) = model_id {
+        role.model_id = m.to_string();
+    }
+    let value = to_value(&role).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    context
+        .borrow_mut()
+        .write(&path!("gate/completions/primary"), Record::parsed(value))
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    Ok(())
 }
 
 /// Read the ProviderConfig for the given provider name from the gate store.
@@ -766,13 +795,12 @@ async fn run_agentic_loop(
         .map_err(|e| e.to_string())?;
     emit_js(callback, "context_changed", "");
 
-    // Read default account → provider config from gate
-    let default_account = {
-        let mut ctx = context_ref.borrow_mut();
-        match ctx.read(&path!("gate/defaults/account")) {
-            Ok(Some(Record::Parsed(Value::String(s)))) => s,
-            _ => "anthropic".to_string(),
-        }
+    // Read default account → provider config from gate. Sourced from
+    // the primary CompletionRole's `account` field (post-O2 replacement
+    // for the retired `gate/defaults/account` read).
+    let default_account = match read_primary_role(context_ref) {
+        Some(role) => role.account,
+        None => "anthropic".to_string(),
     };
     let provider = {
         let account_comp = PathComponent::try_new(&default_account).map_err(|e| e.to_string())?;

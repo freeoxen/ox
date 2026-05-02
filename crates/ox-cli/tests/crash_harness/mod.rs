@@ -278,10 +278,6 @@ fn default_test_config() -> BTreeMap<String, Value> {
     );
 
     cfg.insert(
-        "gate/defaults/account".into(),
-        Value::String("anthropic".into()),
-    );
-    cfg.insert(
         "gate/accounts/anthropic/provider".into(),
         Value::String("anthropic".into()),
     );

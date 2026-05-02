@@ -6,7 +6,7 @@
 //!
 //! No masking — consumers that need masking use a `Masked` wrapper.
 //! No thread scoping — threads use `Cascade<LocalConfig, ReadOnly<handle>>`.
-//! Reads and writes use flat string keys (e.g. gate/defaults/model).
+//! Reads and writes use flat string keys (e.g. gate/completions/primary).
 
 use std::collections::BTreeMap;
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer};

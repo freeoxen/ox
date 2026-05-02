@@ -748,17 +748,18 @@ fn read_typed<T: serde::de::DeserializeOwned>(
     }
 }
 
-/// Read the default account from the context, defaulting to `"anthropic"`.
+/// Read the default account from the primary completion role.
+///
+/// Reads `gate/completions/primary: CompletionRole` and returns the
+/// `account` field. Replaces the pre-O2 `gate/defaults/account` read,
+/// which `GateStore` no longer surfaces. Errors when no primary role is
+/// configured — the gate's built-in fallback role keeps reads alive
+/// during early bring-up, so a missing role here is a real
+/// misconfiguration, not a normal-path default.
 fn read_default_account(context: &mut dyn Reader) -> Result<String, String> {
-    let record = context
-        .read(&path!("gate/defaults/account"))
-        .map_err(|e| e.to_string())?;
-
-    match record {
-        Some(Record::Parsed(Value::String(s))) => Ok(s),
-        Some(_) => Err("expected string for gate/defaults/account".into()),
-        None => Ok("anthropic".to_string()),
-    }
+    let role: ox_types::CompletionRole = read_typed(context, &path!("gate/completions/primary"))?
+        .ok_or_else(|| "no primary completion role configured".to_string())?;
+    Ok(role.account)
 }
 
 /// Best-effort append to the structured log. Ignores errors.
@@ -2155,18 +2156,18 @@ mod tests {
     }
 
     #[test]
-    fn read_default_account_returns_stored_value() {
+    fn read_default_account_returns_role_account() {
         let mut store = MockStore::new();
-        store.set("gate/defaults/account", Value::String("openai".into()));
+        set_completion_primary(&mut store, "openai", "gpt-4o", 2048);
         let account = read_default_account(&mut store).unwrap();
         assert_eq!(account, "openai");
     }
 
     #[test]
-    fn read_default_account_defaults_to_anthropic() {
+    fn read_default_account_errors_when_no_role_configured() {
         let mut store = MockStore::new();
-        let account = read_default_account(&mut store).unwrap();
-        assert_eq!(account, "anthropic");
+        let err = read_default_account(&mut store).unwrap_err();
+        assert!(err.contains("no primary completion role"));
     }
 
     #[test]
@@ -2233,8 +2234,9 @@ mod tests {
     #[test]
     fn run_turn_text_only() {
         let mut store = MockStore::new();
-        // Context paths read by synthesize + read_default_account
-        store.set("gate/defaults/account", Value::String("test".into()));
+        // Context paths read by synthesize + read_default_account.
+        // The account flows out of the CompletionRole seeded below by
+        // `set_completion_primary`; nothing else needs to be wired here.
         store.set("system", Value::String("You are helpful.".into()));
         store.set(
             "history/messages",
@@ -2321,8 +2323,8 @@ mod tests {
     #[test]
     fn run_turn_with_tool_calls() {
         let mut store = MockStore::new();
-        // Context paths
-        store.set("gate/defaults/account", Value::String("test".into()));
+        // Context paths; `set_completion_primary` below seeds the role
+        // that `read_default_account` resolves from.
         store.set("system", Value::String("You are helpful.".into()));
         store.set(
             "history/messages",
@@ -2617,7 +2619,6 @@ mod tests {
         // frame and fires a sub-completion. When the inner completion resolves,
         // the text is delivered as the tool result for the parent.
         let mut store = MockStore::new();
-        store.set("gate/defaults/account", Value::String("test".into()));
         store.set("system", Value::String("You are helpful.".into()));
         store.set(
             "history/messages",
@@ -2666,7 +2667,6 @@ mod tests {
     #[test]
     fn run_turn_iteration_limit() {
         let mut store = MockStore::new();
-        store.set("gate/defaults/account", Value::String("test".into()));
         store.set("system", Value::String("Loop.".into()));
         store.set(
             "history/messages",
@@ -2703,7 +2703,6 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn seed_resume_context(store: &mut MockStore) {
-        store.set("gate/defaults/account", Value::String("test".into()));
         store.set("system", Value::String("You are helpful.".into()));
         store.set(
             "history/messages",

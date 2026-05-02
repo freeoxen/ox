@@ -181,9 +181,16 @@ mod tests {
         let inbox = InboxStore::open(dir.path()).unwrap();
         let bindings = crate::bindings::default_bindings();
         let mut config = BTreeMap::new();
+        // Seed the primary CompletionRole so the broker config has the
+        // shape production expects. This drain-focused test never reads
+        // it; the entry exists purely to mirror real wiring.
+        let role = ox_types::CompletionRole {
+            account: "anthropic".to_string(),
+            model_id: "claude-sonnet-4-20250514".to_string(),
+        };
         config.insert(
-            "gate/defaults/model".to_string(),
-            Value::String("claude-sonnet-4-20250514".into()),
+            "gate/completions/primary".to_string(),
+            structfs_serde_store::to_value(&role).expect("CompletionRole serializes"),
         );
         let handle =
             crate::broker_setup::setup(inbox, bindings, dir.path().to_path_buf(), config).await;

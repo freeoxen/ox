@@ -190,18 +190,21 @@ impl OxConfig {
                 Value::String(entry.provider.clone()),
             );
         }
-        map.insert(
-            "gate/defaults/account".into(),
-            Value::String(self.gate.defaults.account.clone()),
-        );
-        map.insert(
-            "gate/defaults/model".into(),
-            Value::String(self.gate.defaults.model.clone()),
-        );
-        map.insert(
-            "gate/defaults/max_tokens".into(),
-            Value::Integer(self.gate.defaults.max_tokens),
-        );
+        // Post-O2 the broker namespace exposes (account, model_id) as a
+        // single `gate/completions/primary: CompletionRole` typed record;
+        // the older split `gate/defaults/{account, model}` paths were
+        // retired. `max_tokens` no longer enters the namespace at all —
+        // the kernel reads it from `gate/accounts/{name}/models` (the
+        // per-account catalog). The TOML schema keeps `[gate.defaults]`
+        // as the user-facing surface; the figment loader still resolves
+        // those into the in-memory `DefaultsConfig`.
+        let role = ox_types::CompletionRole {
+            account: self.gate.defaults.account.clone(),
+            model_id: self.gate.defaults.model.clone(),
+        };
+        if let Ok(role_value) = structfs_serde_store::to_value(&role) {
+            map.insert("gate/completions/primary".into(), role_value);
+        }
         map
     }
 }
@@ -316,23 +319,24 @@ pub fn has_any_usable_account(config: &OxConfig) -> bool {
 mod tests {
     use super::*;
 
+    fn role_from_flat(flat: &BTreeMap<String, Value>) -> ox_types::CompletionRole {
+        let v = flat
+            .get("gate/completions/primary")
+            .expect("primary CompletionRole must be seeded")
+            .clone();
+        structfs_serde_store::from_value(v).expect("CompletionRole deserializes")
+    }
+
     #[test]
     fn defaults_produce_expected_base() {
         let config = OxConfig::default();
         let flat = config.to_flat_map();
-        assert_eq!(
-            flat.get("gate/defaults/model").unwrap(),
-            &Value::String("claude-sonnet-4-20250514".into())
-        );
-        assert_eq!(
-            flat.get("gate/defaults/max_tokens").unwrap(),
-            &Value::Integer(4096)
-        );
-        assert_eq!(
-            flat.get("gate/defaults/account").unwrap(),
-            &Value::String("anthropic".into())
-        );
+        let role = role_from_flat(&flat);
+        assert_eq!(role.account, "anthropic");
+        assert_eq!(role.model_id, "claude-sonnet-4-20250514");
         assert!(!flat.keys().any(|k| k.starts_with("gate/accounts/")));
+        // max_tokens is no longer surfaced into the broker namespace post-O2.
+        assert!(!flat.keys().any(|k| k.contains("max_tokens")));
     }
 
     #[test]
@@ -345,18 +349,9 @@ mod tests {
         let mut config = OxConfig::default();
         config.apply_overrides(&overrides);
         let flat = config.to_flat_map();
-        assert_eq!(
-            flat.get("gate/defaults/account").unwrap(),
-            &Value::String("work".into())
-        );
-        assert_eq!(
-            flat.get("gate/defaults/model").unwrap(),
-            &Value::String("gpt-4o".into())
-        );
-        assert_eq!(
-            flat.get("gate/defaults/max_tokens").unwrap(),
-            &Value::Integer(4096)
-        );
+        let role = role_from_flat(&flat);
+        assert_eq!(role.account, "work");
+        assert_eq!(role.model_id, "gpt-4o");
     }
 
     #[test]
