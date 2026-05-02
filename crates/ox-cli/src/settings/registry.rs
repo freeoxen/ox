@@ -24,12 +24,22 @@ use ox_view::View;
 use crate::theme::Theme;
 
 /// What happens when a renderer is asked to ascend (Esc).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Three variants because top-level pages within a screen don't fit either of
+/// the two alternatives cleanly: their parent in the *display* tree (the
+/// screen's index) is a sibling under the screen root, not a strict ancestor.
+/// `Fallback(Path)` lets the renderer name its ascent target explicitly.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AscendRule {
     /// Walk the display-tree parent chain until a registered renderer matches.
     /// Used by all detail/list pages: Esc returns to the nearest registered
     /// ancestor.
     NearestRegistered,
+    /// Top-level page within a screen: ascend to the named cursor (typically
+    /// the screen's index page). The named target must be a registered
+    /// cursor; if it isn't, the registry falls through to `None` and the
+    /// dispatcher signals `_request_exit` (same as `ExitScreen`).
+    Fallback(Path),
     /// Top-level page; ascending exits the settings screen entirely.
     /// Used by `settings/index`.
     ExitScreen,
@@ -104,12 +114,20 @@ impl RendererRegistry {
     /// Compute the cursor's "ascent" target per the matched renderer's
     /// rule. Returns `None` when there's no registered ancestor (i.e.
     /// the rule is `ExitScreen`, OR the rule is `NearestRegistered` and
-    /// no ancestor up to the root is registered).
+    /// no ancestor up to the root is registered, OR the rule is
+    /// `Fallback(target)` but `target` is not registered).
     pub fn ascend(&self, cursor: &Path) -> Option<Path> {
         let renderer = self.specs.get(cursor)?;
         match renderer.ascend_to() {
             AscendRule::ExitScreen => None,
             AscendRule::NearestRegistered => self.nearest_registered_parent(cursor),
+            AscendRule::Fallback(target) => {
+                if self.specs.contains_key(&target) {
+                    Some(target)
+                } else {
+                    None
+                }
+            }
         }
     }
 
@@ -159,12 +177,18 @@ mod tests {
             View::Empty
         }
         fn ascend_to(&self) -> AscendRule {
-            self.ascend
+            self.ascend.clone()
         }
     }
 
     fn fake(rule: AscendRule) -> Box<dyn Renderer> {
         Box::new(FakeRenderer { ascend: rule })
+    }
+
+    fn fake_with_fallback(target: Path) -> Box<dyn Renderer> {
+        Box::new(FakeRenderer {
+            ascend: AscendRule::Fallback(target),
+        })
     }
 
     #[test]
@@ -224,6 +248,34 @@ mod tests {
         // Cursor with no registered renderer at all → None (no rule to apply).
         let reg = RendererRegistry::new();
         assert_eq!(reg.ascend(&oxpath!("settings", "ghost")), None);
+    }
+
+    #[test]
+    fn ascend_fallback_returns_named_target() {
+        // Top-level page declares Fallback to settings/index — registry
+        // returns the named target (no strict-ancestor walk).
+        let mut reg = RendererRegistry::new();
+        reg.register(oxpath!("settings", "index"), fake(AscendRule::ExitScreen));
+        reg.register(
+            oxpath!("settings", "accounts"),
+            fake_with_fallback(oxpath!("settings", "index")),
+        );
+        assert_eq!(
+            reg.ascend(&oxpath!("settings", "accounts")),
+            Some(oxpath!("settings", "index")),
+        );
+    }
+
+    #[test]
+    fn ascend_fallback_target_must_be_registered_or_returns_none() {
+        // Guard against typos: a Fallback whose target is not a registered
+        // cursor falls through to None (dispatcher then signals _request_exit).
+        let mut reg = RendererRegistry::new();
+        reg.register(
+            oxpath!("settings", "accounts"),
+            fake_with_fallback(oxpath!("settings", "ghost")),
+        );
+        assert_eq!(reg.ascend(&oxpath!("settings", "accounts")), None);
     }
 
     #[test]

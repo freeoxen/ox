@@ -202,7 +202,7 @@ mod tests {
             ox_view::View::Empty
         }
         fn ascend_to(&self) -> AscendRule {
-            self.0
+            self.0.clone()
         }
     }
 
