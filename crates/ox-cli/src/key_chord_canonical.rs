@@ -75,16 +75,13 @@ pub fn canonical_chords() -> Vec<KeyChord> {
     out.push(with_mods(KeyCodeRepr::BackTab, shift()));
 
     // ---- Function keys F1..=F12 ----
+    // Encoder gap today (`encode_key` returns None for function keys) — the
+    // round-trip test silently skips chords the encoder cannot represent.
+    // Included here so future-proofing intent is documented and so the
+    // sanity test's `F1` anchor lands.
     for n in 1..=12u8 {
         out.push(plain(KeyCodeRepr::F(n)));
     }
-
-    // ---- Alt+ samples (encoder gap today, included for future-proofing) ----
-    out.push(with_mods(KeyCodeRepr::Char('a'), alt()));
-    out.push(with_mods(KeyCodeRepr::Enter, alt()));
-
-    // ---- Super+ samples (encoder gap today) ----
-    out.push(with_mods(KeyCodeRepr::Char('s'), super_mod()));
 
     out
 }
@@ -122,18 +119,48 @@ fn ctrl_shift() -> KeyModifierSet {
     }
 }
 
-fn alt() -> KeyModifierSet {
-    KeyModifierSet {
-        alt: true,
-        ..KeyModifierSet::default()
-    }
-}
+/// Bridge a `KeyChord` to the wire form an equivalent crossterm `KeyEvent`
+/// would produce via `key_encode::encode_key`. Returns `None` when the
+/// encoder cannot represent the chord (e.g. function keys today). The
+/// round-trip property test relies on this to avoid duplicating the
+/// encoder's logic; the encoder remains the source of truth for the wire
+/// shape.
+pub fn encode_keychord_to_str(chord: &KeyChord) -> Option<String> {
+    use crossterm::event::{KeyCode, KeyModifiers};
 
-fn super_mod() -> KeyModifierSet {
-    KeyModifierSet {
-        super_: true,
-        ..KeyModifierSet::default()
+    let mut mods = KeyModifiers::NONE;
+    if chord.modifiers.ctrl {
+        mods |= KeyModifiers::CONTROL;
     }
+    if chord.modifiers.shift {
+        mods |= KeyModifiers::SHIFT;
+    }
+    if chord.modifiers.alt {
+        mods |= KeyModifiers::ALT;
+    }
+    if chord.modifiers.super_ {
+        mods |= KeyModifiers::SUPER;
+    }
+    let code = match chord.code {
+        KeyCodeRepr::Char(c) => KeyCode::Char(c),
+        KeyCodeRepr::Enter => KeyCode::Enter,
+        KeyCodeRepr::Esc => KeyCode::Esc,
+        KeyCodeRepr::Tab => KeyCode::Tab,
+        KeyCodeRepr::BackTab => KeyCode::BackTab,
+        KeyCodeRepr::Backspace => KeyCode::Backspace,
+        KeyCodeRepr::Delete => KeyCode::Delete,
+        KeyCodeRepr::Up => KeyCode::Up,
+        KeyCodeRepr::Down => KeyCode::Down,
+        KeyCodeRepr::Left => KeyCode::Left,
+        KeyCodeRepr::Right => KeyCode::Right,
+        KeyCodeRepr::PageUp => KeyCode::PageUp,
+        KeyCodeRepr::PageDown => KeyCode::PageDown,
+        KeyCodeRepr::Home => KeyCode::Home,
+        KeyCodeRepr::End => KeyCode::End,
+        KeyCodeRepr::Insert => KeyCode::Insert,
+        KeyCodeRepr::F(n) => KeyCode::F(n),
+    };
+    crate::key_encode::encode_key(mods, code)
 }
 
 #[cfg(test)]

@@ -338,6 +338,53 @@ mod tests {
         assert!(matches!(chord.code, KeyCodeRepr::BackTab));
     }
 
+    // -------- encoder/parser round-trip property test --------------------
+
+    /// Property test: every `KeyChord` in the canonical set must round-trip
+    /// through `encode_keychord_to_str` → `parse_key_str`. This is the
+    /// safety net that would have caught the Shift+Tab bug (`53d3da2`):
+    /// the parser produced `Tab + shift` while bindings registered
+    /// `BackTab + shift`, so the lookup silently missed.
+    ///
+    /// Chords the encoder cannot represent (today: `KeyCodeRepr::F(_)`) are
+    /// silently skipped — the encoder is the source of truth for what
+    /// chords reach the dispatcher; if it returns `None`, no wire form
+    /// exists to round-trip. Future encoder extensions automatically pull
+    /// those chords into the assertion set.
+    #[test]
+    fn keychord_encode_parse_roundtrip() {
+        use crate::key_chord_canonical::{canonical_chords, encode_keychord_to_str};
+
+        let mut failures: Vec<String> = Vec::new();
+        let mut roundtripped = 0usize;
+        let mut encoder_skipped = 0usize;
+        for chord in canonical_chords() {
+            let Some(wire) = encode_keychord_to_str(&chord) else {
+                encoder_skipped += 1;
+                continue;
+            };
+            match parse_key_str(&wire) {
+                Some(parsed) if parsed == chord => roundtripped += 1,
+                Some(parsed) => failures.push(format!(
+                    "{chord:?} encoded to {wire:?}, parsed back as {parsed:?} (mismatch)"
+                )),
+                None => failures.push(format!(
+                    "{chord:?} encoded to {wire:?}, parser returned None"
+                )),
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "round-trip failures ({} encoder gaps tolerated):\n{}",
+            encoder_skipped,
+            failures.join("\n"),
+        );
+        assert!(
+            roundtripped >= 100,
+            "expected ≥100 round-trip-clean chords; got {roundtripped} (encoder skipped {encoder_skipped})"
+        );
+    }
+
     // -------- send_key integration tests ----------------------------------
 
     /// Stub Renderer used only to seed the renderer registry with an
