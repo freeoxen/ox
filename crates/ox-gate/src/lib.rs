@@ -13,7 +13,16 @@ pub mod codec;
 pub mod known_family;
 pub mod pricing;
 pub mod provider;
+// Subscriptions sit on top of ox-broker, which uses
+// `tokio::task::block_in_place` and so requires the multi-thread runtime —
+// neither is available on wasm. ox-web has no need for the broker-side
+// subscription runtime; gate it out so the wasm build remains clean.
+#[cfg(not(target_arch = "wasm32"))]
 pub mod subscriptions;
+// `transport` uses `reqwest::blocking` and `Send`-bound async futures,
+// neither of which compiles on wasm. Browser callers (ox-web) talk to
+// providers directly via `fetch`/wasm-bindgen and don't need this module.
+#[cfg(not(target_arch = "wasm32"))]
 pub mod transport;
 pub mod validation;
 
@@ -28,6 +37,7 @@ pub use provider::{
     AuthScheme, Preset, ProviderConfig, completion_url, dialect_paths, models_url, presets,
     validate_endpoint,
 };
+#[cfg(not(target_arch = "wasm32"))]
 pub use transport::{HttpTransport, Transport};
 
 use ox_kernel::ToolSchema;

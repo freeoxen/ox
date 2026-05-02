@@ -17,7 +17,6 @@ tracing = { workspace = true }
 ox-kernel = { path = "../ox-kernel" }
 ox-types = { path = "../ox-types" }
 ox-path = { path = "../ox-path" }
-ox-broker = { path = "../ox-broker" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 structfs-core-store = { workspace = true }
@@ -25,6 +24,12 @@ structfs-serde-store = { workspace = true }
 reqwest = { version = "0.12", features = ["blocking"] }
 async-trait = "0.1"
 tokio = { workspace = true }
+
+# `ox-broker` pulls in tokio with `rt-multi-thread`, which is unsupported
+# on wasm. Only the `subscriptions` module needs it; see lib.rs for the
+# matching cfg gate. ox-web/wasm builds skip subscriptions entirely.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ox-broker = { path = "../ox-broker" }
 
 [dev-dependencies]
 ox-store-util = { path = "../ox-store-util" }
