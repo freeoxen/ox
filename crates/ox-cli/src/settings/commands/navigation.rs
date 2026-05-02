@@ -143,10 +143,22 @@ fn ascend(
         Some(c) => c,
         None => return Vec::new(),
     };
+    let index = oxpath!("settings", "index");
+    // Resolution order:
+    //   1. Registry-defined parent (`AscendRule::NearestRegistered`).
+    //   2. Top-level fallback to `settings/index` (spec §4.1 + §6 binding
+    //      tables — Esc on `settings/accounts` and `settings/models`
+    //      should land on the index, not exit the screen).
+    //   3. From the index itself (or any cursor with no registered
+    //      renderer), exit the settings screen via `_request_exit`.
     match ctx.registry.ascend(&cursor) {
         Some(parent) => vec![Write {
             path: oxpath!("ui", "settings", "cursor"),
             record: Record::parsed(path_to_value(&parent)),
+        }],
+        None if cursor != index => vec![Write {
+            path: oxpath!("ui", "settings", "cursor"),
+            record: Record::parsed(path_to_value(&index)),
         }],
         None => vec![Write {
             path: oxpath!("ui", "settings", "_request_exit"),
@@ -295,6 +307,31 @@ mod tests {
             &writes,
             oxpath!("ui", "settings", "cursor"),
             oxpath!("settings", "accounts"),
+        );
+    }
+
+    #[test]
+    fn ascend_top_level_page_falls_back_to_settings_index() {
+        // Cursor at `settings/accounts` (a top-level page) with NearestRegistered;
+        // no registered ancestor in the chain. Per spec §4.1 + §6.2, Esc here
+        // should land on `settings/index`, not exit the screen.
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("ui", "settings", "cursor"),
+            super::path_to_value(&oxpath!("settings", "accounts")),
+        );
+
+        let mut registry = RendererRegistry::new();
+        registry.register(
+            oxpath!("settings", "accounts"),
+            Box::new(FakeRenderer(AscendRule::NearestRegistered)),
+        );
+
+        let writes = run_with_registry(&NavAscend::new(), &mut snap, &registry);
+        assert_path_write(
+            &writes,
+            oxpath!("ui", "settings", "cursor"),
+            oxpath!("settings", "index"),
         );
     }
 

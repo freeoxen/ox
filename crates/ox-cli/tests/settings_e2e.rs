@@ -359,14 +359,17 @@ async fn navigate_index_to_models_set_primary() {
     assert_eq!(primary.account, "anthropic");
     assert_eq!(primary.model_id, "claude-haiku-4-5-20251001");
 
-    // `Esc` from `settings/models` ascends per the renderer's
-    // `NearestRegistered` rule — but `settings/models` has no
-    // registered strict ancestor, so the rule degrades to writing
-    // `ui/settings/_request_exit: true`. (Same effect Esc-at-index has;
-    // the index uses `AscendRule::ExitScreen` directly.) The plan's
-    // narration of "Esc → return to index" describes a desired UX
-    // round-trip; the day-one implementation routes back through the
-    // exit signal and the event loop re-lands on the index.
+    // `Esc` from `settings/models` ascends to `settings/index` per
+    // spec §6.6: top-level pages use `AscendRule::NearestRegistered`,
+    // and when no strict ancestor is registered, `NavAscend` falls back
+    // to `settings/index`. Pressing `Esc` again from index hits its
+    // `ExitScreen` rule and writes `_request_exit: true`.
+    let _ = h.dispatch("Esc").await;
+    assert_eq!(
+        h.current_cursor().await,
+        Some(oxpath!("settings", "index"))
+    );
+
     let _ = h.dispatch("Esc").await;
     let exit: bool = h
         .client
@@ -374,7 +377,7 @@ async fn navigate_index_to_models_set_primary() {
         .await
         .expect("read exit")
         .expect("exit present");
-    assert!(exit, "Esc at models should request screen exit");
+    assert!(exit, "Esc at index should request screen exit");
 }
 
 // ---------------------------------------------------------------------------
