@@ -902,13 +902,16 @@ mod tests {
             other => panic!("expected integer 1, got {:?}", other),
         }
 
-        // Read model id from gate store (defaults namespace)
-        let model_path = Path::parse("t_a/gate/defaults/model").unwrap();
-        let result = futures_or_poll(reg.read(&model_path)).unwrap();
-        match result.unwrap().as_value().unwrap() {
-            Value::String(s) => assert_eq!(s, "claude-sonnet-4-20250514"),
-            other => panic!("expected model string, got {:?}", other),
-        }
+        // Read the primary completion role from the gate store. With no
+        // config handle attached the gate falls back to the built-in
+        // (FALLBACK_ACCOUNT, FALLBACK_MODEL) pair — this is what the test
+        // pinned via `gate/defaults/model` pre-O2.
+        let role_path = Path::parse("t_a/gate/completions/primary").unwrap();
+        let result = futures_or_poll(reg.read(&role_path)).unwrap();
+        let role: ox_types::CompletionRole =
+            structfs_serde_store::from_value(result.unwrap().as_value().unwrap().clone()).unwrap();
+        assert_eq!(role.account, "anthropic");
+        assert_eq!(role.model_id, "claude-sonnet-4-20250514");
     }
 
     #[test]

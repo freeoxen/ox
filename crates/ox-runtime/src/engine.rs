@@ -474,7 +474,36 @@ mod tests {
             return;
         }
 
-        // Set up namespace with all required providers.
+        // Set up namespace with all required providers. The gate is wired
+        // with a config handle that names the primary completion role +
+        // per-account model catalog — the post-O2 replacement for the
+        // retired `gate/defaults/{account, model, max_tokens}` writes.
+        use ox_store_util::LocalConfig;
+        use ox_types::{CompletionRole, ModelInfo, ModelInfoSource};
+
+        let role = CompletionRole {
+            account: "anthropic".to_string(),
+            model_id: "claude-sonnet-4-20250514".to_string(),
+        };
+        let catalog = vec![ModelInfo {
+            id: "claude-sonnet-4-20250514".to_string(),
+            display_name: "Claude Sonnet 4".to_string(),
+            max_context_size: None,
+            max_output_tokens: Some(4096),
+            source: ModelInfoSource::Server,
+        }];
+        let mut config = LocalConfig::new();
+        config.set(
+            "gate/completions/primary",
+            structfs_serde_store::to_value(&role).unwrap(),
+        );
+        config.set(
+            "gate/accounts/anthropic/models",
+            structfs_serde_store::to_value(&catalog).unwrap(),
+        );
+
+        let gate = GateStore::new().with_config(Box::new(config));
+
         let shared_log = SharedLog::new();
         let mut ns = Namespace::new();
         ns.mount(
@@ -483,15 +512,8 @@ mod tests {
         );
         ns.mount("history", Box::new(HistoryView::new(shared_log.clone())));
         ns.mount("tools", Box::new(ox_tools::ToolStore::empty()));
-        ns.mount("gate", Box::new(GateStore::new()));
+        ns.mount("gate", Box::new(gate));
         ns.mount("log", Box::new(LogStore::from_shared(shared_log)));
-
-        // Write default account so the agent knows which completion path to use.
-        ns.write(
-            &path!("gate/defaults/account"),
-            Record::parsed(Value::String("anthropic".into())),
-        )
-        .expect("failed to write default account");
 
         // Write a user message so prompt synthesis has something to work with.
         let user_msg = serde_json::json!({ "role": "user", "content": "Say hello." });

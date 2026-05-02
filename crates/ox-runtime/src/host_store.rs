@@ -230,6 +230,38 @@ mod tests {
     }
 
     fn make_namespace() -> Namespace {
+        // Wire the GateStore with a config handle that names the primary
+        // completion role + per-account model catalog. Pre-O2 this seeded
+        // `gate/defaults/{model, max_tokens}` directly on the gate; the
+        // kernel's `read_model_config` now reads role + catalog instead, so
+        // tests build that shape and let the gate hand it back through its
+        // `completions` arm.
+        use ox_store_util::LocalConfig;
+        use ox_types::{CompletionRole, ModelInfo, ModelInfoSource};
+
+        let role = CompletionRole {
+            account: "anthropic".to_string(),
+            model_id: "test-model".to_string(),
+        };
+        let catalog = vec![ModelInfo {
+            id: "test-model".to_string(),
+            display_name: "Test Model".to_string(),
+            max_context_size: None,
+            max_output_tokens: Some(1024),
+            source: ModelInfoSource::Server,
+        }];
+        let mut config = LocalConfig::new();
+        config.set(
+            "gate/completions/primary",
+            structfs_serde_store::to_value(&role).unwrap(),
+        );
+        config.set(
+            "gate/accounts/anthropic/models",
+            structfs_serde_store::to_value(&catalog).unwrap(),
+        );
+
+        let gate = GateStore::new().with_config(Box::new(config));
+
         let shared_log = SharedLog::new();
         let mut ns = Namespace::new();
         ns.mount(
@@ -238,18 +270,8 @@ mod tests {
         );
         ns.mount("history", Box::new(HistoryView::new(shared_log.clone())));
         ns.mount("tools", Box::new(ox_tools::ToolStore::empty()));
-        ns.mount("gate", Box::new(GateStore::new()));
+        ns.mount("gate", Box::new(gate));
         ns.mount("log", Box::new(LogStore::from_shared(shared_log)));
-        ns.write(
-            &structfs_core_store::path!("gate/defaults/model"),
-            Record::parsed(Value::String("test-model".into())),
-        )
-        .unwrap();
-        ns.write(
-            &structfs_core_store::path!("gate/defaults/max_tokens"),
-            Record::parsed(Value::Integer(1024)),
-        )
-        .unwrap();
         ns
     }
 

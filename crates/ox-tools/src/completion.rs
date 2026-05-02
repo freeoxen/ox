@@ -403,9 +403,15 @@ mod tests {
 
     #[test]
     fn gate_store_accessible_by_path() {
+        // O2: `defaults/*` was removed from GateStore. The post-O2 gate
+        // surface for the model/account pair is `completions/primary`,
+        // which always returns Some(Record) (config handle override or
+        // built-in fallback role). This test pins that the wrapping
+        // CompletionModule routes a gate-namespace read through the
+        // contained gate without mangling it.
         let gate = GateStore::new();
         let mut module = CompletionModule::new(gate);
-        let result = module.read_gate("defaults/account");
+        let result = module.read_gate("completions/primary");
         assert!(result.is_some());
     }
 
@@ -413,7 +419,7 @@ mod tests {
     fn reader_delegates_to_gate() {
         let gate = GateStore::new();
         let mut module = CompletionModule::new(gate);
-        let result = module.read(&structfs_core_store::path!("defaults/account"));
+        let result = module.read(&structfs_core_store::path!("completions/primary"));
         assert!(result.is_ok());
     }
 
@@ -581,10 +587,14 @@ mod tests {
 
     #[test]
     fn writer_delegates_non_complete_paths_to_gate() {
+        // GateStore accepts writes to its known paths — exercise the
+        // accounts surface (a stable, post-O2 mutable shape on the gate)
+        // and confirm the CompletionModule routes a non-`complete/*` write
+        // through to the gate. Pre-O2 used `defaults/model`, which was
+        // removed when Defaults retired.
         let mut module = CompletionModule::new(GateStore::new());
-        // GateStore accepts writes to its known paths like defaults/model
-        let path = structfs_core_store::path!("defaults/model");
-        let result = module.write(&path, Record::parsed(Value::String("gpt-4o".into())));
+        let path = structfs_core_store::path!("accounts/anthropic/provider");
+        let result = module.write(&path, Record::parsed(Value::String("anthropic".into())));
         assert!(result.is_ok());
     }
 

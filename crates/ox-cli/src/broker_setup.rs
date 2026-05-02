@@ -658,20 +658,24 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn thread_model_reads_from_gate_store() {
+    async fn thread_completion_role_reads_from_gate_store_fallback() {
         let handle = test_setup().await;
         let client = handle.client();
 
-        // Read model for a thread — uses GateStore default
-        let model = client
-            .read(&path!("threads/t_test/gate/defaults/model"))
+        // Read the primary completion role for a thread. With no role seeded
+        // in the broker config, GateStore falls back to its built-in
+        // (FALLBACK_ACCOUNT, FALLBACK_MODEL) pair — the post-O2 replacement
+        // for the retired `gate/defaults/{account, model}` reads.
+        let role_record = client
+            .read(&path!("threads/t_test/gate/completions/primary"))
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(
-            model.as_value().unwrap(),
-            &Value::String("claude-sonnet-4-20250514".into())
-        );
+        let role: ox_types::CompletionRole = match role_record.as_value().unwrap() {
+            v => structfs_serde_store::from_value(v.clone()).unwrap(),
+        };
+        assert_eq!(role.account, "anthropic");
+        assert_eq!(role.model_id, "claude-sonnet-4-20250514");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -700,20 +704,34 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn thread_gate_reads_model_from_config() {
+    async fn thread_gate_reads_completion_role_from_config() {
         let handle = test_setup().await;
         let client = handle.client();
 
-        // GateStore config handle reads gate/defaults/model from ConfigStore
-        let model = client
-            .read(&path!("threads/t_cfg/gate/defaults/model"))
+        // Seed the broker-config `gate/completions/primary` with an explicit
+        // CompletionRole, then read it back through the per-thread
+        // GateStore's config handle. Replaces the pre-O2
+        // `thread_gate_reads_model_from_config` test which exercised the
+        // retired `gate/defaults/model` path.
+        let role = ox_types::CompletionRole {
+            account: "openai".to_string(),
+            model_id: "gpt-4o-mini".to_string(),
+        };
+        client
+            .write_typed(&path!("config/gate/completions/primary"), &role)
+            .await
+            .unwrap();
+
+        let record = client
+            .read(&path!("threads/t_cfg/gate/completions/primary"))
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(
-            model.as_value().unwrap(),
-            &Value::String("claude-sonnet-4-20250514".into())
-        );
+        let resolved: ox_types::CompletionRole = match record.as_value().unwrap() {
+            v => structfs_serde_store::from_value(v.clone()).unwrap(),
+        };
+        assert_eq!(resolved.account, "openai");
+        assert_eq!(resolved.model_id, "gpt-4o-mini");
     }
 
     // -- Performance floor via linearity ratio ------------------------

@@ -317,14 +317,23 @@ mod tests {
         let sys_snap = unwrap_value(ns.read(&path!("system/snapshot/state")).unwrap().unwrap());
         let gate_snap = unwrap_value(ns.read(&path!("gate/snapshot/state")).unwrap().unwrap());
 
+        // Mutate live state in both mounts, then restore each mount from
+        // the snapshot we captured above. The system prompt and the gate's
+        // provider catalog should both revert to their pre-mutation values.
+        // (Pre-O2 this used `gate/defaults/model`; with Defaults retired,
+        // an account-name override is the equivalent mutable gate surface.)
         ns.write(
             &path!("system"),
             Record::parsed(Value::String("changed".to_string())),
         )
         .unwrap();
+        let mutated_account = ox_gate::AccountConfig {
+            provider: "openai".to_string(),
+        };
+        let mutated_value = structfs_serde_store::to_value(&mutated_account).unwrap();
         ns.write(
-            &path!("gate/defaults/model"),
-            Record::parsed(Value::String("gpt-4o".to_string())),
+            &path!("gate/accounts/anthropic"),
+            Record::parsed(mutated_value),
         )
         .unwrap();
 
@@ -335,7 +344,11 @@ mod tests {
 
         let val = unwrap_value(ns.read(&path!("system")).unwrap().unwrap());
         assert_eq!(val, Value::String("original".to_string()));
-        let val = unwrap_value(ns.read(&path!("gate/defaults/model")).unwrap().unwrap());
-        assert_eq!(val, Value::String("claude-sonnet-4-20250514".to_string()));
+        let val = unwrap_value(
+            ns.read(&path!("gate/accounts/anthropic/provider"))
+                .unwrap()
+                .unwrap(),
+        );
+        assert_eq!(val, Value::String("anthropic".to_string()));
     }
 }

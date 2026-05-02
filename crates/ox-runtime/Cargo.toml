@@ -22,3 +22,5 @@ wasmtime = "29"
 
 [dev-dependencies]
 tempfile = "3"
+ox-store-util = { path = "../ox-store-util" }
+ox-types = { path = "../ox-types" }

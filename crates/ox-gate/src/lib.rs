@@ -35,25 +35,15 @@ use std::collections::{BTreeMap, HashMap};
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Store, Value, Writer};
 use structfs_serde_store::{from_value, to_value};
 
-/// Session defaults — which account, model, and token limit to use.
-#[derive(Debug, Clone)]
-struct Defaults {
-    account: String,
-    model: String,
-    max_tokens: u32,
-}
+/// Account name handed back by `completions/primary` when no config handle
+/// has been attached. Kept as a const so the gate has a working default for
+/// ox-core / unit-test contexts that never seed a role.
+const FALLBACK_ACCOUNT: &str = "anthropic";
 
-impl Defaults {
-    fn new() -> Self {
-        Self {
-            account: "anthropic".to_string(),
-            model: "claude-sonnet-4-20250514".to_string(),
-            max_tokens: 4096,
-        }
-    }
-}
+/// Model id paired with [`FALLBACK_ACCOUNT`] in the same fallback role.
+const FALLBACK_MODEL: &str = "claude-sonnet-4-20250514";
 
-/// Gate store — manages providers, accounts, model catalogs, and session defaults.
+/// Gate store — manages providers, accounts, and model catalogs.
 ///
 /// Mount this at `"gate"` in the namespace. Read/write paths:
 ///
@@ -63,13 +53,12 @@ impl Defaults {
 /// - `accounts/{name}/key` — API key (read-only; resolved from the secrets
 ///   handle at `keys/{name}`, i.e. `secret/keys/{name}` at broker root)
 /// - `accounts/{name}/provider` — provider name
-/// - `defaults/account` — name of the default account
-/// - `defaults/model` — default model ID (falls back to config handle)
-/// - `defaults/max_tokens` — default token limit (falls back to config handle)
+/// - `completions/primary` — [`CompletionRole`] naming the (account, model)
+///   pair the kernel should drive next; resolved from the attached config
+///   handle, falling back to a built-in role when none is wired.
 pub struct GateStore {
     providers: HashMap<String, ProviderConfig>,
     accounts: HashMap<String, AccountConfig>,
-    defaults: Defaults,
     catalogs: HashMap<String, Vec<ModelInfo>>,
     config: Option<Box<dyn Store + Send + Sync>>,
     /// Secrets handle. Reads `keys/{name}: ApiKey` for the
@@ -104,7 +93,6 @@ impl GateStore {
         Self {
             providers,
             accounts,
-            defaults: Defaults::new(),
             catalogs: HashMap::new(),
             config: None,
             secrets: None,
@@ -113,9 +101,10 @@ impl GateStore {
 
     /// Attach a config handle for config-aware reads.
     ///
-    /// When reading defaults and account-shape fields, GateStore checks the
-    /// config handle first, falling back to local fields. API keys come from
-    /// the *secrets* handle — see [`with_secrets`].
+    /// When reading account-, provider-, or completion-shape fields, the
+    /// GateStore checks the config handle first, falling back to local
+    /// fields. API keys come from the *secrets* handle — see
+    /// [`with_secrets`].
     pub fn with_config(mut self, config: Box<dyn Store + Send + Sync>) -> Self {
         self.config = Some(config);
         self
@@ -233,24 +222,6 @@ impl GateStore {
         }
     }
 
-    /// Read an integer value from the config handle at the given path.
-    fn config_integer(&mut self, path_str: &str) -> Option<i64> {
-        let config = self.config.as_mut()?;
-        let path = Path::parse(path_str).ok()?;
-        let record = config.read(&path).ok()??;
-        match record.as_value() {
-            Some(Value::Integer(n)) => {
-                tracing::debug!(
-                    path = path_str,
-                    value = n,
-                    "config integer read from handle"
-                );
-                Some(*n)
-            }
-            _ => None,
-        }
-    }
-
     /// Generate [`ToolSchema`]s for all accounts with API keys set.
     pub fn completion_tool_schemas(&mut self) -> Vec<ToolSchema> {
         let names: Vec<String> = self.accounts.keys().cloned().collect();
@@ -296,24 +267,9 @@ impl GateStore {
             .collect()
     }
 
-    /// Build the snapshot state: defaults + providers + accounts (keys excluded).
+    /// Build the snapshot state: providers + accounts (keys excluded).
     fn snapshot_state(&self) -> Value {
         let mut state = BTreeMap::new();
-
-        let mut defaults_map = BTreeMap::new();
-        defaults_map.insert(
-            "account".to_string(),
-            Value::String(self.defaults.account.clone()),
-        );
-        defaults_map.insert(
-            "model".to_string(),
-            Value::String(self.defaults.model.clone()),
-        );
-        defaults_map.insert(
-            "max_tokens".to_string(),
-            Value::Integer(self.defaults.max_tokens as i64),
-        );
-        state.insert("defaults".to_string(), Value::Map(defaults_map));
 
         let mut providers_map = BTreeMap::new();
         for (name, config) in &self.providers {
@@ -349,21 +305,12 @@ impl GateStore {
             }
         };
 
-        if let Some(Value::Map(defaults)) = state_map.get("defaults") {
-            if let Some(Value::String(a)) = defaults.get("account") {
-                self.defaults.account = a.clone();
-            }
-            if let Some(Value::String(m)) = defaults.get("model") {
-                self.defaults.model = m.clone();
-            }
-            if let Some(Value::Integer(n)) = defaults.get("max_tokens") {
-                self.defaults.max_tokens = *n as u32;
-            }
-        }
-        // Backwards compat: old snapshots have "bootstrap" at top level
-        if let Some(Value::String(b)) = state_map.get("bootstrap") {
-            self.defaults.account = b.clone();
-        }
+        // Older snapshots may carry a top-level `defaults` map or the legacy
+        // `bootstrap` field; both encoded a session-defaults shape that O2
+        // retired. They are intentionally ignored here — the live state a
+        // snapshot now restores is providers + accounts. CompletionRole (the
+        // post-O1 replacement for the `defaults` shape) lives in the broker
+        // config store, which has its own ledger entries and snapshot path.
 
         if let Some(providers_val) = state_map.get("providers") {
             let providers_json = structfs_serde_store::value_to_json(providers_val.clone());
@@ -409,49 +356,6 @@ impl Reader for GateStore {
 
         let first = from.components[0].as_str();
         match first {
-            "defaults" => {
-                if from.components.len() < 2 {
-                    return Ok(None);
-                }
-                let field = from.components[1].as_str();
-                match field {
-                    "account" => {
-                        if let Some(s) = self.config_string("gate/defaults/account") {
-                            tracing::debug!(account = %s, "defaults/account from config");
-                            return Ok(Some(Record::parsed(Value::String(s))));
-                        }
-                        tracing::debug!(account = %self.defaults.account, "defaults/account from local");
-                        Ok(Some(Record::parsed(Value::String(
-                            self.defaults.account.clone(),
-                        ))))
-                    }
-                    "model" => {
-                        if let Some(s) = self.config_string("gate/defaults/model") {
-                            tracing::debug!(model = %s, "defaults/model from config");
-                            return Ok(Some(Record::parsed(Value::String(s))));
-                        }
-                        tracing::debug!(model = %self.defaults.model, "defaults/model from local");
-                        Ok(Some(Record::parsed(Value::String(
-                            self.defaults.model.clone(),
-                        ))))
-                    }
-                    "max_tokens" => {
-                        if let Some(n) = self.config_integer("gate/defaults/max_tokens") {
-                            tracing::debug!(max_tokens = n, "defaults/max_tokens from config");
-                            return Ok(Some(Record::parsed(Value::Integer(n))));
-                        }
-                        tracing::debug!(
-                            max_tokens = self.defaults.max_tokens,
-                            "defaults/max_tokens from local"
-                        );
-                        Ok(Some(Record::parsed(Value::Integer(
-                            self.defaults.max_tokens as i64,
-                        ))))
-                    }
-                    _ => Ok(None),
-                }
-            }
-
             "providers" => {
                 if from.components.len() < 2 {
                     return Ok(None);
@@ -564,9 +468,10 @@ impl Reader for GateStore {
             //
             // When no config handle is attached (ox-core unit tests, etc.)
             // and the path is `completions/primary`, fall back to a
-            // built-in CompletionRole pointing at the same defaults the
-            // pre-O1 `gate/defaults/{model,account}` handed out — kernel
-            // tests that don't seed a role still get a usable default.
+            // built-in CompletionRole pointing at the FALLBACK_ACCOUNT /
+            // FALLBACK_MODEL constants — same pair the retired session-
+            // defaults shape handed out, so kernel tests that never seed a
+            // role still get a usable default.
             "completions" => {
                 if let Some(handle) = self.config.as_mut() {
                     let mut full = vec!["gate".to_string()];
@@ -579,8 +484,8 @@ impl Reader for GateStore {
                 }
                 if from.components.len() == 2 && from.components[1].as_str() == "primary" {
                     let role = ox_types::CompletionRole {
-                        account: self.defaults.account.clone(),
-                        model_id: self.defaults.model.clone(),
+                        account: FALLBACK_ACCOUNT.to_string(),
+                        model_id: FALLBACK_MODEL.to_string(),
                     };
                     let value = to_value(&role)
                         .map_err(|e| StoreError::store("gate", "read", e.to_string()))?;
@@ -602,57 +507,6 @@ impl Writer for GateStore {
 
         let first = to.components[0].as_str();
         match first {
-            "defaults" => {
-                if to.components.len() < 2 {
-                    return Err(StoreError::store(
-                        "gate",
-                        "write",
-                        "defaults requires a field name",
-                    ));
-                }
-                let field = to.components[1].as_str();
-                match field {
-                    "account" => match data {
-                        Record::Parsed(Value::String(s)) => {
-                            self.defaults.account = s;
-                            Ok(to.clone())
-                        }
-                        _ => Err(StoreError::store(
-                            "gate",
-                            "write",
-                            "expected string for defaults/account",
-                        )),
-                    },
-                    "model" => match data {
-                        Record::Parsed(Value::String(s)) => {
-                            self.defaults.model = s;
-                            Ok(to.clone())
-                        }
-                        _ => Err(StoreError::store(
-                            "gate",
-                            "write",
-                            "expected string for defaults/model",
-                        )),
-                    },
-                    "max_tokens" => match data {
-                        Record::Parsed(Value::Integer(n)) => {
-                            self.defaults.max_tokens = n as u32;
-                            Ok(to.clone())
-                        }
-                        _ => Err(StoreError::store(
-                            "gate",
-                            "write",
-                            "expected integer for defaults/max_tokens",
-                        )),
-                    },
-                    _ => Err(StoreError::store(
-                        "gate",
-                        "write",
-                        format!("unknown defaults field: {field}"),
-                    )),
-                }
-            }
-
             "providers" => {
                 if to.components.len() < 2 {
                     return Err(StoreError::store(
@@ -871,68 +725,21 @@ mod tests {
     }
 
     #[test]
-    fn test_defaults_roundtrip() {
+    fn completions_primary_falls_back_to_built_in_role_when_no_config() {
+        // No config handle: completions/primary returns the built-in
+        // CompletionRole baked from FALLBACK_ACCOUNT/FALLBACK_MODEL. This is
+        // the contract that ox-core unit tests and other handle-less callers
+        // depend on now that GateStore no longer carries session-defaults
+        // state on the struct.
         let mut gate = GateStore::new();
-
-        // Default account is "anthropic"
-        let record = gate.read(&path!("defaults/account")).unwrap().unwrap();
-        match record {
-            Record::Parsed(Value::String(s)) => assert_eq!(s, "anthropic"),
-            _ => panic!("expected string"),
-        }
-
-        // Default model
-        let record = gate.read(&path!("defaults/model")).unwrap().unwrap();
-        match record {
-            Record::Parsed(Value::String(s)) => assert_eq!(s, "claude-sonnet-4-20250514"),
-            _ => panic!("expected string"),
-        }
-
-        // Default max_tokens
-        let record = gate.read(&path!("defaults/max_tokens")).unwrap().unwrap();
-        match record {
-            Record::Parsed(Value::Integer(n)) => assert_eq!(n, 4096),
-            _ => panic!("expected integer"),
-        }
-
-        // Set account to "openai"
-        gate.write(
-            &path!("defaults/account"),
-            Record::parsed(Value::String("openai".to_string())),
-        )
-        .unwrap();
-
-        let record = gate.read(&path!("defaults/account")).unwrap().unwrap();
-        match record {
-            Record::Parsed(Value::String(s)) => assert_eq!(s, "openai"),
-            _ => panic!("expected string"),
-        }
-
-        // Set model
-        gate.write(
-            &path!("defaults/model"),
-            Record::parsed(Value::String("gpt-4o".to_string())),
-        )
-        .unwrap();
-
-        let record = gate.read(&path!("defaults/model")).unwrap().unwrap();
-        match record {
-            Record::Parsed(Value::String(s)) => assert_eq!(s, "gpt-4o"),
-            _ => panic!("expected string"),
-        }
-
-        // Set max_tokens
-        gate.write(
-            &path!("defaults/max_tokens"),
-            Record::parsed(Value::Integer(8192)),
-        )
-        .unwrap();
-
-        let record = gate.read(&path!("defaults/max_tokens")).unwrap().unwrap();
-        match record {
-            Record::Parsed(Value::Integer(n)) => assert_eq!(n, 8192),
-            _ => panic!("expected integer"),
-        }
+        let record = gate.read(&path!("completions/primary")).unwrap().unwrap();
+        let value = match record {
+            Record::Parsed(v) => v,
+            _ => panic!("expected parsed record"),
+        };
+        let role: ox_types::CompletionRole = from_value(value).unwrap();
+        assert_eq!(role.account, "anthropic");
+        assert_eq!(role.model_id, "claude-sonnet-4-20250514");
     }
 
     #[test]
@@ -1036,7 +843,9 @@ mod tests {
                 let state = m.get("state").unwrap();
                 match state {
                     Value::Map(sm) => {
-                        assert!(sm.contains_key("defaults"));
+                        // O2: `defaults` is gone; the live snapshot keys are
+                        // providers + accounts.
+                        assert!(!sm.contains_key("defaults"));
                         assert!(sm.contains_key("providers"));
                         assert!(sm.contains_key("accounts"));
                         let accounts = match sm.get("accounts").unwrap() {
@@ -1074,7 +883,9 @@ mod tests {
         let val = unwrap_value(gate.read(&path!("snapshot/state")).unwrap().unwrap());
         match val {
             Value::Map(m) => {
-                assert!(m.contains_key("defaults"));
+                // O2: `defaults` is gone; the live snapshot keys are
+                // providers + accounts.
+                assert!(!m.contains_key("defaults"));
                 assert!(m.contains_key("providers"));
                 assert!(m.contains_key("accounts"));
             }
@@ -1102,6 +913,11 @@ mod tests {
     fn snapshot_write_restores_state() {
         let mut gate = GateStore::new();
 
+        // Older snapshots may carry a `defaults` map at top level — the gate
+        // ignores it now (the kernel reads CompletionRole from the broker
+        // config store instead). The post-O2 contract is that providers and
+        // accounts roundtrip; the rest of the prior `defaults` payload is
+        // dropped on the floor.
         let state_json = serde_json::json!({
             "defaults": {
                 "account": "openai",
@@ -1128,24 +944,6 @@ mod tests {
         gate.write(&path!("snapshot"), Record::parsed(Value::Map(snap_map)))
             .unwrap();
 
-        let val = unwrap_value(gate.read(&path!("defaults/account")).unwrap().unwrap());
-        match val {
-            Value::String(s) => assert_eq!(s, "openai"),
-            _ => panic!("expected string"),
-        }
-
-        let val = unwrap_value(gate.read(&path!("defaults/model")).unwrap().unwrap());
-        match val {
-            Value::String(s) => assert_eq!(s, "gpt-4o"),
-            _ => panic!("expected string"),
-        }
-
-        let val = unwrap_value(gate.read(&path!("defaults/max_tokens")).unwrap().unwrap());
-        match val {
-            Value::Integer(n) => assert_eq!(n, 8192),
-            _ => panic!("expected integer"),
-        }
-
         assert!(gate.read(&path!("providers/anthropic")).unwrap().is_none());
         assert!(gate.read(&path!("providers/openai")).unwrap().is_some());
         assert!(gate.read(&path!("accounts/anthropic")).unwrap().is_none());
@@ -1159,6 +957,12 @@ mod tests {
 
     #[test]
     fn snapshot_restores_legacy_bootstrap_field() {
+        // Pre-O2 snapshots wrote a top-level `bootstrap` string the gate
+        // restored into the session-defaults account slot. With that slot
+        // gone, the field is silently ignored — but the surrounding
+        // providers/accounts payload must still roundtrip. This test pins
+        // that backwards-compatible no-op so we don't regress to an error
+        // path.
         let mut gate = GateStore::new();
         let state_json = serde_json::json!({
             "bootstrap": "openai",
@@ -1179,23 +983,14 @@ mod tests {
         gate.write(&path!("snapshot/state"), Record::parsed(state))
             .unwrap();
 
-        // Legacy "bootstrap" should populate defaults.account
-        let val = unwrap_value(gate.read(&path!("defaults/account")).unwrap().unwrap());
-        match val {
-            Value::String(s) => assert_eq!(s, "openai"),
-            _ => panic!("expected string"),
-        }
+        assert!(gate.read(&path!("providers/openai")).unwrap().is_some());
+        assert!(gate.read(&path!("accounts/openai")).unwrap().is_some());
     }
 
     #[test]
     fn snapshot_write_via_state_path() {
         let mut gate = GateStore::new();
         let state_json = serde_json::json!({
-            "defaults": {
-                "account": "openai",
-                "model": "gpt-4o",
-                "max_tokens": 4096
-            },
             "providers": {
                 "openai": {
                     "dialect": "openai",
@@ -1213,39 +1008,37 @@ mod tests {
         gate.write(&path!("snapshot/state"), Record::parsed(state))
             .unwrap();
 
-        let val = unwrap_value(gate.read(&path!("defaults/account")).unwrap().unwrap());
-        match val {
-            Value::String(s) => assert_eq!(s, "openai"),
-            _ => panic!("expected string"),
-        }
+        assert!(gate.read(&path!("providers/anthropic")).unwrap().is_none());
+        assert!(gate.read(&path!("providers/openai")).unwrap().is_some());
+        assert!(gate.read(&path!("accounts/openai")).unwrap().is_some());
     }
 
     // -- Config handle tests --
 
     #[test]
-    fn config_handle_overrides_defaults_model() {
+    fn config_handle_overrides_completions_primary() {
+        // Replaces the pre-O2 `config_handle_overrides_defaults_model` test.
+        // CompletionRole written under the broker-relative
+        // `gate/completions/primary` is what `gate.read("completions/primary")`
+        // resolves through the config handle, beating the built-in fallback
+        // baked from FALLBACK_ACCOUNT/FALLBACK_MODEL.
         use ox_store_util::LocalConfig;
         let mut config = LocalConfig::new();
-        config.set("gate/defaults/model", Value::String("config-model".into()));
-        let mut gate = GateStore::new().with_config(Box::new(config));
-        let record = gate.read(&path!("defaults/model")).unwrap().unwrap();
-        match record {
-            Record::Parsed(Value::String(s)) => assert_eq!(s, "config-model"),
-            _ => panic!("expected string"),
-        }
-    }
+        let role = ox_types::CompletionRole {
+            account: "openai".to_string(),
+            model_id: "gpt-4o-mini".to_string(),
+        };
+        let value = to_value(&role).unwrap();
+        config.set("gate/completions/primary", value);
 
-    #[test]
-    fn config_handle_overrides_defaults_max_tokens() {
-        use ox_store_util::LocalConfig;
-        let mut config = LocalConfig::new();
-        config.set("gate/defaults/max_tokens", Value::Integer(16384));
         let mut gate = GateStore::new().with_config(Box::new(config));
-        let record = gate.read(&path!("defaults/max_tokens")).unwrap().unwrap();
-        match record {
-            Record::Parsed(Value::Integer(n)) => assert_eq!(n, 16384),
-            _ => panic!("expected integer"),
-        }
+        let record = gate.read(&path!("completions/primary")).unwrap().unwrap();
+        let resolved: ox_types::CompletionRole = match record {
+            Record::Parsed(v) => from_value(v).unwrap(),
+            _ => panic!("expected parsed record"),
+        };
+        assert_eq!(resolved.account, "openai");
+        assert_eq!(resolved.model_id, "gpt-4o-mini");
     }
 
     #[test]
@@ -1266,7 +1059,9 @@ mod tests {
     fn secrets_handle_overrides_non_bootstrap_account_key() {
         let secrets = secrets_with(&[("openai", "sk-openai-secret")]);
         let mut gate = GateStore::new().with_secrets(Box::new(secrets));
-        // defaults.account is "anthropic", but secrets provides openai key
+        // The built-in account is "anthropic", but secrets provides an
+        // openai key. The synthetic accounts/{name}/key read still surfaces
+        // it without needing a primary completion role.
         let record = gate.read(&path!("accounts/openai/key")).unwrap().unwrap();
         match record {
             Record::Parsed(Value::String(s)) => assert_eq!(s, "sk-openai-secret"),
@@ -1299,21 +1094,22 @@ mod tests {
     }
 
     #[test]
-    fn config_handle_falls_back_to_local_defaults() {
+    fn defaults_path_is_no_longer_routed() {
+        // O2 deleted the `defaults/*` arm. Reads return None (the trailing
+        // catch-all in match), and writes return an "unknown path" error.
+        // This test guards the deletion: any reintroduction of a session-
+        // defaults shaped surface should be an explicit, deliberate change.
         let mut gate = GateStore::new();
-        // No config handle — should return local defaults
-        let record = gate.read(&path!("defaults/model")).unwrap().unwrap();
-        match record {
-            Record::Parsed(Value::String(s)) => {
-                assert_eq!(s, "claude-sonnet-4-20250514");
-            }
-            _ => panic!("expected string"),
-        }
+        assert!(gate.read(&path!("defaults/model")).unwrap().is_none());
+        assert!(gate.read(&path!("defaults/account")).unwrap().is_none());
+        assert!(gate.read(&path!("defaults/max_tokens")).unwrap().is_none());
 
-        let record = gate.read(&path!("defaults/max_tokens")).unwrap().unwrap();
-        match record {
-            Record::Parsed(Value::Integer(n)) => assert_eq!(n, 4096),
-            _ => panic!("expected integer"),
-        }
+        let err = gate
+            .write(
+                &path!("defaults/model"),
+                Record::parsed(Value::String("gpt-4o".into())),
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("unknown path"));
     }
 }

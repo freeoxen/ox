@@ -406,12 +406,18 @@ mod tests {
             _ => panic!("expected string"),
         }
 
-        // Verify model (now read from gate store defaults)
-        let record = ns2.read(&path!("gate/defaults/model")).unwrap().unwrap();
-        match record.as_value().unwrap() {
-            structfs_core_store::Value::String(s) => assert_eq!(s, "claude-sonnet-4-20250514"),
-            _ => panic!("expected string"),
-        }
+        // Verify the gate's primary completion role roundtrips. Pre-O2 this
+        // pinned `gate/defaults/model`; with Defaults retired, the gate
+        // hands back its built-in fallback CompletionRole when no config
+        // handle is attached, which is what `build_namespace` produces.
+        let record = ns2
+            .read(&path!("gate/completions/primary"))
+            .unwrap()
+            .unwrap();
+        let role: ox_gate::CompletionRole =
+            structfs_serde_store::from_value(record.as_value().unwrap().clone()).unwrap();
+        assert_eq!(role.account, "anthropic");
+        assert_eq!(role.model_id, "claude-sonnet-4-20250514");
 
         // Verify history (1 message)
         let record = ns2.read(&path!("history/count")).unwrap().unwrap();

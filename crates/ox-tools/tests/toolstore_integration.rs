@@ -47,17 +47,19 @@ fn routes_fs_read() {
 }
 
 #[test]
-fn routes_completions_defaults() {
+fn routes_completions_primary_role() {
     let tmp = tempfile::tempdir().unwrap();
     let mut store = make_tool_store(tmp.path());
 
-    // GateStore should have a default account
+    // GateStore (post-O2) hands back a built-in primary CompletionRole
+    // when no config handle is attached. Pre-O2 this test exercised the
+    // retired `completions/defaults/account` shape.
     let result = store
-        .read(&oxpath!("completions", "defaults", "account"))
+        .read(&oxpath!("completions", "completions", "primary"))
         .unwrap();
     assert!(
         result.is_some(),
-        "expected Some for completions/defaults/account"
+        "expected Some for completions/completions/primary"
     );
 }
 
