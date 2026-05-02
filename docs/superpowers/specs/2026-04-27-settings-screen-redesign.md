@@ -77,12 +77,12 @@ loop {
     let view: View = registry.render(&cursor, &snap);          // sync, pure
     view::render_to_frame(&view, &mut terminal)?;              // sync, pure translation
     let key = next_key().await;                                // async
-    let writes = dispatch(&snap, screen, &cursor, key, &cmds, &bindings);
+    let writes = dispatch(&mut snap, screen, &cursor, key, &cmds, &bindings);
     for w in writes { client.write(&w.path, w.record).await?; }
 }
 ```
 
-**Pre-fetch budget.** v1 assumes the renderer's read set is ≤ O(1k) records and refetches the relevant subtree between frames. The settings screen is well within that — accounts × catalog entries × UI pointers totals to a few hundred. When a future screen exceeds the budget, the path forward is subscription-driven incremental snapshots: the snapshot mutates in place when watched paths change, and the renderer is invoked with the same `&dyn Reader` interface. The View enum's structural diffability supports incremental rendering atop that. Both are forward-compatible with v1 without changing renderer signatures.
+**Pre-fetch budget.** v1 assumes the renderer's read set is ≤ O(1k) records and refetches the relevant subtree between frames. The settings screen is well within that — accounts × catalog entries × UI pointers totals to a few hundred. When a future screen exceeds the budget, the path forward is subscription-driven incremental snapshots: the snapshot mutates in place when watched paths change, and the renderer is invoked with the same `&mut dyn Reader` interface. The View enum's structural diffability supports incremental rendering atop that. Both are forward-compatible with v1 without changing renderer signatures.
 
 ### 3.3 The subscription protocol (over StructFS)
 
@@ -172,7 +172,7 @@ Consequence for the display tree: cursors don't carry captures. Pages with insta
 
 Everything that crosses the broker boundary is `serde`-serialized but statically typed at both ends. Producer and consumer both know the type; serde mediates the wire form. The compiler enforces shape at every read/write site. Adding a new record kind requires Rust changes; adding a new instance of an existing record kind is a typed write to a path.
 
-Renderers consume `&dyn Reader` and emit `View` — both typed. Commands consume `&dyn Reader` and emit `Vec<Write>` — both typed. Subscriptions consume snapshot+change and emit writes — same. There is no untyped intermediate stage.
+Renderers consume `&mut dyn Reader` and emit `View` — both typed. Commands consume `&mut dyn Reader` and emit `Vec<Write>` — both typed. Subscriptions consume snapshot+change and emit writes — same. There is no untyped intermediate stage.
 
 ### 3.6 Why this works in this codebase
 
@@ -225,13 +225,13 @@ A renderer is a *pure function* from a Reader to a View. It cannot draw, await, 
 
 ```rust
 pub trait Renderer: Send + Sync {
-    fn render(&self, ctx: &RenderCtx) -> View;
+    fn render(&self, ctx: &mut RenderCtx<'_>) -> View;
     fn ascend_to(&self) -> AscendRule;
 }
 
 pub struct RenderCtx<'a> {
     pub area:     Rect,
-    pub data:     &'a dyn Reader,
+    pub data:     &'a mut dyn Reader,
     pub registry: &'a RendererRegistry,
     pub theme:    &'a Theme,
 }
@@ -239,7 +239,7 @@ pub struct RenderCtx<'a> {
 pub struct RendererRegistry { specs: HashMap<Path, Box<dyn Renderer>> }
 
 impl RendererRegistry {
-    pub fn render(&self, cursor: &Path, ctx: &RenderCtx) -> View {
+    pub fn render(&self, cursor: &Path, ctx: &mut RenderCtx<'_>) -> View {
         match self.specs.get(cursor) {
             Some(r) => r.render(ctx),
             None    => View::unknown_cursor_fallback(cursor),
@@ -249,10 +249,12 @@ impl RendererRegistry {
 }
 ```
 
+> Reader signatures are `&mut dyn Reader` throughout (Renderer, Command, RenderCtx, CommandCtx, SubCtx, dispatch, the event-loop snippet). `Reader::read` is `&mut self` because production Reader implementations (`LiveReader`, `LocalConfig`) hold lazy decode caches — the mutation is internal to the Reader, not to observable application state. Renderers and commands remain pure with respect to the namespace.
+
 **Composition is value-shaped, not call-shaped.** A modal-over-page renderer constructs its View from sub-Views by calling the registry recursively and wrapping:
 
 ```rust
-fn render(&self, ctx: &RenderCtx) -> View {
+fn render(&self, ctx: &mut RenderCtx<'_>) -> View {
     let parent = ctx.registry.render(&oxpath!("settings","accounts"), ctx);
     let modal  = self.render_modal_body(ctx);
     View::Modal { background: Box::new(parent), foreground: Box::new(modal), dim: true }
@@ -270,7 +272,7 @@ pub trait Command: Send + Sync {
     fn id(&self)      -> &CommandId;
     fn display(&self) -> &CommandDisplay;
     fn scope(&self)   -> &CommandScope;
-    fn run(&self, snapshot: &dyn Reader, ctx: &CommandCtx<'_>) -> Vec<Write>;
+    fn run(&self, snapshot: &mut dyn Reader, ctx: &CommandCtx<'_>) -> Vec<Write>;
 }
 
 /// Non-data services a command may legitimately need.
@@ -288,7 +290,7 @@ There is **no on-the-wire effect DSL.** No `PathTemplate`, no `PayloadSource`, n
 
 **What goes where.** Commands take inputs from three places, by category:
 
-- **Data inputs** → `&dyn Reader`. Anything stored in the namespace: selection pointers, draft text, focused-field pointers, all of `config/*`, all of `ui/*`.
+- **Data inputs** → `&mut dyn Reader`. Anything stored in the namespace: selection pointers, draft text, focused-field pointers, all of `config/*`, all of `ui/*`.
 - **Per-invocation non-data inputs** → `CommandCtx`. Things the dispatcher knows that vary per dispatch and aren't namespace-shaped: the renderer registry (a static structural reference, not data), the just-pressed key.
 - **Ambient services** → captured at command construction. Transport clients, config dirs, anything resolved once at startup. Subscriptions follow the same rule.
 
