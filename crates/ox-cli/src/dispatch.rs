@@ -195,6 +195,15 @@ async fn send_via_input_store(
 /// - `"Ctrl+x"` → `Char('x')` with `ctrl: true`.
 /// - `"Ctrl+Enter"` → `Enter` with `ctrl: true`.
 fn parse_key_str(s: &str) -> Option<KeyChord> {
+    // Encoder convention: KeyCode::BackTab → "Shift+Tab" wire string.
+    // Bindings register KeyChord { shift: true, code: BackTab }, so we
+    // must produce that exact chord rather than Tab+shift.
+    if s == "Shift+Tab" {
+        return Some(KeyChord {
+            modifiers: KeyModifierSet { shift: true, ..KeyModifierSet::default() },
+            code: KeyCodeRepr::BackTab,
+        });
+    }
     if let Some(rest) = s.strip_prefix("Ctrl+") {
         let mut chord = parse_key_str(rest)?;
         chord.modifiers.ctrl = true;
@@ -226,12 +235,6 @@ fn parse_key_str(s: &str) -> Option<KeyChord> {
         "Home"      => KeyCodeRepr::Home,
         "End"       => KeyCodeRepr::End,
         "Insert"    => KeyCodeRepr::Insert,
-        // The encoder writes "Shift+Tab" for BackTab; the explicit
-        // recursion at the top handles that prefix and falls into the
-        // `Tab` branch — but the bindings table registers BackTab as a
-        // distinct code. Detect the bare token here for callers that
-        // build the string directly.
-        "BackTab"   => KeyCodeRepr::BackTab,
         _ => {
             let mut chars = s.chars();
             let c = chars.next()?;
@@ -317,6 +320,19 @@ mod tests {
     fn parse_unknown_returns_none() {
         assert!(parse_key_str("F1").is_none());
         assert!(parse_key_str("absolutelyNotAKey").is_none());
+    }
+
+    #[test]
+    fn parse_shift_tab_yields_back_tab() {
+        // Encoder writes "Shift+Tab" for KeyCode::BackTab; bindings
+        // register `KeyChord { shift: true, code: BackTab }`. The parser
+        // must produce that exact chord — not `Tab` with `shift: true`,
+        // which would silently miss the binding.
+        let chord = parse_key_str("Shift+Tab").expect("parsed");
+        assert!(chord.modifiers.shift);
+        assert!(!chord.modifiers.ctrl);
+        assert!(!chord.modifiers.alt);
+        assert!(matches!(chord.code, KeyCodeRepr::BackTab));
     }
 
     // -------- send_key integration tests ----------------------------------
