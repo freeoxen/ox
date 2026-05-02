@@ -162,7 +162,6 @@ pub async fn run_async(
     crate::settings::bindings::register(&mut settings_bindings);
 
     loop {
-
         // -----------------------------------------------------------------
         // 1. Fetch, draw, extract what we need — scope ViewState tightly
         // -----------------------------------------------------------------
@@ -253,8 +252,8 @@ pub async fn run_async(
             let mut settings_view: Option<View> = None;
             if matches!(&vs.ui.screen, ScreenSnapshot::Settings(_)) {
                 let mut snap = fetch_settings_view_state(client).await;
-                let cursor = read_settings_cursor(&mut snap)
-                    .unwrap_or_else(|| oxpath!("settings", "index"));
+                let cursor =
+                    read_settings_cursor(&mut snap).unwrap_or_else(|| oxpath!("settings", "index"));
                 let area = terminal.get_frame().area();
                 let mut ctx = RenderCtx {
                     area,
@@ -571,9 +570,7 @@ pub async fn run_async(
                     // registry pipeline (would need a per-cursor
                     // text-paste command). The bespoke path that lived
                     // here is gone with the rest of the legacy shell.
-                    if !matches!(&ui.screen, ScreenSnapshot::Settings(_))
-                        && ui.editor().is_some()
-                    {
+                    if !matches!(&ui.screen, ScreenSnapshot::Settings(_)) && ui.editor().is_some() {
                         thread.input_session.insert(&text, EditSource::Paste);
                     }
                 }
@@ -905,10 +902,7 @@ async fn dispatch_key(
             // Clear the flag first so we don't loop on the next frame.
             let _ = client.write_typed(&exit_path, &false).await;
             let _ = client
-                .write_typed(
-                    &oxpath!("ui"),
-                    &UiCommand::Global(GlobalCommand::GoToInbox),
-                )
+                .write_typed(&oxpath!("ui"), &UiCommand::Global(GlobalCommand::GoToInbox))
                 .await;
         }
     }

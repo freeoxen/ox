@@ -100,7 +100,9 @@ pub struct CreateAccountRequest {
 mod tests {
     use super::*;
 
-    fn json_roundtrip<T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug>(
+    fn json_roundtrip<
+        T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug,
+    >(
         value: T,
     ) {
         let json = serde_json::to_string(&value).expect("serialize");

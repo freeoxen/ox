@@ -60,11 +60,13 @@ use std::sync::{Arc, RwLock as StdRwLock};
 use std::time::Duration;
 use tokio::sync::Mutex;
 
-use structfs_core_store::{Error as StoreError, Path, Record, Reader, Writer};
+use structfs_core_store::{Error as StoreError, Path, Reader, Record, Writer};
 
 use crate::async_store::BoxFuture;
 use crate::dispatching_store::{DispatchingStore, SnapshotReader, TokioSpawnHandle};
-use crate::subscription::{AsyncWriter as SubAsyncWriter, SpawnHandle, Subscription, SubscriptionRegistry};
+use crate::subscription::{
+    AsyncWriter as SubAsyncWriter, SpawnHandle, Subscription, SubscriptionRegistry,
+};
 
 /// Default cascade bound — the maximum depth of subscription-triggered
 /// recursive writes. Per spec §3.3, default 64.
@@ -90,18 +92,10 @@ impl SubAsyncWriter for BrokerSubstrate {
             tokio::time::timeout(timeout, rx)
                 .await
                 .map_err(|_| {
-                    StoreError::store(
-                        "broker",
-                        "write",
-                        format!("timeout writing '{}'", path),
-                    )
+                    StoreError::store("broker", "write", format!("timeout writing '{}'", path))
                 })?
                 .map_err(|_| {
-                    StoreError::store(
-                        "broker",
-                        "write",
-                        format!("server dropped for '{}'", path),
-                    )
+                    StoreError::store("broker", "write", format!("server dropped for '{}'", path))
                 })?
         })
     }
@@ -135,11 +129,7 @@ impl BrokerSnapshotReader {
                 tokio::time::timeout(timeout, rx)
                     .await
                     .map_err(|_| {
-                        StoreError::store(
-                            "broker",
-                            "read",
-                            format!("timeout reading '{}'", path),
-                        )
+                        StoreError::store("broker", "read", format!("timeout reading '{}'", path))
                     })?
                     .map_err(|_| {
                         StoreError::store(
@@ -187,11 +177,7 @@ impl Reader for LiveReader {
                 tokio::time::timeout(timeout, rx)
                     .await
                     .map_err(|_| {
-                        StoreError::store(
-                            "broker",
-                            "read",
-                            format!("timeout reading '{}'", path),
-                        )
+                        StoreError::store("broker", "read", format!("timeout reading '{}'", path))
                     })?
                     .map_err(|_| {
                         StoreError::store(
@@ -656,10 +642,7 @@ mod integration_tests {
 
         assert_eq!(entries.len(), 1);
         let record = entries.get(&path!("config/completions/primary")).unwrap();
-        assert_eq!(
-            record.as_value().unwrap(),
-            &Value::String("alpha".into()),
-        );
+        assert_eq!(record.as_value().unwrap(), &Value::String("alpha".into()),);
     }
 
     #[tokio::test]
@@ -899,9 +882,6 @@ mod integration_tests {
 
         // The status path should now hold "ok".
         let status = client.read(&path!("status/last")).await.unwrap().unwrap();
-        assert_eq!(
-            status.as_value().unwrap(),
-            &Value::String("ok".to_string()),
-        );
+        assert_eq!(status.as_value().unwrap(), &Value::String("ok".to_string()),);
     }
 }

@@ -243,13 +243,7 @@ mod tests {
             prefix: oxpath!("config", "gate", "accounts"),
             suffix: oxpath!("test_now"),
         };
-        assert!(!pat.matches(&oxpath!(
-            "config",
-            "gate",
-            "accounts",
-            "foo",
-            "refresh_now"
-        )));
+        assert!(!pat.matches(&oxpath!("config", "gate", "accounts", "foo", "refresh_now")));
     }
 
     #[test]

@@ -38,8 +38,8 @@ pub(crate) mod inbox_shell;
 pub(crate) mod inbox_view;
 pub(crate) mod json_backing;
 pub(crate) mod key_encode;
-pub(crate) mod key_migration;
 pub(crate) mod key_handlers;
+pub(crate) mod key_migration;
 pub(crate) mod parse;
 pub(crate) mod policy;
 pub(crate) mod policy_check;
@@ -50,7 +50,6 @@ pub(crate) mod shell;
 pub(crate) mod simple_input;
 pub(crate) mod tab_bar;
 pub(crate) mod text_input_view;
-pub(crate) mod text_pane;
 pub(crate) mod theme;
 
 /// Re-export of the post-crash Skip synthetic-`ToolResult` content string

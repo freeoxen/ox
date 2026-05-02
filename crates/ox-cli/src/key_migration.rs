@@ -36,6 +36,7 @@ pub async fn migrate_legacy_keys(
         return Ok(0);
     }
 
+    let attempted = legacy.len();
     let mut migrated = 0usize;
     for (name, key) in &legacy {
         let name_comp = match ox_kernel::PathComponent::try_new(name.as_str()) {
@@ -60,13 +61,26 @@ pub async fn migrate_legacy_keys(
     if migrated > 0 {
         // Persist secrets to disk so the migration result survives the
         // process exit even if the user never opens the settings UI.
+        // Surface a partial-failure (saved-to-disk) error so operators
+        // notice when the broker accepted writes but the file flush
+        // didn't land — silent `.ok()` here would leave the migration
+        // counted as a success while the next launch re-migrates.
         let save_path = StorePath::parse("secret/save")
             .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;
-        client
-            .write(&save_path, Record::parsed(Value::Null))
-            .await
-            .ok();
-        tracing::info!(count = migrated, "migrated {migrated} legacy key files into namespace");
+        if let Err(e) = client.write(&save_path, Record::parsed(Value::Null)).await {
+            tracing::warn!(error = %e, "secret/save failed after legacy key migration");
+        }
+        tracing::info!(
+            attempted,
+            migrated,
+            failed = attempted - migrated,
+            "migrated {migrated}/{attempted} legacy key files into namespace"
+        );
+    } else if attempted > 0 {
+        tracing::warn!(
+            attempted,
+            "legacy key migration found {attempted} candidate(s) but all writes failed"
+        );
     }
 
     Ok(migrated)
@@ -98,10 +112,7 @@ mod tests {
     /// JSON backing.
     async fn test_broker(
         inbox_root: &std::path::Path,
-    ) -> (
-        ox_broker::ClientHandle,
-        Vec<tokio::task::JoinHandle<()>>,
-    ) {
+    ) -> (ox_broker::ClientHandle, Vec<tokio::task::JoinHandle<()>>) {
         use structfs_core_store::path;
 
         let broker = ox_broker::BrokerStore::default();

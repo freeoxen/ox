@@ -100,14 +100,14 @@ pub enum KeyDispatchOutcome {
 /// module-level doc for the full rationale.
 #[allow(clippy::too_many_arguments)]
 pub async fn send_key(
-    client:    &ClientHandle,
-    key:       &str,
-    screen:    Screen,
-    flags:     ClientModalFlags,
-    cursor:    Option<&Path>,
-    snapshot:  Option<&mut dyn Reader>,
-    bindings:  Option<&BindingRegistry>,
-    commands:  Option<&CommandRegistry>,
+    client: &ClientHandle,
+    key: &str,
+    screen: Screen,
+    flags: ClientModalFlags,
+    cursor: Option<&Path>,
+    snapshot: Option<&mut dyn Reader>,
+    bindings: Option<&BindingRegistry>,
+    commands: Option<&CommandRegistry>,
     renderers: Option<&RendererRegistry>,
 ) -> KeyDispatchOutcome {
     if screen == Screen::Settings {
@@ -148,9 +148,9 @@ pub async fn send_key(
 /// substrate's reply path into a `KeyDispatchOutcome`.
 async fn send_via_input_store(
     client: &ClientHandle,
-    key:    &str,
+    key: &str,
     screen: Screen,
-    flags:  ClientModalFlags,
+    flags: ClientModalFlags,
 ) -> KeyDispatchOutcome {
     let event = InputKeyEvent {
         mode: None,
@@ -200,7 +200,10 @@ fn parse_key_str(s: &str) -> Option<KeyChord> {
     // must produce that exact chord rather than Tab+shift.
     if s == "Shift+Tab" {
         return Some(KeyChord {
-            modifiers: KeyModifierSet { shift: true, ..KeyModifierSet::default() },
+            modifiers: KeyModifierSet {
+                shift: true,
+                ..KeyModifierSet::default()
+            },
             code: KeyCodeRepr::BackTab,
         });
     }
@@ -221,20 +224,20 @@ fn parse_key_str(s: &str) -> Option<KeyChord> {
     }
 
     let code = match s {
-        "Esc"       => KeyCodeRepr::Esc,
-        "Enter"     => KeyCodeRepr::Enter,
+        "Esc" => KeyCodeRepr::Esc,
+        "Enter" => KeyCodeRepr::Enter,
         "Backspace" => KeyCodeRepr::Backspace,
-        "Tab"       => KeyCodeRepr::Tab,
-        "Up"        => KeyCodeRepr::Up,
-        "Down"      => KeyCodeRepr::Down,
-        "Left"      => KeyCodeRepr::Left,
-        "Right"     => KeyCodeRepr::Right,
-        "Delete"    => KeyCodeRepr::Delete,
-        "PageUp"    => KeyCodeRepr::PageUp,
-        "PageDown"  => KeyCodeRepr::PageDown,
-        "Home"      => KeyCodeRepr::Home,
-        "End"       => KeyCodeRepr::End,
-        "Insert"    => KeyCodeRepr::Insert,
+        "Tab" => KeyCodeRepr::Tab,
+        "Up" => KeyCodeRepr::Up,
+        "Down" => KeyCodeRepr::Down,
+        "Left" => KeyCodeRepr::Left,
+        "Right" => KeyCodeRepr::Right,
+        "Delete" => KeyCodeRepr::Delete,
+        "PageUp" => KeyCodeRepr::PageUp,
+        "PageDown" => KeyCodeRepr::PageDown,
+        "Home" => KeyCodeRepr::Home,
+        "End" => KeyCodeRepr::End,
+        "Insert" => KeyCodeRepr::Insert,
         _ => {
             let mut chars = s.chars();
             let c = chars.next()?;
@@ -378,7 +381,7 @@ mod tests {
         snap.insert(
             &oxpath!("ui", "settings", "models", "selected"),
             to_value(&Some(ModelKey {
-                account:  "alpha".into(),
+                account: "alpha".into(),
                 model_id: "m1".into(),
             }))
             .unwrap(),
@@ -452,10 +455,7 @@ mod tests {
 
         let cursor = oxpath!("settings", "index");
         let mut snap = SettingsSnapshot::empty();
-        snap.insert(
-            &oxpath!("ui", "settings", "cursor"),
-            path_to_value(&cursor),
-        );
+        snap.insert(&oxpath!("ui", "settings", "cursor"), path_to_value(&cursor));
 
         let outcome = send_key(
             &client,
@@ -522,7 +522,10 @@ mod tests {
             .read_typed::<bool>(&oxpath!("ui", "settings", "_request_exit"))
             .await
             .expect("read_typed");
-        assert!(exit_canary.is_none(), "no settings command should have written");
+        assert!(
+            exit_canary.is_none(),
+            "no settings command should have written"
+        );
 
         let primary = client
             .read_typed::<CompletionRole>(&oxpath!("config", "gate", "completions", "primary"))

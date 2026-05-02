@@ -63,8 +63,10 @@ impl Renderer for ModelDetailRenderer {
             }
         };
 
-        let focused_field: Option<ModelField> =
-            read_typed(ctx.data, &oxpath!("ui", "settings", "model_detail", "field"));
+        let focused_field: Option<ModelField> = read_typed(
+            ctx.data,
+            &oxpath!("ui", "settings", "model_detail", "field"),
+        );
         let focused = focused_field.map(|f| match f {
             ModelField::ContextSizeOverride => 2,
             ModelField::OutputTokensOverride => 3,
@@ -320,6 +322,9 @@ mod tests {
 
     #[test]
     fn ascend_rule_is_nearest_registered() {
-        assert_eq!(ModelDetailRenderer.ascend_to(), AscendRule::NearestRegistered);
+        assert_eq!(
+            ModelDetailRenderer.ascend_to(),
+            AscendRule::NearestRegistered
+        );
     }
 }

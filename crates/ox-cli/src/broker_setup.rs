@@ -103,10 +103,8 @@ pub async fn setup(
     {
         let keys_path = inbox_root.join("keys.json");
         let backing = crate::json_backing::JsonFileBacking::new(keys_path);
-        let secrets = ox_ui::ConfigStore::with_backing(
-            std::collections::BTreeMap::new(),
-            Box::new(backing),
-        );
+        let secrets =
+            ox_ui::ConfigStore::with_backing(std::collections::BTreeMap::new(), Box::new(backing));
         servers.push(broker.mount(path!("secret"), secrets).await);
     }
 
@@ -683,9 +681,8 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        let role: ox_types::CompletionRole = match role_record.as_value().unwrap() {
-            v => structfs_serde_store::from_value(v.clone()).unwrap(),
-        };
+        let v = role_record.as_value().unwrap();
+        let role: ox_types::CompletionRole = structfs_serde_store::from_value(v.clone()).unwrap();
         assert_eq!(role.account, "anthropic");
         assert_eq!(role.model_id, "claude-sonnet-4-20250514");
     }
@@ -739,9 +736,9 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        let resolved: ox_types::CompletionRole = match record.as_value().unwrap() {
-            v => structfs_serde_store::from_value(v.clone()).unwrap(),
-        };
+        let v = record.as_value().unwrap();
+        let resolved: ox_types::CompletionRole =
+            structfs_serde_store::from_value(v.clone()).unwrap();
         assert_eq!(resolved.account, "openai");
         assert_eq!(resolved.model_id, "gpt-4o-mini");
     }

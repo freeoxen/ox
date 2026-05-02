@@ -58,8 +58,8 @@ mod tests {
     use ox_path::oxpath;
     use structfs_core_store::{Record, Value};
 
-    use crate::transport::HttpTransport;
     use crate::subscriptions::register_all;
+    use crate::transport::HttpTransport;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn register_all_does_not_panic() {
@@ -79,7 +79,10 @@ mod tests {
         struct MemStore(BTreeMap<String, Value>);
         impl Reader for MemStore {
             fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
-                Ok(self.0.get(&from.to_string()).map(|v| Record::parsed(v.clone())))
+                Ok(self
+                    .0
+                    .get(&from.to_string())
+                    .map(|v| Record::parsed(v.clone())))
             }
         }
         impl Writer for MemStore {

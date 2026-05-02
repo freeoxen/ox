@@ -248,8 +248,8 @@ mod tests {
 
     #[test]
     fn gpt_4o_openai_returns_128k_context() {
-        let entry = known_family_metadata("gpt-4o-2024-11-20", "openai")
-            .expect("known family for gpt-4o*");
+        let entry =
+            known_family_metadata("gpt-4o-2024-11-20", "openai").expect("known family for gpt-4o*");
         assert_eq!(entry.max_context_size, Some(128_000));
         assert!(
             entry.max_output_tokens.is_some(),

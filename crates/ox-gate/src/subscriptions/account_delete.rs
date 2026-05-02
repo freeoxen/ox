@@ -13,15 +13,15 @@
 //!
 //! Per spec §6.5.
 
-use ox_broker::subscription::{Subscription, SubCtx};
+use ox_broker::subscription::{SubCtx, Subscription};
 use ox_path::oxpath;
 use ox_types::subscription::{PathPattern, SubscriptionId, Write};
 
+use crate::AccountConfig;
 use crate::subscriptions::util::{
     account_path, instance_segment, null_write, provider_path, read_typed_via_reader,
     secret_key_path, write_path,
 };
-use crate::AccountConfig;
 
 pub const ID: &str = "gate.account_delete";
 
@@ -110,14 +110,14 @@ impl Subscription for AccountDeleteSubscription {
 mod tests {
     use std::sync::Arc;
 
-    use ox_broker::subscription::{AsyncWriter, Subscription, SubCtx};
+    use ox_broker::subscription::{AsyncWriter, SubCtx, Subscription};
     use ox_path::oxpath;
     use ox_types::subscription::PathChange;
     use structfs_core_store::{Path, Record, Value};
 
     use super::*;
     use crate::subscriptions::util::testing::{
-        populate_anthropic_account, CapturingWriter, InMemoryReader, TestSpawn,
+        CapturingWriter, InMemoryReader, TestSpawn, populate_anthropic_account,
     };
 
     fn trigger_path(name: &str) -> Path {
@@ -150,8 +150,7 @@ mod tests {
 
     fn null_record(writes: &[Write], path_str: &str) -> bool {
         writes.iter().any(|w| {
-            w.path.to_string() == path_str
-                && matches!(w.record.as_value(), Some(Value::Null))
+            w.path.to_string() == path_str && matches!(w.record.as_value(), Some(Value::Null))
         })
     }
 
@@ -161,8 +160,16 @@ mod tests {
         populate_anthropic_account(&mut reader, "alpha", "sk-key");
 
         let writes = drive(&mut reader, "alpha");
-        assert!(null_record(&writes, "config/gate/accounts/alpha"), "{:?}", paths(&writes));
-        assert!(null_record(&writes, "secret/keys/alpha"), "{:?}", paths(&writes));
+        assert!(
+            null_record(&writes, "config/gate/accounts/alpha"),
+            "{:?}",
+            paths(&writes)
+        );
+        assert!(
+            null_record(&writes, "secret/keys/alpha"),
+            "{:?}",
+            paths(&writes)
+        );
         assert!(
             null_record(&writes, "config/gate/providers/alpha"),
             "{:?}",
@@ -184,7 +191,11 @@ mod tests {
             w.path.to_string() == "ui/settings/accounts/selected"
                 && matches!(w.record.as_value(), Some(Value::Null))
         });
-        assert!(cleared, "selection should be cleared, got {:?}", paths(&writes));
+        assert!(
+            cleared,
+            "selection should be cleared, got {:?}",
+            paths(&writes)
+        );
     }
 
     #[test]

@@ -372,7 +372,7 @@ mod tests {
     use ox_kernel::log::{LogStore, SharedLog};
     use ox_kernel::{AgentEvent, CompletionRequest, StreamEvent};
     use ox_tools::completion::CompletionTransport;
-    use structfs_core_store::{Record, Value, Writer, path};
+    use structfs_core_store::{Record, Writer, path};
 
     #[test]
     fn runtime_creates_engine() {

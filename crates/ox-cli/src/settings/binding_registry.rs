@@ -218,12 +218,7 @@ mod tests {
         });
 
         let hit = reg
-            .lookup(
-                Screen::Settings,
-                &oxpath!("settings"),
-                None,
-                &key_char('x'),
-            )
+            .lookup(Screen::Settings, &oxpath!("settings"), None, &key_char('x'))
             .expect("should match");
         assert_eq!(hit, &cmd("first"));
     }

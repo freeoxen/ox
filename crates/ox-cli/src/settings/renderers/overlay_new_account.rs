@@ -17,13 +17,13 @@ pub struct OverlayNewAccountRenderer;
 
 impl Renderer for OverlayNewAccountRenderer {
     fn render(&self, ctx: &mut RenderCtx<'_>) -> View {
-        let bg = ctx
-            .registry
-            .render(&oxpath!("settings", "accounts"), ctx);
+        let bg = ctx.registry.render(&oxpath!("settings", "accounts"), ctx);
 
-        let name_input: String =
-            read_typed(ctx.data, &oxpath!("ui", "settings", "new_account", "name_input"))
-                .unwrap_or_default();
+        let name_input: String = read_typed(
+            ctx.data,
+            &oxpath!("ui", "settings", "new_account", "name_input"),
+        )
+        .unwrap_or_default();
 
         let cursor: u32 = name_input.chars().count() as u32;
 
@@ -112,11 +112,7 @@ mod tests {
                         assert_eq!(rows.len(), 1);
                         assert_eq!(rows[0].label, "Name");
                         match &rows[0].value {
-                            FormValue::Text {
-                                value,
-                                masked,
-                                ..
-                            } => {
+                            FormValue::Text { value, masked, .. } => {
                                 assert_eq!(value, name);
                                 assert!(!masked);
                             }

@@ -18,7 +18,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use ox_broker::subscription::{Subscription, SubCtx};
+use ox_broker::subscription::{SubCtx, Subscription};
 use ox_path::oxpath;
 use ox_types::subscription::{PathPattern, SubscriptionId, Write};
 use structfs_core_store::Record;
@@ -26,8 +26,8 @@ use tokio::task::AbortHandle;
 
 use crate::known_family::known_family_metadata;
 use crate::subscriptions::util::{
-    account_path, instance_segment, models_path, now_ms, provider_path,
-    read_typed_via_reader, refresh_status_path, secret_key_path, validation_path, write_typed,
+    account_path, instance_segment, models_path, now_ms, provider_path, read_typed_via_reader,
+    refresh_status_path, secret_key_path, validation_path, write_typed,
 };
 use crate::transport::Transport;
 use crate::validation::validate_account;
@@ -173,9 +173,7 @@ impl Subscription for CatalogRefreshSubscription {
             Some(p) => p,
             None => return vec![],
         };
-        let api_key = key
-            .map(|k| k.expose().to_string())
-            .unwrap_or_default();
+        let api_key = key.map(|k| k.expose().to_string()).unwrap_or_default();
 
         // Read the current catalog so the diff in the spawned task can
         // count added vs updated. Do this synchronously while we still
@@ -257,14 +255,14 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use ox_broker::subscription::{AsyncWriter, Subscription, SubCtx};
+    use ox_broker::subscription::{AsyncWriter, SubCtx, Subscription};
     use ox_path::oxpath;
     use ox_types::subscription::PathChange;
     use structfs_core_store::{Path, Record, Value};
 
     use super::*;
     use crate::subscriptions::util::testing::{
-        populate_anthropic_account, CapturingWriter, InMemoryReader, MockTransport, TestSpawn,
+        CapturingWriter, InMemoryReader, MockTransport, TestSpawn, populate_anthropic_account,
     };
 
     fn trigger_path(name: &str) -> Path {
@@ -322,8 +320,7 @@ mod tests {
         populate_anthropic_account(&mut reader, "alpha", "sk-key");
 
         let transport = Arc::new(
-            MockTransport::new()
-                .with_catalog(Ok(vec![server_model("claude-haiku-4-5-20251001")])),
+            MockTransport::new().with_catalog(Ok(vec![server_model("claude-haiku-4-5-20251001")])),
         );
         let sub = CatalogRefreshSubscription::new(transport);
         let spawn = TestSpawn::new();
@@ -355,8 +352,7 @@ mod tests {
         // Synchronous side: Refreshing.
         assert_eq!(writes.len(), 1);
         let s: CatalogRefreshStatus =
-            structfs_serde_store::from_value(writes[0].record.as_value().unwrap().clone())
-                .unwrap();
+            structfs_serde_store::from_value(writes[0].record.as_value().unwrap().clone()).unwrap();
         assert!(matches!(s, CatalogRefreshStatus::Refreshing { .. }));
 
         wait_for_all(&spawn).await;
@@ -449,8 +445,7 @@ mod tests {
         // known_family_metadata("claude-haiku-4-5", "anthropic") row
         // should fill it in and set source=KnownTable.
         let transport = Arc::new(
-            MockTransport::new()
-                .with_catalog(Ok(vec![server_model("claude-haiku-4-5-20251001")])),
+            MockTransport::new().with_catalog(Ok(vec![server_model("claude-haiku-4-5-20251001")])),
         );
         let sub = CatalogRefreshSubscription::new(transport);
         let spawn = TestSpawn::new();

@@ -727,8 +727,7 @@ pub fn read_model_config(context: &mut dyn Reader) -> Result<(String, u32), Stri
 
 /// Build a `PathComponent` from an account name with a typed error.
 fn ox_kernel_path_component(name: &str) -> Result<crate::PathComponent, String> {
-    crate::PathComponent::try_new(name)
-        .map_err(|e| format!("invalid account name '{name}': {e}"))
+    crate::PathComponent::try_new(name).map_err(|e| format!("invalid account name '{name}': {e}"))
 }
 
 /// Read a serde-deserializable value from `path` on `context`. Returns
@@ -757,8 +756,9 @@ fn read_typed<T: serde::de::DeserializeOwned>(
 /// during early bring-up, so a missing role here is a real
 /// misconfiguration, not a normal-path default.
 fn read_default_account(context: &mut dyn Reader) -> Result<String, String> {
-    let role: ox_types::CompletionRole = read_typed(context, &path!("gate/completions/primary"))?
-        .ok_or_else(|| "no primary completion role configured".to_string())?;
+    let role: ox_types::CompletionRole =
+        read_typed(context, &path!("gate/completions/primary"))?
+            .ok_or_else(|| "no primary completion role configured".to_string())?;
     Ok(role.account)
 }
 

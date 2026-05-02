@@ -10,7 +10,7 @@ use std::path::Path as FsPath;
 use ox_broker::ClientHandle;
 use ox_path::oxpath;
 use ox_types::{BadgeSource, SettingsIndexEntry};
-use structfs_core_store::{Error as StoreError, Record, Value};
+use structfs_core_store::{Error as StoreError, Record};
 
 use super::commands::navigation::path_to_value;
 
@@ -68,9 +68,7 @@ pub async fn maybe_first_run_cursor(client: &ClientHandle) -> Result<bool, Store
     }
     let first_cursor = oxpath!("settings", "accounts", "_new");
     let value = path_to_value(&first_cursor);
-    client
-        .write(&cursor_path, Record::parsed(value))
-        .await?;
+    client.write(&cursor_path, Record::parsed(value)).await?;
     Ok(true)
 }
 
@@ -124,7 +122,7 @@ mod tests {
     use ox_broker::BrokerStore;
     use ox_kernel::PathComponent;
     use std::time::Duration;
-    use structfs_core_store::path;
+    use structfs_core_store::{Value, path};
 
     async fn fresh_broker() -> BrokerStore {
         let broker = BrokerStore::new(Duration::from_secs(2));

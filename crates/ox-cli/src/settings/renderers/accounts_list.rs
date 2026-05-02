@@ -23,9 +23,11 @@ pub struct AccountsListRenderer;
 impl Renderer for AccountsListRenderer {
     fn render(&self, ctx: &mut RenderCtx<'_>) -> View {
         let names = child_names_under(ctx.data, "config/gate/accounts");
-        let selected_name =
-            read_typed::<Option<String>>(ctx.data, &oxpath!("ui", "settings", "accounts", "selected"))
-                .flatten();
+        let selected_name = read_typed::<Option<String>>(
+            ctx.data,
+            &oxpath!("ui", "settings", "accounts", "selected"),
+        )
+        .flatten();
 
         let mut items: Vec<ListItem> = Vec::with_capacity(names.len());
         for name in &names {
@@ -33,14 +35,13 @@ impl Renderer for AccountsListRenderer {
                 Ok(c) => c,
                 Err(_) => continue,
             };
-            let acct: Option<AccountConfig> =
-                read_typed(ctx.data, &oxpath!("config", "gate", "accounts", comp.clone()));
+            let acct: Option<AccountConfig> = read_typed(
+                ctx.data,
+                &oxpath!("config", "gate", "accounts", comp.clone()),
+            );
             let provider_ref = acct.map(|a| a.provider).unwrap_or_default();
             let host = if !provider_ref.is_empty() {
-                let pref_comp = match ox_kernel::PathComponent::try_new(&provider_ref) {
-                    Ok(c) => Some(c),
-                    Err(_) => None,
-                };
+                let pref_comp = ox_kernel::PathComponent::try_new(&provider_ref).ok();
                 pref_comp
                     .and_then(|c| {
                         read_typed::<ProviderConfig>(
@@ -54,10 +55,9 @@ impl Renderer for AccountsListRenderer {
                 String::new()
             };
 
-            let key_present =
-                read_typed::<ApiKey>(ctx.data, &oxpath!("secret", "keys", comp))
-                    .map(|k| !k.is_empty())
-                    .unwrap_or(false);
+            let key_present = read_typed::<ApiKey>(ctx.data, &oxpath!("secret", "keys", comp))
+                .map(|k| !k.is_empty())
+                .unwrap_or(false);
             let badge = if key_present { "✓key" } else { "–" }.to_string();
 
             items.push(ListItem {
@@ -82,7 +82,10 @@ impl Renderer for AccountsListRenderer {
 }
 
 pub fn register(reg: &mut RendererRegistry) {
-    reg.register(oxpath!("settings", "accounts"), Box::new(AccountsListRenderer));
+    reg.register(
+        oxpath!("settings", "accounts"),
+        Box::new(AccountsListRenderer),
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -223,6 +226,9 @@ mod tests {
 
     #[test]
     fn ascend_rule_is_nearest_registered() {
-        assert_eq!(AccountsListRenderer.ascend_to(), AscendRule::NearestRegistered);
+        assert_eq!(
+            AccountsListRenderer.ascend_to(),
+            AscendRule::NearestRegistered
+        );
     }
 }

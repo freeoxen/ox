@@ -22,9 +22,7 @@ use ox_view::{
 };
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
-use ratatui::layout::{
-    Alignment as RAlignment, Constraint, Direction as RDirection, Layout, Rect,
-};
+use ratatui::layout::{Alignment as RAlignment, Constraint, Direction as RDirection, Layout, Rect};
 use ratatui::style::{Color as RColor, Modifier as RModifier, Style as RStyle};
 use ratatui::text::{Line, Span as RSpan};
 use ratatui::widgets::{
@@ -210,10 +208,7 @@ fn format_form_value(v: &FormValue) -> String {
             }
         }
         FormValue::Selector { options, current } => {
-            let opt = options
-                .get(*current)
-                .map(String::as_str)
-                .unwrap_or("");
+            let opt = options.get(*current).map(String::as_str).unwrap_or("");
             format!("< {} >", opt)
         }
         FormValue::ReadOnly(s) => s.clone(),
@@ -253,7 +248,9 @@ fn render_banner(kind: &BannerKind, content: &str, frame: &mut Frame, area: Rect
         BannerKind::Error => RStyle::default().bg(RColor::Red).fg(RColor::White),
     };
     let block = Block::default().borders(Borders::ALL).style(style);
-    let para = Paragraph::new(content.to_string()).style(style).block(block);
+    let para = Paragraph::new(content.to_string())
+        .style(style)
+        .block(block);
     frame.render_widget(para, area);
 }
 
@@ -268,8 +265,12 @@ fn render_status_block(
         .iter()
         .map(|StyledLine(spans)| Line::from(spans.iter().map(map_span).collect::<Vec<_>>()))
         .collect();
-    let block = Block::default().borders(Borders::ALL).title(title.to_string());
-    let para = Paragraph::new(rlines).block(block).scroll((scroll_offset, 0));
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title.to_string());
+    let para = Paragraph::new(rlines)
+        .block(block)
+        .scroll((scroll_offset, 0));
     frame.render_widget(para, area);
 }
 
@@ -394,8 +395,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 mod tests {
     use super::*;
     use ox_view::{
-        Align, BannerKind, FormRow, FormValue, ListItem, Padding, Sizing, Span, StyledLine,
-        View,
+        Align, BannerKind, FormRow, FormValue, ListItem, Padding, Sizing, Span, StyledLine, View,
     };
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;

@@ -12,10 +12,7 @@ use structfs_core_store::{Path, Reader, Value};
 /// any failure: missing path, store error, non-value record, or
 /// deserialization mismatch. Renderers must remain total over Reader state,
 /// so callers handle `None` with the appropriate empty-state View.
-pub(crate) fn read_typed<T: DeserializeOwned>(
-    data: &mut dyn Reader,
-    path: &Path,
-) -> Option<T> {
+pub(crate) fn read_typed<T: DeserializeOwned>(data: &mut dyn Reader, path: &Path) -> Option<T> {
     let record = match data.read(path) {
         Ok(Some(rec)) => rec,
         Ok(None) => return None,
@@ -118,7 +115,10 @@ mod tests {
     #[test]
     fn read_typed_decodes_simple_string() {
         let mut snap = SettingsSnapshot::empty();
-        snap.insert(&oxpath!("ui", "global", "mode"), Value::String("normal".into()));
+        snap.insert(
+            &oxpath!("ui", "global", "mode"),
+            Value::String("normal".into()),
+        );
         let v: Option<String> = read_typed(&mut snap, &oxpath!("ui", "global", "mode"));
         assert_eq!(v.as_deref(), Some("normal"));
     }

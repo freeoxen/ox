@@ -18,15 +18,15 @@
 //! the broker subscription, the CLI commands, and any future renderer
 //! can all agree on the shape without an ox-cli dep.
 
-use ox_broker::subscription::{Subscription, SubCtx};
+use ox_broker::subscription::{SubCtx, Subscription};
 use ox_kernel::PathComponent;
 use ox_path::oxpath;
 use ox_types::settings::{CreateAccountRequest, GlobalBanner};
 use ox_types::subscription::{PathPattern, SubscriptionId, Write};
 use structfs_core_store::Record;
 
-use crate::subscriptions::util::{account_path, now_ms, null_write, write_path, write_typed};
 use crate::AccountConfig;
+use crate::subscriptions::util::{account_path, now_ms, null_write, write_path, write_typed};
 
 pub const ID: &str = "gate.account_create";
 
@@ -108,27 +108,24 @@ impl Subscription for AccountCreateSubscription {
             provider: DEFAULT_PROVIDER.to_string(),
         };
 
-        let mut writes: Vec<Write> = Vec::new();
         // 1. Materialize the default config.
-        writes.push(write_typed(&acct_path, &cfg));
         // 2. Select the new account.
-        writes.push(write_typed(
-            &oxpath!("ui", "settings", "accounts", "selected"),
-            &Some(req.name.clone()),
-        ));
         // 3. Drive the cursor to the detail page.
-        writes.push(write_path(
-            &oxpath!("ui", "settings", "cursor"),
-            &oxpath!("settings", "accounts", "_detail"),
-        ));
         // 4. Clear `_create_now` so the same name can be created again
         //    in a session — keeps the path tidy and avoids dangling
         //    request payloads.
-        writes.push(null_write(oxpath!(
-            "config", "gate", "accounts", "_create_now"
-        )));
-
-        writes
+        vec![
+            write_typed(&acct_path, &cfg),
+            write_typed(
+                &oxpath!("ui", "settings", "accounts", "selected"),
+                &Some(req.name.clone()),
+            ),
+            write_path(
+                &oxpath!("ui", "settings", "cursor"),
+                &oxpath!("settings", "accounts", "_detail"),
+            ),
+            null_write(oxpath!("config", "gate", "accounts", "_create_now")),
+        ]
     }
 }
 
@@ -147,7 +144,7 @@ fn banner_error(message: String) -> Write {
 mod tests {
     use std::sync::Arc;
 
-    use ox_broker::subscription::{AsyncWriter, Subscription, SubCtx};
+    use ox_broker::subscription::{AsyncWriter, SubCtx, Subscription};
     use ox_path::oxpath;
     use ox_types::subscription::PathChange;
     use structfs_core_store::{Record, Value};
@@ -201,8 +198,7 @@ mod tests {
             .find(|w| w.path.to_string() == "ui/settings/accounts/selected")
             .expect("missing selection write");
         let sel: Option<String> =
-            structfs_serde_store::from_value(sel_write.record.as_value().unwrap().clone())
-                .unwrap();
+            structfs_serde_store::from_value(sel_write.record.as_value().unwrap().clone()).unwrap();
         assert_eq!(sel.as_deref(), Some("alpha"));
 
         // Cursor → settings/accounts/_detail.
@@ -256,9 +252,11 @@ mod tests {
             }
             other => panic!("expected Error banner, got {other:?}"),
         }
-        assert!(!writes
-            .iter()
-            .any(|w| w.path.to_string() == "config/gate/accounts/bad-name"));
+        assert!(
+            !writes
+                .iter()
+                .any(|w| w.path.to_string() == "config/gate/accounts/bad-name")
+        );
     }
 
     #[test]

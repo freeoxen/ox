@@ -101,31 +101,121 @@ fn register_text_editing(reg: &mut BindingRegistry, cursor: Path) {
 
 fn register_index(reg: &mut BindingRegistry) {
     let cursor = oxpath!("settings", "index");
-    bind(reg, Some(cursor.clone()), no_mods(), KeyCodeRepr::Char('j'), "highlight.index.next");
-    bind(reg, Some(cursor.clone()), no_mods(), KeyCodeRepr::Char('k'), "highlight.index.prev");
-    bind(reg, Some(cursor.clone()), no_mods(), KeyCodeRepr::Enter, "nav.descend.index");
+    bind(
+        reg,
+        Some(cursor.clone()),
+        no_mods(),
+        KeyCodeRepr::Char('j'),
+        "highlight.index.next",
+    );
+    bind(
+        reg,
+        Some(cursor.clone()),
+        no_mods(),
+        KeyCodeRepr::Char('k'),
+        "highlight.index.prev",
+    );
+    bind(
+        reg,
+        Some(cursor.clone()),
+        no_mods(),
+        KeyCodeRepr::Enter,
+        "nav.descend.index",
+    );
     bind(reg, Some(cursor), no_mods(), KeyCodeRepr::Esc, "nav.ascend");
 }
 
 fn register_accounts(reg: &mut BindingRegistry) {
     let cursor = oxpath!("settings", "accounts");
-    bind(reg, Some(cursor.clone()), no_mods(), KeyCodeRepr::Char('j'), "highlight.accounts.next");
-    bind(reg, Some(cursor.clone()), no_mods(), KeyCodeRepr::Char('k'), "highlight.accounts.prev");
-    bind(reg, Some(cursor.clone()), no_mods(), KeyCodeRepr::Enter, "nav.descend.accounts");
-    bind(reg, Some(cursor.clone()), no_mods(), KeyCodeRepr::Char('a'), "accounts.add");
-    bind(reg, Some(cursor.clone()), no_mods(), KeyCodeRepr::Char('d'), "accounts.delete_confirm");
+    bind(
+        reg,
+        Some(cursor.clone()),
+        no_mods(),
+        KeyCodeRepr::Char('j'),
+        "highlight.accounts.next",
+    );
+    bind(
+        reg,
+        Some(cursor.clone()),
+        no_mods(),
+        KeyCodeRepr::Char('k'),
+        "highlight.accounts.prev",
+    );
+    bind(
+        reg,
+        Some(cursor.clone()),
+        no_mods(),
+        KeyCodeRepr::Enter,
+        "nav.descend.accounts",
+    );
+    bind(
+        reg,
+        Some(cursor.clone()),
+        no_mods(),
+        KeyCodeRepr::Char('a'),
+        "accounts.add",
+    );
+    bind(
+        reg,
+        Some(cursor.clone()),
+        no_mods(),
+        KeyCodeRepr::Char('d'),
+        "accounts.delete_confirm",
+    );
     bind(reg, Some(cursor), no_mods(), KeyCodeRepr::Esc, "nav.ascend");
 }
 
 fn register_account_detail(reg: &mut BindingRegistry) {
     let cursor = oxpath!("settings", "accounts", "_detail");
-    bind(reg, Some(cursor.clone()), no_mods(), KeyCodeRepr::Tab, "field.account.next");
-    bind(reg, Some(cursor.clone()), no_mods(), KeyCodeRepr::Down, "field.account.next");
-    bind(reg, Some(cursor.clone()), shift_only(), KeyCodeRepr::BackTab, "field.account.prev");
-    bind(reg, Some(cursor.clone()), no_mods(), KeyCodeRepr::Up, "field.account.prev");
-    bind(reg, Some(cursor.clone()), no_mods(), KeyCodeRepr::Char('t'), "account.test");
-    bind(reg, Some(cursor.clone()), ctrl_only(), KeyCodeRepr::Char('s'), "app.save");
-    bind(reg, Some(cursor.clone()), no_mods(), KeyCodeRepr::Esc, "nav.ascend");
+    bind(
+        reg,
+        Some(cursor.clone()),
+        no_mods(),
+        KeyCodeRepr::Tab,
+        "field.account.next",
+    );
+    bind(
+        reg,
+        Some(cursor.clone()),
+        no_mods(),
+        KeyCodeRepr::Down,
+        "field.account.next",
+    );
+    bind(
+        reg,
+        Some(cursor.clone()),
+        shift_only(),
+        KeyCodeRepr::BackTab,
+        "field.account.prev",
+    );
+    bind(
+        reg,
+        Some(cursor.clone()),
+        no_mods(),
+        KeyCodeRepr::Up,
+        "field.account.prev",
+    );
+    bind(
+        reg,
+        Some(cursor.clone()),
+        no_mods(),
+        KeyCodeRepr::Char('t'),
+        "account.test",
+    );
+    bind(
+        reg,
+        Some(cursor.clone()),
+        ctrl_only(),
+        KeyCodeRepr::Char('s'),
+        "app.save",
+    );
+    bind(
+        reg,
+        Some(cursor.clone()),
+        no_mods(),
+        KeyCodeRepr::Esc,
+        "nav.ascend",
+    );
     // Printable chars + Backspace via the helper — these come last so the
     // scope's specific bindings (Tab, t, Ctrl+s, Esc) win over a literal
     // 't' or ' ' insert when the BindingEntry is identical aside from
@@ -136,36 +226,120 @@ fn register_account_detail(reg: &mut BindingRegistry) {
 
 fn register_account_new(reg: &mut BindingRegistry) {
     let cursor = oxpath!("settings", "accounts", "_new");
-    bind(reg, Some(cursor.clone()), no_mods(), KeyCodeRepr::Enter, "accounts.create");
-    bind(reg, Some(cursor), no_mods(), KeyCodeRepr::Esc, "accounts.cancel");
+    bind(
+        reg,
+        Some(cursor.clone()),
+        no_mods(),
+        KeyCodeRepr::Enter,
+        "accounts.create",
+    );
+    bind(
+        reg,
+        Some(cursor),
+        no_mods(),
+        KeyCodeRepr::Esc,
+        "accounts.cancel",
+    );
 }
 
 fn register_account_delete(reg: &mut BindingRegistry) {
     let cursor = oxpath!("settings", "accounts", "_delete");
-    bind(reg, Some(cursor.clone()), no_mods(), KeyCodeRepr::Char('y'), "accounts.delete");
-    bind(reg, Some(cursor.clone()), no_mods(), KeyCodeRepr::Char('n'), "accounts.cancel");
-    bind(reg, Some(cursor), no_mods(), KeyCodeRepr::Esc, "accounts.cancel");
+    bind(
+        reg,
+        Some(cursor.clone()),
+        no_mods(),
+        KeyCodeRepr::Char('y'),
+        "accounts.delete",
+    );
+    bind(
+        reg,
+        Some(cursor.clone()),
+        no_mods(),
+        KeyCodeRepr::Char('n'),
+        "accounts.cancel",
+    );
+    bind(
+        reg,
+        Some(cursor),
+        no_mods(),
+        KeyCodeRepr::Esc,
+        "accounts.cancel",
+    );
 }
 
 fn register_models(reg: &mut BindingRegistry) {
     let cursor = oxpath!("settings", "models");
-    bind(reg, Some(cursor.clone()), no_mods(), KeyCodeRepr::Char('j'), "highlight.models.next");
-    bind(reg, Some(cursor.clone()), no_mods(), KeyCodeRepr::Char('k'), "highlight.models.prev");
-    bind(reg, Some(cursor.clone()), no_mods(), KeyCodeRepr::Enter, "nav.descend.models");
+    bind(
+        reg,
+        Some(cursor.clone()),
+        no_mods(),
+        KeyCodeRepr::Char('j'),
+        "highlight.models.next",
+    );
+    bind(
+        reg,
+        Some(cursor.clone()),
+        no_mods(),
+        KeyCodeRepr::Char('k'),
+        "highlight.models.prev",
+    );
+    bind(
+        reg,
+        Some(cursor.clone()),
+        no_mods(),
+        KeyCodeRepr::Enter,
+        "nav.descend.models",
+    );
     // Capital `P` — render shift in the modifier set so a `Shift+P`
     // chord lookup resolves here. The dispatch layer converts crossterm
     // `KeyCode::Char('P')` to `KeyChord { shift: true, code: Char('P') }`.
-    bind(reg, Some(cursor.clone()), shift_only(), KeyCodeRepr::Char('P'), "models.set_primary");
-    bind(reg, Some(cursor.clone()), no_mods(), KeyCodeRepr::Char('r'), "account.refresh");
+    bind(
+        reg,
+        Some(cursor.clone()),
+        shift_only(),
+        KeyCodeRepr::Char('P'),
+        "models.set_primary",
+    );
+    bind(
+        reg,
+        Some(cursor.clone()),
+        no_mods(),
+        KeyCodeRepr::Char('r'),
+        "account.refresh",
+    );
     bind(reg, Some(cursor), no_mods(), KeyCodeRepr::Esc, "nav.ascend");
 }
 
 fn register_model_detail(reg: &mut BindingRegistry) {
     let cursor = oxpath!("settings", "models", "_detail");
-    bind(reg, Some(cursor.clone()), no_mods(), KeyCodeRepr::Tab, "field.model.next");
-    bind(reg, Some(cursor.clone()), no_mods(), KeyCodeRepr::Down, "field.model.next");
-    bind(reg, Some(cursor.clone()), shift_only(), KeyCodeRepr::BackTab, "field.model.prev");
-    bind(reg, Some(cursor.clone()), no_mods(), KeyCodeRepr::Up, "field.model.prev");
+    bind(
+        reg,
+        Some(cursor.clone()),
+        no_mods(),
+        KeyCodeRepr::Tab,
+        "field.model.next",
+    );
+    bind(
+        reg,
+        Some(cursor.clone()),
+        no_mods(),
+        KeyCodeRepr::Down,
+        "field.model.next",
+    );
+    bind(
+        reg,
+        Some(cursor.clone()),
+        shift_only(),
+        KeyCodeRepr::BackTab,
+        "field.model.prev",
+    );
+    bind(
+        reg,
+        Some(cursor.clone()),
+        no_mods(),
+        KeyCodeRepr::Up,
+        "field.model.prev",
+    );
     bind(reg, Some(cursor), no_mods(), KeyCodeRepr::Esc, "nav.ascend");
 }
 

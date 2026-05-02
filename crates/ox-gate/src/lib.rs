@@ -777,6 +777,12 @@ mod tests {
         let arr = json.as_array().unwrap();
         assert_eq!(arr.len(), 2);
         assert_eq!(arr[0]["id"], "claude-sonnet-4-20250514");
+        // Source field round-trips as a bare PascalCase string per
+        // `model_info::tests::model_info_source_serializes_as_bare_pascal_case_string`.
+        // Asserting it here pins the catalog wire shape for both entries.
+        assert_eq!(arr[0]["source"], "Server");
+        assert_eq!(arr[1]["id"], "claude-haiku-4-5-20251001");
+        assert_eq!(arr[1]["source"], "Server");
     }
 
     #[test]

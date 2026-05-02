@@ -2,12 +2,12 @@
 //!
 //! Three areas, two directions each:
 //!
-//! - **Index**     — `ui/settings/index/selected: usize`, count from
-//!                   children of `settings/index/entries`.
-//! - **Accounts**  — `ui/settings/accounts/selected: Option<String>`, list
-//!                   from children of `config/gate/accounts`.
-//! - **Models**    — `ui/settings/models/selected: Option<ModelKey>`, list
-//!                   flattened from every account's `…/{name}/models`.
+//! - **Index** — `ui/settings/index/selected: usize`, count from
+//!   children of `settings/index/entries`.
+//! - **Accounts** — `ui/settings/accounts/selected: Option<String>`, list
+//!   from children of `config/gate/accounts`.
+//! - **Models** — `ui/settings/models/selected: Option<ModelKey>`, list
+//!   flattened from every account's `…/{name}/models`.
 //!
 //! Per spec §6.1 / §6.2 / §6.6. Empty-list cases are inert (`vec![]`); a
 //! prev/next with no current selection starts at the first list element.
@@ -136,11 +136,9 @@ fn accounts_step(data: &mut dyn Reader, direction: Direction) -> Vec<Write> {
     if names.is_empty() {
         return Vec::new();
     }
-    let current = read_typed::<Option<String>>(
-        data,
-        &oxpath!("ui", "settings", "accounts", "selected"),
-    )
-    .flatten();
+    let current =
+        read_typed::<Option<String>>(data, &oxpath!("ui", "settings", "accounts", "selected"))
+            .flatten();
     let current_idx = current
         .as_ref()
         .and_then(|n| names.iter().position(|x| x == n))
@@ -193,11 +191,9 @@ fn models_step(data: &mut dyn Reader, direction: Direction) -> Vec<Write> {
     if keys.is_empty() {
         return Vec::new();
     }
-    let current = read_typed::<Option<ModelKey>>(
-        data,
-        &oxpath!("ui", "settings", "models", "selected"),
-    )
-    .flatten();
+    let current =
+        read_typed::<Option<ModelKey>>(data, &oxpath!("ui", "settings", "models", "selected"))
+            .flatten();
     let current_idx = current
         .as_ref()
         .and_then(|k| {
@@ -303,11 +299,7 @@ mod tests {
         );
     }
 
-    fn write_account_with_models(
-        snap: &mut SettingsSnapshot,
-        name: &str,
-        model_ids: &[&str],
-    ) {
+    fn write_account_with_models(snap: &mut SettingsSnapshot, name: &str, model_ids: &[&str]) {
         write_account(snap, name);
         let comp = ox_kernel::PathComponent::try_new(name).unwrap();
         let models: Vec<ModelInfo> = model_ids
@@ -377,7 +369,10 @@ mod tests {
     fn next_wraps_at_end_for_index() {
         let mut snap = SettingsSnapshot::empty();
         write_three_entries(&mut snap);
-        snap.insert(&oxpath!("ui", "settings", "index", "selected"), Value::Integer(2));
+        snap.insert(
+            &oxpath!("ui", "settings", "index", "selected"),
+            Value::Integer(2),
+        );
 
         let writes = run(&HighlightIndexNext::new(), &mut snap);
         assert_usize_write(&writes, oxpath!("ui", "settings", "index", "selected"), 0);
@@ -387,7 +382,10 @@ mod tests {
     fn prev_wraps_at_start_for_index() {
         let mut snap = SettingsSnapshot::empty();
         write_three_entries(&mut snap);
-        snap.insert(&oxpath!("ui", "settings", "index", "selected"), Value::Integer(0));
+        snap.insert(
+            &oxpath!("ui", "settings", "index", "selected"),
+            Value::Integer(0),
+        );
 
         let writes = run(&HighlightIndexPrev::new(), &mut snap);
         assert_usize_write(&writes, oxpath!("ui", "settings", "index", "selected"), 2);
@@ -413,7 +411,11 @@ mod tests {
             to_value(&Some("alpha".to_string())).unwrap(),
         );
         let writes = run(&HighlightAccountsNext::new(), &mut snap);
-        assert_optstr_write(&writes, oxpath!("ui", "settings", "accounts", "selected"), "beta");
+        assert_optstr_write(
+            &writes,
+            oxpath!("ui", "settings", "accounts", "selected"),
+            "beta",
+        );
     }
 
     #[test]
@@ -427,7 +429,11 @@ mod tests {
             to_value(&Some("alpha".to_string())).unwrap(),
         );
         let writes = run(&HighlightAccountsPrev::new(), &mut snap);
-        assert_optstr_write(&writes, oxpath!("ui", "settings", "accounts", "selected"), "gamma");
+        assert_optstr_write(
+            &writes,
+            oxpath!("ui", "settings", "accounts", "selected"),
+            "gamma",
+        );
     }
 
     #[test]
@@ -437,7 +443,11 @@ mod tests {
         write_account(&mut snap, "beta");
         // No selection set.
         let writes = run(&HighlightAccountsNext::new(), &mut snap);
-        assert_optstr_write(&writes, oxpath!("ui", "settings", "accounts", "selected"), "alpha");
+        assert_optstr_write(
+            &writes,
+            oxpath!("ui", "settings", "accounts", "selected"),
+            "alpha",
+        );
     }
 
     // -- Models -----------------------------------------------------------------

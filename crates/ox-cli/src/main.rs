@@ -34,7 +34,6 @@ mod tab_bar;
 #[allow(dead_code)]
 mod test_support;
 mod text_input_view;
-mod text_pane;
 mod theme;
 pub(crate) mod thread_registry;
 mod thread_shell;
@@ -188,7 +187,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         use std::sync::Arc;
         let transport: Arc<dyn ox_gate::transport::Transport> =
-            Arc::new(ox_gate::transport::HttpTransport::default());
+            Arc::new(ox_gate::transport::HttpTransport);
         ox_gate::subscriptions::register_all(&broker_handle.broker, transport);
     }
 

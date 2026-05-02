@@ -70,8 +70,14 @@ mod tests {
     fn debug_does_not_leak_key_body() {
         let key = ApiKey::new("sk-secret-xyz");
         let printed = format!("{key:?}");
-        assert!(!printed.contains("sk-secret-xyz"), "Debug must elide key body, got: {printed}");
-        assert!(printed.contains("13 chars"), "Debug should report length, got: {printed}");
+        assert!(
+            !printed.contains("sk-secret-xyz"),
+            "Debug must elide key body, got: {printed}"
+        );
+        assert!(
+            printed.contains("13 chars"),
+            "Debug should report length, got: {printed}"
+        );
     }
 
     #[test]

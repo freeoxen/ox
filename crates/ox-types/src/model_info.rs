@@ -95,7 +95,7 @@ mod tests {
     }
 
     #[test]
-    fn model_info_source_serializes_as_external_tag() {
+    fn model_info_source_serializes_as_bare_pascal_case_string() {
         // Default serde for unit-only enums uses bare strings; pin that for
         // forward-compat with stored catalogs.
         assert_eq!(

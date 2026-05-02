@@ -4,12 +4,12 @@
 //! `config/gate/accounts/{name}/models: Vec<ModelInfo>` into one row per
 //! `(account, model_id)`. Columns:
 //!
-//! - `primary`:   `"{account} / {display_name}"`
+//! - `primary`: `"{account} / {display_name}"`
 //! - `secondary`: `Some(model.id)`
-//! - `badge`:     joined source-tag (`server` / `known` / `override`) +
-//!                primary-tag (`★` for the model bound by
-//!                `config/completions/primary: CompletionRole`) +
-//!                refresh-status chrome (e.g. `refreshing`).
+//! - `badge`: joined source-tag (`server` / `known` / `override`) +
+//!   primary-tag (`★` for the model bound by
+//!   `config/completions/primary: CompletionRole`) +
+//!   refresh-status chrome (e.g. `refreshing`).
 //!
 //! Selection (`ui/settings/models/selected: Option<ModelKey>`) translates
 //! to the matching list index, or `None` when the pointer is absent or
@@ -30,11 +30,15 @@ pub struct ModelsListRenderer;
 impl Renderer for ModelsListRenderer {
     fn render(&self, ctx: &mut RenderCtx<'_>) -> View {
         let account_names = child_names_under(ctx.data, "config/gate/accounts");
-        let primary: Option<CompletionRole> =
-            read_typed(ctx.data, &oxpath!("config", "gate", "completions", "primary"));
-        let selected: Option<ModelKey> =
-            read_typed::<Option<ModelKey>>(ctx.data, &oxpath!("ui", "settings", "models", "selected"))
-                .flatten();
+        let primary: Option<CompletionRole> = read_typed(
+            ctx.data,
+            &oxpath!("config", "gate", "completions", "primary"),
+        );
+        let selected: Option<ModelKey> = read_typed::<Option<ModelKey>>(
+            ctx.data,
+            &oxpath!("ui", "settings", "models", "selected"),
+        )
+        .flatten();
 
         let mut items: Vec<ListItem> = Vec::new();
         // Cache (name, refresh_status_tag) so we don't read it per-model.
@@ -148,11 +152,7 @@ mod tests {
         ModelsListRenderer.render(&mut ctx)
     }
 
-    fn write_account_with_models(
-        snap: &mut SettingsSnapshot,
-        name: &str,
-        models: Vec<ModelInfo>,
-    ) {
+    fn write_account_with_models(snap: &mut SettingsSnapshot, name: &str, models: Vec<ModelInfo>) {
         let comp = ox_kernel::PathComponent::try_new(name).unwrap();
         snap.insert(
             &oxpath!("config", "gate", "accounts", comp.clone()),
@@ -223,7 +223,11 @@ mod tests {
         assert_eq!(items[2].primary, "beta / Model Three");
         assert_eq!(items[3].primary, "gamma / Model Four");
         // No primary set → no ★ in any badge.
-        assert!(items.iter().all(|i| !i.badge.as_ref().unwrap().contains('★')));
+        assert!(
+            items
+                .iter()
+                .all(|i| !i.badge.as_ref().unwrap().contains('★'))
+        );
     }
 
     #[test]
@@ -256,7 +260,9 @@ mod tests {
 
         let view = render(&mut snap);
         let (items, selected) = match view {
-            View::List { items, selected, .. } => (items, selected),
+            View::List {
+                items, selected, ..
+            } => (items, selected),
             other => panic!("expected List, got {other:?}"),
         };
         assert_eq!(items.len(), 2);
@@ -326,6 +332,9 @@ mod tests {
 
     #[test]
     fn ascend_rule_is_nearest_registered() {
-        assert_eq!(ModelsListRenderer.ascend_to(), AscendRule::NearestRegistered);
+        assert_eq!(
+            ModelsListRenderer.ascend_to(),
+            AscendRule::NearestRegistered
+        );
     }
 }

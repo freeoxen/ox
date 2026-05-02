@@ -40,7 +40,8 @@ impl Renderer for IndexRenderer {
             }
         }
 
-        let selected = read_typed::<usize>(ctx.data, &oxpath!("ui", "settings", "index", "selected"));
+        let selected =
+            read_typed::<usize>(ctx.data, &oxpath!("ui", "settings", "index", "selected"));
 
         let items: Vec<ListItem> = entries
             .iter()
@@ -76,8 +77,10 @@ fn resolve_badge(data: &mut dyn structfs_core_store::Reader, source: &BadgeSourc
         BadgeSource::Static(s) => s.clone(),
         BadgeSource::SubtreeCount(p) => subtree_count(data, &p.to_string()).to_string(),
         BadgeSource::PrimaryReference => {
-            match read_typed::<CompletionRole>(data, &oxpath!("config", "gate", "completions", "primary"))
-            {
+            match read_typed::<CompletionRole>(
+                data,
+                &oxpath!("config", "gate", "completions", "primary"),
+            ) {
                 Some(role) => format!("{} / {}", role.account, role.model_id),
                 None => String::new(),
             }

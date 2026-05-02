@@ -16,9 +16,7 @@ pub struct OverlayDeleteAccountRenderer;
 
 impl Renderer for OverlayDeleteAccountRenderer {
     fn render(&self, ctx: &mut RenderCtx<'_>) -> View {
-        let bg = ctx
-            .registry
-            .render(&oxpath!("settings", "accounts"), ctx);
+        let bg = ctx.registry.render(&oxpath!("settings", "accounts"), ctx);
 
         let selected: Option<String> = read_typed::<Option<String>>(
             ctx.data,

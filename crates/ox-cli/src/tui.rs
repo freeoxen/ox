@@ -438,4 +438,3 @@ fn format_tokens(n: u32) -> String {
         format!("{:.1}M", n as f64 / 1_000_000.0)
     }
 }
-

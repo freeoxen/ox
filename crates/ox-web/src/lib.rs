@@ -447,7 +447,10 @@ fn read_api_key(context: &Rc<RefCell<Namespace>>, account: &str) -> String {
 /// defaults at each call site.
 fn read_primary_role(context: &Rc<RefCell<Namespace>>) -> Option<ox_gate::CompletionRole> {
     let mut ctx = context.borrow_mut();
-    let record = ctx.read(&path!("gate/completions/primary")).ok().flatten()?;
+    let record = ctx
+        .read(&path!("gate/completions/primary"))
+        .ok()
+        .flatten()?;
     match record.as_value() {
         Some(value) => structfs_serde_store::from_value(value.clone()).ok(),
         None => None,

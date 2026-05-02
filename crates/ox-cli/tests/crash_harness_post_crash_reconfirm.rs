@@ -131,8 +131,8 @@ impl LocalHarness {
 }
 
 async fn build_broker(inbox_root: &std::path::Path) -> BrokerHandle {
-    use std::collections::BTreeMap;
     use ox_types::{CompletionRole, ModelInfo, ModelInfoSource};
+    use std::collections::BTreeMap;
     use structfs_core_store::Value;
     let inbox = InboxStore::open(inbox_root).expect("open inbox store");
     let bindings = ox_cli::bindings::default_bindings();

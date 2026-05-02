@@ -261,7 +261,10 @@ fn null_write(path: Path) -> Write {
 }
 
 fn accounts_create(data: &mut dyn Reader) -> Vec<Write> {
-    let name: String = match read_typed(data, &oxpath!("ui", "settings", "new_account", "name_input")) {
+    let name: String = match read_typed(
+        data,
+        &oxpath!("ui", "settings", "new_account", "name_input"),
+    ) {
         Some(s) => s,
         None => return Vec::new(),
     };
@@ -359,7 +362,10 @@ fn field_account_step(data: &mut dyn Reader, delta: isize) -> Vec<Write> {
     let current: AccountField =
         read_typed(data, &oxpath!("ui", "settings", "account_detail", "field"))
             .unwrap_or(AccountField::Name);
-    let idx = ACCOUNT_FIELDS.iter().position(|f| *f == current).unwrap_or(0);
+    let idx = ACCOUNT_FIELDS
+        .iter()
+        .position(|f| *f == current)
+        .unwrap_or(0);
     let next = ACCOUNT_FIELDS[cycle_index(idx, ACCOUNT_FIELDS.len(), delta)];
     let value = match to_value(&next) {
         Ok(v) => v,
@@ -375,9 +381,8 @@ fn field_account_step(data: &mut dyn Reader, delta: isize) -> Vec<Write> {
 }
 
 fn field_model_step(data: &mut dyn Reader, delta: isize) -> Vec<Write> {
-    let current: ModelField =
-        read_typed(data, &oxpath!("ui", "settings", "model_detail", "field"))
-            .unwrap_or(ModelField::ContextSizeOverride);
+    let current: ModelField = read_typed(data, &oxpath!("ui", "settings", "model_detail", "field"))
+        .unwrap_or(ModelField::ContextSizeOverride);
     let idx = MODEL_FIELDS.iter().position(|f| *f == current).unwrap_or(0);
     let next = MODEL_FIELDS[cycle_index(idx, MODEL_FIELDS.len(), delta)];
     let value = match to_value(&next) {
@@ -400,11 +405,9 @@ fn mutate_focused_text<F>(data: &mut dyn Reader, update: F) -> Vec<Write>
 where
     F: FnOnce(String, u32) -> Option<(String, u32)>,
 {
-    let field: AccountField = read_typed(
-        data,
-        &oxpath!("ui", "settings", "account_detail", "field"),
-    )
-    .unwrap_or(AccountField::Name);
+    let field: AccountField =
+        read_typed(data, &oxpath!("ui", "settings", "account_detail", "field"))
+            .unwrap_or(AccountField::Name);
     let selected = match read_selected_account(data) {
         Some(s) => s,
         None => return Vec::new(),
@@ -591,10 +594,7 @@ fn selector_cycle_auth(data: &mut dyn Reader) -> Vec<Write> {
         None => return Vec::new(),
     };
     let current = provider.resolved_auth();
-    let idx = AUTH_OPTIONS
-        .iter()
-        .position(|a| *a == current)
-        .unwrap_or(0);
+    let idx = AUTH_OPTIONS.iter().position(|a| *a == current).unwrap_or(0);
     let next = AUTH_OPTIONS[(idx + 1) % AUTH_OPTIONS.len()].clone();
     provider.auth = Some(next);
     let value = match to_value(&provider) {
@@ -717,19 +717,23 @@ mod tests {
         assert!(writes.iter().any(|w| {
             w.path == oxpath!("ui", "settings", "cursor")
                 && match &w.record {
-                    Record::Parsed(v) => super::super::navigation::path_from_value(v)
-                        == Some(expected_target.clone()),
+                    Record::Parsed(v) => {
+                        super::super::navigation::path_from_value(v)
+                            == Some(expected_target.clone())
+                    }
                     _ => false,
                 }
         }));
     }
 
     fn assert_null_write(writes: &[Write], expected_path: structfs_core_store::Path) {
-        let hit = writes.iter().any(|w| {
-            w.path == expected_path
-                && matches!(&w.record, Record::Parsed(Value::Null))
-        });
-        assert!(hit, "expected Null write at {expected_path}, got {writes:?}");
+        let hit = writes
+            .iter()
+            .any(|w| w.path == expected_path && matches!(&w.record, Record::Parsed(Value::Null)));
+        assert!(
+            hit,
+            "expected Null write at {expected_path}, got {writes:?}"
+        );
     }
 
     // -- Cursor-shuffle tests ---------------------------------------------------
@@ -769,7 +773,10 @@ mod tests {
         );
         let writes = run_cmd(&AccountsCreate::new(), &mut snap);
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("config", "gate", "accounts", "_create_now"));
+        assert_eq!(
+            writes[0].path,
+            oxpath!("config", "gate", "accounts", "_create_now")
+        );
         match &writes[0].record {
             Record::Parsed(v) => {
                 let req: CreateAccountRequest =
@@ -844,11 +851,13 @@ mod tests {
         select_model(&mut snap, "alpha", "m1");
         let writes = run_cmd(&ModelsSetPrimary::new(), &mut snap);
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("config", "gate", "completions", "primary"));
+        assert_eq!(
+            writes[0].path,
+            oxpath!("config", "gate", "completions", "primary")
+        );
         match &writes[0].record {
             Record::Parsed(v) => {
-                let role: CompletionRole =
-                    structfs_serde_store::from_value(v.clone()).unwrap();
+                let role: CompletionRole = structfs_serde_store::from_value(v.clone()).unwrap();
                 assert_eq!(role.account, "alpha");
                 assert_eq!(role.model_id, "m1");
             }
@@ -961,11 +970,8 @@ mod tests {
         let mut snap = SettingsSnapshot::empty();
         setup_endpoint_edit(&mut snap, "https://api.example.com", 23);
         // Append 'X' at the end.
-        let writes = run_cmd_with_keystroke(
-            &FieldInsert::new(),
-            &mut snap,
-            Some(keystroke_char('X')),
-        );
+        let writes =
+            run_cmd_with_keystroke(&FieldInsert::new(), &mut snap, Some(keystroke_char('X')));
         // Expect a provider write + cursor write.
         let provider_path = oxpath!(
             "config",
@@ -979,8 +985,7 @@ mod tests {
             .expect("provider write");
         match &provider_write.record {
             Record::Parsed(v) => {
-                let pc: ProviderConfig =
-                    structfs_serde_store::from_value(v.clone()).unwrap();
+                let pc: ProviderConfig = structfs_serde_store::from_value(v.clone()).unwrap();
                 assert_eq!(pc.endpoint, "https://api.example.comX");
             }
             other => panic!("unexpected record: {other:?}"),
@@ -1035,8 +1040,7 @@ mod tests {
             .expect("provider write");
         match &provider_write.record {
             Record::Parsed(v) => {
-                let pc: ProviderConfig =
-                    structfs_serde_store::from_value(v.clone()).unwrap();
+                let pc: ProviderConfig = structfs_serde_store::from_value(v.clone()).unwrap();
                 assert_eq!(pc.endpoint, "https://api.example.co");
             }
             other => panic!("unexpected record: {other:?}"),
@@ -1074,8 +1078,7 @@ mod tests {
             .expect("account write");
         match &acct_write.record {
             Record::Parsed(v) => {
-                let acct: AccountConfig =
-                    structfs_serde_store::from_value(v.clone()).unwrap();
+                let acct: AccountConfig = structfs_serde_store::from_value(v.clone()).unwrap();
                 assert_eq!(acct.provider, "openai");
             }
             other => panic!("unexpected record: {other:?}"),
@@ -1101,8 +1104,7 @@ mod tests {
             .expect("provider write");
         match &prov_write.record {
             Record::Parsed(v) => {
-                let pc: ProviderConfig =
-                    structfs_serde_store::from_value(v.clone()).unwrap();
+                let pc: ProviderConfig = structfs_serde_store::from_value(v.clone()).unwrap();
                 assert_eq!(pc.auth, Some(AuthScheme::BearerToken));
             }
             other => panic!("unexpected record: {other:?}"),

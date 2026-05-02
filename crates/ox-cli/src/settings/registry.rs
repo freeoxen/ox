@@ -57,10 +57,10 @@ pub trait Renderer: Send + Sync {
 /// observable application state — the mutation is internal to the
 /// Reader (e.g. lazy-decode caches in `LiveReader`/`LocalConfig`).
 pub struct RenderCtx<'a> {
-    pub area:     Rect,
-    pub data:     &'a mut dyn Reader,
+    pub area: Rect,
+    pub data: &'a mut dyn Reader,
     pub registry: &'a RendererRegistry,
-    pub theme:    &'a Theme,
+    pub theme: &'a Theme,
 }
 
 /// Indexes registered renderers by cursor `Path`.

@@ -103,8 +103,7 @@ mod tests {
     fn bad_endpoint_returns_endpoint_error() {
         let mut p = good_anthropic();
         p.endpoint = "no-scheme.example.com".into();
-        let diag = validate_account(&account(), Some(&p), Some("sk-test"))
-            .expect("should be Some");
+        let diag = validate_account(&account(), Some(&p), Some("sk-test")).expect("should be Some");
         assert!(
             diag.field_errors.contains_key(&AccountField::Endpoint),
             "expected Endpoint error, got: {:?}",
@@ -136,13 +135,15 @@ mod tests {
             auth: Some(AuthScheme::None),
         };
         let diag = validate_account(&account(), Some(&p), Some(""));
-        assert!(diag.is_none(), "no-auth provider with empty key must validate");
+        assert!(
+            diag.is_none(),
+            "no-auth provider with empty key must validate"
+        );
     }
 
     #[test]
     fn missing_provider_returns_endpoint_error() {
-        let diag = validate_account(&account(), None, Some("sk-test"))
-            .expect("should be Some");
+        let diag = validate_account(&account(), None, Some("sk-test")).expect("should be Some");
         assert!(
             diag.field_errors.contains_key(&AccountField::Endpoint),
             "expected Endpoint error, got: {:?}",
@@ -155,8 +156,7 @@ mod tests {
         // Bad endpoint AND missing key: both fields appear.
         let mut p = good_anthropic();
         p.endpoint = "ftp://nope".into();
-        let diag = validate_account(&account(), Some(&p), Some(""))
-            .expect("should be Some");
+        let diag = validate_account(&account(), Some(&p), Some("")).expect("should be Some");
         assert!(
             diag.field_errors.contains_key(&AccountField::Endpoint),
             "expected Endpoint, got {:?}",

@@ -166,4 +166,3 @@ mod tests {
         assert_eq!(reg.iter().count(), 27);
     }
 }
-

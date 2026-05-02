@@ -35,12 +35,12 @@ use ox_types::settings::ModelKey;
 use ox_types::{ClientModalFlags, CompletionRole, Screen};
 use structfs_core_store::{Path, Record, Value};
 
-use ox_cli::dispatch::{send_key, KeyDispatchOutcome};
+use ox_cli::dispatch::{KeyDispatchOutcome, send_key};
 use ox_cli::settings::binding_registry::BindingRegistry;
 use ox_cli::settings::command_registry::CommandRegistry;
 use ox_cli::settings::commands::navigation::path_to_value;
 use ox_cli::settings::registry::RendererRegistry;
-use ox_cli::settings::snapshot::{fetch_settings_view_state, SettingsSnapshot};
+use ox_cli::settings::snapshot::{SettingsSnapshot, fetch_settings_view_state};
 
 // ---------------------------------------------------------------------------
 // MockTransport — records every call, returns scripted responses.
@@ -307,15 +307,15 @@ async fn navigate_index_to_models_set_primary() {
     write_models_for_account(&h, "anthropic", &["claude-haiku-4-5-20251001"]).await;
 
     // Cursor starts at the index.
-    h.write_path(&oxpath!("ui", "settings", "cursor"), &oxpath!("settings", "index"))
-        .await;
+    h.write_path(
+        &oxpath!("ui", "settings", "cursor"),
+        &oxpath!("settings", "index"),
+    )
+    .await;
 
     // `j` — highlight Models. Index entries land in lexicographic order
     // by id (`accounts` < `models`), so `j` from index 0 → 1 selects Models.
-    assert!(matches!(
-        h.dispatch("j").await,
-        KeyDispatchOutcome::Handled
-    ));
+    assert!(matches!(h.dispatch("j").await, KeyDispatchOutcome::Handled));
     let selected: usize = h
         .client
         .read_typed(&oxpath!("ui", "settings", "index", "selected"))
@@ -346,10 +346,7 @@ async fn navigate_index_to_models_set_primary() {
     .await;
 
     // `P` — set primary.
-    assert!(matches!(
-        h.dispatch("P").await,
-        KeyDispatchOutcome::Handled
-    ));
+    assert!(matches!(h.dispatch("P").await, KeyDispatchOutcome::Handled));
     let primary: CompletionRole = h
         .client
         .read_typed(&oxpath!("config", "gate", "completions", "primary"))
@@ -365,10 +362,7 @@ async fn navigate_index_to_models_set_primary() {
     // to `settings/index`. Pressing `Esc` again from index hits its
     // `ExitScreen` rule and writes `_request_exit: true`.
     let _ = h.dispatch("Esc").await;
-    assert_eq!(
-        h.current_cursor().await,
-        Some(oxpath!("settings", "index"))
-    );
+    assert_eq!(h.current_cursor().await, Some(oxpath!("settings", "index")));
 
     let _ = h.dispatch("Esc").await;
     let exit: bool = h
@@ -416,12 +410,7 @@ async fn add_account_create_flow() {
     let comp = ox_kernel::PathComponent::try_new("anthropic_personal").unwrap();
     let account = poll_until(|| async {
         h.client
-            .read_typed::<AccountConfig>(&oxpath!(
-                "config",
-                "gate",
-                "accounts",
-                comp.clone()
-            ))
+            .read_typed::<AccountConfig>(&oxpath!("config", "gate", "accounts", comp.clone()))
             .await
             .ok()
             .flatten()
@@ -468,8 +457,11 @@ async fn delete_account_flow() {
     populate_account(&h, "anthropic", "sk-test").await;
 
     // Cursor at accounts list, selection points at the account.
-    h.write_path(&oxpath!("ui", "settings", "cursor"), &oxpath!("settings", "accounts"))
-        .await;
+    h.write_path(
+        &oxpath!("ui", "settings", "cursor"),
+        &oxpath!("settings", "accounts"),
+    )
+    .await;
     h.write_typed(
         &oxpath!("ui", "settings", "accounts", "selected"),
         &Some("anthropic".to_string()),
@@ -477,10 +469,7 @@ async fn delete_account_flow() {
     .await;
 
     // `d` — open the delete overlay.
-    assert!(matches!(
-        h.dispatch("d").await,
-        KeyDispatchOutcome::Handled
-    ));
+    assert!(matches!(h.dispatch("d").await, KeyDispatchOutcome::Handled));
     assert_eq!(
         h.current_cursor().await.expect("cursor"),
         oxpath!("settings", "accounts", "_delete"),
@@ -488,10 +477,7 @@ async fn delete_account_flow() {
 
     // `y` — confirm delete. AccountDeleteSubscription fires async; poll
     // for the account record's removal.
-    assert!(matches!(
-        h.dispatch("y").await,
-        KeyDispatchOutcome::Handled
-    ));
+    assert!(matches!(h.dispatch("y").await, KeyDispatchOutcome::Handled));
 
     let comp = ox_kernel::PathComponent::try_new("anthropic").unwrap();
     let acct_path = oxpath!("config", "gate", "accounts", comp);
@@ -507,7 +493,10 @@ async fn delete_account_flow() {
         }
     })
     .await;
-    assert!(gone.is_some(), "account record should be removed after delete");
+    assert!(
+        gone.is_some(),
+        "account record should be removed after delete"
+    );
 
     // Selection cleared.
     let cleared = poll_until(|| async {
@@ -523,7 +512,10 @@ async fn delete_account_flow() {
         }
     })
     .await;
-    assert!(cleared.is_some(), "selection should be cleared after delete");
+    assert!(
+        cleared.is_some(),
+        "selection should be cleared after delete"
+    );
 
     // Cursor pops back to settings/accounts.
     let cursor = poll_until(|| async {
@@ -535,7 +527,10 @@ async fn delete_account_flow() {
         }
     })
     .await;
-    assert_eq!(cursor.expect("cursor pops"), oxpath!("settings", "accounts"));
+    assert_eq!(
+        cursor.expect("cursor pops"),
+        oxpath!("settings", "accounts")
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -544,9 +539,8 @@ async fn delete_account_flow() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_account_progresses_status() {
-    let transport = Arc::new(
-        MockTransport::new().with_test_result(Ok(("anthropic".to_string(), 87))),
-    );
+    let transport =
+        Arc::new(MockTransport::new().with_test_result(Ok(("anthropic".to_string(), 87))));
     let h = E2eHarness::new_with_transport(transport.clone()).await;
     populate_index(&h).await;
     populate_account(&h, "anthropic", "sk-test").await;
@@ -567,10 +561,7 @@ async fn test_account_progresses_status() {
     // writes `Testing { … }` before the spawned task runs. Polling
     // observes either Testing or Success — both confirm the lifecycle
     // engaged (Testing is racy under multi-thread schedulers).
-    assert!(matches!(
-        h.dispatch("t").await,
-        KeyDispatchOutcome::Handled
-    ));
+    assert!(matches!(h.dispatch("t").await, KeyDispatchOutcome::Handled));
 
     let comp = ox_kernel::PathComponent::try_new("anthropic").unwrap();
     let status_path = oxpath!("config", "gate", "accounts", comp, "test_status");
@@ -578,12 +569,7 @@ async fn test_account_progresses_status() {
     // The Success transition is the load-bearing one — it proves the
     // spawned task ran end-to-end. Wait for it.
     let final_status = poll_until(|| async {
-        let s: Option<AccountTestStatus> = h
-            .client
-            .read_typed(&status_path)
-            .await
-            .ok()
-            .flatten();
+        let s: Option<AccountTestStatus> = h.client.read_typed(&status_path).await.ok().flatten();
         match s {
             Some(AccountTestStatus::Success { .. }) => s,
             _ => None,
@@ -639,8 +625,7 @@ async fn refresh_writes_catalog() {
             source: ModelInfoSource::Server,
         },
     ];
-    let transport =
-        Arc::new(MockTransport::new().with_catalog(Ok(scripted.clone())));
+    let transport = Arc::new(MockTransport::new().with_catalog(Ok(scripted.clone())));
     let h = E2eHarness::new_with_transport(transport.clone()).await;
     populate_index(&h).await;
     populate_account(&h, "anthropic", "sk-test").await;
@@ -648,8 +633,11 @@ async fn refresh_writes_catalog() {
     // Cursor at the models list; selection points at a model belonging
     // to the account whose catalog we'll refresh. The refresh command
     // reads `selected: Option<ModelKey>` and pulls `account` off it.
-    h.write_path(&oxpath!("ui", "settings", "cursor"), &oxpath!("settings", "models"))
-        .await;
+    h.write_path(
+        &oxpath!("ui", "settings", "cursor"),
+        &oxpath!("settings", "models"),
+    )
+    .await;
     h.write_typed(
         &oxpath!("ui", "settings", "models", "selected"),
         &Some(ModelKey {
@@ -660,15 +648,11 @@ async fn refresh_writes_catalog() {
     .await;
 
     // `r` triggers the catalog refresh subscription.
-    assert!(matches!(
-        h.dispatch("r").await,
-        KeyDispatchOutcome::Handled
-    ));
+    assert!(matches!(h.dispatch("r").await, KeyDispatchOutcome::Handled));
 
     let comp = ox_kernel::PathComponent::try_new("anthropic").unwrap();
     let models_path = oxpath!("config", "gate", "accounts", comp.clone(), "models");
-    let refresh_status_path =
-        oxpath!("config", "gate", "accounts", comp, "refresh_status");
+    let refresh_status_path = oxpath!("config", "gate", "accounts", comp, "refresh_status");
 
     let saved = poll_until(|| async {
         h.client
@@ -716,4 +700,3 @@ async fn refresh_writes_catalog() {
         &["anthropic".to_string()],
     );
 }
-

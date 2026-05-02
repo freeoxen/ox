@@ -24,9 +24,9 @@ use structfs_core_store::{Error as StoreError, Path, Reader, Record};
 use tracing::error;
 
 use crate::async_store::BoxFuture;
-use crate::subscription::{AsyncWriter, PathChange, SubCtx, SubscriptionRegistry};
 #[cfg(test)]
 use crate::subscription::Subscription;
+use crate::subscription::{AsyncWriter, PathChange, SubCtx, SubscriptionRegistry};
 
 /// Read access for the dispatcher. The dispatcher uses this to compute
 /// `before`/`after` snapshots and to hand a fresh `Reader` to handlers.
@@ -102,8 +102,8 @@ impl DispatchingStore {
     }
 
     /// Recursive core. `depth` is the cascade depth; root entries are 0.
-    fn write_at_depth<'a>(
-        self: &'a Arc<Self>,
+    fn write_at_depth(
+        self: &Arc<Self>,
         path: Path,
         record: Record,
         depth: usize,
@@ -284,9 +284,9 @@ mod tests {
             let key = path.to_string();
             if let Some(bad) = &self.reject_path {
                 if &key == bad {
-                    return Box::pin(async move {
-                        Err(StoreError::store("mock", "write", "rejected"))
-                    });
+                    return Box::pin(
+                        async move { Err(StoreError::store("mock", "write", "rejected")) },
+                    );
                 }
             }
             if let Some(v) = record.as_value() {
@@ -369,9 +369,9 @@ mod tests {
 
     /// A subscription whose `handle` runs a closure to produce returned
     /// writes. Closure is `Fn(SubCtx<'_>) -> Vec<Write>`, sharable.
-    type HandlerFn = Box<dyn Fn(&PathChange, Arc<dyn SubAsyncWriter>, &dyn SpawnHandle) -> Vec<Write>
-        + Send
-        + Sync>;
+    type HandlerFn = Box<
+        dyn Fn(&PathChange, Arc<dyn SubAsyncWriter>, &dyn SpawnHandle) -> Vec<Write> + Send + Sync,
+    >;
 
     struct ClosureSub {
         id: SubscriptionId,
@@ -405,15 +405,24 @@ mod tests {
 
     // ---------- Test dispatcher builder ----------
 
-    fn build(
-        subs: SubscriptionRegistry,
-        cascade_bound: usize,
-    ) -> (
+    /// Shared return shape for the test dispatcher fixtures. Carrying the
+    /// substrate's data map and the recording spawn together keeps each
+    /// test self-contained without per-test boilerplate.
+    type TestRig = (
         Arc<DispatchingStore>,
         Arc<Mutex<BTreeMap<String, Value>>>,
         Arc<MockSpawn>,
-    ) {
-        let (substrate, data) = MockSubstrate::new();
+    );
+
+    /// Wire a `DispatchingStore` around the supplied substrate. The
+    /// returned tuple holds the dispatcher, the substrate's backing data
+    /// (for direct assertion), and the `MockSpawn` recorder.
+    fn build_rig(
+        substrate: Arc<dyn AsyncWriter>,
+        data: Arc<Mutex<BTreeMap<String, Value>>>,
+        subs: SubscriptionRegistry,
+        cascade_bound: usize,
+    ) -> TestRig {
         let reader: Arc<dyn SnapshotReader> = Arc::new(MockReader { data: data.clone() });
         let spawn = Arc::new(MockSpawn::new());
         let dispatcher = Arc::new(DispatchingStore::new(
@@ -426,26 +435,18 @@ mod tests {
         (dispatcher, data, spawn)
     }
 
+    fn build(subs: SubscriptionRegistry, cascade_bound: usize) -> TestRig {
+        let (substrate, data) = MockSubstrate::new();
+        build_rig(substrate as Arc<dyn AsyncWriter>, data, subs, cascade_bound)
+    }
+
     fn build_with_reject(
         subs: SubscriptionRegistry,
         cascade_bound: usize,
         reject: &str,
-    ) -> (
-        Arc<DispatchingStore>,
-        Arc<Mutex<BTreeMap<String, Value>>>,
-        Arc<MockSpawn>,
-    ) {
+    ) -> TestRig {
         let (substrate, data) = MockSubstrate::with_reject(reject);
-        let reader: Arc<dyn SnapshotReader> = Arc::new(MockReader { data: data.clone() });
-        let spawn = Arc::new(MockSpawn::new());
-        let dispatcher = Arc::new(DispatchingStore::new(
-            substrate,
-            reader,
-            Arc::new(RwLock::new(subs)),
-            spawn.clone(),
-            cascade_bound,
-        ));
-        (dispatcher, data, spawn)
+        build_rig(substrate as Arc<dyn AsyncWriter>, data, subs, cascade_bound)
     }
 
     // ---------- Tests ----------
@@ -611,6 +612,11 @@ mod tests {
         assert_eq!(*fired.lock().unwrap(), 0, "must not fire on adjacent name");
     }
 
+    // TODO: convert to `#[tokio::test(start_paused = true)]` once we have
+    // a single-threaded substrate fixture. Currently the test relies on
+    // `flavor = "multi_thread"` so the `block_in_place`-based snapshot
+    // bridge can run, and on real wall-clock for the `< 40ms` immediate-
+    // return assertion (a virtual-clock version would lose that signal).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn spawn_lifecycle() {
         // Sub spawns a task that sleeps 50ms then writes back via the
@@ -688,7 +694,10 @@ mod tests {
             .await;
         assert!(result.is_ok(), "sibling failure must not fail original");
         let map = data.lock().unwrap();
-        assert!(map.get("rejected").is_none(), "rejected path stays unwritten");
+        assert!(
+            map.get("rejected").is_none(),
+            "rejected path stays unwritten"
+        );
         assert_eq!(map.get("ok"), Some(&Value::Integer(2)));
     }
 }

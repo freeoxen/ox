@@ -1,23 +1,23 @@
 //! Navigation commands — descend into a sub-page; ascend back via the
 //! renderer registry's `AscendRule`.
 //!
-//! - `NavDescendIndex`    — read highlighted entry's `target_cursor`,
-//!                          write to `ui/settings/cursor`.
+//! - `NavDescendIndex` — read highlighted entry's `target_cursor`,
+//!   write to `ui/settings/cursor`.
 //! - `NavDescendAccounts` — write `ui/settings/cursor ←
-//!                          settings/accounts/_detail`.
-//! - `NavDescendModels`   — write `ui/settings/cursor ←
-//!                          settings/models/_detail`.
-//! - `NavAscend`          — consult `ctx.registry.ascend(&cursor)`. On
-//!                          `Some(parent)` write parent to cursor; on `None`
-//!                          (`AscendRule::ExitScreen`), write `true` to
-//!                          `ui/settings/_request_exit` so the dispatch loop
-//!                          can react in the next tick (per plan §L2).
+//!   settings/accounts/_detail`.
+//! - `NavDescendModels` — write `ui/settings/cursor ←
+//!   settings/models/_detail`.
+//! - `NavAscend` — consult `ctx.registry.ascend(&cursor)`. On
+//!   `Some(parent)` write parent to cursor; on `None`
+//!   (`AscendRule::ExitScreen`), write `true` to
+//!   `ui/settings/_request_exit` so the dispatch loop
+//!   can react in the next tick (per plan §L2).
 //!
 //! Per spec §6 binding tables.
 
 use ox_path::oxpath;
-use ox_types::SettingsIndexEntry;
 use ox_types::Screen;
+use ox_types::SettingsIndexEntry;
 use ox_types::subscription::Write;
 use structfs_core_store::{Path, Reader, Record, Value};
 
@@ -28,7 +28,12 @@ use crate::settings::renderers::util::{child_names_under, read_typed};
 /// `ox_types::path_serde` (a `Value::Array` of `Value::String` segments).
 /// `Path` itself doesn't implement `Serialize`, so we hand-roll the encoding.
 pub fn path_to_value(p: &Path) -> Value {
-    Value::Array(p.components.iter().map(|c| Value::String(c.clone())).collect())
+    Value::Array(
+        p.components
+            .iter()
+            .map(|c| Value::String(c.clone()))
+            .collect(),
+    )
 }
 
 /// Decode a `Value` previously produced by `path_to_value` back into a

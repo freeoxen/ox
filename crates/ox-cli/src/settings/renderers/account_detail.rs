@@ -16,7 +16,7 @@
 
 use ox_path::oxpath;
 use ox_view::{
-    Color, Direction, FormRow, FormValue, ModifierSet, Sizing, Span, StyledLine, Style, View,
+    Color, Direction, FormRow, FormValue, ModifierSet, Sizing, Span, Style, StyledLine, View,
 };
 
 use ox_gate::{
@@ -85,13 +85,7 @@ impl Renderer for AccountDetailRenderer {
 
         let refresh_status: CatalogRefreshStatus = read_typed(
             ctx.data,
-            &oxpath!(
-                "config",
-                "gate",
-                "accounts",
-                comp.clone(),
-                "refresh_status"
-            ),
+            &oxpath!("config", "gate", "accounts", comp.clone(), "refresh_status"),
         )
         .unwrap_or(CatalogRefreshStatus::Idle);
 
@@ -388,7 +382,10 @@ mod tests {
     fn account_detail_no_selection() {
         let mut snap = SettingsSnapshot::empty();
         let view = render(&mut snap);
-        assert_eq!(view, View::text("No account selected. Press Esc to return."));
+        assert_eq!(
+            view,
+            View::text("No account selected. Press Esc to return.")
+        );
     }
 
     #[test]

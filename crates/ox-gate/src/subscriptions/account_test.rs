@@ -22,15 +22,15 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use ox_broker::subscription::{Subscription, SubCtx};
+use ox_broker::subscription::{SubCtx, Subscription};
 use ox_path::oxpath;
 use ox_types::subscription::{PathPattern, SubscriptionId, Write};
 use structfs_core_store::Record;
 use tokio::task::AbortHandle;
 
 use crate::subscriptions::util::{
-    account_path, instance_segment, now_ms, provider_path, read_typed_via_reader,
-    secret_key_path, test_status_path, validation_path, write_typed,
+    account_path, instance_segment, now_ms, provider_path, read_typed_via_reader, secret_key_path,
+    test_status_path, validation_path, write_typed,
 };
 use crate::transport::Transport;
 use crate::validation::validate_account;
@@ -129,9 +129,7 @@ impl Subscription for AccountTestSubscription {
             Some(p) => p,
             None => return vec![],
         };
-        let api_key = key
-            .map(|k| k.expose().to_string())
-            .unwrap_or_default();
+        let api_key = key.map(|k| k.expose().to_string()).unwrap_or_default();
 
         // -- Synchronous status flip ----------------------------------------
         let start = Instant::now();
@@ -199,14 +197,14 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use ox_broker::subscription::{AsyncWriter, Subscription, SubCtx};
+    use ox_broker::subscription::{AsyncWriter, SubCtx, Subscription};
     use ox_path::oxpath;
     use ox_types::subscription::PathChange;
     use structfs_core_store::{Path, Record};
 
     use super::*;
     use crate::subscriptions::util::testing::{
-        populate_anthropic_account, CapturingWriter, InMemoryReader, MockTransport, TestSpawn,
+        CapturingWriter, InMemoryReader, MockTransport, TestSpawn, populate_anthropic_account,
     };
 
     fn trigger_path(name: &str) -> Path {
@@ -279,12 +277,16 @@ mod tests {
 
         // Two synchronous writes: validation diag + test_status: Failed.
         assert_eq!(writes.len(), 2, "writes: {writes:?}");
-        assert!(writes
-            .iter()
-            .any(|w| w.path.to_string() == "config/gate/accounts/alpha/validation"));
-        assert!(writes
-            .iter()
-            .any(|w| w.path.to_string() == "config/gate/accounts/alpha/test_status"));
+        assert!(
+            writes
+                .iter()
+                .any(|w| w.path.to_string() == "config/gate/accounts/alpha/validation")
+        );
+        assert!(
+            writes
+                .iter()
+                .any(|w| w.path.to_string() == "config/gate/accounts/alpha/test_status")
+        );
 
         // No spawn — validation short-circuits.
         assert!(spawn.handles().is_empty(), "validation must not spawn");
@@ -297,9 +299,8 @@ mod tests {
         let mut reader = InMemoryReader::new();
         populate_anthropic_account(&mut reader, "alpha", "sk-key");
 
-        let transport = Arc::new(
-            MockTransport::new().with_test_result(Ok(("anthropic".into(), 87))),
-        );
+        let transport =
+            Arc::new(MockTransport::new().with_test_result(Ok(("anthropic".into(), 87))));
         let sub = AccountTestSubscription::new(transport.clone());
         let spawn = TestSpawn::new();
         let cap = CapturingWriter::new();
@@ -336,9 +337,7 @@ mod tests {
         let mut reader = InMemoryReader::new();
         populate_anthropic_account(&mut reader, "alpha", "sk-key");
 
-        let transport = Arc::new(
-            MockTransport::new().with_test_result(Err("HTTP 401".into())),
-        );
+        let transport = Arc::new(MockTransport::new().with_test_result(Err("HTTP 401".into())));
         let sub = AccountTestSubscription::new(transport.clone());
         let spawn = TestSpawn::new();
         let cap = CapturingWriter::new();
@@ -414,4 +413,3 @@ mod tests {
         );
     }
 }
-

@@ -239,6 +239,7 @@ impl AgentPool {
     }
 
     /// Path to the inbox root directory (for direct file reads).
+    #[allow(dead_code)]
     pub fn inbox_root(&self) -> &std::path::Path {
         &self.inbox_root
     }

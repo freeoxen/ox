@@ -22,7 +22,7 @@
 //!
 //! Today it logs and returns `vec![]`.
 
-use ox_broker::subscription::{Subscription, SubCtx};
+use ox_broker::subscription::{SubCtx, Subscription};
 use ox_path::oxpath;
 use ox_types::subscription::{PathPattern, SubscriptionId, Write};
 
