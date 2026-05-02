@@ -197,12 +197,15 @@ Movement happens via three commands:
 pub enum AscendRule {
     /// Walk the display-tree parent chain until a registered renderer matches.
     NearestRegistered,
+    /// Top-level page within a screen: ascend to the named cursor (typically
+    /// the screen's index page). The named target must be a registered cursor.
+    Fallback(Path),
     /// Top-level page; ascending exits the settings screen entirely.
     ExitScreen,
 }
 ```
 
-`settings/index` uses `ExitScreen`. Everything else uses `NearestRegistered`.
+`settings/index` uses `ExitScreen`. Top-level pages (`settings/accounts`, `settings/models`) use `Fallback(settings/index)`. Detail pages and overlays use `NearestRegistered`.
 
 ### 4.2 Selection pointers
 
@@ -824,6 +827,10 @@ Multiple writes from one keystroke are fine — `Command::run` returns `Vec<Writ
 ### 9.11 Why two writer types in the subscription protocol (`Store` for sync, `AsyncWriter` for back-channel)?
 
 Subscribers can't carry an `&dyn Store` across an async boundary easily; `Arc<dyn AsyncWriter>` is `Send + Sync` and clonable. They're the same underlying store; the trait split is for ergonomics around spawned tasks.
+
+### 9.12 Why three `AscendRule` variants instead of two?
+
+v0 of this design had two — `NearestRegistered` (strict-ancestor walk) and `ExitScreen`. Top-level pages fell into a gap: their parent in the display tree is the screen's index, but the index isn't an ancestor of `settings/accounts` (they're siblings under `settings/`). The `Fallback(Path)` variant lets the renderer declare its ascent target explicitly, keeping the routing decision in the renderer where it belongs rather than in `NavAscend`'s body.
 
 ## 10. Implementation sketch
 
