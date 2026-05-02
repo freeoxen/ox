@@ -7,6 +7,7 @@ use crate::log::{LogEntry, TurnAbortReason};
 use crate::{
     AgentEvent, CompletionRequest, ContentBlock, StreamEvent, ToolCall, ToolResult, ToolSchema,
 };
+use ox_path::oxpath;
 use serde::{Deserialize, Serialize};
 use structfs_core_store::{Path, Reader, Record, Store, Value, Writer, path};
 
@@ -271,7 +272,7 @@ pub fn deserialize_events(record: Record) -> Result<Vec<StreamEvent>, String> {
 /// Fire a completion with resolved context references.
 ///
 /// 1. Resolves refs by reading from the namespace
-/// 2. Reads model config from `gate/defaults/`
+/// 2. Reads model config from `gate/completions/primary` + per-account catalog
 /// 3. Assembles a CompletionRequest (internal detail)
 /// 4. Sends via `tools/completions/complete/{account}`
 /// 5. Returns stream events
@@ -680,23 +681,71 @@ fn send_completion(
     deserialize_events(response_record)
 }
 
-/// Read model ID and max_tokens from gate defaults.
+/// Read the primary completion role and resolve `max_output_tokens`
+/// from that account's model catalog.
+///
+/// Paths are **kernel-context-relative** — they go through
+/// `ThreadNamespace` which routes `gate/*` to `GateStore`. `GateStore`'s
+/// config handle prepends the broker's `config/` mount, so a kernel read
+/// of `gate/completions/primary` resolves to `config/gate/completions/primary`
+/// at the broker. Internal kernel tests use a `LocalConfig` populated at
+/// the same `gate/`-prefixed paths.
+///
+/// Reads:
+/// - `gate/completions/primary: CompletionRole` — names the
+///   `(account, model_id)` pair to drive the next request.
+/// - `gate/accounts/{account}/models: Vec<ModelInfo>` — the catalog
+///   the role points into.
+///
+/// Returns `(model_id, max_tokens)`. The catalog is informational —
+/// the dialect makes the actual request; if `model_id` isn't present
+/// in the catalog (or the catalog is empty), `KERNEL_FALLBACK_MAX_TOKENS`
+/// is used so a stale catalog doesn't block requests with otherwise-
+/// valid role bindings.
 pub fn read_model_config(context: &mut dyn Reader) -> Result<(String, u32), String> {
-    let model = match context
-        .read(&path!("gate/defaults/model"))
-        .map_err(|e| e.to_string())?
-    {
-        Some(Record::Parsed(Value::String(s))) => s,
-        _ => return Err("expected string from gate/defaults/model".into()),
-    };
-    let max_tokens = match context
-        .read(&path!("gate/defaults/max_tokens"))
-        .map_err(|e| e.to_string())?
-    {
-        Some(Record::Parsed(Value::Integer(n))) => n as u32,
-        _ => return Err("expected integer from gate/defaults/max_tokens".into()),
-    };
-    Ok((model, max_tokens))
+    use ox_types::{CompletionRole, ModelInfo};
+
+    const KERNEL_FALLBACK_MAX_TOKENS: u32 = 4096;
+
+    let role: CompletionRole = read_typed(context, &path!("gate/completions/primary"))?
+        .ok_or_else(|| "no primary completion role configured".to_string())?;
+
+    let account_comp = ox_kernel_path_component(&role.account)?;
+    let catalog_path = oxpath!("gate", "accounts", account_comp, "models");
+    let catalog: Vec<ModelInfo> = read_typed(context, &catalog_path)?.unwrap_or_default();
+
+    // The catalog is informational; the dialect makes the actual request.
+    // Returning role.model_id even when absent from the catalog is intentional.
+    let max_tokens = catalog
+        .iter()
+        .find(|m| m.id == role.model_id)
+        .and_then(|m| m.max_output_tokens)
+        .unwrap_or(KERNEL_FALLBACK_MAX_TOKENS);
+
+    Ok((role.model_id, max_tokens))
+}
+
+/// Build a `PathComponent` from an account name with a typed error.
+fn ox_kernel_path_component(name: &str) -> Result<crate::PathComponent, String> {
+    crate::PathComponent::try_new(name)
+        .map_err(|e| format!("invalid account name '{name}': {e}"))
+}
+
+/// Read a serde-deserializable value from `path` on `context`. Returns
+/// `Ok(None)` when the path is empty or the record is non-parsed.
+fn read_typed<T: serde::de::DeserializeOwned>(
+    context: &mut dyn Reader,
+    path: &Path,
+) -> Result<Option<T>, String> {
+    match context.read(path).map_err(|e| e.to_string())? {
+        Some(record) => match record.as_value() {
+            Some(value) => structfs_serde_store::from_value(value.clone())
+                .map(Some)
+                .map_err(|e| e.to_string()),
+            None => Ok(None),
+        },
+        None => Ok(None),
+    }
 }
 
 /// Read the default account from the context, defaulting to `"anthropic"`.
@@ -1729,14 +1778,67 @@ mod tests {
                 }
             ])),
         );
-        store.set("gate/defaults/model", Value::String("claude-test".into()));
-        store.set("gate/defaults/max_tokens", Value::Integer(2048));
+        set_completion_primary(&mut store, "test", "claude-test", 2048);
         store
+    }
+
+    /// Seed the new CompletionRole + per-account catalog shape on a `MockStore`,
+    /// replacing the older `gate/defaults/{model, max_tokens}` pair the kernel
+    /// no longer reads.
+    fn set_completion_primary(store: &mut MockStore, account: &str, model: &str, max_tokens: u32) {
+        use ox_types::{CompletionRole, ModelInfo, ModelInfoSource};
+        let role = CompletionRole {
+            account: account.to_string(),
+            model_id: model.to_string(),
+        };
+        store.set(
+            "gate/completions/primary",
+            structfs_serde_store::to_value(&role).unwrap(),
+        );
+        let catalog = vec![ModelInfo {
+            id: model.to_string(),
+            display_name: model.to_string(),
+            max_context_size: None,
+            max_output_tokens: Some(max_tokens),
+            source: ModelInfoSource::Server,
+        }];
+        store.set(
+            &format!("gate/accounts/{account}/models"),
+            structfs_serde_store::to_value(&catalog).unwrap(),
+        );
     }
 
     // -----------------------------------------------------------------------
     // Tests
     // -----------------------------------------------------------------------
+
+    #[test]
+    fn read_model_config_resolves_from_completion_role_and_catalog() {
+        use ox_store_util::local_config::LocalConfig;
+        use ox_types::{CompletionRole, ModelInfo, ModelInfoSource};
+
+        let mut store = LocalConfig::new();
+        let role = CompletionRole {
+            account: "anthropic".to_string(),
+            model_id: "claude-sonnet-4-20250514".to_string(),
+        };
+        let role_value = structfs_serde_store::to_value(&role).unwrap();
+        store.set("gate/completions/primary", role_value);
+
+        let catalog = vec![ModelInfo {
+            id: "claude-sonnet-4-20250514".to_string(),
+            display_name: "Claude Sonnet 4".to_string(),
+            max_context_size: Some(200_000),
+            max_output_tokens: Some(32_000),
+            source: ModelInfoSource::Server,
+        }];
+        let catalog_value = structfs_serde_store::to_value(&catalog).unwrap();
+        store.set("gate/accounts/anthropic/models", catalog_value);
+
+        let (model_id, max_tokens) = read_model_config(&mut store).unwrap();
+        assert_eq!(model_id, "claude-sonnet-4-20250514");
+        assert_eq!(max_tokens, 32_000);
+    }
 
     #[test]
     fn stream_event_json_roundtrip() {
@@ -2144,8 +2246,7 @@ mod tests {
             "tools/schemas",
             structfs_serde_store::json_to_value(serde_json::json!([])),
         );
-        store.set("gate/defaults/model", Value::String("test-model".into()));
-        store.set("gate/defaults/max_tokens", Value::Integer(100));
+        set_completion_primary(&mut store, "test", "test-model", 100);
         // Push completion response (text only — no tool calls → loop exits)
         store.push_completion_response(serde_json::json!([
             {"type": "text_delta", "text": "Hello!"},
@@ -2211,8 +2312,7 @@ mod tests {
             "tools/schemas",
             structfs_serde_store::json_to_value(serde_json::json!([])),
         );
-        store.set("gate/defaults/model", Value::String("test".into()));
-        store.set("gate/defaults/max_tokens", Value::Integer(100));
+        set_completion_primary(&mut store, "test", "test", 100);
         let result = synthesize(&mut store);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("system"));
@@ -2234,8 +2334,7 @@ mod tests {
             "tools/schemas",
             structfs_serde_store::json_to_value(serde_json::json!([])),
         );
-        store.set("gate/defaults/model", Value::String("test".into()));
-        store.set("gate/defaults/max_tokens", Value::Integer(100));
+        set_completion_primary(&mut store, "test", "test", 100);
 
         // First completion: returns a tool call
         store.push_completion_response(serde_json::json!([
@@ -2450,8 +2549,7 @@ mod tests {
             "tools/schemas",
             structfs_serde_store::json_to_value(serde_json::json!([])),
         );
-        store.set("gate/defaults/model", Value::String("test-model".into()));
-        store.set("gate/defaults/max_tokens", Value::Integer(100));
+        set_completion_primary(&mut store, "test", "test-model", 100);
         store.push_completion_response(serde_json::json!([
             {"type": "text_delta", "text": "Hello!"},
             {"type": "message_stop"}
@@ -2475,8 +2573,7 @@ mod tests {
             "tools/schemas",
             structfs_serde_store::json_to_value(serde_json::json!([])),
         );
-        store.set("gate/defaults/model", Value::String("test".into()));
-        store.set("gate/defaults/max_tokens", Value::Integer(100));
+        set_completion_primary(&mut store, "test", "test", 100);
         store.push_completion_response(serde_json::json!([
             {"type": "text_delta", "text": "ok"},
             {"type": "message_stop"}
@@ -2532,8 +2629,7 @@ mod tests {
             "tools/schemas",
             structfs_serde_store::json_to_value(serde_json::json!([])),
         );
-        store.set("gate/defaults/model", Value::String("test".into()));
-        store.set("gate/defaults/max_tokens", Value::Integer(100));
+        set_completion_primary(&mut store, "test", "test", 100);
 
         // Outer completion #1: LLM calls complete
         store.push_completion_response(serde_json::json!([
@@ -2580,8 +2676,7 @@ mod tests {
             "tools/schemas",
             structfs_serde_store::json_to_value(serde_json::json!([])),
         );
-        store.set("gate/defaults/model", Value::String("test".into()));
-        store.set("gate/defaults/max_tokens", Value::Integer(100));
+        set_completion_primary(&mut store, "test", "test", 100);
 
         // Push enough tool-call responses to exceed MAX_TOTAL_ITERATIONS
         for _ in 0..(MAX_TOTAL_ITERATIONS + 1) {
@@ -2620,8 +2715,7 @@ mod tests {
             "tools/schemas",
             structfs_serde_store::json_to_value(serde_json::json!([])),
         );
-        store.set("gate/defaults/model", Value::String("test-model".into()));
-        store.set("gate/defaults/max_tokens", Value::Integer(100));
+        set_completion_primary(store, "test", "test-model", 100);
     }
 
     /// Log tail: TurnStart → User → Assistant(tool_use) → ToolCall →

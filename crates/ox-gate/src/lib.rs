@@ -555,6 +555,40 @@ impl Reader for GateStore {
                 }
             }
 
+            // Pass-through to the config handle for paths like
+            // `completions/primary` that aren't held in GateStore's local
+            // state. The namespace fact lives in the broker's config mount
+            // at `config/gate/completions/primary`; re-prepend `gate/` (the
+            // mount that routed us here) and read through the config
+            // handle, which is itself scoped with the `config/` prefix.
+            //
+            // When no config handle is attached (ox-core unit tests, etc.)
+            // and the path is `completions/primary`, fall back to a
+            // built-in CompletionRole pointing at the same defaults the
+            // pre-O1 `gate/defaults/{model,account}` handed out — kernel
+            // tests that don't seed a role still get a usable default.
+            "completions" => {
+                if let Some(handle) = self.config.as_mut() {
+                    let mut full = vec!["gate".to_string()];
+                    full.extend(from.iter().cloned());
+                    if let Ok(prefixed) = Path::try_from_components(full) {
+                        if let Some(record) = handle.read(&prefixed)? {
+                            return Ok(Some(record));
+                        }
+                    }
+                }
+                if from.components.len() == 2 && from.components[1].as_str() == "primary" {
+                    let role = ox_types::CompletionRole {
+                        account: self.defaults.account.clone(),
+                        model_id: self.defaults.model.clone(),
+                    };
+                    let value = to_value(&role)
+                        .map_err(|e| StoreError::store("gate", "read", e.to_string()))?;
+                    return Ok(Some(Record::parsed(value)));
+                }
+                Ok(None)
+            }
+
             _ => Ok(None),
         }
     }

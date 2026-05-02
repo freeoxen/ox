@@ -31,7 +31,7 @@ impl Renderer for ModelsListRenderer {
     fn render(&self, ctx: &mut RenderCtx<'_>) -> View {
         let account_names = child_names_under(ctx.data, "config/gate/accounts");
         let primary: Option<CompletionRole> =
-            read_typed(ctx.data, &oxpath!("config", "completions", "primary"));
+            read_typed(ctx.data, &oxpath!("config", "gate", "completions", "primary"));
         let selected: Option<ModelKey> =
             read_typed::<Option<ModelKey>>(ctx.data, &oxpath!("ui", "settings", "models", "selected"))
                 .flatten();
@@ -238,7 +238,7 @@ mod tests {
             ],
         );
         snap.insert(
-            &oxpath!("config", "completions", "primary"),
+            &oxpath!("config", "gate", "completions", "primary"),
             to_value(&CompletionRole {
                 account: "alpha".into(),
                 model_id: "m2".into(),

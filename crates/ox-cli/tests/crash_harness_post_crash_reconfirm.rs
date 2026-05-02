@@ -132,19 +132,37 @@ impl LocalHarness {
 
 async fn build_broker(inbox_root: &std::path::Path) -> BrokerHandle {
     use std::collections::BTreeMap;
+    use ox_types::{CompletionRole, ModelInfo, ModelInfoSource};
     use structfs_core_store::Value;
     let inbox = InboxStore::open(inbox_root).expect("open inbox store");
     let bindings = ox_cli::bindings::default_bindings();
     let mut cfg: BTreeMap<String, Value> = BTreeMap::new();
+
+    let role = CompletionRole {
+        account: "anthropic".to_string(),
+        model_id: "claude-sonnet-4-20250514".to_string(),
+    };
     cfg.insert(
-        "gate/defaults/model".into(),
-        Value::String("claude-sonnet-4-20250514".into()),
+        "gate/completions/primary".into(),
+        structfs_serde_store::to_value(&role).expect("CompletionRole serializes"),
     );
+
+    let catalog = vec![ModelInfo {
+        id: "claude-sonnet-4-20250514".to_string(),
+        display_name: "Claude Sonnet 4".to_string(),
+        max_context_size: None,
+        max_output_tokens: Some(4096),
+        source: ModelInfoSource::Server,
+    }];
+    cfg.insert(
+        "gate/accounts/anthropic/models".into(),
+        structfs_serde_store::to_value(&catalog).expect("catalog serializes"),
+    );
+
     cfg.insert(
         "gate/defaults/account".into(),
         Value::String("anthropic".into()),
     );
-    cfg.insert("gate/defaults/max_tokens".into(), Value::Integer(4096));
     cfg.insert(
         "gate/accounts/anthropic/provider".into(),
         Value::String("anthropic".into()),

@@ -61,7 +61,7 @@ impl Reader for SettingsSnapshot {
 const PREFIXES: &[&str] = &[
     "config/gate/accounts",
     "config/gate/providers",
-    "config/completions",
+    "config/gate/completions",
     "ui/settings",
     "ui/global",
     "settings/index/entries",
@@ -139,13 +139,13 @@ mod tests {
             model_id: "claude-sonnet-4-20250514".to_string(),
         };
         client
-            .write_typed(&oxpath!("config", "completions", "primary"), &role)
+            .write_typed(&oxpath!("config", "gate", "completions", "primary"), &role)
             .await
             .expect("write_typed");
 
         let mut snap = fetch_settings_view_state(&client).await;
         let record = snap
-            .read(&oxpath!("config", "completions", "primary"))
+            .read(&oxpath!("config", "gate", "completions", "primary"))
             .expect("read")
             .expect("record present");
         let value = record.as_value().expect("parsed value").clone();

@@ -117,7 +117,7 @@ command! {
     struct_name: ModelsSetPrimary,
     id: "models.set_primary",
     title: "Set as Primary",
-    description: "Bind config/completions/primary to the selected (account, model).",
+    description: "Bind config/gate/completions/primary to the selected (account, model).",
     screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "models")),
     run: |snap, _ctx| models_set_primary(snap),
@@ -331,7 +331,7 @@ fn models_set_primary(data: &mut dyn Reader) -> Vec<Write> {
         }
     };
     vec![Write {
-        path: oxpath!("config", "completions", "primary"),
+        path: oxpath!("config", "gate", "completions", "primary"),
         record: Record::parsed(value),
     }]
 }
@@ -844,7 +844,7 @@ mod tests {
         select_model(&mut snap, "alpha", "m1");
         let writes = run_cmd(&ModelsSetPrimary::new(), &mut snap);
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("config", "completions", "primary"));
+        assert_eq!(writes[0].path, oxpath!("config", "gate", "completions", "primary"));
         match &writes[0].record {
             Record::Parsed(v) => {
                 let role: CompletionRole =
