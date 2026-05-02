@@ -820,6 +820,16 @@ async fn dispatch_key(
             show_usage: dialog.show_usage,
             show_thread_info: dialog.show_thread_info,
         },
+        // Settings cursor scoping (Phase P1). The legacy event-loop
+        // call site does not yet thread the settings registries +
+        // snapshot through; that wiring is part of Phase P2. Until
+        // then, pass `None` for each — `send_key` falls through to the
+        // input-store path unchanged.
+        None,
+        None,
+        None,
+        None,
+        None,
     )
     .await;
 
