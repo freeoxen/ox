@@ -385,6 +385,90 @@ mod tests {
         );
     }
 
+    /// End-to-end pipeline test: for every day-one binding, dispatch the
+    /// original chord *and* the encode→parse round-tripped chord through
+    /// `dispatch_settings_key`, then assert the resulting writes match.
+    /// If encode/parse drops chord information that bindings depend on,
+    /// the two dispatches diverge and this test fails — closing the loop
+    /// the unit tests above can't (they only cover one stage at a time).
+    #[test]
+    fn day_one_bindings_round_trip_through_full_dispatch() {
+        use crate::key_chord_canonical::encode_keychord_to_str;
+        use crate::settings::binding_registry::BindingRegistry;
+        use crate::settings::bindings::register as register_all_bindings;
+        use crate::settings::command_registry::CommandRegistry;
+        use crate::settings::commands::register_all as register_all_commands;
+        use crate::settings::dispatch::dispatch_settings_key;
+        use crate::settings::registry::RendererRegistry;
+
+        let mut bindings = BindingRegistry::new();
+        register_all_bindings(&mut bindings);
+        let mut cmds = CommandRegistry::new();
+        register_all_commands(&mut cmds);
+        let renderers = RendererRegistry::new();
+
+        let empty_path = oxpath!();
+        let entries: Vec<_> = bindings.entries().to_vec();
+        let mut tested = 0usize;
+        let mut encoder_gaps = 0usize;
+
+        for entry in &entries {
+            let Some(wire) = encode_keychord_to_str(&entry.key) else {
+                encoder_gaps += 1;
+                continue;
+            };
+            let parsed = parse_key_str(&wire).unwrap_or_else(|| {
+                panic!("binding {entry:?} encoded to {wire:?}, parser returned None")
+            });
+
+            let cursor = entry.cursor_path.as_ref().unwrap_or(&empty_path);
+
+            let mut reader_orig = LocalConfig::default();
+            let writes_orig = dispatch_settings_key(
+                &mut reader_orig,
+                entry.screen,
+                cursor,
+                entry.mode,
+                &entry.key,
+                &cmds,
+                &bindings,
+                &renderers,
+            );
+
+            let mut reader_parsed = LocalConfig::default();
+            let writes_parsed = dispatch_settings_key(
+                &mut reader_parsed,
+                entry.screen,
+                cursor,
+                entry.mode,
+                &parsed,
+                &cmds,
+                &bindings,
+                &renderers,
+            );
+
+            assert_eq!(
+                writes_orig.len(),
+                writes_parsed.len(),
+                "binding {entry:?}: original chord produced {} writes; parsed chord produced {} (encoded as {wire:?}, parsed back as {parsed:?})",
+                writes_orig.len(),
+                writes_parsed.len(),
+            );
+            for (i, (a, b)) in writes_orig.iter().zip(writes_parsed.iter()).enumerate() {
+                assert_eq!(
+                    a.path, b.path,
+                    "binding {entry:?}: write[{i}].path differs between original and round-tripped chord (wire {wire:?})"
+                );
+            }
+            tested += 1;
+        }
+
+        assert!(
+            tested >= 100,
+            "expected ≥100 bindings exercised end-to-end; got {tested} (encoder skipped {encoder_gaps})"
+        );
+    }
+
     // -------- send_key integration tests ----------------------------------
 
     /// Stub Renderer used only to seed the renderer registry with an
