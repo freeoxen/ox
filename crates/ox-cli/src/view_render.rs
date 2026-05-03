@@ -107,7 +107,13 @@ fn render_list(
         .iter()
         .map(|it| {
             let mut primary_spans: Vec<RSpan> = Vec::new();
-            primary_spans.push(RSpan::raw(it.primary.clone()));
+            if let Some(spans) = &it.primary_spans {
+                for s in spans {
+                    primary_spans.push(RSpan::styled(s.text.clone(), map_style(s.style)));
+                }
+            } else {
+                primary_spans.push(RSpan::raw(it.primary.clone()));
+            }
             if let Some(badge) = &it.badge {
                 primary_spans.push(RSpan::raw(" "));
                 primary_spans.push(RSpan::styled(
@@ -469,12 +475,14 @@ mod tests {
             items: vec![
                 ListItem {
                     primary: "personal".into(),
-                    secondary: Some("anthropic".into()),
+                    primary_spans: None,
+                secondary: Some("anthropic".into()),
                     badge: Some("default".into()),
                 },
                 ListItem {
                     primary: "work".into(),
-                    secondary: Some("openai".into()),
+                    primary_spans: None,
+                secondary: Some("openai".into()),
                     badge: None,
                 },
             ],
@@ -529,7 +537,8 @@ mod tests {
                     title: Some("items".into()),
                     items: vec![ListItem {
                         primary: "alpha".into(),
-                        secondary: None,
+                        primary_spans: None,
+                secondary: None,
                         badge: None,
                     }],
                     selected: Some(0),

@@ -244,11 +244,23 @@ fn register_row_prefixes(reg: &mut BindingRegistry) {
     );
     bind_prefix(
         reg,
-        accounts_subtree,
+        accounts_subtree.clone(),
         no_mods(),
         KeyCodeRepr::Char('d'),
         "accounts.delete_confirm",
     );
+    // h / l (and Left / Right) cycle through selector options when
+    // the focused row is a selector field. The command itself
+    // checks `RowKind` and no-ops on non-selector rows, so binding
+    // at the broad accounts-subtree prefix is fine.
+    for (key, id) in [
+        (KeyCodeRepr::Char('h'), "cycle.field.prev"),
+        (KeyCodeRepr::Left, "cycle.field.prev"),
+        (KeyCodeRepr::Char('l'), "cycle.field.next"),
+        (KeyCodeRepr::Right, "cycle.field.next"),
+    ] {
+        bind_prefix(reg, accounts_subtree.clone(), no_mods(), key, id);
+    }
     let models_subtree = oxpath!("settings", "models");
     bind_prefix(
         reg,

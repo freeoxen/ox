@@ -13,8 +13,9 @@
 //! glyph on the primary text; the legacy badge slot still carries
 //! the entry's badge string.
 
-use ox_view::{ListItem, View};
+use ox_view::{ListItem, ModifierSet, Span, Style, View};
 
+use crate::settings::commands::account_model::{AUTH_DISPLAY, PROTOCOL_OPTIONS};
 use crate::settings::commands::edit::read_edit_state;
 use crate::settings::registry::{AscendRule, RenderCtx, Renderer, RendererRegistry};
 use crate::settings::visible_rows::{self, RowKind};
@@ -33,16 +34,35 @@ impl Renderer for IndexRenderer {
 
         let items: Vec<ListItem> = rows
             .iter()
-            .map(|row| {
+            .enumerate()
+            .map(|(i, row)| {
                 let indent = "  ".repeat(row.depth);
                 let glyph = if row.expandable {
                     if row.expanded { "▾ " } else { "▸ " }
                 } else {
                     "  "
                 };
+                // Selector rows render a flanked carousel only when
+                // they're the focused row — that's the visual cue
+                // that h/l will cycle. Other rows fall through to
+                // the plain label.
+                let is_focused = selected.is_some_and(|sel| sel == i);
+                if is_focused {
+                    if let Some(spans) =
+                        selector_carousel_spans(row, &indent, glyph)
+                    {
+                        return ListItem {
+                            primary: format!("{indent}{glyph}{}", row.label),
+                            primary_spans: Some(spans),
+                            secondary: None,
+                            badge: row.badge.clone(),
+                        };
+                    }
+                }
                 let label = decorate_row_label(row, edit_state.as_ref());
                 ListItem {
                     primary: format!("{indent}{glyph}{label}"),
+                    primary_spans: None,
                     secondary: None,
                     badge: row.badge.clone(),
                 }
@@ -61,6 +81,83 @@ impl Renderer for IndexRenderer {
     fn ascend_to(&self) -> AscendRule {
         AscendRule::ExitScreen
     }
+}
+
+/// For a focused selector row, build the flanked carousel as styled
+/// spans — indent + glyph + label + dim prev + bright current + dim
+/// next. Returns `None` when the row isn't a selector, so the caller
+/// falls through to the plain label.
+fn selector_carousel_spans(
+    row: &visible_rows::VisibleRow,
+    indent: &str,
+    glyph: &str,
+) -> Option<Vec<Span>> {
+    let (label, options, current_idx): (&str, &[&str], usize) = match &row.kind {
+        RowKind::AccountField {
+            account,
+            field: ox_types::AccountField::Protocol,
+        } => {
+            let _ = account;
+            // Parse the row label "Protocol: <provider>" to find
+            // the current option. `safe_component`-style sanitation
+            // doesn't apply here — the label embeds the literal
+            // provider string from `AccountConfig.provider`.
+            let value = row.label.split(": ").nth(1).unwrap_or("");
+            let idx = PROTOCOL_OPTIONS
+                .iter()
+                .position(|o| *o == value)
+                .unwrap_or(0);
+            ("Protocol", PROTOCOL_OPTIONS, idx)
+        }
+        RowKind::AccountField {
+            account,
+            field: ox_types::AccountField::Auth,
+        } => {
+            let _ = account;
+            let value = row.label.split(": ").nth(1).unwrap_or("");
+            let idx = AUTH_DISPLAY.iter().position(|o| *o == value).unwrap_or(0);
+            ("Auth", AUTH_DISPLAY, idx)
+        }
+        _ => return None,
+    };
+    if options.is_empty() {
+        return None;
+    }
+    let len = options.len();
+    let prev = options[(current_idx + len - 1) % len];
+    let current = options[current_idx];
+    let next = options[(current_idx + 1) % len];
+    let dim = Style {
+        fg: None,
+        bg: None,
+        modifiers: ModifierSet {
+            dim: true,
+            ..ModifierSet::default()
+        },
+    };
+    let bright = Style {
+        fg: None,
+        bg: None,
+        modifiers: ModifierSet {
+            bold: true,
+            ..ModifierSet::default()
+        },
+    };
+    Some(vec![
+        Span::plain(format!("{indent}{glyph}{label}: ")),
+        Span {
+            text: format!("◂ {prev}  "),
+            style: dim,
+        },
+        Span {
+            text: current.to_string(),
+            style: bright,
+        },
+        Span {
+            text: format!("  {next} ▸"),
+            style: dim,
+        },
+    ])
 }
 
 /// When the user is editing a field row, replace the row's

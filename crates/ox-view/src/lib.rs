@@ -72,6 +72,11 @@ pub enum View {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ListItem {
     pub primary: String,
+    /// When present, the translator renders this styled-span sequence
+    /// in place of `primary`. Used by the settings tree to render
+    /// inline selector carousels — `[prev_dim] current [next_dim]` —
+    /// without inventing a new `View` variant.
+    pub primary_spans: Option<Vec<Span>>,
     pub secondary: Option<String>,
     pub badge: Option<String>,
 }
@@ -319,12 +324,14 @@ mod tests {
             items: vec![
                 ListItem {
                     primary: "personal".into(),
-                    secondary: Some("anthropic".into()),
+                    primary_spans: None,
+                secondary: Some("anthropic".into()),
                     badge: Some("default".into()),
                 },
                 ListItem {
                     primary: "work".into(),
-                    secondary: Some("openai".into()),
+                    primary_spans: None,
+                secondary: Some("openai".into()),
                     badge: None,
                 },
             ],
@@ -335,12 +342,14 @@ mod tests {
             items: vec![
                 ListItem {
                     primary: "personal".into(),
-                    secondary: Some("anthropic".into()),
+                    primary_spans: None,
+                secondary: Some("anthropic".into()),
                     badge: Some("default".into()),
                 },
                 ListItem {
                     primary: "work".into(),
-                    secondary: Some("openai".into()),
+                    primary_spans: None,
+                secondary: Some("openai".into()),
                     badge: None,
                 },
             ],
@@ -416,7 +425,8 @@ mod tests {
                     title: Some("accounts".into()),
                     items: vec![ListItem {
                         primary: "personal".into(),
-                        secondary: None,
+                        primary_spans: None,
+                secondary: None,
                         badge: None,
                     }],
                     selected: Some(0),

@@ -433,7 +433,29 @@ fn field_model_step(data: &mut dyn Reader, delta: isize) -> Vec<Write> {
     }]
 }
 
+/// Ordered options for each selector. Public so the renderer can
+/// surface the prev/current/next triple without re-implementing the
+/// list.
+pub const PROTOCOL_OPTIONS: &[&str] = &["anthropic", "openai"];
+pub const AUTH_DISPLAY: &[&str] = &["x-api-key", "bearer-token", "none"];
+
+/// Direction for selector cycling. `Forward` is what the legacy
+/// `selector_cycle_*` commands have always done; `Back` mirrors it.
+#[derive(Clone, Copy)]
+pub(crate) enum CycleDir {
+    Forward,
+    Back,
+}
+
 pub(crate) fn selector_cycle_protocol(data: &mut dyn Reader) -> Vec<Write> {
+    selector_cycle_protocol_dir(data, CycleDir::Forward)
+}
+
+pub(crate) fn selector_cycle_protocol_back(data: &mut dyn Reader) -> Vec<Write> {
+    selector_cycle_protocol_dir(data, CycleDir::Back)
+}
+
+fn selector_cycle_protocol_dir(data: &mut dyn Reader, dir: CycleDir) -> Vec<Write> {
     let selected = match read_selected_account(data) {
         Some(s) => s,
         None => return Vec::new(),
@@ -451,12 +473,16 @@ pub(crate) fn selector_cycle_protocol(data: &mut dyn Reader) -> Vec<Write> {
         provider: read_account_child_string(data, &selected, "provider")
             .unwrap_or_else(|| "anthropic".to_string()),
     });
-    const OPTIONS: &[&str] = &["anthropic", "openai"];
-    let idx = OPTIONS
+    let idx = PROTOCOL_OPTIONS
         .iter()
         .position(|o| *o == acct.provider)
         .unwrap_or(0);
-    let next = OPTIONS[(idx + 1) % OPTIONS.len()];
+    let next = match dir {
+        CycleDir::Forward => PROTOCOL_OPTIONS[(idx + 1) % PROTOCOL_OPTIONS.len()],
+        CycleDir::Back => {
+            PROTOCOL_OPTIONS[(idx + PROTOCOL_OPTIONS.len() - 1) % PROTOCOL_OPTIONS.len()]
+        }
+    };
     acct.provider = next.to_string();
     let value = match to_value(&acct) {
         Ok(v) => v,
@@ -469,6 +495,50 @@ pub(crate) fn selector_cycle_protocol(data: &mut dyn Reader) -> Vec<Write> {
         path: acct_path,
         record: Record::parsed(value),
     }]
+}
+
+command! {
+    struct_name: CycleFieldNext,
+    id: "cycle.field.next",
+    title: "Cycle field next",
+    description: "Advance the focused selector field to its next option.",
+    screen: Screen::Settings,
+    cursor: None,
+    run: |snap, _ctx| cycle_field(snap, CycleDir::Forward),
+}
+
+command! {
+    struct_name: CycleFieldPrev,
+    id: "cycle.field.prev",
+    title: "Cycle field prev",
+    description: "Advance the focused selector field to its previous option.",
+    screen: Screen::Settings,
+    cursor: None,
+    run: |snap, _ctx| cycle_field(snap, CycleDir::Back),
+}
+
+fn cycle_field(data: &mut dyn Reader, dir: CycleDir) -> Vec<Write> {
+    use crate::settings::visible_rows::{self, RowKind};
+    let path = match focused_path(data) {
+        Some(p) => p,
+        None => return Vec::new(),
+    };
+    let rows = visible_rows::enumerate(data);
+    let row = match rows.into_iter().find(|r| r.path == path) {
+        Some(r) => r,
+        None => return Vec::new(),
+    };
+    match row.kind {
+        RowKind::AccountField {
+            field: AccountField::Protocol,
+            ..
+        } => selector_cycle_protocol_dir(data, dir),
+        RowKind::AccountField {
+            field: AccountField::Auth,
+            ..
+        } => selector_cycle_auth_dir(data, dir),
+        _ => Vec::new(),
+    }
 }
 
 /// Read a child string under `config/gate/accounts/{name}/{child}`
@@ -500,6 +570,14 @@ const AUTH_OPTIONS: [AuthScheme; 3] = [
 ];
 
 pub(crate) fn selector_cycle_auth(data: &mut dyn Reader) -> Vec<Write> {
+    selector_cycle_auth_dir(data, CycleDir::Forward)
+}
+
+pub(crate) fn selector_cycle_auth_back(data: &mut dyn Reader) -> Vec<Write> {
+    selector_cycle_auth_dir(data, CycleDir::Back)
+}
+
+fn selector_cycle_auth_dir(data: &mut dyn Reader, dir: CycleDir) -> Vec<Write> {
     let selected = match read_selected_account(data) {
         Some(s) => s,
         None => return Vec::new(),
@@ -535,7 +613,10 @@ pub(crate) fn selector_cycle_auth(data: &mut dyn Reader) -> Vec<Write> {
         });
     let current = provider.resolved_auth();
     let idx = AUTH_OPTIONS.iter().position(|a| *a == current).unwrap_or(0);
-    let next = AUTH_OPTIONS[(idx + 1) % AUTH_OPTIONS.len()].clone();
+    let next = match dir {
+        CycleDir::Forward => AUTH_OPTIONS[(idx + 1) % AUTH_OPTIONS.len()].clone(),
+        CycleDir::Back => AUTH_OPTIONS[(idx + AUTH_OPTIONS.len() - 1) % AUTH_OPTIONS.len()].clone(),
+    };
     provider.auth = Some(next);
     let value = match to_value(&provider) {
         Ok(v) => v,
@@ -567,6 +648,8 @@ pub fn register(reg: &mut CommandRegistry) {
     reg.register(Box::new(FieldAccountNext::new()));
     reg.register(Box::new(SelectorCycleProtocol::new()));
     reg.register(Box::new(SelectorCycleAuth::new()));
+    reg.register(Box::new(CycleFieldNext::new()));
+    reg.register(Box::new(CycleFieldPrev::new()));
 }
 
 // ---------------------------------------------------------------------------
