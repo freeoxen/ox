@@ -160,6 +160,46 @@ fn register_index(reg: &mut BindingRegistry) {
         KeyCodeRepr::Enter,
         "tree.activate",
     );
+    // Vim aliases: `e` (edit), `o` (open), `i` (insert) all route
+    // to `tree.activate`. `tree.activate` already dispatches by
+    // RowKind, so the same binding either toggles expansion (on a
+    // category) or enters edit mode (on a text-editable field) —
+    // muscle-memory paths for vim users without inventing per-key
+    // semantics.
+    for ch in ['e', 'o', 'i'] {
+        bind(
+            reg,
+            Some(cursor.clone()),
+            no_mods(),
+            KeyCodeRepr::Char(ch),
+            "tree.activate",
+        );
+    }
+    // `gg` (vim: top) would need a chord state machine the registry
+    // doesn't have today. Single-key `G` (Shift+g) for last row is
+    // the achievable subset; `Home` / `End` cover the same ground
+    // for non-vim users.
+    bind(
+        reg,
+        Some(cursor.clone()),
+        shift_only(),
+        KeyCodeRepr::Char('G'),
+        "tree.last",
+    );
+    bind(
+        reg,
+        Some(cursor.clone()),
+        no_mods(),
+        KeyCodeRepr::End,
+        "tree.last",
+    );
+    bind(
+        reg,
+        Some(cursor.clone()),
+        no_mods(),
+        KeyCodeRepr::Home,
+        "tree.first",
+    );
     bind(
         reg,
         Some(cursor),

@@ -58,6 +58,26 @@ command! {
 }
 
 command! {
+    struct_name: TreeFirst,
+    id: "tree.first",
+    title: "First Row",
+    description: "Move focus to the first visible row.",
+    screen: Screen::Settings,
+    cursor: Some(oxpath!("settings", "index")),
+    run: |snap, _ctx| jump(snap, JumpTo::First),
+}
+
+command! {
+    struct_name: TreeLast,
+    id: "tree.last",
+    title: "Last Row",
+    description: "Move focus to the last visible row.",
+    screen: Screen::Settings,
+    cursor: Some(oxpath!("settings", "index")),
+    run: |snap, _ctx| jump(snap, JumpTo::Last),
+}
+
+command! {
     struct_name: TreeCollapseOrAscend,
     id: "tree.collapse_or_ascend",
     title: "Collapse / Back",
@@ -71,6 +91,27 @@ command! {
 enum Direction {
     Next,
     Prev,
+}
+
+#[derive(Clone, Copy)]
+enum JumpTo {
+    First,
+    Last,
+}
+
+fn jump(data: &mut dyn Reader, to: JumpTo) -> Vec<Write> {
+    let rows = visible_rows::enumerate(data);
+    if rows.is_empty() {
+        return Vec::new();
+    }
+    let target = match to {
+        JumpTo::First => &rows[0].path,
+        JumpTo::Last => &rows[rows.len() - 1].path,
+    };
+    vec![Write {
+        path: oxpath!("ui", "settings", "focused_row"),
+        record: Record::parsed(path_to_value(target)),
+    }]
 }
 
 /// Read the focused-row path. This is intentionally NOT
@@ -254,6 +295,8 @@ pub fn register(reg: &mut CommandRegistry) {
     reg.register(Box::new(TreeNext::new()));
     reg.register(Box::new(TreePrev::new()));
     reg.register(Box::new(TreeActivate::new()));
+    reg.register(Box::new(TreeFirst::new()));
+    reg.register(Box::new(TreeLast::new()));
     reg.register(Box::new(TreeCollapseOrAscend::new()));
 }
 

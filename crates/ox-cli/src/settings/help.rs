@@ -23,18 +23,59 @@ use crate::key_chord_canonical::encode_keychord_to_str;
 use crate::settings::binding_registry::BindingRegistry;
 use crate::settings::command_registry::CommandRegistry;
 
-/// Build the hint list for a given settings cursor. Returned in
-/// resolution order (most-specific first); duplicate keys after the
-/// first are dropped so each chord shows up once with its winning
-/// command.
+/// Build the hint list for the given settings dispatch context.
+///
+/// Mirrors the dispatcher's three-pass lookup: edit-mode synthetic
+/// cursor (when active) → focused row → page cursor. A key seen at
+/// a higher-priority scope shadows the same key at a lower-priority
+/// one, so the modal shows the binding that would actually fire.
+///
+/// The legacy single-cursor entrypoint was missing per-row Prefix
+/// bindings (t / r / h / l / a / d / P) and edit-mode bindings — they
+/// were never visible in the shortcuts modal because the page cursor
+/// (`settings/index`) doesn't match `Prefix(settings/accounts)` or
+/// `Exact(settings/_edit_mode)`. Threading the focused row + edit
+/// flag fixes that.
+pub fn key_hints_for_context(
+    bindings: &BindingRegistry,
+    commands: &CommandRegistry,
+    page_cursor: &Path,
+    focused_row: Option<&Path>,
+    edit_mode: bool,
+) -> Vec<KeyHint> {
+    let mut out: Vec<KeyHint> = Vec::new();
+    let mut seen_keys: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    let edit_scope;
+    if edit_mode {
+        edit_scope = ox_path::oxpath!("settings", "_edit_mode");
+        emit_for_cursor(bindings, commands, &edit_scope, &mut seen_keys, &mut out);
+    }
+    if let Some(focus) = focused_row {
+        emit_for_cursor(bindings, commands, focus, &mut seen_keys, &mut out);
+    }
+    emit_for_cursor(bindings, commands, page_cursor, &mut seen_keys, &mut out);
+    out
+}
+
+/// Compatibility shim: hints for a page cursor only, no focused-row
+/// or edit-mode context. Kept for tests; production callers now use
+/// `key_hints_for_context`.
 pub fn key_hints_for_cursor(
     bindings: &BindingRegistry,
     commands: &CommandRegistry,
     cursor: &Path,
 ) -> Vec<KeyHint> {
-    let mut out: Vec<KeyHint> = Vec::new();
-    let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+    key_hints_for_context(bindings, commands, cursor, None, false)
+}
 
+fn emit_for_cursor(
+    bindings: &BindingRegistry,
+    commands: &CommandRegistry,
+    cursor: &Path,
+    seen_keys: &mut std::collections::HashSet<String>,
+    out: &mut Vec<KeyHint>,
+) {
     for entry in bindings.entries() {
         if !entry.scope.matches(cursor) {
             continue;
@@ -56,7 +97,6 @@ pub fn key_hints_for_cursor(
             status_hint: false,
         });
     }
-    out
 }
 
 #[cfg(test)]
