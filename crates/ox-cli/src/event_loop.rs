@@ -861,6 +861,17 @@ async fn dispatch_key(
     // lookup (text routing, not binding lookup).
     let _ = has_approval_pending;
 
+    // Esc dismisses the shortcuts modal first, before any
+    // screen-specific dispatch sees the key. The modal is a global
+    // overlay over whatever page the user is on; consuming Esc here
+    // means hitting Esc to close `?` doesn't also collapse a
+    // settings tree row, cancel an inline edit, or back out of the
+    // thread view.
+    if dialog.show_shortcuts && matches!(code, KeyCode::Esc) {
+        dialog.show_shortcuts = false;
+        return;
+    }
+
     let input_screen = match &ui.screen {
         ScreenSnapshot::Inbox(_) => Screen::Inbox,
         ScreenSnapshot::Thread(_) => Screen::Thread,
