@@ -20,12 +20,10 @@
 
 use ox_path::oxpath;
 use ox_types::Screen;
-use ox_types::SettingsIndexEntry;
 use ox_types::subscription::Write;
 use structfs_core_store::{Path, Reader, Record, Value};
 
 use crate::settings::command_registry::CommandRegistry;
-use crate::settings::renderers::util::{child_names_under, read_typed};
 
 /// Encode a `Path` as a `Value` matching the wire shape used by
 /// `ox_types::path_serde` (a `Value::Array` of `Value::String` segments).
@@ -72,42 +70,6 @@ fn read_path(data: &mut dyn Reader, path: &Path) -> Option<Path> {
 use super::command;
 
 command! {
-    struct_name: NavDescendIndex,
-    id: "nav.descend.index",
-    title: "Open Selected Settings Entry",
-    description: "Descend into the highlighted index entry's target page.",
-    screen: Screen::Settings,
-    cursor: Some(oxpath!("settings", "index")),
-    run: |snap, _ctx| descend_index(snap),
-}
-
-command! {
-    struct_name: NavDescendAccounts,
-    id: "nav.descend.accounts",
-    title: "Open Selected Account",
-    description: "Descend into the account detail page.",
-    screen: Screen::Settings,
-    cursor: Some(oxpath!("settings", "accounts")),
-    run: |_snap, _ctx| vec![Write {
-        path: oxpath!("ui", "settings", "cursor"),
-        record: Record::parsed(path_to_value(&oxpath!("settings", "accounts", "_detail"))),
-    }],
-}
-
-command! {
-    struct_name: NavDescendModels,
-    id: "nav.descend.models",
-    title: "Open Selected Model",
-    description: "Descend into the model detail page.",
-    screen: Screen::Settings,
-    cursor: Some(oxpath!("settings", "models")),
-    run: |_snap, _ctx| vec![Write {
-        path: oxpath!("ui", "settings", "cursor"),
-        record: Record::parsed(path_to_value(&oxpath!("settings", "models", "_detail"))),
-    }],
-}
-
-command! {
     struct_name: NavAscend,
     id: "nav.ascend",
     title: "Go Back",
@@ -115,32 +77,6 @@ command! {
     screen: Screen::Settings,
     cursor: None,
     run: |snap, ctx| ascend(snap, ctx),
-}
-
-fn descend_index(data: &mut dyn Reader) -> Vec<Write> {
-    let entry_ids = child_names_under(data, "settings/index/entries");
-    if entry_ids.is_empty() {
-        return Vec::new();
-    }
-    let selected: usize =
-        read_typed(data, &oxpath!("ui", "settings", "index", "selected")).unwrap_or(0);
-    let id = match entry_ids.get(selected) {
-        Some(s) => s,
-        None => return Vec::new(),
-    };
-    let comp = match ox_kernel::PathComponent::try_new(id) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
-    let entry: SettingsIndexEntry =
-        match read_typed(data, &oxpath!("settings", "index", "entries", comp)) {
-            Some(e) => e,
-            None => return Vec::new(),
-        };
-    vec![Write {
-        path: oxpath!("ui", "settings", "cursor"),
-        record: Record::parsed(path_to_value(&entry.target_cursor)),
-    }]
 }
 
 fn ascend(
@@ -164,9 +100,6 @@ fn ascend(
 }
 
 pub fn register(reg: &mut CommandRegistry) {
-    reg.register(Box::new(NavDescendIndex::new()));
-    reg.register(Box::new(NavDescendAccounts::new()));
-    reg.register(Box::new(NavDescendModels::new()));
     reg.register(Box::new(NavAscend::new()));
 }
 
@@ -177,10 +110,6 @@ pub fn register(reg: &mut CommandRegistry) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use structfs_serde_store::to_value;
-
-    use ox_types::{BadgeSource, SettingsIndexEntry};
 
     use crate::settings::command_registry::{Command, CommandCtx};
     use crate::settings::registry::{AscendRule, RenderCtx, Renderer, RendererRegistry};
@@ -209,15 +138,6 @@ mod tests {
         cmd.run(snap, &ctx)
     }
 
-    fn entry(id: &str, target: &str) -> SettingsIndexEntry {
-        SettingsIndexEntry {
-            id: id.to_string(),
-            label: id.to_string(),
-            description: String::new(),
-            target_cursor: structfs_core_store::Path::parse(target).unwrap(),
-            badge: BadgeSource::None,
-        }
-    }
 
     fn assert_path_write(
         writes: &[Write],
@@ -233,51 +153,6 @@ mod tests {
             }
             other => panic!("unexpected record: {other:?}"),
         }
-    }
-
-    #[test]
-    fn descend_index_writes_target_cursor() {
-        let mut snap = SettingsSnapshot::empty();
-        snap.insert(
-            &oxpath!("settings", "index", "entries", "accounts"),
-            to_value(&entry("accounts", "settings/accounts")).unwrap(),
-        );
-        snap.insert(
-            &oxpath!("ui", "settings", "index", "selected"),
-            Value::Integer(0),
-        );
-
-        let registry = RendererRegistry::new();
-        let writes = run_with_registry(&NavDescendIndex::new(), &mut snap, &registry);
-        assert_path_write(
-            &writes,
-            oxpath!("ui", "settings", "cursor"),
-            oxpath!("settings", "accounts"),
-        );
-    }
-
-    #[test]
-    fn descend_accounts_writes_detail_cursor() {
-        let mut snap = SettingsSnapshot::empty();
-        let registry = RendererRegistry::new();
-        let writes = run_with_registry(&NavDescendAccounts::new(), &mut snap, &registry);
-        assert_path_write(
-            &writes,
-            oxpath!("ui", "settings", "cursor"),
-            oxpath!("settings", "accounts", "_detail"),
-        );
-    }
-
-    #[test]
-    fn descend_models_writes_detail_cursor() {
-        let mut snap = SettingsSnapshot::empty();
-        let registry = RendererRegistry::new();
-        let writes = run_with_registry(&NavDescendModels::new(), &mut snap, &registry);
-        assert_path_write(
-            &writes,
-            oxpath!("ui", "settings", "cursor"),
-            oxpath!("settings", "models", "_detail"),
-        );
     }
 
     #[test]

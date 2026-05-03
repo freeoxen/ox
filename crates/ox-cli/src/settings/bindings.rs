@@ -169,46 +169,6 @@ fn register_index(reg: &mut BindingRegistry) {
     );
 }
 
-fn register_accounts(reg: &mut BindingRegistry) {
-    let cursor = oxpath!("settings", "accounts");
-    bind(
-        reg,
-        Some(cursor.clone()),
-        no_mods(),
-        KeyCodeRepr::Char('j'),
-        "highlight.accounts.next",
-    );
-    bind(
-        reg,
-        Some(cursor.clone()),
-        no_mods(),
-        KeyCodeRepr::Char('k'),
-        "highlight.accounts.prev",
-    );
-    bind(
-        reg,
-        Some(cursor.clone()),
-        no_mods(),
-        KeyCodeRepr::Enter,
-        "nav.descend.accounts",
-    );
-    bind(
-        reg,
-        Some(cursor.clone()),
-        no_mods(),
-        KeyCodeRepr::Char('a'),
-        "accounts.add",
-    );
-    bind(
-        reg,
-        Some(cursor.clone()),
-        no_mods(),
-        KeyCodeRepr::Char('d'),
-        "accounts.delete_confirm",
-    );
-    bind(reg, Some(cursor), no_mods(), KeyCodeRepr::Esc, "nav.ascend");
-}
-
 fn register_account_detail(reg: &mut BindingRegistry) {
     let cursor = oxpath!("settings", "accounts", "_detail");
     bind(
@@ -311,49 +271,6 @@ fn register_account_delete(reg: &mut BindingRegistry) {
     );
 }
 
-fn register_models(reg: &mut BindingRegistry) {
-    let cursor = oxpath!("settings", "models");
-    bind(
-        reg,
-        Some(cursor.clone()),
-        no_mods(),
-        KeyCodeRepr::Char('j'),
-        "highlight.models.next",
-    );
-    bind(
-        reg,
-        Some(cursor.clone()),
-        no_mods(),
-        KeyCodeRepr::Char('k'),
-        "highlight.models.prev",
-    );
-    bind(
-        reg,
-        Some(cursor.clone()),
-        no_mods(),
-        KeyCodeRepr::Enter,
-        "nav.descend.models",
-    );
-    // Capital `P` — render shift in the modifier set so a `Shift+P`
-    // chord lookup resolves here. The dispatch layer converts crossterm
-    // `KeyCode::Char('P')` to `KeyChord { shift: true, code: Char('P') }`.
-    bind(
-        reg,
-        Some(cursor.clone()),
-        shift_only(),
-        KeyCodeRepr::Char('P'),
-        "models.set_primary",
-    );
-    bind(
-        reg,
-        Some(cursor.clone()),
-        no_mods(),
-        KeyCodeRepr::Char('r'),
-        "account.refresh",
-    );
-    bind(reg, Some(cursor), no_mods(), KeyCodeRepr::Esc, "nav.ascend");
-}
-
 fn register_model_detail(reg: &mut BindingRegistry) {
     let cursor = oxpath!("settings", "models", "_detail");
     bind(
@@ -407,6 +324,13 @@ fn register_row_prefixes(reg: &mut BindingRegistry) {
         reg,
         accounts_subtree.clone(),
         no_mods(),
+        KeyCodeRepr::Char('a'),
+        "accounts.add",
+    );
+    bind_prefix(
+        reg,
+        accounts_subtree.clone(),
+        no_mods(),
         KeyCodeRepr::Char('t'),
         "account.test",
     );
@@ -427,10 +351,20 @@ fn register_row_prefixes(reg: &mut BindingRegistry) {
     let models_subtree = oxpath!("settings", "models");
     bind_prefix(
         reg,
-        models_subtree,
+        models_subtree.clone(),
         shift_only(),
         KeyCodeRepr::Char('P'),
         "models.set_primary",
+    );
+    // `r` refreshes the focused model's owning account catalog. Useful
+    // both when focused on an account row and when focused on a model
+    // row (the latter is what the accordion makes natural).
+    bind_prefix(
+        reg,
+        models_subtree,
+        no_mods(),
+        KeyCodeRepr::Char('r'),
+        "account.refresh",
     );
 }
 
@@ -454,11 +388,9 @@ fn register_global(reg: &mut BindingRegistry) {
 pub fn register(reg: &mut BindingRegistry) {
     register_global(reg);
     register_index(reg);
-    register_accounts(reg);
     register_account_detail(reg);
     register_account_new(reg);
     register_account_delete(reg);
-    register_models(reg);
     register_model_detail(reg);
     register_row_prefixes(reg);
 }

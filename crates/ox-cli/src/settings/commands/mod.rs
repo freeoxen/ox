@@ -164,10 +164,11 @@ mod tests {
 
     #[test]
     fn register_all_total_count() {
-        // Six highlight + four navigation + seventeen account/model +
-        // one modal toggle + four tree commands = 32. Pin this so a
-        // future drop-without-replacement gets caught.
+        // Six highlight + one navigation (NavAscend; the three legacy
+        // descend commands retired with the list pages) + seventeen
+        // account/model + one modal toggle + four tree commands = 29.
+        // Pin this so a future drop-without-replacement gets caught.
         let reg = populated();
-        assert_eq!(reg.iter().count(), 32);
+        assert_eq!(reg.iter().count(), 29);
     }
 }

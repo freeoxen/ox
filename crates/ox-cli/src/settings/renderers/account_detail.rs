@@ -177,7 +177,11 @@ impl Renderer for AccountDetailRenderer {
     }
 
     fn ascend_to(&self) -> AscendRule {
-        AscendRule::NearestRegistered
+        // Esc returns straight to the accordion at `settings/index`,
+        // not to the legacy `settings/accounts` list page (which only
+        // exists today as a vestigial registered ancestor and would be
+        // confusing to land on).
+        AscendRule::Fallback(oxpath!("settings", "index"))
     }
 }
 
@@ -646,10 +650,10 @@ mod tests {
     }
 
     #[test]
-    fn ascend_rule_is_nearest_registered() {
+    fn ascend_rule_falls_back_to_settings_index() {
         assert_eq!(
             AccountDetailRenderer.ascend_to(),
-            AscendRule::NearestRegistered
+            AscendRule::Fallback(oxpath!("settings", "index"))
         );
     }
 }

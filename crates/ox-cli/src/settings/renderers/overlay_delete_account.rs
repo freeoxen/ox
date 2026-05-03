@@ -16,7 +16,7 @@ pub struct OverlayDeleteAccountRenderer;
 
 impl Renderer for OverlayDeleteAccountRenderer {
     fn render(&self, ctx: &mut RenderCtx<'_>) -> View {
-        let bg = ctx.registry.render(&oxpath!("settings", "accounts"), ctx);
+        let bg = ctx.registry.render(&oxpath!("settings", "index"), ctx);
 
         let selected: Option<String> = read_typed::<Option<String>>(
             ctx.data,
@@ -66,7 +66,7 @@ mod tests {
     fn render(snap: &mut SettingsSnapshot) -> View {
         let theme = Theme::default();
         let mut registry = RendererRegistry::new();
-        crate::settings::renderers::accounts_list::register(&mut registry);
+        crate::settings::renderers::index::register(&mut registry);
         let mut ctx = RenderCtx {
             area: Rect::new(0, 0, 80, 24),
             data: snap,

@@ -117,7 +117,9 @@ impl Renderer for ModelDetailRenderer {
     }
 
     fn ascend_to(&self) -> AscendRule {
-        AscendRule::NearestRegistered
+        // Esc returns straight to the accordion, not to the legacy
+        // `settings/models` list page.
+        AscendRule::Fallback(oxpath!("settings", "index"))
     }
 }
 
@@ -321,10 +323,10 @@ mod tests {
     }
 
     #[test]
-    fn ascend_rule_is_nearest_registered() {
+    fn ascend_rule_falls_back_to_settings_index() {
         assert_eq!(
             ModelDetailRenderer.ascend_to(),
-            AscendRule::NearestRegistered
+            AscendRule::Fallback(oxpath!("settings", "index"))
         );
     }
 }
