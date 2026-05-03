@@ -268,25 +268,41 @@ fn read_selected_model(data: &mut dyn Reader) -> Option<ModelKey> {
 /// enumeration to find the row whose path matches `focused_row`
 /// recovers the original.
 fn focused_account(data: &mut dyn Reader) -> Option<String> {
+    use crate::settings::visible_rows::{self, RowKind};
     let path = focused_path(data)?;
-    let rows = crate::settings::visible_rows::enumerate(data);
-    rows.into_iter().find_map(|r| match r.kind {
-        crate::settings::visible_rows::RowKind::Account { name } if r.path == path => Some(name),
-        _ => None,
+    let rows = visible_rows::enumerate(data);
+    rows.into_iter().find_map(|r| {
+        if r.path != path {
+            return None;
+        }
+        match r.kind {
+            RowKind::Account { name } => Some(name),
+            // Field rows under an expanded account also count — the
+            // user has focused a field that belongs to that account.
+            RowKind::AccountField { account, .. } => Some(account),
+            _ => None,
+        }
     })
 }
 
-/// Same shape for models — `RowKind::Model` carries the un-sanitized
-/// `(account, model_id)` regardless of how the row's path component
-/// got encoded.
+/// Same shape for models. `RowKind::Model` and `RowKind::ModelField`
+/// both carry the un-sanitized `(account, model_id)` regardless of
+/// how the row's path component got encoded.
 fn focused_model(data: &mut dyn Reader) -> Option<ModelKey> {
+    use crate::settings::visible_rows::{self, RowKind};
     let path = focused_path(data)?;
-    let rows = crate::settings::visible_rows::enumerate(data);
-    rows.into_iter().find_map(|r| match r.kind {
-        crate::settings::visible_rows::RowKind::Model { account, model_id } if r.path == path => {
-            Some(ModelKey { account, model_id })
+    let rows = visible_rows::enumerate(data);
+    rows.into_iter().find_map(|r| {
+        if r.path != path {
+            return None;
         }
-        _ => None,
+        match r.kind {
+            RowKind::Model { account, model_id } => Some(ModelKey { account, model_id }),
+            RowKind::ModelField {
+                account, model_id, ..
+            } => Some(ModelKey { account, model_id }),
+            _ => None,
+        }
     })
 }
 
@@ -551,6 +567,21 @@ fn field_insert(data: &mut dyn Reader, ctx: &CommandCtx<'_>) -> Vec<Write> {
         KeyCodeRepr::Char(c) => c,
         _ => return Vec::new(),
     };
+    // Try the model numeric path first; fall back to the account
+    // text path. The two contexts are distinguished by whether
+    // `model_detail/field` or `account_detail/field` was set by the
+    // begin-edit command.
+    let writes = mutate_focused_model_numeric(data, |text| {
+        if !ch.is_ascii_digit() {
+            return None;
+        }
+        let mut buf = text;
+        buf.push(ch);
+        Some(buf)
+    });
+    if !writes.is_empty() {
+        return writes;
+    }
     mutate_focused_text(data, |text, cursor| {
         let cur = (cursor as usize).min(text.len());
         let mut buf = String::with_capacity(text.len() + ch.len_utf8());
@@ -562,6 +593,17 @@ fn field_insert(data: &mut dyn Reader, ctx: &CommandCtx<'_>) -> Vec<Write> {
 }
 
 fn field_delete_back(data: &mut dyn Reader) -> Vec<Write> {
+    let writes = mutate_focused_model_numeric(data, |text| {
+        let mut buf = text;
+        if buf.pop().is_some() {
+            Some(buf)
+        } else {
+            None
+        }
+    });
+    if !writes.is_empty() {
+        return writes;
+    }
     mutate_focused_text(data, |text, cursor| {
         if cursor == 0 {
             return None;
@@ -579,7 +621,87 @@ fn field_delete_back(data: &mut dyn Reader) -> Vec<Write> {
     })
 }
 
-fn selector_cycle_protocol(data: &mut dyn Reader) -> Vec<Write> {
+/// Edit-in-place mutation for the model-override numeric fields
+/// (`max_context_size`, `max_output_tokens`). Reads
+/// `ui/settings/model_detail/field` to decide which override to
+/// edit and `ui/settings/models/selected` to identify the model.
+/// Returns no writes when the model-edit context isn't set, which
+/// lets `field_insert`/`field_delete_back` fall through to the
+/// account-text path.
+///
+/// `update` receives the current value as its decimal string
+/// representation (empty for `None`) and returns the new string,
+/// or `None` to bail (e.g. trying to insert a non-digit). The new
+/// string is parsed back to `Option<u32>` — empty string → `None`,
+/// non-empty digits → `Some(n)`. The model's `source` is bumped to
+/// `UserOverride` whenever the value changes.
+fn mutate_focused_model_numeric<F>(data: &mut dyn Reader, update: F) -> Vec<Write>
+where
+    F: FnOnce(String) -> Option<String>,
+{
+    let field: ModelField = match read_typed(data, &oxpath!("ui", "settings", "model_detail", "field"))
+    {
+        Some(f) => f,
+        None => return Vec::new(),
+    };
+    let key = match read_selected_model(data) {
+        Some(k) => k,
+        None => return Vec::new(),
+    };
+    let acct_comp = match ox_kernel::PathComponent::try_new(&key.account) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let models_path = oxpath!("config", "gate", "accounts", acct_comp, "models");
+    let mut models: Vec<ox_gate::ModelInfo> = match read_typed(data, &models_path) {
+        Some(m) => m,
+        None => return Vec::new(),
+    };
+    let model = match models.iter_mut().find(|m| m.id == key.model_id) {
+        Some(m) => m,
+        None => return Vec::new(),
+    };
+    let current_string = match field {
+        ModelField::ContextSizeOverride => model
+            .max_context_size
+            .map(|n| n.to_string())
+            .unwrap_or_default(),
+        ModelField::OutputTokensOverride => model
+            .max_output_tokens
+            .map(|n| n.to_string())
+            .unwrap_or_default(),
+    };
+    let next = match update(current_string) {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+    let parsed: Option<u32> = if next.is_empty() {
+        None
+    } else {
+        match next.parse::<u32>() {
+            Ok(n) => Some(n),
+            Err(_) => return Vec::new(),
+        }
+    };
+    match field {
+        ModelField::ContextSizeOverride => model.max_context_size = parsed,
+        ModelField::OutputTokensOverride => model.max_output_tokens = parsed,
+    }
+    model.source = ox_gate::ModelInfoSource::UserOverride;
+    let value = match to_value(&models) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "field.numeric: failed to encode model list");
+            return Vec::new();
+        }
+    };
+    vec![Write {
+        path: models_path,
+        record: Record::parsed(value),
+    }]
+}
+
+pub(crate) fn selector_cycle_protocol(data: &mut dyn Reader) -> Vec<Write> {
     let selected = match read_selected_account(data) {
         Some(s) => s,
         None => return Vec::new(),
@@ -619,7 +741,7 @@ const AUTH_OPTIONS: [AuthScheme; 3] = [
     AuthScheme::None,
 ];
 
-fn selector_cycle_auth(data: &mut dyn Reader) -> Vec<Write> {
+pub(crate) fn selector_cycle_auth(data: &mut dyn Reader) -> Vec<Write> {
     let selected = match read_selected_account(data) {
         Some(s) => s,
         None => return Vec::new(),

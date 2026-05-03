@@ -14,7 +14,7 @@
 
 use ox_path::oxpath;
 use ox_types::subscription::Write;
-use ox_types::{AccountField, Screen};
+use ox_types::{AccountField, ModelField, Screen};
 use structfs_core_store::{Reader, Record, Value};
 
 use super::super::command_registry::CommandRegistry;
@@ -135,89 +135,51 @@ fn activate(data: &mut dyn Reader) -> Vec<Write> {
             record: Record::parsed(expanded_set_to_value(&set)),
         }]
     } else {
-        // Leaf field row. Two paths:
+        // Leaf field row. Every field stays on the accordion; no
+        // page-flip. The shape of the inline action depends on the
+        // field's type:
         //
-        // - **Text-editable account fields (Endpoint, Key)** stay on
-        //   the accordion and switch to inline edit mode: write the
-        //   account selection + the focused-field state + flip
-        //   `edit_mode = true`. The dispatcher's edit-mode pass routes
-        //   subsequent printable-char keystrokes to `field.insert`,
-        //   which mutates the underlying data path directly.
-        //
-        // - **Selectors and read-only fields (Name / Protocol / Auth,
-        //   plus all model fields for now)** drill into the legacy
-        //   `_detail` editor with the targeted field pre-focused.
-        //   Their edit semantics (cycle through provider options,
-        //   numeric override) need separate inline handling that's
-        //   deferred to a follow-up.
+        // - **Read-only (account Name)**: no-op.
+        // - **Selectors (Protocol, Auth)**: cycle to next option in
+        //   place. The selector helper writes the new value to its
+        //   data path; the next render picks it up automatically.
+        // - **Text fields (Endpoint, Key)**: switch to inline edit
+        //   mode; printable chars route to `field.insert`.
+        // - **Numeric model overrides (max_context_size,
+        //   max_output_tokens)**: switch to inline edit mode;
+        //   `field.insert`'s model-numeric branch accepts digits.
         match &row.kind {
+            RowKind::AccountField {
+                field: AccountField::Name,
+                ..
+            } => Vec::new(),
+            RowKind::AccountField {
+                account,
+                field: AccountField::Protocol,
+            } => with_account_selected(
+                account,
+                super::account_model::selector_cycle_protocol(data),
+            ),
+            RowKind::AccountField {
+                account,
+                field: AccountField::Auth,
+            } => with_account_selected(
+                account,
+                super::account_model::selector_cycle_auth(data),
+            ),
             RowKind::AccountField {
                 account,
                 field: AccountField::Endpoint,
-            } => begin_inline_edit_account(
-                account.clone(),
-                AccountField::Endpoint,
-            ),
+            } => begin_inline_edit_account(account.clone(), AccountField::Endpoint),
             RowKind::AccountField {
                 account,
                 field: AccountField::Key,
             } => begin_inline_edit_account(account.clone(), AccountField::Key),
-            RowKind::AccountField { account, field } => {
-                let mut writes = Vec::new();
-                if let Ok(value) = structfs_serde_store::to_value(&Some(account.clone())) {
-                    writes.push(Write {
-                        path: oxpath!("ui", "settings", "accounts", "selected"),
-                        record: Record::parsed(value),
-                    });
-                }
-                if let Ok(value) = structfs_serde_store::to_value(field) {
-                    writes.push(Write {
-                        path: oxpath!("ui", "settings", "account_detail", "field"),
-                        record: Record::parsed(value),
-                    });
-                }
-                writes.push(Write {
-                    path: oxpath!("ui", "settings", "cursor"),
-                    record: Record::parsed(path_to_value(&oxpath!(
-                        "settings",
-                        "accounts",
-                        "_detail"
-                    ))),
-                });
-                writes
-            }
             RowKind::ModelField {
                 account,
                 model_id,
                 field,
-            } => {
-                let mut writes = Vec::new();
-                let key = ox_types::settings::ModelKey {
-                    account: account.clone(),
-                    model_id: model_id.clone(),
-                };
-                if let Ok(value) = structfs_serde_store::to_value(&Some(key)) {
-                    writes.push(Write {
-                        path: oxpath!("ui", "settings", "models", "selected"),
-                        record: Record::parsed(value),
-                    });
-                }
-                if let Ok(value) = structfs_serde_store::to_value(field) {
-                    writes.push(Write {
-                        path: oxpath!("ui", "settings", "model_detail", "field"),
-                        record: Record::parsed(value),
-                    });
-                }
-                writes.push(Write {
-                    path: oxpath!("ui", "settings", "cursor"),
-                    record: Record::parsed(path_to_value(&oxpath!(
-                        "settings",
-                        "models",
-                        "_detail"
-                    ))),
-                });
-                writes
-            }
+            } => begin_inline_edit_model(account.clone(), model_id.clone(), *field),
             // The expandable arm above already handles every Entry,
             // Account, and Model row.
             RowKind::Entry { .. } | RowKind::Account { .. } | RowKind::Model { .. } => {
@@ -225,6 +187,61 @@ fn activate(data: &mut dyn Reader) -> Vec<Write> {
             }
         }
     }
+}
+
+/// The selector helpers (`selector_cycle_protocol/auth`) read the
+/// account through `read_selected_account`, which now first tries
+/// `focused_row` — but in case the focused-row resolution misses
+/// (for any reason), we prepend an explicit `accounts/selected`
+/// write so the cycle hits the right account regardless.
+fn with_account_selected(account: &str, mut writes: Vec<Write>) -> Vec<Write> {
+    if let Ok(value) = structfs_serde_store::to_value(&Some(account.to_string())) {
+        writes.insert(
+            0,
+            Write {
+                path: oxpath!("ui", "settings", "accounts", "selected"),
+                record: Record::parsed(value),
+            },
+        );
+    }
+    writes
+}
+
+/// Same shape for the model numeric overrides — sets
+/// `model_detail/field` + `models/selected` (the per-model edit
+/// context) and flips `edit_mode = true`. `field.insert`'s
+/// model-numeric branch reads those to find the right
+/// `(account, model_id)` and override field.
+fn begin_inline_edit_model(
+    account: String,
+    model_id: String,
+    field: ModelField,
+) -> Vec<Write> {
+    let mut writes: Vec<Write> = Vec::new();
+    let key = ox_types::settings::ModelKey { account, model_id };
+    if let Ok(value) = structfs_serde_store::to_value(&Some(key)) {
+        writes.push(Write {
+            path: oxpath!("ui", "settings", "models", "selected"),
+            record: Record::parsed(value),
+        });
+    }
+    if let Ok(value) = structfs_serde_store::to_value(&field) {
+        writes.push(Write {
+            path: oxpath!("ui", "settings", "model_detail", "field"),
+            record: Record::parsed(value),
+        });
+    }
+    // Clear the account-edit context so `field.insert` doesn't
+    // accidentally route to the account-text branch.
+    writes.push(Write {
+        path: oxpath!("ui", "settings", "account_detail", "field"),
+        record: Record::parsed(Value::Null),
+    });
+    writes.push(Write {
+        path: oxpath!("ui", "settings", "edit_mode"),
+        record: Record::parsed(Value::Bool(true)),
+    });
+    writes
 }
 
 /// Switch the focused account field into inline edit mode on the
@@ -248,6 +265,12 @@ fn begin_inline_edit_account(account: String, field: AccountField) -> Vec<Write>
             record: Record::parsed(value),
         });
     }
+    // Clear the model-edit context so `field.insert`'s
+    // model-numeric branch doesn't shadow this account-text edit.
+    writes.push(Write {
+        path: oxpath!("ui", "settings", "model_detail", "field"),
+        record: Record::parsed(Value::Null),
+    });
     // `i64::MAX` clamps to end-of-string in the existing
     // `field.delete_back` / `field.insert` cursor math.
     writes.push(Write {
@@ -533,8 +556,7 @@ mod tests {
     #[test]
     fn activate_on_endpoint_field_enters_inline_edit_mode() {
         // Text-edit-able account fields (Endpoint, Key) switch to
-        // inline edit mode: writes selection + field + edit_cursor +
-        // edit_mode=true, and stays on `settings/index` (no cursor
+        // inline edit mode and stay on `settings/index` (no cursor
         // write).
         let mut snap = SettingsSnapshot::empty();
         write_index(&mut snap);
@@ -548,7 +570,9 @@ mod tests {
         );
         set_focused(&mut snap, "settings/accounts/alpha/endpoint");
         let writes = run(&TreeActivate::new(), &mut snap);
-        assert_eq!(writes.len(), 4);
+        // selected + account_detail/field + model_detail/field=Null +
+        // edit_cursor + edit_mode = 5 writes
+        assert_eq!(writes.len(), 5);
         assert_eq!(
             writes[0].path,
             oxpath!("ui", "settings", "accounts", "selected")
@@ -557,24 +581,59 @@ mod tests {
             writes[1].path,
             oxpath!("ui", "settings", "account_detail", "field")
         );
-        assert_eq!(writes[2].path, oxpath!("ui", "settings", "edit_cursor"));
-        assert_eq!(writes[3].path, oxpath!("ui", "settings", "edit_mode"));
-        match &writes[3].record {
+        assert_eq!(
+            writes[2].path,
+            oxpath!("ui", "settings", "model_detail", "field")
+        );
+        assert!(matches!(&writes[2].record, Record::Parsed(Value::Null)));
+        assert_eq!(writes[3].path, oxpath!("ui", "settings", "edit_cursor"));
+        assert_eq!(writes[4].path, oxpath!("ui", "settings", "edit_mode"));
+        match &writes[4].record {
             Record::Parsed(Value::Bool(true)) => {}
             other => panic!("expected edit_mode=true, got {other:?}"),
         }
-        // Critically: no `cursor` write — the page stays at
-        // `settings/index` while the user edits inline.
+        // Critically: no `cursor` write.
         for w in &writes {
             assert_ne!(w.path, oxpath!("ui", "settings", "cursor"));
         }
     }
 
     #[test]
-    fn activate_on_protocol_field_drills_with_field_focused() {
-        // Selectors (Name / Protocol / Auth) still drill into the
-        // legacy detail editor — they need cycle-through edit logic
-        // that doesn't fit the inline-text model.
+    fn activate_on_protocol_field_cycles_provider() {
+        // Protocol cycles inline (anthropic ↔ openai). Writes the
+        // accounts/selected (so the helper finds the account) and
+        // the new AccountConfig.
+        let mut snap = SettingsSnapshot::empty();
+        write_index(&mut snap);
+        write_account(&mut snap, "alpha"); // provider="alpha" initially
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&[
+                "settings/accounts".to_string(),
+                "settings/accounts/alpha".to_string(),
+            ]),
+        );
+        set_focused(&mut snap, "settings/accounts/alpha/protocol");
+        let writes = run(&TreeActivate::new(), &mut snap);
+        // Should write the AccountConfig back; no cursor write.
+        assert!(!writes.is_empty());
+        for w in &writes {
+            assert_ne!(w.path, oxpath!("ui", "settings", "cursor"));
+        }
+        // The cycle helper writes to the account path.
+        assert!(writes.iter().any(
+            |w| w.path == oxpath!(
+                "config",
+                "gate",
+                "accounts",
+                ox_kernel::PathComponent::try_new("alpha").unwrap()
+            )
+        ));
+    }
+
+    #[test]
+    fn activate_on_name_field_is_inert() {
+        // Name is read-only — Enter does nothing.
         let mut snap = SettingsSnapshot::empty();
         write_index(&mut snap);
         write_account(&mut snap, "alpha");
@@ -585,20 +644,9 @@ mod tests {
                 "settings/accounts/alpha".to_string(),
             ]),
         );
-        set_focused(&mut snap, "settings/accounts/alpha/protocol");
+        set_focused(&mut snap, "settings/accounts/alpha/name");
         let writes = run(&TreeActivate::new(), &mut snap);
-        assert_eq!(writes.len(), 3);
-        assert_eq!(
-            writes[0].path,
-            oxpath!("ui", "settings", "accounts", "selected")
-        );
-        assert_eq!(
-            writes[1].path,
-            oxpath!("ui", "settings", "account_detail", "field")
-        );
-        assert_eq!(writes[2].path, oxpath!("ui", "settings", "cursor"));
-        let target = path_from_value(writes[2].record.as_value().unwrap()).unwrap();
-        assert_eq!(target.to_string(), "settings/accounts/_detail");
+        assert!(writes.is_empty());
     }
 
     #[test]
@@ -617,7 +665,11 @@ mod tests {
     }
 
     #[test]
-    fn activate_on_model_field_drills_with_field_focused() {
+    fn activate_on_model_field_enters_inline_edit_mode() {
+        // Model numeric fields enter inline edit mode in place. The
+        // dispatcher's edit-mode pass routes digits to `field.insert`,
+        // whose model-numeric branch reads `model_detail/field` and
+        // mutates the override on the per-account models list.
         let mut snap = SettingsSnapshot::empty();
         write_index(&mut snap);
         write_account_with_models(&mut snap, "alpha", &["m1"]);
@@ -630,7 +682,9 @@ mod tests {
         );
         set_focused(&mut snap, "settings/models/alpha/m1/max_context_size");
         let writes = run(&TreeActivate::new(), &mut snap);
-        assert_eq!(writes.len(), 3);
+        // selected + model_detail/field + account_detail/field=Null +
+        // edit_mode=true = 4 writes
+        assert_eq!(writes.len(), 4);
         assert_eq!(
             writes[0].path,
             oxpath!("ui", "settings", "models", "selected")
@@ -639,9 +693,20 @@ mod tests {
             writes[1].path,
             oxpath!("ui", "settings", "model_detail", "field")
         );
-        assert_eq!(writes[2].path, oxpath!("ui", "settings", "cursor"));
-        let target = path_from_value(writes[2].record.as_value().unwrap()).unwrap();
-        assert_eq!(target.to_string(), "settings/models/_detail");
+        assert_eq!(
+            writes[2].path,
+            oxpath!("ui", "settings", "account_detail", "field")
+        );
+        assert!(matches!(&writes[2].record, Record::Parsed(Value::Null)));
+        assert_eq!(writes[3].path, oxpath!("ui", "settings", "edit_mode"));
+        match &writes[3].record {
+            Record::Parsed(Value::Bool(true)) => {}
+            other => panic!("expected edit_mode=true, got {other:?}"),
+        }
+        // No cursor write — stays on the accordion.
+        for w in &writes {
+            assert_ne!(w.path, oxpath!("ui", "settings", "cursor"));
+        }
     }
 
     #[test]

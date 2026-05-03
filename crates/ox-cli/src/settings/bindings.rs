@@ -169,65 +169,6 @@ fn register_index(reg: &mut BindingRegistry) {
     );
 }
 
-fn register_account_detail(reg: &mut BindingRegistry) {
-    let cursor = oxpath!("settings", "accounts", "_detail");
-    bind(
-        reg,
-        Some(cursor.clone()),
-        no_mods(),
-        KeyCodeRepr::Tab,
-        "field.account.next",
-    );
-    bind(
-        reg,
-        Some(cursor.clone()),
-        no_mods(),
-        KeyCodeRepr::Down,
-        "field.account.next",
-    );
-    bind(
-        reg,
-        Some(cursor.clone()),
-        shift_only(),
-        KeyCodeRepr::BackTab,
-        "field.account.prev",
-    );
-    bind(
-        reg,
-        Some(cursor.clone()),
-        no_mods(),
-        KeyCodeRepr::Up,
-        "field.account.prev",
-    );
-    bind(
-        reg,
-        Some(cursor.clone()),
-        no_mods(),
-        KeyCodeRepr::Char('t'),
-        "account.test",
-    );
-    bind(
-        reg,
-        Some(cursor.clone()),
-        ctrl_only(),
-        KeyCodeRepr::Char('s'),
-        "app.save",
-    );
-    bind(
-        reg,
-        Some(cursor.clone()),
-        no_mods(),
-        KeyCodeRepr::Esc,
-        "nav.ascend",
-    );
-    // Printable chars + Backspace via the helper — these come last so the
-    // scope's specific bindings (Tab, t, Ctrl+s, Esc) win over a literal
-    // 't' or ' ' insert when the BindingEntry is identical aside from
-    // command. Lookup uses the *first* registered match within a
-    // specificity class, so registration order matters here.
-    register_text_editing(reg, cursor);
-}
-
 fn register_account_new(reg: &mut BindingRegistry) {
     let cursor = oxpath!("settings", "accounts", "_new");
     bind(
@@ -269,46 +210,6 @@ fn register_account_delete(reg: &mut BindingRegistry) {
         KeyCodeRepr::Esc,
         "accounts.cancel",
     );
-}
-
-fn register_model_detail(reg: &mut BindingRegistry) {
-    let cursor = oxpath!("settings", "models", "_detail");
-    bind(
-        reg,
-        Some(cursor.clone()),
-        no_mods(),
-        KeyCodeRepr::Tab,
-        "field.model.next",
-    );
-    bind(
-        reg,
-        Some(cursor.clone()),
-        no_mods(),
-        KeyCodeRepr::Down,
-        "field.model.next",
-    );
-    bind(
-        reg,
-        Some(cursor.clone()),
-        shift_only(),
-        KeyCodeRepr::BackTab,
-        "field.model.prev",
-    );
-    bind(
-        reg,
-        Some(cursor.clone()),
-        no_mods(),
-        KeyCodeRepr::Up,
-        "field.model.prev",
-    );
-    bind(
-        reg,
-        Some(cursor.clone()),
-        shift_only(),
-        KeyCodeRepr::Char('P'),
-        "models.set_primary",
-    );
-    bind(reg, Some(cursor), no_mods(), KeyCodeRepr::Esc, "nav.ascend");
 }
 
 /// Per-row commands for accordion-focused leaf rows. Bound under
@@ -415,10 +316,8 @@ pub fn register(reg: &mut BindingRegistry) {
     register_global(reg);
     register_edit_mode(reg);
     register_index(reg);
-    register_account_detail(reg);
     register_account_new(reg);
     register_account_delete(reg);
-    register_model_detail(reg);
     register_row_prefixes(reg);
 }
 
@@ -546,28 +445,15 @@ mod tests {
     }
 
     #[test]
-    fn detail_t_resolves_to_account_test() {
+    fn edit_mode_printable_char_resolves_to_field_insert() {
+        // The text-editing helper now lives under the synthetic
+        // `_edit_mode` cursor; the dispatcher routes there when
+        // `ui/settings/edit_mode = true`.
         let reg = populated();
         let hit = reg
             .lookup(
                 Screen::Settings,
-                &oxpath!("settings", "accounts", "_detail"),
-                None,
-                &key(no_mods(), KeyCodeRepr::Char('t')),
-            )
-            .expect("should match");
-        assert_eq!(hit, &cmd("account.test"));
-    }
-
-    #[test]
-    fn detail_printable_char_resolves_to_field_insert() {
-        let reg = populated();
-        // 'x' is not bound to anything else on _detail, so it must hit
-        // the text-editing helper.
-        let hit = reg
-            .lookup(
-                Screen::Settings,
-                &oxpath!("settings", "accounts", "_detail"),
+                &oxpath!("settings", "_edit_mode"),
                 None,
                 &key(no_mods(), KeyCodeRepr::Char('x')),
             )
@@ -576,12 +462,12 @@ mod tests {
     }
 
     #[test]
-    fn detail_backspace_resolves_to_field_delete_back() {
+    fn edit_mode_backspace_resolves_to_field_delete_back() {
         let reg = populated();
         let hit = reg
             .lookup(
                 Screen::Settings,
-                &oxpath!("settings", "accounts", "_detail"),
+                &oxpath!("settings", "_edit_mode"),
                 None,
                 &key(no_mods(), KeyCodeRepr::Backspace),
             )
@@ -590,15 +476,31 @@ mod tests {
     }
 
     #[test]
-    fn detail_unbound_chord_returns_none() {
+    fn edit_mode_enter_resolves_to_edit_exit() {
         let reg = populated();
-        let hit = reg.lookup(
-            Screen::Settings,
-            &oxpath!("settings", "accounts", "_detail"),
-            None,
-            &key(ctrl_only(), KeyCodeRepr::Char('x')),
-        );
-        assert!(hit.is_none());
+        let hit = reg
+            .lookup(
+                Screen::Settings,
+                &oxpath!("settings", "_edit_mode"),
+                None,
+                &key(no_mods(), KeyCodeRepr::Enter),
+            )
+            .expect("should match");
+        assert_eq!(hit, &cmd("edit.exit"));
+    }
+
+    #[test]
+    fn edit_mode_esc_resolves_to_edit_exit() {
+        let reg = populated();
+        let hit = reg
+            .lookup(
+                Screen::Settings,
+                &oxpath!("settings", "_edit_mode"),
+                None,
+                &key(no_mods(), KeyCodeRepr::Esc),
+            )
+            .expect("should match");
+        assert_eq!(hit, &cmd("edit.exit"));
     }
 
     #[test]
@@ -613,25 +515,6 @@ mod tests {
             )
             .expect("should match");
         assert_eq!(hit, &cmd("models.set_primary"));
-    }
-
-    #[test]
-    fn detail_t_beats_text_editing_t() {
-        // The scope-specific 't' binding (account.test) must win over the
-        // generic text-editing 't' (field.insert) on _detail. They have
-        // identical specificity (both cursor-Some / mode-None), so this
-        // depends on registration order. account.test is registered
-        // before register_text_editing, so the lookup picks it.
-        let reg = populated();
-        let hit = reg
-            .lookup(
-                Screen::Settings,
-                &oxpath!("settings", "accounts", "_detail"),
-                None,
-                &key(no_mods(), KeyCodeRepr::Char('t')),
-            )
-            .expect("should match");
-        assert_eq!(hit, &cmd("account.test"));
     }
 
     #[test]
@@ -660,20 +543,6 @@ mod tests {
             )
             .expect("should match");
         assert_eq!(hit, &cmd("accounts.delete"));
-    }
-
-    #[test]
-    fn model_detail_tab_resolves_to_field_model_next() {
-        let reg = populated();
-        let hit = reg
-            .lookup(
-                Screen::Settings,
-                &oxpath!("settings", "models", "_detail"),
-                None,
-                &key(no_mods(), KeyCodeRepr::Tab),
-            )
-            .expect("should match");
-        assert_eq!(hit, &cmd("field.model.next"));
     }
 
     #[test]
