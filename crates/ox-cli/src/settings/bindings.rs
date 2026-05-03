@@ -106,23 +106,43 @@ fn register_index(reg: &mut BindingRegistry) {
         Some(cursor.clone()),
         no_mods(),
         KeyCodeRepr::Char('j'),
-        "highlight.index.next",
+        "tree.next",
+    );
+    bind(
+        reg,
+        Some(cursor.clone()),
+        no_mods(),
+        KeyCodeRepr::Down,
+        "tree.next",
     );
     bind(
         reg,
         Some(cursor.clone()),
         no_mods(),
         KeyCodeRepr::Char('k'),
-        "highlight.index.prev",
+        "tree.prev",
+    );
+    bind(
+        reg,
+        Some(cursor.clone()),
+        no_mods(),
+        KeyCodeRepr::Up,
+        "tree.prev",
     );
     bind(
         reg,
         Some(cursor.clone()),
         no_mods(),
         KeyCodeRepr::Enter,
-        "nav.descend.index",
+        "tree.activate",
     );
-    bind(reg, Some(cursor), no_mods(), KeyCodeRepr::Esc, "nav.ascend");
+    bind(
+        reg,
+        Some(cursor),
+        no_mods(),
+        KeyCodeRepr::Esc,
+        "tree.collapse_or_ascend",
+    );
 }
 
 fn register_accounts(reg: &mut BindingRegistry) {
@@ -340,11 +360,36 @@ fn register_model_detail(reg: &mut BindingRegistry) {
         KeyCodeRepr::Up,
         "field.model.prev",
     );
+    bind(
+        reg,
+        Some(cursor.clone()),
+        shift_only(),
+        KeyCodeRepr::Char('P'),
+        "models.set_primary",
+    );
     bind(reg, Some(cursor), no_mods(), KeyCodeRepr::Esc, "nav.ascend");
+}
+
+/// Whole-screen `?` toggles the shortcuts modal regardless of cursor
+/// depth. Bound once with `cursor_path: None` so it works at every
+/// settings page; specific cursor scopes can still shadow it by
+/// registering a same-key binding earlier (none do today).
+fn register_global(reg: &mut BindingRegistry) {
+    reg.register(BindingEntry {
+        screen: Screen::Settings,
+        cursor_path: None,
+        mode: None,
+        key: KeyChord {
+            modifiers: no_mods(),
+            code: KeyCodeRepr::Char('?'),
+        },
+        command_id: cmd("modal.toggle_shortcuts"),
+    });
 }
 
 /// Register every day-one settings binding into `reg`.
 pub fn register(reg: &mut BindingRegistry) {
+    register_global(reg);
     register_index(reg);
     register_accounts(reg);
     register_account_detail(reg);
@@ -373,7 +418,7 @@ mod tests {
     }
 
     #[test]
-    fn index_j_resolves_to_highlight_next() {
+    fn index_j_resolves_to_tree_next() {
         let reg = populated();
         let hit = reg
             .lookup(
@@ -383,7 +428,35 @@ mod tests {
                 &key(no_mods(), KeyCodeRepr::Char('j')),
             )
             .expect("should match");
-        assert_eq!(hit, &cmd("highlight.index.next"));
+        assert_eq!(hit, &cmd("tree.next"));
+    }
+
+    #[test]
+    fn index_enter_resolves_to_tree_activate() {
+        let reg = populated();
+        let hit = reg
+            .lookup(
+                Screen::Settings,
+                &oxpath!("settings", "index"),
+                None,
+                &key(no_mods(), KeyCodeRepr::Enter),
+            )
+            .expect("should match");
+        assert_eq!(hit, &cmd("tree.activate"));
+    }
+
+    #[test]
+    fn index_esc_resolves_to_tree_collapse_or_ascend() {
+        let reg = populated();
+        let hit = reg
+            .lookup(
+                Screen::Settings,
+                &oxpath!("settings", "index"),
+                None,
+                &key(no_mods(), KeyCodeRepr::Esc),
+            )
+            .expect("should match");
+        assert_eq!(hit, &cmd("tree.collapse_or_ascend"));
     }
 
     #[test]

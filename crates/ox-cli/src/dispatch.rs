@@ -132,10 +132,36 @@ pub async fn send_key(
                 // a shot at this key.
                 return send_via_input_store(client, key, screen, flags).await;
             }
+            // A substrate rejection here is always a topology bug — the
+            // mount at the write target's prefix doesn't honor
+            // state-shaped writes (e.g. a typed-command store sitting
+            // where the framework expects a generic key/value store).
+            // Log at error level for production visibility and
+            // `debug_assert!` so dev builds fail at the seam instead
+            // of silently reporting `Handled`.
+            let mut first_failure: Option<(Path, String)> = None;
             for write in writes {
+                let path = write.path.clone();
                 if let Err(e) = client.write(&write.path, write.record).await {
-                    tracing::warn!(error = %e, key = %key, "settings dispatch write failed");
+                    if first_failure.is_none() {
+                        first_failure = Some((path, e.to_string()));
+                    }
                 }
+            }
+            if let Some((path, err)) = first_failure {
+                tracing::error!(
+                    error = %err, key = %key, path = %path,
+                    "settings dispatch: substrate rejected a write — the mount at \
+                     this prefix does not accept state-shaped writes; check \
+                     broker_setup mount topology"
+                );
+                debug_assert!(
+                    false,
+                    "settings dispatch: substrate rejected write to {path}: {err}. \
+                     Check that the mount at this prefix accepts arbitrary state \
+                     writes (the framework guarantee). UiStore is a typed-command \
+                     store and will reject paths it doesn't recognize."
+                );
             }
             return KeyDispatchOutcome::Handled;
         }

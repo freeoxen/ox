@@ -14,6 +14,7 @@ pub mod command_store;
 pub mod config_store;
 pub mod input_store;
 pub mod text_input_store;
+pub mod ui_pending;
 pub mod ui_store;
 
 pub use approval_store::ApprovalStore;

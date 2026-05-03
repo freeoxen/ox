@@ -78,7 +78,9 @@ pub(crate) use command;
 
 pub mod account_model;
 pub mod highlight;
+pub mod modal;
 pub mod navigation;
+pub mod tree;
 
 use super::command_registry::CommandRegistry;
 
@@ -90,7 +92,9 @@ use super::command_registry::CommandRegistry;
 pub fn register_all(reg: &mut CommandRegistry) {
     account_model::register(reg);
     highlight::register(reg);
+    modal::register(reg);
     navigation::register(reg);
+    tree::register(reg);
 }
 
 #[cfg(test)]
@@ -160,9 +164,10 @@ mod tests {
 
     #[test]
     fn register_all_total_count() {
-        // Six highlight + four navigation + seventeen account/model = 27.
-        // Pin this so a future drop-without-replacement gets caught.
+        // Six highlight + four navigation + seventeen account/model +
+        // one modal toggle + four tree commands = 32. Pin this so a
+        // future drop-without-replacement gets caught.
         let reg = populated();
-        assert_eq!(reg.iter().count(), 27);
+        assert_eq!(reg.iter().count(), 32);
     }
 }

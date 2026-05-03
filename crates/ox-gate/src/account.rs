@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// API keys are resolved separately from key files and environment
 /// variables — they do not live on this type.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AccountConfig {
     /// Name of the provider dialect (e.g. `"anthropic"`, `"openai"`).
     pub provider: String,

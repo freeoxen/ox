@@ -19,7 +19,9 @@ pub mod bootstrap;
 pub mod command_registry;
 pub mod commands;
 pub mod dispatch;
+pub mod help;
 pub mod registry;
 pub mod renderers;
 pub mod snapshot;
+pub mod visible_rows;
 // pub(crate) mod subscription_install; // Phase N

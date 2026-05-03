@@ -33,6 +33,7 @@ use ox_path::oxpath;
 use ox_store_util::local_config::LocalConfig;
 use ox_types::settings::ModelKey;
 use ox_types::{ClientModalFlags, CompletionRole, Screen};
+use ox_ui::UiStore;
 use structfs_core_store::{Path, Record, Value};
 
 use ox_cli::dispatch::{KeyDispatchOutcome, send_key};
@@ -157,6 +158,29 @@ impl E2eHarness {
 
     async fn snapshot(&self) -> SettingsSnapshot {
         fetch_settings_view_state(&self.client).await
+    }
+
+    /// Read the focused-row path written by the tree commands.
+    async fn focused_row(&self) -> Option<Path> {
+        let rec = self
+            .client
+            .read(&oxpath!("ui", "settings", "focused_row"))
+            .await
+            .expect("read focused_row")?;
+        let value = rec.as_value()?.clone();
+        match value {
+            Value::Array(items) => {
+                let mut comps: Vec<String> = Vec::with_capacity(items.len());
+                for item in items {
+                    match item {
+                        Value::String(s) => comps.push(s),
+                        _ => return None,
+                    }
+                }
+                Path::try_from_components(comps).ok()
+            }
+            _ => None,
+        }
     }
 
     /// Read the current settings cursor as an oxpath. Returns `None`
@@ -301,51 +325,77 @@ async fn navigate_index_to_models_set_primary() {
     let h = E2eHarness::new().await;
     populate_index(&h).await;
 
-    // Pre-populate one account with one model so models.set_primary has
-    // a concrete (account, model) to bind.
     populate_account(&h, "anthropic", "sk-test").await;
     write_models_for_account(&h, "anthropic", &["claude-haiku-4-5-20251001"]).await;
 
-    // Cursor starts at the index.
+    // The page-level cursor (binding scope) sits at the index. The
+    // focused-row state lives at `ui/settings/focused_row`.
     h.write_path(
         &oxpath!("ui", "settings", "cursor"),
         &oxpath!("settings", "index"),
     )
     .await;
+    h.write_path(
+        &oxpath!("ui", "settings", "focused_row"),
+        &oxpath!("settings", "accounts"),
+    )
+    .await;
 
-    // `j` — highlight Models. Index entries land in lexicographic order
-    // by id (`accounts` < `models`), so `j` from index 0 → 1 selects Models.
+    // `j` advances the focused row to Models (the only other
+    // top-level row visible while nothing is expanded).
     assert!(matches!(h.dispatch("j").await, KeyDispatchOutcome::Handled));
-    let selected: usize = h
-        .client
-        .read_typed(&oxpath!("ui", "settings", "index", "selected"))
-        .await
-        .expect("read selected")
-        .expect("selected present");
-    assert_eq!(selected, 1, "j should advance index selection to Models");
+    let focused = h.focused_row().await.expect("focused_row written");
+    assert_eq!(focused, oxpath!("settings", "models"));
 
-    // `Enter` — descend into Models.
+    // `Enter` on a category row toggles expansion in place.
+    assert!(matches!(
+        h.dispatch("Enter").await,
+        KeyDispatchOutcome::Handled
+    ));
+    let expanded: Vec<String> = h
+        .client
+        .read_typed(&oxpath!("ui", "settings", "expanded"))
+        .await
+        .expect("read expanded")
+        .expect("expanded present");
+    assert_eq!(expanded, vec!["settings/models".to_string()]);
+
+    // `j` again moves focus into the now-visible model leaf row.
+    // The row's path uses sanitized components (UAX#31 forbids `-` in
+    // path identifiers) so `claude-haiku-4-5-20251001` becomes
+    // `claude_haiku_4_5_20251001` in the cursor — the real model id
+    // stays intact on the row's `RowKind`, which `tree.activate` reads
+    // when descending to the legacy detail page.
+    assert!(matches!(h.dispatch("j").await, KeyDispatchOutcome::Handled));
+    let focused = h.focused_row().await.expect("focused_row written");
+    assert_eq!(
+        focused.to_string(),
+        "settings/models/anthropic/claude_haiku_4_5_20251001",
+    );
+
+    // `Enter` on a leaf model row writes the selection key and
+    // moves the page cursor to the legacy detail page so editing
+    // and actions still resolve to the cursor-scoped detail bindings.
     assert!(matches!(
         h.dispatch("Enter").await,
         KeyDispatchOutcome::Handled
     ));
     assert_eq!(
         h.current_cursor().await.expect("cursor"),
-        oxpath!("settings", "models"),
+        oxpath!("settings", "models", "_detail"),
     );
+    let selected: Option<ModelKey> = h
+        .client
+        .read_typed(&oxpath!("ui", "settings", "models", "selected"))
+        .await
+        .expect("read selected")
+        .expect("selected present");
+    let key = selected.expect("Some(ModelKey)");
+    assert_eq!(key.account, "anthropic");
+    assert_eq!(key.model_id, "claude-haiku-4-5-20251001");
 
-    // The Models page's highlight isn't pre-set; `models.set_primary`
-    // requires a `selected: Option<ModelKey>`, so seed it now.
-    h.write_typed(
-        &oxpath!("ui", "settings", "models", "selected"),
-        &Some(ModelKey {
-            account: "anthropic".to_string(),
-            model_id: "claude-haiku-4-5-20251001".to_string(),
-        }),
-    )
-    .await;
-
-    // `P` — set primary.
+    // `P` on the Models page still wires up to `models.set_primary`
+    // through the legacy cursor-scoped binding.
     assert!(matches!(h.dispatch("P").await, KeyDispatchOutcome::Handled));
     let primary: CompletionRole = h
         .client
@@ -355,23 +405,6 @@ async fn navigate_index_to_models_set_primary() {
         .expect("primary present");
     assert_eq!(primary.account, "anthropic");
     assert_eq!(primary.model_id, "claude-haiku-4-5-20251001");
-
-    // `Esc` from `settings/models` ascends to `settings/index` per
-    // spec §6.6: top-level pages use `AscendRule::NearestRegistered`,
-    // and when no strict ancestor is registered, `NavAscend` falls back
-    // to `settings/index`. Pressing `Esc` again from index hits its
-    // `ExitScreen` rule and writes `_request_exit: true`.
-    let _ = h.dispatch("Esc").await;
-    assert_eq!(h.current_cursor().await, Some(oxpath!("settings", "index")));
-
-    let _ = h.dispatch("Esc").await;
-    let exit: bool = h
-        .client
-        .read_typed(&oxpath!("ui", "settings", "_request_exit"))
-        .await
-        .expect("read exit")
-        .expect("exit present");
-    assert!(exit, "Esc at index should request screen exit");
 }
 
 // ---------------------------------------------------------------------------
@@ -698,5 +731,98 @@ async fn refresh_writes_catalog() {
     assert_eq!(
         transport.catalog_calls.lock().unwrap().as_slice(),
         &["anthropic".to_string()],
+    );
+}
+
+// Pin the production substrate. Other tests in this file mount a
+// generic `LocalConfig` at `ui/`, which accepts arbitrary state-shaped
+// writes — production mounts `UiStore`, which only honors them through
+// the embedded `settings/*` sub-store. Without this test, that sub-store
+// could be removed and the suite would still go green while production
+// silently rejected every settings keystroke.
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn production_ui_store_routes_settings_writes() {
+    let broker = BrokerStore::new(Duration::from_secs(5));
+    let client = broker.client();
+
+    let mut mounts = Vec::new();
+    mounts.push(broker.mount(oxpath!("settings"), LocalConfig::new()).await);
+    mounts.push(broker.mount(oxpath!("config"), LocalConfig::new()).await);
+    mounts.push(broker.mount(oxpath!("ui"), UiStore::new()).await);
+    mounts.push(broker.mount(oxpath!("secret"), LocalConfig::new()).await);
+
+    let mut renderers = RendererRegistry::new();
+    ox_cli::settings::renderers::register_all(&mut renderers);
+    let mut commands = CommandRegistry::new();
+    ox_cli::settings::commands::register_all(&mut commands);
+    let mut bindings = BindingRegistry::new();
+    ox_cli::settings::bindings::register(&mut bindings);
+
+    ox_cli::settings::bootstrap::populate_index_entries(&client)
+        .await
+        .expect("populate index");
+
+    client
+        .write(
+            &oxpath!("ui", "settings", "cursor"),
+            Record::parsed(path_to_value(&oxpath!("settings", "index"))),
+        )
+        .await
+        .expect(
+            "cursor write must reach UiStore's settings sub-store — if this \
+             errors, the `settings/*` arm has been removed from UiStore::write",
+        );
+
+    // Seed page cursor (binding scope) and the focused row.
+    client
+        .write(
+            &oxpath!("ui", "settings", "cursor"),
+            Record::parsed(path_to_value(&oxpath!("settings", "index"))),
+        )
+        .await
+        .expect("seed page cursor");
+    client
+        .write(
+            &oxpath!("ui", "settings", "focused_row"),
+            Record::parsed(path_to_value(&oxpath!("settings", "accounts"))),
+        )
+        .await
+        .expect("seed focused_row");
+
+    let mut snap = fetch_settings_view_state(&client).await;
+    let cursor = oxpath!("settings", "index");
+    let outcome = send_key(
+        &client,
+        "j",
+        Screen::Settings,
+        ClientModalFlags::default(),
+        Some(&cursor),
+        Some(&mut snap),
+        Some(&bindings),
+        Some(&commands),
+        Some(&renderers),
+    )
+    .await;
+    assert!(matches!(outcome, KeyDispatchOutcome::Handled));
+
+    // The focused-row write must round-trip through UiStore's
+    // settings sub-store. `None` here would mean the sub-store has
+    // been removed or replaced with a typed-command surface.
+    let focused_record = client
+        .read(&oxpath!("ui", "settings", "focused_row"))
+        .await
+        .expect("read focused_row")
+        .expect(
+            "focused_row write must persist — UiStore's settings sub-store is \
+             gone if this is None (see crates/ox-ui/src/ui_store.rs)",
+        );
+    let new_focus =
+        ox_cli::settings::commands::navigation::path_from_value(focused_record.as_value().unwrap())
+            .expect("focused_row decodes as path");
+    assert_eq!(
+        new_focus.to_string(),
+        "settings/models",
+        "j on the Accounts row must advance focus to Models",
     );
 }

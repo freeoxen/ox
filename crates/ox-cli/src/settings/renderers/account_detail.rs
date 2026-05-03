@@ -26,7 +26,7 @@ use ox_types::{AccountField, ValidationDiagnostics};
 
 use crate::settings::registry::{AscendRule, RenderCtx, Renderer, RendererRegistry};
 
-use super::util::read_typed;
+use super::util::{child_names_under, read_typed};
 
 pub struct AccountDetailRenderer;
 
@@ -64,10 +64,34 @@ impl Renderer for AccountDetailRenderer {
         ) {
             Some(a) => a,
             None => {
-                return View::text(format!(
-                    "Account '{}' was removed. Press Esc to return.",
-                    selected
-                ));
+                // The parent path holds no AccountConfig blob. Two
+                // distinct cases produce that:
+                //
+                //   1. The account was deleted between the user
+                //      selecting it and this render. In that case the
+                //      whole subtree is empty and "removed" is honest.
+                //
+                //   2. The account exists as a directory of child
+                //      fields (provider at `…/{name}/provider`, models
+                //      at `…/{name}/models`, etc.) without a single
+                //      AccountConfig leaf at the parent. Accounts
+                //      loaded from on-disk TOML land here — the
+                //      flattening doesn't reconstruct a parent leaf.
+                //
+                // Use any child under `config/gate/accounts/{name}`
+                // as evidence of case 2 and fall back to a default
+                // AccountConfig so the user can see the fields and
+                // re-save (which will write the parent leaf).
+                let prefix = format!("config/gate/accounts/{}", selected);
+                let has_children = !child_names_under(ctx.data, &prefix).is_empty();
+                if has_children {
+                    AccountConfig::default()
+                } else {
+                    return View::text(format!(
+                        "Account '{}' was removed. Press Esc to return.",
+                        selected
+                    ));
+                }
             }
         };
 
@@ -328,6 +352,7 @@ mod tests {
 
     use ratatui::layout::Rect;
     use std::collections::BTreeMap;
+    use structfs_core_store::Value;
     use structfs_serde_store::to_value;
 
     use crate::settings::registry::RendererRegistry;
@@ -386,6 +411,44 @@ mod tests {
             view,
             View::text("No account selected. Press Esc to return.")
         );
+    }
+
+    #[test]
+    fn account_detail_missing_blob_with_no_children_says_removed() {
+        // selected names an account whose subtree is completely empty —
+        // the "removed" message is honest here.
+        let mut snap = SettingsSnapshot::empty();
+        select(&mut snap, Some("ghost"));
+        let view = render(&mut snap);
+        assert_eq!(
+            view,
+            View::text("Account 'ghost' was removed. Press Esc to return.")
+        );
+    }
+
+    #[test]
+    fn account_detail_missing_blob_with_children_renders_default_form() {
+        // selected names an account that exists as a directory of
+        // child fields without an AccountConfig leaf at the parent —
+        // the shape TOML-loaded accounts produce. The renderer must
+        // surface a usable form, not the misleading "removed" line.
+        let mut snap = SettingsSnapshot::empty();
+        select(&mut snap, Some("LMStudio"));
+        let comp = ox_kernel::PathComponent::try_new("LMStudio").unwrap();
+        // A child path under the account confirms the directory exists.
+        snap.insert(
+            &oxpath!("config", "gate", "accounts", comp, "models"),
+            Value::Array(vec![]),
+        );
+        let view = render(&mut snap);
+        match view {
+            View::Stack { .. } => {} // Form rendered, not the error text.
+            View::Text { spans, .. } => panic!(
+                "expected a Form, got Text: {:?}",
+                spans.iter().map(|s| s.text.as_str()).collect::<Vec<_>>()
+            ),
+            other => panic!("expected View::Stack with Form, got {other:?}"),
+        }
     }
 
     #[test]

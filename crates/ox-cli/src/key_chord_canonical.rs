@@ -15,9 +15,16 @@
 //! future-proofing." When a new binding lands using a chord not in this
 //! set, add it here so the round-trip tests cover it.
 
-use ox_types::key_chord::{KeyChord, KeyCodeRepr, KeyModifierSet};
+use ox_types::key_chord::KeyChord;
+#[cfg(test)]
+use ox_types::key_chord::KeyModifierSet;
+// `KeyCodeRepr` is referenced both by the always-compiled
+// `encode_keychord_to_str` (variant matching) and by the test-only
+// chord constructors.
+use ox_types::key_chord::KeyCodeRepr;
 
 /// Build the canonical chord set. ~150-200 entries.
+#[cfg(test)]
 pub fn canonical_chords() -> Vec<KeyChord> {
     let mut out = Vec::new();
 
@@ -84,6 +91,7 @@ pub fn canonical_chords() -> Vec<KeyChord> {
     out
 }
 
+#[cfg(test)]
 fn plain(code: KeyCodeRepr) -> KeyChord {
     KeyChord {
         modifiers: KeyModifierSet::default(),
@@ -91,10 +99,12 @@ fn plain(code: KeyCodeRepr) -> KeyChord {
     }
 }
 
+#[cfg(test)]
 fn with_mods(code: KeyCodeRepr, modifiers: KeyModifierSet) -> KeyChord {
     KeyChord { modifiers, code }
 }
 
+#[cfg(test)]
 fn ctrl() -> KeyModifierSet {
     KeyModifierSet {
         ctrl: true,
@@ -102,6 +112,7 @@ fn ctrl() -> KeyModifierSet {
     }
 }
 
+#[cfg(test)]
 fn shift() -> KeyModifierSet {
     KeyModifierSet {
         shift: true,
@@ -109,6 +120,7 @@ fn shift() -> KeyModifierSet {
     }
 }
 
+#[cfg(test)]
 fn ctrl_shift() -> KeyModifierSet {
     KeyModifierSet {
         ctrl: true,

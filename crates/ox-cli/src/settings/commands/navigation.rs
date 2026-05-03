@@ -41,7 +41,7 @@ pub fn path_to_value(p: &Path) -> Value {
 
 /// Decode a `Value` previously produced by `path_to_value` back into a
 /// `Path`. Returns `None` on any shape mismatch.
-pub(crate) fn path_from_value(v: &Value) -> Option<Path> {
+pub fn path_from_value(v: &Value) -> Option<Path> {
     match v {
         Value::Array(items) => {
             let mut components: Vec<String> = Vec::with_capacity(items.len());

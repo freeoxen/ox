@@ -1,0 +1,160 @@
+//! Project the settings binding + command registries into the
+//! `KeyHint` stream the shortcuts modal renders.
+//!
+//! The modal reads `vs.key_hints` and shows one row per hint. For
+//! legacy screens those hints come from `InputStore` at
+//! `input/bindings/{mode}/{screen}`. The new settings pipeline keeps
+//! its bindings + command descriptions in a separate pair of
+//! registries owned by the event loop, so the projection has to
+//! happen client-side. This module is that projection.
+//!
+//! Scoping: at a given cursor we want the bindings whose `cursor_path`
+//! either matches the current cursor exactly or is `None` (whole-
+//! screen). When a key is bound at both levels the cursor-specific
+//! binding shadows the whole-screen one, matching the dispatch
+//! lookup's specificity rule. We sort by specificity-then-registration
+//! the same way the registry does.
+
+use ox_types::KeyHint;
+use structfs_core_store::Path;
+
+use crate::key_chord_canonical::encode_keychord_to_str;
+use crate::settings::binding_registry::BindingRegistry;
+use crate::settings::command_registry::CommandRegistry;
+
+/// Build the hint list for a given settings cursor. Returned in
+/// resolution order (most-specific first); duplicate keys after the
+/// first are dropped so each chord shows up once with its winning
+/// command.
+pub fn key_hints_for_cursor(
+    bindings: &BindingRegistry,
+    commands: &CommandRegistry,
+    cursor: &Path,
+) -> Vec<KeyHint> {
+    let mut out: Vec<KeyHint> = Vec::new();
+    let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for entry in bindings.entries() {
+        let cursor_matches = match &entry.cursor_path {
+            Some(p) => p == cursor,
+            None => true,
+        };
+        if !cursor_matches {
+            continue;
+        }
+        let Some(wire) = encode_keychord_to_str(&entry.key) else {
+            continue;
+        };
+        if !seen_keys.insert(wire.clone()) {
+            continue;
+        }
+        let Some(command) = commands.lookup(&entry.command_id) else {
+            continue;
+        };
+        let display = command.display();
+        out.push(KeyHint {
+            key: wire,
+            description: display.name.clone(),
+            command: entry.command_id.0.clone(),
+            status_hint: false,
+        });
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use ox_path::oxpath;
+    use ox_types::key_chord::{KeyCodeRepr, KeyModifierSet};
+    use ox_types::{BindingEntry, CommandId, KeyChord, Screen};
+
+    use crate::settings::commands::register_all as register_all_commands;
+
+    fn key(c: char) -> KeyChord {
+        KeyChord {
+            modifiers: KeyModifierSet::default(),
+            code: KeyCodeRepr::Char(c),
+        }
+    }
+
+    fn populated_registries() -> (BindingRegistry, CommandRegistry) {
+        let mut bindings = BindingRegistry::new();
+        crate::settings::bindings::register(&mut bindings);
+        let mut commands = CommandRegistry::new();
+        register_all_commands(&mut commands);
+        (bindings, commands)
+    }
+
+    #[test]
+    fn cursor_specific_and_whole_screen_both_appear_for_index() {
+        let (bindings, commands) = populated_registries();
+        let hints = key_hints_for_cursor(&bindings, &commands, &oxpath!("settings", "index"));
+
+        // The index page binds j/k/Enter/Esc at cursor scope.
+        assert!(
+            hints
+                .iter()
+                .any(|h| h.key == "j" && h.command == "tree.next")
+        );
+        assert!(
+            hints
+                .iter()
+                .any(|h| h.key == "Enter" && h.command == "tree.activate")
+        );
+        assert!(
+            hints
+                .iter()
+                .any(|h| h.key == "Esc" && h.command == "tree.collapse_or_ascend")
+        );
+        // The whole-screen `?` is visible at every cursor.
+        assert!(
+            hints
+                .iter()
+                .any(|h| h.key == "?" && h.command == "modal.toggle_shortcuts")
+        );
+    }
+
+    #[test]
+    fn cursor_specific_binding_shadows_whole_screen_for_same_key() {
+        // Construct a registry where `?` is whole-screen AND cursor-bound;
+        // the cursor-bound entry registers first so it wins both by
+        // specificity and registration order.
+        let mut bindings = BindingRegistry::new();
+        bindings.register(BindingEntry {
+            screen: Screen::Settings,
+            cursor_path: Some(oxpath!("settings", "index")),
+            mode: None,
+            key: key('?'),
+            command_id: CommandId(String::from("highlight.index.next")),
+        });
+        bindings.register(BindingEntry {
+            screen: Screen::Settings,
+            cursor_path: None,
+            mode: None,
+            key: key('?'),
+            command_id: CommandId(String::from("modal.toggle_shortcuts")),
+        });
+        let mut commands = CommandRegistry::new();
+        register_all_commands(&mut commands);
+
+        let hints = key_hints_for_cursor(&bindings, &commands, &oxpath!("settings", "index"));
+        let q = hints.iter().filter(|h| h.key == "?").count();
+        assert_eq!(q, 1, "duplicate keys must dedupe to one row");
+        let qhint = hints.iter().find(|h| h.key == "?").unwrap();
+        assert_eq!(qhint.command, "highlight.index.next");
+    }
+
+    #[test]
+    fn keys_from_other_cursor_pages_do_not_leak() {
+        let (bindings, commands) = populated_registries();
+        // Models page binds `r` (account.refresh); it must NOT appear
+        // when the cursor is on the index.
+        let hints = key_hints_for_cursor(&bindings, &commands, &oxpath!("settings", "index"));
+        assert!(
+            hints.iter().all(|h| h.key != "r"),
+            "models-only `r` should not show on the index hint list"
+        );
+    }
+}

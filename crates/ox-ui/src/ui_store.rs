@@ -1,7 +1,17 @@
-//! UiStore — in-memory state machine for TUI state.
+//! `UiStore` is a router over `UiStateStore`. The store owns no logic
+//! of its own — its `Reader`/`Writer` impls inspect the first path
+//! component and either delegate to one of the embedded sub-stores
+//! (`command_line/*`, `settings/*`, `input/*`) or hand off to a
+//! verb-resolution + dispatch chain on `UiStateStore`.
 //!
-//! Reads return current field values. Writes are typed UiCommand enums
-//! that transition state atomically.
+//! Adding a new state-shaped surface (path-as-address, value-as-state)
+//! goes inside `UiStateStore` as another embedded sub-store with a
+//! delegation arm in `Reader::read`/`Writer::write`. Do NOT mount a
+//! new sibling under `ui/` at the broker — that splits ownership of
+//! the namespace across two types and hides the split in the broker
+//! mount table, which means a state write to an unrecognized prefix
+//! falls into the verb-resolution path and is rejected as an unknown
+//! command instead of being recognized as state.
 
 use std::collections::BTreeMap;
 
@@ -184,29 +194,57 @@ enum ActiveScreen {
 // UiStore
 // ---------------------------------------------------------------------------
 
-/// Holds all TUI state. Implements StructFS Reader and Writer.
-pub struct UiStore {
-    /// Inbox state lives outside the active-screen enum so filter chips
-    /// and the selected row survive navigation to a thread (and back).
+/// All TUI state and the verb-handlers that mutate it. Owned by
+/// `UiStore` as a single field; methods on this type take
+/// `&mut UiStateStore` so handlers don't have to reach through the
+/// router.
+struct UiStateStore {
+    /// Lives outside `ActiveScreen` so search chips and the selected
+    /// row survive navigation to a thread and back.
     inbox: InboxState,
     screen: ActiveScreen,
-    pending_action: Option<PendingAction>,
+    pending: crate::ui_pending::UiPendingMailbox,
     status: Option<String>,
     command_line: crate::CommandLineStore,
+    /// Generic key/value sub-store for the path-shaped UI state under
+    /// `ui/settings/*`: cursor, per-area selection pointers, focus
+    /// indices, `_request_exit`. The contract is "writes are state,
+    /// paths are addresses" — distinct from the verb-shaped writes
+    /// `UiStateStore`'s command handlers consume.
+    settings: ox_store_util::local_config::LocalConfig,
+}
+
+impl UiStateStore {
+    fn new() -> Self {
+        UiStateStore {
+            inbox: InboxState::default(),
+            screen: ActiveScreen::Inbox,
+            pending: crate::ui_pending::UiPendingMailbox::new(),
+            status: None,
+            command_line: crate::CommandLineStore::new(),
+            settings: ox_store_util::local_config::LocalConfig::new(),
+        }
+    }
+}
+
+/// Router at the `ui/` mount. Holds no logic — `Reader`/`Writer`
+/// route by first path component into the sub-stores embedded on
+/// `UiStateStore`, or into the verb-resolution chain for legacy
+/// command writes.
+pub struct UiStore {
+    state: UiStateStore,
 }
 
 impl UiStore {
     /// Create a new UiStore with default state.
     pub fn new() -> Self {
         UiStore {
-            inbox: InboxState::default(),
-            screen: ActiveScreen::Inbox,
-            pending_action: None,
-            status: None,
-            command_line: crate::CommandLineStore::new(),
+            state: UiStateStore::new(),
         }
     }
+}
 
+impl UiStateStore {
     /// Drop any in-flight search prompt state when navigating off the
     /// inbox. Chips and the selected row stay; the transient prompt
     /// (mode flag + live query) does not.
@@ -305,7 +343,7 @@ impl UiStore {
         };
         UiSnapshot {
             screen,
-            pending_action: self.pending_action,
+            pending_action: self.pending.peek().cloned(),
             command_line: CommandLineSnapshot {
                 open: self.command_line.is_open(),
                 content: self.command_line.content().to_string(),
@@ -379,10 +417,10 @@ impl UiStore {
     }
 
     fn pending_action_value(&self) -> Value {
-        match &self.pending_action {
-            Some(action) => structfs_serde_store::to_value(action).unwrap_or(Value::Null),
-            None => Value::Null,
-        }
+        // Wire-shape projection lives on the mailbox; this helper stays
+        // because the read-arm dispatch in `Reader::read` calls it by
+        // path-component name and we want to keep that table flat.
+        self.pending.as_value()
     }
 
     fn history_set_value(
@@ -490,7 +528,7 @@ impl UiStore {
     fn handle_global(&mut self, cmd: GlobalCommand) -> Result<Path, StoreError> {
         match cmd {
             GlobalCommand::Quit => {
-                self.pending_action = Some(PendingAction::Quit);
+                self.pending.set(PendingAction::Quit);
                 Ok(path!("pending_action"))
             }
             GlobalCommand::Open { thread_id } => {
@@ -503,7 +541,7 @@ impl UiStore {
                 // (chips, selected row). Only the transient prompt
                 // should have been reset on the way out.
                 self.screen = ActiveScreen::Inbox;
-                self.pending_action = None;
+                self.pending.clear();
                 Ok(path!("screen"))
             }
             GlobalCommand::GoToSettings => {
@@ -529,7 +567,7 @@ impl UiStore {
                 Ok(path!("status"))
             }
             GlobalCommand::ClearPendingAction => {
-                self.pending_action = None;
+                self.pending.clear();
                 Ok(path!("pending_action"))
             }
         }
@@ -577,11 +615,11 @@ impl UiStore {
                 Ok(path!("row_count"))
             }
             InboxCommand::OpenSelected => {
-                self.pending_action = Some(PendingAction::OpenSelected);
+                self.pending.set(PendingAction::OpenSelected);
                 Ok(path!("pending_action"))
             }
             InboxCommand::ArchiveSelected => {
-                self.pending_action = Some(PendingAction::ArchiveSelected);
+                self.pending.set(PendingAction::ArchiveSelected);
                 Ok(path!("pending_action"))
             }
             InboxCommand::SearchInsertChar { char: ch } => {
@@ -648,7 +686,7 @@ impl UiStore {
                 Ok(path!("editor"))
             }
             InboxCommand::SubmitEditor => {
-                self.pending_action = Some(PendingAction::SendInput);
+                self.pending.set(PendingAction::SendInput);
                 Ok(path!("pending_action"))
             }
         }
@@ -727,7 +765,7 @@ impl UiStore {
                 Ok(path!("editor"))
             }
             ThreadCommand::SubmitEditor => {
-                self.pending_action = Some(PendingAction::SendInput);
+                self.pending.set(PendingAction::SendInput);
                 Ok(path!("pending_action"))
             }
             ThreadCommand::ApprovalSelectNext => {
@@ -1345,37 +1383,46 @@ impl Reader for UiStore {
         // Delegate command_line/* reads to the embedded sub-store.
         if key == "command_line" {
             let sub = strip_first_component(from);
-            return self.command_line.read(&sub);
+            return self.state.command_line.read(&sub);
+        }
+        // Delegate settings/* reads to the embedded settings sub-store.
+        // A bare `read("settings")` returns the sub-store's root, which
+        // `LocalConfig` answers as a `Value::Map` of all flat-keyed entries —
+        // exactly what `ClientHandle::read_subtree("ui/settings")` expects so
+        // the renderers' `fetch_settings_view_state` can rebuild a snapshot.
+        if key == "settings" {
+            let sub = strip_first_component(from);
+            return self.state.settings.read(&sub);
         }
         let value = match key {
-            "" => structfs_serde_store::to_value(&self.snapshot()).map_err(|e| {
+            "" => structfs_serde_store::to_value(&self.state.snapshot()).map_err(|e| {
                 StoreError::store("ui", "read", format!("snapshot serialization failed: {e}"))
             })?,
-            "screen" => Value::String(self.screen_name().to_string()),
-            "active_thread" => self.active_thread_value(),
-            "mode" => self.mode_value(),
-            "insert_context" => self.insert_context_value(),
-            "selected_row" => self.selected_row_value(),
-            "row_count" => self.row_count_value(),
-            "pretty" => self.history_set_value(|s| &s.pretty),
-            "full" => self.history_set_value(|s| &s.full),
-            "scroll" => self.scroll_value(),
-            "scroll_max" => self.scroll_max_value(),
-            "viewport_height" => self.viewport_height_value(),
+            "screen" => Value::String(self.state.screen_name().to_string()),
+            "active_thread" => self.state.active_thread_value(),
+            "mode" => self.state.mode_value(),
+            "insert_context" => self.state.insert_context_value(),
+            "selected_row" => self.state.selected_row_value(),
+            "row_count" => self.state.row_count_value(),
+            "pretty" => self.state.history_set_value(|s| &s.pretty),
+            "full" => self.state.history_set_value(|s| &s.full),
+            "scroll" => self.state.scroll_value(),
+            "scroll_max" => self.state.scroll_max_value(),
+            "viewport_height" => self.state.viewport_height_value(),
             "input" => {
                 let sub = if from.components.len() > 1 {
                     from.components[1].as_str()
                 } else {
                     ""
                 };
-                self.input_value(sub)
+                self.state.input_value(sub)
             }
-            "cursor" => self.input_value("cursor"),
-            "status" => self.status_value(),
-            "pending_action" => self.pending_action_value(),
-            "search_chips" => self.search_chips_value(),
-            "search_live_query" => self.search_live_query_value(),
-            "search_active" => self.search_active_value(),
+            "cursor" => self.state.input_value("cursor"),
+            "status" => self.state.status_value(),
+            "pending_action" => self.state.pending_action_value(),
+            "search_chips" => self.state.search_chips_value(),
+            "search_live_query" => self.state.search_live_query_value(),
+            "search_active" => self.state.search_active_value(),
             _ => return Ok(None),
         };
         Ok(Some(Record::parsed(value)))
@@ -1391,7 +1438,16 @@ impl Writer for UiStore {
         // Delegate command_line/* writes to the embedded sub-store.
         if !to.is_empty() && to.components[0] == "command_line" {
             let sub = strip_first_component(to);
-            return self.command_line.write(&sub, data);
+            return self.state.command_line.write(&sub, data);
+        }
+        // Delegate settings/* writes to the generic K/V sub-store.
+        // The contract here is "writes are state, paths are addresses" —
+        // no verb matching. Without this arm a write to e.g.
+        // `ui/settings/cursor` falls into the verb-resolution path
+        // below, which has no `settings` arm and rejects it.
+        if !to.is_empty() && to.components[0] == "settings" {
+            let sub = strip_first_component(to);
+            return self.state.settings.write(&sub, data);
         }
         // Delegate input/* writes to the active editor
         if !to.is_empty() && to.components[0] == "input" {
@@ -1414,7 +1470,7 @@ impl Writer for UiStore {
                         .map_err(|e| {
                             StoreError::store("ui", "input/edit", format!("bad edit sequence: {e}"))
                         })?;
-                    let editor = self.active_editor_mut()?;
+                    let editor = self.state.active_editor_mut()?;
                     // Stale generation — ignore silently
                     if seq.generation < editor.generation {
                         return Ok(path!("input"));
@@ -1441,14 +1497,14 @@ impl Writer for UiStore {
                             format!("bad replace payload: {e}"),
                         )
                     })?;
-                    let editor = self.active_editor_mut()?;
+                    let editor = self.state.active_editor_mut()?;
                     editor.content = payload.content;
                     editor.cursor = payload.cursor.min(editor.content.len());
                     editor.generation += 1;
                     Ok(path!("input"))
                 }
                 "clear" => {
-                    let editor = self.active_editor_mut()?;
+                    let editor = self.state.active_editor_mut()?;
                     editor.content.clear();
                     editor.cursor = 0;
                     Ok(path!("input"))
@@ -1479,8 +1535,8 @@ impl Writer for UiStore {
                 let decision: ox_types::Decision =
                     serde_json::from_value(serde_json::Value::String(decision_str))
                         .unwrap_or(ox_types::Decision::DenyOnce);
-                self.pending_action = Some(PendingAction::Approve(decision));
-                if let Ok(s) = self.thread_state() {
+                self.state.pending.set(PendingAction::Approve(decision));
+                if let Ok(s) = self.state.thread_state() {
                     s.approval_selected = 0;
                     s.approval_preview_scroll = 0;
                 }
@@ -1488,7 +1544,7 @@ impl Writer for UiStore {
             }
             // approval_confirm: event loop resolves selected index to a decision
             if cmd_name == "approval_confirm" {
-                self.pending_action = Some(PendingAction::ApprovalConfirm);
+                self.state.pending.set(PendingAction::ApprovalConfirm);
                 return Ok(path!("pending_action"));
             }
             // Modal and dialog commands — all route through PendingAction
@@ -1507,7 +1563,7 @@ impl Writer for UiStore {
                 _ => None,
             };
             if let Some(action) = pending {
-                self.pending_action = Some(action);
+                self.state.pending.set(action);
                 return Ok(path!("pending_action"));
             }
             // set_input and clear_input are handled directly (they mutate editor state)
@@ -1515,13 +1571,13 @@ impl Writer for UiStore {
                 let value = data.as_value().ok_or_else(|| {
                     StoreError::store("ui", "write", "write data must contain a value")
                 })?;
-                return self.resolve_path_command_direct(cmd_name, value);
+                return self.state.resolve_path_command_direct(cmd_name, value);
             }
             let value = data.as_value().ok_or_else(|| {
                 StoreError::store("ui", "write", "write data must contain a value")
             })?;
-            let cmd = self.resolve_path_command(cmd_name, value)?;
-            self.dispatch_command(cmd)
+            let cmd = self.state.resolve_path_command(cmd_name, value)?;
+            self.state.dispatch_command(cmd)
         } else {
             let value = data.as_value().ok_or_else(|| {
                 StoreError::store("ui", "write", "write data must contain a value")
@@ -1535,12 +1591,12 @@ impl Writer for UiStore {
                 )
             })?;
 
-            self.dispatch_command(cmd)
+            self.state.dispatch_command(cmd)
         }
     }
 }
 
-impl UiStore {
+impl UiStateStore {
     /// Handle set_input and clear_input directly (they mutate editor, not via command dispatch).
     fn resolve_path_command_direct(
         &mut self,

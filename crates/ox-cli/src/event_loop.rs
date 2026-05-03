@@ -176,7 +176,8 @@ pub async fn run_async(
             // view state — fetch_view_state remains a pure reader.
             refresh_thread_info_cache(client, &mut dialog).await;
 
-            let vs = fetch_view_state(client, app, &dialog, thread.input_session.editor_mode).await;
+            let mut vs =
+                fetch_view_state(client, app, &dialog, thread.input_session.editor_mode).await;
 
             // Editor sync (detects editor appeared/disappeared, flushes edits)
             let had_editor = thread.had_editor;
@@ -254,6 +255,18 @@ pub async fn run_async(
                 let mut snap = fetch_settings_view_state(client).await;
                 let cursor =
                     read_settings_cursor(&mut snap).unwrap_or_else(|| oxpath!("settings", "index"));
+                // Override `key_hints` with the projection from the new
+                // settings registries scoped to the current cursor. The
+                // legacy `input/bindings/{mode}/settings` lookup that
+                // `fetch_view_state` performed only knows the three
+                // back-out keys (Esc/q/Ctrl+C) — it predates the new
+                // pipeline and would otherwise leave the modal showing
+                // a near-empty list.
+                vs.key_hints = crate::settings::help::key_hints_for_cursor(
+                    &settings_bindings,
+                    &settings_commands,
+                    &cursor,
+                );
                 let area = terminal.get_frame().area();
                 let mut ctx = RenderCtx {
                     area,
