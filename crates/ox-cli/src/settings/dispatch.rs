@@ -39,21 +39,36 @@ pub fn dispatch_settings_key(
     bindings: &BindingRegistry,
     renderers: &RendererRegistry,
 ) -> Vec<Write> {
-    // Two-pass binding lookup: try the focused-row scope first
-    // (so per-row `Prefix(settings/{accounts,models})` bindings
-    // fire when the user has focused a row), then fall back to the
-    // page-level cursor (`settings/index`, `_detail`, etc.). The
-    // accordion's tree commands live at `Exact(settings/index)` and
-    // catch the second pass; per-row commands live at `Prefix(...)`
-    // matching descendant focused-row paths and catch the first.
+    // Three-pass binding lookup ordered by specificity of context:
     //
-    // A miss in pass one followed by a hit in pass two is the common
-    // case for tree navigation (j/k/Enter/Esc); a hit in pass one is
-    // the per-row action case (t/r/P/d on a focused leaf).
-    let cmd_id = read_focused_row(snapshot)
-        .as_ref()
-        .and_then(|focus| bindings.lookup(screen, focus, mode, key))
-        .or_else(|| bindings.lookup(screen, cursor, mode, key));
+    //   1. Edit mode — when `ui/settings/edit_mode = true`, the
+    //      dispatcher routes printable chars and Backspace to
+    //      `field.insert` / `field.delete_back` and Enter/Esc to
+    //      `edit.exit`. These bindings live under
+    //      `Exact(settings/_edit_mode)`. The synthetic cursor lets us
+    //      reuse the regular registry/lookup machinery without a
+    //      special branch — it's data, not code.
+    //
+    //   2. Focused-row scope — `Prefix(settings/{accounts,models})`
+    //      bindings fire on whichever row the user has focused. This
+    //      is the per-row action surface (t/r/P/d on a focused leaf).
+    //
+    //   3. Page cursor — the accordion's tree commands at
+    //      `Exact(settings/index)`, plus the legacy `_detail` field
+    //      bindings at their own exact cursors.
+    let edit_mode_active = read_edit_mode(snapshot);
+    let edit_scope = ox_path::oxpath!("settings", "_edit_mode");
+    let cmd_id = if edit_mode_active {
+        bindings.lookup(screen, &edit_scope, mode, key)
+    } else {
+        None
+    }
+    .or_else(|| {
+        read_focused_row(snapshot)
+            .as_ref()
+            .and_then(|focus| bindings.lookup(screen, focus, mode, key))
+    })
+    .or_else(|| bindings.lookup(screen, cursor, mode, key));
     let Some(cmd_id) = cmd_id else {
         return vec![];
     };
@@ -68,7 +83,7 @@ pub fn dispatch_settings_key(
 }
 
 /// Read `ui/settings/focused_row` from the dispatch snapshot. Used as
-/// the first-pass binding-scope cursor so per-row bindings can fire
+/// the focused-row binding-scope cursor so per-row bindings can fire
 /// while the page cursor sits at `settings/index`.
 fn read_focused_row(snapshot: &mut dyn Reader) -> Option<Path> {
     use ox_path::oxpath;
@@ -78,6 +93,21 @@ fn read_focused_row(snapshot: &mut dyn Reader) -> Option<Path> {
         .flatten()?;
     let value = record.as_value()?;
     crate::settings::commands::navigation::path_from_value(value)
+}
+
+/// Read the inline edit-mode flag.
+fn read_edit_mode(snapshot: &mut dyn Reader) -> bool {
+    use ox_path::oxpath;
+    use structfs_core_store::Value;
+    snapshot
+        .read(&oxpath!("ui", "settings", "edit_mode"))
+        .ok()
+        .flatten()
+        .and_then(|r| match r.as_value() {
+            Some(Value::Bool(b)) => Some(*b),
+            _ => None,
+        })
+        .unwrap_or(false)
 }
 
 // ---------------------------------------------------------------------------

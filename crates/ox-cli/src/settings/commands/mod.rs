@@ -77,6 +77,7 @@ macro_rules! command {
 pub(crate) use command;
 
 pub mod account_model;
+pub mod edit;
 pub mod highlight;
 pub mod modal;
 pub mod navigation;
@@ -91,6 +92,7 @@ use super::command_registry::CommandRegistry;
 /// the three buckets in alphabetical order purely as a readability cue.
 pub fn register_all(reg: &mut CommandRegistry) {
     account_model::register(reg);
+    edit::register(reg);
     highlight::register(reg);
     modal::register(reg);
     navigation::register(reg);
@@ -164,11 +166,11 @@ mod tests {
 
     #[test]
     fn register_all_total_count() {
-        // Six highlight + one navigation (NavAscend; the three legacy
-        // descend commands retired with the list pages) + seventeen
-        // account/model + one modal toggle + four tree commands = 29.
-        // Pin this so a future drop-without-replacement gets caught.
+        // Six highlight + one navigation (NavAscend) + seventeen
+        // account/model + one modal toggle + four tree commands +
+        // three edit lifecycle commands = 32. Pin this so a future
+        // drop-without-replacement gets caught.
         let reg = populated();
-        assert_eq!(reg.iter().count(), 29);
+        assert_eq!(reg.iter().count(), 32);
     }
 }

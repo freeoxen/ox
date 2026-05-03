@@ -368,6 +368,32 @@ fn register_row_prefixes(reg: &mut BindingRegistry) {
     );
 }
 
+/// Inline edit-mode bindings under the synthetic cursor
+/// `settings/_edit_mode`. The dispatcher swaps the lookup cursor to
+/// this synthetic when `ui/settings/edit_mode = true`, so these
+/// bindings shadow the tree-nav / per-row keys while the user is
+/// editing a field. The text-editing helper handles the printable
+/// ASCII range plus Backspace; Enter and Esc both exit edit mode
+/// (commit-on-keystroke is the model — no separate buffer).
+fn register_edit_mode(reg: &mut BindingRegistry) {
+    let scope = oxpath!("settings", "_edit_mode");
+    register_text_editing(reg, scope.clone());
+    bind(
+        reg,
+        Some(scope.clone()),
+        no_mods(),
+        KeyCodeRepr::Enter,
+        "edit.exit",
+    );
+    bind(
+        reg,
+        Some(scope),
+        no_mods(),
+        KeyCodeRepr::Esc,
+        "edit.exit",
+    );
+}
+
 /// Whole-screen `?` toggles the shortcuts modal regardless of cursor
 /// depth. `BindingScope::Anywhere` means specific scopes can still
 /// shadow it by registering a same-key binding (none do today).
@@ -387,6 +413,7 @@ fn register_global(reg: &mut BindingRegistry) {
 /// Register every day-one settings binding into `reg`.
 pub fn register(reg: &mut BindingRegistry) {
     register_global(reg);
+    register_edit_mode(reg);
     register_index(reg);
     register_account_detail(reg);
     register_account_new(reg);

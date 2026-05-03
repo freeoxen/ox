@@ -13,8 +13,8 @@
 //! navigation commands clamp to the first visible row.
 
 use ox_path::oxpath;
-use ox_types::Screen;
 use ox_types::subscription::Write;
+use ox_types::{AccountField, Screen};
 use structfs_core_store::{Reader, Record, Value};
 
 use super::super::command_registry::CommandRegistry;
@@ -135,12 +135,33 @@ fn activate(data: &mut dyn Reader) -> Vec<Write> {
             record: Record::parsed(expanded_set_to_value(&set)),
         }]
     } else {
-        // Leaf field row — drill into the legacy `_detail` editor with
-        // the targeted account/model pre-selected and the targeted
-        // field pre-focused, so the user lands ready to type. Esc on
-        // the editor returns to the accordion via
-        // `AscendRule::Fallback(settings/index)`.
+        // Leaf field row. Two paths:
+        //
+        // - **Text-editable account fields (Endpoint, Key)** stay on
+        //   the accordion and switch to inline edit mode: write the
+        //   account selection + the focused-field state + flip
+        //   `edit_mode = true`. The dispatcher's edit-mode pass routes
+        //   subsequent printable-char keystrokes to `field.insert`,
+        //   which mutates the underlying data path directly.
+        //
+        // - **Selectors and read-only fields (Name / Protocol / Auth,
+        //   plus all model fields for now)** drill into the legacy
+        //   `_detail` editor with the targeted field pre-focused.
+        //   Their edit semantics (cycle through provider options,
+        //   numeric override) need separate inline handling that's
+        //   deferred to a follow-up.
         match &row.kind {
+            RowKind::AccountField {
+                account,
+                field: AccountField::Endpoint,
+            } => begin_inline_edit_account(
+                account.clone(),
+                AccountField::Endpoint,
+            ),
+            RowKind::AccountField {
+                account,
+                field: AccountField::Key,
+            } => begin_inline_edit_account(account.clone(), AccountField::Key),
             RowKind::AccountField { account, field } => {
                 let mut writes = Vec::new();
                 if let Ok(value) = structfs_serde_store::to_value(&Some(account.clone())) {
@@ -204,6 +225,40 @@ fn activate(data: &mut dyn Reader) -> Vec<Write> {
             }
         }
     }
+}
+
+/// Switch the focused account field into inline edit mode on the
+/// accordion. Sets `account_detail/field`, `accounts/selected`,
+/// resets `edit_cursor` to the end of the current value, and flips
+/// `edit_mode = true`. After this, the dispatcher's edit-mode pass
+/// routes printable chars / Backspace / Enter / Esc to the
+/// edit-mode bindings; the page cursor stays at `settings/index`,
+/// so the user never leaves the tree.
+fn begin_inline_edit_account(account: String, field: AccountField) -> Vec<Write> {
+    let mut writes: Vec<Write> = Vec::new();
+    if let Ok(value) = structfs_serde_store::to_value(&Some(account)) {
+        writes.push(Write {
+            path: oxpath!("ui", "settings", "accounts", "selected"),
+            record: Record::parsed(value),
+        });
+    }
+    if let Ok(value) = structfs_serde_store::to_value(&field) {
+        writes.push(Write {
+            path: oxpath!("ui", "settings", "account_detail", "field"),
+            record: Record::parsed(value),
+        });
+    }
+    // `i64::MAX` clamps to end-of-string in the existing
+    // `field.delete_back` / `field.insert` cursor math.
+    writes.push(Write {
+        path: oxpath!("ui", "settings", "edit_cursor"),
+        record: Record::parsed(Value::Integer(i64::MAX)),
+    });
+    writes.push(Write {
+        path: oxpath!("ui", "settings", "edit_mode"),
+        record: Record::parsed(Value::Bool(true)),
+    });
+    writes
 }
 
 fn collapse_or_ascend(data: &mut dyn Reader) -> Vec<Write> {
@@ -476,10 +531,11 @@ mod tests {
     }
 
     #[test]
-    fn activate_on_account_field_drills_with_field_focused() {
-        // Field-row leaves drill into the legacy detail editor with
-        // both the account selection AND the focused-field state set,
-        // so the user lands ready to edit that exact field.
+    fn activate_on_endpoint_field_enters_inline_edit_mode() {
+        // Text-edit-able account fields (Endpoint, Key) switch to
+        // inline edit mode: writes selection + field + edit_cursor +
+        // edit_mode=true, and stays on `settings/index` (no cursor
+        // write).
         let mut snap = SettingsSnapshot::empty();
         write_index(&mut snap);
         write_account(&mut snap, "alpha");
@@ -492,7 +548,45 @@ mod tests {
         );
         set_focused(&mut snap, "settings/accounts/alpha/endpoint");
         let writes = run(&TreeActivate::new(), &mut snap);
-        // selection + focused-field + cursor = 3 writes
+        assert_eq!(writes.len(), 4);
+        assert_eq!(
+            writes[0].path,
+            oxpath!("ui", "settings", "accounts", "selected")
+        );
+        assert_eq!(
+            writes[1].path,
+            oxpath!("ui", "settings", "account_detail", "field")
+        );
+        assert_eq!(writes[2].path, oxpath!("ui", "settings", "edit_cursor"));
+        assert_eq!(writes[3].path, oxpath!("ui", "settings", "edit_mode"));
+        match &writes[3].record {
+            Record::Parsed(Value::Bool(true)) => {}
+            other => panic!("expected edit_mode=true, got {other:?}"),
+        }
+        // Critically: no `cursor` write — the page stays at
+        // `settings/index` while the user edits inline.
+        for w in &writes {
+            assert_ne!(w.path, oxpath!("ui", "settings", "cursor"));
+        }
+    }
+
+    #[test]
+    fn activate_on_protocol_field_drills_with_field_focused() {
+        // Selectors (Name / Protocol / Auth) still drill into the
+        // legacy detail editor — they need cycle-through edit logic
+        // that doesn't fit the inline-text model.
+        let mut snap = SettingsSnapshot::empty();
+        write_index(&mut snap);
+        write_account(&mut snap, "alpha");
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&[
+                "settings/accounts".to_string(),
+                "settings/accounts/alpha".to_string(),
+            ]),
+        );
+        set_focused(&mut snap, "settings/accounts/alpha/protocol");
+        let writes = run(&TreeActivate::new(), &mut snap);
         assert_eq!(writes.len(), 3);
         assert_eq!(
             writes[0].path,
