@@ -193,17 +193,42 @@ mod tests {
             expanded_set_to_value(&["settings/accounts".to_string()]),
         );
         let (_title, items, _selected) = assert_list(render(&mut snap));
-        // Accounts (▾) + alpha + beta + Models (▸) = 4 rows
+        // Accounts (▾) + alpha (▸) + beta (▸) + Models (▸) = 4 rows;
+        // accounts are themselves expandable now.
         assert_eq!(items.len(), 4);
         assert!(items[0].primary.starts_with("▾ "));
+        // Depth-1 rows are indented two spaces and carry their own
+        // expand glyph because they're expandable too.
         assert!(
-            items[1].primary.starts_with("    "),
-            "expected depth-1 indent; got {:?}",
+            items[1].primary.starts_with("  ▸ "),
+            "expected depth-1 indented expand glyph; got {:?}",
             items[1].primary
         );
         assert!(items[1].primary.ends_with("alpha"));
         assert!(items[2].primary.ends_with("beta"));
         assert!(items[3].primary.starts_with("▸ "));
+    }
+
+    #[test]
+    fn expanded_account_inlines_field_rows() {
+        let mut snap = SettingsSnapshot::empty();
+        write_index(&mut snap);
+        write_account(&mut snap, "alpha");
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&[
+                "settings/accounts".to_string(),
+                "settings/accounts/alpha".to_string(),
+            ]),
+        );
+        let (_title, items, _selected) = assert_list(render(&mut snap));
+        // Accounts (▾) + alpha (▾) + 5 field rows + Models (▸) = 8.
+        assert_eq!(items.len(), 8);
+        // First field row is "Name: alpha", indented to depth 2.
+        assert!(items[2].primary.contains("Name: alpha"));
+        assert!(items[2].primary.starts_with("    "));
+        assert!(items[3].primary.contains("Protocol:"));
+        assert!(items[6].primary.contains("Key:"));
     }
 
     #[test]

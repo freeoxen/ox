@@ -135,28 +135,42 @@ fn activate(data: &mut dyn Reader) -> Vec<Write> {
             record: Record::parsed(expanded_set_to_value(&set)),
         }]
     } else {
-        // Leaf row — descend into the legacy detail page so editing
-        // commands continue to work as registered.
-        let target = match &row.kind {
-            RowKind::Account { .. } => oxpath!("settings", "accounts", "_detail"),
-            RowKind::Model { .. } => oxpath!("settings", "models", "_detail"),
-            RowKind::Entry { .. } => return Vec::new(),
-        };
-        // Mirror the row's identity onto the legacy selection paths so
-        // the detail renderer reads the right account/model — preserves
-        // the contract the legacy AccountDetailRenderer / ModelDetailRenderer
-        // expect.
-        let mut writes = Vec::new();
+        // Leaf field row — drill into the legacy `_detail` editor with
+        // the targeted account/model pre-selected and the targeted
+        // field pre-focused, so the user lands ready to type. Esc on
+        // the editor returns to the accordion via
+        // `AscendRule::Fallback(settings/index)`.
         match &row.kind {
-            RowKind::Account { name } => {
-                if let Ok(value) = structfs_serde_store::to_value(&Some(name.clone())) {
+            RowKind::AccountField { account, field } => {
+                let mut writes = Vec::new();
+                if let Ok(value) = structfs_serde_store::to_value(&Some(account.clone())) {
                     writes.push(Write {
                         path: oxpath!("ui", "settings", "accounts", "selected"),
                         record: Record::parsed(value),
                     });
                 }
+                if let Ok(value) = structfs_serde_store::to_value(field) {
+                    writes.push(Write {
+                        path: oxpath!("ui", "settings", "account_detail", "field"),
+                        record: Record::parsed(value),
+                    });
+                }
+                writes.push(Write {
+                    path: oxpath!("ui", "settings", "cursor"),
+                    record: Record::parsed(path_to_value(&oxpath!(
+                        "settings",
+                        "accounts",
+                        "_detail"
+                    ))),
+                });
+                writes
             }
-            RowKind::Model { account, model_id } => {
+            RowKind::ModelField {
+                account,
+                model_id,
+                field,
+            } => {
+                let mut writes = Vec::new();
                 let key = ox_types::settings::ModelKey {
                     account: account.clone(),
                     model_id: model_id.clone(),
@@ -167,14 +181,28 @@ fn activate(data: &mut dyn Reader) -> Vec<Write> {
                         record: Record::parsed(value),
                     });
                 }
+                if let Ok(value) = structfs_serde_store::to_value(field) {
+                    writes.push(Write {
+                        path: oxpath!("ui", "settings", "model_detail", "field"),
+                        record: Record::parsed(value),
+                    });
+                }
+                writes.push(Write {
+                    path: oxpath!("ui", "settings", "cursor"),
+                    record: Record::parsed(path_to_value(&oxpath!(
+                        "settings",
+                        "models",
+                        "_detail"
+                    ))),
+                });
+                writes
             }
-            RowKind::Entry { .. } => unreachable!(),
+            // The expandable arm above already handles every Entry,
+            // Account, and Model row.
+            RowKind::Entry { .. } | RowKind::Account { .. } | RowKind::Model { .. } => {
+                Vec::new()
+            }
         }
-        writes.push(Write {
-            path: oxpath!("ui", "settings", "cursor"),
-            record: Record::parsed(path_to_value(&target)),
-        });
-        writes
     }
 }
 
@@ -428,7 +456,9 @@ mod tests {
     }
 
     #[test]
-    fn activate_on_account_leaf_writes_selection_and_descends() {
+    fn activate_on_account_row_toggles_expansion() {
+        // Accounts are now expandable: Enter expands them inline to
+        // reveal field rows, rather than descending into _detail.
         let mut snap = SettingsSnapshot::empty();
         write_index(&mut snap);
         write_account(&mut snap, "alpha");
@@ -438,19 +468,47 @@ mod tests {
         );
         set_focused(&mut snap, "settings/accounts/alpha");
         let writes = run(&TreeActivate::new(), &mut snap);
-        // Should write selection + cursor.
-        assert_eq!(writes.len(), 2);
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].path, oxpath!("ui", "settings", "expanded"));
+        snap.insert(&writes[0].path, writes[0].record.as_value().unwrap().clone());
+        let set = read_expanded_raw(&mut snap);
+        assert!(set.contains(&"settings/accounts/alpha".to_string()));
+    }
+
+    #[test]
+    fn activate_on_account_field_drills_with_field_focused() {
+        // Field-row leaves drill into the legacy detail editor with
+        // both the account selection AND the focused-field state set,
+        // so the user lands ready to edit that exact field.
+        let mut snap = SettingsSnapshot::empty();
+        write_index(&mut snap);
+        write_account(&mut snap, "alpha");
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&[
+                "settings/accounts".to_string(),
+                "settings/accounts/alpha".to_string(),
+            ]),
+        );
+        set_focused(&mut snap, "settings/accounts/alpha/endpoint");
+        let writes = run(&TreeActivate::new(), &mut snap);
+        // selection + focused-field + cursor = 3 writes
+        assert_eq!(writes.len(), 3);
         assert_eq!(
             writes[0].path,
             oxpath!("ui", "settings", "accounts", "selected")
         );
-        assert_eq!(writes[1].path, oxpath!("ui", "settings", "cursor"));
-        let target = path_from_value(writes[1].record.as_value().unwrap()).unwrap();
+        assert_eq!(
+            writes[1].path,
+            oxpath!("ui", "settings", "account_detail", "field")
+        );
+        assert_eq!(writes[2].path, oxpath!("ui", "settings", "cursor"));
+        let target = path_from_value(writes[2].record.as_value().unwrap()).unwrap();
         assert_eq!(target.to_string(), "settings/accounts/_detail");
     }
 
     #[test]
-    fn activate_on_model_leaf_writes_modelkey_and_descends() {
+    fn activate_on_model_row_toggles_expansion() {
         let mut snap = SettingsSnapshot::empty();
         write_index(&mut snap);
         write_account_with_models(&mut snap, "alpha", &["m1"]);
@@ -460,13 +518,35 @@ mod tests {
         );
         set_focused(&mut snap, "settings/models/alpha/m1");
         let writes = run(&TreeActivate::new(), &mut snap);
-        assert_eq!(writes.len(), 2);
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].path, oxpath!("ui", "settings", "expanded"));
+    }
+
+    #[test]
+    fn activate_on_model_field_drills_with_field_focused() {
+        let mut snap = SettingsSnapshot::empty();
+        write_index(&mut snap);
+        write_account_with_models(&mut snap, "alpha", &["m1"]);
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&[
+                "settings/models".to_string(),
+                "settings/models/alpha/m1".to_string(),
+            ]),
+        );
+        set_focused(&mut snap, "settings/models/alpha/m1/max_context_size");
+        let writes = run(&TreeActivate::new(), &mut snap);
+        assert_eq!(writes.len(), 3);
         assert_eq!(
             writes[0].path,
             oxpath!("ui", "settings", "models", "selected")
         );
-        assert_eq!(writes[1].path, oxpath!("ui", "settings", "cursor"));
-        let target = path_from_value(writes[1].record.as_value().unwrap()).unwrap();
+        assert_eq!(
+            writes[1].path,
+            oxpath!("ui", "settings", "model_detail", "field")
+        );
+        assert_eq!(writes[2].path, oxpath!("ui", "settings", "cursor"));
+        let target = path_from_value(writes[2].record.as_value().unwrap()).unwrap();
         assert_eq!(target.to_string(), "settings/models/_detail");
     }
 

@@ -39,7 +39,22 @@ pub fn dispatch_settings_key(
     bindings: &BindingRegistry,
     renderers: &RendererRegistry,
 ) -> Vec<Write> {
-    let Some(cmd_id) = bindings.lookup(screen, cursor, mode, key) else {
+    // Two-pass binding lookup: try the focused-row scope first
+    // (so per-row `Prefix(settings/{accounts,models})` bindings
+    // fire when the user has focused a row), then fall back to the
+    // page-level cursor (`settings/index`, `_detail`, etc.). The
+    // accordion's tree commands live at `Exact(settings/index)` and
+    // catch the second pass; per-row commands live at `Prefix(...)`
+    // matching descendant focused-row paths and catch the first.
+    //
+    // A miss in pass one followed by a hit in pass two is the common
+    // case for tree navigation (j/k/Enter/Esc); a hit in pass one is
+    // the per-row action case (t/r/P/d on a focused leaf).
+    let cmd_id = read_focused_row(snapshot)
+        .as_ref()
+        .and_then(|focus| bindings.lookup(screen, focus, mode, key))
+        .or_else(|| bindings.lookup(screen, cursor, mode, key));
+    let Some(cmd_id) = cmd_id else {
         return vec![];
     };
     let Some(command) = cmds.lookup(cmd_id) else {
@@ -50,6 +65,19 @@ pub fn dispatch_settings_key(
         last_keystroke: Some(key.clone()),
     };
     command.run(snapshot, &ctx)
+}
+
+/// Read `ui/settings/focused_row` from the dispatch snapshot. Used as
+/// the first-pass binding-scope cursor so per-row bindings can fire
+/// while the page cursor sits at `settings/index`.
+fn read_focused_row(snapshot: &mut dyn Reader) -> Option<Path> {
+    use ox_path::oxpath;
+    let record = snapshot
+        .read(&oxpath!("ui", "settings", "focused_row"))
+        .ok()
+        .flatten()?;
+    let value = record.as_value()?;
+    crate::settings::commands::navigation::path_from_value(value)
 }
 
 // ---------------------------------------------------------------------------

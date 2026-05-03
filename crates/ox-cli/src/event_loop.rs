@@ -616,6 +616,7 @@ fn read_settings_cursor(snap: &mut SettingsSnapshot) -> Option<Path> {
     path_from_value(value)
 }
 
+
 // ---------------------------------------------------------------------------
 // Key dispatch — factored out to avoid duplication
 // ---------------------------------------------------------------------------

@@ -373,29 +373,11 @@ async fn navigate_index_to_models_set_primary() {
         "settings/models/anthropic/claude_haiku_4_5_20251001",
     );
 
-    // `Enter` on a leaf model row writes the selection key and
-    // moves the page cursor to the legacy detail page so editing
-    // and actions still resolve to the cursor-scoped detail bindings.
-    assert!(matches!(
-        h.dispatch("Enter").await,
-        KeyDispatchOutcome::Handled
-    ));
-    assert_eq!(
-        h.current_cursor().await.expect("cursor"),
-        oxpath!("settings", "models", "_detail"),
-    );
-    let selected: Option<ModelKey> = h
-        .client
-        .read_typed(&oxpath!("ui", "settings", "models", "selected"))
-        .await
-        .expect("read selected")
-        .expect("selected present");
-    let key = selected.expect("Some(ModelKey)");
-    assert_eq!(key.account, "anthropic");
-    assert_eq!(key.model_id, "claude-haiku-4-5-20251001");
-
-    // `P` on the Models page still wires up to `models.set_primary`
-    // through the legacy cursor-scoped binding.
+    // `P` on the focused model row fires `models.set_primary`
+    // through the per-row `Prefix(settings/models)` binding — no
+    // page-flip required. The command resolves the unsanitized
+    // (account, model_id) from the row's `RowKind` and writes
+    // `config/gate/completions/primary`.
     assert!(matches!(h.dispatch("P").await, KeyDispatchOutcome::Handled));
     let primary: CompletionRole = h
         .client

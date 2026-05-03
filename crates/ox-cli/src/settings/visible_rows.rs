@@ -8,7 +8,7 @@
 //! visible-row order can never disagree between them.
 
 use ox_path::oxpath;
-use ox_types::SettingsIndexEntry;
+use ox_types::{AccountField, ModelField, SettingsIndexEntry};
 use structfs_core_store::{Path, Reader, Value};
 
 use super::renderers::util::{child_names_under, read_typed};
@@ -24,6 +24,17 @@ pub enum RowKind {
     Account { name: String },
     /// One (account, model_id) row inside an expanded Models entry.
     Model { account: String, model_id: String },
+    /// One field row under an expanded account.
+    AccountField {
+        account: String,
+        field: AccountField,
+    },
+    /// One field row under an expanded model.
+    ModelField {
+        account: String,
+        model_id: String,
+        field: ModelField,
+    },
 }
 
 /// One row of the visible tree.
@@ -98,28 +109,35 @@ pub fn enumerate(data: &mut dyn Reader) -> Vec<VisibleRow> {
     rows
 }
 
-/// Append one row per account in `config/gate/accounts/*`.
-/// Account rows are leaves in v1 — they don't expand further; pressing
-/// Enter drills into the legacy `settings/accounts/_detail` page.
-fn append_account_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, _expanded: &[String]) {
+/// Append one row per account in `config/gate/accounts/*`. Account
+/// rows are *expandable* — when in the expanded set, their fields
+/// (Name / Protocol / Endpoint / Auth / Key) appear inline as
+/// depth-2 rows. The user never has to leave `settings/index` to see
+/// or act on an account.
+fn append_account_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, expanded: &[String]) {
     let names = child_names_under(data, "config/gate/accounts");
     for name in names {
         let path = row_path(&["settings", "accounts", &safe_component(&name)]);
+        let path_str = path_to_string(&path);
+        let is_expanded = expanded.iter().any(|s| s == &path_str);
         rows.push(VisibleRow {
-            path,
+            path: path.clone(),
             depth: 1,
             label: name.clone(),
             badge: None,
-            kind: RowKind::Account { name },
-            expandable: false,
-            expanded: false,
+            kind: RowKind::Account { name: name.clone() },
+            expandable: true,
+            expanded: is_expanded,
         });
+        if is_expanded {
+            append_account_field_rows(rows, data, &name);
+        }
     }
 }
 
-/// Append one row per (account, model_id) pair across all accounts'
-/// `models` subtrees. Same leaf semantics as account rows.
-fn append_model_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, _expanded: &[String]) {
+/// Append one row per (account, model_id) pair. Like accounts, model
+/// rows are expandable — expanding shows the per-model overrides.
+fn append_model_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, expanded: &[String]) {
     let account_names = child_names_under(data, "config/gate/accounts");
     for account_name in &account_names {
         // `child_names_under` splits broker keys on `/`, so its outputs
@@ -142,19 +160,159 @@ fn append_model_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, _expande
                 &safe_component(account_name),
                 &safe_component(&m.id),
             ]);
+            let path_str = path_to_string(&path);
+            let is_expanded = expanded.iter().any(|s| s == &path_str);
             rows.push(VisibleRow {
-                path,
+                path: path.clone(),
                 depth: 1,
                 label: format!("{} / {}", account_name, m.id),
                 badge: None,
                 kind: RowKind::Model {
                     account: account_name.clone(),
-                    model_id: m.id,
+                    model_id: m.id.clone(),
                 },
-                expandable: false,
-                expanded: false,
+                expandable: true,
+                expanded: is_expanded,
             });
+            if is_expanded {
+                append_model_field_rows(rows, &m, account_name);
+            }
         }
+    }
+}
+
+/// Field rows for an expanded account. Reads each field's current
+/// value from the broker; the renderer formats them as `"Label: value"`
+/// rows so a user can see the whole account state at a glance.
+fn append_account_field_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, name: &str) {
+    use ox_gate::{AccountConfig, ApiKey, ProviderConfig};
+
+    let comp = match ox_kernel::PathComponent::try_new(name) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let acct: AccountConfig = read_typed(data, &oxpath!("config", "gate", "accounts", comp.clone()))
+        .unwrap_or_default();
+    let provider: Option<ProviderConfig> = ox_kernel::PathComponent::try_new(&acct.provider)
+        .ok()
+        .and_then(|pc| read_typed(data, &oxpath!("config", "gate", "providers", pc)));
+    let key: Option<ApiKey> = read_typed(data, &oxpath!("secret", "keys", comp.clone()));
+
+    for field in [
+        AccountField::Name,
+        AccountField::Protocol,
+        AccountField::Endpoint,
+        AccountField::Auth,
+        AccountField::Key,
+    ] {
+        let value = match field {
+            AccountField::Name => name.to_string(),
+            AccountField::Protocol => acct.provider.clone(),
+            AccountField::Endpoint => provider
+                .as_ref()
+                .map(|p| p.endpoint.clone())
+                .unwrap_or_default(),
+            AccountField::Auth => provider
+                .as_ref()
+                .map(|p| match &p.auth {
+                    Some(scheme) => format!("{scheme:?}").to_lowercase(),
+                    None => String::from("(default)"),
+                })
+                .unwrap_or_default(),
+            AccountField::Key => match key.as_ref() {
+                Some(_) => "(set)".to_string(),
+                None => "(unset)".to_string(),
+            },
+        };
+        let label = match field {
+            AccountField::Name => "Name",
+            AccountField::Protocol => "Protocol",
+            AccountField::Endpoint => "Endpoint",
+            AccountField::Auth => "Auth",
+            AccountField::Key => "Key",
+        };
+        let path = row_path(&[
+            "settings",
+            "accounts",
+            &safe_component(name),
+            field_segment_account(field),
+        ]);
+        rows.push(VisibleRow {
+            path,
+            depth: 2,
+            label: format!("{label}: {value}"),
+            badge: None,
+            kind: RowKind::AccountField {
+                account: name.to_string(),
+                field,
+            },
+            expandable: false,
+            expanded: false,
+        });
+    }
+}
+
+/// Field rows for an expanded model. Surfaces the two overridable
+/// token-window fields plus the read-only id and display name so the
+/// user has the full picture before opening the editor.
+fn append_model_field_rows(
+    rows: &mut Vec<VisibleRow>,
+    model: &ox_gate::ModelInfo,
+    account: &str,
+) {
+    let render = |opt: Option<u32>| match opt {
+        Some(n) => n.to_string(),
+        None => "—".to_string(),
+    };
+    for (field, label, value) in [
+        (
+            ModelField::ContextSizeOverride,
+            "max_context_size",
+            render(model.max_context_size),
+        ),
+        (
+            ModelField::OutputTokensOverride,
+            "max_output_tokens",
+            render(model.max_output_tokens),
+        ),
+    ] {
+        let path = row_path(&[
+            "settings",
+            "models",
+            &safe_component(account),
+            &safe_component(&model.id),
+            field_segment_model(field),
+        ]);
+        rows.push(VisibleRow {
+            path,
+            depth: 2,
+            label: format!("{label}: {value}"),
+            badge: None,
+            kind: RowKind::ModelField {
+                account: account.to_string(),
+                model_id: model.id.clone(),
+                field,
+            },
+            expandable: false,
+            expanded: false,
+        });
+    }
+}
+
+fn field_segment_account(field: AccountField) -> &'static str {
+    match field {
+        AccountField::Name => "name",
+        AccountField::Protocol => "protocol",
+        AccountField::Endpoint => "endpoint",
+        AccountField::Auth => "auth",
+        AccountField::Key => "key",
+    }
+}
+
+fn field_segment_model(field: ModelField) -> &'static str {
+    match field {
+        ModelField::ContextSizeOverride => "max_context_size",
+        ModelField::OutputTokensOverride => "max_output_tokens",
     }
 }
 
