@@ -270,29 +270,42 @@ fn register_row_prefixes(reg: &mut BindingRegistry) {
 }
 
 /// Inline edit-mode bindings under the synthetic cursor
-/// `settings/_edit_mode`. The dispatcher swaps the lookup cursor to
-/// this synthetic when `ui/settings/edit_mode = true`, so these
-/// bindings shadow the tree-nav / per-row keys while the user is
-/// editing a field. The text-editing helper handles the printable
-/// ASCII range plus Backspace; Enter and Esc both exit edit mode
-/// (commit-on-keystroke is the model — no separate buffer).
+/// `settings/_edit_mode`. While `ui/settings/edit_mode = true` the
+/// dispatcher routes through this scope, shadowing tree-nav and
+/// per-row keys. Printable chars and Backspace mutate the edit
+/// buffer; Enter commits the buffer to the field's data path; Esc
+/// cancels without writing.
 fn register_edit_mode(reg: &mut BindingRegistry) {
     let scope = oxpath!("settings", "_edit_mode");
-    register_text_editing(reg, scope.clone());
+    // Printable ASCII (0x20..=0x7E) → edit.insert_char.
+    for byte in 0x20u8..=0x7E {
+        let ch = byte as char;
+        reg.register(BindingEntry {
+            screen: Screen::Settings,
+            scope: BindingScope::Exact(scope.clone()),
+            mode: None,
+            key: KeyChord {
+                modifiers: no_mods(),
+                code: KeyCodeRepr::Char(ch),
+            },
+            command_id: cmd("edit.insert_char"),
+        });
+    }
+    bind(
+        reg,
+        Some(scope.clone()),
+        no_mods(),
+        KeyCodeRepr::Backspace,
+        "edit.delete_back",
+    );
     bind(
         reg,
         Some(scope.clone()),
         no_mods(),
         KeyCodeRepr::Enter,
-        "edit.exit",
+        "edit.commit",
     );
-    bind(
-        reg,
-        Some(scope),
-        no_mods(),
-        KeyCodeRepr::Esc,
-        "edit.exit",
-    );
+    bind(reg, Some(scope), no_mods(), KeyCodeRepr::Esc, "edit.cancel");
 }
 
 /// Whole-screen `?` toggles the shortcuts modal regardless of cursor
@@ -445,10 +458,7 @@ mod tests {
     }
 
     #[test]
-    fn edit_mode_printable_char_resolves_to_field_insert() {
-        // The text-editing helper now lives under the synthetic
-        // `_edit_mode` cursor; the dispatcher routes there when
-        // `ui/settings/edit_mode = true`.
+    fn edit_mode_printable_char_resolves_to_edit_insert_char() {
         let reg = populated();
         let hit = reg
             .lookup(
@@ -458,11 +468,11 @@ mod tests {
                 &key(no_mods(), KeyCodeRepr::Char('x')),
             )
             .expect("should match");
-        assert_eq!(hit, &cmd("field.insert"));
+        assert_eq!(hit, &cmd("edit.insert_char"));
     }
 
     #[test]
-    fn edit_mode_backspace_resolves_to_field_delete_back() {
+    fn edit_mode_backspace_resolves_to_edit_delete_back() {
         let reg = populated();
         let hit = reg
             .lookup(
@@ -472,11 +482,11 @@ mod tests {
                 &key(no_mods(), KeyCodeRepr::Backspace),
             )
             .expect("should match");
-        assert_eq!(hit, &cmd("field.delete_back"));
+        assert_eq!(hit, &cmd("edit.delete_back"));
     }
 
     #[test]
-    fn edit_mode_enter_resolves_to_edit_exit() {
+    fn edit_mode_enter_resolves_to_edit_commit() {
         let reg = populated();
         let hit = reg
             .lookup(
@@ -486,11 +496,11 @@ mod tests {
                 &key(no_mods(), KeyCodeRepr::Enter),
             )
             .expect("should match");
-        assert_eq!(hit, &cmd("edit.exit"));
+        assert_eq!(hit, &cmd("edit.commit"));
     }
 
     #[test]
-    fn edit_mode_esc_resolves_to_edit_exit() {
+    fn edit_mode_esc_resolves_to_edit_cancel() {
         let reg = populated();
         let hit = reg
             .lookup(
@@ -500,7 +510,7 @@ mod tests {
                 &key(no_mods(), KeyCodeRepr::Esc),
             )
             .expect("should match");
-        assert_eq!(hit, &cmd("edit.exit"));
+        assert_eq!(hit, &cmd("edit.cancel"));
     }
 
     #[test]

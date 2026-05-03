@@ -15,14 +15,16 @@
 
 use ox_view::{ListItem, View};
 
+use crate::settings::commands::edit::read_edit_state;
 use crate::settings::registry::{AscendRule, RenderCtx, Renderer, RendererRegistry};
-use crate::settings::visible_rows;
+use crate::settings::visible_rows::{self, RowKind};
 
 pub struct IndexRenderer;
 
 impl Renderer for IndexRenderer {
     fn render(&self, ctx: &mut RenderCtx<'_>) -> View {
         let rows = visible_rows::enumerate(ctx.data);
+        let edit_state = read_edit_state(ctx.data);
 
         let cursor = read_cursor(ctx.data);
         let selected = cursor
@@ -38,8 +40,9 @@ impl Renderer for IndexRenderer {
                 } else {
                     "  "
                 };
+                let label = decorate_row_label(row, edit_state.as_ref());
                 ListItem {
-                    primary: format!("{indent}{glyph}{}", row.label),
+                    primary: format!("{indent}{glyph}{label}"),
                     secondary: None,
                     badge: row.badge.clone(),
                 }
@@ -58,6 +61,58 @@ impl Renderer for IndexRenderer {
     fn ascend_to(&self) -> AscendRule {
         AscendRule::ExitScreen
     }
+}
+
+/// When the user is editing a field row, replace the row's
+/// "Label: value" with "Label> buffer▏" so the live buffer (not the
+/// stored data value) is what the user sees as they type. The `▏`
+/// (U+258F LEFT ONE EIGHTH BLOCK) gives a visible insertion cursor.
+fn decorate_row_label(
+    row: &visible_rows::VisibleRow,
+    edit_state: Option<&crate::settings::commands::edit::EditState>,
+) -> String {
+    let Some(state) = edit_state else {
+        return row.label.clone();
+    };
+    if state.field_path != row.path {
+        return row.label.clone();
+    }
+    let label = match &row.kind {
+        RowKind::AccountField {
+            field: ox_types::AccountField::Name,
+            ..
+        } => "Name",
+        RowKind::AccountField {
+            field: ox_types::AccountField::Protocol,
+            ..
+        } => "Protocol",
+        RowKind::AccountField {
+            field: ox_types::AccountField::Endpoint,
+            ..
+        } => "Endpoint",
+        RowKind::AccountField {
+            field: ox_types::AccountField::Auth,
+            ..
+        } => "Auth",
+        RowKind::AccountField {
+            field: ox_types::AccountField::Key,
+            ..
+        } => "Key",
+        RowKind::ModelField {
+            field: ox_types::ModelField::ContextSizeOverride,
+            ..
+        } => "max_context_size",
+        RowKind::ModelField {
+            field: ox_types::ModelField::OutputTokensOverride,
+            ..
+        } => "max_output_tokens",
+        // Other row kinds aren't editable; fall through to the
+        // original label.
+        _ => return row.label.clone(),
+    };
+    // `▏` (U+258F) renders as a thin vertical bar — a clear cursor
+    // mark at end-of-buffer that doesn't get confused with text.
+    format!("{label}▸ {}\u{258F}", state.buffer)
 }
 
 fn read_cursor(data: &mut dyn structfs_core_store::Reader) -> Option<structfs_core_store::Path> {

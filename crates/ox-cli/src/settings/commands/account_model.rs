@@ -11,15 +11,14 @@
 
 use ox_path::oxpath;
 use ox_types::Screen;
-use ox_types::key_chord::KeyCodeRepr;
 use ox_types::settings::{AccountField, CreateAccountRequest, ModelField, ModelKey};
 use ox_types::subscription::Write;
 use structfs_core_store::{Path, Reader, Record, Value};
 use structfs_serde_store::to_value;
 
-use ox_gate::{AccountConfig, ApiKey, AuthScheme, CompletionRole, ProviderConfig};
+use ox_gate::{AccountConfig, AuthScheme, CompletionRole, ProviderConfig};
 
-use crate::settings::command_registry::{CommandCtx, CommandRegistry};
+use crate::settings::command_registry::CommandRegistry;
 use crate::settings::renderers::util::read_typed;
 
 #[allow(unused_imports)]
@@ -178,37 +177,6 @@ command! {
     screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "models", "_detail")),
     run: |snap, _ctx| field_model_step(snap, -1),
-}
-
-// ---------------------------------------------------------------------------
-// Text-field edits
-// ---------------------------------------------------------------------------
-//
-// `FieldInsert` and `FieldDeleteBack` mutate one of the two editable text
-// fields on the Account detail page: `Endpoint` (stored on the
-// provider config) or `Key` (stored at `secret/keys/{name}: ApiKey`).
-// `Name` is immutable post-creation per spec §6.4 — no insert path.
-// `Protocol` and `Auth` are selectors, not text fields, so they live on
-// the `selector.cycle.*` commands below.
-
-command! {
-    struct_name: FieldInsert,
-    id: "field.insert",
-    title: "Insert Character",
-    description: "Insert the keystroke character into the focused text field.",
-    screen: Screen::Settings,
-    cursor: Some(oxpath!("settings", "accounts", "_detail")),
-    run: |snap, ctx| field_insert(snap, ctx),
-}
-
-command! {
-    struct_name: FieldDeleteBack,
-    id: "field.delete_back",
-    title: "Backspace",
-    description: "Delete the character before the cursor in the focused text field.",
-    screen: Screen::Settings,
-    cursor: Some(oxpath!("settings", "accounts", "_detail")),
-    run: |snap, _ctx| field_delete_back(snap),
 }
 
 // ---------------------------------------------------------------------------
@@ -465,242 +433,6 @@ fn field_model_step(data: &mut dyn Reader, delta: isize) -> Vec<Write> {
     }]
 }
 
-/// Field-aware text mutation. Returns the writes needed to apply
-/// `update(current_text, cursor) -> (new_text, new_cursor)`. Inert when no
-/// editable field is focused or the precondition fails.
-fn mutate_focused_text<F>(data: &mut dyn Reader, update: F) -> Vec<Write>
-where
-    F: FnOnce(String, u32) -> Option<(String, u32)>,
-{
-    let field: AccountField =
-        read_typed(data, &oxpath!("ui", "settings", "account_detail", "field"))
-            .unwrap_or(AccountField::Name);
-    let selected = match read_selected_account(data) {
-        Some(s) => s,
-        None => return Vec::new(),
-    };
-    let name_comp = match ox_kernel::PathComponent::try_new(&selected) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
-    let cursor: u32 = read_typed(data, &oxpath!("ui", "settings", "edit_cursor")).unwrap_or(0);
-
-    match field {
-        AccountField::Endpoint => {
-            let acct: AccountConfig = match read_typed(
-                data,
-                &oxpath!("config", "gate", "accounts", name_comp.clone()),
-            ) {
-                Some(a) => a,
-                None => return Vec::new(),
-            };
-            let provider_comp = match ox_kernel::PathComponent::try_new(&acct.provider) {
-                Ok(c) => c,
-                Err(_) => return Vec::new(),
-            };
-            let provider_path = oxpath!("config", "gate", "providers", provider_comp);
-            let mut provider: ProviderConfig = match read_typed(data, &provider_path) {
-                Some(p) => p,
-                None => return Vec::new(),
-            };
-            let (new_text, new_cursor) = match update(provider.endpoint.clone(), cursor) {
-                Some(t) => t,
-                None => return Vec::new(),
-            };
-            provider.endpoint = new_text;
-            let value = match to_value(&provider) {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::warn!(error = %e, "field.text: failed to encode ProviderConfig");
-                    return Vec::new();
-                }
-            };
-            vec![
-                Write {
-                    path: provider_path,
-                    record: Record::parsed(value),
-                },
-                cursor_write(new_cursor),
-            ]
-        }
-        AccountField::Key => {
-            let key_path = oxpath!("secret", "keys", name_comp);
-            let current_text: String = read_typed::<ApiKey>(data, &key_path)
-                .map(|k| k.expose().to_string())
-                .unwrap_or_default();
-            let (new_text, new_cursor) = match update(current_text, cursor) {
-                Some(t) => t,
-                None => return Vec::new(),
-            };
-            let value = match to_value(&ApiKey::new(new_text)) {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::warn!(error = %e, "field.text: failed to encode ApiKey");
-                    return Vec::new();
-                }
-            };
-            vec![
-                Write {
-                    path: key_path,
-                    record: Record::parsed(value),
-                },
-                cursor_write(new_cursor),
-            ]
-        }
-        AccountField::Name | AccountField::Protocol | AccountField::Auth => Vec::new(),
-    }
-}
-
-fn cursor_write(new_cursor: u32) -> Write {
-    Write {
-        path: oxpath!("ui", "settings", "edit_cursor"),
-        record: Record::parsed(Value::Integer(new_cursor as i64)),
-    }
-}
-
-fn field_insert(data: &mut dyn Reader, ctx: &CommandCtx<'_>) -> Vec<Write> {
-    let chord = match ctx.last_keystroke.as_ref() {
-        Some(c) => c,
-        None => return Vec::new(),
-    };
-    let ch = match chord.code {
-        KeyCodeRepr::Char(c) => c,
-        _ => return Vec::new(),
-    };
-    // Try the model numeric path first; fall back to the account
-    // text path. The two contexts are distinguished by whether
-    // `model_detail/field` or `account_detail/field` was set by the
-    // begin-edit command.
-    let writes = mutate_focused_model_numeric(data, |text| {
-        if !ch.is_ascii_digit() {
-            return None;
-        }
-        let mut buf = text;
-        buf.push(ch);
-        Some(buf)
-    });
-    if !writes.is_empty() {
-        return writes;
-    }
-    mutate_focused_text(data, |text, cursor| {
-        let cur = (cursor as usize).min(text.len());
-        let mut buf = String::with_capacity(text.len() + ch.len_utf8());
-        buf.push_str(&text[..cur]);
-        buf.push(ch);
-        buf.push_str(&text[cur..]);
-        Some((buf, cursor + 1))
-    })
-}
-
-fn field_delete_back(data: &mut dyn Reader) -> Vec<Write> {
-    let writes = mutate_focused_model_numeric(data, |text| {
-        let mut buf = text;
-        if buf.pop().is_some() {
-            Some(buf)
-        } else {
-            None
-        }
-    });
-    if !writes.is_empty() {
-        return writes;
-    }
-    mutate_focused_text(data, |text, cursor| {
-        if cursor == 0 {
-            return None;
-        }
-        let cur = (cursor as usize).min(text.len());
-        // Walk back one char-boundary so we don't split a multi-byte char.
-        let mut prev = cur.saturating_sub(1);
-        while prev > 0 && !text.is_char_boundary(prev) {
-            prev -= 1;
-        }
-        let mut buf = String::with_capacity(text.len());
-        buf.push_str(&text[..prev]);
-        buf.push_str(&text[cur..]);
-        Some((buf, cursor - 1))
-    })
-}
-
-/// Edit-in-place mutation for the model-override numeric fields
-/// (`max_context_size`, `max_output_tokens`). Reads
-/// `ui/settings/model_detail/field` to decide which override to
-/// edit and `ui/settings/models/selected` to identify the model.
-/// Returns no writes when the model-edit context isn't set, which
-/// lets `field_insert`/`field_delete_back` fall through to the
-/// account-text path.
-///
-/// `update` receives the current value as its decimal string
-/// representation (empty for `None`) and returns the new string,
-/// or `None` to bail (e.g. trying to insert a non-digit). The new
-/// string is parsed back to `Option<u32>` — empty string → `None`,
-/// non-empty digits → `Some(n)`. The model's `source` is bumped to
-/// `UserOverride` whenever the value changes.
-fn mutate_focused_model_numeric<F>(data: &mut dyn Reader, update: F) -> Vec<Write>
-where
-    F: FnOnce(String) -> Option<String>,
-{
-    let field: ModelField = match read_typed(data, &oxpath!("ui", "settings", "model_detail", "field"))
-    {
-        Some(f) => f,
-        None => return Vec::new(),
-    };
-    let key = match read_selected_model(data) {
-        Some(k) => k,
-        None => return Vec::new(),
-    };
-    let acct_comp = match ox_kernel::PathComponent::try_new(&key.account) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
-    let models_path = oxpath!("config", "gate", "accounts", acct_comp, "models");
-    let mut models: Vec<ox_gate::ModelInfo> = match read_typed(data, &models_path) {
-        Some(m) => m,
-        None => return Vec::new(),
-    };
-    let model = match models.iter_mut().find(|m| m.id == key.model_id) {
-        Some(m) => m,
-        None => return Vec::new(),
-    };
-    let current_string = match field {
-        ModelField::ContextSizeOverride => model
-            .max_context_size
-            .map(|n| n.to_string())
-            .unwrap_or_default(),
-        ModelField::OutputTokensOverride => model
-            .max_output_tokens
-            .map(|n| n.to_string())
-            .unwrap_or_default(),
-    };
-    let next = match update(current_string) {
-        Some(s) => s,
-        None => return Vec::new(),
-    };
-    let parsed: Option<u32> = if next.is_empty() {
-        None
-    } else {
-        match next.parse::<u32>() {
-            Ok(n) => Some(n),
-            Err(_) => return Vec::new(),
-        }
-    };
-    match field {
-        ModelField::ContextSizeOverride => model.max_context_size = parsed,
-        ModelField::OutputTokensOverride => model.max_output_tokens = parsed,
-    }
-    model.source = ox_gate::ModelInfoSource::UserOverride;
-    let value = match to_value(&models) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!(error = %e, "field.numeric: failed to encode model list");
-            return Vec::new();
-        }
-    };
-    vec![Write {
-        path: models_path,
-        record: Record::parsed(value),
-    }]
-}
-
 pub(crate) fn selector_cycle_protocol(data: &mut dyn Reader) -> Vec<Write> {
     let selected = match read_selected_account(data) {
         Some(s) => s,
@@ -798,11 +530,6 @@ pub fn register(reg: &mut CommandRegistry) {
     reg.register(Box::new(ModelsSetPrimary::new()));
     reg.register(Box::new(AppSave::new()));
     reg.register(Box::new(FieldAccountNext::new()));
-    reg.register(Box::new(FieldAccountPrev::new()));
-    reg.register(Box::new(FieldModelNext::new()));
-    reg.register(Box::new(FieldModelPrev::new()));
-    reg.register(Box::new(FieldInsert::new()));
-    reg.register(Box::new(FieldDeleteBack::new()));
     reg.register(Box::new(SelectorCycleProtocol::new()));
     reg.register(Box::new(SelectorCycleAuth::new()));
 }
@@ -817,7 +544,7 @@ mod tests {
 
     use ox_types::key_chord::{KeyChord, KeyCodeRepr, KeyModifierSet};
 
-    use crate::settings::command_registry::Command;
+    use crate::settings::command_registry::{Command, CommandCtx};
     use crate::settings::registry::RendererRegistry;
     use crate::settings::snapshot::SettingsSnapshot;
 
@@ -1141,103 +868,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn field_insert_writes_updated_endpoint_and_cursor() {
-        let mut snap = SettingsSnapshot::empty();
-        setup_endpoint_edit(&mut snap, "https://api.example.com", 23);
-        // Append 'X' at the end.
-        let writes =
-            run_cmd_with_keystroke(&FieldInsert::new(), &mut snap, Some(keystroke_char('X')));
-        // Expect a provider write + cursor write.
-        let provider_path = oxpath!(
-            "config",
-            "gate",
-            "providers",
-            ox_kernel::PathComponent::try_new("anthropic").unwrap()
-        );
-        let provider_write = writes
-            .iter()
-            .find(|w| w.path == provider_path)
-            .expect("provider write");
-        match &provider_write.record {
-            Record::Parsed(v) => {
-                let pc: ProviderConfig = structfs_serde_store::from_value(v.clone()).unwrap();
-                assert_eq!(pc.endpoint, "https://api.example.comX");
-            }
-            other => panic!("unexpected record: {other:?}"),
-        }
-        let cursor_write = writes
-            .iter()
-            .find(|w| w.path == oxpath!("ui", "settings", "edit_cursor"))
-            .expect("cursor write");
-        match &cursor_write.record {
-            Record::Parsed(Value::Integer(n)) => assert_eq!(*n, 24),
-            other => panic!("unexpected record: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn field_insert_inert_when_no_keystroke() {
-        let mut snap = SettingsSnapshot::empty();
-        setup_endpoint_edit(&mut snap, "https://api.example.com", 23);
-        let writes = run_cmd_with_keystroke(&FieldInsert::new(), &mut snap, None);
-        assert!(writes.is_empty());
-    }
-
-    #[test]
-    fn field_insert_inert_when_keystroke_not_char() {
-        let mut snap = SettingsSnapshot::empty();
-        setup_endpoint_edit(&mut snap, "https://api.example.com", 23);
-        let writes = run_cmd_with_keystroke(
-            &FieldInsert::new(),
-            &mut snap,
-            Some(KeyChord {
-                modifiers: KeyModifierSet::default(),
-                code: KeyCodeRepr::Tab,
-            }),
-        );
-        assert!(writes.is_empty());
-    }
-
-    #[test]
-    fn field_delete_back_removes_char_and_decrements_cursor() {
-        let mut snap = SettingsSnapshot::empty();
-        setup_endpoint_edit(&mut snap, "https://api.example.com", 23);
-        let writes = run_cmd(&FieldDeleteBack::new(), &mut snap);
-        let provider_path = oxpath!(
-            "config",
-            "gate",
-            "providers",
-            ox_kernel::PathComponent::try_new("anthropic").unwrap()
-        );
-        let provider_write = writes
-            .iter()
-            .find(|w| w.path == provider_path)
-            .expect("provider write");
-        match &provider_write.record {
-            Record::Parsed(v) => {
-                let pc: ProviderConfig = structfs_serde_store::from_value(v.clone()).unwrap();
-                assert_eq!(pc.endpoint, "https://api.example.co");
-            }
-            other => panic!("unexpected record: {other:?}"),
-        }
-        let cursor_write = writes
-            .iter()
-            .find(|w| w.path == oxpath!("ui", "settings", "edit_cursor"))
-            .expect("cursor write");
-        match &cursor_write.record {
-            Record::Parsed(Value::Integer(n)) => assert_eq!(*n, 22),
-            other => panic!("unexpected record: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn field_delete_back_noop_at_cursor_zero() {
-        let mut snap = SettingsSnapshot::empty();
-        setup_endpoint_edit(&mut snap, "https://api.example.com", 0);
-        let writes = run_cmd(&FieldDeleteBack::new(), &mut snap);
-        assert!(writes.is_empty());
-    }
+    // (text-edit tests retired with FieldInsert/FieldDeleteBack —
+    // the inline edit-buffer model is covered by tests in
+    // `settings::commands::edit::tests`.)
 
     // -- Selectors --------------------------------------------------------------
 
