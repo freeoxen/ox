@@ -60,12 +60,12 @@ command! {
     struct_name: AccountsCancel,
     id: "accounts.cancel",
     title: "Cancel",
-    description: "Dismiss the current overlay; return to the accounts list.",
+    description: "Dismiss the current overlay; return to the accordion.",
     screen: Screen::Settings,
     cursor: None,
     run: |_snap, _ctx| vec![Write {
         path: oxpath!("ui", "settings", "cursor"),
-        record: Record::parsed(path_to_value(&oxpath!("settings", "accounts"))),
+        record: Record::parsed(path_to_value(&oxpath!("settings", "index"))),
     }],
 }
 
@@ -928,11 +928,14 @@ mod tests {
     }
 
     #[test]
-    fn accounts_cancel_writes_accounts_cursor() {
+    fn accounts_cancel_returns_to_accordion_index() {
+        // Cancel from the new- or delete-account overlay returns to
+        // the accordion. The legacy `settings/accounts` list page is
+        // gone, so the cursor must land on `settings/index` instead.
         let mut snap = SettingsSnapshot::empty();
         let writes = run_cmd(&AccountsCancel::new(), &mut snap);
         assert_eq!(writes.len(), 1);
-        assert_cursor_write(&writes, oxpath!("settings", "accounts"));
+        assert_cursor_write(&writes, oxpath!("settings", "index"));
     }
 
     // -- Subscription requests --------------------------------------------------
