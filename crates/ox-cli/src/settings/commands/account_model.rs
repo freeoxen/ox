@@ -443,10 +443,14 @@ pub(crate) fn selector_cycle_protocol(data: &mut dyn Reader) -> Vec<Write> {
         Err(_) => return Vec::new(),
     };
     let acct_path = oxpath!("config", "gate", "accounts", name_comp);
-    let mut acct: AccountConfig = match read_typed(data, &acct_path) {
-        Some(a) => a,
-        None => return Vec::new(),
-    };
+    // TOML-loaded accounts may not have a parent `AccountConfig` leaf
+    // — only child fields. Synthesize one (using a child `provider`
+    // string if present) so the cycle can advance and the first
+    // cycle write creates the leaf.
+    let mut acct: AccountConfig = read_typed(data, &acct_path).unwrap_or_else(|| AccountConfig {
+        provider: read_account_child_string(data, &selected, "provider")
+            .unwrap_or_else(|| "anthropic".to_string()),
+    });
     const OPTIONS: &[&str] = &["anthropic", "openai"];
     let idx = OPTIONS
         .iter()
@@ -467,6 +471,28 @@ pub(crate) fn selector_cycle_protocol(data: &mut dyn Reader) -> Vec<Write> {
     }]
 }
 
+/// Read a child string under `config/gate/accounts/{name}/{child}`
+/// — the shape TOML-loaded accounts produce when there's no
+/// AccountConfig leaf at the parent.
+fn read_account_child_string(data: &mut dyn Reader, account: &str, child: &str) -> Option<String> {
+    let acct_comp = ox_kernel::PathComponent::try_new(account).ok()?;
+    let child_comp = ox_kernel::PathComponent::try_new(child).ok()?;
+    let r = data
+        .read(&oxpath!(
+            "config",
+            "gate",
+            "accounts",
+            acct_comp,
+            child_comp
+        ))
+        .ok()
+        .flatten()?;
+    match r.as_value()? {
+        Value::String(s) => Some(s.clone()),
+        _ => None,
+    }
+}
+
 const AUTH_OPTIONS: [AuthScheme; 3] = [
     AuthScheme::XApiKey,
     AuthScheme::BearerToken,
@@ -482,22 +508,31 @@ pub(crate) fn selector_cycle_auth(data: &mut dyn Reader) -> Vec<Write> {
         Ok(c) => c,
         Err(_) => return Vec::new(),
     };
-    let acct: AccountConfig = match read_typed(
+    // Synthesize a default `AccountConfig` when the parent leaf is
+    // missing (TOML-loaded accounts), pulling the provider name
+    // from the child path if present.
+    let acct: AccountConfig = read_typed(
         data,
         &oxpath!("config", "gate", "accounts", name_comp.clone()),
-    ) {
-        Some(a) => a,
-        None => return Vec::new(),
-    };
+    )
+    .unwrap_or_else(|| AccountConfig {
+        provider: read_account_child_string(data, &selected, "provider")
+            .unwrap_or_else(|| "anthropic".to_string()),
+    });
     let provider_comp = match ox_kernel::PathComponent::try_new(&acct.provider) {
         Ok(c) => c,
         Err(_) => return Vec::new(),
     };
     let provider_path = oxpath!("config", "gate", "providers", provider_comp);
-    let mut provider: ProviderConfig = match read_typed(data, &provider_path) {
-        Some(p) => p,
-        None => return Vec::new(),
-    };
+    // Same shape for ProviderConfig: synthesize a default when no
+    // leaf exists, so the first cycle creates the row.
+    let mut provider: ProviderConfig =
+        read_typed(data, &provider_path).unwrap_or_else(|| ProviderConfig {
+            dialect: acct.provider.clone(),
+            endpoint: String::new(),
+            version: String::new(),
+            auth: None,
+        });
     let current = provider.resolved_auth();
     let idx = AUTH_OPTIONS.iter().position(|a| *a == current).unwrap_or(0);
     let next = AUTH_OPTIONS[(idx + 1) % AUTH_OPTIONS.len()].clone();
@@ -873,6 +908,37 @@ mod tests {
     // `settings::commands::edit::tests`.)
 
     // -- Selectors --------------------------------------------------------------
+
+    #[test]
+    fn selector_cycle_protocol_synthesizes_account_config_for_toml_loaded() {
+        // TOML-loaded accounts have no parent `AccountConfig` leaf —
+        // only child fields like `…/{name}/provider`. The cycle must
+        // still advance and write back; the first cycle creates the
+        // leaf.
+        let mut snap = SettingsSnapshot::empty();
+        let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
+        // Child-only `provider` field, no parent leaf.
+        snap.insert(
+            &oxpath!("config", "gate", "accounts", comp.clone(), "provider"),
+            Value::String("anthropic".into()),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "accounts", "selected"),
+            to_value(&Some("alpha".to_string())).unwrap(),
+        );
+        let writes = run_cmd(&SelectorCycleProtocol::new(), &mut snap);
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].path, oxpath!("config", "gate", "accounts", comp));
+        // anthropic → openai
+        match &writes[0].record {
+            Record::Parsed(v) => {
+                let acct: AccountConfig =
+                    structfs_serde_store::from_value(v.clone()).unwrap();
+                assert_eq!(acct.provider, "openai");
+            }
+            other => panic!("unexpected record: {other:?}"),
+        }
+    }
 
     #[test]
     fn selector_cycle_protocol_advances_then_writes_account() {
