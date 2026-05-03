@@ -8,12 +8,13 @@
 //! registries owned by the event loop, so the projection has to
 //! happen client-side. This module is that projection.
 //!
-//! Scoping: at a given cursor we want the bindings whose `cursor_path`
-//! either matches the current cursor exactly or is `None` (whole-
-//! screen). When a key is bound at both levels the cursor-specific
-//! binding shadows the whole-screen one, matching the dispatch
-//! lookup's specificity rule. We sort by specificity-then-registration
-//! the same way the registry does.
+//! Scoping: at a given cursor we want every binding whose
+//! `BindingScope` admits that cursor — `Anywhere` always, `Exact(p)`
+//! when `p == cursor`, `Prefix(p)` when `cursor` starts with `p`'s
+//! components. When several bindings share a key the most-specific
+//! one wins (matching the dispatch lookup's resolution order); the
+//! registry sorts entries that way already, so a single pass plus a
+//! key-dedupe is enough.
 
 use ox_types::KeyHint;
 use structfs_core_store::Path;
@@ -35,11 +36,7 @@ pub fn key_hints_for_cursor(
     let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for entry in bindings.entries() {
-        let cursor_matches = match &entry.cursor_path {
-            Some(p) => p == cursor,
-            None => true,
-        };
-        if !cursor_matches {
+        if !entry.scope.matches(cursor) {
             continue;
         }
         let Some(wire) = encode_keychord_to_str(&entry.key) else {
@@ -68,7 +65,7 @@ mod tests {
 
     use ox_path::oxpath;
     use ox_types::key_chord::{KeyCodeRepr, KeyModifierSet};
-    use ox_types::{BindingEntry, CommandId, KeyChord, Screen};
+    use ox_types::{BindingEntry, BindingScope, CommandId, KeyChord, Screen};
 
     use crate::settings::commands::register_all as register_all_commands;
 
@@ -124,14 +121,14 @@ mod tests {
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
             screen: Screen::Settings,
-            cursor_path: Some(oxpath!("settings", "index")),
+            scope: BindingScope::Exact(oxpath!("settings", "index")),
             mode: None,
             key: key('?'),
             command_id: CommandId(String::from("highlight.index.next")),
         });
         bindings.register(BindingEntry {
             screen: Screen::Settings,
-            cursor_path: None,
+            scope: BindingScope::Anywhere,
             mode: None,
             key: key('?'),
             command_id: CommandId(String::from("modal.toggle_shortcuts")),

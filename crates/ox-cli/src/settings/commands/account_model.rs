@@ -239,12 +239,63 @@ command! {
 // Implementation helpers
 // ---------------------------------------------------------------------------
 
+/// Resolve the active account name. The accordion's per-row `Prefix`
+/// bindings fire while the focused row sits anywhere under
+/// `settings/accounts`, so we honor the focused row first; the
+/// legacy `_detail` page (still used by editing flows) writes its
+/// selection to `ui/settings/accounts/selected` and we fall back to
+/// that if no focus is set.
 fn read_selected_account(data: &mut dyn Reader) -> Option<String> {
+    if let Some(name) = focused_account(data) {
+        return Some(name);
+    }
     read_typed::<Option<String>>(data, &oxpath!("ui", "settings", "accounts", "selected")).flatten()
 }
 
+/// Same shape for models. Reads the focused row first, falls back to
+/// the legacy `_detail` selection.
 fn read_selected_model(data: &mut dyn Reader) -> Option<ModelKey> {
+    if let Some(key) = focused_model(data) {
+        return Some(key);
+    }
     read_typed::<Option<ModelKey>>(data, &oxpath!("ui", "settings", "models", "selected")).flatten()
+}
+
+/// Resolve the focused row to its real (un-sanitized)
+/// account name. Row paths in the visible tree pass user-supplied ids
+/// through `safe_component`, which substitutes any non-identifier
+/// char with `_`; the original id lives on `RowKind`. Walking the
+/// enumeration to find the row whose path matches `focused_row`
+/// recovers the original.
+fn focused_account(data: &mut dyn Reader) -> Option<String> {
+    let path = focused_path(data)?;
+    let rows = crate::settings::visible_rows::enumerate(data);
+    rows.into_iter().find_map(|r| match r.kind {
+        crate::settings::visible_rows::RowKind::Account { name } if r.path == path => Some(name),
+        _ => None,
+    })
+}
+
+/// Same shape for models — `RowKind::Model` carries the un-sanitized
+/// `(account, model_id)` regardless of how the row's path component
+/// got encoded.
+fn focused_model(data: &mut dyn Reader) -> Option<ModelKey> {
+    let path = focused_path(data)?;
+    let rows = crate::settings::visible_rows::enumerate(data);
+    rows.into_iter().find_map(|r| match r.kind {
+        crate::settings::visible_rows::RowKind::Model { account, model_id } if r.path == path => {
+            Some(ModelKey { account, model_id })
+        }
+        _ => None,
+    })
+}
+
+fn focused_path(data: &mut dyn Reader) -> Option<Path> {
+    let r = data
+        .read(&oxpath!("ui", "settings", "focused_row"))
+        .ok()
+        .flatten()?;
+    super::navigation::path_from_value(r.as_value()?)
 }
 
 fn account_request_path(name: &str, suffix: &str) -> Option<Path> {

@@ -14,7 +14,7 @@
 
 use structfs_core_store::Path;
 
-use ox_types::{BindingEntry, CommandId, KeyChord, Mode, Screen};
+use ox_types::{BindingEntry, BindingScope, CommandId, KeyChord, Mode, Screen};
 
 /// Indexes bindings for `(screen, cursor, mode, key)` → `CommandId`.
 pub struct BindingRegistry {
@@ -62,15 +62,9 @@ impl BindingRegistry {
             if &e.key != key {
                 continue;
             }
-            // Cursor scope: a `Some(p)` entry must match the current cursor;
-            // a `None` entry matches any cursor.
-            if let Some(p) = &e.cursor_path {
-                if p != cursor {
-                    continue;
-                }
+            if !e.scope.matches(cursor) {
+                continue;
             }
-            // Mode scope: a `Some(m)` entry must match the current mode;
-            // a `None` entry matches any mode (including no-mode).
             if let Some(m) = e.mode {
                 if Some(m) != mode {
                     continue;
@@ -88,15 +82,32 @@ impl Default for BindingRegistry {
     }
 }
 
-/// Specificity class (lower is more specific). Used as the stable-sort
-/// key so resolution scans the most specific entries first.
-fn specificity_class(e: &BindingEntry) -> u8 {
-    match (e.cursor_path.is_some(), e.mode.is_some()) {
-        (true, true) => 0,
-        (true, false) => 1,
-        (false, true) => 2,
-        (false, false) => 3,
-    }
+/// Specificity class (lower number = more specific = scanned first).
+///
+/// `Exact(p) > Prefix(p, longer) > Prefix(p, shorter) > Anywhere`,
+/// crossed with mode-Some > mode-None. The five-bit code packs both
+/// dimensions into one sort key so a stable sort produces the right
+/// resolution order. We push `Prefix` deeper-first by letting longer
+/// prefixes win — represented inline in the sort key by negating the
+/// component count.
+fn specificity_class(e: &BindingEntry) -> i32 {
+    // Major axis: scope class (smaller wins).
+    //   0 = Exact
+    //   1 = Prefix (with longer prefix winning within this class)
+    //   2 = Anywhere
+    let (scope_major, scope_depth_penalty) = match &e.scope {
+        BindingScope::Exact(_) => (0, 0),
+        // Within Prefix entries, a longer (more specific) prefix should
+        // outrank a shorter one. Encode as negative depth so deeper
+        // sorts earlier.
+        BindingScope::Prefix(p) => (1, -(p.components.len() as i32)),
+        BindingScope::Anywhere => (2, 0),
+    };
+    // Minor axis: mode-Some wins over mode-None within a scope class.
+    let mode_offset = if e.mode.is_some() { 0 } else { 1 };
+    // Compose: scope_major dominates by a wide stride; depth penalty
+    // distinguishes Prefix entries; mode offset breaks remaining ties.
+    scope_major * 1000 + scope_depth_penalty * 10 + mode_offset
 }
 
 // ---------------------------------------------------------------------------
@@ -130,14 +141,14 @@ mod tests {
         // not just "registration order."
         reg.register(BindingEntry {
             screen: Screen::Settings,
-            cursor_path: None,
+            scope: BindingScope::Anywhere,
             mode: None,
             key: key_char('a'),
             command_id: cmd("screen_wide"),
         });
         reg.register(BindingEntry {
             screen: Screen::Settings,
-            cursor_path: Some(p.clone()),
+            scope: BindingScope::Exact(p.clone()),
             mode: None,
             key: key_char('a'),
             command_id: cmd("cursor_specific"),
@@ -156,14 +167,14 @@ mod tests {
 
         reg.register(BindingEntry {
             screen: Screen::Settings,
-            cursor_path: Some(p.clone()),
+            scope: BindingScope::Exact(p.clone()),
             mode: None,
             key: key_char('a'),
             command_id: cmd("mode_any"),
         });
         reg.register(BindingEntry {
             screen: Screen::Settings,
-            cursor_path: Some(p.clone()),
+            scope: BindingScope::Exact(p.clone()),
             mode: Some(Mode::Insert),
             key: key_char('a'),
             command_id: cmd("mode_insert"),
@@ -180,7 +191,7 @@ mod tests {
         let mut reg = BindingRegistry::new();
         reg.register(BindingEntry {
             screen: Screen::Settings,
-            cursor_path: None,
+            scope: BindingScope::Anywhere,
             mode: None,
             key: key_char('q'),
             command_id: cmd("quit"),
@@ -211,14 +222,14 @@ mod tests {
         // Two entries with identical specificity (whole-screen, no mode).
         reg.register(BindingEntry {
             screen: Screen::Settings,
-            cursor_path: None,
+            scope: BindingScope::Anywhere,
             mode: None,
             key: key_char('x'),
             command_id: cmd("first"),
         });
         reg.register(BindingEntry {
             screen: Screen::Settings,
-            cursor_path: None,
+            scope: BindingScope::Anywhere,
             mode: None,
             key: key_char('x'),
             command_id: cmd("second"),
@@ -235,7 +246,7 @@ mod tests {
         let mut reg = BindingRegistry::new();
         reg.register(BindingEntry {
             screen: Screen::Settings,
-            cursor_path: None,
+            scope: BindingScope::Anywhere,
             mode: None,
             key: key_char('j'),
             command_id: cmd("down"),
@@ -250,7 +261,7 @@ mod tests {
         let mut reg = BindingRegistry::new();
         reg.register(BindingEntry {
             screen: Screen::Settings,
-            cursor_path: None,
+            scope: BindingScope::Anywhere,
             mode: None,
             key: key_char('j'),
             command_id: cmd("down"),
@@ -268,7 +279,7 @@ mod tests {
         let mut reg = BindingRegistry::new();
         reg.register(BindingEntry {
             screen: Screen::Settings,
-            cursor_path: None,
+            scope: BindingScope::Anywhere,
             mode: Some(Mode::Insert),
             key: key_char('a'),
             command_id: cmd("insert_only"),
@@ -290,7 +301,7 @@ mod tests {
         let mut reg = BindingRegistry::new();
         reg.register(BindingEntry {
             screen: Screen::Settings,
-            cursor_path: None,
+            scope: BindingScope::Anywhere,
             mode: Some(Mode::Insert),
             key: key_char('a'),
             command_id: cmd("insert_only"),

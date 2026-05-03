@@ -14,7 +14,7 @@ use ox_path::oxpath;
 use structfs_core_store::Path;
 
 use ox_types::key_chord::{KeyCodeRepr, KeyModifierSet};
-use ox_types::{BindingEntry, CommandId, KeyChord, Screen};
+use ox_types::{BindingEntry, BindingScope, CommandId, KeyChord, Screen};
 
 use crate::settings::binding_registry::BindingRegistry;
 
@@ -51,9 +51,33 @@ fn bind(
     code: KeyCodeRepr,
     command_id: &str,
 ) {
+    let scope = match cursor {
+        Some(p) => BindingScope::Exact(p),
+        None => BindingScope::Anywhere,
+    };
     reg.register(BindingEntry {
         screen: Screen::Settings,
-        cursor_path: cursor,
+        scope,
+        mode: None,
+        key: KeyChord { modifiers, code },
+        command_id: cmd(command_id),
+    });
+}
+
+/// Bind a key under a `Prefix` scope — fires when the cursor sits at
+/// `prefix` itself or any deeper component path. Used by per-row
+/// commands that act on a focused subtree (e.g. `t` testing whichever
+/// account is currently focused at `settings/accounts/{any}`).
+fn bind_prefix(
+    reg: &mut BindingRegistry,
+    prefix: Path,
+    modifiers: KeyModifierSet,
+    code: KeyCodeRepr,
+    command_id: &str,
+) {
+    reg.register(BindingEntry {
+        screen: Screen::Settings,
+        scope: BindingScope::Prefix(prefix),
         mode: None,
         key: KeyChord { modifiers, code },
         command_id: cmd(command_id),
@@ -73,7 +97,7 @@ fn register_text_editing(reg: &mut BindingRegistry, cursor: Path) {
         let ch = byte as char;
         reg.register(BindingEntry {
             screen: Screen::Settings,
-            cursor_path: Some(cursor.clone()),
+            scope: BindingScope::Exact(cursor.clone()),
             mode: None,
             key: KeyChord {
                 modifiers: no_mods(),
@@ -85,7 +109,7 @@ fn register_text_editing(reg: &mut BindingRegistry, cursor: Path) {
     // Backspace.
     reg.register(BindingEntry {
         screen: Screen::Settings,
-        cursor_path: Some(cursor),
+        scope: BindingScope::Exact(cursor),
         mode: None,
         key: KeyChord {
             modifiers: no_mods(),
@@ -370,14 +394,53 @@ fn register_model_detail(reg: &mut BindingRegistry) {
     bind(reg, Some(cursor), no_mods(), KeyCodeRepr::Esc, "nav.ascend");
 }
 
+/// Per-row commands for accordion-focused leaf rows. Bound under
+/// `Prefix(settings/accounts)` and `Prefix(settings/models)` so they
+/// fire whenever the focused row sits anywhere inside that subtree —
+/// `settings/accounts` (the parent), `settings/accounts/{name}`
+/// (the leaf), or `settings/accounts/{name}/{field}` (the inline
+/// field rows). The commands themselves read the focused row to
+/// figure out *which* account/model to act on.
+fn register_row_prefixes(reg: &mut BindingRegistry) {
+    let accounts_subtree = oxpath!("settings", "accounts");
+    bind_prefix(
+        reg,
+        accounts_subtree.clone(),
+        no_mods(),
+        KeyCodeRepr::Char('t'),
+        "account.test",
+    );
+    bind_prefix(
+        reg,
+        accounts_subtree.clone(),
+        no_mods(),
+        KeyCodeRepr::Char('r'),
+        "account.refresh",
+    );
+    bind_prefix(
+        reg,
+        accounts_subtree,
+        no_mods(),
+        KeyCodeRepr::Char('d'),
+        "accounts.delete_confirm",
+    );
+    let models_subtree = oxpath!("settings", "models");
+    bind_prefix(
+        reg,
+        models_subtree,
+        shift_only(),
+        KeyCodeRepr::Char('P'),
+        "models.set_primary",
+    );
+}
+
 /// Whole-screen `?` toggles the shortcuts modal regardless of cursor
-/// depth. Bound once with `cursor_path: None` so it works at every
-/// settings page; specific cursor scopes can still shadow it by
-/// registering a same-key binding earlier (none do today).
+/// depth. `BindingScope::Anywhere` means specific scopes can still
+/// shadow it by registering a same-key binding (none do today).
 fn register_global(reg: &mut BindingRegistry) {
     reg.register(BindingEntry {
         screen: Screen::Settings,
-        cursor_path: None,
+        scope: BindingScope::Anywhere,
         mode: None,
         key: KeyChord {
             modifiers: no_mods(),
@@ -397,6 +460,7 @@ pub fn register(reg: &mut BindingRegistry) {
     register_account_delete(reg);
     register_models(reg);
     register_model_detail(reg);
+    register_row_prefixes(reg);
 }
 
 // ---------------------------------------------------------------------------
@@ -471,6 +535,55 @@ mod tests {
             )
             .expect("should match");
         assert_eq!(hit, &cmd("accounts.add"));
+    }
+
+    #[test]
+    fn focused_account_row_t_resolves_to_account_test() {
+        // Per-row prefix binding: `t` fires whenever the cursor sits
+        // under `settings/accounts`, including the account leaf row
+        // — no page-flip required.
+        let reg = populated();
+        let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
+        let hit = reg
+            .lookup(
+                Screen::Settings,
+                &oxpath!("settings", "accounts", comp),
+                None,
+                &key(no_mods(), KeyCodeRepr::Char('t')),
+            )
+            .expect("should match");
+        assert_eq!(hit, &cmd("account.test"));
+    }
+
+    #[test]
+    fn focused_account_row_r_resolves_to_account_refresh() {
+        let reg = populated();
+        let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
+        let hit = reg
+            .lookup(
+                Screen::Settings,
+                &oxpath!("settings", "accounts", comp),
+                None,
+                &key(no_mods(), KeyCodeRepr::Char('r')),
+            )
+            .expect("should match");
+        assert_eq!(hit, &cmd("account.refresh"));
+    }
+
+    #[test]
+    fn focused_model_row_p_resolves_to_set_primary() {
+        let reg = populated();
+        let acct = ox_kernel::PathComponent::try_new("anthropic").unwrap();
+        let model = ox_kernel::PathComponent::try_new("claude_haiku").unwrap();
+        let hit = reg
+            .lookup(
+                Screen::Settings,
+                &oxpath!("settings", "models", acct, model),
+                None,
+                &key(shift_only(), KeyCodeRepr::Char('P')),
+            )
+            .expect("should match");
+        assert_eq!(hit, &cmd("models.set_primary"));
     }
 
     #[test]
@@ -622,13 +735,9 @@ mod tests {
         let mut directly_reachable = 0usize;
         let mut shadowed: Vec<(BindingEntry, CommandId)> = Vec::new();
         for entry in entries {
+            let cursor = entry.scope.keyed_path().unwrap_or(&empty_path);
             let resolved = reg
-                .lookup(
-                    entry.screen,
-                    entry.cursor_path.as_ref().unwrap_or(&empty_path),
-                    entry.mode,
-                    &entry.key,
-                )
+                .lookup(entry.screen, cursor, entry.mode, &entry.key)
                 .unwrap_or_else(|| {
                     panic!("binding {entry:?} resolved to None — structurally unreachable")
                 });

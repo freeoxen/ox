@@ -447,7 +447,7 @@ mod tests {
                 panic!("binding {entry:?} encoded to {wire:?}, parser returned None")
             });
 
-            let cursor = entry.cursor_path.as_ref().unwrap_or(&empty_path);
+            let cursor = entry.scope.keyed_path().unwrap_or(&empty_path);
 
             let mut reader_orig = LocalConfig::default();
             let writes_orig = dispatch_settings_key(

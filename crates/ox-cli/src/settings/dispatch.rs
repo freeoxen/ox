@@ -181,7 +181,7 @@ mod tests {
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
             screen: Screen::Settings,
-            cursor_path: None,
+            scope: ox_types::BindingScope::Anywhere,
             mode: None,
             key: key_char('a'),
             command_id: cmd_id("test.sentinel"),
@@ -238,7 +238,7 @@ mod tests {
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
             screen: Screen::Settings,
-            cursor_path: None,
+            scope: ox_types::BindingScope::Anywhere,
             mode: None,
             key: key_char('a'),
             command_id: cmd_id("not.registered"),
@@ -268,7 +268,7 @@ mod tests {
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
             screen: Screen::Settings,
-            cursor_path: None,
+            scope: ox_types::BindingScope::Anywhere,
             mode: None,
             key: key_char('z'),
             command_id: cmd_id("test.report_keystroke"),
