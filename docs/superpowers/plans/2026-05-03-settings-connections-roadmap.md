@@ -35,7 +35,7 @@ Six slices, ordered by leverage. Each ships independently.
 | # | Slice | Blockers | Touches kernel? | Schema change? |
 |---|---|---|---|---|
 | 1 | Dynamic Protocol options (kill hardcoded carousel) | none | no | no |
-| 2 | Bootstrap rename (`gate/completions/primary` → `gate/bootstrap`) + per-row toggle | Q3 | no | renaming only |
+| 2 | Bootstrap rename (`gate/completions/primary` → `gate/completions/bootstrap`) + per-row toggle | Q3 | no | renaming only |
 | 3 | `default_available: Vec<ModelKey>` record + per-row toggle | Q1 | yes (if Q1=a) | new record |
 | 4 | Models becomes a flat table; per-account drill-in retired | depends on 2 | no | no |
 | 5 | Accounts → Connections (joint provider+account form, share-set indicator) | none | no | no (cosmetic + UX) |
@@ -53,7 +53,7 @@ These are decisions the human partner must make before the affected slice can be
 
 When a user un-checks **Default** on a `(connection, model_id)` row, that should:
 
-- **(a) Kernel-side gate.** Block the kernel from accepting a tool call asking for that model. `config/gate/default_available: Vec<ModelKey>` lives in the broker config namespace; ox-kernel reads it at thread spawn and enforces.
+- **(a) Kernel-side gate.** Block the kernel from accepting a tool call asking for that model. `config/gate/completions/default_available: Vec<ModelKey>` lives in the broker config namespace; ox-kernel reads it at thread spawn and enforces.
 - **(b) UI-only filter.** Hide the row from any model-picker UI but accept any cataloged model the kernel sees. `ui/settings/default_available` lives in the UI namespace; the kernel never reads it.
 
 If (a), Slice 3 touches ox-kernel. If (b), Slice 3 is UI-only.
@@ -748,10 +748,10 @@ Each slice below ships independently and produces working software. Before execu
 
 ### Slice 2 — Bootstrap rename + per-row toggle
 
-**Outcome:** `config/gate/completions/primary` becomes `config/gate/bootstrap` (same `CompletionRole` shape, clearer name). The Models tier gets a per-row Bootstrap toggle (`b` key) that's exclusive (toggling one clears any other).
+**Outcome:** `config/gate/completions/primary` becomes `config/gate/completions/bootstrap` (same `CompletionRole` shape, clearer name). The Models tier gets a per-row Bootstrap toggle (`b` key) that's exclusive (toggling one clears any other).
 
 **Touch points:**
-- New typed read at `config/gate/bootstrap`. During migration, kernel reads new path, falls back to legacy path, writes go to both. Legacy retired in a follow-up after one release.
+- New typed read at `config/gate/completions/bootstrap`. During migration, kernel reads new path, falls back to legacy path, writes go to both. Legacy retired in a follow-up after one release.
 - `crates/ox-cli/src/settings/commands/account_model.rs::models_set_primary` becomes `models_set_bootstrap`; writes to new path.
 - Models row renderer gets a "B" column showing `●` for the row that is bootstrap.
 - `BadgeSource::PrimaryReference` either stays (until Slice 4 retires the badge) or is renamed to `BootstrapReference`.
@@ -763,7 +763,7 @@ Each slice below ships independently and produces working software. Before execu
 **Outcome:** New typed record `Vec<ModelKey>` controlling which `(connection, model_id)` pairs a fresh thread sees. Models tier gets a "D" column with multi-select toggle (`d` key).
 
 **Touch points (if Q1=a, kernel-side gate):**
-- New record at `config/gate/default_available: Vec<ModelKey>` (or `ui/settings/default_available` if Q1=b).
+- New record at `config/gate/completions/default_available: Vec<ModelKey>` (or `ui/settings/default_available` if Q1=b).
 - ox-kernel reads at thread spawn, gates the tool-callable model set.
 - Renderer gets D column.
 - Toggle command: `models.toggle_default` adds/removes the focused row's `ModelKey` from the set.

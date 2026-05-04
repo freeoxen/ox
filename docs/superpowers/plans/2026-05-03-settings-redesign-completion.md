@@ -4,7 +4,7 @@
 
 **Goal:** Land the four remaining slices of the Connections-redesign roadmap so the Settings screen reaches the shape committed to in `docs/superpowers/plans/2026-05-03-settings-connections-roadmap.md`. Slice 1 already shipped (kill `PROTOCOL_OPTIONS`). Slice 4's standalone plan is at `docs/superpowers/plans/2026-05-03-settings-slice-4-models-empty-state.md`. This document covers Slices 2, 3, 5, 6 in execution order, with Slice 4 inserted by reference at its dependency point.
 
-**Architecture:** Same path-MVU primitive throughout. Schema additions are surgical: rename `gate/completions/primary` → `gate/bootstrap` (Slice 2), add `gate/default_available: Vec<ModelKey>` (Slice 3), add `ModelInfoSource::UserEntered` variant (Slice 6). Only Slice 3 touches the kernel; everything else stays inside `ox-cli/src/settings`. Rename of "Account" → "Connection" stays at the UI-string level — broker paths and Rust identifiers keep `account` so the data layer is undisturbed.
+**Architecture:** Same path-MVU primitive throughout. Schema additions are surgical: rename `gate/completions/primary` → `gate/completions/bootstrap` (Slice 2), add `gate/completions/default_available: Vec<ModelKey>` (Slice 3), add `ModelInfoSource::UserEntered` variant (Slice 6). Only Slice 3 touches the kernel; everything else stays inside `ox-cli/src/settings`. Rename of "Account" → "Connection" stays at the UI-string level — broker paths and Rust identifiers keep `account` so the data layer is undisturbed.
 
 **Tech Stack:** Rust, ox-cli settings module, ox-broker subscriptions, ox-kernel (Slice 3 only), ox-gate types.
 
@@ -20,7 +20,7 @@ These were the three open questions from the roadmap. Default-applied here so ex
 
 | Q | Decision | Rationale |
 |---|---|---|
-| Q1 — default-available scope | **Kernel-side gate.** `config/gate/default_available: Vec<ModelKey>`. Kernel reads at thread spawn and gates the tool-callable model set. | The phrasing "default available for a new thread without modification" implies the thread CAN modify access; the default subset is the enforced floor. UI-only filter would be a lie. |
+| Q1 — default-available scope | **Kernel-side gate.** `config/gate/completions/default_available: Vec<ModelKey>`. Kernel reads at thread spawn and gates the tool-callable model set. | The phrasing "default available for a new thread without modification" implies the thread CAN modify access; the default subset is the enforced floor. UI-only filter would be a lie. |
 | Q2 — manual entry required fields | **`id`, `max_context_size`, `max_output_tokens`.** Display name auto-fills from `id`. Pricing deferred to a future slice. | Anything less and the kernel can't budget context or build requests. Pricing is presentation, not functionality. |
 | Q3 — bootstrap on failing connection | **Allow with inline warning.** Bootstrap toggle never blocks; if `test_status == Failed { .. }`, render an inline warning "(connection failing — bootstrap will retry on next launch)". | User is in control; transient failures shouldn't lock out their own bootstrap choice. |
 
@@ -49,19 +49,19 @@ Same as Slice 1: `cargo fmt --all -- --check && cargo clippy -p <crate> --all-ta
 
 ## 1. Slice 2 — Bootstrap rename + per-row toggle
 
-**Outcome:** The path `config/gate/completions/primary: CompletionRole` becomes `config/gate/bootstrap: CompletionRole` (same shape, clearer name). Reads cascade: new path first, fall back to legacy. Writes go to both during the migration window so a downgrade doesn't corrupt state. The Models index entry's badge re-points to the new path; the `models.set_primary` command becomes `models.set_bootstrap` (same `P` keystroke, same row behavior). Models rows render a `B` glyph in their badge slot when they're the bootstrap model.
+**Outcome:** The path `config/gate/completions/primary: CompletionRole` becomes `config/gate/completions/bootstrap: CompletionRole` (same shape, clearer name). Reads cascade: new path first, fall back to legacy. Writes go to both during the migration window so a downgrade doesn't corrupt state. The Models index entry's badge re-points to the new path; the `models.set_primary` command becomes `models.set_bootstrap` (same `P` keystroke, same row behavior). Models rows render a `B` glyph in their badge slot when they're the bootstrap model.
 
 ### File Structure
 
 | File | Change |
 |---|---|
-| `crates/ox-cli/src/settings/bootstrap.rs` | `populate_index_entries`: rename Models entry's badge from `BadgeSource::PrimaryReference` to a new `BadgeSource::BootstrapReference` that resolves from `config/gate/bootstrap`. |
+| `crates/ox-cli/src/settings/bootstrap.rs` | `populate_index_entries`: rename Models entry's badge from `BadgeSource::PrimaryReference` to a new `BadgeSource::BootstrapReference` that resolves from `config/gate/completions/bootstrap`. |
 | `crates/ox-types/src/settings.rs` | Add `BadgeSource::BootstrapReference` variant; keep `PrimaryReference` for one release as a deprecated alias for backwards-compat with stored entries. |
-| `crates/ox-cli/src/settings/visible_rows.rs` | `resolve_badge` arm for `BootstrapReference` reads `config/gate/bootstrap` (with fallback to `config/gate/completions/primary`). |
-| `crates/ox-cli/src/settings/commands/account_model.rs` | `models_set_primary` becomes `models_set_bootstrap`: writes to `config/gate/bootstrap` AND `config/gate/completions/primary` for migration; rename the `ModelsSetPrimary` struct to `ModelsSetBootstrap`. Update binding registration. |
+| `crates/ox-cli/src/settings/visible_rows.rs` | `resolve_badge` arm for `BootstrapReference` reads `config/gate/completions/bootstrap` (with fallback to `config/gate/completions/primary`). |
+| `crates/ox-cli/src/settings/commands/account_model.rs` | `models_set_primary` becomes `models_set_bootstrap`: writes to `config/gate/completions/bootstrap` AND `config/gate/completions/primary` for migration; rename the `ModelsSetPrimary` struct to `ModelsSetBootstrap`. Update binding registration. |
 | `crates/ox-cli/src/settings/visible_rows.rs` | Model row's `badge` set to `Some("B".into())` when its (account, model_id) matches the bootstrap CompletionRole. |
 | `crates/ox-cli/src/settings/bindings.rs` | Update binding for `P` to point at `models.set_bootstrap` (id rename). |
-| Kernel call sites that read primary | Read `config/gate/bootstrap` first; fall back to `config/gate/completions/primary`. Search `grep -rn "completions.*primary" crates/ox-kernel`. |
+| Kernel call sites that read primary | Read `config/gate/completions/bootstrap` first; fall back to `config/gate/completions/primary`. Search `grep -rn "completions.*primary" crates/ox-kernel`. |
 
 ### Conventions specific to this slice
 
@@ -95,7 +95,7 @@ pub enum BadgeSource {
     /// stored SettingsIndexEntry records written under the old name still
     /// deserialize cleanly.
     PrimaryReference,
-    /// Resolves to "{account} / {model}" from `config/gate/bootstrap`,
+    /// Resolves to "{account} / {model}" from `config/gate/completions/bootstrap`,
     /// falling back to `config/gate/completions/primary` for migration.
     BootstrapReference,
 }
@@ -132,7 +132,7 @@ git add -u
 git commit -m "feat(types): add BadgeSource::BootstrapReference variant
 
 Mirrors PrimaryReference's shape but resolves from the new
-config/gate/bootstrap path. PrimaryReference stays for one release
+config/gate/completions/bootstrap path. PrimaryReference stays for one release
 as a deprecated alias so stored SettingsIndexEntry records survive."
 ```
 
@@ -150,7 +150,7 @@ In `visible_rows.rs` test module:
     fn resolve_badge_bootstrap_reference_reads_new_path() {
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
-            &oxpath!("config", "gate", "bootstrap"),
+            &oxpath!("config", "gate", "completions", "bootstrap"),
             to_value(&CompletionRole {
                 account: "alpha".into(),
                 model_id: "claude-sonnet-4".into(),
@@ -191,7 +191,7 @@ In `visible_rows.rs` test module:
             .unwrap(),
         );
         snap.insert(
-            &oxpath!("config", "gate", "bootstrap"),
+            &oxpath!("config", "gate", "completions", "bootstrap"),
             to_value(&CompletionRole {
                 account: "current".into(),
                 model_id: "new-model".into(),
@@ -216,7 +216,7 @@ Expected: 3 fail. The current `resolve_badge` arm for `BootstrapReference` (adde
 In `visible_rows.rs`, locate `resolve_badge`. Replace the `BootstrapReference` arm with:
 
 ```rust
-        BadgeSource::BootstrapReference => read_typed::<CompletionRole>(data, &oxpath!("config", "gate", "bootstrap"))
+        BadgeSource::BootstrapReference => read_typed::<CompletionRole>(data, &oxpath!("config", "gate", "completions", "bootstrap"))
             .or_else(|| {
                 read_typed::<CompletionRole>(
                     data,
@@ -242,7 +242,7 @@ git add crates/ox-cli/src/settings/visible_rows.rs
 git commit -m "feat(settings): BootstrapReference badge resolves new path with legacy fallback
 
 resolve_badge for BadgeSource::BootstrapReference reads
-config/gate/bootstrap first, falls back to config/gate/completions/primary
+config/gate/completions/bootstrap first, falls back to config/gate/completions/primary
 when absent. Lets stored configs from before the rename render their
 bootstrap badge unchanged."
 ```
@@ -334,7 +334,7 @@ In `account_model.rs` test module, add:
         // Expect two writes: new path AND legacy path. Order doesn't matter.
         assert_eq!(writes.len(), 2);
         let paths: Vec<String> = writes.iter().map(|w| w.path.to_string()).collect();
-        assert!(paths.iter().any(|p| p == "config/gate/bootstrap"));
+        assert!(paths.iter().any(|p| p == "config/gate/completions/bootstrap"));
         assert!(paths.iter().any(|p| p == "config/gate/completions/primary"));
         // Both must encode the same CompletionRole.
         for w in &writes {
@@ -377,7 +377,7 @@ command! {
     struct_name: ModelsSetBootstrap,
     id: "models.set_bootstrap",
     title: "Set as Bootstrap",
-    description: "Bind config/gate/bootstrap to the selected (account, model). Also writes the legacy config/gate/completions/primary path during the migration window.",
+    description: "Bind config/gate/completions/bootstrap to the selected (account, model). Also writes the legacy config/gate/completions/primary path during the migration window.",
     screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "models")),
     run: |snap, _ctx| models_set_bootstrap(snap),
@@ -410,7 +410,7 @@ fn models_set_bootstrap(data: &mut dyn Reader) -> Vec<Write> {
     // once every reader has migrated.
     vec![
         Write {
-            path: oxpath!("config", "gate", "bootstrap"),
+            path: oxpath!("config", "gate", "completions", "bootstrap"),
             record: Record::parsed(value.clone()),
         },
         Write {
@@ -468,7 +468,7 @@ is just a tool call), so the only thing that's actually configurable
 is the bootstrap model used before the thread or user has picked
 otherwise. The new name reflects that.
 
-Writes go to both config/gate/bootstrap (new source of truth) and
+Writes go to both config/gate/completions/bootstrap (new source of truth) and
 config/gate/completions/primary (legacy) so a downgrade or a
 not-yet-migrated reader still sees the user's choice. Legacy write
 retires in a follow-up after one release."
@@ -491,7 +491,7 @@ Run the grep. For each result, decide whether it's a read (needs migration) or a
 
 - [ ] **Step 2: Write the failing test**
 
-Pick the lowest-level kernel reader (likely in `crates/ox-kernel/src/run.rs`). Add a test that seeds `config/gate/bootstrap` only (no legacy primary) and verifies the kernel reads it.
+Pick the lowest-level kernel reader (likely in `crates/ox-kernel/src/run.rs`). Add a test that seeds `config/gate/completions/bootstrap` only (no legacy primary) and verifies the kernel reads it.
 
 Pattern (adapt to the actual fixture conventions in the kernel test module):
 
@@ -502,7 +502,7 @@ async fn kernel_resolves_bootstrap_role_from_new_path() {
     let (broker, client) = setup_test_broker().await;
     client
         .write_typed(
-            &path!("config/gate/bootstrap"),
+            &path!("config/gate/completions/bootstrap"),
             &CompletionRole {
                 account: "personal".into(),
                 model_id: "claude-sonnet-4".into(),
@@ -550,7 +550,7 @@ Change to:
 
 ```rust
 let role: CompletionRole = match client
-    .read_typed(&path!("config/gate/bootstrap"))
+    .read_typed(&path!("config/gate/completions/bootstrap"))
     .await?
 {
     Some(r) => r,
@@ -579,7 +579,7 @@ git add -u
 git commit -m "feat(kernel): read bootstrap role from new path with legacy fallback
 
 Kernel readers of the bootstrap (formerly 'primary') CompletionRole
-now check config/gate/bootstrap first and fall back to
+now check config/gate/completions/bootstrap first and fall back to
 config/gate/completions/primary. Lets the new path become the source
 of truth for fresh installs while preserving stored state for
 existing users."
@@ -599,7 +599,7 @@ existing users."
         write_index_entries(&mut snap);
         write_account_with_models(&mut snap, "alpha", &["claude-sonnet-4", "claude-opus-4"]);
         snap.insert(
-            &oxpath!("config", "gate", "bootstrap"),
+            &oxpath!("config", "gate", "completions", "bootstrap"),
             to_value(&CompletionRole {
                 account: "alpha".into(),
                 model_id: "claude-sonnet-4".into(),
@@ -647,7 +647,7 @@ In `visible_rows.rs`, modify `append_model_rows` to read the bootstrap role once
 ```rust
 fn append_model_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, expanded: &[String]) {
     let bootstrap: Option<ox_gate::CompletionRole> =
-        read_typed(data, &oxpath!("config", "gate", "bootstrap")).or_else(|| {
+        read_typed(data, &oxpath!("config", "gate", "completions", "bootstrap")).or_else(|| {
             read_typed(data, &oxpath!("config", "gate", "completions", "primary"))
         });
 
@@ -689,14 +689,14 @@ cargo fmt --all -- --check && cargo clippy -p ox-cli --all-targets -- -D warning
 git add crates/ox-cli/src/settings/visible_rows.rs
 git commit -m "feat(settings): mark bootstrap model row with 'B' badge
 
-The (account, model_id) pair currently bound to config/gate/bootstrap
+The (account, model_id) pair currently bound to config/gate/completions/bootstrap
 (or the legacy primary path) renders with badge='B' so the user can
 see at a glance which model their fresh threads start on."
 ```
 
 ### Slice 2 Definition of Done
 
-- `config/gate/bootstrap` is the source of truth for the bootstrap CompletionRole; `config/gate/completions/primary` stays in lockstep via the dual-write.
+- `config/gate/completions/bootstrap` is the source of truth for the bootstrap CompletionRole; `config/gate/completions/primary` stays in lockstep via the dual-write.
 - Kernel readers consult the new path first.
 - Models tree shows `B` badge on the bootstrap row.
 - The `P` keystroke writes both paths; a fresh install uses the new path; an upgraded install keeps working.
@@ -706,7 +706,7 @@ see at a glance which model their fresh threads start on."
 
 ## 2. Slice 3 — `default_available` record + kernel gate + per-row toggle
 
-**Outcome:** A new typed record `config/gate/default_available: Vec<ModelKey>` controls which `(account, model_id)` pairs a freshly-spawned thread sees in its tool-callable model set. The Models tree gets a `D` badge on each row that's in the set; pressing `d` on a focused row toggles membership.
+**Outcome:** A new typed record `config/gate/completions/default_available: Vec<ModelKey>` controls which `(account, model_id)` pairs a freshly-spawned thread sees in its tool-callable model set. The Models tree gets a `D` badge on each row that's in the set; pressing `d` on a focused row toggles membership.
 
 ### File Structure
 
@@ -738,7 +738,7 @@ see at a glance which model their fresh threads start on."
         select_model(&mut snap, "alpha", "claude-sonnet-4");
         let writes = run_cmd(&ModelsToggleDefault::new(), &mut snap);
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("config", "gate", "default_available"));
+        assert_eq!(writes[0].path, oxpath!("config", "gate", "completions", "default_available"));
         let set: Vec<ModelKey> =
             structfs_serde_store::from_value(writes[0].record.as_value().unwrap().clone()).unwrap();
         assert_eq!(set.len(), 1);
@@ -750,7 +750,7 @@ see at a glance which model their fresh threads start on."
     fn toggle_default_removes_from_set_when_already_present() {
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
-            &oxpath!("config", "gate", "default_available"),
+            &oxpath!("config", "gate", "completions", "default_available"),
             to_value(&vec![ModelKey {
                 account: "alpha".into(),
                 model_id: "claude-sonnet-4".into(),
@@ -772,7 +772,7 @@ see at a glance which model their fresh threads start on."
     fn toggle_default_removes_one_keeps_rest() {
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
-            &oxpath!("config", "gate", "default_available"),
+            &oxpath!("config", "gate", "completions", "default_available"),
             to_value(&vec![
                 ModelKey {
                     account: "alpha".into(),
@@ -835,7 +835,7 @@ fn models_toggle_default(data: &mut dyn Reader) -> Vec<Write> {
         None => return Vec::new(),
     };
     let current: Vec<ModelKey> =
-        read_typed(data, &oxpath!("config", "gate", "default_available")).unwrap_or_default();
+        read_typed(data, &oxpath!("config", "gate", "completions", "default_available")).unwrap_or_default();
 
     let mut next = current.clone();
     if let Some(pos) = next
@@ -852,7 +852,7 @@ fn models_toggle_default(data: &mut dyn Reader) -> Vec<Write> {
     // verbatim.
     if next.is_empty() {
         return vec![Write {
-            path: oxpath!("config", "gate", "default_available"),
+            path: oxpath!("config", "gate", "completions", "default_available"),
             record: Record::parsed(Value::Null),
         }];
     }
@@ -865,7 +865,7 @@ fn models_toggle_default(data: &mut dyn Reader) -> Vec<Write> {
         }
     };
     vec![Write {
-        path: oxpath!("config", "gate", "default_available"),
+        path: oxpath!("config", "gate", "completions", "default_available"),
         record: Record::parsed(value),
     }]
 }
@@ -888,7 +888,7 @@ cargo fmt --all -- --check && cargo clippy -p ox-cli --all-targets -- -D warning
 git add crates/ox-cli/src/settings/commands/account_model.rs
 git commit -m "feat(settings): add models.toggle_default command
 
-Reads config/gate/default_available, toggles the focused model's
+Reads config/gate/completions/default_available, toggles the focused model's
 ModelKey, writes back. Empty result deletes the record (kernel
 falls back to 'all cataloged models default-available')."
 ```
@@ -964,7 +964,7 @@ serves two roles in two cursor regions without ambiguity."
         write_index_entries(&mut snap);
         write_account_with_models(&mut snap, "alpha", &["m1", "m2"]);
         snap.insert(
-            &oxpath!("config", "gate", "default_available"),
+            &oxpath!("config", "gate", "completions", "default_available"),
             to_value(&vec![ModelKey {
                 account: "alpha".into(),
                 model_id: "m1".into(),
@@ -1002,7 +1002,7 @@ serves two roles in two cursor regions without ambiguity."
         write_index_entries(&mut snap);
         write_account_with_models(&mut snap, "alpha", &["m1"]);
         snap.insert(
-            &oxpath!("config", "gate", "default_available"),
+            &oxpath!("config", "gate", "completions", "default_available"),
             to_value(&vec![ModelKey {
                 account: "alpha".into(),
                 model_id: "m1".into(),
@@ -1010,7 +1010,7 @@ serves two roles in two cursor regions without ambiguity."
             .unwrap(),
         );
         snap.insert(
-            &oxpath!("config", "gate", "bootstrap"),
+            &oxpath!("config", "gate", "completions", "bootstrap"),
             to_value(&CompletionRole {
                 account: "alpha".into(),
                 model_id: "m1".into(),
@@ -1046,11 +1046,11 @@ In `visible_rows.rs::append_model_rows`, near where `bootstrap` is read (Slice 2
 
 ```rust
     let bootstrap: Option<ox_gate::CompletionRole> =
-        read_typed(data, &oxpath!("config", "gate", "bootstrap")).or_else(|| {
+        read_typed(data, &oxpath!("config", "gate", "completions", "bootstrap")).or_else(|| {
             read_typed(data, &oxpath!("config", "gate", "completions", "primary"))
         });
     let default_set: Vec<ModelKey> =
-        read_typed(data, &oxpath!("config", "gate", "default_available")).unwrap_or_default();
+        read_typed(data, &oxpath!("config", "gate", "completions", "default_available")).unwrap_or_default();
 ```
 
 Replace the per-model badge computation with a combined version:
@@ -1098,7 +1098,7 @@ The hook lives wherever a fresh thread's model surface is determined. Look for t
 
 Read the relevant kernel files. Find the function (likely in `crates/ox-kernel/src/run.rs` or similar) that decides which models are tool-callable. The semantics are:
 
-- Read `config/gate/default_available: Vec<ModelKey>`.
+- Read `config/gate/completions/default_available: Vec<ModelKey>`.
 - If the record is absent or empty, the gate is open (any cataloged model).
 - If present and non-empty, restrict the tool-callable set to its members.
 
@@ -1115,7 +1115,7 @@ async fn thread_spawn_honors_default_available_subset() {
     // Default-available restricts to one.
     client
         .write_typed(
-            &path!("config/gate/default_available"),
+            &path!("config/gate/completions/default_available"),
             &vec![ModelKey {
                 account: "alpha".into(),
                 model_id: "m2".into(),
@@ -1144,7 +1144,7 @@ async fn empty_default_available_means_all_cataloged_models_callable() {
     let (broker, client) = setup_test_broker().await;
     seed_account_with_models(&client, "alpha", &["m1", "m2"]).await;
     client
-        .write_typed::<Vec<ModelKey>>(&path!("config/gate/default_available"), &vec![])
+        .write_typed::<Vec<ModelKey>>(&path!("config/gate/completions/default_available"), &vec![])
         .await
         .unwrap();
     let callable = compute_callable_models_for_new_thread(&client).await.unwrap();
@@ -1172,7 +1172,7 @@ async fn compute_callable_models_for_new_thread(
 ) -> Result<Vec<ModelKey>, Error> {
     let cataloged = enumerate_all_cataloged_models(client).await?;
     let default_available: Option<Vec<ModelKey>> = client
-        .read_typed(&path!("config/gate/default_available"))
+        .read_typed(&path!("config/gate/completions/default_available"))
         .await?;
     match default_available {
         Some(set) if !set.is_empty() => Ok(cataloged
@@ -1196,7 +1196,7 @@ async fn compute_callable_models_for_new_thread(
 cargo test -p ox-kernel
 cargo fmt --all -- --check && cargo clippy --workspace -- -D warnings
 git add -u
-git commit -m "feat(kernel): gate per-thread callable models by config/gate/default_available
+git commit -m "feat(kernel): gate per-thread callable models by config/gate/completions/default_available
 
 When the default_available record is present and non-empty, the
 kernel restricts a fresh thread's tool-callable model set to its
@@ -1207,7 +1207,7 @@ explicitly tagged a subset."
 
 ### Slice 3 Definition of Done
 
-- `config/gate/default_available: Vec<ModelKey>` exists as a typed record; absent/empty means "all cataloged."
+- `config/gate/completions/default_available: Vec<ModelKey>` exists as a typed record; absent/empty means "all cataloged."
 - Pressing `d` on a focused Models row toggles membership.
 - Models tree shows `D` badge on rows in the set; combined with `B` if also bootstrap.
 - ox-kernel restricts a fresh thread's callable model set to the explicit subset when present.
