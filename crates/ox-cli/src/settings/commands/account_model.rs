@@ -439,6 +439,34 @@ fn field_model_step(data: &mut dyn Reader, delta: isize) -> Vec<Write> {
 pub const PROTOCOL_OPTIONS: &[&str] = &["anthropic", "openai"];
 pub const AUTH_DISPLAY: &[&str] = &["x-api-key", "bearer-token", "none"];
 
+/// Resolve the carousel options for the Protocol field.
+///
+/// Built-in presets first (declaration order), then user-configured
+/// providers (lexicographic), then the current value if it isn't already
+/// in either set. The current-value tail guarantees that cycling from a
+/// custom-provider account visits every option without silently snapping
+/// the account to a preset value it never had.
+pub fn resolve_protocol_options(data: &mut dyn Reader, current: &str) -> Vec<String> {
+    use crate::settings::renderers::util::child_names_under;
+
+    let mut options: Vec<String> = ox_gate::presets()
+        .iter()
+        .filter(|p| !p.custom)
+        .map(|p| p.id.to_string())
+        .collect();
+
+    let mut user = child_names_under(data, "config/gate/providers");
+    user.sort();
+    user.retain(|n| !options.contains(n));
+    options.append(&mut user);
+
+    if !current.is_empty() && !options.iter().any(|o| o == current) {
+        options.push(current.to_string());
+    }
+
+    options
+}
+
 /// Direction for selector cycling. `Forward` is what the legacy
 /// `selector_cycle_*` commands have always done; `Back` mirrors it.
 #[derive(Clone, Copy)]
@@ -549,11 +577,7 @@ fn read_account_child_string(data: &mut dyn Reader, account: &str, child: &str) 
     let child_comp = ox_kernel::PathComponent::try_new(child).ok()?;
     let r = data
         .read(&oxpath!(
-            "config",
-            "gate",
-            "accounts",
-            acct_comp,
-            child_comp
+            "config", "gate", "accounts", acct_comp, child_comp
         ))
         .ok()
         .flatten()?;
@@ -1015,8 +1039,7 @@ mod tests {
         // anthropic → openai
         match &writes[0].record {
             Record::Parsed(v) => {
-                let acct: AccountConfig =
-                    structfs_serde_store::from_value(v.clone()).unwrap();
+                let acct: AccountConfig = structfs_serde_store::from_value(v.clone()).unwrap();
                 assert_eq!(acct.provider, "openai");
             }
             other => panic!("unexpected record: {other:?}"),
@@ -1067,5 +1090,72 @@ mod tests {
             }
             other => panic!("unexpected record: {other:?}"),
         }
+    }
+
+    // -- resolve_protocol_options ----------------------------------------
+
+    #[test]
+    fn resolve_protocol_options_lists_presets_first() {
+        let mut snap = SettingsSnapshot::empty();
+        let opts = resolve_protocol_options(&mut snap, "anthropic");
+        assert_eq!(opts, vec!["anthropic".to_string(), "openai".to_string()]);
+    }
+
+    #[test]
+    fn resolve_protocol_options_appends_user_providers() {
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("config", "gate", "providers", "lm_studio", "dialect"),
+            Value::String("openai".into()),
+        );
+        snap.insert(
+            &oxpath!("config", "gate", "providers", "lm_studio", "endpoint"),
+            Value::String("http://127.0.0.1:1234".into()),
+        );
+        let opts = resolve_protocol_options(&mut snap, "anthropic");
+        assert_eq!(
+            opts,
+            vec![
+                "anthropic".to_string(),
+                "openai".to_string(),
+                "lm_studio".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_protocol_options_dedupes_user_provider_named_like_preset() {
+        // A user provider literally named "anthropic" must not appear twice.
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("config", "gate", "providers", "anthropic", "dialect"),
+            Value::String("anthropic".into()),
+        );
+        let opts = resolve_protocol_options(&mut snap, "anthropic");
+        assert_eq!(opts, vec!["anthropic".to_string(), "openai".to_string()]);
+    }
+
+    #[test]
+    fn resolve_protocol_options_appends_current_when_absent() {
+        // Account whose provider isn't in presets and isn't a configured
+        // provider record either (an orphan binding). The current value must
+        // still appear so cycling can find it and advance honestly.
+        let mut snap = SettingsSnapshot::empty();
+        let opts = resolve_protocol_options(&mut snap, "LMStudio");
+        assert_eq!(
+            opts,
+            vec![
+                "anthropic".to_string(),
+                "openai".to_string(),
+                "LMStudio".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_protocol_options_does_not_append_empty_current() {
+        let mut snap = SettingsSnapshot::empty();
+        let opts = resolve_protocol_options(&mut snap, "");
+        assert_eq!(opts, vec!["anthropic".to_string(), "openai".to_string()]);
     }
 }
