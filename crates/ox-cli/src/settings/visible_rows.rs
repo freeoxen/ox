@@ -363,7 +363,13 @@ fn resolve_badge(data: &mut dyn Reader, source: &ox_types::BadgeSource) -> Optio
                 .map(|role| format!("{} / {}", role.account, role.model_id))
         }
         BadgeSource::BootstrapReference => {
-            read_typed::<CompletionRole>(data, &oxpath!("config", "gate", "completions", "primary"))
+            read_typed::<CompletionRole>(data, &oxpath!("config", "gate", "bootstrap"))
+                .or_else(|| {
+                    read_typed::<CompletionRole>(
+                        data,
+                        &oxpath!("config", "gate", "completions", "primary"),
+                    )
+                })
                 .map(|role| format!("{} / {}", role.account, role.model_id))
         }
     }
@@ -653,6 +659,65 @@ mod tests {
         );
         let rows = enumerate(&mut snap);
         assert!(rows[0].badge.is_none());
+    }
+
+    #[test]
+    fn resolve_badge_bootstrap_reference_reads_new_path() {
+        use ox_gate::CompletionRole;
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("config", "gate", "bootstrap"),
+            to_value(&CompletionRole {
+                account: "alpha".into(),
+                model_id: "claude-sonnet-4".into(),
+            })
+            .unwrap(),
+        );
+        let badge = resolve_badge(&mut snap, &BadgeSource::BootstrapReference);
+        assert_eq!(badge.as_deref(), Some("alpha / claude-sonnet-4"));
+    }
+
+    #[test]
+    fn resolve_badge_bootstrap_reference_falls_back_to_legacy_primary() {
+        use ox_gate::CompletionRole;
+        // Stored config from before the rename only has the legacy path.
+        // The badge must still render so the user sees their bootstrap
+        // choice on the Models row.
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("config", "gate", "completions", "primary"),
+            to_value(&CompletionRole {
+                account: "legacy".into(),
+                model_id: "claude-3".into(),
+            })
+            .unwrap(),
+        );
+        let badge = resolve_badge(&mut snap, &BadgeSource::BootstrapReference);
+        assert_eq!(badge.as_deref(), Some("legacy / claude-3"));
+    }
+
+    #[test]
+    fn resolve_badge_bootstrap_reference_prefers_new_path_when_both_present() {
+        use ox_gate::CompletionRole;
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("config", "gate", "completions", "primary"),
+            to_value(&CompletionRole {
+                account: "legacy".into(),
+                model_id: "old-model".into(),
+            })
+            .unwrap(),
+        );
+        snap.insert(
+            &oxpath!("config", "gate", "bootstrap"),
+            to_value(&CompletionRole {
+                account: "current".into(),
+                model_id: "new-model".into(),
+            })
+            .unwrap(),
+        );
+        let badge = resolve_badge(&mut snap, &BadgeSource::BootstrapReference);
+        assert_eq!(badge.as_deref(), Some("current / new-model"));
     }
 
     #[test]
