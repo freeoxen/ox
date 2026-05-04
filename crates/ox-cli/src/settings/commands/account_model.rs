@@ -433,10 +433,10 @@ fn field_model_step(data: &mut dyn Reader, delta: isize) -> Vec<Write> {
     }]
 }
 
-/// Ordered options for each selector. Public so the renderer can
-/// surface the prev/current/next triple without re-implementing the
-/// list.
-pub const PROTOCOL_OPTIONS: &[&str] = &["anthropic", "openai"];
+/// Ordered display labels for the Auth carousel. Auth's options are a
+/// fixed wire-protocol enum (`AuthScheme`), so the labels are static —
+/// unlike Protocol, whose options come from the broker via
+/// `resolve_protocol_options`.
 pub const AUTH_DISPLAY: &[&str] = &["x-api-key", "bearer-token", "none"];
 
 /// Resolve the carousel options for the Protocol field.
@@ -1170,14 +1170,13 @@ mod tests {
 
     #[test]
     fn cycle_protocol_forward_from_custom_provider_does_not_snap_to_anthropic() {
-        // Regression for the silent-overwrite bug. Pre-fix: with hardcoded
-        // PROTOCOL_OPTIONS=["anthropic","openai"] and an account whose
-        // provider is "LMStudio", position_of returned None, the index
-        // fell back to 0, and forward cycle wrote "openai" — silently
-        // overwriting a custom provider with one the user never chose.
+        // The cycle's option list must include the account's current
+        // provider — otherwise position_of returns None, the index falls
+        // back to 0, and the first cycle silently overwrites the custom
+        // provider with whatever sits at idx 1 of the preset list.
         //
-        // Post-fix: resolve_protocol_options yields
-        // ["anthropic","openai","LMStudio"]; idx of "LMStudio" is 2;
+        // With resolve_protocol_options the list is
+        // ["anthropic", "openai", "LMStudio"]; idx of "LMStudio" is 2;
         // forward wraps to idx 0 = "anthropic".
         let mut snap = SettingsSnapshot::empty();
         write_account(&mut snap, "local", "LMStudio");
