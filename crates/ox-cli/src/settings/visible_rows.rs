@@ -138,6 +138,15 @@ fn append_account_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, expand
 /// Append one row per (account, model_id) pair. Like accounts, model
 /// rows are expandable — expanding shows the per-model overrides.
 fn append_model_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, expanded: &[String]) {
+    // Resolve the bootstrap role once per enumeration so every row can
+    // be cheaply tagged. Same fallback the badge resolver uses: new path
+    // first, legacy path second, so freshly-installed and upgraded
+    // installs both render the badge against whichever path holds the
+    // user's choice.
+    let bootstrap: Option<ox_gate::CompletionRole> =
+        read_typed(data, &oxpath!("config", "gate", "completions", "bootstrap"))
+            .or_else(|| read_typed(data, &oxpath!("config", "gate", "completions", "primary")));
+
     let account_names = child_names_under(data, "config/gate/accounts");
     for account_name in &account_names {
         // `child_names_under` splits broker keys on `/`, so its outputs
@@ -162,11 +171,19 @@ fn append_model_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, expanded
             ]);
             let path_str = path_to_string(&path);
             let is_expanded = expanded.iter().any(|s| s == &path_str);
+            let badge = if bootstrap
+                .as_ref()
+                .is_some_and(|r| r.account == *account_name && r.model_id == m.id)
+            {
+                Some("B".to_string())
+            } else {
+                None
+            };
             rows.push(VisibleRow {
                 path: path.clone(),
                 depth: 1,
                 label: format!("{} / {}", account_name, m.id),
-                badge: None,
+                badge,
                 kind: RowKind::Model {
                     account: account_name.clone(),
                     model_id: m.id.clone(),
@@ -514,6 +531,49 @@ mod tests {
             &rows[3].kind,
             RowKind::Model { account, model_id } if account == "alpha" && model_id == "m2"
         ));
+    }
+
+    #[test]
+    fn model_row_badge_marks_bootstrap_choice() {
+        use ox_gate::CompletionRole;
+        let mut snap = SettingsSnapshot::empty();
+        write_index_entries(&mut snap);
+        write_account_with_models(&mut snap, "alpha", &["claude-sonnet-4", "claude-opus-4"]);
+        snap.insert(
+            &oxpath!("config", "gate", "completions", "bootstrap"),
+            to_value(&CompletionRole {
+                account: "alpha".into(),
+                model_id: "claude-sonnet-4".into(),
+            })
+            .unwrap(),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&["settings/models".to_string()]),
+        );
+        let rows = enumerate(&mut snap);
+        let bootstrap_row = rows
+            .iter()
+            .find(|r| {
+                matches!(
+                    &r.kind,
+                    RowKind::Model { account, model_id }
+                        if account == "alpha" && model_id == "claude-sonnet-4"
+                )
+            })
+            .expect("bootstrap row");
+        assert_eq!(bootstrap_row.badge.as_deref(), Some("B"));
+        let other_row = rows
+            .iter()
+            .find(|r| {
+                matches!(
+                    &r.kind,
+                    RowKind::Model { account, model_id }
+                        if account == "alpha" && model_id == "claude-opus-4"
+                )
+            })
+            .expect("non-bootstrap row");
+        assert!(other_row.badge.is_none());
     }
 
     #[test]
