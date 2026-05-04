@@ -362,16 +362,14 @@ fn resolve_badge(data: &mut dyn Reader, source: &ox_types::BadgeSource) -> Optio
             read_typed::<CompletionRole>(data, &oxpath!("config", "gate", "completions", "primary"))
                 .map(|role| format!("{} / {}", role.account, role.model_id))
         }
-        BadgeSource::BootstrapReference => {
-            read_typed::<CompletionRole>(data, &oxpath!("config", "gate", "bootstrap"))
-                .or_else(|| {
-                    read_typed::<CompletionRole>(
-                        data,
-                        &oxpath!("config", "gate", "completions", "primary"),
-                    )
-                })
-                .map(|role| format!("{} / {}", role.account, role.model_id))
-        }
+        BadgeSource::BootstrapReference => read_typed::<CompletionRole>(
+            data,
+            &oxpath!("config", "gate", "completions", "bootstrap"),
+        )
+        .or_else(|| {
+            read_typed::<CompletionRole>(data, &oxpath!("config", "gate", "completions", "primary"))
+        })
+        .map(|role| format!("{} / {}", role.account, role.model_id)),
     }
 }
 
@@ -666,7 +664,7 @@ mod tests {
         use ox_gate::CompletionRole;
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
-            &oxpath!("config", "gate", "bootstrap"),
+            &oxpath!("config", "gate", "completions", "bootstrap"),
             to_value(&CompletionRole {
                 account: "alpha".into(),
                 model_id: "claude-sonnet-4".into(),
@@ -709,7 +707,7 @@ mod tests {
             .unwrap(),
         );
         snap.insert(
-            &oxpath!("config", "gate", "bootstrap"),
+            &oxpath!("config", "gate", "completions", "bootstrap"),
             to_value(&CompletionRole {
                 account: "current".into(),
                 model_id: "new-model".into(),

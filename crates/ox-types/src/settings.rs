@@ -69,7 +69,7 @@ pub enum BadgeSource {
     /// stored SettingsIndexEntry records written under the old name still
     /// deserialize cleanly.
     PrimaryReference,
-    /// Resolves to "{account} / {model}" from `config/gate/bootstrap`,
+    /// Resolves to "{account} / {model}" from `config/gate/completions/bootstrap`,
     /// falling back to `config/gate/completions/primary` for migration.
     BootstrapReference,
 }
