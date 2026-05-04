@@ -44,8 +44,7 @@ pub fn key_hints_for_context(
     edit_mode: bool,
 ) -> Vec<KeyHint> {
     let mut out: Vec<KeyHint> = Vec::new();
-    let mut seen_keys: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
+    let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
     let edit_scope;
     if edit_mode {
         edit_scope = ox_path::oxpath!("settings", "_edit_mode");

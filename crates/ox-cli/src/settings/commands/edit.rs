@@ -339,8 +339,7 @@ fn current_endpoint(data: &mut dyn Reader, account: &str) -> Option<String> {
         // TOML-loaded accounts have no parent leaf; synthesize a
         // default. The provider name lives at the child path; pull it
         // there if present.
-        let provider_str: Option<String> =
-            read_child_string(data, account, "provider").or(None);
+        let provider_str: Option<String> = read_child_string(data, account, "provider").or(None);
         provider_str.map(|p| ox_gate::AccountConfig { provider: p })
     })?;
     let provider_comp = ox_kernel::PathComponent::try_new(&acct.provider).ok()?;
@@ -353,10 +352,8 @@ fn current_endpoint(data: &mut dyn Reader, account: &str) -> Option<String> {
 
 fn current_api_key(data: &mut dyn Reader, account: &str) -> Option<String> {
     let acct_comp = ox_kernel::PathComponent::try_new(account).ok()?;
-    let key: ox_gate::ApiKey = super::super::renderers::util::read_typed(
-        data,
-        &oxpath!("secret", "keys", acct_comp),
-    )?;
+    let key: ox_gate::ApiKey =
+        super::super::renderers::util::read_typed(data, &oxpath!("secret", "keys", acct_comp))?;
     Some(key.expose().to_string())
 }
 
@@ -384,11 +381,7 @@ fn read_child_string(data: &mut dyn Reader, account: &str, child: &str) -> Optio
     let child_comp = ox_kernel::PathComponent::try_new(child).ok()?;
     let r = data
         .read(&oxpath!(
-            "config",
-            "gate",
-            "accounts",
-            acct_comp,
-            child_comp
+            "config", "gate", "accounts", acct_comp, child_comp
         ))
         .ok()
         .flatten()?;
@@ -429,13 +422,14 @@ fn commit_account_field(
             };
             let provider_path = oxpath!("config", "gate", "providers", provider_comp);
             let mut provider: ox_gate::ProviderConfig =
-                super::super::renderers::util::read_typed(data, &provider_path)
-                    .unwrap_or_else(|| ox_gate::ProviderConfig {
+                super::super::renderers::util::read_typed(data, &provider_path).unwrap_or_else(
+                    || ox_gate::ProviderConfig {
                         dialect: acct.provider.clone(),
                         endpoint: String::new(),
                         version: String::new(),
                         auth: None,
-                    });
+                    },
+                );
             provider.endpoint = buffer.to_string();
             let value = match to_value(&provider) {
                 Ok(v) => v,
@@ -560,11 +554,7 @@ mod tests {
         cmd.run(snap, &ctx)
     }
 
-    fn run_with_key<C: Command>(
-        cmd: &C,
-        snap: &mut SettingsSnapshot,
-        ch: char,
-    ) -> Vec<Write> {
+    fn run_with_key<C: Command>(cmd: &C, snap: &mut SettingsSnapshot, ch: char) -> Vec<Write> {
         use ox_types::KeyChord;
         use ox_types::key_chord::{KeyCodeRepr, KeyModifierSet};
         let registry = RendererRegistry::new();
@@ -636,10 +626,7 @@ mod tests {
         let writes = run(&BeginEditAccountEndpoint::new(), &mut snap);
         // edit_field_path + edit_buffer + edit_mode
         assert_eq!(writes.len(), 3);
-        assert_eq!(
-            writes[0].path,
-            oxpath!("ui", "settings", "edit_field_path")
-        );
+        assert_eq!(writes[0].path, oxpath!("ui", "settings", "edit_field_path"));
         assert_eq!(writes[1].path, oxpath!("ui", "settings", "edit_buffer"));
         match &writes[1].record {
             Record::Parsed(Value::String(s)) => {
@@ -711,13 +698,7 @@ mod tests {
                 "settings/models/alpha/m1".to_string(),
             ]),
         );
-        let field_path = oxpath!(
-            "settings",
-            "models",
-            "alpha",
-            "m1",
-            "max_context_size"
-        );
+        let field_path = oxpath!("settings", "models", "alpha", "m1", "max_context_size");
         snap.insert(
             &oxpath!("ui", "settings", "edit_buffer"),
             Value::String("100".into()),
@@ -728,7 +709,10 @@ mod tests {
         );
 
         let writes = run_with_key(&InsertChar::new(), &mut snap, 'x');
-        assert!(writes.is_empty(), "non-digit must be rejected for model fields");
+        assert!(
+            writes.is_empty(),
+            "non-digit must be rejected for model fields"
+        );
 
         let writes = run_with_key(&InsertChar::new(), &mut snap, '5');
         assert_eq!(writes.len(), 1);
@@ -767,10 +751,7 @@ mod tests {
     #[test]
     fn cancel_clears_edit_state_without_writing_data() {
         let mut snap = SettingsSnapshot::empty();
-        snap.insert(
-            &oxpath!("ui", "settings", "edit_mode"),
-            Value::Bool(true),
-        );
+        snap.insert(&oxpath!("ui", "settings", "edit_mode"), Value::Bool(true));
         let writes = run(&Cancel::new(), &mut snap);
         // edit_mode=false + edit_buffer=Null + edit_field_path=Null
         assert_eq!(writes.len(), 3);
@@ -796,10 +777,7 @@ mod tests {
             })
             .unwrap(),
         );
-        snap.insert(
-            &oxpath!("ui", "settings", "edit_mode"),
-            Value::Bool(true),
-        );
+        snap.insert(&oxpath!("ui", "settings", "edit_mode"), Value::Bool(true));
         snap.insert(
             &oxpath!("ui", "settings", "edit_buffer"),
             Value::String("https://new.example".into()),
@@ -818,27 +796,23 @@ mod tests {
         );
         // Apply and verify the endpoint changed.
         apply_writes(&mut snap, &writes);
-        let provider: ox_gate::ProviderConfig =
-            super::super::super::renderers::util::read_typed(
-                &mut snap,
-                &oxpath!(
-                    "config",
-                    "gate",
-                    "providers",
-                    ox_kernel::PathComponent::try_new("anthropic").unwrap()
-                ),
-            )
-            .unwrap();
+        let provider: ox_gate::ProviderConfig = super::super::super::renderers::util::read_typed(
+            &mut snap,
+            &oxpath!(
+                "config",
+                "gate",
+                "providers",
+                ox_kernel::PathComponent::try_new("anthropic").unwrap()
+            ),
+        )
+        .unwrap();
         assert_eq!(provider.endpoint, "https://new.example");
     }
 
     #[test]
     fn commit_with_no_field_path_just_clears_state() {
         let mut snap = SettingsSnapshot::empty();
-        snap.insert(
-            &oxpath!("ui", "settings", "edit_mode"),
-            Value::Bool(true),
-        );
+        snap.insert(&oxpath!("ui", "settings", "edit_mode"), Value::Bool(true));
         let writes = run(&Commit::new(), &mut snap);
         // No data write; just the 3 clear-state entries.
         assert_eq!(writes.len(), 3);
@@ -848,10 +822,7 @@ mod tests {
     fn read_edit_state_reflects_active_edit() {
         let mut snap = SettingsSnapshot::empty();
         let field_path = oxpath!("settings", "accounts", "alpha", "endpoint");
-        snap.insert(
-            &oxpath!("ui", "settings", "edit_mode"),
-            Value::Bool(true),
-        );
+        snap.insert(&oxpath!("ui", "settings", "edit_mode"), Value::Bool(true));
         snap.insert(
             &oxpath!("ui", "settings", "edit_field_path"),
             path_to_value(&field_path),
@@ -868,10 +839,7 @@ mod tests {
     #[test]
     fn read_edit_state_returns_none_when_inactive() {
         let mut snap = SettingsSnapshot::empty();
-        snap.insert(
-            &oxpath!("ui", "settings", "edit_mode"),
-            Value::Bool(false),
-        );
+        snap.insert(&oxpath!("ui", "settings", "edit_mode"), Value::Bool(false));
         assert!(read_edit_state(&mut snap).is_none());
     }
 }

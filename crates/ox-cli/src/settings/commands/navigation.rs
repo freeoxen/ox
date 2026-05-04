@@ -138,7 +138,6 @@ mod tests {
         cmd.run(snap, &ctx)
     }
 
-
     fn assert_path_write(
         writes: &[Write],
         path: structfs_core_store::Path,

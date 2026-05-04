@@ -640,7 +640,6 @@ fn read_settings_edit_mode(snap: &mut SettingsSnapshot) -> bool {
         .unwrap_or(false)
 }
 
-
 // ---------------------------------------------------------------------------
 // Key dispatch — factored out to avoid duplication
 // ---------------------------------------------------------------------------

@@ -476,13 +476,13 @@ mod tests {
                 ListItem {
                     primary: "personal".into(),
                     primary_spans: None,
-                secondary: Some("anthropic".into()),
+                    secondary: Some("anthropic".into()),
                     badge: Some("default".into()),
                 },
                 ListItem {
                     primary: "work".into(),
                     primary_spans: None,
-                secondary: Some("openai".into()),
+                    secondary: Some("openai".into()),
                     badge: None,
                 },
             ],
@@ -538,7 +538,7 @@ mod tests {
                     items: vec![ListItem {
                         primary: "alpha".into(),
                         primary_spans: None,
-                secondary: None,
+                        secondary: None,
                         badge: None,
                     }],
                     selected: Some(0),
