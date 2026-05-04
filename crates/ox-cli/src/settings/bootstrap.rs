@@ -28,9 +28,9 @@ pub async fn populate_index_entries(client: &ClientHandle) -> Result<(), StoreEr
     let models_entry = SettingsIndexEntry {
         id: "models".to_string(),
         label: "Models".to_string(),
-        description: "Browse model catalogs and select primary.".to_string(),
+        description: "Browse model catalogs and tag the bootstrap model.".to_string(),
         target_cursor: oxpath!("settings", "models"),
-        badge: BadgeSource::PrimaryReference,
+        badge: BadgeSource::BootstrapReference,
     };
     client
         .write_typed(
@@ -168,7 +168,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(models.id, "models");
-        assert!(matches!(models.badge, BadgeSource::PrimaryReference));
+        assert!(matches!(models.badge, BadgeSource::BootstrapReference));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
