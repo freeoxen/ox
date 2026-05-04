@@ -501,17 +501,24 @@ fn selector_cycle_protocol_dir(data: &mut dyn Reader, dir: CycleDir) -> Vec<Writ
         provider: read_account_child_string(data, &selected, "provider")
             .unwrap_or_else(|| "anthropic".to_string()),
     });
-    let idx = PROTOCOL_OPTIONS
+
+    // Resolve options *for the current value*: the helper guarantees the
+    // current provider appears in the list, so position_of can never
+    // silently fall through to idx 0 and overwrite a custom provider.
+    let options = resolve_protocol_options(data, &acct.provider);
+    if options.is_empty() {
+        return Vec::new();
+    }
+    let idx = options
         .iter()
-        .position(|o| *o == acct.provider)
+        .position(|o| o == &acct.provider)
         .unwrap_or(0);
     let next = match dir {
-        CycleDir::Forward => PROTOCOL_OPTIONS[(idx + 1) % PROTOCOL_OPTIONS.len()],
-        CycleDir::Back => {
-            PROTOCOL_OPTIONS[(idx + PROTOCOL_OPTIONS.len() - 1) % PROTOCOL_OPTIONS.len()]
-        }
+        CycleDir::Forward => options[(idx + 1) % options.len()].clone(),
+        CycleDir::Back => options[(idx + options.len() - 1) % options.len()].clone(),
     };
-    acct.provider = next.to_string();
+    acct.provider = next;
+
     let value = match to_value(&acct) {
         Ok(v) => v,
         Err(e) => {
@@ -1157,5 +1164,66 @@ mod tests {
         let mut snap = SettingsSnapshot::empty();
         let opts = resolve_protocol_options(&mut snap, "");
         assert_eq!(opts, vec!["anthropic".to_string(), "openai".to_string()]);
+    }
+
+    // -- selector_cycle_protocol_dir, post-dynamic-options ---------------
+
+    #[test]
+    fn cycle_protocol_forward_from_custom_provider_does_not_snap_to_anthropic() {
+        // Regression for the silent-overwrite bug. Pre-fix: with hardcoded
+        // PROTOCOL_OPTIONS=["anthropic","openai"] and an account whose
+        // provider is "LMStudio", position_of returned None, the index
+        // fell back to 0, and forward cycle wrote "openai" — silently
+        // overwriting a custom provider with one the user never chose.
+        //
+        // Post-fix: resolve_protocol_options yields
+        // ["anthropic","openai","LMStudio"]; idx of "LMStudio" is 2;
+        // forward wraps to idx 0 = "anthropic".
+        let mut snap = SettingsSnapshot::empty();
+        write_account(&mut snap, "local", "LMStudio");
+        select_account(&mut snap, "local");
+
+        let writes = selector_cycle_protocol_dir(&mut snap, CycleDir::Forward);
+        assert_eq!(writes.len(), 1);
+        let written: AccountConfig =
+            structfs_serde_store::from_value(writes[0].record.as_value().unwrap().clone()).unwrap();
+        assert_eq!(written.provider, "anthropic");
+    }
+
+    #[test]
+    fn cycle_protocol_back_from_custom_provider_lands_on_previous_option() {
+        // With options [anthropic, openai, LMStudio], back from idx 2 = "openai".
+        let mut snap = SettingsSnapshot::empty();
+        write_account(&mut snap, "local", "LMStudio");
+        select_account(&mut snap, "local");
+
+        let writes = selector_cycle_protocol_dir(&mut snap, CycleDir::Back);
+        assert_eq!(writes.len(), 1);
+        let written: AccountConfig =
+            structfs_serde_store::from_value(writes[0].record.as_value().unwrap().clone()).unwrap();
+        assert_eq!(written.provider, "openai");
+    }
+
+    #[test]
+    fn cycle_protocol_forward_includes_user_configured_provider() {
+        // An account bound to "openai" cycles forward through any
+        // user-configured provider entries before wrapping back to anthropic.
+        // Here: configure a "lm_studio" provider, then forward from "openai"
+        // (idx 1 in [anthropic, openai, lm_studio]) lands on "lm_studio".
+        let mut snap = SettingsSnapshot::empty();
+        write_account(&mut snap, "alpha", "openai");
+        write_provider(
+            &mut snap,
+            "lm_studio",
+            "http://127.0.0.1:1234",
+            AuthScheme::None,
+        );
+        select_account(&mut snap, "alpha");
+
+        let writes = selector_cycle_protocol_dir(&mut snap, CycleDir::Forward);
+        assert_eq!(writes.len(), 1);
+        let written: AccountConfig =
+            structfs_serde_store::from_value(writes[0].record.as_value().unwrap().clone()).unwrap();
+        assert_eq!(written.provider, "lm_studio");
     }
 }
