@@ -15,7 +15,7 @@
 
 use ox_view::{ListItem, ModifierSet, Span, Style, View};
 
-use crate::settings::commands::account_model::{AUTH_DISPLAY, PROTOCOL_OPTIONS};
+use crate::settings::commands::account_model::{AUTH_DISPLAY, resolve_protocol_options};
 use crate::settings::commands::edit::read_edit_state;
 use crate::settings::registry::{AscendRule, RenderCtx, Renderer, RendererRegistry};
 use crate::settings::visible_rows::{self, RowKind};
@@ -31,6 +31,28 @@ impl Renderer for IndexRenderer {
         let selected = cursor
             .as_ref()
             .and_then(|c| visible_rows::position_of(&rows, c));
+
+        // Resolve the Protocol carousel's option list once per frame, only
+        // when the focused row actually is a Protocol field. Doing this
+        // here (rather than inside the per-row closure) keeps the broker
+        // read out of the iteration's borrow scope and avoids paying the
+        // resolution cost for every visible row.
+        let protocol_options: Vec<String> = selected
+            .and_then(|i| rows.get(i))
+            .filter(|r| {
+                matches!(
+                    &r.kind,
+                    RowKind::AccountField {
+                        field: ox_types::AccountField::Protocol,
+                        ..
+                    }
+                )
+            })
+            .map(|r| {
+                let current = r.label.split(": ").nth(1).unwrap_or("");
+                resolve_protocol_options(ctx.data, current)
+            })
+            .unwrap_or_default();
 
         let items: Vec<ListItem> = rows
             .iter()
@@ -48,7 +70,9 @@ impl Renderer for IndexRenderer {
                 // the plain label.
                 let is_focused = selected.is_some_and(|sel| sel == i);
                 if is_focused {
-                    if let Some(spans) = selector_carousel_spans(row, &indent, glyph) {
+                    if let Some(spans) =
+                        selector_carousel_spans(row, &indent, glyph, &protocol_options)
+                    {
                         return ListItem {
                             primary: format!("{indent}{glyph}{}", row.label),
                             primary_spans: Some(spans),
@@ -89,32 +113,39 @@ fn selector_carousel_spans(
     row: &visible_rows::VisibleRow,
     indent: &str,
     glyph: &str,
+    protocol_options: &[String],
 ) -> Option<Vec<Span>> {
-    let (label, options, current_idx): (&str, &[&str], usize) = match &row.kind {
+    // Build an owned option list per arm. Auth's options are a fixed
+    // wire-protocol enum (`AUTH_DISPLAY`); Protocol's are resolved
+    // per-frame from the broker (`protocol_options`). Owned strings on
+    // both branches keep the formatting block below uniform.
+    let (label, options, current_idx): (&str, Vec<String>, usize) = match &row.kind {
         RowKind::AccountField {
-            account,
+            account: _,
             field: ox_types::AccountField::Protocol,
         } => {
-            let _ = account;
-            // Parse the row label "Protocol: <provider>" to find
-            // the current option. `safe_component`-style sanitation
-            // doesn't apply here — the label embeds the literal
-            // provider string from `AccountConfig.provider`.
+            // Parse the row label "Protocol: <provider>" to find the
+            // current option. `safe_component`-style sanitation doesn't
+            // apply here — the label embeds the literal provider string
+            // from `AccountConfig.provider`.
             let value = row.label.split(": ").nth(1).unwrap_or("");
-            let idx = PROTOCOL_OPTIONS
+            let idx = protocol_options
                 .iter()
-                .position(|o| *o == value)
+                .position(|o| o == value)
                 .unwrap_or(0);
-            ("Protocol", PROTOCOL_OPTIONS, idx)
+            ("Protocol", protocol_options.to_vec(), idx)
         }
         RowKind::AccountField {
-            account,
+            account: _,
             field: ox_types::AccountField::Auth,
         } => {
-            let _ = account;
             let value = row.label.split(": ").nth(1).unwrap_or("");
             let idx = AUTH_DISPLAY.iter().position(|o| *o == value).unwrap_or(0);
-            ("Auth", AUTH_DISPLAY, idx)
+            (
+                "Auth",
+                AUTH_DISPLAY.iter().map(|s| s.to_string()).collect(),
+                idx,
+            )
         }
         _ => return None,
     };
@@ -122,9 +153,9 @@ fn selector_carousel_spans(
         return None;
     }
     let len = options.len();
-    let prev = options[(current_idx + len - 1) % len];
-    let current = options[current_idx];
-    let next = options[(current_idx + 1) % len];
+    let prev = &options[(current_idx + len - 1) % len];
+    let current = &options[current_idx];
+    let next = &options[(current_idx + 1) % len];
     let dim = Style {
         fg: None,
         bg: None,
@@ -148,7 +179,7 @@ fn selector_carousel_spans(
             style: dim,
         },
         Span {
-            text: current.to_string(),
+            text: current.clone(),
             style: bright,
         },
         Span {
@@ -437,5 +468,48 @@ mod tests {
             View::List { items, .. } => assert_eq!(items.len(), 2),
             other => panic!("unexpected: {other:?}"),
         }
+    }
+
+    #[test]
+    fn focused_protocol_row_renders_custom_provider_in_carousel() {
+        // Regression: when an account's provider isn't in the preset list
+        // (e.g. "LMStudio" from a TOML config that predates the carousel),
+        // the focused row's carousel must show that custom name as the
+        // current option — not silently render "anthropic" because the
+        // value-not-found fallback hit idx 0.
+        let mut snap = SettingsSnapshot::empty();
+        write_index(&mut snap);
+        let comp = ox_kernel::PathComponent::try_new("local").unwrap();
+        snap.insert(
+            &oxpath!("config", "gate", "accounts", comp.clone()),
+            to_value(&AccountConfig {
+                provider: "LMStudio".into(),
+            })
+            .unwrap(),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&[
+                "settings/accounts".to_string(),
+                "settings/accounts/local".to_string(),
+            ]),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "focused_row"),
+            path_to_value(&oxpath!("settings", "accounts", comp, "protocol")),
+        );
+
+        let view = render(&mut snap);
+        let (_title, items, selected) = assert_list(view);
+        let i = selected.expect("a row should be selected");
+        let primary_spans = items[i]
+            .primary_spans
+            .as_ref()
+            .expect("focused Protocol row should render carousel spans");
+        let joined: String = primary_spans.iter().map(|s| s.text.as_str()).collect();
+        assert!(
+            joined.contains("LMStudio"),
+            "expected carousel to include 'LMStudio'; got {joined:?}"
+        );
     }
 }
