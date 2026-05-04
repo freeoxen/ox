@@ -198,17 +198,13 @@ fn activate(data: &mut dyn Reader) -> Vec<Write> {
             RowKind::AccountField {
                 account,
                 field: AccountField::Protocol,
-            } => with_account_selected(
-                account,
-                super::account_model::selector_cycle_protocol(data),
-            ),
+            } => {
+                with_account_selected(account, super::account_model::selector_cycle_protocol(data))
+            }
             RowKind::AccountField {
                 account,
                 field: AccountField::Auth,
-            } => with_account_selected(
-                account,
-                super::account_model::selector_cycle_auth(data),
-            ),
+            } => with_account_selected(account, super::account_model::selector_cycle_auth(data)),
             RowKind::AccountField {
                 field: AccountField::Endpoint,
                 ..
@@ -220,9 +216,7 @@ fn activate(data: &mut dyn Reader) -> Vec<Write> {
             RowKind::ModelField { .. } => super::edit::begin_edit_model_field(data),
             // The expandable arm above already handles every Entry,
             // Account, and Model row.
-            RowKind::Entry { .. } | RowKind::Account { .. } | RowKind::Model { .. } => {
-                Vec::new()
-            }
+            RowKind::Entry { .. } | RowKind::Account { .. } | RowKind::Model { .. } => Vec::new(),
         }
     }
 }
@@ -511,7 +505,10 @@ mod tests {
         let writes = run(&TreeActivate::new(), &mut snap);
         assert_eq!(writes.len(), 1);
         assert_eq!(writes[0].path, oxpath!("ui", "settings", "expanded"));
-        snap.insert(&writes[0].path, writes[0].record.as_value().unwrap().clone());
+        snap.insert(
+            &writes[0].path,
+            writes[0].record.as_value().unwrap().clone(),
+        );
         let set = read_expanded_raw(&mut snap);
         assert!(set.contains(&"settings/accounts/alpha".to_string()));
     }
@@ -535,10 +532,7 @@ mod tests {
         let writes = run(&TreeActivate::new(), &mut snap);
         // edit_field_path + edit_buffer + edit_mode = 3 writes
         assert_eq!(writes.len(), 3);
-        assert_eq!(
-            writes[0].path,
-            oxpath!("ui", "settings", "edit_field_path")
-        );
+        assert_eq!(writes[0].path, oxpath!("ui", "settings", "edit_field_path"));
         assert_eq!(writes[1].path, oxpath!("ui", "settings", "edit_buffer"));
         assert_eq!(writes[2].path, oxpath!("ui", "settings", "edit_mode"));
         match &writes[2].record {
@@ -573,14 +567,13 @@ mod tests {
             assert_ne!(w.path, oxpath!("ui", "settings", "cursor"));
         }
         // The cycle helper writes to the account path.
-        assert!(writes.iter().any(
-            |w| w.path == oxpath!(
+        assert!(writes.iter().any(|w| w.path
+            == oxpath!(
                 "config",
                 "gate",
                 "accounts",
                 ox_kernel::PathComponent::try_new("alpha").unwrap()
-            )
-        ));
+            )));
     }
 
     #[test]
@@ -637,10 +630,7 @@ mod tests {
         let writes = run(&TreeActivate::new(), &mut snap);
         // edit_field_path + edit_buffer + edit_mode = 3 writes
         assert_eq!(writes.len(), 3);
-        assert_eq!(
-            writes[0].path,
-            oxpath!("ui", "settings", "edit_field_path")
-        );
+        assert_eq!(writes[0].path, oxpath!("ui", "settings", "edit_field_path"));
         assert_eq!(writes[1].path, oxpath!("ui", "settings", "edit_buffer"));
         assert_eq!(writes[2].path, oxpath!("ui", "settings", "edit_mode"));
         match &writes[2].record {

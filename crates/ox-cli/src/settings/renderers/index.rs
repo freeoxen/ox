@@ -48,9 +48,7 @@ impl Renderer for IndexRenderer {
                 // the plain label.
                 let is_focused = selected.is_some_and(|sel| sel == i);
                 if is_focused {
-                    if let Some(spans) =
-                        selector_carousel_spans(row, &indent, glyph)
-                    {
+                    if let Some(spans) = selector_carousel_spans(row, &indent, glyph) {
                         return ListItem {
                             primary: format!("{indent}{glyph}{}", row.label),
                             primary_spans: Some(spans),

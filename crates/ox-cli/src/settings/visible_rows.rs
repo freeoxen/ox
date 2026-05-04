@@ -191,8 +191,8 @@ fn append_account_field_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, 
         Ok(c) => c,
         Err(_) => return,
     };
-    let acct: AccountConfig = read_typed(data, &oxpath!("config", "gate", "accounts", comp.clone()))
-        .unwrap_or_default();
+    let acct: AccountConfig =
+        read_typed(data, &oxpath!("config", "gate", "accounts", comp.clone())).unwrap_or_default();
     let provider: Option<ProviderConfig> = ox_kernel::PathComponent::try_new(&acct.provider)
         .ok()
         .and_then(|pc| read_typed(data, &oxpath!("config", "gate", "providers", pc)));
@@ -255,11 +255,7 @@ fn append_account_field_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, 
 /// Field rows for an expanded model. Surfaces the two overridable
 /// token-window fields plus the read-only id and display name so the
 /// user has the full picture before opening the editor.
-fn append_model_field_rows(
-    rows: &mut Vec<VisibleRow>,
-    model: &ox_gate::ModelInfo,
-    account: &str,
-) {
+fn append_model_field_rows(rows: &mut Vec<VisibleRow>, model: &ox_gate::ModelInfo, account: &str) {
     let render = |opt: Option<u32>| match opt {
         Some(n) => n.to_string(),
         None => "—".to_string(),
