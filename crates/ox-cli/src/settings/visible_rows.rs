@@ -362,6 +362,10 @@ fn resolve_badge(data: &mut dyn Reader, source: &ox_types::BadgeSource) -> Optio
             read_typed::<CompletionRole>(data, &oxpath!("config", "gate", "completions", "primary"))
                 .map(|role| format!("{} / {}", role.account, role.model_id))
         }
+        BadgeSource::BootstrapReference => {
+            read_typed::<CompletionRole>(data, &oxpath!("config", "gate", "completions", "primary"))
+                .map(|role| format!("{} / {}", role.account, role.model_id))
+        }
     }
 }
 

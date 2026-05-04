@@ -64,8 +64,14 @@ pub enum BadgeSource {
     Static(String),
     /// Count of immediate children at the given path.
     SubtreeCount(#[serde(with = "path_serde")] Path),
-    /// Resolves to "{account} / {model}" from `config/completions/primary`.
+    /// Resolves to "{account} / {model}" from `config/gate/completions/primary`.
+    /// Deprecated: prefer `BootstrapReference`. Retained for one release so
+    /// stored SettingsIndexEntry records written under the old name still
+    /// deserialize cleanly.
     PrimaryReference,
+    /// Resolves to "{account} / {model}" from `config/gate/bootstrap`,
+    /// falling back to `config/gate/completions/primary` for migration.
+    BootstrapReference,
 }
 
 /// Validation diagnostics for the currently-edited account.
