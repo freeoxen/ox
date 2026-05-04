@@ -113,13 +113,13 @@ command! {
 }
 
 command! {
-    struct_name: ModelsSetPrimary,
-    id: "models.set_primary",
-    title: "Set as Primary",
-    description: "Bind config/gate/completions/primary to the selected (account, model).",
+    struct_name: ModelsSetBootstrap,
+    id: "models.set_bootstrap",
+    title: "Set as Bootstrap",
+    description: "Bind config/gate/completions/bootstrap to the selected (account, model). Also writes the legacy config/gate/completions/primary path during the migration window.",
     screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "models")),
-    run: |snap, _ctx| models_set_primary(snap),
+    run: |snap, _ctx| models_set_bootstrap(snap),
 }
 
 command! {
@@ -352,7 +352,7 @@ fn account_refresh(data: &mut dyn Reader) -> Vec<Write> {
     }
 }
 
-fn models_set_primary(data: &mut dyn Reader) -> Vec<Write> {
+fn models_set_bootstrap(data: &mut dyn Reader) -> Vec<Write> {
     let key = match read_selected_model(data) {
         Some(k) => k,
         None => return Vec::new(),
@@ -364,14 +364,25 @@ fn models_set_primary(data: &mut dyn Reader) -> Vec<Write> {
     let value = match to_value(&role) {
         Ok(v) => v,
         Err(e) => {
-            tracing::warn!(error = %e, "models.set_primary: failed to encode CompletionRole");
+            tracing::warn!(error = %e, "models.set_bootstrap: failed to encode CompletionRole");
             return Vec::new();
         }
     };
-    vec![Write {
-        path: oxpath!("config", "gate", "completions", "primary"),
-        record: Record::parsed(value),
-    }]
+    // Two writes during the migration window: the new path is the
+    // source of truth, the legacy path stays in lockstep so a downgrade
+    // (or any kernel call site that hasn't yet switched) sees the same
+    // bootstrap choice. The legacy write can be removed in a follow-up
+    // once every reader has migrated.
+    vec![
+        Write {
+            path: oxpath!("config", "gate", "completions", "bootstrap"),
+            record: Record::parsed(value.clone()),
+        },
+        Write {
+            path: oxpath!("config", "gate", "completions", "primary"),
+            record: Record::parsed(value),
+        },
+    ]
 }
 
 const ACCOUNT_FIELDS: [AccountField; 5] = [
@@ -674,7 +685,7 @@ pub fn register(reg: &mut CommandRegistry) {
     reg.register(Box::new(AccountsDelete::new()));
     reg.register(Box::new(AccountTest::new()));
     reg.register(Box::new(AccountRefresh::new()));
-    reg.register(Box::new(ModelsSetPrimary::new()));
+    reg.register(Box::new(ModelsSetBootstrap::new()));
     reg.register(Box::new(AppSave::new()));
     reg.register(Box::new(FieldAccountNext::new()));
     reg.register(Box::new(SelectorCycleProtocol::new()));
@@ -898,22 +909,26 @@ mod tests {
     }
 
     #[test]
-    fn models_set_primary_writes_completion_role() {
+    fn models_set_bootstrap_writes_both_paths_for_migration() {
         let mut snap = SettingsSnapshot::empty();
-        select_model(&mut snap, "alpha", "m1");
-        let writes = run_cmd(&ModelsSetPrimary::new(), &mut snap);
-        assert_eq!(writes.len(), 1);
-        assert_eq!(
-            writes[0].path,
-            oxpath!("config", "gate", "completions", "primary")
+        select_model(&mut snap, "alpha", "claude-sonnet-4");
+        let writes = run_cmd(&ModelsSetBootstrap::new(), &mut snap);
+        // Two writes during the migration window: new path AND legacy path.
+        // Order doesn't matter.
+        assert_eq!(writes.len(), 2);
+        let paths: Vec<String> = writes.iter().map(|w| w.path.to_string()).collect();
+        assert!(
+            paths
+                .iter()
+                .any(|p| p == "config/gate/completions/bootstrap")
         );
-        match &writes[0].record {
-            Record::Parsed(v) => {
-                let role: CompletionRole = structfs_serde_store::from_value(v.clone()).unwrap();
-                assert_eq!(role.account, "alpha");
-                assert_eq!(role.model_id, "m1");
-            }
-            other => panic!("unexpected record: {other:?}"),
+        assert!(paths.iter().any(|p| p == "config/gate/completions/primary"));
+        // Both must encode the same CompletionRole.
+        for w in &writes {
+            let role: CompletionRole =
+                structfs_serde_store::from_value(w.record.as_value().unwrap().clone()).unwrap();
+            assert_eq!(role.account, "alpha");
+            assert_eq!(role.model_id, "claude-sonnet-4");
         }
     }
 

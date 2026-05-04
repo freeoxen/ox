@@ -531,7 +531,7 @@ mod tests {
         ClientModalFlags::default()
     }
 
-    /// Pre-populate the snapshot Reader with everything `models.set_primary`
+    /// Pre-populate the snapshot Reader with everything `models.set_bootstrap`
     /// needs: a selected model and its account/model in the gate catalog.
     fn snap_with_selected_model() -> SettingsSnapshot {
         let mut snap = SettingsSnapshot::empty();
@@ -549,8 +549,10 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn settings_p_on_models_writes_completion_role() {
         // Full integration: a Shift+P on `settings/models` runs the
-        // `models.set_primary` command and writes the `CompletionRole` to
-        // `config/gate/completions/primary` through the broker.
+        // `models.set_bootstrap` command and writes the `CompletionRole` to
+        // both `config/gate/completions/bootstrap` (new source of truth) and
+        // `config/gate/completions/primary` (legacy, dual-write during the
+        // migration window) through the broker.
         let (_broker, client, _config_h, _ui_h) = broker_with_config_and_ui().await;
 
         let mut bindings = BindingRegistry::new();
@@ -581,15 +583,22 @@ mod tests {
         .await;
         assert!(matches!(outcome, KeyDispatchOutcome::Handled));
 
-        // Verify the Write reached the broker — read it back through the
-        // client and deserialize.
-        let role: CompletionRole = client
+        // Verify both writes reached the broker — the new source of
+        // truth and the legacy migration path must encode the same role.
+        let bootstrap: CompletionRole = client
+            .read_typed(&oxpath!("config", "gate", "completions", "bootstrap"))
+            .await
+            .expect("read_typed")
+            .expect("bootstrap completion role present");
+        assert_eq!(bootstrap.account, "alpha");
+        assert_eq!(bootstrap.model_id, "m1");
+        let legacy: CompletionRole = client
             .read_typed(&oxpath!("config", "gate", "completions", "primary"))
             .await
             .expect("read_typed")
-            .expect("primary completion role present");
-        assert_eq!(role.account, "alpha");
-        assert_eq!(role.model_id, "m1");
+            .expect("legacy primary completion role present");
+        assert_eq!(legacy.account, "alpha");
+        assert_eq!(legacy.model_id, "m1");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

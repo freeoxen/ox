@@ -307,7 +307,7 @@ fn register_row_prefixes(reg: &mut BindingRegistry) {
         models_subtree.clone(),
         shift_only(),
         KeyCodeRepr::Char('P'),
-        "models.set_primary",
+        "models.set_bootstrap",
     );
     // `r` refreshes the focused model's owning account catalog. Useful
     // both when focused on an account row and when focused on a model
@@ -494,7 +494,7 @@ mod tests {
     }
 
     #[test]
-    fn focused_model_row_p_resolves_to_set_primary() {
+    fn focused_model_row_p_resolves_to_set_bootstrap() {
         let reg = populated();
         let acct = ox_kernel::PathComponent::try_new("anthropic").unwrap();
         let model = ox_kernel::PathComponent::try_new("claude_haiku").unwrap();
@@ -506,7 +506,7 @@ mod tests {
                 &key(shift_only(), KeyCodeRepr::Char('P')),
             )
             .expect("should match");
-        assert_eq!(hit, &cmd("models.set_primary"));
+        assert_eq!(hit, &cmd("models.set_bootstrap"));
     }
 
     #[test]
@@ -566,7 +566,7 @@ mod tests {
     }
 
     #[test]
-    fn models_capital_p_resolves_to_set_primary() {
+    fn models_capital_p_resolves_to_set_bootstrap() {
         let reg = populated();
         let hit = reg
             .lookup(
@@ -576,7 +576,7 @@ mod tests {
                 &key(shift_only(), KeyCodeRepr::Char('P')),
             )
             .expect("should match");
-        assert_eq!(hit, &cmd("models.set_primary"));
+        assert_eq!(hit, &cmd("models.set_bootstrap"));
     }
 
     #[test]

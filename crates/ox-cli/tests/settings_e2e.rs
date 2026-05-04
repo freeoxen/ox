@@ -317,11 +317,11 @@ async fn write_models_for_account(h: &E2eHarness, name: &str, ids: &[&str]) {
 }
 
 // ---------------------------------------------------------------------------
-// Scenario: navigate index → models, then set primary
+// Scenario: navigate index → models, then set bootstrap
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn navigate_index_to_models_set_primary() {
+async fn navigate_index_to_models_set_bootstrap() {
     let h = E2eHarness::new().await;
     populate_index(&h).await;
 
@@ -373,20 +373,29 @@ async fn navigate_index_to_models_set_primary() {
         "settings/models/anthropic/claude_haiku_4_5_20251001",
     );
 
-    // `P` on the focused model row fires `models.set_primary`
+    // `P` on the focused model row fires `models.set_bootstrap`
     // through the per-row `Prefix(settings/models)` binding — no
     // page-flip required. The command resolves the unsanitized
     // (account, model_id) from the row's `RowKind` and writes
-    // `config/gate/completions/primary`.
+    // both `config/gate/completions/bootstrap` (new source of truth)
+    // and `config/gate/completions/primary` (legacy migration path).
     assert!(matches!(h.dispatch("P").await, KeyDispatchOutcome::Handled));
-    let primary: CompletionRole = h
+    let bootstrap: CompletionRole = h
+        .client
+        .read_typed(&oxpath!("config", "gate", "completions", "bootstrap"))
+        .await
+        .expect("read bootstrap")
+        .expect("bootstrap present");
+    assert_eq!(bootstrap.account, "anthropic");
+    assert_eq!(bootstrap.model_id, "claude-haiku-4-5-20251001");
+    let legacy: CompletionRole = h
         .client
         .read_typed(&oxpath!("config", "gate", "completions", "primary"))
         .await
-        .expect("read primary")
-        .expect("primary present");
-    assert_eq!(primary.account, "anthropic");
-    assert_eq!(primary.model_id, "claude-haiku-4-5-20251001");
+        .expect("read legacy primary")
+        .expect("legacy primary present");
+    assert_eq!(legacy.account, "anthropic");
+    assert_eq!(legacy.model_id, "claude-haiku-4-5-20251001");
 }
 
 // ---------------------------------------------------------------------------
