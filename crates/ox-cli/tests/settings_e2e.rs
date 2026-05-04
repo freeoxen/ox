@@ -808,3 +808,81 @@ async fn production_ui_store_routes_settings_writes() {
         "j on the Accounts row must advance focus to Models",
     );
 }
+
+// ---------------------------------------------------------------------------
+// Scenario: cycling Protocol on a custom-provider account
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cycling_protocol_on_custom_provider_account_does_not_silently_overwrite() {
+    // Drives the full dispatch path (key → binding → command → broker
+    // write) for an account whose provider isn't a built-in preset —
+    // the exact shape a TOML-loaded LM Studio / Ollama / corp-gateway
+    // account presents at first launch.
+    //
+    // Pre-fix: with the carousel options hardcoded to ["anthropic",
+    // "openai"], position_of("LMStudio") returned None, the index fell
+    // back to 0, and `l` (cycle forward) wrote "openai" to the account
+    // — silently switching the user to a provider they never chose.
+    //
+    // Post-fix: the carousel resolves options dynamically and includes
+    // the current value; cycling forward from "LMStudio" (idx 2 of
+    // [anthropic, openai, LMStudio]) wraps to "anthropic".
+    let h = E2eHarness::new().await;
+    populate_index(&h).await;
+
+    // Account `local` with a custom provider name that is NOT in the
+    // preset table. No matching ProviderConfig record — the orphan
+    // binding is part of the regression shape.
+    let comp = ox_kernel::PathComponent::try_new("local").unwrap();
+    h.write_typed(
+        &oxpath!("config", "gate", "accounts", comp.clone()),
+        &AccountConfig {
+            provider: "LMStudio".to_string(),
+        },
+    )
+    .await;
+
+    // Expand Accounts and the `local` account so the Protocol field
+    // row appears in the visible enumeration that `cycle_field` walks.
+    h.client
+        .write(
+            &oxpath!("ui", "settings", "expanded"),
+            Record::parsed(ox_cli::settings::visible_rows::expanded_set_to_value(&[
+                "settings/accounts".to_string(),
+                "settings/accounts/local".to_string(),
+            ])),
+        )
+        .await
+        .expect("write expanded set");
+
+    // Page-level cursor stays on the index; focused_row points at the
+    // Protocol field row of the `local` account. (cycle.field is bound
+    // as a Prefix(settings/accounts) binding; the page cursor needs to
+    // resolve under that prefix.)
+    h.write_path(
+        &oxpath!("ui", "settings", "cursor"),
+        &oxpath!("settings", "accounts", comp.clone()),
+    )
+    .await;
+    h.write_path(
+        &oxpath!("ui", "settings", "focused_row"),
+        &oxpath!("settings", "accounts", comp.clone(), "protocol"),
+    )
+    .await;
+
+    assert!(matches!(h.dispatch("l").await, KeyDispatchOutcome::Handled));
+
+    let acct: AccountConfig = h
+        .client
+        .read_typed(&oxpath!("config", "gate", "accounts", comp))
+        .await
+        .expect("read account")
+        .expect("account present");
+    assert_eq!(
+        acct.provider, "anthropic",
+        "forward cycle from custom provider 'LMStudio' must wrap to 'anthropic' \
+         (the next option in the resolved list), not silently snap to 'openai' \
+         via the value-not-found idx-0 fallback",
+    );
+}
