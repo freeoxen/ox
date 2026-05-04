@@ -681,19 +681,21 @@ fn send_completion(
     deserialize_events(response_record)
 }
 
-/// Read the primary completion role and resolve `max_output_tokens`
+/// Read the bootstrap completion role and resolve `max_output_tokens`
 /// from that account's model catalog.
 ///
 /// Paths are **kernel-context-relative** — they go through
 /// `ThreadNamespace` which routes `gate/*` to `GateStore`. `GateStore`'s
 /// config handle prepends the broker's `config/` mount, so a kernel read
-/// of `gate/completions/primary` resolves to `config/gate/completions/primary`
+/// of `gate/completions/bootstrap` resolves to `config/gate/completions/bootstrap`
 /// at the broker. Internal kernel tests use a `LocalConfig` populated at
 /// the same `gate/`-prefixed paths.
 ///
 /// Reads:
-/// - `gate/completions/primary: CompletionRole` — names the
-///   `(account, model_id)` pair to drive the next request.
+/// - `gate/completions/bootstrap: CompletionRole` — names the
+///   `(account, model_id)` pair to drive the next request. Falls back
+///   to the legacy `gate/completions/primary` path when the new one is
+///   absent so installs from before the rename keep working.
 /// - `gate/accounts/{account}/models: Vec<ModelInfo>` — the catalog
 ///   the role points into.
 ///
@@ -707,8 +709,11 @@ pub fn read_model_config(context: &mut dyn Reader) -> Result<(String, u32), Stri
 
     const KERNEL_FALLBACK_MAX_TOKENS: u32 = 4096;
 
-    let role: CompletionRole = read_typed(context, &path!("gate/completions/primary"))?
-        .ok_or_else(|| "no primary completion role configured".to_string())?;
+    let role: CompletionRole = match read_typed(context, &path!("gate/completions/bootstrap"))? {
+        Some(r) => r,
+        None => read_typed(context, &path!("gate/completions/primary"))?
+            .ok_or_else(|| "no bootstrap completion role configured".to_string())?,
+    };
 
     let account_comp = ox_kernel_path_component(&role.account)?;
     let catalog_path = oxpath!("gate", "accounts", account_comp, "models");
@@ -747,18 +752,22 @@ fn read_typed<T: serde::de::DeserializeOwned>(
     }
 }
 
-/// Read the default account from the primary completion role.
+/// Read the default account from the bootstrap completion role.
 ///
-/// Reads `gate/completions/primary: CompletionRole` and returns the
-/// `account` field. Replaces the pre-O2 `gate/defaults/account` read,
-/// which `GateStore` no longer surfaces. Errors when no primary role is
-/// configured — the gate's built-in fallback role keeps reads alive
-/// during early bring-up, so a missing role here is a real
-/// misconfiguration, not a normal-path default.
+/// Reads `gate/completions/bootstrap: CompletionRole` (falling back to
+/// the legacy `gate/completions/primary` path when the new one is
+/// absent) and returns the `account` field. Replaces the pre-O2
+/// `gate/defaults/account` read, which `GateStore` no longer surfaces.
+/// Errors when no role is configured — the gate's built-in fallback
+/// role keeps reads alive during early bring-up, so a missing role
+/// here is a real misconfiguration, not a normal-path default.
 fn read_default_account(context: &mut dyn Reader) -> Result<String, String> {
     let role: ox_types::CompletionRole =
-        read_typed(context, &path!("gate/completions/primary"))?
-            .ok_or_else(|| "no primary completion role configured".to_string())?;
+        match read_typed(context, &path!("gate/completions/bootstrap"))? {
+            Some(r) => r,
+            None => read_typed(context, &path!("gate/completions/primary"))?
+                .ok_or_else(|| "no bootstrap completion role configured".to_string())?,
+        };
     Ok(role.account)
 }
 
@@ -1842,6 +1851,128 @@ mod tests {
     }
 
     #[test]
+    fn read_model_config_prefers_bootstrap_path() {
+        // Fresh installs write to gate/completions/bootstrap; the kernel
+        // must consult that path first so the new source of truth wins
+        // over a stale legacy value left around from earlier writes.
+        use ox_store_util::local_config::LocalConfig;
+        use ox_types::{CompletionRole, ModelInfo, ModelInfoSource};
+
+        let mut store = LocalConfig::new();
+        let bootstrap_role = CompletionRole {
+            account: "personal".to_string(),
+            model_id: "claude-sonnet-4-20250514".to_string(),
+        };
+        store.set(
+            "gate/completions/bootstrap",
+            structfs_serde_store::to_value(&bootstrap_role).unwrap(),
+        );
+        // A stale legacy value pointing at a different model. The
+        // kernel must NOT fall through to it when the new path resolves.
+        let legacy_role = CompletionRole {
+            account: "personal".to_string(),
+            model_id: "claude-old".to_string(),
+        };
+        store.set(
+            "gate/completions/primary",
+            structfs_serde_store::to_value(&legacy_role).unwrap(),
+        );
+        let catalog = vec![ModelInfo {
+            id: "claude-sonnet-4-20250514".to_string(),
+            display_name: "Claude Sonnet 4".to_string(),
+            max_context_size: Some(200_000),
+            max_output_tokens: Some(32_000),
+            source: ModelInfoSource::Server,
+        }];
+        store.set(
+            "gate/accounts/personal/models",
+            structfs_serde_store::to_value(&catalog).unwrap(),
+        );
+
+        let (model_id, max_tokens) = read_model_config(&mut store).unwrap();
+        assert_eq!(model_id, "claude-sonnet-4-20250514");
+        assert_eq!(max_tokens, 32_000);
+    }
+
+    #[test]
+    fn read_model_config_falls_back_to_legacy_primary_when_bootstrap_absent() {
+        // Upgraded installs from before the rename only have the legacy
+        // path set. The kernel must keep working — falling back keeps
+        // their fresh threads running with the bootstrap they last chose.
+        use ox_store_util::local_config::LocalConfig;
+        use ox_types::{CompletionRole, ModelInfo, ModelInfoSource};
+
+        let mut store = LocalConfig::new();
+        let legacy_role = CompletionRole {
+            account: "legacy".to_string(),
+            model_id: "claude-3".to_string(),
+        };
+        store.set(
+            "gate/completions/primary",
+            structfs_serde_store::to_value(&legacy_role).unwrap(),
+        );
+        let catalog = vec![ModelInfo {
+            id: "claude-3".to_string(),
+            display_name: "Claude 3".to_string(),
+            max_context_size: Some(200_000),
+            max_output_tokens: Some(4_096),
+            source: ModelInfoSource::Server,
+        }];
+        store.set(
+            "gate/accounts/legacy/models",
+            structfs_serde_store::to_value(&catalog).unwrap(),
+        );
+
+        let (model_id, max_tokens) = read_model_config(&mut store).unwrap();
+        assert_eq!(model_id, "claude-3");
+        assert_eq!(max_tokens, 4_096);
+    }
+
+    #[test]
+    fn read_default_account_prefers_bootstrap_path() {
+        use ox_store_util::local_config::LocalConfig;
+        use ox_types::CompletionRole;
+
+        let mut store = LocalConfig::new();
+        store.set(
+            "gate/completions/bootstrap",
+            structfs_serde_store::to_value(&CompletionRole {
+                account: "new".to_string(),
+                model_id: "m1".to_string(),
+            })
+            .unwrap(),
+        );
+        store.set(
+            "gate/completions/primary",
+            structfs_serde_store::to_value(&CompletionRole {
+                account: "old".to_string(),
+                model_id: "m1".to_string(),
+            })
+            .unwrap(),
+        );
+        let account = read_default_account(&mut store).unwrap();
+        assert_eq!(account, "new");
+    }
+
+    #[test]
+    fn read_default_account_falls_back_to_legacy_primary() {
+        use ox_store_util::local_config::LocalConfig;
+        use ox_types::CompletionRole;
+
+        let mut store = LocalConfig::new();
+        store.set(
+            "gate/completions/primary",
+            structfs_serde_store::to_value(&CompletionRole {
+                account: "legacy".to_string(),
+                model_id: "m1".to_string(),
+            })
+            .unwrap(),
+        );
+        let account = read_default_account(&mut store).unwrap();
+        assert_eq!(account, "legacy");
+    }
+
+    #[test]
     fn stream_event_json_roundtrip() {
         let events = vec![
             StreamEvent::TextDelta("hello".into()),
@@ -2167,7 +2298,7 @@ mod tests {
     fn read_default_account_errors_when_no_role_configured() {
         let mut store = MockStore::new();
         let err = read_default_account(&mut store).unwrap_err();
-        assert!(err.contains("no primary completion role"));
+        assert!(err.contains("no bootstrap completion role"));
     }
 
     #[test]
