@@ -153,17 +153,13 @@ fn append_account_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, expand
     }
 
     for name in &names {
-        let comp = match ox_kernel::PathComponent::try_new(name) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
+        if ox_kernel::PathComponent::try_new(name).is_err() {
+            continue;
+        }
         let acct: AccountConfig =
-            read_typed(data, &oxpath!("config", "gate", "accounts", comp.clone())).unwrap_or_else(
-                || AccountConfig {
-                    provider: read_account_child_string_in_visible_rows(data, name, "provider")
-                        .unwrap_or_else(|| "anthropic".to_string()),
-                },
-            );
+            read_account_assembling_flat(data, name).unwrap_or(AccountConfig {
+                provider: "anthropic".to_string(),
+            });
 
         let secondary = {
             let users = provider_users.get(&acct.provider);
@@ -219,6 +215,76 @@ fn read_account_child_string_in_visible_rows(
         Value::String(s) => Some(s.clone()),
         _ => None,
     }
+}
+
+/// Read an `AccountConfig` from the snapshot, trying the parent path
+/// first, then falling back to assembling from flat sub-keys
+/// (`config/gate/accounts/{name}/provider`). The flat-key fallback is
+/// the shape `TomlFileBacking` produces at startup — without it,
+/// TOML-loaded accounts read as `AccountConfig::default()` (provider="")
+/// and every downstream lookup fails (Protocol carousel sticks at the
+/// idx-0 fallback, Endpoint/Auth render empty).
+pub(crate) fn read_account_assembling_flat(
+    data: &mut dyn Reader,
+    name: &str,
+) -> Option<ox_gate::AccountConfig> {
+    let comp = ox_kernel::PathComponent::try_new(name).ok()?;
+    if let Some(a) =
+        read_typed::<ox_gate::AccountConfig>(data, &oxpath!("config", "gate", "accounts", comp))
+    {
+        return Some(a);
+    }
+    let provider = read_account_child_string_in_visible_rows(data, name, "provider")?;
+    Some(ox_gate::AccountConfig { provider })
+}
+
+/// Read a `ProviderConfig` from the snapshot, trying the parent path
+/// first, then assembling from flat sub-keys
+/// (`.../{name}/{dialect,endpoint,version,auth}`). Required field is
+/// `dialect`; the rest fall back to defaults so a partially-populated
+/// TOML record still produces a usable ProviderConfig. Returns `None`
+/// only when neither the parent Map nor a `dialect` sub-key exists,
+/// which signals a true orphan binding.
+pub(crate) fn read_provider_assembling_flat(
+    data: &mut dyn Reader,
+    provider_name: &str,
+) -> Option<ox_gate::ProviderConfig> {
+    let comp = ox_kernel::PathComponent::try_new(provider_name).ok()?;
+    if let Some(p) = read_typed::<ox_gate::ProviderConfig>(
+        data,
+        &oxpath!("config", "gate", "providers", comp.clone()),
+    ) {
+        return Some(p);
+    }
+    let dialect: String = read_typed(
+        data,
+        &oxpath!("config", "gate", "providers", comp.clone(), "dialect"),
+    )?;
+    let endpoint: String = read_typed(
+        data,
+        &oxpath!("config", "gate", "providers", comp.clone(), "endpoint"),
+    )
+    .unwrap_or_default();
+    let version: String = read_typed(
+        data,
+        &oxpath!("config", "gate", "providers", comp.clone(), "version"),
+    )
+    .unwrap_or_default();
+    let auth: Option<ox_gate::AuthScheme> =
+        read_typed::<String>(data, &oxpath!("config", "gate", "providers", comp, "auth")).and_then(
+            |s| match s.as_str() {
+                "x-api-key" => Some(ox_gate::AuthScheme::XApiKey),
+                "bearer-token" => Some(ox_gate::AuthScheme::BearerToken),
+                "none" => Some(ox_gate::AuthScheme::None),
+                _ => None,
+            },
+        );
+    Some(ox_gate::ProviderConfig {
+        dialect,
+        endpoint,
+        version,
+        auth,
+    })
 }
 
 /// Append one row per (account, model_id) pair. Like accounts, model
@@ -344,17 +410,21 @@ fn append_model_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, expanded
 /// value from the broker; the renderer formats them as `"Label: value"`
 /// rows so a user can see the whole account state at a glance.
 fn append_account_field_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, name: &str) {
-    use ox_gate::{AccountConfig, ApiKey, ProviderConfig};
+    use ox_gate::ApiKey;
 
     let comp = match ox_kernel::PathComponent::try_new(name) {
         Ok(c) => c,
         Err(_) => return,
     };
-    let acct: AccountConfig =
-        read_typed(data, &oxpath!("config", "gate", "accounts", comp.clone())).unwrap_or_default();
-    let provider: Option<ProviderConfig> = ox_kernel::PathComponent::try_new(&acct.provider)
-        .ok()
-        .and_then(|pc| read_typed(data, &oxpath!("config", "gate", "providers", pc)));
+    // Use the assembling readers so TOML-loaded accounts (no parent
+    // Map; only flat sub-keys) resolve correctly. Pre-fix this used
+    // `read_typed::<AccountConfig>(...).unwrap_or_default()` which
+    // returned `AccountConfig { provider: "" }` for the user's TOML
+    // shape — the empty provider then failed `PathComponent::try_new`
+    // and the bound provider was never resolved, leaving Endpoint /
+    // Auth empty and the Protocol carousel locked at idx-0.
+    let acct = read_account_assembling_flat(data, name).unwrap_or_default();
+    let provider = read_provider_assembling_flat(data, &acct.provider);
     let key: Option<ApiKey> = read_typed(data, &oxpath!("secret", "keys", comp.clone()));
 
     for field in [

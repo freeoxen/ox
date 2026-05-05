@@ -7,9 +7,9 @@ expression: "&frame_after_two"
 │  ▾ LMStudio                                                                  │
 │  LMStudio                                                                    │
 │      Name: LMStudio                                                          │
-│      Protocol: ◂ openai  anthropic  openai ▸                                 │
-│      Endpoint:                                                               │
-│      Auth:                                                                   │
+│      Protocol: ◂ anthropic  openai  anthropic ▸                              │
+│      Endpoint: http://127.0.0.1:1234                                         │
+│      Auth: none                                                              │
 │      Key: (unset)                                                            │
 │▸ Models                                                                      │
 │                                                                              │

@@ -676,18 +676,22 @@ fn selector_cycle_protocol_dir(data: &mut dyn Reader, dir: CycleDir) -> Vec<Writ
         Err(_) => return Vec::new(),
     };
     let provider_path = oxpath!("config", "gate", "providers", provider_name_comp);
-    // Synthesize a default ProviderConfig if the record is missing — an
-    // orphan binding (account references a provider record that doesn't
-    // exist) is rare but legitimate (e.g. a fresh `anthropic` account
-    // with no separate provider entry yet). Cycling such an account
-    // creates the record with the new dialect.
+    // Read the provider via the assembling helper so a TOML-loaded
+    // record (flat sub-keys, no parent Map) still returns the user's
+    // actual endpoint/auth/version. Without this we'd synthesize an
+    // empty default and the first cycle would silently wipe those
+    // fields when writing the parent Map back. Only when even the
+    // flat sub-keys are absent (true orphan binding — account points
+    // at a provider record that doesn't exist) do we synthesize
+    // defaults; that path creates the record with the new dialect.
     let mut provider: ProviderConfig =
-        read_typed(data, &provider_path).unwrap_or_else(|| ProviderConfig {
-            dialect: acct.provider.clone(),
-            endpoint: String::new(),
-            version: String::new(),
-            auth: None,
-        });
+        crate::settings::visible_rows::read_provider_assembling_flat(data, &acct.provider)
+            .unwrap_or_else(|| ProviderConfig {
+                dialect: acct.provider.clone(),
+                endpoint: String::new(),
+                version: String::new(),
+                auth: None,
+            });
 
     let options = resolve_protocol_options(data, &provider.dialect);
     if options.is_empty() {

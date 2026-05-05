@@ -8,8 +8,8 @@ expression: "&frame_after_one"
 │  LMStudio                                                                    │
 │      Name: LMStudio                                                          │
 │      Protocol: ◂ openai  anthropic  openai ▸                                 │
-│      Endpoint:                                                               │
-│      Auth:                                                                   │
+│      Endpoint: http://127.0.0.1:1234                                         │
+│      Auth: none                                                              │
 │      Key: (unset)                                                            │
 │▸ Models                                                                      │
 │                                                                              │
