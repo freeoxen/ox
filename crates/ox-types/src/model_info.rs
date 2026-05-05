@@ -39,6 +39,11 @@ pub enum ModelInfoSource {
     KnownTable,
     /// Set by the user via override.
     UserOverride,
+    /// Added by hand because the connection can't enumerate models
+    /// automatically (no /models endpoint, refresh failed, unsupported
+    /// provider). Treated the same as Server everywhere except provenance
+    /// display.
+    UserEntered,
 }
 
 #[cfg(test)]
@@ -87,6 +92,7 @@ mod tests {
             ModelInfoSource::Server,
             ModelInfoSource::KnownTable,
             ModelInfoSource::UserOverride,
+            ModelInfoSource::UserEntered,
         ] {
             let json = serde_json::to_string(&variant).expect("serialize");
             let parsed: ModelInfoSource = serde_json::from_str(&json).expect("deserialize");
@@ -109,6 +115,10 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&ModelInfoSource::UserOverride).unwrap(),
             "\"UserOverride\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ModelInfoSource::UserEntered).unwrap(),
+            "\"UserEntered\""
         );
     }
 }
