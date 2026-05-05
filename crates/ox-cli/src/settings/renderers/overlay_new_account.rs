@@ -27,19 +27,22 @@ impl Renderer for OverlayNewAccountRenderer {
 
         let cursor: u32 = name_input.chars().count() as u32;
 
-        let fg = View::Form {
+        let fg = View::Frame {
             title: Some("New connection".into()),
-            rows: vec![FormRow {
-                label: "Name".into(),
-                value: FormValue::Text {
-                    value: name_input,
-                    cursor,
-                    masked: false,
-                },
-                error: None,
-                hint: Some("Enter to create. Esc to cancel.".into()),
-            }],
-            focused: Some(0),
+            title_right: None,
+            content: Box::new(View::Form {
+                rows: vec![FormRow {
+                    label: "Name".into(),
+                    value: FormValue::Text {
+                        value: name_input,
+                        cursor,
+                        masked: false,
+                    },
+                    error: None,
+                    hint: Some("Enter to create. Esc to cancel.".into()),
+                }],
+                focused: Some(0),
+            }),
         };
 
         View::Modal {
@@ -102,12 +105,16 @@ mod tests {
             } => {
                 assert!(*dim, "overlay must dim the background");
                 match foreground.as_ref() {
-                    View::Form {
+                    View::Frame {
                         title,
-                        rows,
-                        focused,
+                        title_right: _,
+                        content,
                     } => {
                         assert_eq!(title.as_deref(), Some("New connection"));
+                        let (rows, focused) = match content.as_ref() {
+                            View::Form { rows, focused } => (rows, focused),
+                            other => panic!("expected Form inside Frame, got {other:?}"),
+                        };
                         assert_eq!(*focused, Some(0));
                         assert_eq!(rows.len(), 1);
                         assert_eq!(rows[0].label, "Name");
@@ -119,7 +126,7 @@ mod tests {
                             other => panic!("expected Text FormValue, got {other:?}"),
                         }
                     }
-                    other => panic!("expected Form foreground, got {other:?}"),
+                    other => panic!("expected Frame foreground, got {other:?}"),
                 }
             }
             other => panic!("expected Modal, got {other:?}"),

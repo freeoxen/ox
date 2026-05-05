@@ -16,6 +16,12 @@ pub struct ConfigStore {
     base: BTreeMap<String, Value>,
     /// Runtime changes (user-set during session).
     runtime: BTreeMap<String, Value>,
+    /// Snapshot of `runtime` at the most recent successful `save_runtime`.
+    /// Used to compute "is the in-memory state ahead of disk?" without
+    /// inspecting the file: dirty when `runtime != runtime_at_last_save`.
+    /// Initialized to an empty map so a fresh ConfigStore with no writes
+    /// reports clean.
+    runtime_at_last_save: BTreeMap<String, Value>,
     /// Optional persistence for the runtime layer.
     backing: Option<Box<dyn ox_store_util::StoreBacking>>,
 }
@@ -26,6 +32,7 @@ impl ConfigStore {
         Self {
             base,
             runtime: BTreeMap::new(),
+            runtime_at_last_save: BTreeMap::new(),
             backing: None,
         }
     }
@@ -44,8 +51,18 @@ impl ConfigStore {
         Self {
             base,
             runtime: BTreeMap::new(),
+            runtime_at_last_save: BTreeMap::new(),
             backing: Some(backing),
         }
+    }
+
+    /// `true` when the in-memory runtime layer carries unsaved changes.
+    /// `false` immediately after a successful `save_runtime` (and from
+    /// startup, before any writes). Read via the `_dirty` sentinel
+    /// path so consumers behind the broker can subscribe through the
+    /// regular Reader trait.
+    pub fn is_dirty(&self) -> bool {
+        self.runtime != self.runtime_at_last_save
     }
 
     /// Attach a persistence backing after construction.
@@ -57,7 +74,14 @@ impl ConfigStore {
     /// Null-deleted entries are excluded. API keys live in a separate
     /// `secret/` mount with its own `JsonFileBacking` (chmod 0600); they
     /// don't reach this code path at all.
-    pub fn save_runtime(&self) -> Result<(), StoreError> {
+    ///
+    /// On success snapshots `runtime` into `runtime_at_last_save` so
+    /// subsequent `is_dirty` reads return false until the next write.
+    /// `&mut self` because the snapshot update mutates internal state;
+    /// callers that already have the broker actor's mutable borrow
+    /// (e.g., the special-case in `Writer::write` for the `save` key)
+    /// pass `&mut self` through.
+    pub fn save_runtime(&mut self) -> Result<(), StoreError> {
         let Some(ref backing) = self.backing else {
             return Ok(());
         };
@@ -79,13 +103,28 @@ impl ConfigStore {
             .filter(|(_, v)| *v != Value::Null)
             .collect();
         tracing::info!(key_count = filtered.len(), "saving runtime config");
-        backing.save(&Value::Map(filtered))
+        backing.save(&Value::Map(filtered))?;
+        // Capture the runtime snapshot only after the backing write
+        // succeeds — a failed save leaves dirty=true so the user
+        // doesn't get a false "saved" indicator.
+        self.runtime_at_last_save = self.runtime.clone();
+        Ok(())
     }
 }
 
 impl Reader for ConfigStore {
     fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
         let key = from.to_string();
+
+        // Sentinel: `_dirty` returns the current dirty state as a Bool.
+        // Surfaces the runtime-vs-last-saved comparison through the
+        // standard Reader trait so consumers behind the broker (e.g.
+        // the settings renderer) can read it without reaching for a
+        // store-specific accessor. Underscore prefix keeps it out of
+        // the user's identifier namespace.
+        if key == "_dirty" {
+            return Ok(Some(Record::parsed(Value::Bool(self.is_dirty()))));
+        }
 
         // Root read: return all effective values as a map
         if key.is_empty() {

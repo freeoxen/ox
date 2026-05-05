@@ -107,6 +107,18 @@ pub async fn fetch_settings_view_state(client: &ClientHandle) -> SettingsSnapsho
             }
         }
     }
+    // Sentinel single-key fetch: ConfigStore exposes its dirty state
+    // at `config/_dirty` via its Reader impl. The PREFIXES sweep can't
+    // discover it because read_subtree walks the merged base+runtime
+    // map and the sentinel isn't a stored key — it's computed on read.
+    // Fetch it explicitly so the settings renderer can show an
+    // unsaved-changes indicator.
+    let dirty_path = Path::parse("config/_dirty").expect("static path literal");
+    if let Ok(Some(record)) = client.read(&dirty_path).await {
+        if let Some(value) = record.as_value() {
+            snap.insert(&dirty_path, value.clone());
+        }
+    }
     snap
 }
 

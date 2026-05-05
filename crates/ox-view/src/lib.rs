@@ -31,13 +31,22 @@ pub enum View {
         dir: Direction,
         children: Vec<(View, Sizing)>,
     },
-    List {
+    /// A bordered/titled box around any inner View. Splits the
+    /// "is-a-list-of-items" concept from the "is-displayed-in-a-titled-box"
+    /// concept so the same framing applies uniformly to lists, forms,
+    /// stacks, or anything else. `title_right` renders right-aligned on
+    /// the same border line as `title` — for status indicators that
+    /// shouldn't displace the main title.
+    Frame {
         title: Option<String>,
+        title_right: Option<String>,
+        content: Box<View>,
+    },
+    List {
         items: Vec<ListItem>,
         selected: Option<usize>,
     },
     Form {
-        title: Option<String>,
         rows: Vec<FormRow>,
         focused: Option<usize>,
     },
@@ -318,9 +327,8 @@ mod tests {
     }
 
     #[test]
-    fn view_list_with_title_and_items() {
+    fn view_list_with_items() {
         let v = View::List {
-            title: Some("accounts".into()),
             items: vec![
                 ListItem {
                     primary: "personal".into(),
@@ -338,7 +346,6 @@ mod tests {
             selected: Some(1),
         };
         let expected = View::List {
-            title: Some("accounts".into()),
             items: vec![
                 ListItem {
                     primary: "personal".into(),
@@ -359,9 +366,38 @@ mod tests {
     }
 
     #[test]
+    fn view_frame_wraps_a_list_with_title_and_right_status() {
+        let inner = View::List {
+            items: vec![ListItem {
+                primary: "personal".into(),
+                primary_spans: None,
+                secondary: None,
+                badge: None,
+            }],
+            selected: Some(0),
+        };
+        let framed = View::Frame {
+            title: Some("Settings".into()),
+            title_right: Some("● unsaved".into()),
+            content: Box::new(inner.clone()),
+        };
+        match framed {
+            View::Frame {
+                title,
+                title_right,
+                content,
+            } => {
+                assert_eq!(title.as_deref(), Some("Settings"));
+                assert_eq!(title_right.as_deref(), Some("● unsaved"));
+                assert_eq!(*content, inner);
+            }
+            other => panic!("expected View::Frame, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn view_form_with_focused_row() {
         let v = View::Form {
-            title: Some("provider".into()),
             rows: vec![
                 FormRow {
                     label: "endpoint".into(),
@@ -421,34 +457,40 @@ mod tests {
         let background = View::stack_v(vec![
             (View::text("status"), Sizing::Min(1)),
             (
-                View::List {
+                View::Frame {
                     title: Some("accounts".into()),
-                    items: vec![ListItem {
-                        primary: "personal".into(),
-                        primary_spans: None,
-                        secondary: None,
-                        badge: None,
-                    }],
-                    selected: Some(0),
+                    title_right: None,
+                    content: Box::new(View::List {
+                        items: vec![ListItem {
+                            primary: "personal".into(),
+                            primary_spans: None,
+                            secondary: None,
+                            badge: None,
+                        }],
+                        selected: Some(0),
+                    }),
                 },
                 Sizing::Fill,
             ),
         ]);
 
-        // Non-trivial foreground: a Form with one row.
-        let foreground = View::Form {
+        // Non-trivial foreground: a Form with one row, framed with a title.
+        let foreground = View::Frame {
             title: Some("edit".into()),
-            rows: vec![FormRow {
-                label: "name".into(),
-                value: FormValue::Text {
-                    value: "personal".into(),
-                    cursor: 8,
-                    masked: false,
-                },
-                error: None,
-                hint: None,
-            }],
-            focused: Some(0),
+            title_right: None,
+            content: Box::new(View::Form {
+                rows: vec![FormRow {
+                    label: "name".into(),
+                    value: FormValue::Text {
+                        value: "personal".into(),
+                        cursor: 8,
+                        masked: false,
+                    },
+                    error: None,
+                    hint: None,
+                }],
+                focused: Some(0),
+            }),
         };
 
         let v = View::Modal {

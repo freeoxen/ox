@@ -93,10 +93,18 @@ impl Renderer for IndexRenderer {
 
         let selected = selected.filter(|i| !items.is_empty() && *i < items.len());
 
-        View::List {
+        // Right-aligned dirty indicator on the title bar. Reads
+        // `config/_dirty` (a sentinel ConfigStore exposes that returns
+        // true when its runtime layer differs from the last persisted
+        // state). Renders nothing when clean — the title bar shows
+        // just "Settings" — so users get an at-a-glance signal that
+        // edits exist but haven't been saved yet.
+        let title_right = read_dirty_indicator(ctx.data);
+
+        View::Frame {
             title: Some("Settings".into()),
-            items,
-            selected,
+            title_right,
+            content: Box::new(View::List { items, selected }),
         }
     }
 
@@ -256,6 +264,29 @@ fn read_cursor(data: &mut dyn structfs_core_store::Reader) -> Option<structfs_co
     path_from_value(r.as_value()?)
 }
 
+/// Right-aligned title-bar indicator. Returns `Some("● unsaved · Ctrl+S")`
+/// when ConfigStore reports its runtime layer differs from the last
+/// persisted state, `None` otherwise. Reads the `config/_dirty`
+/// sentinel that ConfigStore exposes via its Reader impl.
+fn read_dirty_indicator(data: &mut dyn structfs_core_store::Reader) -> Option<String> {
+    use ox_path::oxpath;
+    use structfs_core_store::Value;
+    let dirty = data
+        .read(&oxpath!("config", "_dirty"))
+        .ok()
+        .flatten()
+        .and_then(|r| match r.as_value() {
+            Some(Value::Bool(b)) => Some(*b),
+            _ => None,
+        })
+        .unwrap_or(false);
+    if dirty {
+        Some("● unsaved · Ctrl+S".to_string())
+    } else {
+        None
+    }
+}
+
 pub fn register(reg: &mut RendererRegistry) {
     reg.register(
         ox_path::oxpath!("settings", "index"),
@@ -336,13 +367,19 @@ mod tests {
     }
 
     fn assert_list(view: View) -> (Option<String>, Vec<ListItem>, Option<usize>) {
+        // The IndexRenderer wraps its View::List in a View::Frame; pull
+        // the title from the frame and the items/selected from the
+        // inner list.
         match view {
-            View::List {
+            View::Frame {
                 title,
-                items,
-                selected,
-            } => (title, items, selected),
-            other => panic!("expected View::List, got {other:?}"),
+                title_right: _,
+                content,
+            } => match *content {
+                View::List { items, selected } => (title, items, selected),
+                other => panic!("expected View::List inside Frame, got {other:?}"),
+            },
+            other => panic!("expected View::Frame, got {other:?}"),
         }
     }
 
@@ -465,8 +502,11 @@ mod tests {
         };
         let view = reg.render(&oxpath!("settings", "index"), &mut ctx);
         match view {
-            View::List { items, .. } => assert_eq!(items.len(), 2),
-            other => panic!("unexpected: {other:?}"),
+            View::Frame { content, .. } => match *content {
+                View::List { items, .. } => assert_eq!(items.len(), 2),
+                other => panic!("expected List inside Frame, got {other:?}"),
+            },
+            other => panic!("expected Frame, got {other:?}"),
         }
     }
 

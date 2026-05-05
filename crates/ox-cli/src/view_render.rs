@@ -43,16 +43,20 @@ pub(crate) fn render_to_frame(view: &View, frame: &mut Frame, area: Rect, theme:
         View::Empty => {}
         View::Text { spans, align } => render_text(spans, *align, frame, area),
         View::Stack { dir, children } => render_stack(dir, children, frame, area, theme),
-        View::List {
+        View::Frame {
             title,
-            items,
-            selected,
-        } => render_list(title.as_deref(), items, *selected, frame, area, theme),
-        View::Form {
-            title,
-            rows,
-            focused,
-        } => render_form(title.as_deref(), rows, *focused, frame, area, theme),
+            title_right,
+            content,
+        } => render_frame(
+            title.as_deref(),
+            title_right.as_deref(),
+            content,
+            frame,
+            area,
+            theme,
+        ),
+        View::List { items, selected } => render_list(items, *selected, frame, area, theme),
+        View::Form { rows, focused } => render_form(rows, *focused, frame, area, theme),
         View::Modal {
             background,
             foreground,
@@ -96,7 +100,6 @@ fn render_stack(
 }
 
 fn render_list(
-    title: Option<&str>,
     items: &[ListItem],
     selected: Option<usize>,
     frame: &mut Frame,
@@ -132,13 +135,8 @@ fn render_list(
         })
         .collect();
 
-    let mut block = Block::default();
-    if let Some(t) = title {
-        block = block.borders(Borders::ALL).title(t.to_string());
-    }
-    let list = RList::new(ritems)
-        .block(block)
-        .highlight_style(RStyle::default().add_modifier(RModifier::REVERSED));
+    let list =
+        RList::new(ritems).highlight_style(RStyle::default().add_modifier(RModifier::REVERSED));
 
     let mut state = ListState::default();
     state.select(selected);
@@ -146,7 +144,6 @@ fn render_list(
 }
 
 fn render_form(
-    title: Option<&str>,
     rows: &[FormRow],
     focused: Option<usize>,
     frame: &mut Frame,
@@ -192,12 +189,31 @@ fn render_form(
         lines.push(Line::from(spans));
     }
 
-    let mut block = Block::default();
-    if let Some(t) = title {
-        block = block.borders(Borders::ALL).title(t.to_string());
-    }
-    let para = Paragraph::new(lines).block(block);
+    let para = Paragraph::new(lines);
     frame.render_widget(para, area);
+}
+
+/// Draws a bordered Block (with optional left- and right-aligned titles)
+/// around `content`. The inner area shrinks to account for the border;
+/// content recursively renders into that.
+fn render_frame(
+    title: Option<&str>,
+    title_right: Option<&str>,
+    content: &View,
+    frame: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+) {
+    let mut block = Block::default().borders(Borders::ALL);
+    if let Some(t) = title {
+        block = block.title_top(Line::from(t.to_string()));
+    }
+    if let Some(tr) = title_right {
+        block = block.title_top(Line::from(tr.to_string()).right_aligned());
+    }
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    render_to_frame(content, frame, inner, theme);
 }
 
 fn format_form_value(v: &FormValue) -> String {
@@ -470,23 +486,26 @@ mod tests {
 
     #[test]
     fn renders_list_with_title_and_selection() {
-        let view = View::List {
+        let view = View::Frame {
             title: Some("accounts".into()),
-            items: vec![
-                ListItem {
-                    primary: "personal".into(),
-                    primary_spans: None,
-                    secondary: Some("anthropic".into()),
-                    badge: Some("default".into()),
-                },
-                ListItem {
-                    primary: "work".into(),
-                    primary_spans: None,
-                    secondary: Some("openai".into()),
-                    badge: None,
-                },
-            ],
-            selected: Some(1),
+            title_right: None,
+            content: Box::new(View::List {
+                items: vec![
+                    ListItem {
+                        primary: "personal".into(),
+                        primary_spans: None,
+                        secondary: Some("anthropic".into()),
+                        badge: Some("default".into()),
+                    },
+                    ListItem {
+                        primary: "work".into(),
+                        primary_spans: None,
+                        secondary: Some("openai".into()),
+                        badge: None,
+                    },
+                ],
+                selected: Some(1),
+            }),
         };
         let out = render_view(view, 30, 6);
         insta::assert_snapshot!(out);
@@ -496,31 +515,34 @@ mod tests {
 
     #[test]
     fn renders_form_with_focused_row() {
-        let view = View::Form {
+        let view = View::Frame {
             title: Some("provider".into()),
-            rows: vec![
-                FormRow {
-                    label: "endpoint".into(),
-                    value: FormValue::Text {
-                        value: "https://api.example.com".into(),
-                        cursor: 0,
-                        masked: false,
+            title_right: None,
+            content: Box::new(View::Form {
+                rows: vec![
+                    FormRow {
+                        label: "endpoint".into(),
+                        value: FormValue::Text {
+                            value: "https://api.example.com".into(),
+                            cursor: 0,
+                            masked: false,
+                        },
+                        error: None,
+                        hint: Some("HTTPS URL".into()),
                     },
-                    error: None,
-                    hint: Some("HTTPS URL".into()),
-                },
-                FormRow {
-                    label: "api_key".into(),
-                    value: FormValue::Text {
-                        value: "secret".into(),
-                        cursor: 0,
-                        masked: true,
+                    FormRow {
+                        label: "api_key".into(),
+                        value: FormValue::Text {
+                            value: "secret".into(),
+                            cursor: 0,
+                            masked: true,
+                        },
+                        error: Some("required".into()),
+                        hint: None,
                     },
-                    error: Some("required".into()),
-                    hint: None,
-                },
-            ],
-            focused: Some(0),
+                ],
+                focused: Some(0),
+            }),
         };
         let out = render_view(view, 60, 5);
         insta::assert_snapshot!(out);
@@ -533,28 +555,34 @@ mod tests {
         let background = View::stack_v(vec![
             (View::text("status"), Sizing::Fixed(1)),
             (
-                View::List {
+                View::Frame {
                     title: Some("items".into()),
-                    items: vec![ListItem {
-                        primary: "alpha".into(),
-                        primary_spans: None,
-                        secondary: None,
-                        badge: None,
-                    }],
-                    selected: Some(0),
+                    title_right: None,
+                    content: Box::new(View::List {
+                        items: vec![ListItem {
+                            primary: "alpha".into(),
+                            primary_spans: None,
+                            secondary: None,
+                            badge: None,
+                        }],
+                        selected: Some(0),
+                    }),
                 },
                 Sizing::Fill,
             ),
         ]);
-        let foreground = View::Form {
+        let foreground = View::Frame {
             title: Some("edit".into()),
-            rows: vec![FormRow {
-                label: "name".into(),
-                value: FormValue::ReadOnly("personal".into()),
-                error: None,
-                hint: None,
-            }],
-            focused: Some(0),
+            title_right: None,
+            content: Box::new(View::Form {
+                rows: vec![FormRow {
+                    label: "name".into(),
+                    value: FormValue::ReadOnly("personal".into()),
+                    error: None,
+                    hint: None,
+                }],
+                focused: Some(0),
+            }),
         };
         let view = View::Modal {
             background: Box::new(background),
