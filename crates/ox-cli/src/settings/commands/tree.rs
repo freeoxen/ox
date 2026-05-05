@@ -217,6 +217,9 @@ fn activate(data: &mut dyn Reader) -> Vec<Write> {
             // The expandable arm above already handles every Entry,
             // Account, and Model row.
             RowKind::Entry { .. } | RowKind::Account { .. } | RowKind::Model { .. } => Vec::new(),
+            // Real behavior comes in the next commit; this keeps the
+            // match exhaustive without yet writing the refresh trigger.
+            RowKind::ModelEmptyState { .. } => Vec::new(),
         }
     }
 }
