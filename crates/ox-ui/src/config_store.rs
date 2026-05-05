@@ -85,15 +85,29 @@ impl ConfigStore {
         let Some(ref backing) = self.backing else {
             return Ok(());
         };
-        // Merge base with runtime overrides
-        let mut effective = self.base.clone();
+        // Expand any runtime Map entries into their flat sub-keys
+        // before merging with base. Without this, a runtime entry like
+        // `gate/providers/LMStudio` = Map({dialect: "anthropic", ...})
+        // would coexist with base's flat `gate/providers/LMStudio/dialect`
+        // = "openai" — both as separate BTreeMap keys, and base wins at
+        // serialization because TomlFileBacking's insert_nested processes
+        // entries in lex order (parent first, then sub-keys overwrite
+        // the parent's fields). Flattening converts every runtime entry
+        // into its leaf sub-keys so runtime cleanly shadows base at the
+        // same key.
+        let mut flat_runtime: BTreeMap<String, Value> = BTreeMap::new();
         for (k, v) in &self.runtime {
+            flatten_value_into(k, v, &mut flat_runtime);
+        }
+        // Merge base with the flattened runtime overrides.
+        let mut effective = self.base.clone();
+        for (k, v) in flat_runtime {
             match v {
                 Value::Null => {
-                    effective.remove(k);
+                    effective.remove(&k);
                 }
                 _ => {
-                    effective.insert(k.clone(), v.clone());
+                    effective.insert(k, v);
                 }
             }
         }
@@ -109,6 +123,29 @@ impl ConfigStore {
         // doesn't get a false "saved" indicator.
         self.runtime_at_last_save = self.runtime.clone();
         Ok(())
+    }
+}
+
+/// Recursively expand a value into flat-keyed leaves under `prefix`.
+/// `Value::Map` recurses into its fields; everything else is treated as
+/// a leaf and inserted at `prefix`. Used in save to decompose runtime
+/// parent Maps into the flat sub-keys the TOML backing serializes
+/// natively.
+fn flatten_value_into(prefix: &str, value: &Value, out: &mut BTreeMap<String, Value>) {
+    match value {
+        Value::Map(m) => {
+            for (k, v) in m {
+                let path = if prefix.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{}/{}", prefix, k)
+                };
+                flatten_value_into(&path, v, out);
+            }
+        }
+        _ => {
+            out.insert(prefix.to_string(), value.clone());
+        }
     }
 }
 
@@ -357,6 +394,83 @@ mod tests {
             Value::Map(m) => {
                 assert!(!m.contains_key("gate/old"));
                 assert!(m.contains_key("gate/model"));
+            }
+            _ => panic!("expected map"),
+        }
+    }
+
+    #[test]
+    fn save_runtime_parent_map_shadows_base_flat_sub_keys() {
+        // The protocol-cycle bug: base loads a TOML provider as flat
+        // sub-keys (gate/providers/LMStudio/dialect = "openai", etc.).
+        // The cycle command writes a parent ProviderConfig Map at
+        // gate/providers/LMStudio = Map({dialect: "anthropic", ...}).
+        // Without flattening, base's "openai" sub-key would survive
+        // into the saved file and silently override the new dialect.
+        // This test pins the fix.
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Default)]
+        struct CaptureBacking {
+            saved: Arc<Mutex<Option<Value>>>,
+        }
+        impl ox_store_util::StoreBacking for CaptureBacking {
+            fn load(&self) -> Result<Option<Value>, StoreError> {
+                Ok(None)
+            }
+            fn save(&self, value: &Value) -> Result<(), StoreError> {
+                *self.saved.lock().unwrap() = Some(value.clone());
+                Ok(())
+            }
+        }
+
+        let mut base = BTreeMap::new();
+        base.insert(
+            "gate/providers/LMStudio/dialect".to_string(),
+            Value::String("openai".into()),
+        );
+        base.insert(
+            "gate/providers/LMStudio/endpoint".to_string(),
+            Value::String("http://127.0.0.1:1234".into()),
+        );
+
+        let saved = Arc::new(Mutex::new(None));
+        let backing = CaptureBacking {
+            saved: saved.clone(),
+        };
+        let mut config = ConfigStore::new(base);
+        config.set_backing(Box::new(backing));
+
+        // Cycle writes the parent Map (not the sub-keys directly).
+        let mut new_provider = BTreeMap::new();
+        new_provider.insert("dialect".to_string(), Value::String("anthropic".into()));
+        new_provider.insert(
+            "endpoint".to_string(),
+            Value::String("http://127.0.0.1:1234".into()),
+        );
+        config
+            .write(
+                &path!("gate/providers/LMStudio"),
+                Record::parsed(Value::Map(new_provider)),
+            )
+            .unwrap();
+        config.save_runtime().unwrap();
+
+        let saved_val = saved.lock().unwrap().clone().unwrap();
+        match saved_val {
+            Value::Map(m) => {
+                assert_eq!(
+                    m.get("gate/providers/LMStudio/dialect").unwrap(),
+                    &Value::String("anthropic".into()),
+                    "runtime parent-Map's dialect must shadow base's flat sub-key"
+                );
+                assert_eq!(
+                    m.get("gate/providers/LMStudio/endpoint").unwrap(),
+                    &Value::String("http://127.0.0.1:1234".into())
+                );
+                // The parent-key shape is gone; it was decomposed into
+                // its leaf sub-keys.
+                assert!(!m.contains_key("gate/providers/LMStudio"));
             }
             _ => panic!("expected map"),
         }
