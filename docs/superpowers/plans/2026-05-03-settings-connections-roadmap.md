@@ -32,14 +32,14 @@ The Models tier becomes a flat table over `(connection, model_id)` pairs with tw
 
 Six slices, ordered by leverage. Each ships independently.
 
-| # | Slice | Blockers | Touches kernel? | Schema change? |
-|---|---|---|---|---|
-| 1 | Dynamic Protocol options (kill hardcoded carousel) | none | no | no |
-| 2 | Bootstrap rename (`gate/completions/primary` → `gate/completions/bootstrap`) + per-row toggle | Q3 | no | renaming only |
-| 3 | `default_available: Vec<ModelKey>` record + per-row toggle | Q1 | yes (if Q1=a) | new record |
-| 4 | Models becomes a flat table; per-account drill-in retired | depends on 2 | no | no |
-| 5 | Accounts → Connections (joint provider+account form, share-set indicator) | none | no | no (cosmetic + UX) |
-| 6 | Manual model entry (`+ add row`, `ModelInfoSource::UserEntered`) | Q2 | no | new enum variant |
+| # | Slice | Status |
+|---|---|---|
+| 1 | Dynamic Protocol options (kill hardcoded carousel) | **shipped** |
+| 2 | Bootstrap rename (`gate/completions/primary` → `gate/completions/bootstrap`) + per-row toggle | **shipped** |
+| 3 | `default_available: Vec<ModelKey>` record + per-row toggle | **shipped (UI half).** Enforcement gate deferred — see completion plan §1 ("Slice 3 Status") for the architectural blocker (no per-call model selection in `complete` tool today; gate would live in the harness, not kernel, when that lands). |
+| 4 | Models flat table — empty-state row per connection + inline `ctx/out` metadata in `secondary` | **shipped.** Real `View::Table` variant (column alignment, headers, search) is a separate ox-view slice; current rows use existing `primary`+`secondary`+`badge` slots. |
+| 5 | Connections terminology + share-set indicator + fork-provider command | **shipped.** Joint Add-Connection form (single-screen wizard) deferred — current `_new` overlay still ping-pongs through name → defaults. |
+| 6 | Manual model entry (`+ add row`, `ModelInfoSource::UserEntered`) | **shipped.** |
 
 **Slice 1** is fully specified below. **Slices 2–6** require their own detailed plans (see §5) and, for slices 2/3/6, answers to the open questions in §3.
 
