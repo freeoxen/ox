@@ -28,7 +28,7 @@ impl Renderer for OverlayNewAccountRenderer {
         let cursor: u32 = name_input.chars().count() as u32;
 
         let fg = View::Form {
-            title: Some("New account".into()),
+            title: Some("New connection".into()),
             rows: vec![FormRow {
                 label: "Name".into(),
                 value: FormValue::Text {
@@ -107,7 +107,7 @@ mod tests {
                         rows,
                         focused,
                     } => {
-                        assert_eq!(title.as_deref(), Some("New account"));
+                        assert_eq!(title.as_deref(), Some("New connection"));
                         assert_eq!(*focused, Some(0));
                         assert_eq!(rows.len(), 1);
                         assert_eq!(rows[0].label, "Name");

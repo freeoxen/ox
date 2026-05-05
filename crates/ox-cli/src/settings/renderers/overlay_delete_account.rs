@@ -25,7 +25,7 @@ impl Renderer for OverlayDeleteAccountRenderer {
         .flatten();
 
         let fg = match selected {
-            Some(name) => View::text(format!("Delete account '{}'? (y/n)", name)),
+            Some(name) => View::text(format!("Delete connection '{}'? (y/n)", name)),
             None => View::text("Nothing selected. Press Esc."),
         };
 
@@ -89,7 +89,7 @@ mod tests {
                 foreground, dim, ..
             } => {
                 assert!(dim);
-                assert_eq!(*foreground, View::text("Delete account 'alpha'? (y/n)"));
+                assert_eq!(*foreground, View::text("Delete connection 'alpha'? (y/n)"));
             }
             other => panic!("expected Modal, got {other:?}"),
         }

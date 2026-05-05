@@ -52,8 +52,8 @@ command! {
 command! {
     struct_name: HighlightAccountsNext,
     id: "highlight.accounts.next",
-    title: "Highlight Next (Accounts)",
-    description: "Move the accounts selection to the next account (wrap).",
+    title: "Highlight Next (Connections)",
+    description: "Move the Connections selection to the next Connection (wrap).",
     screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "accounts")),
     run: |snap, _ctx| accounts_step(snap, Direction::Next),
@@ -62,8 +62,8 @@ command! {
 command! {
     struct_name: HighlightAccountsPrev,
     id: "highlight.accounts.prev",
-    title: "Highlight Prev (Accounts)",
-    description: "Move the accounts selection to the previous account (wrap).",
+    title: "Highlight Prev (Connections)",
+    description: "Move the Connections selection to the previous Connection (wrap).",
     screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "accounts")),
     run: |snap, _ctx| accounts_step(snap, Direction::Prev),
