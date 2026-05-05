@@ -30,6 +30,12 @@ pub enum RowKind {
     /// natural one ("expand to see models") would otherwise yield a
     /// silent zero-row expansion.
     ModelEmptyState { account: String },
+    /// Inline "+ add model manually" row that appears directly under a
+    /// ModelEmptyState row. Activating it opens the three-field manual
+    /// entry form. Future iteration may also emit this after the last
+    /// model row of a non-empty catalog so users can add custom entries
+    /// alongside auto-enumerated ones.
+    ModelAddManual { account: String },
     /// One field row under an expanded account.
     AccountField {
         account: String,
@@ -199,6 +205,19 @@ fn append_model_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, expanded
                 secondary: None,
                 badge: None,
                 kind: RowKind::ModelEmptyState {
+                    account: account_name.clone(),
+                },
+                expandable: false,
+                expanded: false,
+            });
+            let add_path = row_path(&["settings", "models", &safe_component(account_name), "_add"]);
+            rows.push(VisibleRow {
+                path: add_path,
+                depth: 1,
+                label: format!("{} / + add model manually", account_name),
+                secondary: None,
+                badge: None,
+                kind: RowKind::ModelAddManual {
                     account: account_name.clone(),
                 },
                 expandable: false,
@@ -957,8 +976,8 @@ mod tests {
         );
         let rows = enumerate(&mut snap);
         // Visible: [Accounts header, Models header, alpha/m1 row,
-        // beta empty-state row] = 4
-        assert_eq!(rows.len(), 4);
+        // beta empty-state row, beta add-manual row] = 5
+        assert_eq!(rows.len(), 5);
         let empty = rows
             .iter()
             .find(|r| matches!(&r.kind, RowKind::ModelEmptyState { .. }))
@@ -991,6 +1010,31 @@ mod tests {
             .collect();
         assert_eq!(empty.len(), 2);
         assert_ne!(empty[0].path, empty[1].path);
+    }
+
+    #[test]
+    fn empty_state_is_followed_by_add_manual_row() {
+        let mut snap = SettingsSnapshot::empty();
+        write_index_entries(&mut snap);
+        write_account(&mut snap, "alpha"); // no models
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&["settings/models".to_string()]),
+        );
+        let rows = enumerate(&mut snap);
+        let empty_idx = rows
+            .iter()
+            .position(|r| matches!(&r.kind, RowKind::ModelEmptyState { .. }))
+            .expect("empty-state row");
+        let add_idx = rows
+            .iter()
+            .position(|r| matches!(&r.kind, RowKind::ModelAddManual { .. }))
+            .expect("add-manual row");
+        assert_eq!(add_idx, empty_idx + 1);
+        if let RowKind::ModelAddManual { account } = &rows[add_idx].kind {
+            assert_eq!(account, "alpha");
+        }
+        assert!(rows[add_idx].label.contains("+ add model manually"));
     }
 
     // -- format_token_count ---------------------------------------------

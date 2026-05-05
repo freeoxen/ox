@@ -233,6 +233,7 @@ fn activate(data: &mut dyn Reader) -> Vec<Write> {
                     record: Record::parsed(Value::Null),
                 }]
             }
+            RowKind::ModelAddManual { .. } => Vec::new(),
         }
     }
 }
