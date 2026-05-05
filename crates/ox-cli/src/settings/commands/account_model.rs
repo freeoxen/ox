@@ -1498,6 +1498,83 @@ mod tests {
     }
 
     #[test]
+    fn cycle_protocol_repro_user_toml_flat_keys_two_cycles_advance() {
+        // Realistic TOML shape: provider record loaded via TomlFileBacking
+        // arrives as FLAT sub-keys (gate/providers/LMStudio/dialect = "openai",
+        // /endpoint, /version, /auth) — there is no parent `Value::Map` at
+        // gate/providers/LMStudio. The ConfigStore's runtime layer adds
+        // the parent Map on first cycle write, and subsequent cycles must
+        // read it and advance honestly.
+        //
+        // This test pins both cycles. If the second cycle doesn't move
+        // the dialect, the bug is here.
+        let mut snap = SettingsSnapshot::empty();
+        // Account: flat-key (no parent Map) — matches TomlFileBacking output.
+        let acct_comp = ox_kernel::PathComponent::try_new("LMStudio").unwrap();
+        snap.insert(
+            &oxpath!("config", "gate", "accounts", acct_comp.clone(), "provider"),
+            Value::String("LMStudio".into()),
+        );
+        // Provider: flat-key (no parent Map) — matches TomlFileBacking output.
+        snap.insert(
+            &oxpath!("config", "gate", "providers", acct_comp.clone(), "dialect"),
+            Value::String("openai".into()),
+        );
+        snap.insert(
+            &oxpath!("config", "gate", "providers", acct_comp.clone(), "endpoint"),
+            Value::String("http://127.0.0.1:1234".into()),
+        );
+        snap.insert(
+            &oxpath!("config", "gate", "providers", acct_comp.clone(), "auth"),
+            Value::String("none".into()),
+        );
+        snap.insert(
+            &oxpath!("config", "gate", "providers", acct_comp, "version"),
+            Value::String(String::new()),
+        );
+        select_account(&mut snap, "LMStudio");
+
+        // First cycle — read_typed::<ProviderConfig> on the parent path
+        // returns None (no parent Map), so the cycle synthesizes a default
+        // with dialect=acct.provider="LMStudio". options=[anthropic, openai,
+        // LMStudio]; idx=2; forward → idx 0 = "anthropic".
+        let writes_1 = selector_cycle_protocol_dir(&mut snap, CycleDir::Forward);
+        assert_eq!(writes_1.len(), 1, "first cycle must produce one write");
+        let prov_comp = ox_kernel::PathComponent::try_new("LMStudio").unwrap();
+        assert_eq!(
+            writes_1[0].path,
+            oxpath!("config", "gate", "providers", prov_comp.clone())
+        );
+        let pc1: ProviderConfig =
+            structfs_serde_store::from_value(writes_1[0].record.as_value().unwrap().clone())
+                .unwrap();
+        assert_eq!(
+            pc1.dialect, "anthropic",
+            "first cycle must advance dialect from synthesized 'LMStudio' to 'anthropic'"
+        );
+
+        // Apply the write into the snapshot the same way the broker would,
+        // then cycle again.
+        snap.insert(
+            &oxpath!("config", "gate", "providers", prov_comp.clone()),
+            writes_1[0].record.as_value().unwrap().clone(),
+        );
+
+        // Second cycle — now read_typed::<ProviderConfig> finds the parent
+        // Map (from the inserted runtime override). dialect is "anthropic".
+        // options=[anthropic, openai]; idx=0; forward → idx 1 = "openai".
+        let writes_2 = selector_cycle_protocol_dir(&mut snap, CycleDir::Forward);
+        assert_eq!(writes_2.len(), 1, "second cycle must produce one write");
+        let pc2: ProviderConfig =
+            structfs_serde_store::from_value(writes_2[0].record.as_value().unwrap().clone())
+                .unwrap();
+        assert_eq!(
+            pc2.dialect, "openai",
+            "second cycle must advance dialect from 'anthropic' to 'openai'"
+        );
+    }
+
+    #[test]
     fn cycle_protocol_does_not_treat_provider_record_names_as_options() {
         // Two provider records, both with dialect="openai", with
         // distinguishing names (LMStudio, lm_studio). A connection bound

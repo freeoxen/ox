@@ -823,6 +823,110 @@ async fn production_ui_store_routes_settings_writes() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cycling_protocol_with_toml_loaded_flat_keys_advances_through_broker() {
+    // Mimics the user-reported reproduction shape: provider record arrives
+    // from TomlFileBacking as FLAT sub-keys (no parent Map), then cycle
+    // twice through the real broker dispatch path. Both cycles must
+    // advance the dialect — the second cycle exercises the runtime-Map
+    // override-of-base-flat-keys read path.
+    let h = E2eHarness::new().await;
+    populate_index(&h).await;
+
+    // Account `LMStudio` as flat sub-key (mimics TOML loading): no parent
+    // AccountConfig leaf, just the child `provider` string.
+    let comp = ox_kernel::PathComponent::try_new("LMStudio").unwrap();
+    h.client
+        .write(
+            &oxpath!("config", "gate", "accounts", comp.clone(), "provider"),
+            Record::parsed(Value::String("LMStudio".into())),
+        )
+        .await
+        .expect("write provider child");
+    // Provider `LMStudio` record as flat sub-keys, dialect=openai.
+    h.client
+        .write(
+            &oxpath!("config", "gate", "providers", comp.clone(), "dialect"),
+            Record::parsed(Value::String("openai".into())),
+        )
+        .await
+        .expect("write dialect");
+    h.client
+        .write(
+            &oxpath!("config", "gate", "providers", comp.clone(), "endpoint"),
+            Record::parsed(Value::String("http://127.0.0.1:1234".into())),
+        )
+        .await
+        .expect("write endpoint");
+    h.client
+        .write(
+            &oxpath!("config", "gate", "providers", comp.clone(), "auth"),
+            Record::parsed(Value::String("none".into())),
+        )
+        .await
+        .expect("write auth");
+    h.client
+        .write(
+            &oxpath!("config", "gate", "providers", comp.clone(), "version"),
+            Record::parsed(Value::String(String::new())),
+        )
+        .await
+        .expect("write version");
+
+    h.client
+        .write(
+            &oxpath!("ui", "settings", "expanded"),
+            Record::parsed(ox_cli::settings::visible_rows::expanded_set_to_value(&[
+                "settings/accounts".to_string(),
+                "settings/accounts/LMStudio".to_string(),
+            ])),
+        )
+        .await
+        .expect("write expanded set");
+
+    h.write_path(
+        &oxpath!("ui", "settings", "cursor"),
+        &oxpath!("settings", "accounts", comp.clone()),
+    )
+    .await;
+    h.write_path(
+        &oxpath!("ui", "settings", "focused_row"),
+        &oxpath!("settings", "accounts", comp.clone(), "protocol"),
+    )
+    .await;
+
+    // First cycle.
+    assert!(matches!(h.dispatch("l").await, KeyDispatchOutcome::Handled));
+    let pc1: ProviderConfig = h
+        .client
+        .read_typed(&oxpath!("config", "gate", "providers", comp.clone()))
+        .await
+        .expect("read provider")
+        .expect("provider present after first cycle");
+    // From acct.provider="LMStudio" (since no parent ProviderConfig Map
+    // existed yet to read dialect from), synthesized default has
+    // dialect="LMStudio". options=[anthropic, openai, LMStudio]; idx=2;
+    // forward → idx 0 = "anthropic".
+    assert_eq!(
+        pc1.dialect, "anthropic",
+        "first cycle must advance from synthesized 'LMStudio' to 'anthropic'"
+    );
+
+    // Second cycle — now the runtime override exists; the read should
+    // see dialect="anthropic", and forward should land on "openai".
+    assert!(matches!(h.dispatch("l").await, KeyDispatchOutcome::Handled));
+    let pc2: ProviderConfig = h
+        .client
+        .read_typed(&oxpath!("config", "gate", "providers", comp))
+        .await
+        .expect("read provider")
+        .expect("provider present after second cycle");
+    assert_eq!(
+        pc2.dialect, "openai",
+        "second cycle must advance from 'anthropic' to 'openai'"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cycling_protocol_mutates_bound_provider_dialect_not_account() {
     // Drives the full dispatch path (key → binding → command → broker
     // write) for the Protocol carousel. The Protocol field characterizes
