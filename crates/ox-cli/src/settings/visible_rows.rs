@@ -138,6 +138,8 @@ fn append_account_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, expand
 /// Append one row per (account, model_id) pair. Like accounts, model
 /// rows are expandable — expanding shows the per-model overrides.
 fn append_model_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, expanded: &[String]) {
+    use ox_types::settings::ModelKey;
+
     // Resolve the bootstrap role once per enumeration so every row can
     // be cheaply tagged. Same fallback the badge resolver uses: new path
     // first, legacy path second, so freshly-installed and upgraded
@@ -146,6 +148,15 @@ fn append_model_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, expanded
     let bootstrap: Option<ox_gate::CompletionRole> =
         read_typed(data, &oxpath!("config", "gate", "completions", "bootstrap"))
             .or_else(|| read_typed(data, &oxpath!("config", "gate", "completions", "primary")));
+    // Same one-shot read for the default-available set: each row tests
+    // membership locally instead of re-reading the record per pair.
+    // Absent record collapses to an empty vec — no rows badge with D
+    // until the user explicitly opts a subset in.
+    let default_set: Vec<ModelKey> = read_typed(
+        data,
+        &oxpath!("config", "gate", "completions", "default_available"),
+    )
+    .unwrap_or_default();
 
     let account_names = child_names_under(data, "config/gate/accounts");
     for account_name in &account_names {
@@ -171,13 +182,21 @@ fn append_model_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, expanded
             ]);
             let path_str = path_to_string(&path);
             let is_expanded = expanded.iter().any(|s| s == &path_str);
-            let badge = if bootstrap
+            let is_bootstrap = bootstrap
                 .as_ref()
-                .is_some_and(|r| r.account == *account_name && r.model_id == m.id)
-            {
-                Some("B".to_string())
-            } else {
-                None
+                .is_some_and(|r| r.account == *account_name && r.model_id == m.id);
+            let is_default = default_set
+                .iter()
+                .any(|k| k.account == *account_name && k.model_id == m.id);
+            // D before B: default-available is the multi-select common
+            // case the user toggles often, bootstrap is the single
+            // global pin. Reading "D B" left-to-right matches that
+            // mental order.
+            let badge = match (is_default, is_bootstrap) {
+                (true, true) => Some("D B".to_string()),
+                (true, false) => Some("D".to_string()),
+                (false, true) => Some("B".to_string()),
+                (false, false) => None,
             };
             rows.push(VisibleRow {
                 path: path.clone(),
@@ -776,6 +795,85 @@ mod tests {
         );
         let badge = resolve_badge(&mut snap, &BadgeSource::BootstrapReference);
         assert_eq!(badge.as_deref(), Some("current / new-model"));
+    }
+
+    #[test]
+    fn model_row_badge_marks_default_available_pair() {
+        use ox_types::settings::ModelKey;
+        let mut snap = SettingsSnapshot::empty();
+        write_index_entries(&mut snap);
+        write_account_with_models(&mut snap, "alpha", &["m1", "m2"]);
+        snap.insert(
+            &oxpath!("config", "gate", "completions", "default_available"),
+            to_value(&vec![ModelKey {
+                account: "alpha".into(),
+                model_id: "m1".into(),
+            }])
+            .unwrap(),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&["settings/models".to_string()]),
+        );
+        let rows = enumerate(&mut snap);
+        let m1_row = rows
+            .iter()
+            .find(|r| {
+                matches!(
+                    &r.kind,
+                    RowKind::Model { account, model_id }
+                        if account == "alpha" && model_id == "m1"
+                )
+            })
+            .expect("m1 row");
+        assert_eq!(m1_row.badge.as_deref(), Some("D"));
+        let m2_row = rows
+            .iter()
+            .find(|r| {
+                matches!(
+                    &r.kind,
+                    RowKind::Model { account, model_id }
+                        if account == "alpha" && model_id == "m2"
+                )
+            })
+            .expect("m2 row");
+        assert!(m2_row.badge.is_none());
+    }
+
+    #[test]
+    fn model_row_badge_combines_default_and_bootstrap() {
+        use ox_gate::CompletionRole;
+        use ox_types::settings::ModelKey;
+        let mut snap = SettingsSnapshot::empty();
+        write_index_entries(&mut snap);
+        write_account_with_models(&mut snap, "alpha", &["m1"]);
+        snap.insert(
+            &oxpath!("config", "gate", "completions", "default_available"),
+            to_value(&vec![ModelKey {
+                account: "alpha".into(),
+                model_id: "m1".into(),
+            }])
+            .unwrap(),
+        );
+        snap.insert(
+            &oxpath!("config", "gate", "completions", "bootstrap"),
+            to_value(&CompletionRole {
+                account: "alpha".into(),
+                model_id: "m1".into(),
+            })
+            .unwrap(),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&["settings/models".to_string()]),
+        );
+        let rows = enumerate(&mut snap);
+        let row = rows
+            .iter()
+            .find(|r| matches!(&r.kind, RowKind::Model { .. }))
+            .expect("model row");
+        // Order: D first, then B (D is the multi-select common case).
+        assert_eq!(row.badge.as_deref(), Some("D B"));
     }
 
     #[test]
