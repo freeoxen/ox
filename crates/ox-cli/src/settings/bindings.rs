@@ -314,10 +314,17 @@ fn register_row_prefixes(reg: &mut BindingRegistry) {
     // row (the latter is what the accordion makes natural).
     bind_prefix(
         reg,
-        models_subtree,
+        models_subtree.clone(),
         no_mods(),
         KeyCodeRepr::Char('r'),
         "account.refresh",
+    );
+    bind_prefix(
+        reg,
+        models_subtree,
+        no_mods(),
+        KeyCodeRepr::Char('d'),
+        "models.toggle_default",
     );
 }
 
@@ -577,6 +584,24 @@ mod tests {
             )
             .expect("should match");
         assert_eq!(hit, &cmd("models.set_bootstrap"));
+    }
+
+    #[test]
+    fn models_d_resolves_to_toggle_default() {
+        // `d` under settings/models toggles default-available membership.
+        // The same key under settings/accounts is bound to
+        // accounts.delete_confirm; the prefix scopes are disjoint so
+        // resolution is unambiguous.
+        let reg = populated();
+        let hit = reg
+            .lookup(
+                Screen::Settings,
+                &oxpath!("settings", "models"),
+                None,
+                &key(no_mods(), KeyCodeRepr::Char('d')),
+            )
+            .expect("should match");
+        assert_eq!(hit, &cmd("models.toggle_default"));
     }
 
     #[test]
