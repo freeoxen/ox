@@ -424,6 +424,20 @@ fn register_global(reg: &mut BindingRegistry) {
         },
         command_id: cmd("modal.toggle_shortcuts"),
     });
+    // Ctrl+S persists the in-memory runtime config to ~/.ox/config.toml.
+    // Without this binding `app.save` was registered but unreachable —
+    // every edit lived only in the broker's runtime layer and was lost
+    // on restart. Anywhere-scoped so save works from any cursor depth.
+    reg.register(BindingEntry {
+        screen: Screen::Settings,
+        scope: BindingScope::Anywhere,
+        mode: None,
+        key: KeyChord {
+            modifiers: ctrl_only(),
+            code: KeyCodeRepr::Char('s'),
+        },
+        command_id: cmd("app.save"),
+    });
 }
 
 /// Register every day-one settings binding into `reg`.
