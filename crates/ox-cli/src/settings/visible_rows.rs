@@ -366,7 +366,14 @@ fn append_account_field_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, 
     ] {
         let value = match field {
             AccountField::Name => name.to_string(),
-            AccountField::Protocol => acct.provider.clone(),
+            // Protocol = the dialect the bound provider speaks, not the
+            // provider record's name. When the record is missing (orphan
+            // binding) fall back to acct.provider, which for legacy
+            // direct-cloud accounts doubles as the dialect.
+            AccountField::Protocol => provider
+                .as_ref()
+                .map(|p| p.dialect.clone())
+                .unwrap_or_else(|| acct.provider.clone()),
             AccountField::Endpoint => provider
                 .as_ref()
                 .map(|p| p.endpoint.clone())

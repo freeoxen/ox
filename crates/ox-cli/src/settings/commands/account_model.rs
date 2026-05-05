@@ -519,24 +519,27 @@ pub const AUTH_DISPLAY: &[&str] = &["x-api-key", "bearer-token", "none"];
 
 /// Resolve the carousel options for the Protocol field.
 ///
-/// Built-in presets first (declaration order), then user-configured
-/// providers (lexicographic), then the current value if it isn't already
-/// in either set. The current-value tail guarantees that cycling from a
-/// custom-provider account visits every option without silently snapping
-/// the account to a preset value it never had.
-pub fn resolve_protocol_options(data: &mut dyn Reader, current: &str) -> Vec<String> {
-    use crate::settings::renderers::util::child_names_under;
-
+/// Protocol characterizes *what wire format the endpoint speaks* — the
+/// dialect — not which provider record an account binds to. Options come
+/// from the built-in preset table's `dialect` field (today: `anthropic`,
+/// `openai`); a custom value currently bound to a provider record is
+/// appended so cycling never silently overwrites a dialect we don't
+/// recognize.
+///
+/// Provider record *names* (e.g. `LMStudio`, `corp-gateway`) are NOT
+/// carousel options — they're identifiers for endpoint+dialect+auth
+/// bundles. Multiple records can speak the same dialect; that's why
+/// `LMStudio (openai dialect)` and `lm_studio (openai dialect)` appear
+/// once each as `openai`, not twice.
+pub fn resolve_protocol_options(_data: &mut dyn Reader, current: &str) -> Vec<String> {
+    let _ = _data; // kept for signature stability; future dialects could be data-driven
     let mut options: Vec<String> = ox_gate::presets()
         .iter()
         .filter(|p| !p.custom)
-        .map(|p| p.id.to_string())
+        .map(|p| p.dialect.to_string())
         .collect();
-
-    let mut user = child_names_under(data, "config/gate/providers");
-    user.sort();
-    user.retain(|n| !options.contains(n));
-    options.append(&mut user);
+    // Dedupe in case two presets share a dialect (none today; defensive).
+    options.dedup();
 
     if !current.is_empty() && !options.iter().any(|o| o == current) {
         options.push(current.to_string());
@@ -566,46 +569,67 @@ fn selector_cycle_protocol_dir(data: &mut dyn Reader, dir: CycleDir) -> Vec<Writ
         Some(s) => s,
         None => return Vec::new(),
     };
-    let name_comp = match ox_kernel::PathComponent::try_new(&selected) {
+    let acct_name_comp = match ox_kernel::PathComponent::try_new(&selected) {
         Ok(c) => c,
         Err(_) => return Vec::new(),
     };
-    let acct_path = oxpath!("config", "gate", "accounts", name_comp);
+    let acct_path = oxpath!("config", "gate", "accounts", acct_name_comp);
     // TOML-loaded accounts may not have a parent `AccountConfig` leaf
     // — only child fields. Synthesize one (using a child `provider`
-    // string if present) so the cycle can advance and the first
-    // cycle write creates the leaf.
-    let mut acct: AccountConfig = read_typed(data, &acct_path).unwrap_or_else(|| AccountConfig {
+    // string if present) so the bound-provider lookup below can find
+    // a record to mutate.
+    let acct: AccountConfig = read_typed(data, &acct_path).unwrap_or_else(|| AccountConfig {
         provider: read_account_child_string(data, &selected, "provider")
             .unwrap_or_else(|| "anthropic".to_string()),
     });
 
-    // Resolve options *for the current value*: the helper guarantees the
-    // current provider appears in the list, so position_of can never
-    // silently fall through to idx 0 and overwrite a custom provider.
-    let options = resolve_protocol_options(data, &acct.provider);
+    // The carousel cycles *dialects*, not provider record names. The
+    // mutation target is the bound provider record's `dialect` field —
+    // the account's `provider` reference stays stable. If multiple
+    // accounts share this provider record, the dialect change applies
+    // to all of them; the share-set indicator on each account row
+    // surfaces that coupling so the user isn't surprised.
+    let provider_name_comp = match ox_kernel::PathComponent::try_new(&acct.provider) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let provider_path = oxpath!("config", "gate", "providers", provider_name_comp);
+    // Synthesize a default ProviderConfig if the record is missing — an
+    // orphan binding (account references a provider record that doesn't
+    // exist) is rare but legitimate (e.g. a fresh `anthropic` account
+    // with no separate provider entry yet). Cycling such an account
+    // creates the record with the new dialect.
+    let mut provider: ProviderConfig =
+        read_typed(data, &provider_path).unwrap_or_else(|| ProviderConfig {
+            dialect: acct.provider.clone(),
+            endpoint: String::new(),
+            version: String::new(),
+            auth: None,
+        });
+
+    let options = resolve_protocol_options(data, &provider.dialect);
     if options.is_empty() {
         return Vec::new();
     }
     let idx = options
         .iter()
-        .position(|o| o == &acct.provider)
+        .position(|o| o == &provider.dialect)
         .unwrap_or(0);
     let next = match dir {
         CycleDir::Forward => options[(idx + 1) % options.len()].clone(),
         CycleDir::Back => options[(idx + options.len() - 1) % options.len()].clone(),
     };
-    acct.provider = next;
+    provider.dialect = next;
 
-    let value = match to_value(&acct) {
+    let value = match to_value(&provider) {
         Ok(v) => v,
         Err(e) => {
-            tracing::warn!(error = %e, "selector.cycle.protocol: failed to encode AccountConfig");
+            tracing::warn!(error = %e, "selector.cycle.protocol: failed to encode ProviderConfig");
             return Vec::new();
         }
     };
     vec![Write {
-        path: acct_path,
+        path: provider_path,
         record: Record::parsed(value),
     }]
 }
@@ -1253,16 +1277,16 @@ mod tests {
     // -- Selectors --------------------------------------------------------------
 
     #[test]
-    fn selector_cycle_protocol_synthesizes_account_config_for_toml_loaded() {
-        // TOML-loaded accounts have no parent `AccountConfig` leaf —
-        // only child fields like `…/{name}/provider`. The cycle must
-        // still advance and write back; the first cycle creates the
-        // leaf.
+    fn selector_cycle_protocol_synthesizes_provider_for_toml_loaded() {
+        // TOML-loaded accounts may have no AccountConfig leaf (only child
+        // `…/{name}/provider`), AND no provider record. The cycle must
+        // still advance: synthesize a default ProviderConfig from
+        // acct.provider, advance its dialect, write the synthesized
+        // record at config/gate/providers/{provider_name}.
         let mut snap = SettingsSnapshot::empty();
         let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
-        // Child-only `provider` field, no parent leaf.
         snap.insert(
-            &oxpath!("config", "gate", "accounts", comp.clone(), "provider"),
+            &oxpath!("config", "gate", "accounts", comp, "provider"),
             Value::String("anthropic".into()),
         );
         snap.insert(
@@ -1271,35 +1295,61 @@ mod tests {
         );
         let writes = run_cmd(&SelectorCycleProtocol::new(), &mut snap);
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("config", "gate", "accounts", comp));
-        // anthropic → openai
+        let prov_comp = ox_kernel::PathComponent::try_new("anthropic").unwrap();
+        assert_eq!(
+            writes[0].path,
+            oxpath!("config", "gate", "providers", prov_comp)
+        );
+        // Synthesized default had dialect="anthropic" (from acct.provider);
+        // forward cycle through ["anthropic", "openai"] lands on "openai".
         match &writes[0].record {
             Record::Parsed(v) => {
-                let acct: AccountConfig = structfs_serde_store::from_value(v.clone()).unwrap();
-                assert_eq!(acct.provider, "openai");
+                let pc: ProviderConfig = structfs_serde_store::from_value(v.clone()).unwrap();
+                assert_eq!(pc.dialect, "openai");
             }
             other => panic!("unexpected record: {other:?}"),
         }
     }
 
     #[test]
-    fn selector_cycle_protocol_advances_then_writes_account() {
+    fn selector_cycle_protocol_writes_provider_record_dialect_not_account() {
+        // Cycle Protocol mutates the bound provider record's dialect.
+        // The account's provider reference (the record name) stays stable.
         let mut snap = SettingsSnapshot::empty();
         write_account(&mut snap, "alpha", "anthropic");
+        write_provider(
+            &mut snap,
+            "anthropic",
+            "https://api.anthropic.com",
+            AuthScheme::XApiKey,
+        );
         select_account(&mut snap, "alpha");
         let writes = run_cmd(&SelectorCycleProtocol::new(), &mut snap);
-        let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
-        let acct_write = writes
+        // Provider record gets written, account does not.
+        let prov_comp = ox_kernel::PathComponent::try_new("anthropic").unwrap();
+        let prov_write = writes
             .iter()
-            .find(|w| w.path == oxpath!("config", "gate", "accounts", comp))
-            .expect("account write");
-        match &acct_write.record {
+            .find(|w| w.path == oxpath!("config", "gate", "providers", prov_comp))
+            .expect("provider write");
+        match &prov_write.record {
             Record::Parsed(v) => {
-                let acct: AccountConfig = structfs_serde_store::from_value(v.clone()).unwrap();
-                assert_eq!(acct.provider, "openai");
+                let pc: ProviderConfig = structfs_serde_store::from_value(v.clone()).unwrap();
+                // write_provider seeded dialect="anthropic"; cycle forward
+                // through ["anthropic", "openai"] lands on "openai".
+                assert_eq!(pc.dialect, "openai");
+                // Endpoint and auth on the provider stay untouched.
+                assert_eq!(pc.endpoint, "https://api.anthropic.com");
+                assert_eq!(pc.auth, Some(AuthScheme::XApiKey));
             }
             other => panic!("unexpected record: {other:?}"),
         }
+        let acct_comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
+        assert!(
+            !writes
+                .iter()
+                .any(|w| w.path == oxpath!("config", "gate", "accounts", acct_comp)),
+            "cycle must not write the account record",
+        );
     }
 
     #[test]
@@ -1338,52 +1388,41 @@ mod tests {
     }
 
     #[test]
-    fn resolve_protocol_options_appends_user_providers() {
+    fn resolve_protocol_options_does_not_enumerate_user_provider_names() {
+        // Provider record names (e.g. LMStudio, lm_studio, corp-gateway)
+        // are NOT carousel options — they're identifiers for endpoint
+        // bundles, not dialects. Multiple records can speak the same
+        // dialect (LMStudio at openai, lm_studio at openai); the
+        // carousel still shows just `openai` once.
         let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("config", "gate", "providers", "LMStudio", "dialect"),
+            Value::String("openai".into()),
+        );
         snap.insert(
             &oxpath!("config", "gate", "providers", "lm_studio", "dialect"),
             Value::String("openai".into()),
         );
-        snap.insert(
-            &oxpath!("config", "gate", "providers", "lm_studio", "endpoint"),
-            Value::String("http://127.0.0.1:1234".into()),
-        );
-        let opts = resolve_protocol_options(&mut snap, "anthropic");
-        assert_eq!(
-            opts,
-            vec![
-                "anthropic".to_string(),
-                "openai".to_string(),
-                "lm_studio".to_string()
-            ]
-        );
-    }
-
-    #[test]
-    fn resolve_protocol_options_dedupes_user_provider_named_like_preset() {
-        // A user provider literally named "anthropic" must not appear twice.
-        let mut snap = SettingsSnapshot::empty();
-        snap.insert(
-            &oxpath!("config", "gate", "providers", "anthropic", "dialect"),
-            Value::String("anthropic".into()),
-        );
-        let opts = resolve_protocol_options(&mut snap, "anthropic");
+        let opts = resolve_protocol_options(&mut snap, "openai");
         assert_eq!(opts, vec!["anthropic".to_string(), "openai".to_string()]);
     }
 
     #[test]
-    fn resolve_protocol_options_appends_current_when_absent() {
-        // Account whose provider isn't in presets and isn't a configured
-        // provider record either (an orphan binding). The current value must
-        // still appear so cycling can find it and advance honestly.
+    fn resolve_protocol_options_appends_current_dialect_when_unknown() {
+        // A connection currently bound to a dialect we don't ship a
+        // preset for (e.g. an experimental dialect named "groq") must
+        // still appear in the carousel — otherwise cycling silently
+        // overwrites it via the idx-0 fallback. Provider record names
+        // never get this treatment; only the actual current dialect
+        // string the bound provider's `dialect` field holds.
         let mut snap = SettingsSnapshot::empty();
-        let opts = resolve_protocol_options(&mut snap, "LMStudio");
+        let opts = resolve_protocol_options(&mut snap, "groq");
         assert_eq!(
             opts,
             vec![
                 "anthropic".to_string(),
                 "openai".to_string(),
-                "LMStudio".to_string()
+                "groq".to_string()
             ]
         );
     }
@@ -1398,61 +1437,111 @@ mod tests {
     // -- selector_cycle_protocol_dir, post-dynamic-options ---------------
 
     #[test]
-    fn cycle_protocol_forward_from_custom_provider_does_not_snap_to_anthropic() {
-        // The cycle's option list must include the account's current
-        // provider — otherwise position_of returns None, the index falls
-        // back to 0, and the first cycle silently overwrites the custom
-        // provider with whatever sits at idx 1 of the preset list.
-        //
-        // With resolve_protocol_options the list is
-        // ["anthropic", "openai", "LMStudio"]; idx of "LMStudio" is 2;
-        // forward wraps to idx 0 = "anthropic".
+    fn cycle_protocol_forward_from_unknown_dialect_visits_current_then_wraps() {
+        // A connection's bound provider has dialect="groq" (not in our
+        // preset table). resolve_protocol_options appends it; cycling
+        // forward through ["anthropic", "openai", "groq"] from idx 2
+        // wraps to idx 0 = "anthropic". Critically, we mutate the
+        // provider record's dialect — not the account's provider field.
         let mut snap = SettingsSnapshot::empty();
-        write_account(&mut snap, "local", "LMStudio");
+        write_account(&mut snap, "local", "experimental");
+        // Provider record `experimental` with a non-preset dialect.
+        let prov_comp = ox_kernel::PathComponent::try_new("experimental").unwrap();
+        snap.insert(
+            &oxpath!("config", "gate", "providers", prov_comp.clone()),
+            to_value(&ProviderConfig {
+                dialect: "groq".into(),
+                endpoint: "https://api.groq.example".into(),
+                version: String::new(),
+                auth: None,
+            })
+            .unwrap(),
+        );
         select_account(&mut snap, "local");
 
         let writes = selector_cycle_protocol_dir(&mut snap, CycleDir::Forward);
         assert_eq!(writes.len(), 1);
-        let written: AccountConfig =
+        assert_eq!(
+            writes[0].path,
+            oxpath!("config", "gate", "providers", prov_comp)
+        );
+        let written: ProviderConfig =
             structfs_serde_store::from_value(writes[0].record.as_value().unwrap().clone()).unwrap();
-        assert_eq!(written.provider, "anthropic");
+        assert_eq!(written.dialect, "anthropic");
+        // Endpoint/auth survive — only dialect changes.
+        assert_eq!(written.endpoint, "https://api.groq.example");
     }
 
     #[test]
-    fn cycle_protocol_back_from_custom_provider_lands_on_previous_option() {
-        // With options [anthropic, openai, LMStudio], back from idx 2 = "openai".
+    fn cycle_protocol_back_from_unknown_dialect_lands_on_previous_option() {
+        // Same setup as the forward test; back from idx 2 = "openai".
         let mut snap = SettingsSnapshot::empty();
-        write_account(&mut snap, "local", "LMStudio");
+        write_account(&mut snap, "local", "experimental");
+        let prov_comp = ox_kernel::PathComponent::try_new("experimental").unwrap();
+        snap.insert(
+            &oxpath!("config", "gate", "providers", prov_comp),
+            to_value(&ProviderConfig {
+                dialect: "groq".into(),
+                endpoint: "https://api.groq.example".into(),
+                version: String::new(),
+                auth: None,
+            })
+            .unwrap(),
+        );
         select_account(&mut snap, "local");
 
         let writes = selector_cycle_protocol_dir(&mut snap, CycleDir::Back);
         assert_eq!(writes.len(), 1);
-        let written: AccountConfig =
+        let written: ProviderConfig =
             structfs_serde_store::from_value(writes[0].record.as_value().unwrap().clone()).unwrap();
-        assert_eq!(written.provider, "openai");
+        assert_eq!(written.dialect, "openai");
     }
 
     #[test]
-    fn cycle_protocol_forward_includes_user_configured_provider() {
-        // An account bound to "openai" cycles forward through any
-        // user-configured provider entries before wrapping back to anthropic.
-        // Here: configure a "lm_studio" provider, then forward from "openai"
-        // (idx 1 in [anthropic, openai, lm_studio]) lands on "lm_studio".
+    fn cycle_protocol_does_not_treat_provider_record_names_as_options() {
+        // Two provider records, both with dialect="openai", with
+        // distinguishing names (LMStudio, lm_studio). A connection bound
+        // to LMStudio (dialect=openai) cycles forward — the result must
+        // be "anthropic" (next dialect after wrapping from idx 1 in
+        // [anthropic, openai]), not "lm_studio" (which Slice 1's old
+        // semantics would have produced by treating record names as
+        // options).
         let mut snap = SettingsSnapshot::empty();
-        write_account(&mut snap, "alpha", "openai");
-        write_provider(
-            &mut snap,
-            "lm_studio",
-            "http://127.0.0.1:1234",
-            AuthScheme::None,
+        write_account(&mut snap, "local", "LMStudio");
+        let lms_comp = ox_kernel::PathComponent::try_new("LMStudio").unwrap();
+        snap.insert(
+            &oxpath!("config", "gate", "providers", lms_comp.clone()),
+            to_value(&ProviderConfig {
+                dialect: "openai".into(),
+                endpoint: "http://127.0.0.1:1234".into(),
+                version: String::new(),
+                auth: Some(AuthScheme::None),
+            })
+            .unwrap(),
         );
-        select_account(&mut snap, "alpha");
+        let other_comp = ox_kernel::PathComponent::try_new("lm_studio").unwrap();
+        snap.insert(
+            &oxpath!("config", "gate", "providers", other_comp),
+            to_value(&ProviderConfig {
+                dialect: "openai".into(),
+                endpoint: "http://127.0.0.1:1234".into(),
+                version: String::new(),
+                auth: Some(AuthScheme::None),
+            })
+            .unwrap(),
+        );
+        select_account(&mut snap, "local");
 
         let writes = selector_cycle_protocol_dir(&mut snap, CycleDir::Forward);
         assert_eq!(writes.len(), 1);
-        let written: AccountConfig =
+        // Mutation lands on LMStudio (the bound record), not on lm_studio.
+        assert_eq!(
+            writes[0].path,
+            oxpath!("config", "gate", "providers", lms_comp)
+        );
+        let written: ProviderConfig =
             structfs_serde_store::from_value(writes[0].record.as_value().unwrap().clone()).unwrap();
-        assert_eq!(written.provider, "lm_studio");
+        assert_eq!(written.dialect, "anthropic");
     }
 
     // -- models.toggle_default --------------------------------------------

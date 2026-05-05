@@ -823,37 +823,41 @@ async fn production_ui_store_routes_settings_writes() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn cycling_protocol_on_custom_provider_account_does_not_silently_overwrite() {
+async fn cycling_protocol_mutates_bound_provider_dialect_not_account() {
     // Drives the full dispatch path (key → binding → command → broker
-    // write) for an account whose provider isn't a built-in preset —
-    // the exact shape a TOML-loaded LM Studio / Ollama / corp-gateway
-    // account presents at first launch.
-    //
-    // Pre-fix: with the carousel options hardcoded to ["anthropic",
-    // "openai"], position_of("LMStudio") returned None, the index fell
-    // back to 0, and `l` (cycle forward) wrote "openai" to the account
-    // — silently switching the user to a provider they never chose.
-    //
-    // Post-fix: the carousel resolves options dynamically and includes
-    // the current value; cycling forward from "LMStudio" (idx 2 of
-    // [anthropic, openai, LMStudio]) wraps to "anthropic".
+    // write) for the Protocol carousel. The Protocol field characterizes
+    // the wire-format dialect the bound endpoint speaks — anthropic,
+    // openai — not the provider record's name. Cycling mutates the
+    // bound provider record's `dialect` field; the account's provider
+    // reference (the record name) stays stable so endpoint, auth, and
+    // sharing relationships survive the cycle.
     let h = E2eHarness::new().await;
     populate_index(&h).await;
 
-    // Account `local` with a custom provider name that is NOT in the
-    // preset table. No matching ProviderConfig record — the orphan
-    // binding is part of the regression shape.
-    let comp = ox_kernel::PathComponent::try_new("local").unwrap();
+    // Account `local` bound to provider record `LMStudio`; that record
+    // currently speaks the openai dialect.
+    let acct_comp = ox_kernel::PathComponent::try_new("local").unwrap();
     h.write_typed(
-        &oxpath!("config", "gate", "accounts", comp.clone()),
+        &oxpath!("config", "gate", "accounts", acct_comp.clone()),
         &AccountConfig {
             provider: "LMStudio".to_string(),
         },
     )
     .await;
+    let prov_comp = ox_kernel::PathComponent::try_new("LMStudio").unwrap();
+    h.write_typed(
+        &oxpath!("config", "gate", "providers", prov_comp.clone()),
+        &ProviderConfig {
+            dialect: "openai".to_string(),
+            endpoint: "http://127.0.0.1:1234".to_string(),
+            version: String::new(),
+            auth: Some(ox_gate::AuthScheme::None),
+        },
+    )
+    .await;
 
-    // Expand Accounts and the `local` account so the Protocol field
-    // row appears in the visible enumeration that `cycle_field` walks.
+    // Expand the connection so the Protocol field row exists in the
+    // visible enumeration cycle_field walks.
     h.client
         .write(
             &oxpath!("ui", "settings", "expanded"),
@@ -865,33 +869,43 @@ async fn cycling_protocol_on_custom_provider_account_does_not_silently_overwrite
         .await
         .expect("write expanded set");
 
-    // Page-level cursor stays on the index; focused_row points at the
-    // Protocol field row of the `local` account. (cycle.field is bound
-    // as a Prefix(settings/accounts) binding; the page cursor needs to
-    // resolve under that prefix.)
     h.write_path(
         &oxpath!("ui", "settings", "cursor"),
-        &oxpath!("settings", "accounts", comp.clone()),
+        &oxpath!("settings", "accounts", acct_comp.clone()),
     )
     .await;
     h.write_path(
         &oxpath!("ui", "settings", "focused_row"),
-        &oxpath!("settings", "accounts", comp.clone(), "protocol"),
+        &oxpath!("settings", "accounts", acct_comp.clone(), "protocol"),
     )
     .await;
 
     assert!(matches!(h.dispatch("l").await, KeyDispatchOutcome::Handled));
 
+    // Provider record's dialect cycled openai → anthropic (wrap from
+    // idx 1 in [anthropic, openai]). Endpoint and auth survive.
+    let pc: ProviderConfig = h
+        .client
+        .read_typed(&oxpath!("config", "gate", "providers", prov_comp))
+        .await
+        .expect("read provider")
+        .expect("provider present");
+    assert_eq!(
+        pc.dialect, "anthropic",
+        "forward cycle from openai must mutate dialect to anthropic"
+    );
+    assert_eq!(pc.endpoint, "http://127.0.0.1:1234");
+
+    // Account's provider reference is unchanged — the record name still
+    // points at LMStudio, just with a different dialect now.
     let acct: AccountConfig = h
         .client
-        .read_typed(&oxpath!("config", "gate", "accounts", comp))
+        .read_typed(&oxpath!("config", "gate", "accounts", acct_comp))
         .await
         .expect("read account")
         .expect("account present");
     assert_eq!(
-        acct.provider, "anthropic",
-        "forward cycle from custom provider 'LMStudio' must wrap to 'anthropic' \
-         (the next option in the resolved list), not silently snap to 'openai' \
-         via the value-not-found idx-0 fallback",
+        acct.provider, "LMStudio",
+        "cycling Protocol must not mutate the account's provider reference"
     );
 }

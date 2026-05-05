@@ -562,13 +562,14 @@ mod tests {
     }
 
     #[test]
-    fn activate_on_protocol_field_cycles_provider() {
-        // Protocol cycles inline (anthropic ↔ openai). Writes the
-        // accounts/selected (so the helper finds the account) and
-        // the new AccountConfig.
+    fn activate_on_protocol_field_cycles_bound_provider_dialect() {
+        // Protocol cycles the *dialect* of the bound provider record,
+        // not the account's provider reference. Writes accounts/selected
+        // (so the helper finds the account) and the provider record
+        // with its new dialect.
         let mut snap = SettingsSnapshot::empty();
         write_index(&mut snap);
-        write_account(&mut snap, "alpha"); // provider="alpha" initially
+        write_account(&mut snap, "alpha"); // provider="alpha"
         snap.insert(
             &oxpath!("ui", "settings", "expanded"),
             expanded_set_to_value(&[
@@ -578,19 +579,27 @@ mod tests {
         );
         set_focused(&mut snap, "settings/accounts/alpha/protocol");
         let writes = run(&TreeActivate::new(), &mut snap);
-        // Should write the AccountConfig back; no cursor write.
         assert!(!writes.is_empty());
         for w in &writes {
             assert_ne!(w.path, oxpath!("ui", "settings", "cursor"));
         }
-        // The cycle helper writes to the account path.
-        assert!(writes.iter().any(|w| w.path
-            == oxpath!(
-                "config",
-                "gate",
-                "accounts",
-                ox_kernel::PathComponent::try_new("alpha").unwrap()
-            )));
+        // The cycle helper writes to the *provider* path (record name
+        // matches the account's provider field). The account record
+        // itself is untouched.
+        let prov_comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
+        assert!(
+            writes
+                .iter()
+                .any(|w| w.path == oxpath!("config", "gate", "providers", prov_comp.clone())),
+            "cycle must write to the provider record",
+        );
+        let acct_comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
+        assert!(
+            !writes
+                .iter()
+                .any(|w| w.path == oxpath!("config", "gate", "accounts", acct_comp)),
+            "cycle must not write the account record",
+        );
     }
 
     #[test]
