@@ -213,6 +213,16 @@ command! {
     run: |snap, _ctx| selector_cycle_auth(snap),
 }
 
+command! {
+    struct_name: AccountsForkProvider,
+    id: "accounts.fork_provider",
+    title: "Fork Provider",
+    description: "Clone the bound provider so this Connection no longer shares it with others. Edits to endpoint/auth/version then affect only this Connection.",
+    screen: Screen::Settings,
+    cursor: Some(oxpath!("settings", "accounts")),
+    run: |snap, _ctx| accounts_fork_provider(snap),
+}
+
 // ---------------------------------------------------------------------------
 // Implementation helpers
 // ---------------------------------------------------------------------------
@@ -730,6 +740,100 @@ fn selector_cycle_auth_dir(data: &mut dyn Reader, dir: CycleDir) -> Vec<Write> {
     }]
 }
 
+/// Clone the bound provider record under a fresh name and repoint the
+/// selected account at the new entry. No-op when the provider isn't
+/// shared with any other account — already exclusive, no untangling
+/// needed. No-op when no account is selected or the provider name
+/// can't form a valid path component.
+fn accounts_fork_provider(data: &mut dyn Reader) -> Vec<Write> {
+    let selected = match read_selected_account(data) {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+    let acct_comp = match ox_kernel::PathComponent::try_new(&selected) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let acct_path = oxpath!("config", "gate", "accounts", acct_comp.clone());
+    let mut acct: AccountConfig = match read_typed(data, &acct_path) {
+        Some(a) => a,
+        None => return Vec::new(),
+    };
+
+    // Count other accounts that share this provider. If zero, the
+    // fork is a no-op — the provider is already exclusive to this
+    // account and untangling would only add a confusing rename.
+    let names = crate::settings::renderers::util::child_names_under(data, "config/gate/accounts");
+    let mut other_users = 0;
+    for n in &names {
+        if n == &selected {
+            continue;
+        }
+        if let Ok(other_comp) = ox_kernel::PathComponent::try_new(n) {
+            let other: Option<AccountConfig> =
+                read_typed(data, &oxpath!("config", "gate", "accounts", other_comp));
+            if let Some(o) = other {
+                if o.provider == acct.provider {
+                    other_users += 1;
+                }
+            }
+        }
+    }
+    if other_users == 0 {
+        return Vec::new();
+    }
+
+    // Read the currently-bound provider record. If it's missing, fork
+    // a default-shaped one — better to surface the renamed provider
+    // with sensible defaults than to silently no-op.
+    let existing_provider_comp = match ox_kernel::PathComponent::try_new(&acct.provider) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let provider: ProviderConfig = read_typed(
+        data,
+        &oxpath!("config", "gate", "providers", existing_provider_comp),
+    )
+    .unwrap_or_else(|| ProviderConfig {
+        dialect: acct.provider.clone(),
+        endpoint: String::new(),
+        version: String::new(),
+        auth: None,
+    });
+
+    // Forked name: "{account}_fork". `safe_component` lands at a
+    // valid PathComponent. Two-account fork sequences would collide,
+    // but that's rare enough we accept the simple case.
+    let base = format!("{}_fork", selected);
+    let forked_name = crate::settings::visible_rows::safe_component(&base);
+    let forked_comp = match ox_kernel::PathComponent::try_new(&forked_name) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let forked_path = oxpath!("config", "gate", "providers", forked_comp);
+
+    let provider_value = match to_value(&provider) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    acct.provider = forked_name;
+    let acct_value = match to_value(&acct) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+
+    vec![
+        Write {
+            path: forked_path,
+            record: Record::parsed(provider_value),
+        },
+        Write {
+            path: acct_path,
+            record: Record::parsed(acct_value),
+        },
+    ]
+}
+
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
@@ -748,6 +852,7 @@ pub fn register(reg: &mut CommandRegistry) {
     reg.register(Box::new(FieldAccountNext::new()));
     reg.register(Box::new(SelectorCycleProtocol::new()));
     reg.register(Box::new(SelectorCycleAuth::new()));
+    reg.register(Box::new(AccountsForkProvider::new()));
     reg.register(Box::new(CycleFieldNext::new()));
     reg.register(Box::new(CycleFieldPrev::new()));
 }
@@ -939,6 +1044,57 @@ mod tests {
     fn accounts_delete_inert_without_selection() {
         let mut snap = SettingsSnapshot::empty();
         let writes = run_cmd(&AccountsDelete::new(), &mut snap);
+        assert!(writes.is_empty());
+    }
+
+    #[test]
+    fn fork_provider_clones_record_and_repoints_account() {
+        let mut snap = SettingsSnapshot::empty();
+        // Two accounts share provider "anthropic".
+        write_account(&mut snap, "personal", "anthropic");
+        write_account(&mut snap, "work", "anthropic");
+        write_provider(
+            &mut snap,
+            "anthropic",
+            "https://api.anthropic.com",
+            AuthScheme::XApiKey,
+        );
+        select_account(&mut snap, "personal");
+        let writes = run_cmd(&AccountsForkProvider::new(), &mut snap);
+
+        // Expect: write a new provider "personal_fork" + repoint personal's account.
+        let provider_write = writes
+            .iter()
+            .find(|w| w.path.to_string() == "config/gate/providers/personal_fork")
+            .expect("forked provider write");
+        let pc: ProviderConfig =
+            structfs_serde_store::from_value(provider_write.record.as_value().unwrap().clone())
+                .unwrap();
+        assert_eq!(pc.endpoint, "https://api.anthropic.com");
+
+        let account_write = writes
+            .iter()
+            .find(|w| w.path.to_string() == "config/gate/accounts/personal")
+            .expect("account repoint");
+        let ac: AccountConfig =
+            structfs_serde_store::from_value(account_write.record.as_value().unwrap().clone())
+                .unwrap();
+        assert_eq!(ac.provider, "personal_fork");
+    }
+
+    #[test]
+    fn fork_provider_no_op_when_provider_not_shared() {
+        let mut snap = SettingsSnapshot::empty();
+        write_account(&mut snap, "lone", "openai");
+        write_provider(
+            &mut snap,
+            "openai",
+            "https://api.openai.com",
+            AuthScheme::BearerToken,
+        );
+        select_account(&mut snap, "lone");
+        let writes = run_cmd(&AccountsForkProvider::new(), &mut snap);
+        // No need to fork — the provider is already exclusive.
         assert!(writes.is_empty());
     }
 

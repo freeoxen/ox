@@ -289,6 +289,13 @@ fn register_row_prefixes(reg: &mut BindingRegistry) {
         KeyCodeRepr::Char('d'),
         "accounts.delete_confirm",
     );
+    bind_prefix(
+        reg,
+        accounts_subtree.clone(),
+        no_mods(),
+        KeyCodeRepr::Char('f'),
+        "accounts.fork_provider",
+    );
     // h / l (and Left / Right) cycle through selector options when
     // the focused row is a selector field. The command itself
     // checks `RowKind` and no-ops on non-selector rows, so binding

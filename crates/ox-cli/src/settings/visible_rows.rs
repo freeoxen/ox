@@ -491,7 +491,7 @@ fn row_path(parts: &[&str]) -> Path {
 /// only needs to be stable and unique enough to identify the row in
 /// the visible list — the real identifier lives on `RowKind`, which
 /// commands consult before issuing any data write.
-fn safe_component(s: &str) -> String {
+pub(crate) fn safe_component(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut empty = true;
     for (i, ch) in s.chars().enumerate() {
