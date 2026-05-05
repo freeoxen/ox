@@ -62,6 +62,32 @@ pub(crate) mod theme;
 pub mod test_theme_exports {
     pub use crate::theme::POST_CRASH_SKIP_CONTENT;
 }
+
+/// Re-exports of the rendering primitives integration tests need to
+/// drive the settings screen through ratatui to a `TestBackend` and
+/// capture the visible buffer. Lets a snapshot test verify the *actual
+/// rendered output* — what the user sees — rather than just broker
+/// writes. Caught the protocol-carousel "doesn't visually toggle"
+/// regression that the broker-only e2e tests missed because the
+/// regression was in the renderer's read path, not in the cycle's
+/// write path.
+pub mod test_render_exports {
+    pub use crate::theme::Theme;
+
+    /// Test-only wrapper around the in-crate `view_render::render_to_frame`.
+    /// The wrapper exists because the underlying function is `pub(crate)`
+    /// (its surface is internal-only); this re-exposes it through a
+    /// dedicated test entry point without widening the production
+    /// visibility.
+    pub fn render_to_frame(
+        view: &ox_view::View,
+        frame: &mut ratatui::Frame,
+        area: ratatui::layout::Rect,
+        theme: &Theme,
+    ) {
+        crate::view_render::render_to_frame(view, frame, area, theme);
+    }
+}
 pub(crate) mod thread_shell;
 pub(crate) mod thread_view;
 pub(crate) mod toml_backing;

@@ -1013,3 +1013,162 @@ async fn cycling_protocol_mutates_bound_provider_dialect_not_account() {
         "cycling Protocol must not mutate the account's provider reference"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Render snapshot tests — drive the settings View through ratatui to a
+// TestBackend and capture the visible buffer. Catches regressions in the
+// renderer's read path that broker-only e2e tests miss (e.g. the cycle
+// writes the right thing to the broker but the renderer doesn't see it
+// because it reads from a different path or with different fallback
+// semantics).
+// ---------------------------------------------------------------------------
+
+use ox_cli::test_render_exports::{Theme, render_to_frame};
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer;
+
+/// Render the settings screen at `width` × `height` and return the
+/// visible buffer as a `\n`-separated string. Drops styling — we
+/// snapshot the visible characters; styles can be added later if a test
+/// needs them.
+async fn render_settings_to_string(h: &E2eHarness, width: u16, height: u16) -> String {
+    use ratatui::layout::Rect;
+
+    // Same fetch as the production event loop.
+    let mut snap = fetch_settings_view_state(&h.client).await;
+    let cursor: Path = h.current_cursor().await.unwrap_or_else(|| oxpath!());
+
+    let theme = Theme::default();
+    let view = {
+        use ox_cli::settings::registry::RenderCtx;
+        let mut ctx = RenderCtx {
+            area: Rect::new(0, 0, width, height),
+            data: &mut snap as &mut dyn structfs_core_store::Reader,
+            registry: &h.renderers,
+            theme: &theme,
+        };
+        h.renderers.render(&cursor, &mut ctx)
+    };
+
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("test backend init");
+    terminal
+        .draw(|frame| {
+            let area = Rect::new(0, 0, width, height);
+            render_to_frame(&view, frame, area, &theme);
+        })
+        .expect("draw");
+    buffer_to_string(terminal.backend().buffer())
+}
+
+/// Walk the buffer cell-by-cell; emit visible chars row by row. Trims
+/// trailing spaces per row to reduce snapshot diff noise. Strips ANSI;
+/// the snapshot is plain text.
+fn buffer_to_string(buf: &Buffer) -> String {
+    let area = buf.area();
+    let mut out = String::with_capacity((area.width as usize + 1) * area.height as usize);
+    for y in 0..area.height {
+        let mut row = String::with_capacity(area.width as usize);
+        for x in 0..area.width {
+            let cell = &buf[(x, y)];
+            row.push_str(cell.symbol());
+        }
+        out.push_str(row.trim_end());
+        out.push('\n');
+    }
+    out
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn protocol_cycle_visibly_toggles_in_rendered_carousel() {
+    // The broker-only e2e tests confirm cycle writes land. This test
+    // confirms the *renderer* picks them up by capturing the rendered
+    // buffer before and after each cycle. If the rendered text is
+    // identical across cycles, the renderer isn't reading the cycle's
+    // writes — the precise failure mode the user reported with a
+    // TOML-loaded LMStudio account where read_typed::<AccountConfig>
+    // returned None and the carousel stuck on idx-0 fallback.
+    let h = E2eHarness::new().await;
+    populate_index(&h).await;
+
+    // Mimic the user's TOML shape: account + provider as flat sub-keys
+    // (TomlFileBacking output), no parent ProviderConfig Map. The
+    // rendered initial carousel must show some sensible Protocol value;
+    // each `l` press must produce a *visibly different* frame.
+    let acct_comp = ox_kernel::PathComponent::try_new("LMStudio").unwrap();
+    h.client
+        .write(
+            &oxpath!("config", "gate", "accounts", acct_comp.clone(), "provider"),
+            Record::parsed(Value::String("LMStudio".into())),
+        )
+        .await
+        .expect("write account/provider");
+    let prov_comp = ox_kernel::PathComponent::try_new("LMStudio").unwrap();
+    for (sub, val) in [
+        ("dialect", "openai"),
+        ("endpoint", "http://127.0.0.1:1234"),
+        ("auth", "none"),
+        ("version", ""),
+    ] {
+        let sub_comp = ox_kernel::PathComponent::try_new(sub).unwrap();
+        h.client
+            .write(
+                &oxpath!("config", "gate", "providers", prov_comp.clone(), sub_comp),
+                Record::parsed(Value::String(val.into())),
+            )
+            .await
+            .expect("write provider sub-key");
+    }
+
+    h.client
+        .write(
+            &oxpath!("ui", "settings", "expanded"),
+            Record::parsed(ox_cli::settings::visible_rows::expanded_set_to_value(&[
+                "settings/accounts".to_string(),
+                "settings/accounts/LMStudio".to_string(),
+            ])),
+        )
+        .await
+        .expect("write expanded set");
+    // Page cursor stays at settings/index for the accordion design — the
+    // index renderer is what renders the whole tree. focused_row is what
+    // identifies the Protocol field row inside that tree (used for both
+    // the renderer's `selected` highlight and binding-scope dispatch).
+    h.write_path(
+        &oxpath!("ui", "settings", "cursor"),
+        &oxpath!("settings", "index"),
+    )
+    .await;
+    h.write_path(
+        &oxpath!("ui", "settings", "focused_row"),
+        &oxpath!("settings", "accounts", acct_comp.clone(), "protocol"),
+    )
+    .await;
+
+    let frame_before = render_settings_to_string(&h, 80, 24).await;
+    insta::assert_snapshot!("protocol_carousel_before_cycle", &frame_before);
+
+    assert!(matches!(h.dispatch("l").await, KeyDispatchOutcome::Handled));
+    let frame_after_one = render_settings_to_string(&h, 80, 24).await;
+    insta::assert_snapshot!("protocol_carousel_after_one_cycle", &frame_after_one);
+
+    assert!(matches!(h.dispatch("l").await, KeyDispatchOutcome::Handled));
+    let frame_after_two = render_settings_to_string(&h, 80, 24).await;
+    insta::assert_snapshot!("protocol_carousel_after_two_cycles", &frame_after_two);
+
+    // The bug-detection assertions, independent of the snapshot
+    // contents. Each cycle must produce a visibly different frame —
+    // the renderer must be picking up the broker writes the cycle
+    // produced.
+    assert_ne!(
+        frame_before, frame_after_one,
+        "first cycle must produce a visible change in the rendered carousel — \
+         if these frames are identical, the renderer isn't reading the cycle's \
+         provider-record write (likely AccountConfig::default() fallback)"
+    );
+    assert_ne!(
+        frame_after_one, frame_after_two,
+        "second cycle must also produce a visible change"
+    );
+}

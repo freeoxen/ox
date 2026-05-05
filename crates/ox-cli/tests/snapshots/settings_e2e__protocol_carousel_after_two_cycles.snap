@@ -1,0 +1,28 @@
+---
+source: crates/ox-cli/tests/settings_e2e.rs
+expression: "&frame_after_two"
+---
+┌Settings──────────────────────────────────────────────────────────────────────┐
+│▾ Connections [1]                                                             │
+│  ▾ LMStudio                                                                  │
+│  LMStudio                                                                    │
+│      Name: LMStudio                                                          │
+│      Protocol: ◂ openai  anthropic  openai ▸                                 │
+│      Endpoint:                                                               │
+│      Auth:                                                                   │
+│      Key: (unset)                                                            │
+│▸ Models                                                                      │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
