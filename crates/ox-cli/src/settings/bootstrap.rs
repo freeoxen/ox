@@ -20,8 +20,8 @@ use super::commands::navigation::path_to_value;
 pub async fn populate_index_entries(client: &ClientHandle) -> Result<(), StoreError> {
     let accounts_entry = SettingsIndexEntry {
         id: "accounts".to_string(),
-        label: "Accounts".to_string(),
-        description: "Manage accounts and API keys.".to_string(),
+        label: "Connections".to_string(),
+        description: "Manage connections (provider + account + key).".to_string(),
         target_cursor: oxpath!("settings", "accounts"),
         badge: BadgeSource::SubtreeCount(oxpath!("config", "gate", "accounts")),
     };
