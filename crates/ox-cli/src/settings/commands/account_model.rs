@@ -123,6 +123,16 @@ command! {
 }
 
 command! {
+    struct_name: ModelsToggleDefault,
+    id: "models.toggle_default",
+    title: "Toggle Default-Available",
+    description: "Add or remove the focused (account, model) from the default-available set.",
+    screen: Screen::Settings,
+    cursor: Some(oxpath!("settings", "models")),
+    run: |snap, _ctx| models_toggle_default(snap),
+}
+
+command! {
     struct_name: AppSave,
     id: "app.save",
     title: "Save",
@@ -383,6 +393,53 @@ fn models_set_bootstrap(data: &mut dyn Reader) -> Vec<Write> {
             record: Record::parsed(value),
         },
     ]
+}
+
+/// Read-modify-write toggle on
+/// `config/gate/completions/default_available: Vec<ModelKey>`. The
+/// record's empty/absent state is the canonical "no explicit subset"
+/// signal — when the toggle empties the set, write `Value::Null` to
+/// delete the record so the kernel falls back to the implicit
+/// "all cataloged models default-available" behavior.
+fn models_toggle_default(data: &mut dyn Reader) -> Vec<Write> {
+    let key = match read_selected_model(data) {
+        Some(k) => k,
+        None => return Vec::new(),
+    };
+    let current: Vec<ModelKey> = read_typed(
+        data,
+        &oxpath!("config", "gate", "completions", "default_available"),
+    )
+    .unwrap_or_default();
+
+    let mut next = current;
+    if let Some(pos) = next
+        .iter()
+        .position(|k| k.account == key.account && k.model_id == key.model_id)
+    {
+        next.remove(pos);
+    } else {
+        next.push(key);
+    }
+
+    if next.is_empty() {
+        return vec![Write {
+            path: oxpath!("config", "gate", "completions", "default_available"),
+            record: Record::parsed(Value::Null),
+        }];
+    }
+
+    let value = match to_value(&next) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "models.toggle_default: failed to encode");
+            return Vec::new();
+        }
+    };
+    vec![Write {
+        path: oxpath!("config", "gate", "completions", "default_available"),
+        record: Record::parsed(value),
+    }]
 }
 
 const ACCOUNT_FIELDS: [AccountField; 5] = [
@@ -686,6 +743,7 @@ pub fn register(reg: &mut CommandRegistry) {
     reg.register(Box::new(AccountTest::new()));
     reg.register(Box::new(AccountRefresh::new()));
     reg.register(Box::new(ModelsSetBootstrap::new()));
+    reg.register(Box::new(ModelsToggleDefault::new()));
     reg.register(Box::new(AppSave::new()));
     reg.register(Box::new(FieldAccountNext::new()));
     reg.register(Box::new(SelectorCycleProtocol::new()));
@@ -1239,5 +1297,79 @@ mod tests {
         let written: AccountConfig =
             structfs_serde_store::from_value(writes[0].record.as_value().unwrap().clone()).unwrap();
         assert_eq!(written.provider, "lm_studio");
+    }
+
+    // -- models.toggle_default --------------------------------------------
+
+    #[test]
+    fn toggle_default_adds_to_empty_set() {
+        let mut snap = SettingsSnapshot::empty();
+        select_model(&mut snap, "alpha", "claude-sonnet-4");
+        let writes = run_cmd(&ModelsToggleDefault::new(), &mut snap);
+        assert_eq!(writes.len(), 1);
+        assert_eq!(
+            writes[0].path,
+            oxpath!("config", "gate", "completions", "default_available")
+        );
+        let set: Vec<ModelKey> =
+            structfs_serde_store::from_value(writes[0].record.as_value().unwrap().clone()).unwrap();
+        assert_eq!(set.len(), 1);
+        assert_eq!(set[0].account, "alpha");
+        assert_eq!(set[0].model_id, "claude-sonnet-4");
+    }
+
+    #[test]
+    fn toggle_default_removes_from_set_when_already_present() {
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("config", "gate", "completions", "default_available"),
+            to_value(&vec![ModelKey {
+                account: "alpha".into(),
+                model_id: "claude-sonnet-4".into(),
+            }])
+            .unwrap(),
+        );
+        select_model(&mut snap, "alpha", "claude-sonnet-4");
+        let writes = run_cmd(&ModelsToggleDefault::new(), &mut snap);
+        assert_eq!(writes.len(), 1);
+        // Removing the last entry deletes the record (back to implicit
+        // "all cataloged models default-available").
+        match &writes[0].record {
+            Record::Parsed(Value::Null) => {}
+            other => panic!("expected null delete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn toggle_default_removes_one_keeps_rest() {
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("config", "gate", "completions", "default_available"),
+            to_value(&vec![
+                ModelKey {
+                    account: "alpha".into(),
+                    model_id: "m1".into(),
+                },
+                ModelKey {
+                    account: "alpha".into(),
+                    model_id: "m2".into(),
+                },
+            ])
+            .unwrap(),
+        );
+        select_model(&mut snap, "alpha", "m1");
+        let writes = run_cmd(&ModelsToggleDefault::new(), &mut snap);
+        assert_eq!(writes.len(), 1);
+        let set: Vec<ModelKey> =
+            structfs_serde_store::from_value(writes[0].record.as_value().unwrap().clone()).unwrap();
+        assert_eq!(set.len(), 1);
+        assert_eq!(set[0].model_id, "m2");
+    }
+
+    #[test]
+    fn toggle_default_no_op_with_no_selected_model() {
+        let mut snap = SettingsSnapshot::empty();
+        let writes = run_cmd(&ModelsToggleDefault::new(), &mut snap);
+        assert!(writes.is_empty());
     }
 }
