@@ -36,10 +36,29 @@ command! {
     description: "Open the new-connection overlay.",
     screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "accounts")),
-    run: |_snap, _ctx| vec![Write {
-        path: oxpath!("ui", "settings", "cursor"),
-        record: Record::parsed(path_to_value(&oxpath!("settings", "accounts", "_new"))),
-    }],
+    // Also clears edit_mode + the edit_field_path because the modal has
+    // its own typing surface (accounts.new.insert_char) and shouldn't
+    // share scope with any field-edit that happened to be open. Without
+    // this reset, a lingering edit_mode=true causes lowercase printable
+    // keys to route through edit.insert_char (the global edit-mode
+    // binding for printable ASCII is registered with no_mods only;
+    // uppercase letters arrive with shift_only and slip through to the
+    // modal's own bindings) — the user sees uppercase typing work and
+    // lowercase silently eaten.
+    run: |_snap, _ctx| vec![
+        Write {
+            path: oxpath!("ui", "settings", "cursor"),
+            record: Record::parsed(path_to_value(&oxpath!("settings", "accounts", "_new"))),
+        },
+        Write {
+            path: oxpath!("ui", "settings", "edit_mode"),
+            record: Record::parsed(Value::Bool(false)),
+        },
+        Write {
+            path: oxpath!("ui", "settings", "edit_field_path"),
+            record: Record::parsed(Value::Null),
+        },
+    ],
 }
 
 command! {
@@ -49,10 +68,23 @@ command! {
     description: "Open the delete-confirmation overlay.",
     screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "accounts")),
-    run: |_snap, _ctx| vec![Write {
-        path: oxpath!("ui", "settings", "cursor"),
-        record: Record::parsed(path_to_value(&oxpath!("settings", "accounts", "_delete"))),
-    }],
+    // Same edit_mode reset as accounts.add — the delete-confirm overlay
+    // has only y/n/Esc bindings, but a stale edit_mode would still
+    // hijack stray printable keys that should be no-ops at this scope.
+    run: |_snap, _ctx| vec![
+        Write {
+            path: oxpath!("ui", "settings", "cursor"),
+            record: Record::parsed(path_to_value(&oxpath!("settings", "accounts", "_delete"))),
+        },
+        Write {
+            path: oxpath!("ui", "settings", "edit_mode"),
+            record: Record::parsed(Value::Bool(false)),
+        },
+        Write {
+            path: oxpath!("ui", "settings", "edit_field_path"),
+            record: Record::parsed(Value::Null),
+        },
+    ],
 }
 
 command! {
@@ -1080,19 +1112,46 @@ mod tests {
     // -- Cursor-shuffle tests ---------------------------------------------------
 
     #[test]
-    fn accounts_add_writes_new_cursor() {
+    fn accounts_add_writes_new_cursor_and_clears_edit_mode() {
         let mut snap = SettingsSnapshot::empty();
         let writes = run_cmd(&AccountsAdd::new(), &mut snap);
-        assert_eq!(writes.len(), 1);
+        // cursor + edit_mode reset + edit_field_path null = 3 writes.
+        assert_eq!(writes.len(), 3);
         assert_cursor_write(&writes, oxpath!("settings", "accounts", "_new"));
+        // edit_mode must be explicitly false so a stale field-edit
+        // doesn't hijack printable keys in the modal's typing surface.
+        let edit_mode = writes
+            .iter()
+            .find(|w| w.path == oxpath!("ui", "settings", "edit_mode"))
+            .expect("edit_mode write");
+        match &edit_mode.record {
+            Record::Parsed(Value::Bool(false)) => {}
+            other => panic!("expected edit_mode=false, got {other:?}"),
+        }
+        let edit_path = writes
+            .iter()
+            .find(|w| w.path == oxpath!("ui", "settings", "edit_field_path"))
+            .expect("edit_field_path write");
+        match &edit_path.record {
+            Record::Parsed(Value::Null) => {}
+            other => panic!("expected edit_field_path=Null, got {other:?}"),
+        }
     }
 
     #[test]
-    fn accounts_delete_confirm_writes_delete_cursor() {
+    fn accounts_delete_confirm_writes_delete_cursor_and_clears_edit_mode() {
         let mut snap = SettingsSnapshot::empty();
         let writes = run_cmd(&AccountsDeleteConfirm::new(), &mut snap);
-        assert_eq!(writes.len(), 1);
+        assert_eq!(writes.len(), 3);
         assert_cursor_write(&writes, oxpath!("settings", "accounts", "_delete"));
+        let edit_mode = writes
+            .iter()
+            .find(|w| w.path == oxpath!("ui", "settings", "edit_mode"))
+            .expect("edit_mode write");
+        match &edit_mode.record {
+            Record::Parsed(Value::Bool(false)) => {}
+            other => panic!("expected edit_mode=false, got {other:?}"),
+        }
     }
 
     #[test]
