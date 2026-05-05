@@ -1215,11 +1215,13 @@ explicitly tagged a subset."
 
 ### Slice 3 Status
 
-**Tasks 3.1, 3.2, 3.3 shipped.** Task 3.4 (kernel gate) deferred: the kernel doesn't currently expose a per-thread "callable models" surface — the only model-resolution path (`read_model_config` in `crates/ox-kernel/src/run.rs`) resolves a single `(model_id, max_tokens)` from `gate/completions/bootstrap` for the whole thread, and the `complete` tool doesn't take a `model_id` parameter. There is nothing to filter today.
+**Tasks 3.1, 3.2, 3.3 shipped.** Task 3.4 (the gate) deferred for an architectural-layering reason: the gate doesn't belong in ox-kernel — ox-kernel **is** the agent. The harness that mounts the kernel (ox-cli for CLI, ox-web for browser) is what restricts the subset of model surfaces the kernel can call. The original Q1 framing said "kernel-side gate" but that conflated agent and harness; the correct framing is "harness-side gate" — ox-cli reads `config/gate/completions/default_available` at thread spawn (or tool-surface assembly time) and shapes what the kernel sees.
 
-Implementing the kernel gate requires *first* exposing per-call model selection (likely adding `model_id` to the `complete` tool's input schema + a kernel validator). That's a tool-schema change with downstream consumers (dialect transport, prompt assembly), not a Settings-screen concern, so it warrants its own slice rather than riding this one.
+Even at the harness layer the gate has nothing concrete to do today: the `complete` tool takes only `account: string`, no `model_id`. The tool's resolved model is whatever `gate/completions/bootstrap` pins for the whole thread. Until per-call model selection exists (likely a `model_id` parameter on the `complete` tool, plus a per-tool-call validator wired by the harness), `default_available` has no enforcement point — at any layer.
 
-**Effective Q1 answer for now: (b) UI-only.** The `default_available` record is settings-managed; the toggle and badge work; kernel enforcement is a follow-up. When the tool-schema slice lands, Task 3.4 reactivates with a real gate point.
+That tool-schema change is a separate slice with downstream consumers (dialect transport, prompt assembly), not a Settings-screen concern.
+
+**Effective Q1 answer for now: settings-managed-only.** The `default_available` record is settings-managed; the toggle and badge work; harness enforcement is a follow-up. When the per-call-model-selection slice lands, Task 3.4 reactivates with the gate inside the harness's tool-surface assembly path — *not* inside ox-kernel.
 
 ---
 
