@@ -109,7 +109,7 @@ command! {
     description: "Discard the edit buffer and exit edit mode.",
     screen: Screen::Settings,
     cursor: None,
-    run: |_snap, _ctx| clear_edit_state(),
+    run: |snap, _ctx| cancel(snap),
 }
 
 pub fn register(reg: &mut CommandRegistry) {
@@ -341,6 +341,30 @@ fn delete_back(data: &mut dyn Reader) -> Vec<Write> {
         path: oxpath!("ui", "settings", "edit_buffer"),
         record: Record::parsed(Value::String(current)),
     }]
+}
+
+fn cancel(data: &mut dyn Reader) -> Vec<Write> {
+    let mut writes = Vec::new();
+    // Manual-model form clears its own state additionally so the user
+    // can abandon a partially-filled form without leaving stale paths
+    // behind. Only fires when a stage value is actually set; otherwise
+    // the regular edit-mode cancel suffices.
+    if super::super::renderers::util::read_typed::<String>(
+        data,
+        &oxpath!("ui", "settings", "manual_model", "stage"),
+    )
+    .is_some()
+    {
+        for sub in ["account", "stage", "buffer", "staged_id", "staged_ctx"] {
+            let comp = ox_kernel::PathComponent::try_new(sub).expect("identifier");
+            writes.push(Write {
+                path: oxpath!("ui", "settings", "manual_model", comp),
+                record: Record::parsed(Value::Null),
+            });
+        }
+    }
+    writes.extend(clear_edit_state());
+    writes
 }
 
 fn commit(data: &mut dyn Reader) -> Vec<Write> {
@@ -1091,6 +1115,37 @@ mod tests {
         );
         let writes = run(&Commit::new(), &mut snap);
         assert!(writes.is_empty());
+    }
+
+    #[test]
+    fn manual_model_cancel_clears_form_without_writing_catalog() {
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "stage"),
+            Value::String("ctx".into()),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "staged_id"),
+            Value::String("custom".into()),
+        );
+        snap.insert(&oxpath!("ui", "settings", "edit_mode"), Value::Bool(true));
+        let writes = run(&Cancel::new(), &mut snap);
+        // No catalog write; all manual_model paths nulled; edit_mode off.
+        assert!(
+            !writes
+                .iter()
+                .any(|w| w.path.to_string().starts_with("config/gate/accounts"))
+        );
+        assert!(
+            writes
+                .iter()
+                .any(|w| w.path.to_string() == "ui/settings/manual_model/stage")
+        );
+        assert!(
+            writes
+                .iter()
+                .any(|w| w.path == oxpath!("ui", "settings", "edit_mode"))
+        );
     }
 
     #[test]
