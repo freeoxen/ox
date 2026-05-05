@@ -1210,8 +1210,16 @@ explicitly tagged a subset."
 - `config/gate/completions/default_available: Vec<ModelKey>` exists as a typed record; absent/empty means "all cataloged."
 - Pressing `d` on a focused Models row toggles membership.
 - Models tree shows `D` badge on rows in the set; combined with `B` if also bootstrap.
-- ox-kernel restricts a fresh thread's callable model set to the explicit subset when present.
+- ~~ox-kernel restricts a fresh thread's callable model set to the explicit subset when present.~~ **Deferred** — see "Status" below.
 - All workspace tests green.
+
+### Slice 3 Status
+
+**Tasks 3.1, 3.2, 3.3 shipped.** Task 3.4 (kernel gate) deferred: the kernel doesn't currently expose a per-thread "callable models" surface — the only model-resolution path (`read_model_config` in `crates/ox-kernel/src/run.rs`) resolves a single `(model_id, max_tokens)` from `gate/completions/bootstrap` for the whole thread, and the `complete` tool doesn't take a `model_id` parameter. There is nothing to filter today.
+
+Implementing the kernel gate requires *first* exposing per-call model selection (likely adding `model_id` to the `complete` tool's input schema + a kernel validator). That's a tool-schema change with downstream consumers (dialect transport, prompt assembly), not a Settings-screen concern, so it warrants its own slice rather than riding this one.
+
+**Effective Q1 answer for now: (b) UI-only.** The `default_available` record is settings-managed; the toggle and badge work; kernel enforcement is a follow-up. When the tool-schema slice lands, Task 3.4 reactivates with a real gate point.
 
 ---
 
