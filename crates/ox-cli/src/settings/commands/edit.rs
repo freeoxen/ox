@@ -344,6 +344,18 @@ fn delete_back(data: &mut dyn Reader) -> Vec<Write> {
 }
 
 fn commit(data: &mut dyn Reader) -> Vec<Write> {
+    // Manual-model form takes precedence: when a manual_model/stage
+    // value is set, route Enter through the staged form's state machine
+    // rather than the regular field-commit path. Stage advances ("id" →
+    // "ctx" → "out") write only the form's own paths; the final stage
+    // additionally writes the assembled ModelInfo to the catalog and
+    // tears the form down.
+    if let Some(stage) = super::super::renderers::util::read_typed::<String>(
+        data,
+        &oxpath!("ui", "settings", "manual_model", "stage"),
+    ) {
+        return commit_manual_model(data, &stage);
+    }
     let field_path = match read_path(data, &oxpath!("ui", "settings", "edit_field_path")) {
         Some(p) => p,
         None => return clear_edit_state(),
@@ -365,6 +377,137 @@ fn commit(data: &mut dyn Reader) -> Vec<Write> {
     };
     writes.extend(clear_edit_state());
     writes
+}
+
+fn commit_manual_model(data: &mut dyn Reader, stage: &str) -> Vec<Write> {
+    let buffer: String = super::super::renderers::util::read_typed(
+        data,
+        &oxpath!("ui", "settings", "manual_model", "buffer"),
+    )
+    .unwrap_or_default();
+    let trimmed = buffer.trim();
+
+    match stage {
+        "id" => {
+            if trimmed.is_empty() {
+                return Vec::new();
+            }
+            vec![
+                Write {
+                    path: oxpath!("ui", "settings", "manual_model", "stage"),
+                    record: Record::parsed(Value::String("ctx".into())),
+                },
+                Write {
+                    path: oxpath!("ui", "settings", "manual_model", "staged_id"),
+                    record: Record::parsed(Value::String(trimmed.to_string())),
+                },
+                Write {
+                    path: oxpath!("ui", "settings", "manual_model", "buffer"),
+                    record: Record::parsed(Value::String(String::new())),
+                },
+            ]
+        }
+        "ctx" => {
+            let n: u32 = match trimmed.parse() {
+                Ok(n) if n > 0 => n,
+                _ => return Vec::new(),
+            };
+            vec![
+                Write {
+                    path: oxpath!("ui", "settings", "manual_model", "stage"),
+                    record: Record::parsed(Value::String("out".into())),
+                },
+                Write {
+                    path: oxpath!("ui", "settings", "manual_model", "staged_ctx"),
+                    record: Record::parsed(Value::String(n.to_string())),
+                },
+                Write {
+                    path: oxpath!("ui", "settings", "manual_model", "buffer"),
+                    record: Record::parsed(Value::String(String::new())),
+                },
+            ]
+        }
+        "out" => {
+            let out: u32 = match trimmed.parse() {
+                Ok(n) if n > 0 => n,
+                _ => return Vec::new(),
+            };
+            let id: String = super::super::renderers::util::read_typed(
+                data,
+                &oxpath!("ui", "settings", "manual_model", "staged_id"),
+            )
+            .unwrap_or_default();
+            let ctx: u32 = super::super::renderers::util::read_typed::<String>(
+                data,
+                &oxpath!("ui", "settings", "manual_model", "staged_ctx"),
+            )
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+            let account: String = super::super::renderers::util::read_typed(
+                data,
+                &oxpath!("ui", "settings", "manual_model", "account"),
+            )
+            .unwrap_or_default();
+
+            let comp = match ox_kernel::PathComponent::try_new(&account) {
+                Ok(c) => c,
+                Err(_) => return Vec::new(),
+            };
+
+            // Read the existing catalog (absent → empty) and append the
+            // new entry. Display name defaults to the id; the user can
+            // refine it later via the model-field rows.
+            let catalog_path = oxpath!("config", "gate", "accounts", comp, "models");
+            let mut catalog: Vec<ox_gate::ModelInfo> =
+                super::super::renderers::util::read_typed(data, &catalog_path).unwrap_or_default();
+            catalog.push(ox_gate::ModelInfo {
+                id: id.clone(),
+                display_name: id,
+                max_context_size: Some(ctx),
+                max_output_tokens: Some(out),
+                source: ox_gate::ModelInfoSource::UserEntered,
+            });
+            let catalog_value = match to_value(&catalog) {
+                Ok(v) => v,
+                Err(_) => return Vec::new(),
+            };
+
+            // Write the catalog and clear the form state. Each form-state
+            // path becomes a Null write to retire it; edit_mode flips off
+            // so the dispatcher returns to normal navigation.
+            vec![
+                Write {
+                    path: catalog_path,
+                    record: Record::parsed(catalog_value),
+                },
+                Write {
+                    path: oxpath!("ui", "settings", "manual_model", "account"),
+                    record: Record::parsed(Value::Null),
+                },
+                Write {
+                    path: oxpath!("ui", "settings", "manual_model", "stage"),
+                    record: Record::parsed(Value::Null),
+                },
+                Write {
+                    path: oxpath!("ui", "settings", "manual_model", "buffer"),
+                    record: Record::parsed(Value::Null),
+                },
+                Write {
+                    path: oxpath!("ui", "settings", "manual_model", "staged_id"),
+                    record: Record::parsed(Value::Null),
+                },
+                Write {
+                    path: oxpath!("ui", "settings", "manual_model", "staged_ctx"),
+                    record: Record::parsed(Value::Null),
+                },
+                Write {
+                    path: oxpath!("ui", "settings", "edit_mode"),
+                    record: Record::parsed(Value::Bool(false)),
+                },
+            ]
+        }
+        _ => Vec::new(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -883,5 +1026,113 @@ mod tests {
         let mut snap = SettingsSnapshot::empty();
         snap.insert(&oxpath!("ui", "settings", "edit_mode"), Value::Bool(false));
         assert!(read_edit_state(&mut snap).is_none());
+    }
+
+    #[test]
+    fn manual_model_commit_id_advances_to_ctx_stage() {
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "account"),
+            Value::String("alpha".into()),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "stage"),
+            Value::String("id".into()),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "buffer"),
+            Value::String("custom-model".into()),
+        );
+        let writes = run(&Commit::new(), &mut snap);
+        // Expect stage="ctx", staged_id="custom-model", buffer="" → 3 writes.
+        let by_path: std::collections::BTreeMap<_, _> = writes
+            .iter()
+            .map(|w| (w.path.to_string(), w.record.as_value().unwrap().clone()))
+            .collect();
+        assert_eq!(
+            by_path.get("ui/settings/manual_model/stage").unwrap(),
+            &Value::String("ctx".into())
+        );
+        assert_eq!(
+            by_path.get("ui/settings/manual_model/staged_id").unwrap(),
+            &Value::String("custom-model".into())
+        );
+        assert_eq!(
+            by_path.get("ui/settings/manual_model/buffer").unwrap(),
+            &Value::String(String::new())
+        );
+    }
+
+    #[test]
+    fn manual_model_commit_id_rejects_empty() {
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "stage"),
+            Value::String("id".into()),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "buffer"),
+            Value::String("   ".into()),
+        );
+        let writes = run(&Commit::new(), &mut snap);
+        assert!(writes.is_empty(), "empty/whitespace id must not advance");
+    }
+
+    #[test]
+    fn manual_model_commit_ctx_rejects_non_numeric() {
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "stage"),
+            Value::String("ctx".into()),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "buffer"),
+            Value::String("not-a-number".into()),
+        );
+        let writes = run(&Commit::new(), &mut snap);
+        assert!(writes.is_empty());
+    }
+
+    #[test]
+    fn manual_model_commit_out_writes_full_modelinfo_and_clears_form() {
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "account"),
+            Value::String("alpha".into()),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "stage"),
+            Value::String("out".into()),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "staged_id"),
+            Value::String("custom-model".into()),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "staged_ctx"),
+            Value::String("100000".into()),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "buffer"),
+            Value::String("8000".into()),
+        );
+        let writes = run(&Commit::new(), &mut snap);
+        // The catalog write goes to config/gate/accounts/alpha/models;
+        // form clears via several deletes; edit_mode flips off.
+        let catalog_write = writes
+            .iter()
+            .find(|w| w.path.to_string() == "config/gate/accounts/alpha/models")
+            .expect("catalog write");
+        let models: Vec<ox_gate::ModelInfo> =
+            structfs_serde_store::from_value(catalog_write.record.as_value().unwrap().clone())
+                .unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "custom-model");
+        assert_eq!(models[0].max_context_size, Some(100_000));
+        assert_eq!(models[0].max_output_tokens, Some(8_000));
+        assert!(matches!(
+            models[0].source,
+            ox_gate::ModelInfoSource::UserEntered
+        ));
     }
 }
