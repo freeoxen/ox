@@ -215,6 +215,48 @@ fn begin_edit_model_field_inner(data: &mut dyn Reader) -> Vec<Write> {
     enter_edit_mode(row.path, initial)
 }
 
+/// Seed the inline three-stage manual-model form. The form lives at
+/// `ui/settings/manual_model/*`:
+///
+/// - `account: String` — which connection we're adding to
+/// - `stage: "id" | "ctx" | "out"` — current field being edited
+/// - `buffer: String` — the live buffer
+/// - `staged_id: String` — committed id from previous stage
+/// - `staged_ctx: String` — committed ctx (raw text) from previous stage
+///
+/// Activation flips edit_mode on so the dispatcher's edit-mode pass
+/// routes printable chars into the buffer; the Commit command's
+/// manual-model branch advances stages and ultimately writes the new
+/// ModelInfo.
+pub(crate) fn begin_manual_model(_data: &mut dyn Reader, account: &str) -> Vec<Write> {
+    let account_value = match to_value(&account.to_string()) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let stage_value = match to_value(&"id".to_string()) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    vec![
+        Write {
+            path: oxpath!("ui", "settings", "manual_model", "account"),
+            record: Record::parsed(account_value),
+        },
+        Write {
+            path: oxpath!("ui", "settings", "manual_model", "stage"),
+            record: Record::parsed(stage_value),
+        },
+        Write {
+            path: oxpath!("ui", "settings", "manual_model", "buffer"),
+            record: Record::parsed(Value::String(String::new())),
+        },
+        Write {
+            path: oxpath!("ui", "settings", "edit_mode"),
+            record: Record::parsed(Value::Bool(true)),
+        },
+    ]
+}
+
 fn enter_edit_mode(field_path: Path, buffer: String) -> Vec<Write> {
     vec![
         Write {

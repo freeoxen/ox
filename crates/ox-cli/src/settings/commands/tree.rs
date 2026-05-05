@@ -233,7 +233,7 @@ fn activate(data: &mut dyn Reader) -> Vec<Write> {
                     record: Record::parsed(Value::Null),
                 }]
             }
-            RowKind::ModelAddManual { .. } => Vec::new(),
+            RowKind::ModelAddManual { account } => super::edit::begin_manual_model(data, account),
         }
     }
 }
@@ -749,6 +749,30 @@ mod tests {
         // branch in account_request_path is covered by other tests.
         let writes = run(&TreeActivate::new(), &mut snap);
         assert_eq!(writes.len(), 1);
+    }
+
+    #[test]
+    fn activate_on_add_manual_row_initializes_form_at_id_stage() {
+        let mut snap = SettingsSnapshot::empty();
+        write_index(&mut snap);
+        write_account(&mut snap, "alpha");
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&["settings/models".to_string()]),
+        );
+        set_focused(&mut snap, "settings/models/alpha/_add");
+
+        let writes = run(&TreeActivate::new(), &mut snap);
+        // Expect: account, stage="id", buffer="", edit_mode=true → 4 writes.
+        assert_eq!(writes.len(), 4);
+        let by_path: std::collections::BTreeMap<_, _> = writes
+            .iter()
+            .map(|w| (w.path.to_string(), w.record.clone()))
+            .collect();
+        assert!(by_path.contains_key("ui/settings/manual_model/account"));
+        assert!(by_path.contains_key("ui/settings/manual_model/stage"));
+        assert!(by_path.contains_key("ui/settings/manual_model/buffer"));
+        assert!(by_path.contains_key("ui/settings/edit_mode"));
     }
 
     // -- collapse_or_ascend ---------------------------------------------
