@@ -131,24 +131,93 @@ pub fn enumerate(data: &mut dyn Reader) -> Vec<VisibleRow> {
 /// depth-2 rows. The user never has to leave `settings/index` to see
 /// or act on an account.
 fn append_account_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, expanded: &[String]) {
+    use ox_gate::AccountConfig;
+
     let names = child_names_under(data, "config/gate/accounts");
-    for name in names {
-        let path = row_path(&["settings", "accounts", &safe_component(&name)]);
+    // Pre-compute the provider-to-accounts map so the share-set lookup
+    // is one pass, not N×N.
+    let mut provider_users: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for n in &names {
+        let provider = if let Ok(comp) = ox_kernel::PathComponent::try_new(n) {
+            let acct: Option<AccountConfig> =
+                read_typed(data, &oxpath!("config", "gate", "accounts", comp));
+            acct.map(|a| a.provider)
+                .or_else(|| read_account_child_string_in_visible_rows(data, n, "provider"))
+        } else {
+            None
+        };
+        if let Some(p) = provider {
+            provider_users.entry(p).or_default().push(n.clone());
+        }
+    }
+
+    for name in &names {
+        let comp = match ox_kernel::PathComponent::try_new(name) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let acct: AccountConfig =
+            read_typed(data, &oxpath!("config", "gate", "accounts", comp.clone())).unwrap_or_else(
+                || AccountConfig {
+                    provider: read_account_child_string_in_visible_rows(data, name, "provider")
+                        .unwrap_or_else(|| "anthropic".to_string()),
+                },
+            );
+
+        let secondary = {
+            let users = provider_users.get(&acct.provider);
+            let other_count = users.map(|v| v.len().saturating_sub(1)).unwrap_or(0);
+            if other_count > 0 {
+                let plural = if other_count == 1 { "" } else { "s" };
+                Some(format!(
+                    "{} · shared with {} other{}",
+                    acct.provider, other_count, plural
+                ))
+            } else {
+                Some(acct.provider.clone())
+            }
+        };
+
+        let path = row_path(&["settings", "accounts", &safe_component(name)]);
         let path_str = path_to_string(&path);
         let is_expanded = expanded.iter().any(|s| s == &path_str);
         rows.push(VisibleRow {
             path: path.clone(),
             depth: 1,
             label: name.clone(),
-            secondary: None,
+            secondary,
             badge: None,
             kind: RowKind::Account { name: name.clone() },
             expandable: true,
             expanded: is_expanded,
         });
         if is_expanded {
-            append_account_field_rows(rows, data, &name);
+            append_account_field_rows(rows, data, name);
         }
+    }
+}
+
+/// Read a child string under `config/gate/accounts/{name}/{child}`
+/// — mirrors `read_account_child_string` in `account_model.rs`. The
+/// fallback covers TOML-loaded accounts that store fields as separate
+/// leaves rather than as one AccountConfig record.
+fn read_account_child_string_in_visible_rows(
+    data: &mut dyn Reader,
+    account: &str,
+    child: &str,
+) -> Option<String> {
+    let acct_comp = ox_kernel::PathComponent::try_new(account).ok()?;
+    let child_comp = ox_kernel::PathComponent::try_new(child).ok()?;
+    let r = data
+        .read(&oxpath!(
+            "config", "gate", "accounts", acct_comp, child_comp
+        ))
+        .ok()
+        .flatten()?;
+    match r.as_value()? {
+        Value::String(s) => Some(s.clone()),
+        _ => None,
     }
 }
 
@@ -541,6 +610,17 @@ mod tests {
         );
     }
 
+    fn write_account_with_provider(snap: &mut SettingsSnapshot, name: &str, provider: &str) {
+        let comp = ox_kernel::PathComponent::try_new(name).unwrap();
+        snap.insert(
+            &oxpath!("config", "gate", "accounts", comp),
+            to_value(&AccountConfig {
+                provider: provider.into(),
+            })
+            .unwrap(),
+        );
+    }
+
     fn write_account_with_models(snap: &mut SettingsSnapshot, name: &str, ids: &[&str]) {
         write_account(snap, name);
         let comp = ox_kernel::PathComponent::try_new(name).unwrap();
@@ -612,6 +692,35 @@ mod tests {
         assert_eq!(rows[1].depth, 1);
         assert!(matches!(&rows[2].kind, RowKind::Account { name } if name == "beta"));
         assert!(matches!(&rows[3].kind, RowKind::Entry { entry_id } if entry_id == "models"));
+    }
+
+    #[test]
+    fn account_row_secondary_indicates_shared_provider() {
+        let mut snap = SettingsSnapshot::empty();
+        write_index_entries(&mut snap);
+        // Three accounts, two share provider "anthropic", one uses "openai".
+        write_account_with_provider(&mut snap, "personal", "anthropic");
+        write_account_with_provider(&mut snap, "work", "anthropic");
+        write_account_with_provider(&mut snap, "lab", "openai");
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&["settings/accounts".to_string()]),
+        );
+        let rows = enumerate(&mut snap);
+        let personal = rows
+            .iter()
+            .find(|r| matches!(&r.kind, RowKind::Account { name } if name == "personal"))
+            .expect("personal row");
+        assert_eq!(
+            personal.secondary.as_deref(),
+            Some("anthropic · shared with 1 other"),
+            "row secondary must reflect provider sharing"
+        );
+        let lab = rows
+            .iter()
+            .find(|r| matches!(&r.kind, RowKind::Account { name } if name == "lab"))
+            .expect("lab row");
+        assert_eq!(lab.secondary.as_deref(), Some("openai"));
     }
 
     #[test]
