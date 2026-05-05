@@ -43,6 +43,9 @@ pub struct VisibleRow {
     pub path: Path,
     pub depth: usize,
     pub label: String,
+    /// Right-aligned secondary text (e.g. model token-budget summary).
+    /// `None` when the row has no extra metadata to show.
+    pub secondary: Option<String>,
     pub badge: Option<String>,
     pub kind: RowKind,
     pub expandable: bool,
@@ -90,6 +93,7 @@ pub fn enumerate(data: &mut dyn Reader) -> Vec<VisibleRow> {
             path: path.clone(),
             depth: 0,
             label: entry.label,
+            secondary: None,
             badge: resolve_badge(data, &entry.badge),
             kind: RowKind::Entry {
                 entry_id: entry.id.clone(),
@@ -124,6 +128,7 @@ fn append_account_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, expand
             path: path.clone(),
             depth: 1,
             label: name.clone(),
+            secondary: None,
             badge: None,
             kind: RowKind::Account { name: name.clone() },
             expandable: true,
@@ -202,6 +207,7 @@ fn append_model_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, expanded
                 path: path.clone(),
                 depth: 1,
                 label: format!("{} / {}", account_name, m.id),
+                secondary: None,
                 badge,
                 kind: RowKind::Model {
                     account: account_name.clone(),
@@ -277,6 +283,7 @@ fn append_account_field_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, 
             path,
             depth: 2,
             label: format!("{label}: {value}"),
+            secondary: None,
             badge: None,
             kind: RowKind::AccountField {
                 account: name.to_string(),
@@ -319,6 +326,7 @@ fn append_model_field_rows(rows: &mut Vec<VisibleRow>, model: &ox_gate::ModelInf
             path,
             depth: 2,
             label: format!("{label}: {value}"),
+            secondary: None,
             badge: None,
             kind: RowKind::ModelField {
                 account: account.to_string(),

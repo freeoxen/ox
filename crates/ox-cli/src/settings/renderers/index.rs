@@ -76,7 +76,7 @@ impl Renderer for IndexRenderer {
                         return ListItem {
                             primary: format!("{indent}{glyph}{}", row.label),
                             primary_spans: Some(spans),
-                            secondary: None,
+                            secondary: row.secondary.clone(),
                             badge: row.badge.clone(),
                         };
                     }
@@ -85,7 +85,7 @@ impl Renderer for IndexRenderer {
                 ListItem {
                     primary: format!("{indent}{glyph}{label}"),
                     primary_spans: None,
-                    secondary: None,
+                    secondary: row.secondary.clone(),
                     badge: row.badge.clone(),
                 }
             })
