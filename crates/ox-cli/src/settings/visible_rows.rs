@@ -207,7 +207,7 @@ fn append_model_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, expanded
                 path: path.clone(),
                 depth: 1,
                 label: format!("{} / {}", account_name, m.id),
-                secondary: None,
+                secondary: Some(model_secondary(&m)),
                 badge,
                 kind: RowKind::Model {
                     account: account_name.clone(),
@@ -431,6 +431,34 @@ pub fn path_to_string(p: &Path) -> String {
 /// to the first row.
 pub fn position_of(rows: &[VisibleRow], cursor: &Path) -> Option<usize> {
     rows.iter().position(|r| &r.path == cursor)
+}
+
+/// Format a token count for display. Uses `k` / `M` suffixes above
+/// 1000 / 1_000_000; raw decimal below. Mirrors how model docs and
+/// dashboards label context windows ("200k context") so the rendered
+/// secondary text reads naturally to anyone who has read a model card.
+fn format_token_count(n: u32) -> String {
+    if n >= 1_000_000 {
+        format!("{}M", n / 1_000_000)
+    } else if n >= 1_000 {
+        format!("{}k", n / 1_000)
+    } else {
+        n.to_string()
+    }
+}
+
+/// Format a model's secondary metadata line: token budgets, dashed
+/// when unknown.
+fn model_secondary(m: &ox_gate::ModelInfo) -> String {
+    let ctx = m
+        .max_context_size
+        .map(format_token_count)
+        .unwrap_or_else(|| "—".to_string());
+    let out = m
+        .max_output_tokens
+        .map(format_token_count)
+        .unwrap_or_else(|| "—".to_string());
+    format!("ctx {ctx} · out {out}")
 }
 
 #[cfg(test)]
@@ -882,6 +910,105 @@ mod tests {
             .expect("model row");
         // Order: D first, then B (D is the multi-select common case).
         assert_eq!(row.badge.as_deref(), Some("D B"));
+    }
+
+    // -- format_token_count ---------------------------------------------
+
+    #[test]
+    fn format_token_count_uses_k_suffix_for_thousands() {
+        assert_eq!(format_token_count(8_000), "8k");
+        assert_eq!(format_token_count(200_000), "200k");
+        assert_eq!(format_token_count(128_000), "128k");
+    }
+
+    #[test]
+    fn format_token_count_uses_m_suffix_for_millions() {
+        assert_eq!(format_token_count(1_000_000), "1M");
+        assert_eq!(format_token_count(2_000_000), "2M");
+    }
+
+    #[test]
+    fn format_token_count_uses_raw_decimal_below_1000() {
+        assert_eq!(format_token_count(0), "0");
+        assert_eq!(format_token_count(512), "512");
+        assert_eq!(format_token_count(999), "999");
+    }
+
+    #[test]
+    fn model_row_secondary_carries_ctx_and_out_metadata() {
+        // A model row's secondary slot must surface the token budgets so
+        // the user can compare models without drilling into each one.
+        let mut snap = SettingsSnapshot::empty();
+        write_index_entries(&mut snap);
+        let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
+        snap.insert(
+            &oxpath!("config", "gate", "accounts", comp.clone()),
+            to_value(&AccountConfig {
+                provider: "anthropic".into(),
+            })
+            .unwrap(),
+        );
+        snap.insert(
+            &oxpath!("config", "gate", "accounts", comp, "models"),
+            to_value(&vec![ModelInfo {
+                id: "claude-sonnet-4".into(),
+                display_name: "Claude Sonnet 4".into(),
+                max_context_size: Some(200_000),
+                max_output_tokens: Some(8_000),
+                source: ModelInfoSource::Server,
+            }])
+            .unwrap(),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&["settings/models".to_string()]),
+        );
+        let rows = enumerate(&mut snap);
+        let model_row = rows
+            .iter()
+            .find(|r| matches!(&r.kind, RowKind::Model { .. }))
+            .expect("model row");
+        assert_eq!(model_row.secondary.as_deref(), Some("ctx 200k · out 8k"));
+    }
+
+    #[test]
+    fn model_row_secondary_renders_em_dash_for_unknown_budget() {
+        // A model entry whose catalog refresh got back ids only (no token
+        // limits) and whose known-family table didn't fill them in must
+        // still render a legible secondary — the dashes carry "we know
+        // this model exists but not its budgets" without leaving the
+        // slot blank.
+        let mut snap = SettingsSnapshot::empty();
+        write_index_entries(&mut snap);
+        let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
+        snap.insert(
+            &oxpath!("config", "gate", "accounts", comp.clone()),
+            to_value(&AccountConfig {
+                provider: "anthropic".into(),
+            })
+            .unwrap(),
+        );
+        snap.insert(
+            &oxpath!("config", "gate", "accounts", comp, "models"),
+            to_value(&vec![ModelInfo {
+                id: "mystery-model".into(),
+                display_name: "Mystery".into(),
+                max_context_size: None,
+                max_output_tokens: None,
+                source: ModelInfoSource::Server,
+            }])
+            .unwrap(),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&["settings/models".to_string()]),
+        );
+        let rows = enumerate(&mut snap);
+        let model_row = rows
+            .iter()
+            .find(|r| matches!(&r.kind, RowKind::Model { .. }))
+            .expect("model row");
+        assert_eq!(model_row.secondary.as_deref(), Some("ctx — · out —"));
     }
 
     #[test]
