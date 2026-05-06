@@ -33,36 +33,10 @@ command! {
     struct_name: AccountsAdd,
     id: "accounts.add",
     title: "Add Connection",
-    description: "Open the new-connection overlay.",
+    description: "Open the inline new-connection prompt at the top of the accounts section.",
     screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "accounts")),
-    // The modal owns its own input scope: typing routes through
-    // `accounts.new.insert_char` bound at Exact(settings/accounts/_new).
-    // Clear focused_row and edit_mode on entry so the dispatcher's
-    // focused-row and edit-mode passes don't shadow the modal's
-    // bindings — the focused_row scope under Prefix(settings/accounts)
-    // binds many letter keys (a, t, d, r, …) to per-row commands, and
-    // a lingering edit_mode would route printable ASCII through
-    // `edit.insert_char` (no_mods variants only) before the page
-    // cursor's Exact(_new) bindings get a chance.
-    run: |_snap, _ctx| vec![
-        Write {
-            path: oxpath!("ui", "settings", "cursor"),
-            record: Record::parsed(path_to_value(&oxpath!("settings", "accounts", "_new"))),
-        },
-        Write {
-            path: oxpath!("ui", "settings", "focused_row"),
-            record: Record::parsed(Value::Null),
-        },
-        Write {
-            path: oxpath!("ui", "settings", "edit_mode"),
-            record: Record::parsed(Value::Bool(false)),
-        },
-        Write {
-            path: oxpath!("ui", "settings", "edit_field_path"),
-            record: Record::parsed(Value::Null),
-        },
-    ],
+    run: |snap, _ctx| accounts_add(snap),
 }
 
 command! {
@@ -453,6 +427,35 @@ fn accounts_create(data: &mut dyn Reader) -> Vec<Write> {
         path: oxpath!("config", "gate", "accounts", "_create_now"),
         record: Record::parsed(value),
     }]
+}
+
+fn accounts_add(data: &mut dyn Reader) -> Vec<Write> {
+    use crate::settings::visible_rows::{expanded_set_to_value, read_expanded_set};
+
+    let mut expanded = read_expanded_set(data);
+    let accounts_key = "settings/accounts".to_string();
+    if !expanded.iter().any(|s| s == &accounts_key) {
+        expanded.push(accounts_key);
+    }
+
+    let mut writes = vec![Write {
+        path: oxpath!("ui", "settings", "expanded"),
+        record: Record::parsed(expanded_set_to_value(&expanded)),
+    }];
+
+    // Focus the ghost row before flipping edit_mode so the renderer's
+    // overlay locks onto the right row.
+    writes.push(Write {
+        path: oxpath!("ui", "settings", "focused_row"),
+        record: Record::parsed(path_to_value(&oxpath!(
+            "settings", "accounts", "_new"
+        ))),
+    });
+
+    // Reuse edit.rs's helper so the seed shape matches what tree.activate
+    // produces from the same row.
+    writes.extend(super::edit::begin_account_add());
+    writes
 }
 
 fn accounts_delete(data: &mut dyn Reader) -> Vec<Write> {
@@ -1120,43 +1123,101 @@ mod tests {
     // -- Cursor-shuffle tests ---------------------------------------------------
 
     #[test]
-    fn accounts_add_writes_new_cursor_and_isolates_input_scope() {
+    fn accounts_add_expands_section_focuses_ghost_and_enters_edit() {
         let mut snap = SettingsSnapshot::empty();
         let writes = run_cmd(&AccountsAdd::new(), &mut snap);
-        // cursor + focused_row null + edit_mode false + edit_field_path null = 4 writes.
-        assert_eq!(writes.len(), 4);
-        assert_cursor_write(&writes, oxpath!("settings", "accounts", "_new"));
-        // focused_row must be cleared so the dispatcher's pass-2
-        // (focused-row scope) doesn't shadow the modal's Exact(_new)
-        // bindings. The Prefix(settings/accounts) bindings bind 't',
-        // 'a', 'r', 'd', etc. to per-row commands.
-        let focused = writes
+        let by_path: std::collections::BTreeMap<_, _> = writes
             .iter()
-            .find(|w| w.path == oxpath!("ui", "settings", "focused_row"))
+            .map(|w| (w.path.to_string(), w.record.clone()))
+            .collect();
+
+        // expanded set must contain settings/accounts.
+        let exp = by_path.get("ui/settings/expanded").expect("expanded write");
+        let set: Vec<String> = match exp {
+            Record::Parsed(v) => structfs_serde_store::from_value(v.clone()).unwrap(),
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert!(
+            set.iter().any(|s| s == "settings/accounts"),
+            "expanded set must include settings/accounts; got {set:?}"
+        );
+
+        // focused_row → settings/accounts/_new (the ghost row).
+        let focus = by_path
+            .get("ui/settings/focused_row")
             .expect("focused_row write");
-        match &focused.record {
-            Record::Parsed(Value::Null) => {}
-            other => panic!("expected focused_row=Null, got {other:?}"),
+        match focus {
+            Record::Parsed(v) => {
+                let parts: Vec<String> = match v {
+                    Value::Array(segs) => segs
+                        .iter()
+                        .map(|s| match s {
+                            Value::String(s) => s.clone(),
+                            _ => panic!(),
+                        })
+                        .collect(),
+                    _ => panic!(),
+                };
+                assert_eq!(parts.join("/"), "settings/accounts/_new");
+            }
+            other => panic!("unexpected: {other:?}"),
         }
-        // edit_mode must be explicitly false so the dispatcher's pass-1
-        // (edit-mode scope) doesn't route printable keys through
-        // edit.insert_char before the modal's bindings see them.
-        let edit_mode = writes
-            .iter()
-            .find(|w| w.path == oxpath!("ui", "settings", "edit_mode"))
-            .expect("edit_mode write");
-        match &edit_mode.record {
-            Record::Parsed(Value::Bool(false)) => {}
-            other => panic!("expected edit_mode=false, got {other:?}"),
-        }
-        let edit_path = writes
-            .iter()
-            .find(|w| w.path == oxpath!("ui", "settings", "edit_field_path"))
+
+        // edit_field_path → settings/accounts/_new.
+        let efp = by_path
+            .get("ui/settings/edit_field_path")
             .expect("edit_field_path write");
-        match &edit_path.record {
-            Record::Parsed(Value::Null) => {}
-            other => panic!("expected edit_field_path=Null, got {other:?}"),
+        match efp {
+            Record::Parsed(Value::Array(segs)) => {
+                let parts: Vec<String> = segs
+                    .iter()
+                    .map(|s| match s {
+                        Value::String(s) => s.clone(),
+                        _ => panic!(),
+                    })
+                    .collect();
+                assert_eq!(parts.join("/"), "settings/accounts/_new");
+            }
+            other => panic!("unexpected: {other:?}"),
         }
+
+        // edit_buffer = "".
+        match by_path.get("ui/settings/edit_buffer").unwrap() {
+            Record::Parsed(Value::String(s)) => assert!(s.is_empty()),
+            other => panic!("unexpected: {other:?}"),
+        }
+
+        // edit_mode = true.
+        match by_path.get("ui/settings/edit_mode").unwrap() {
+            Record::Parsed(Value::Bool(true)) => {}
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn accounts_add_preserves_existing_expanded_entries() {
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            crate::settings::visible_rows::expanded_set_to_value(&["settings/models".to_string()]),
+        );
+        let writes = run_cmd(&AccountsAdd::new(), &mut snap);
+        let exp = writes
+            .iter()
+            .find(|w| w.path == oxpath!("ui", "settings", "expanded"))
+            .expect("expanded write");
+        let set: Vec<String> = match &exp.record {
+            Record::Parsed(v) => structfs_serde_store::from_value(v.clone()).unwrap(),
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert!(
+            set.iter().any(|s| s == "settings/models"),
+            "must not drop pre-existing entries; got {set:?}"
+        );
+        assert!(
+            set.iter().any(|s| s == "settings/accounts"),
+            "must add settings/accounts; got {set:?}"
+        );
     }
 
     #[test]
