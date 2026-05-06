@@ -209,60 +209,6 @@ fn register_index(reg: &mut BindingRegistry) {
     );
 }
 
-fn register_account_new(reg: &mut BindingRegistry) {
-    let cursor = oxpath!("settings", "accounts", "_new");
-    bind(
-        reg,
-        Some(cursor.clone()),
-        no_mods(),
-        KeyCodeRepr::Enter,
-        "accounts.create",
-    );
-    bind(
-        reg,
-        Some(cursor.clone()),
-        no_mods(),
-        KeyCodeRepr::Esc,
-        "accounts.cancel",
-    );
-    // Typing surface for the connection name. The new-account modal is
-    // a cursor scope, not a field-edit, so it doesn't share the inline
-    // `edit_mode` machinery. Bind printable ASCII directly to a
-    // dedicated insert-char command and Backspace to its delete pair.
-    //
-    // Modifier handling: terminals report uppercase letters as
-    // (Char('A'), shift). The encode/parse round-trip mirrors that, so
-    // ASCII uppercase needs shift_only(); everything else uses no_mods().
-    // Non-letter shift-symbols (! @ # …) on US layouts also report with
-    // shift in some terminals — the round-trip test catches those if we
-    // mismatch.
-    for byte in 0x20u8..=0x7E {
-        let ch = byte as char;
-        let modifiers = if ch.is_ascii_uppercase() {
-            shift_only()
-        } else {
-            no_mods()
-        };
-        reg.register(BindingEntry {
-            screen: Screen::Settings,
-            scope: BindingScope::Exact(cursor.clone()),
-            mode: None,
-            key: KeyChord {
-                modifiers,
-                code: KeyCodeRepr::Char(ch),
-            },
-            command_id: cmd("accounts.new.insert_char"),
-        });
-    }
-    bind(
-        reg,
-        Some(cursor),
-        no_mods(),
-        KeyCodeRepr::Backspace,
-        "accounts.new.delete_back",
-    );
-}
-
 fn register_account_delete(reg: &mut BindingRegistry) {
     let cursor = oxpath!("settings", "accounts", "_delete");
     bind(
@@ -445,7 +391,6 @@ pub fn register(reg: &mut BindingRegistry) {
     register_global(reg);
     register_edit_mode(reg);
     register_index(reg);
-    register_account_new(reg);
     register_account_delete(reg);
     register_row_prefixes(reg);
 }
@@ -659,20 +604,6 @@ mod tests {
             )
             .expect("should match");
         assert_eq!(hit, &cmd("models.toggle_default"));
-    }
-
-    #[test]
-    fn account_new_enter_resolves_to_create() {
-        let reg = populated();
-        let hit = reg
-            .lookup(
-                Screen::Settings,
-                &oxpath!("settings", "accounts", "_new"),
-                None,
-                &key(no_mods(), KeyCodeRepr::Enter),
-            )
-            .expect("should match");
-        assert_eq!(hit, &cmd("accounts.create"));
     }
 
     #[test]

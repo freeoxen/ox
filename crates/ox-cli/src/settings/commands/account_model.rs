@@ -11,7 +11,7 @@
 
 use ox_path::oxpath;
 use ox_types::Screen;
-use ox_types::settings::{AccountField, CreateAccountRequest, ModelField, ModelKey};
+use ox_types::settings::{AccountField, ModelField, ModelKey};
 use ox_types::subscription::Write;
 use structfs_core_store::{Path, Reader, Record, Value};
 use structfs_serde_store::to_value;
@@ -85,16 +85,6 @@ command! {
 // ---------------------------------------------------------------------------
 // Subscription-request commands
 // ---------------------------------------------------------------------------
-
-command! {
-    struct_name: AccountsCreate,
-    id: "accounts.create",
-    title: "Create Connection",
-    description: "Submit the new-connection name; the subscription does the rest.",
-    screen: Screen::Settings,
-    cursor: Some(oxpath!("settings", "accounts", "_new")),
-    run: |snap, _ctx| accounts_create(snap),
-}
 
 command! {
     struct_name: AccountsDelete,
@@ -228,26 +218,6 @@ command! {
 }
 
 command! {
-    struct_name: AccountsNewInsertChar,
-    id: "accounts.new.insert_char",
-    title: "Insert char into new-connection name",
-    description: "Append the keystroke's character to ui/settings/new_account/name_input.",
-    screen: Screen::Settings,
-    cursor: Some(oxpath!("settings", "accounts", "_new")),
-    run: |snap, ctx| accounts_new_insert_char(snap, ctx),
-}
-
-command! {
-    struct_name: AccountsNewDeleteBack,
-    id: "accounts.new.delete_back",
-    title: "Delete last char from new-connection name",
-    description: "Remove the trailing character from ui/settings/new_account/name_input.",
-    screen: Screen::Settings,
-    cursor: Some(oxpath!("settings", "accounts", "_new")),
-    run: |snap, _ctx| accounts_new_delete_back(snap),
-}
-
-command! {
     struct_name: AccountsForkProvider,
     id: "accounts.fork_provider",
     title: "Fork Provider",
@@ -347,86 +317,6 @@ fn null_write(path: Path) -> Write {
         path,
         record: Record::parsed(Value::Null),
     }
-}
-
-/// Append the latest keystroke's character to the new-connection name
-/// input. Bound at `Exact(settings/accounts/_new)` for printable ASCII
-/// — gives the modal a typing surface independent of the inline-edit
-/// `edit_mode` machinery (the modal is a cursor scope, not a field
-/// edit). Non-character keystrokes are ignored.
-fn accounts_new_insert_char(
-    data: &mut dyn Reader,
-    ctx: &crate::settings::command_registry::CommandCtx<'_>,
-) -> Vec<Write> {
-    use ox_types::key_chord::KeyCodeRepr;
-    let chord = match ctx.last_keystroke.as_ref() {
-        Some(c) => c,
-        None => return Vec::new(),
-    };
-    let ch = match chord.code {
-        KeyCodeRepr::Char(c) => c,
-        _ => return Vec::new(),
-    };
-    let current: String = read_typed(
-        data,
-        &oxpath!("ui", "settings", "new_account", "name_input"),
-    )
-    .unwrap_or_default();
-    let mut next = current;
-    next.push(ch);
-    let value = match to_value(&next) {
-        Ok(v) => v,
-        Err(_) => return Vec::new(),
-    };
-    vec![Write {
-        path: oxpath!("ui", "settings", "new_account", "name_input"),
-        record: Record::parsed(value),
-    }]
-}
-
-/// Pop the trailing character from the new-connection name input.
-/// No-op when the input is already empty.
-fn accounts_new_delete_back(data: &mut dyn Reader) -> Vec<Write> {
-    let mut current: String = read_typed(
-        data,
-        &oxpath!("ui", "settings", "new_account", "name_input"),
-    )
-    .unwrap_or_default();
-    if current.pop().is_none() {
-        return Vec::new();
-    }
-    let value = match to_value(&current) {
-        Ok(v) => v,
-        Err(_) => return Vec::new(),
-    };
-    vec![Write {
-        path: oxpath!("ui", "settings", "new_account", "name_input"),
-        record: Record::parsed(value),
-    }]
-}
-
-fn accounts_create(data: &mut dyn Reader) -> Vec<Write> {
-    let name: String = match read_typed(
-        data,
-        &oxpath!("ui", "settings", "new_account", "name_input"),
-    ) {
-        Some(s) => s,
-        None => return Vec::new(),
-    };
-    if name.is_empty() {
-        return Vec::new();
-    }
-    let value = match to_value(&CreateAccountRequest { name }) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!(error = %e, "accounts.create: failed to encode request");
-            return Vec::new();
-        }
-    };
-    vec![Write {
-        path: oxpath!("config", "gate", "accounts", "_create_now"),
-        record: Record::parsed(value),
-    }]
 }
 
 fn accounts_add(data: &mut dyn Reader) -> Vec<Write> {
@@ -1001,7 +891,6 @@ pub fn register(reg: &mut CommandRegistry) {
     reg.register(Box::new(AccountsAdd::new()));
     reg.register(Box::new(AccountsDeleteConfirm::new()));
     reg.register(Box::new(AccountsCancel::new()));
-    reg.register(Box::new(AccountsCreate::new()));
     reg.register(Box::new(AccountsDelete::new()));
     reg.register(Box::new(AccountTest::new()));
     reg.register(Box::new(AccountRefresh::new()));
@@ -1012,8 +901,6 @@ pub fn register(reg: &mut CommandRegistry) {
     reg.register(Box::new(SelectorCycleProtocol::new()));
     reg.register(Box::new(SelectorCycleAuth::new()));
     reg.register(Box::new(AccountsForkProvider::new()));
-    reg.register(Box::new(AccountsNewInsertChar::new()));
-    reg.register(Box::new(AccountsNewDeleteBack::new()));
     reg.register(Box::new(CycleFieldNext::new()));
     reg.register(Box::new(CycleFieldPrev::new()));
 }
@@ -1037,19 +924,6 @@ mod tests {
         let ctx = CommandCtx {
             registry: &registry,
             last_keystroke: None,
-        };
-        cmd.run(snap, &ctx)
-    }
-
-    fn run_cmd_with_keystroke<C: Command>(
-        cmd: &C,
-        snap: &mut SettingsSnapshot,
-        chord: Option<KeyChord>,
-    ) -> Vec<Write> {
-        let registry = RendererRegistry::new();
-        let ctx = CommandCtx {
-            registry: &registry,
-            last_keystroke: chord,
         };
         cmd.run(snap, &ctx)
     }
@@ -1256,44 +1130,6 @@ mod tests {
     }
 
     // -- Subscription requests --------------------------------------------------
-
-    #[test]
-    fn accounts_create_writes_request_when_name_present() {
-        let mut snap = SettingsSnapshot::empty();
-        snap.insert(
-            &oxpath!("ui", "settings", "new_account", "name_input"),
-            Value::String("alpha".into()),
-        );
-        let writes = run_cmd(&AccountsCreate::new(), &mut snap);
-        assert_eq!(writes.len(), 1);
-        assert_eq!(
-            writes[0].path,
-            oxpath!("config", "gate", "accounts", "_create_now")
-        );
-        match &writes[0].record {
-            Record::Parsed(v) => {
-                let req: CreateAccountRequest =
-                    structfs_serde_store::from_value(v.clone()).unwrap();
-                assert_eq!(req.name, "alpha");
-            }
-            other => panic!("unexpected record: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn accounts_create_inert_when_name_empty_or_missing() {
-        // Missing.
-        let mut snap = SettingsSnapshot::empty();
-        let writes = run_cmd(&AccountsCreate::new(), &mut snap);
-        assert!(writes.is_empty());
-        // Empty.
-        snap.insert(
-            &oxpath!("ui", "settings", "new_account", "name_input"),
-            Value::String(String::new()),
-        );
-        let writes = run_cmd(&AccountsCreate::new(), &mut snap);
-        assert!(writes.is_empty());
-    }
 
     #[test]
     fn accounts_delete_writes_delete_now_when_selected() {
@@ -1738,65 +1574,6 @@ mod tests {
         let written: ProviderConfig =
             structfs_serde_store::from_value(writes[0].record.as_value().unwrap().clone()).unwrap();
         assert_eq!(written.dialect, "openai");
-    }
-
-    // -- Add Connection modal typing surface ----------------------------
-
-    #[test]
-    fn accounts_new_insert_char_appends_to_name_input() {
-        let mut snap = SettingsSnapshot::empty();
-        snap.insert(
-            &oxpath!("ui", "settings", "new_account", "name_input"),
-            Value::String("ant".into()),
-        );
-        let chord = KeyChord {
-            modifiers: KeyModifierSet::default(),
-            code: KeyCodeRepr::Char('h'),
-        };
-        let writes = run_cmd_with_keystroke(&AccountsNewInsertChar::new(), &mut snap, Some(chord));
-        assert_eq!(writes.len(), 1);
-        assert_eq!(
-            writes[0].path,
-            oxpath!("ui", "settings", "new_account", "name_input")
-        );
-        let written: String =
-            structfs_serde_store::from_value(writes[0].record.as_value().unwrap().clone()).unwrap();
-        assert_eq!(written, "anth");
-    }
-
-    #[test]
-    fn accounts_new_insert_char_starts_from_empty_when_input_absent() {
-        let mut snap = SettingsSnapshot::empty();
-        let chord = KeyChord {
-            modifiers: KeyModifierSet::default(),
-            code: KeyCodeRepr::Char('a'),
-        };
-        let writes = run_cmd_with_keystroke(&AccountsNewInsertChar::new(), &mut snap, Some(chord));
-        assert_eq!(writes.len(), 1);
-        let written: String =
-            structfs_serde_store::from_value(writes[0].record.as_value().unwrap().clone()).unwrap();
-        assert_eq!(written, "a");
-    }
-
-    #[test]
-    fn accounts_new_delete_back_pops_last_char() {
-        let mut snap = SettingsSnapshot::empty();
-        snap.insert(
-            &oxpath!("ui", "settings", "new_account", "name_input"),
-            Value::String("anthropi".into()),
-        );
-        let writes = run_cmd(&AccountsNewDeleteBack::new(), &mut snap);
-        assert_eq!(writes.len(), 1);
-        let written: String =
-            structfs_serde_store::from_value(writes[0].record.as_value().unwrap().clone()).unwrap();
-        assert_eq!(written, "anthrop");
-    }
-
-    #[test]
-    fn accounts_new_delete_back_on_empty_is_inert() {
-        let mut snap = SettingsSnapshot::empty();
-        let writes = run_cmd(&AccountsNewDeleteBack::new(), &mut snap);
-        assert!(writes.is_empty());
     }
 
     #[test]
