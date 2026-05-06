@@ -22,7 +22,7 @@
 
 use ox_path::oxpath;
 use ox_types::Screen;
-use ox_types::settings::{AccountField, ModelField, ModelKey};
+use ox_types::settings::{AccountField, CreateAccountRequest, ModelField, ModelKey};
 use ox_types::subscription::Write;
 use structfs_core_store::{Path, Reader, Record, Value};
 use structfs_serde_store::to_value;
@@ -405,6 +405,28 @@ fn commit(data: &mut dyn Reader) -> Vec<Write> {
             model_id,
             field,
         }) => commit_model_field(data, &account, &model_id, field, &buffer),
+        Some(RowKind::AccountAdd) => {
+            // Empty/whitespace and `_`-prefixed names: silent no-op so
+            // edit mode stays open and the user can keep typing. The
+            // underscore prefix is reserved for synthetic paths
+            // (`_new`, `_create_now`); letting it through would let a
+            // real account collide with the ghost row.
+            let trimmed = buffer.trim();
+            if trimmed.is_empty() || trimmed.starts_with('_') {
+                return Vec::new();
+            }
+            let req = CreateAccountRequest {
+                name: trimmed.to_string(),
+            };
+            let value = match to_value(&req) {
+                Ok(v) => v,
+                Err(_) => return Vec::new(),
+            };
+            vec![Write {
+                path: oxpath!("config", "gate", "accounts", "_create_now"),
+                record: Record::parsed(value),
+            }]
+        }
         _ => Vec::new(),
     };
     writes.extend(clear_edit_state());
@@ -1033,6 +1055,141 @@ mod tests {
         let writes = run(&Commit::new(), &mut snap);
         // No data write; just the 3 clear-state entries.
         assert_eq!(writes.len(), 3);
+    }
+
+    #[test]
+    fn commit_account_add_writes_create_request_and_clears_state() {
+        use ox_types::settings::CreateAccountRequest;
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("settings", "index", "entries", "accounts"),
+            to_value(&SettingsIndexEntry {
+                id: "accounts".into(),
+                label: "Accounts".into(),
+                description: String::new(),
+                target_cursor: Path::parse("settings/accounts").unwrap(),
+                badge: BadgeSource::None,
+            })
+            .unwrap(),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&["settings/accounts".to_string()]),
+        );
+        snap.insert(&oxpath!("ui", "settings", "edit_mode"), Value::Bool(true));
+        snap.insert(
+            &oxpath!("ui", "settings", "edit_field_path"),
+            path_to_value(&oxpath!("settings", "accounts", "_new")),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "edit_buffer"),
+            Value::String("alpha".into()),
+        );
+
+        let writes = run(&Commit::new(), &mut snap);
+        let by_path: std::collections::BTreeMap<_, _> = writes
+            .iter()
+            .map(|w| (w.path.to_string(), w.record.clone()))
+            .collect();
+
+        // _create_now carries the CreateAccountRequest.
+        let create = by_path
+            .get("config/gate/accounts/_create_now")
+            .expect("_create_now write");
+        let req: CreateAccountRequest = match create {
+            Record::Parsed(v) => structfs_serde_store::from_value(v.clone()).unwrap(),
+            other => panic!("unexpected record: {other:?}"),
+        };
+        assert_eq!(req.name, "alpha");
+
+        // Edit state is cleared.
+        assert!(matches!(
+            by_path.get("ui/settings/edit_mode").unwrap(),
+            Record::Parsed(Value::Bool(false))
+        ));
+        assert!(matches!(
+            by_path.get("ui/settings/edit_buffer").unwrap(),
+            Record::Parsed(Value::Null)
+        ));
+        assert!(matches!(
+            by_path.get("ui/settings/edit_field_path").unwrap(),
+            Record::Parsed(Value::Null)
+        ));
+    }
+
+    #[test]
+    fn commit_account_add_with_empty_buffer_keeps_edit_mode_open() {
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("settings", "index", "entries", "accounts"),
+            to_value(&SettingsIndexEntry {
+                id: "accounts".into(),
+                label: "Accounts".into(),
+                description: String::new(),
+                target_cursor: Path::parse("settings/accounts").unwrap(),
+                badge: BadgeSource::None,
+            })
+            .unwrap(),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&["settings/accounts".to_string()]),
+        );
+        snap.insert(&oxpath!("ui", "settings", "edit_mode"), Value::Bool(true));
+        snap.insert(
+            &oxpath!("ui", "settings", "edit_field_path"),
+            path_to_value(&oxpath!("settings", "accounts", "_new")),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "edit_buffer"),
+            Value::String("   ".into()),
+        );
+
+        let writes = run(&Commit::new(), &mut snap);
+        // No _create_now write; no edit-state clear — user can keep typing.
+        assert!(
+            writes.is_empty(),
+            "expected no writes for empty/whitespace buffer; got {writes:?}"
+        );
+    }
+
+    #[test]
+    fn commit_account_add_with_underscore_prefix_keeps_edit_mode_open() {
+        // `_`-prefixed names collide with the synthetic ghost-row path
+        // (`settings/accounts/_new`) and with `_create_now`. Reject them
+        // here the same way as empty input — silent no-op so edit mode
+        // stays open and the user can correct the name.
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("settings", "index", "entries", "accounts"),
+            to_value(&SettingsIndexEntry {
+                id: "accounts".into(),
+                label: "Accounts".into(),
+                description: String::new(),
+                target_cursor: Path::parse("settings/accounts").unwrap(),
+                badge: BadgeSource::None,
+            })
+            .unwrap(),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&["settings/accounts".to_string()]),
+        );
+        snap.insert(&oxpath!("ui", "settings", "edit_mode"), Value::Bool(true));
+        snap.insert(
+            &oxpath!("ui", "settings", "edit_field_path"),
+            path_to_value(&oxpath!("settings", "accounts", "_new")),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "edit_buffer"),
+            Value::String("_new".into()),
+        );
+
+        let writes = run(&Commit::new(), &mut snap);
+        assert!(
+            writes.is_empty(),
+            "expected no writes for underscore-prefixed name; got {writes:?}"
+        );
     }
 
     #[test]

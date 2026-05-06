@@ -100,6 +100,17 @@ impl Subscription for AccountCreateSubscription {
             ))];
         }
 
+        // `_`-prefixed names are reserved for synthetic paths (`_new`
+        // ghost row, `_create_now` trigger). Reject before resolving
+        // the account path so we never materialize a reserved path.
+        if req.name.starts_with('_') {
+            tracing::warn!(name = %req.name, "account_create: reserved underscore prefix");
+            return vec![banner_error(format!(
+                "Account names starting with '_' are reserved: '{}'",
+                req.name
+            ))];
+        }
+
         let Ok(acct_path) = account_path(&req.name) else {
             // Already validated above; this branch is defensive.
             return vec![banner_error(format!(
@@ -317,6 +328,43 @@ mod tests {
             !writes
                 .iter()
                 .any(|w| w.path.to_string() == "config/gate/accounts/bad-name")
+        );
+    }
+
+    #[test]
+    fn create_rejects_underscore_prefix_with_banner() {
+        // `_`-prefixed names are reserved for synthetic ghost-row paths
+        // (`settings/accounts/_new`) and the broker trigger
+        // (`config/gate/accounts/_create_now`). A real account at
+        // `_new` would collide with the synthetic row.
+        let mut reader = InMemoryReader::new();
+        let writes = drive(
+            &mut reader,
+            &CreateAccountRequest {
+                name: "_new".into(),
+            },
+        );
+        let banner_write = writes
+            .iter()
+            .find(|w| w.path.to_string() == "ui/global/banner")
+            .expect("banner missing");
+        let banner: GlobalBanner =
+            structfs_serde_store::from_value(banner_write.record.as_value().unwrap().clone())
+                .unwrap();
+        match banner {
+            GlobalBanner::Error { message, .. } => {
+                assert!(
+                    message.contains("reserved"),
+                    "expected 'reserved' in banner, got: {message}"
+                );
+                assert!(message.contains("_new"), "got: {message}");
+            }
+            other => panic!("expected Error banner, got {other:?}"),
+        }
+        assert!(
+            !writes
+                .iter()
+                .any(|w| w.path.to_string() == "config/gate/accounts/_new")
         );
     }
 
