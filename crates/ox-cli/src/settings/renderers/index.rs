@@ -411,20 +411,25 @@ mod tests {
             expanded_set_to_value(&["settings/accounts".to_string()]),
         );
         let (_title, items, _selected) = assert_list(render(&mut snap));
-        // Accounts (▾) + alpha (▸) + beta (▸) + Models (▸) = 4 rows;
-        // accounts are themselves expandable now.
-        assert_eq!(items.len(), 4);
+        // Accounts (▾) + ghost + alpha (▸) + beta (▸) + Models (▸) = 5
+        assert_eq!(items.len(), 5);
         assert!(items[0].primary.starts_with("▾ "));
+        // Ghost row (depth 1, no expand glyph).
+        assert!(
+            items[1].primary.contains("+ New connection"),
+            "expected ghost row at index 1; got {:?}",
+            items[1].primary
+        );
         // Depth-1 rows are indented two spaces and carry their own
         // expand glyph because they're expandable too.
         assert!(
-            items[1].primary.starts_with("  ▸ "),
+            items[2].primary.starts_with("  ▸ "),
             "expected depth-1 indented expand glyph; got {:?}",
-            items[1].primary
+            items[2].primary
         );
-        assert!(items[1].primary.ends_with("alpha"));
-        assert!(items[2].primary.ends_with("beta"));
-        assert!(items[3].primary.starts_with("▸ "));
+        assert!(items[2].primary.ends_with("alpha"));
+        assert!(items[3].primary.ends_with("beta"));
+        assert!(items[4].primary.starts_with("▸ "));
     }
 
     #[test]
@@ -440,13 +445,13 @@ mod tests {
             ]),
         );
         let (_title, items, _selected) = assert_list(render(&mut snap));
-        // Accounts (▾) + alpha (▾) + 5 field rows + Models (▸) = 8.
-        assert_eq!(items.len(), 8);
+        // Accounts (▾) + ghost + alpha (▾) + 5 field rows + Models (▸) = 9.
+        assert_eq!(items.len(), 9);
         // First field row is "Name: alpha", indented to depth 2.
-        assert!(items[2].primary.contains("Name: alpha"));
-        assert!(items[2].primary.starts_with("    "));
-        assert!(items[3].primary.contains("Protocol:"));
-        assert!(items[6].primary.contains("Key:"));
+        assert!(items[3].primary.contains("Name: alpha"));
+        assert!(items[3].primary.starts_with("    "));
+        assert!(items[4].primary.contains("Protocol:"));
+        assert!(items[7].primary.contains("Key:"));
     }
 
     #[test]

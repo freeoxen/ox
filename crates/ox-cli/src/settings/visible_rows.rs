@@ -138,6 +138,23 @@ pub fn enumerate(data: &mut dyn Reader) -> Vec<VisibleRow> {
 fn append_account_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, expanded: &[String]) {
     use ox_gate::AccountConfig;
 
+    // The ghost "+ New connection" row sits at the top of the section
+    // when accounts is expanded. Activating it (Enter) routes through
+    // edit.rs's begin_account_add helper, which seeds inline edit mode
+    // pointing at this row's path. The path identifier — settings/accounts/_new
+    // — is reserved: no real account uses it, and the renderer never
+    // tries to render it as a cursor.
+    rows.push(VisibleRow {
+        path: oxpath!("settings", "accounts", "_new"),
+        depth: 1,
+        label: "+ New connection".into(),
+        secondary: None,
+        badge: None,
+        kind: RowKind::AccountAdd,
+        expandable: false,
+        expanded: false,
+    });
+
     let names = child_names_under(data, "config/gate/accounts");
     // Pre-compute the provider-to-accounts map so the share-set lookup
     // is one pass, not N×N.
@@ -759,6 +776,41 @@ mod tests {
     }
 
     #[test]
+    fn expanded_accounts_section_starts_with_account_add_ghost_row() {
+        let mut snap = SettingsSnapshot::empty();
+        write_index_entries(&mut snap);
+        write_account(&mut snap, "alpha");
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&["settings/accounts".to_string()]),
+        );
+        let rows = enumerate(&mut snap);
+        // Accounts header + ghost + alpha + Models header = 4
+        assert_eq!(rows.len(), 4);
+        assert!(matches!(&rows[0].kind, RowKind::Entry { entry_id } if entry_id == "accounts"));
+        assert!(matches!(&rows[1].kind, RowKind::AccountAdd));
+        assert_eq!(rows[1].depth, 1);
+        assert_eq!(rows[1].label, "+ New connection");
+        assert!(!rows[1].expandable);
+        assert_eq!(
+            rows[1].path,
+            oxpath!("settings", "accounts", "_new"),
+        );
+        assert!(matches!(&rows[2].kind, RowKind::Account { name } if name == "alpha"));
+    }
+
+    #[test]
+    fn collapsed_accounts_section_has_no_ghost_row() {
+        let mut snap = SettingsSnapshot::empty();
+        write_index_entries(&mut snap);
+        write_account(&mut snap, "alpha");
+        let rows = enumerate(&mut snap);
+        // Collapsed: just the two top-level entries.
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|r| !matches!(r.kind, RowKind::AccountAdd)));
+    }
+
+    #[test]
     fn expanded_accounts_inlines_account_rows() {
         let mut snap = SettingsSnapshot::empty();
         write_index_entries(&mut snap);
@@ -769,12 +821,13 @@ mod tests {
             expanded_set_to_value(&["settings/accounts".to_string()]),
         );
         let rows = enumerate(&mut snap);
-        // Accounts header + 2 accounts + Models header = 4
-        assert_eq!(rows.len(), 4);
-        assert!(matches!(&rows[1].kind, RowKind::Account { name } if name == "alpha"));
-        assert_eq!(rows[1].depth, 1);
-        assert!(matches!(&rows[2].kind, RowKind::Account { name } if name == "beta"));
-        assert!(matches!(&rows[3].kind, RowKind::Entry { entry_id } if entry_id == "models"));
+        // Accounts header + ghost + 2 accounts + Models header = 5
+        assert_eq!(rows.len(), 5);
+        assert!(matches!(&rows[1].kind, RowKind::AccountAdd));
+        assert!(matches!(&rows[2].kind, RowKind::Account { name } if name == "alpha"));
+        assert_eq!(rows[2].depth, 1);
+        assert!(matches!(&rows[3].kind, RowKind::Account { name } if name == "beta"));
+        assert!(matches!(&rows[4].kind, RowKind::Entry { entry_id } if entry_id == "models"));
     }
 
     #[test]
@@ -1343,7 +1396,8 @@ mod tests {
             "accounts",
             ox_kernel::PathComponent::try_new("alpha").unwrap()
         );
-        assert_eq!(position_of(&rows, &alpha_path), Some(1));
+        // Accounts header (0), ghost row (1), alpha (2).
+        assert_eq!(position_of(&rows, &alpha_path), Some(2));
         assert_eq!(
             position_of(&rows, &oxpath!("settings", "accounts")),
             Some(0)

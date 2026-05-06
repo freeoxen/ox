@@ -453,11 +453,11 @@ mod tests {
             &oxpath!("ui", "settings", "expanded"),
             expanded_set_to_value(&["settings/accounts".to_string()]),
         );
-        // Visible: [Accounts, alpha, beta, Models]
+        // Visible: [Accounts, ghost, alpha, beta, Models]
         set_focused(&mut snap, "settings/accounts");
         let writes = run(&TreeNext::new(), &mut snap);
         let target = path_from_value(writes[0].record.as_value().unwrap()).unwrap();
-        assert_eq!(target.to_string(), "settings/accounts/alpha");
+        assert_eq!(target.to_string(), "settings/accounts/_new");
     }
 
     #[test]
@@ -869,6 +869,14 @@ mod tests {
         // Expand
         let w = run(&TreeActivate::new(), &mut snap);
         snap.insert(&w[0].path, w[0].record.as_value().unwrap().clone());
+
+        // j past the synthetic + New connection ghost row.
+        let w = run(&TreeNext::new(), &mut snap);
+        snap.insert(&w[0].path, w[0].record.as_value().unwrap().clone());
+        assert_eq!(
+            read_focused_raw(&mut snap).unwrap().to_string(),
+            "settings/accounts/_new"
+        );
 
         // j to first account
         let w = run(&TreeNext::new(), &mut snap);
