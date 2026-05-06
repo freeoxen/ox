@@ -33,6 +33,11 @@ gate() {
     local name="$1"
     shift
 
+    # Print the gate name immediately so the operator sees what's
+    # currently running. The result (PASS/FAIL + elapsed) is appended
+    # to the same line on completion.
+    printf "  %-40s " "$name"
+
     local tmpfile
     tmpfile="$(mktemp)"
 
@@ -42,11 +47,11 @@ gate() {
     if "$@" >"$tmpfile" 2>&1; then
         local elapsed=$(( $(date +%s) - start ))
         PASSED=$((PASSED + 1))
-        printf "  PASS  %-40s (%ds)\n" "$name" "$elapsed"
+        printf "PASS  (%ds)\n" "$elapsed"
     else
         local elapsed=$(( $(date +%s) - start ))
         FAILED=$((FAILED + 1))
-        printf "  FAIL  %-40s (%ds)\n" "$name" "$elapsed"
+        printf "FAIL  (%ds)\n" "$elapsed"
         FAILURES="${FAILURES}\n--- $name ---\n$(cat "$tmpfile")\n"
     fi
 
