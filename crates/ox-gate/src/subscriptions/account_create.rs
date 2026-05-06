@@ -100,13 +100,15 @@ impl Subscription for AccountCreateSubscription {
             ))];
         }
 
-        // `_`-prefixed names are reserved for synthetic paths (`_new`
-        // ghost row, `_create_now` trigger). Reject before resolving
-        // the account path so we never materialize a reserved path.
+        // `PathComponent::try_new` accepts `_`-prefixed names — they're
+        // valid identifiers. Reject them here so the synthetic
+        // `settings/accounts/_new` ghost-row path (and any sibling
+        // `_create_now` / `_detail` sentinels) cannot be shadowed by a
+        // real account materialized at the same path.
         if req.name.starts_with('_') {
             tracing::warn!(name = %req.name, "account_create: reserved underscore prefix");
             return vec![banner_error(format!(
-                "Account names starting with '_' are reserved: '{}'",
+                "Account name '{}' starts with '_', which is reserved. Try a name without the leading underscore.",
                 req.name
             ))];
         }

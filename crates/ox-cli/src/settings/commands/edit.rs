@@ -1193,6 +1193,59 @@ mod tests {
     }
 
     #[test]
+    fn commit_account_add_with_interior_underscore_writes_create_request() {
+        // Only the *leading* underscore is reserved — interior
+        // underscores like `alpha_beta` are valid identifiers and must
+        // commit normally.
+        use ox_types::settings::CreateAccountRequest;
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("settings", "index", "entries", "accounts"),
+            to_value(&SettingsIndexEntry {
+                id: "accounts".into(),
+                label: "Accounts".into(),
+                description: String::new(),
+                target_cursor: Path::parse("settings/accounts").unwrap(),
+                badge: BadgeSource::None,
+            })
+            .unwrap(),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&["settings/accounts".to_string()]),
+        );
+        snap.insert(&oxpath!("ui", "settings", "edit_mode"), Value::Bool(true));
+        snap.insert(
+            &oxpath!("ui", "settings", "edit_field_path"),
+            path_to_value(&oxpath!("settings", "accounts", "_new")),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "edit_buffer"),
+            Value::String("alpha_beta".into()),
+        );
+
+        let writes = run(&Commit::new(), &mut snap);
+        let by_path: std::collections::BTreeMap<_, _> = writes
+            .iter()
+            .map(|w| (w.path.to_string(), w.record.clone()))
+            .collect();
+
+        let create = by_path
+            .get("config/gate/accounts/_create_now")
+            .expect("_create_now write");
+        let req: CreateAccountRequest = match create {
+            Record::Parsed(v) => structfs_serde_store::from_value(v.clone()).unwrap(),
+            other => panic!("unexpected record: {other:?}"),
+        };
+        assert_eq!(req.name, "alpha_beta");
+
+        assert!(matches!(
+            by_path.get("ui/settings/edit_mode").unwrap(),
+            Record::Parsed(Value::Bool(false))
+        ));
+    }
+
+    #[test]
     fn read_edit_state_reflects_active_edit() {
         let mut snap = SettingsSnapshot::empty();
         let field_path = oxpath!("settings", "accounts", "alpha", "endpoint");
