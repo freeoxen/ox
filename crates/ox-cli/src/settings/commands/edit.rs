@@ -22,7 +22,7 @@
 
 use ox_path::oxpath;
 use ox_types::Screen;
-use ox_types::settings::{AccountField, CreateAccountRequest, ModelField, ModelKey};
+use ox_types::settings::{AccountField, CreateAccountRequest, GlobalBanner, ModelField, ModelKey};
 use ox_types::subscription::Write;
 use structfs_core_store::{Path, Reader, Record, Value};
 use structfs_serde_store::to_value;
@@ -299,6 +299,25 @@ fn clear_edit_state() -> Vec<Write> {
     ]
 }
 
+/// Build a `GlobalBanner::Error` write for `ui/global/banner`. The
+/// `account_create` subscription has its own copy of this constructor
+/// — keeping a duplicate here avoids a cross-crate helper for two
+/// short string literals; if the messages drift, a future cleanup can
+/// extract.
+fn banner_error(message: String) -> Write {
+    let banner = GlobalBanner::Error {
+        message,
+        set_at_ms: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0),
+    };
+    Write {
+        path: oxpath!("ui", "global", "banner"),
+        record: Record::parsed(to_value(&banner).unwrap()),
+    }
+}
+
 fn insert_char(
     data: &mut dyn Reader,
     ctx: &super::super::command_registry::CommandCtx<'_>,
@@ -406,14 +425,25 @@ fn commit(data: &mut dyn Reader) -> Vec<Write> {
             field,
         }) => commit_model_field(data, &account, &model_id, field, &buffer),
         Some(RowKind::AccountAdd) => {
-            // Empty/whitespace and `_`-prefixed names: silent no-op so
-            // edit mode stays open and the user can keep typing. The
-            // underscore prefix is reserved for synthetic paths
-            // (`_new`, `_create_now`); letting it through would let a
-            // real account collide with the ghost row.
             let trimmed = buffer.trim();
-            if trimmed.is_empty() || trimmed.starts_with('_') {
+            // Empty/whitespace: silent no-op. The absence of typed
+            // characters is its own feedback — the user can see they
+            // haven't entered anything yet — so no banner is needed.
+            // Edit mode stays open.
+            if trimmed.is_empty() {
                 return Vec::new();
+            }
+            // `_`-prefixed names collide with the synthetic ghost-row
+            // path (`_new`) and the `_create_now` sentinel; a real
+            // account materialized at one of those paths would shadow
+            // the UI machinery. Surface a banner so the user sees an
+            // actionable message, and skip clear_edit_state so they
+            // can fix the input in place.
+            if trimmed.starts_with('_') {
+                return vec![banner_error(format!(
+                    "Account name '{}' starts with '_', which is reserved. Try a name without the leading underscore.",
+                    trimmed
+                ))];
             }
             let req = CreateAccountRequest {
                 name: trimmed.to_string(),
@@ -1154,11 +1184,12 @@ mod tests {
     }
 
     #[test]
-    fn commit_account_add_with_underscore_prefix_keeps_edit_mode_open() {
+    fn commit_account_add_with_underscore_prefix_emits_banner_keeps_edit_mode_open() {
         // `_`-prefixed names collide with the synthetic ghost-row path
-        // (`settings/accounts/_new`) and with `_create_now`. Reject them
-        // here the same way as empty input — silent no-op so edit mode
-        // stays open and the user can correct the name.
+        // (`settings/accounts/_new`) and with `_create_now`. Surface a
+        // banner with an actionable message and skip clear_edit_state
+        // so edit mode stays open and the user can fix the name in
+        // place.
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
             &oxpath!("settings", "index", "entries", "accounts"),
@@ -1186,10 +1217,29 @@ mod tests {
         );
 
         let writes = run(&Commit::new(), &mut snap);
-        assert!(
-            writes.is_empty(),
-            "expected no writes for underscore-prefixed name; got {writes:?}"
-        );
+
+        // Exactly one write: the banner. No _create_now write, no
+        // clear_edit_state writes, so edit mode stays open for the user
+        // to fix the input.
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].path, oxpath!("ui", "global", "banner"));
+        let banner: ox_types::settings::GlobalBanner = match &writes[0].record {
+            Record::Parsed(v) => structfs_serde_store::from_value(v.clone()).unwrap(),
+            other => panic!("unexpected record: {other:?}"),
+        };
+        match banner {
+            ox_types::settings::GlobalBanner::Error { message, .. } => {
+                assert!(
+                    message.contains("reserved"),
+                    "banner must mention the reservation; got {message:?}"
+                );
+                assert!(
+                    message.contains("_new"),
+                    "banner must mention the offending name; got {message:?}"
+                );
+            }
+            other => panic!("expected Error banner, got {other:?}"),
+        }
     }
 
     #[test]
