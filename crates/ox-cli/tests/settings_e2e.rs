@@ -443,23 +443,24 @@ async fn add_account_create_flow() {
     let account = account.expect("AccountCreateSubscription should materialize the account");
     assert_eq!(account.provider, "anthropic");
 
-    // The subscription clears `_create_now`, sets the selection, and
-    // pops the cursor to the detail page. Poll cursor since the
-    // subscription's cascade may not be fully drained yet on the
-    // initial dispatch return.
-    let final_cursor = poll_until(|| async {
-        let c = h.current_cursor().await?;
-        if c == oxpath!("settings", "accounts", "_detail") {
-            Some(c)
+    // The subscription clears `_create_now`, lands the cursor back at
+    // settings/index (the accordion), and points focused_row at the new
+    // account so the user sees their connection selected. Poll because
+    // the subscription's cascade may still be draining when dispatch
+    // returns.
+    let comp_settled = poll_until(|| async {
+        let cursor = h.current_cursor().await?;
+        let focused = h.focused_row().await;
+        if cursor == oxpath!("settings", "index")
+            && focused.as_ref() == Some(&oxpath!("settings", "accounts", comp.clone()))
+        {
+            Some(())
         } else {
             None
         }
     })
     .await;
-    assert_eq!(
-        final_cursor.expect("cursor settles at _detail"),
-        oxpath!("settings", "accounts", "_detail"),
-    );
+    comp_settled.expect("cursor → settings/index and focused_row → new account");
 
     let selected: Option<String> = h
         .client

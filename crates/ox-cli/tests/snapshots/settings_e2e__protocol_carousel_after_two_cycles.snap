@@ -1,9 +1,11 @@
 ---
 source: crates/ox-cli/tests/settings_e2e.rs
+assertion_line: 1161
 expression: "&frame_after_two"
 ---
 ┌Settings──────────────────────────────────────────────────────────────────────┐
 │▾ Connections [1]                                                             │
+│    + New connection                                                          │
 │  ▾ LMStudio                                                                  │
 │  LMStudio                                                                    │
 │      Name: LMStudio                                                          │
@@ -12,7 +14,6 @@ expression: "&frame_after_two"
 │      Auth: none                                                              │
 │      Key: (unset)                                                            │
 │▸ Models                                                                      │
-│                                                                              │
 │                                                                              │
 │                                                                              │
 │                                                                              │
