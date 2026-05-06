@@ -420,6 +420,11 @@ mod tests {
             "expected ghost row at index 1; got {:?}",
             items[1].primary
         );
+        assert!(
+            items[1].primary.starts_with("    "),
+            "ghost row at depth 1 with no expand glyph should start with four spaces; got {:?}",
+            items[1].primary
+        );
         // Depth-1 rows are indented two spaces and carry their own
         // expand glyph because they're expandable too.
         assert!(

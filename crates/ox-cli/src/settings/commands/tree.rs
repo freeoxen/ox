@@ -458,6 +458,15 @@ mod tests {
         let writes = run(&TreeNext::new(), &mut snap);
         let target = path_from_value(writes[0].record.as_value().unwrap()).unwrap();
         assert_eq!(target.to_string(), "settings/accounts/_new");
+        // Apply the focus write so the next step resolves from the
+        // ghost row's index, not the stale `settings/accounts` cursor.
+        snap.insert(
+            &writes[0].path,
+            writes[0].record.as_value().unwrap().clone(),
+        );
+        let writes = run(&TreeNext::new(), &mut snap);
+        let target = path_from_value(writes[0].record.as_value().unwrap()).unwrap();
+        assert_eq!(target.to_string(), "settings/accounts/alpha");
     }
 
     #[test]

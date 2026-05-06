@@ -138,12 +138,12 @@ pub fn enumerate(data: &mut dyn Reader) -> Vec<VisibleRow> {
 fn append_account_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, expanded: &[String]) {
     use ox_gate::AccountConfig;
 
-    // The ghost "+ New connection" row sits at the top of the section
-    // when accounts is expanded. Activating it (Enter) routes through
-    // edit.rs's begin_account_add helper, which seeds inline edit mode
-    // pointing at this row's path. The path identifier — settings/accounts/_new
-    // — is reserved: no real account uses it, and the renderer never
-    // tries to render it as a cursor.
+    // The ghost row is pushed *before* any per-account iteration so it
+    // always sits at the top of the expanded section, independent of
+    // account ordering. The path identifier `_new` is a synthetic
+    // sentinel — activation/commit dispatch on this row by path
+    // equality. (The create subscription will reject `_`-prefixed
+    // account names in a later task, sealing the reservation.)
     rows.push(VisibleRow {
         path: oxpath!("settings", "accounts", "_new"),
         depth: 1,
