@@ -240,6 +240,7 @@ fn decorate_row_label(
             field: ox_types::ModelField::OutputTokensOverride,
             ..
         } => "max_output_tokens",
+        RowKind::AccountAdd => "Name",
         // Other row kinds aren't editable; fall through to the
         // original label.
         _ => return row.label.clone(),
@@ -302,7 +303,7 @@ mod tests {
     use ox_path::oxpath;
     use ox_types::{BadgeSource, SettingsIndexEntry};
     use ratatui::layout::Rect;
-    use structfs_core_store::Path;
+    use structfs_core_store::{Path, Value};
     use structfs_serde_store::to_value;
 
     use crate::settings::commands::navigation::path_to_value;
@@ -457,6 +458,54 @@ mod tests {
         assert!(items[3].primary.starts_with("    "));
         assert!(items[4].primary.contains("Protocol:"));
         assert!(items[7].primary.contains("Key:"));
+    }
+
+    #[test]
+    fn account_add_ghost_row_renders_inline_buffer_during_edit() {
+        let mut snap = SettingsSnapshot::empty();
+        write_index(&mut snap);
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&["settings/accounts".to_string()]),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "focused_row"),
+            path_to_value(&oxpath!("settings", "accounts", "_new")),
+        );
+        snap.insert(&oxpath!("ui", "settings", "edit_mode"), Value::Bool(true));
+        snap.insert(
+            &oxpath!("ui", "settings", "edit_field_path"),
+            path_to_value(&oxpath!("settings", "accounts", "_new")),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "edit_buffer"),
+            Value::String("per".into()),
+        );
+        let (_title, items, selected) = assert_list(render(&mut snap));
+        let i = selected.expect("ghost row is selected");
+        // Ghost row should render its "Name▸ per▏" label, not "+ New connection".
+        assert!(
+            items[i].primary.contains("Name▸ per\u{258F}"),
+            "expected inline-edit decoration; got {:?}",
+            items[i].primary
+        );
+    }
+
+    #[test]
+    fn account_add_ghost_row_renders_plain_label_when_not_editing() {
+        let mut snap = SettingsSnapshot::empty();
+        write_index(&mut snap);
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&["settings/accounts".to_string()]),
+        );
+        let (_title, items, _selected) = assert_list(render(&mut snap));
+        // Ghost row at index 1 (Accounts header at 0).
+        assert!(
+            items[1].primary.contains("+ New connection"),
+            "expected plain ghost label; got {:?}",
+            items[1].primary
+        );
     }
 
     #[test]
