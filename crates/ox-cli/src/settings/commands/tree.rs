@@ -217,7 +217,7 @@ fn activate(data: &mut dyn Reader) -> Vec<Write> {
             // The expandable arm above already handles every Entry,
             // Account, and Model row.
             RowKind::Entry { .. } | RowKind::Account { .. } | RowKind::Model { .. } => Vec::new(),
-            RowKind::AccountAdd => Vec::new(),
+            RowKind::AccountAdd => super::edit::begin_account_add(),
             RowKind::ModelEmptyState { account } => {
                 // Write the connection's refresh trigger. The
                 // gate.catalog_refresh subscription (PrefixSuffix on
@@ -568,6 +568,68 @@ mod tests {
         }
         for w in &writes {
             assert_ne!(w.path, oxpath!("ui", "settings", "cursor"));
+        }
+    }
+
+    #[test]
+    fn activate_on_account_add_ghost_enters_inline_edit_mode() {
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("settings", "index", "entries", "accounts"),
+            to_value(&entry("accounts", "settings/accounts")).unwrap(),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            crate::settings::visible_rows::expanded_set_to_value(&["settings/accounts".to_string()]),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "focused_row"),
+            crate::settings::commands::navigation::path_to_value(&oxpath!(
+                "settings", "accounts", "_new"
+            )),
+        );
+
+        let writes = run(&TreeActivate::new(), &mut snap);
+        let by_path: std::collections::BTreeMap<_, _> = writes
+            .iter()
+            .map(|w| (w.path.to_string(), w.record.clone()))
+            .collect();
+
+        // edit_field_path → settings/accounts/_new
+        let efp = by_path
+            .get("ui/settings/edit_field_path")
+            .expect("edit_field_path write");
+        match efp {
+            Record::Parsed(v) => {
+                let parts: Vec<String> = match v {
+                    Value::Array(segs) => segs
+                        .iter()
+                        .map(|s| match s {
+                            Value::String(s) => s.clone(),
+                            _ => panic!(),
+                        })
+                        .collect(),
+                    _ => panic!("expected array, got {v:?}"),
+                };
+                assert_eq!(parts.join("/"), "settings/accounts/_new");
+            }
+            other => panic!("unexpected record: {other:?}"),
+        }
+
+        // edit_buffer = ""
+        let buf = by_path
+            .get("ui/settings/edit_buffer")
+            .expect("edit_buffer write");
+        match buf {
+            Record::Parsed(Value::String(s)) => assert!(s.is_empty()),
+            other => panic!("unexpected buffer record: {other:?}"),
+        }
+
+        // edit_mode = true
+        let em = by_path.get("ui/settings/edit_mode").expect("edit_mode write");
+        match em {
+            Record::Parsed(Value::Bool(true)) => {}
+            other => panic!("unexpected edit_mode record: {other:?}"),
         }
     }
 

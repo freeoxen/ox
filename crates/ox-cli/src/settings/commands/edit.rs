@@ -215,6 +215,13 @@ fn begin_edit_model_field_inner(data: &mut dyn Reader) -> Vec<Write> {
     enter_edit_mode(row.path, initial)
 }
 
+/// Begin inline edit on the synthetic AccountAdd ghost row. Seeds an
+/// empty buffer at the ghost row's path. Public so `tree.activate` and
+/// `accounts.add` can both call it.
+pub(crate) fn begin_account_add() -> Vec<Write> {
+    enter_edit_mode(oxpath!("settings", "accounts", "_new"), String::new())
+}
+
 /// Seed the inline three-stage manual-model form. The form lives at
 /// `ui/settings/manual_model/*`:
 ///
