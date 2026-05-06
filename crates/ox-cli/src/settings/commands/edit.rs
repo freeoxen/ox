@@ -216,9 +216,10 @@ fn begin_edit_model_field_inner(data: &mut dyn Reader) -> Vec<Write> {
 }
 
 /// Begin inline edit on the synthetic AccountAdd ghost row. Seeds an
-/// empty buffer at the ghost row's path. Public so `tree.activate` and
-/// `accounts.add` can both call it.
-pub(crate) fn begin_account_add() -> Vec<Write> {
+/// empty buffer at the ghost row's path. Reachable from sibling
+/// `tree` and `account_model` modules so both ghost-row entry points
+/// seed the same shape — single source of truth for the `_new` path.
+pub(super) fn begin_account_add() -> Vec<Write> {
     enter_edit_mode(oxpath!("settings", "accounts", "_new"), String::new())
 }
 
