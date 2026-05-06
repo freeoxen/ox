@@ -4,7 +4,9 @@
 //! The CLI's `accounts.create` command writes a `CreateAccountRequest`
 //! at this path; this subscription validates the name as a path
 //! component, materializes a default `AccountConfig`, selects the new
-//! account, and pops the cursor to the detail page.
+//! account, and drives the focused row to the new account inside the
+//! settings/index accordion, expanding it so its field rows are
+//! visible.
 //!
 //! On invalid name we don't allocate anything — instead we emit a
 //! transient error banner so the user sees what went wrong.
@@ -26,7 +28,9 @@ use ox_types::subscription::{PathPattern, SubscriptionId, Write};
 use structfs_core_store::Record;
 
 use crate::AccountConfig;
-use crate::subscriptions::util::{account_path, now_ms, null_write, write_path, write_typed};
+use crate::subscriptions::util::{
+    account_path, now_ms, null_write, read_typed_via_reader, write_path, write_typed,
+};
 
 pub const ID: &str = "gate.account_create";
 
@@ -108,28 +112,19 @@ impl Subscription for AccountCreateSubscription {
             provider: DEFAULT_PROVIDER.to_string(),
         };
 
-        // 1. Materialize the default config.
-        // 2. Select the new account.
-        // 3. Drive the focused row to the new account's row inside the
-        //    accordion; page cursor stays at settings/index (where the
-        //    accordion lives).
-        // 4. Add the new account to the expanded set so its field rows
-        //    are immediately visible.
-        // 5. Clear _create_now so the same name can be created again
-        //    in a session.
+        // Cursor stays at settings/index — the accordion never left it; the
+        // new account is surfaced via focused_row + expansion so its field
+        // rows are immediately visible in place.
         let new_account_row = oxpath!(
             "settings",
             "accounts",
             PathComponent::try_new(req.name.clone()).unwrap()
         );
-        let mut expanded: Vec<String> = ctx
-            .snapshot
-            .read(&oxpath!("ui", "settings", "expanded"))
-            .ok()
-            .flatten()
-            .and_then(|r| r.as_value().cloned())
-            .and_then(|v| structfs_serde_store::from_value::<Vec<String>>(v).ok())
-            .unwrap_or_default();
+        let mut expanded: Vec<String> = read_typed_via_reader(
+            ctx.snapshot,
+            &oxpath!("ui", "settings", "expanded"),
+        )
+        .unwrap_or_default();
         let accounts_key = "settings/accounts".to_string();
         let new_row_key = format!("settings/accounts/{}", req.name);
         if !expanded.iter().any(|s| s == &accounts_key) {
@@ -138,8 +133,6 @@ impl Subscription for AccountCreateSubscription {
         if !expanded.iter().any(|s| s == &new_row_key) {
             expanded.push(new_row_key);
         }
-        let expanded_value =
-            structfs_serde_store::to_value(&expanded).unwrap_or(structfs_core_store::Value::Null);
 
         vec![
             write_typed(&acct_path, &cfg),
@@ -152,10 +145,7 @@ impl Subscription for AccountCreateSubscription {
                 &oxpath!("settings", "index"),
             ),
             write_path(&oxpath!("ui", "settings", "focused_row"), &new_account_row),
-            Write {
-                path: oxpath!("ui", "settings", "expanded"),
-                record: Record::parsed(expanded_value),
-            },
+            write_typed(&oxpath!("ui", "settings", "expanded"), &expanded),
             null_write(oxpath!("config", "gate", "accounts", "_create_now")),
         ]
     }
