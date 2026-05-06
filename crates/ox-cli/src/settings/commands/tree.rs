@@ -217,6 +217,7 @@ fn activate(data: &mut dyn Reader) -> Vec<Write> {
             // The expandable arm above already handles every Entry,
             // Account, and Model row.
             RowKind::Entry { .. } | RowKind::Account { .. } | RowKind::Model { .. } => Vec::new(),
+            RowKind::AccountAdd => Vec::new(),
             RowKind::ModelEmptyState { account } => {
                 // Write the connection's refresh trigger. The
                 // gate.catalog_refresh subscription (PrefixSuffix on

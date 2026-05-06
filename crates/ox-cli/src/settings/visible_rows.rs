@@ -36,6 +36,11 @@ pub enum RowKind {
     /// model row of a non-empty catalog so users can add custom entries
     /// alongside auto-enumerated ones.
     ModelAddManual { account: String },
+    /// Synthetic ghost row at the top of the expanded Accounts section.
+    /// Activating it (Enter) opens the inline name prompt that
+    /// ultimately fires `accounts.create`. The new connection lands as
+    /// a real `Account` row when the subscription replies.
+    AccountAdd,
     /// One field row under an expanded account.
     AccountField {
         account: String,
