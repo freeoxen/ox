@@ -36,19 +36,23 @@ command! {
     description: "Open the new-connection overlay.",
     screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "accounts")),
-    // Also clears edit_mode + the edit_field_path because the modal has
-    // its own typing surface (accounts.new.insert_char) and shouldn't
-    // share scope with any field-edit that happened to be open. Without
-    // this reset, a lingering edit_mode=true causes lowercase printable
-    // keys to route through edit.insert_char (the global edit-mode
-    // binding for printable ASCII is registered with no_mods only;
-    // uppercase letters arrive with shift_only and slip through to the
-    // modal's own bindings) — the user sees uppercase typing work and
-    // lowercase silently eaten.
+    // The modal owns its own input scope: typing routes through
+    // `accounts.new.insert_char` bound at Exact(settings/accounts/_new).
+    // Clear focused_row and edit_mode on entry so the dispatcher's
+    // focused-row and edit-mode passes don't shadow the modal's
+    // bindings — the focused_row scope under Prefix(settings/accounts)
+    // binds many letter keys (a, t, d, r, …) to per-row commands, and
+    // a lingering edit_mode would route printable ASCII through
+    // `edit.insert_char` (no_mods variants only) before the page
+    // cursor's Exact(_new) bindings get a chance.
     run: |_snap, _ctx| vec![
         Write {
             path: oxpath!("ui", "settings", "cursor"),
             record: Record::parsed(path_to_value(&oxpath!("settings", "accounts", "_new"))),
+        },
+        Write {
+            path: oxpath!("ui", "settings", "focused_row"),
+            record: Record::parsed(Value::Null),
         },
         Write {
             path: oxpath!("ui", "settings", "edit_mode"),
@@ -68,13 +72,17 @@ command! {
     description: "Open the delete-confirmation overlay.",
     screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "accounts")),
-    // Same edit_mode reset as accounts.add — the delete-confirm overlay
-    // has only y/n/Esc bindings, but a stale edit_mode would still
-    // hijack stray printable keys that should be no-ops at this scope.
+    // Same input-scope isolation as accounts.add. The overlay's
+    // bindings are only y/n/Esc, but a stale focused_row or
+    // edit_mode could still misroute stray printable keys.
     run: |_snap, _ctx| vec![
         Write {
             path: oxpath!("ui", "settings", "cursor"),
             record: Record::parsed(path_to_value(&oxpath!("settings", "accounts", "_delete"))),
+        },
+        Write {
+            path: oxpath!("ui", "settings", "focused_row"),
+            record: Record::parsed(Value::Null),
         },
         Write {
             path: oxpath!("ui", "settings", "edit_mode"),
@@ -1112,14 +1120,27 @@ mod tests {
     // -- Cursor-shuffle tests ---------------------------------------------------
 
     #[test]
-    fn accounts_add_writes_new_cursor_and_clears_edit_mode() {
+    fn accounts_add_writes_new_cursor_and_isolates_input_scope() {
         let mut snap = SettingsSnapshot::empty();
         let writes = run_cmd(&AccountsAdd::new(), &mut snap);
-        // cursor + edit_mode reset + edit_field_path null = 3 writes.
-        assert_eq!(writes.len(), 3);
+        // cursor + focused_row null + edit_mode false + edit_field_path null = 4 writes.
+        assert_eq!(writes.len(), 4);
         assert_cursor_write(&writes, oxpath!("settings", "accounts", "_new"));
-        // edit_mode must be explicitly false so a stale field-edit
-        // doesn't hijack printable keys in the modal's typing surface.
+        // focused_row must be cleared so the dispatcher's pass-2
+        // (focused-row scope) doesn't shadow the modal's Exact(_new)
+        // bindings. The Prefix(settings/accounts) bindings bind 't',
+        // 'a', 'r', 'd', etc. to per-row commands.
+        let focused = writes
+            .iter()
+            .find(|w| w.path == oxpath!("ui", "settings", "focused_row"))
+            .expect("focused_row write");
+        match &focused.record {
+            Record::Parsed(Value::Null) => {}
+            other => panic!("expected focused_row=Null, got {other:?}"),
+        }
+        // edit_mode must be explicitly false so the dispatcher's pass-1
+        // (edit-mode scope) doesn't route printable keys through
+        // edit.insert_char before the modal's bindings see them.
         let edit_mode = writes
             .iter()
             .find(|w| w.path == oxpath!("ui", "settings", "edit_mode"))
@@ -1139,11 +1160,19 @@ mod tests {
     }
 
     #[test]
-    fn accounts_delete_confirm_writes_delete_cursor_and_clears_edit_mode() {
+    fn accounts_delete_confirm_writes_delete_cursor_and_isolates_input_scope() {
         let mut snap = SettingsSnapshot::empty();
         let writes = run_cmd(&AccountsDeleteConfirm::new(), &mut snap);
-        assert_eq!(writes.len(), 3);
+        assert_eq!(writes.len(), 4);
         assert_cursor_write(&writes, oxpath!("settings", "accounts", "_delete"));
+        let focused = writes
+            .iter()
+            .find(|w| w.path == oxpath!("ui", "settings", "focused_row"))
+            .expect("focused_row write");
+        match &focused.record {
+            Record::Parsed(Value::Null) => {}
+            other => panic!("expected focused_row=Null, got {other:?}"),
+        }
         let edit_mode = writes
             .iter()
             .find(|w| w.path == oxpath!("ui", "settings", "edit_mode"))
@@ -1718,8 +1747,9 @@ mod tests {
         // the parent Map on first cycle write, and subsequent cycles must
         // read it and advance honestly.
         //
-        // This test pins both cycles. If the second cycle doesn't move
-        // the dialect, the bug is here.
+        // Both cycles must advance — the second exercises the
+        // runtime-Map-overrides-base-flat-keys read path, which is
+        // structurally distinct from the synthesizing first cycle.
         let mut snap = SettingsSnapshot::empty();
         // Account: flat-key (no parent Map) — matches TomlFileBacking output.
         let acct_comp = ox_kernel::PathComponent::try_new("LMStudio").unwrap();

@@ -824,11 +824,13 @@ async fn production_ui_store_routes_settings_writes() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cycling_protocol_with_toml_loaded_flat_keys_advances_through_broker() {
-    // Mimics the user-reported reproduction shape: provider record arrives
-    // from TomlFileBacking as FLAT sub-keys (no parent Map), then cycle
-    // twice through the real broker dispatch path. Both cycles must
-    // advance the dialect — the second cycle exercises the runtime-Map
-    // override-of-base-flat-keys read path.
+    // The TomlFileBacking-loaded shape: provider record arrives as
+    // flat sub-keys (no parent Map). Cycle twice through the real
+    // broker dispatch path — both cycles must advance the dialect.
+    // The second cycle exercises the runtime-Map override-of-base-
+    // flat-keys read path, which is structurally distinct from the
+    // first (synthesizes a default ProviderConfig when no parent Map
+    // exists yet).
     let h = E2eHarness::new().await;
     populate_index(&h).await;
 
@@ -1082,13 +1084,13 @@ fn buffer_to_string(buf: &Buffer) -> String {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn protocol_cycle_visibly_toggles_in_rendered_carousel() {
-    // The broker-only e2e tests confirm cycle writes land. This test
-    // confirms the *renderer* picks them up by capturing the rendered
-    // buffer before and after each cycle. If the rendered text is
-    // identical across cycles, the renderer isn't reading the cycle's
-    // writes — the precise failure mode the user reported with a
-    // TOML-loaded LMStudio account where read_typed::<AccountConfig>
-    // returned None and the carousel stuck on idx-0 fallback.
+    // Captures the rendered buffer before and after each cycle to
+    // verify the renderer's read path picks up the cycle's broker
+    // writes. Broker-only e2e tests can't catch the case where a
+    // write lands but the read path doesn't surface it (e.g. an
+    // AccountConfig::default() fallback that prevents the bound
+    // provider from being resolved); identical frames across cycles
+    // is the failure signal.
     let h = E2eHarness::new().await;
     populate_index(&h).await;
 
@@ -1170,5 +1172,70 @@ async fn protocol_cycle_visibly_toggles_in_rendered_carousel() {
     assert_ne!(
         frame_after_one, frame_after_two,
         "second cycle must also produce a visible change"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn add_connection_modal_accepts_lowercase_and_uppercase_typing() {
+    // End-to-end render assertion for the new-connection modal's
+    // typing surface. Opens the modal, types a mix of upper- and
+    // lowercase chars, captures the rendered frame after each
+    // keystroke. Each press must produce a visibly-different frame
+    // and the cumulative input must appear in the name field —
+    // catches both case-sensitive dispatch routing failures and
+    // text-input write-back failures with one assertion shape.
+    let h = E2eHarness::new().await;
+    populate_index(&h).await;
+
+    // Cursor + focused_row land us under settings/accounts so the
+    // `a` binding (Prefix(settings/accounts)) resolves to accounts.add.
+    h.write_path(
+        &oxpath!("ui", "settings", "cursor"),
+        &oxpath!("settings", "accounts"),
+    )
+    .await;
+    h.write_path(
+        &oxpath!("ui", "settings", "focused_row"),
+        &oxpath!("settings", "accounts"),
+    )
+    .await;
+
+    assert!(matches!(h.dispatch("a").await, KeyDispatchOutcome::Handled));
+
+    let frame_modal_open = render_settings_to_string(&h, 80, 24).await;
+    insta::assert_snapshot!("new_connection_modal_just_opened", &frame_modal_open);
+
+    // "Test" interleaves an uppercase letter (which arrives with
+    // shift_only) and three lowercase letters (no_mods) — a
+    // single-word check that both modifier shapes route into the
+    // modal's typing surface.
+    let mut prior_frame = frame_modal_open.clone();
+    let mut snap_idx = 1;
+    for ch in "Test".chars() {
+        let key = ch.to_string();
+        assert!(
+            matches!(h.dispatch(&key).await, KeyDispatchOutcome::Handled),
+            "dispatch returned Unhandled for {key:?}"
+        );
+        let frame = render_settings_to_string(&h, 80, 24).await;
+        let snap_name = format!("new_connection_modal_after_{}_{}", snap_idx, ch);
+        insta::assert_snapshot!(snap_name, &frame);
+        assert_ne!(
+            prior_frame, frame,
+            "typing {ch:?} into the new-connection modal must produce a \
+             visible change in the rendered frame"
+        );
+        prior_frame = frame;
+        snap_idx += 1;
+    }
+
+    // The final frame's name input must contain the full word —
+    // catches the case where each char produces *some* visual change
+    // (e.g. cursor blink) but the actual text input doesn't fill in.
+    let final_frame = prior_frame;
+    assert!(
+        final_frame.contains("Test"),
+        "rendered modal must show 'Test' in the name input after typing it; \
+         got:\n{final_frame}"
     );
 }

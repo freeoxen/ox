@@ -401,13 +401,13 @@ mod tests {
 
     #[test]
     fn save_runtime_parent_map_shadows_base_flat_sub_keys() {
-        // The protocol-cycle bug: base loads a TOML provider as flat
-        // sub-keys (gate/providers/LMStudio/dialect = "openai", etc.).
-        // The cycle command writes a parent ProviderConfig Map at
-        // gate/providers/LMStudio = Map({dialect: "anthropic", ...}).
-        // Without flattening, base's "openai" sub-key would survive
-        // into the saved file and silently override the new dialect.
-        // This test pins the fix.
+        // A runtime parent Map at e.g. gate/providers/LMStudio must
+        // shadow base's flat sub-keys (gate/providers/LMStudio/dialect,
+        // /endpoint, ...) at save time. Without `save_runtime`'s
+        // flattening pass, base sub-keys survive into the saved file
+        // and silently override the parent Map's fields — the
+        // serializer processes parent first, then sub-keys overwrite
+        // its members. This test pins the shadow ordering.
         use std::sync::{Arc, Mutex};
 
         #[derive(Default)]

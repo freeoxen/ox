@@ -65,12 +65,10 @@ pub mod test_theme_exports {
 
 /// Re-exports of the rendering primitives integration tests need to
 /// drive the settings screen through ratatui to a `TestBackend` and
-/// capture the visible buffer. Lets a snapshot test verify the *actual
-/// rendered output* — what the user sees — rather than just broker
-/// writes. Caught the protocol-carousel "doesn't visually toggle"
-/// regression that the broker-only e2e tests missed because the
-/// regression was in the renderer's read path, not in the cycle's
-/// write path.
+/// capture the visible buffer. Lets a snapshot test assert on the
+/// *actual rendered output* — what the user sees — rather than just
+/// broker writes. Read-path regressions don't surface in broker-only
+/// e2e tests; this surface lets render-path tests catch them.
 pub mod test_render_exports {
     pub use crate::theme::Theme;
 

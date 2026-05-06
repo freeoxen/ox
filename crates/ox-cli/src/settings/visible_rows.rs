@@ -417,12 +417,13 @@ fn append_account_field_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, 
         Err(_) => return,
     };
     // Use the assembling readers so TOML-loaded accounts (no parent
-    // Map; only flat sub-keys) resolve correctly. Pre-fix this used
-    // `read_typed::<AccountConfig>(...).unwrap_or_default()` which
-    // returned `AccountConfig { provider: "" }` for the user's TOML
-    // shape — the empty provider then failed `PathComponent::try_new`
-    // and the bound provider was never resolved, leaving Endpoint /
-    // Auth empty and the Protocol carousel locked at idx-0.
+    // Map; only flat sub-keys) resolve correctly. A bare
+    // `read_typed::<AccountConfig>(...).unwrap_or_default()` would
+    // return `AccountConfig { provider: "" }` here — the empty
+    // provider then fails `PathComponent::try_new` and the bound
+    // provider can't be resolved, which silently empties the
+    // Endpoint / Auth field rows and locks the Protocol carousel at
+    // its idx-0 fallback.
     let acct = read_account_assembling_flat(data, name).unwrap_or_default();
     let provider = read_provider_assembling_flat(data, &acct.provider);
     let key: Option<ApiKey> = read_typed(data, &oxpath!("secret", "keys", comp.clone()));
