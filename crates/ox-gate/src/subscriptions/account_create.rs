@@ -110,10 +110,37 @@ impl Subscription for AccountCreateSubscription {
 
         // 1. Materialize the default config.
         // 2. Select the new account.
-        // 3. Drive the cursor to the detail page.
-        // 4. Clear `_create_now` so the same name can be created again
-        //    in a session — keeps the path tidy and avoids dangling
-        //    request payloads.
+        // 3. Drive the focused row to the new account's row inside the
+        //    accordion; page cursor stays at settings/index (where the
+        //    accordion lives).
+        // 4. Add the new account to the expanded set so its field rows
+        //    are immediately visible.
+        // 5. Clear _create_now so the same name can be created again
+        //    in a session.
+        let new_account_row = oxpath!(
+            "settings",
+            "accounts",
+            PathComponent::try_new(req.name.clone()).unwrap()
+        );
+        let mut expanded: Vec<String> = ctx
+            .snapshot
+            .read(&oxpath!("ui", "settings", "expanded"))
+            .ok()
+            .flatten()
+            .and_then(|r| r.as_value().cloned())
+            .and_then(|v| structfs_serde_store::from_value::<Vec<String>>(v).ok())
+            .unwrap_or_default();
+        let accounts_key = "settings/accounts".to_string();
+        let new_row_key = format!("settings/accounts/{}", req.name);
+        if !expanded.iter().any(|s| s == &accounts_key) {
+            expanded.push(accounts_key);
+        }
+        if !expanded.iter().any(|s| s == &new_row_key) {
+            expanded.push(new_row_key);
+        }
+        let expanded_value =
+            structfs_serde_store::to_value(&expanded).unwrap_or(structfs_core_store::Value::Null);
+
         vec![
             write_typed(&acct_path, &cfg),
             write_typed(
@@ -122,8 +149,13 @@ impl Subscription for AccountCreateSubscription {
             ),
             write_path(
                 &oxpath!("ui", "settings", "cursor"),
-                &oxpath!("settings", "accounts", "_detail"),
+                &oxpath!("settings", "index"),
             ),
+            write_path(&oxpath!("ui", "settings", "focused_row"), &new_account_row),
+            Write {
+                path: oxpath!("ui", "settings", "expanded"),
+                record: Record::parsed(expanded_value),
+            },
             null_write(oxpath!("config", "gate", "accounts", "_create_now")),
         ]
     }
@@ -173,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    fn create_writes_default_config_selection_cursor() {
+    fn create_writes_default_config_selection_focus_and_expansion() {
         let mut reader = InMemoryReader::new();
         let writes = drive(
             &mut reader,
@@ -182,7 +214,7 @@ mod tests {
             },
         );
 
-        // Account record at the canonical path.
+        // 1. Account record at the canonical path.
         let acct_write = writes
             .iter()
             .find(|w| w.path.to_string() == "config/gate/accounts/alpha")
@@ -192,7 +224,7 @@ mod tests {
                 .unwrap();
         assert_eq!(cfg.provider, DEFAULT_PROVIDER);
 
-        // Selection.
+        // 2. Selection.
         let sel_write = writes
             .iter()
             .find(|w| w.path.to_string() == "ui/settings/accounts/selected")
@@ -201,7 +233,8 @@ mod tests {
             structfs_serde_store::from_value(sel_write.record.as_value().unwrap().clone()).unwrap();
         assert_eq!(sel.as_deref(), Some("alpha"));
 
-        // Cursor → settings/accounts/_detail.
+        // 3. Page cursor → settings/index (return to accordion; covers the
+        //    transitional case where the modal was the entry point).
         let cur_write = writes
             .iter()
             .find(|w| w.path.to_string() == "ui/settings/cursor")
@@ -215,12 +248,50 @@ mod tests {
                         _ => panic!("non-string segment"),
                     })
                     .collect();
-                assert_eq!(parts.join("/"), "settings/accounts/_detail");
+                assert_eq!(parts.join("/"), "settings/index");
             }
             other => panic!("cursor must be Value::Array, got {other:?}"),
         }
 
-        // _create_now cleared.
+        // 4. Focused row → settings/accounts/alpha so the user lands on the
+        //    new account's row inside the accordion.
+        let focus_write = writes
+            .iter()
+            .find(|w| w.path.to_string() == "ui/settings/focused_row")
+            .expect("missing focused_row write");
+        match focus_write.record.as_value() {
+            Some(Value::Array(segs)) => {
+                let parts: Vec<String> = segs
+                    .iter()
+                    .map(|v| match v {
+                        Value::String(s) => s.clone(),
+                        _ => panic!("non-string segment"),
+                    })
+                    .collect();
+                assert_eq!(parts.join("/"), "settings/accounts/alpha");
+            }
+            other => panic!("focused_row must be Value::Array, got {other:?}"),
+        }
+
+        // 5. Expanded set contains both `settings/accounts` and
+        //    `settings/accounts/alpha` so the user immediately sees the
+        //    field rows.
+        let exp_write = writes
+            .iter()
+            .find(|w| w.path.to_string() == "ui/settings/expanded")
+            .expect("missing expanded write");
+        let set: Vec<String> =
+            structfs_serde_store::from_value(exp_write.record.as_value().unwrap().clone()).unwrap();
+        assert!(
+            set.iter().any(|s| s == "settings/accounts"),
+            "expanded set must include settings/accounts; got {set:?}"
+        );
+        assert!(
+            set.iter().any(|s| s == "settings/accounts/alpha"),
+            "expanded set must include settings/accounts/alpha; got {set:?}"
+        );
+
+        // 6. _create_now cleared.
         let null = writes.iter().any(|w| {
             w.path.to_string() == "config/gate/accounts/_create_now"
                 && matches!(w.record.as_value(), Some(Value::Null))
