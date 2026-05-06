@@ -732,6 +732,9 @@ path matches its row path."
 **Files:**
 - Modify: `crates/ox-cli/src/settings/commands/edit.rs:370-404` (`commit`).
 - Modify: `crates/ox-cli/src/settings/commands/edit.rs` tests.
+- Modify: `crates/ox-gate/src/subscriptions/account_create.rs` — reject `_`-prefixed account names so `_new` (and friends) cannot collide with the synthetic ghost-row path. Mirror the existing `PathComponent::try_new` rejection: emit a banner-error write and return.
+
+> Sealing-the-reservation note (added after Task 3 review): the ghost row's path is `settings/accounts/_new`, and activation/commit dispatch on it by path equality. If a user could create an account literally named `_new` (or any underscore-prefixed name that the path validator would also accept), the synthetic and real rows would collide. The fix lives in two places: (1) the `commit` arm here trims and rejects empty/whitespace names AND `_`-prefixed names with the same silent-no-op behavior — keeps edit mode open for the user to retry; (2) the `account_create` subscription in ox-gate ALSO rejects underscore-prefixed names with a banner, defense-in-depth against programmatic creates. Both changes ride along in this task.
 
 - [ ] **Step 1: Write failing tests**
 
