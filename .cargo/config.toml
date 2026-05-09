@@ -1,0 +1,19 @@
+# Workspace cargo config. Loaded by every cargo invocation in this
+# tree.
+
+[env]
+# Redirect LLVM raw coverage profile data into `target/` instead of
+# whatever the test binary's working directory happens to be when it
+# runs (which on a per-crate `cargo test -p foo` is the crate dir,
+# leaving `.profraw` files scattered throughout the source tree).
+#
+# `relative = true` resolves the path relative to this config file's
+# location, so the env var becomes an absolute path under the
+# workspace's `target/` directory — gitignored, and stable regardless
+# of which crate the test process runs from.
+#
+# `cargo llvm-cov` sets its own `LLVM_PROFILE_FILE` when spawning
+# child processes; that override wins by virtue of being set later in
+# the spawn env. This config covers the case where a developer runs
+# instrumented `cargo test` manually (e.g.  `RUSTFLAGS="-C instrument-coverage" cargo test`).
+LLVM_PROFILE_FILE = { value = "target/coverage-%p-%m.profraw", relative = true }
