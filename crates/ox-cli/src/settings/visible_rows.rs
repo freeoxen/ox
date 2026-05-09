@@ -651,6 +651,22 @@ pub fn position_of(rows: &[VisibleRow], cursor: &Path) -> Option<usize> {
     rows.iter().position(|r| &r.path == cursor)
 }
 
+/// Snap-based focus enumeration. Returns the `FocusId` of every
+/// navigable widget in the current settings view, in display order.
+///
+/// For Phase 0 (the focus model framework primitive), every visible
+/// row from `enumerate` is a focusable target; the helper is a
+/// one-line projection. Future phases that introduce decorations
+/// (renderer-emitted items not in `enumerate`) leave this helper
+/// unchanged — decorations have `focus: None` in the renderer's
+/// output and don't appear in this enumeration either.
+pub fn focus_enumeration(data: &mut dyn Reader) -> Vec<ox_view::FocusId> {
+    enumerate(data)
+        .into_iter()
+        .map(|row| ox_view::FocusId(row.path))
+        .collect()
+}
+
 /// Format a token count for display. Uses `k` / `M` suffixes above
 /// 1000 / 1_000_000; raw decimal below. Mirrors how model docs and
 /// dashboards label context windows ("200k context") so the rendered
@@ -1404,5 +1420,25 @@ mod tests {
             Some(0)
         );
         assert_eq!(position_of(&rows, &oxpath!("nonexistent")), None);
+    }
+
+    #[test]
+    fn focus_enumeration_mirrors_visible_rows_paths() {
+        let mut snap = SettingsSnapshot::empty();
+        write_index_entries(&mut snap);
+        write_account(&mut snap, "alpha");
+        write_account(&mut snap, "beta");
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&["settings/accounts".to_string()]),
+        );
+
+        let rows = enumerate(&mut snap);
+        let focus_ids = focus_enumeration(&mut snap);
+
+        assert_eq!(focus_ids.len(), rows.len());
+        for (row, id) in rows.iter().zip(focus_ids.iter()) {
+            assert_eq!(id.0, row.path);
+        }
     }
 }
