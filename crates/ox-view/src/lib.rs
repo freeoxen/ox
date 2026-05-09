@@ -90,6 +90,19 @@ pub struct ListItem {
     pub badge: Option<String>,
 }
 
+/// Identity of a focusable widget. The dispatcher's keyboard
+/// navigation (`j`/`k`) walks the focus enumeration of the current
+/// View; the focused widget's identity is stored at
+/// `ui/settings/focused` in the broker (as the underlying `Path`).
+///
+/// `FocusId` wraps a `Path` rather than aliasing it so that function
+/// signatures distinguish "this is a focus identity" from "this is a
+/// data-tree path." On the wire (in the broker) the value is just
+/// the inner `Path`; the wrapping is for type safety at the CLI
+/// dispatch boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FocusId(pub structfs_core_store::Path);
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct FormRow {
     pub label: String,
@@ -274,6 +287,16 @@ impl View {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn focus_id_is_a_path_newtype_with_value_equality() {
+        use structfs_core_store::Path;
+        let p1 = Path::parse("settings/accounts/alpha").unwrap();
+        let p2 = Path::parse("settings/accounts/alpha").unwrap();
+        let p3 = Path::parse("settings/accounts/beta").unwrap();
+        assert_eq!(FocusId(p1.clone()), FocusId(p2));
+        assert_ne!(FocusId(p1), FocusId(p3));
+    }
 
     // Sanity: D1's original test, preserved as the canonical Text example.
     #[test]
