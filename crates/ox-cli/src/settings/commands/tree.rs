@@ -100,13 +100,13 @@ enum JumpTo {
 }
 
 fn jump(data: &mut dyn Reader, to: JumpTo) -> Vec<Write> {
-    let rows = visible_rows::enumerate(data);
-    if rows.is_empty() {
+    let focus_ids = visible_rows::focus_enumeration(data);
+    if focus_ids.is_empty() {
         return Vec::new();
     }
     let target = match to {
-        JumpTo::First => &rows[0].path,
-        JumpTo::Last => &rows[rows.len() - 1].path,
+        JumpTo::First => &focus_ids[0].0,
+        JumpTo::Last => &focus_ids[focus_ids.len() - 1].0,
     };
     vec![Write {
         path: oxpath!("ui", "settings", "focused"),
@@ -114,12 +114,15 @@ fn jump(data: &mut dyn Reader, to: JumpTo) -> Vec<Write> {
     }]
 }
 
-/// Read the focused-widget path. This is intentionally NOT
+/// Read the focused-widget identity. This is intentionally NOT
 /// `ui/settings/cursor`: cursor identifies the active page (the
 /// renderer + binding-scope), which on the accordion screen is always
 /// `settings/index`. The focused widget inside that page lives at
-/// `ui/settings/focused`. Conflating the two breaks binding
-/// dispatch (the binding lookup uses cursor as its scope key).
+/// `ui/settings/focused`. Conflating the two breaks binding dispatch
+/// (the binding lookup uses cursor as its scope key).
+///
+/// Returns the focused widget's underlying `Path` (the inner value
+/// of the conceptual `FocusId` — see `ox_view::FocusId`).
 fn read_focused(data: &mut dyn Reader) -> Option<structfs_core_store::Path> {
     let record = data
         .read(&oxpath!("ui", "settings", "focused"))
@@ -130,20 +133,20 @@ fn read_focused(data: &mut dyn Reader) -> Option<structfs_core_store::Path> {
 }
 
 fn step(data: &mut dyn Reader, direction: Direction) -> Vec<Write> {
-    let rows = visible_rows::enumerate(data);
-    if rows.is_empty() {
+    let focus_ids = visible_rows::focus_enumeration(data);
+    if focus_ids.is_empty() {
         return Vec::new();
     }
-    let cursor = read_focused(data);
-    let current_idx = cursor
+    let current = read_focused(data);
+    let current_idx = current
         .as_ref()
-        .and_then(|c| visible_rows::position_of(&rows, c))
+        .and_then(|p| focus_ids.iter().position(|f| &f.0 == p))
         .unwrap_or(0);
     let next_idx = match direction {
-        Direction::Next => (current_idx + 1) % rows.len(),
-        Direction::Prev => (current_idx + rows.len() - 1) % rows.len(),
+        Direction::Next => (current_idx + 1) % focus_ids.len(),
+        Direction::Prev => (current_idx + focus_ids.len() - 1) % focus_ids.len(),
     };
-    let target = &rows[next_idx].path;
+    let target = &focus_ids[next_idx].0;
     vec![Write {
         path: oxpath!("ui", "settings", "focused"),
         record: Record::parsed(path_to_value(target)),
