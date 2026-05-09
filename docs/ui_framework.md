@@ -31,14 +31,86 @@ lives at a path in StructFS. Renderers are pure `&mut dyn Reader →
 View` functions, registered against cursor paths. Commands are pure
 `&mut dyn Reader, &CommandCtx → Vec<Write>` functions, registered by
 id. Bindings (`(screen, cursor, mode, key) → CommandId`) route key
-events. Long-running effects are subscriptions on the broker, watching
-path patterns.
+events. **A write to a data-tree path IS the action that path
+represents.** Subscriptions exist only for async or cross-cutting
+follow-up work; they never wrap a write the CLI could have made
+directly.
 
 The View enum is small and curated. The translator (the only place
 ratatui is touched) is total over it. Adding a "widget" requires
 extending the enum *and* the translator — that cost is the point.
 
-## Five invariants you must keep
+## Three architectural commitments
+
+These are the design principles the rest of the framework derives
+from. If you find yourself fighting one, the answer is almost always
+to revisit your design — not to work around the principle.
+
+### 1. A write IS the action
+
+A direct write to a data-tree path is the action that path
+represents. Creating an account is a write of `AccountConfig` to
+`config/gate/accounts/<name>`. Deleting is a `Null` write to the same
+path. Renaming is a delete plus a write. The CLI's command handlers
+perform these writes themselves.
+
+Subscriptions are reactive observers, not RPC handlers. They watch
+path patterns and respond with *async* or *cross-cutting* follow-up:
+HTTP fetches, multi-path cleanup, file IO. They do not translate
+"please do X" sentinel writes into "do X" data writes — the CLI does
+the data write directly, and the subscription, if any, fires off the
+side effects in response.
+
+Trigger paths like `config/gate/accounts/<name>/test_now` remain
+legitimate when the trigger represents work that *can only* happen
+asynchronously (running a network test). The shape is: synchronous
+writers produce data; subscriptions watch data and produce side
+effects. RPC indirection through sentinel paths is the anti-pattern.
+
+### 2. Mode is state, not place
+
+A *cursor scope* is a page you navigate to. A *mode* is a state the
+user is in within a page. They are different things.
+
+Modes live at named UI-state paths as ordinary values:
+- `ui/settings/new_account/buffer: Option<String>` — when present,
+  the user is composing a new account name.
+- `ui/settings/pending_delete: Option<AccountName>` — when present,
+  the user is being asked to confirm a delete.
+- `ui/settings/edit_buffer: Option<String>` + `edit_field_path:
+  Option<Path>` — when both present, an existing field is being
+  edited inline.
+
+The renderer reads these values and decorates the page accordingly.
+The dispatcher reads them and routes keys accordingly. Neither
+requires navigating to a special cursor scope.
+
+Cursor scopes are reserved for true page navigation: `settings/index`,
+`settings/accounts`, `settings/models`. There are no `…/_new`,
+`…/_delete`, `…/_edit` cursor scopes — those would be modes
+masquerading as places.
+
+### 3. The display tree names only real things
+
+Every path in the display tree (`settings/…`, `ui/…`) names either a
+real thing in the data tree or a UI-state value with semantic
+meaning. Synthetic affordances — "+ New connection", "no models —
+refresh", "+ add model manually" — are renderer-side decorations
+reading UI-mode state. They are not rows in the visible-rows
+projection and they do not have synthetic identifier paths.
+
+The visible-rows projection is a pure function from the data tree to
+real-account rows. The `+ New connection` line still appears in the
+rendered output, but it appears because the renderer reads
+`ui/settings/new_account/buffer` and emits an inline prompt or a
+static affordance line accordingly — not because a synthetic row
+exists in the projection.
+
+This is what makes path-equality dispatch safe: every path in
+`settings/accounts/<name>` names a real account, full stop. There is
+no `settings/accounts/_new` competing for the same namespace.
+
+## Six invariants you must keep
 
 1. **Renderers are pure.** No async, no I/O, no mutation. Take a
    `&mut dyn Reader`, return a `View`.
@@ -50,13 +122,34 @@ extending the enum *and* the translator — that cost is the point.
    write to `…/test_now`; the subscription does the network call.
 5. **All paths are constructed via `oxpath!` or
    `PathComponent::try_new`.** Never hand-format path strings.
+6. **No synthetic display paths.** Every path in the display tree
+   names a real thing in the data tree or a UI-state value with
+   semantic meaning. If you find yourself reaching for `…/_foo` as
+   "the place where the user is doing X," X is a *mode* — model it
+   as state at a named path instead.
 
 If you find yourself writing async code in a renderer or command,
 stop — you're building the wrong shape. Move the effect into a
-subscription.
+subscription. If you find yourself writing a subscription that
+*translates* a sentinel write into a data write, stop — the CLI
+should make that data write directly. If you find yourself adding a
+synthetic row to the projection to drive a UI affordance, stop —
+that's a mode, not a row.
+
+## Convergence note
+
+The framework's day-one implementation predates these commitments and
+contains transitional shapes that the codebase is converging away
+from: `_create_now` / `delete_now` sentinel paths in `config/gate/…`,
+synthetic `_new` / `_delete` cursor scopes, and `RowKind::AccountAdd`
+/ `ModelEmptyState` / `ModelAddManual` rows in the visible-rows
+projection. New work should target the architecture this doc
+describes; existing surface is being migrated. Where this doc and
+the code disagree, the doc is the target.
 
 ## Branch / SHA
 
 Framework landed on branch `improvements`, commits `5b97d63` (the
 first A0 commit) through `8dba6d9` (Phase S cleanup). About 50 commits
-in 19 phases.
+in 19 phases. The S-tier convergence work begins after the inline
+new-connection branch lands.

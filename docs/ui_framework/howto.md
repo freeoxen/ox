@@ -8,20 +8,56 @@ first; otherwise come straight here.
 
 ## How-tos
 
+- [Pick a pattern: direct write vs. subscription](#pick-a-pattern-direct-write-vs-subscription)
 - [Add a new screen / page](#add-a-new-screen--page)
 - [Add a command](#add-a-command)
 - [Add a binding](#add-a-binding)
+- [Add an inline editing flow (a mode)](#add-an-inline-editing-flow-a-mode)
+- [Add a confirmation flow](#add-a-confirmation-flow)
 - [Add a subscription](#add-a-subscription)
 - [Read a typed value from the snapshot](#read-a-typed-value-from-the-snapshot)
 - [Write a typed value through the broker][write-typed]
 - [Encode/decode a Path as a Value](#encodedecode-a-path-as-a-value)
 
 [write-typed]: #write-a-typed-value-through-the-broker
-- [Encode/decode a Path as a Value](#encodedecode-a-path-as-a-value)
 - [Test a renderer](#test-a-renderer)
 - [Test a command](#test-a-command)
 - [Test a subscription](#test-a-subscription)
 - [Run a settings E2E test](#run-a-settings-e2e-test)
+
+---
+
+## Pick a pattern: direct write vs. subscription
+
+Before writing code, decide which architectural pattern fits the
+work. Most "add a feature" tasks decompose into a command + a write
+shape; getting the write shape right matters more than the command's
+boilerplate.
+
+### Decision matrix
+
+| The work is… | Pattern |
+|---|---|
+| Mutating one or two paths synchronously | **Direct write from the command.** No subscription. |
+| Mutating one path, with async or cross-cutting follow-up needed | **Direct write + reactive subscription** watching the data path. Subscription does the follow-up. |
+| Async only — runs a network call, IO, or other non-instantaneous work the user requested | **Async-trigger subscription.** Command writes `Null` to a `…/<verb>_now` trigger path; subscription does the work. |
+| "Open a sub-state on this page" (composing input, confirming an action, editing a field inline) | **Mode state, not subscription.** Command writes a UI-state path (`ui/.../buffer`, `ui/.../pending_delete`). Renderer + dispatcher react to the state. |
+| "Navigate to a different page" | **Cursor write.** Command writes `ui/settings/cursor` to the new page path. |
+
+### Anti-patterns to avoid
+
+- **Sentinel-as-RPC.** Don't write `…/_create_now` and have a
+  subscription read it, validate, and write the real path. The
+  command should write the real path directly. Subscriptions are
+  for follow-up, not translation.
+- **Mode as cursor scope.** Don't navigate to `…/_new` to enter "the
+  user is composing" mode. Write a UI-state value
+  (`ui/.../new_account/buffer`) instead. The cursor stays on the
+  page; the mode lives in state.
+- **Synthetic display rows.** Don't push a `RowKind::FooAdd` into
+  the visible-rows projection to show a "+ New X" affordance. The
+  renderer reads UI-mode state and emits the affordance as a
+  decoration. The projection contains only real things.
 
 ---
 
@@ -307,109 +343,184 @@ breaks ties in favour of the specific binding.
 
 ## Add a subscription
 
-For an action like "export config":
+Subscriptions come in two shapes. Pick the one that matches the
+work; if neither fits, the work probably doesn't earn a subscription
+(see the decision matrix at the top of this document).
 
-### 1. Pick a watched path
+### Shape 1: Reactive observer
 
-`Exact(oxpath!("config","_export_now"))` for collection-level.
-`PrefixSuffix { prefix, suffix: oxpath!("export_now") }` for
-per-instance.
+Use when a write to a real data-tree path needs async or
+cross-cutting follow-up. The CLI does the data write directly; the
+subscription watches the data path and fires the follow-up.
 
-### 2. Write a command that triggers it
-
-```rust
-command! {
-    struct_name: ConfigExport,
-    id: "config.export",
-    title: "Export Config",
-    description: "Trigger the export subscription.",
-    screen: Screen::Settings,
-    cursor: None,
-    run: |_snap, _ctx| vec![Write {
-        path: oxpath!("config", "_export_now"),
-        record: Record::parsed(Value::Null),
-    }],
-}
-```
-
-### 3. Write the subscription
-
-`crates/ox-gate/src/subscriptions/config_export.rs`:
+Worked example: when a new account appears, fetch its model catalog.
 
 ```rust
-use std::sync::Arc;
-
 use ox_broker::subscription::{Subscription, SubCtx};
 use ox_path::oxpath;
 use ox_types::subscription::{PathPattern, SubscriptionId, Write};
 
-pub struct ConfigExportSubscription {
-    id:      SubscriptionId,
-    watches: Vec<PathPattern>,
+pub struct CatalogFetchOnCreate {
+    id:        SubscriptionId,
+    watches:   Vec<PathPattern>,
+    transport: Arc<dyn Transport>,
 }
 
-impl ConfigExportSubscription {
-    pub fn new() -> Self {
+impl CatalogFetchOnCreate {
+    pub fn new(transport: Arc<dyn Transport>) -> Self {
         Self {
-            id:      SubscriptionId(String::from("gate.config_export")),
-            watches: vec![PathPattern::Exact(
-                oxpath!("config", "_export_now"),
+            id:        SubscriptionId("gate.catalog_fetch_on_create".into()),
+            // Watch every account record under the collection.
+            // The subscription handler filters: only fire when this
+            // is a new entry (change.before.is_none()), not an
+            // update.
+            watches:   vec![PathPattern::Prefix(
+                oxpath!("config", "gate", "accounts"),
             )],
+            transport,
         }
     }
 }
 
-impl Default for ConfigExportSubscription {
-    fn default() -> Self { Self::new() }
-}
-
-impl Subscription for ConfigExportSubscription {
+impl Subscription for CatalogFetchOnCreate {
     fn id(&self)      -> &SubscriptionId { &self.id }
     fn watches(&self) -> &[PathPattern]  { &self.watches }
+
     fn handle(&self, ctx: SubCtx<'_>) -> Vec<Write> {
-        // Read whatever from ctx.snapshot.
-        // Spawn async work via ctx.spawn(...) if needed.
-        // Return Vec<Write> for synchronous status updates.
-        vec![]
+        // Skip updates and deletes — only react to new entries.
+        if ctx.change.before.is_some() || ctx.change.after.is_none() {
+            return vec![];
+        }
+        // Skip nested writes (we want the account record itself,
+        // not its children at .../models, .../test_status, etc.).
+        let prefix = oxpath!("config", "gate", "accounts");
+        if ctx.change.path.len() != prefix.len() + 1 {
+            return vec![];
+        }
+
+        let account = ctx.change.path.components.last().cloned().unwrap();
+        let writer = ctx.writer.clone();
+        let transport = self.transport.clone();
+        ctx.spawn.spawn(Box::pin(async move {
+            let outcome = transport.fetch_catalog(&account, /* … */).await;
+            // Write the catalog (or a Failed status) back.
+            let _ = writer.write(/* path */, /* record */).await;
+        }));
+        vec![]  // No synchronous status writes for this example.
     }
 }
 ```
 
-### 4. Register it
+The CLI does the create:
+
+```rust
+client.write_typed(
+    &oxpath!("config", "gate", "accounts", &name),
+    &AccountConfig::default(),
+).await?;
+```
+
+The subscription fires off the catalog fetch in response. There is
+no `_create_now` sentinel.
+
+### Shape 2: Async action trigger
+
+Use when the user requests an action that has *no* synchronous form
+— a network call, file IO, anything where the work itself is
+async. The trigger path uses the `…/<verb>_now` convention; the
+command writes `Null` to the trigger; the subscription does the
+work.
+
+Worked example: connectivity test for an account.
+
+```rust
+command! {
+    struct_name: AccountTest,
+    id: "account.test",
+    title: "Test Connection",
+    description: "Test the account's API connectivity.",
+    screen: Screen::Settings,
+    cursor: Some(oxpath!("settings", "accounts")),
+    run: |snap, _ctx| {
+        let Some(name) = read_typed::<String>(
+            snap,
+            &oxpath!("ui", "settings", "accounts", "selected"),
+        ) else { return vec![]; };
+        let comp = match PathComponent::try_new(&name) {
+            Ok(c) => c,
+            Err(_) => return vec![],
+        };
+        vec![Write {
+            path: oxpath!("config", "gate", "accounts", comp, "test_now"),
+            record: Record::parsed(Value::Null),
+        }]
+    },
+}
+```
+
+```rust
+impl Subscription for AccountTestSubscription {
+    fn watches(&self) -> &[PathPattern] {
+        // PrefixSuffix matches per-instance triggers without
+        // hard-coding account names.
+        &[PathPattern::PrefixSuffix {
+            prefix: oxpath!("config", "gate", "accounts"),
+            suffix: oxpath!("test_now"),
+        }]
+    }
+
+    fn handle(&self, ctx: SubCtx<'_>) -> Vec<Write> {
+        let name = instance_segment(
+            &ctx.change.path,
+            &oxpath!("config", "gate", "accounts"),
+            &oxpath!("test_now"),
+        ).expect("PrefixSuffix matched but couldn't extract segment");
+
+        let writer = ctx.writer.clone();
+        let transport = self.transport.clone();
+
+        // Synchronous: write the in-progress status.
+        let synchronous = vec![Write {
+            path: oxpath!("config", "gate", "accounts", &name, "test_status"),
+            record: Record::parsed(/* Testing { started_at_ms } */),
+        }];
+
+        ctx.spawn.spawn(Box::pin(async move {
+            let outcome = transport.test_connection(&name, /* … */).await;
+            // Write the result status.
+            let _ = writer.write(/* path */, /* record */).await;
+        }));
+
+        synchronous
+    }
+}
+```
+
+The legitimacy of the `_now` trigger here is that the work is
+fundamentally async — there's no synchronous version of "run a
+network test." Without the trigger path, the CLI would have to
+either (a) block on the network call (which it can't — commands are
+sync) or (b) spawn its own task, fragmenting the async work across
+the codebase.
+
+### Register the subscription
 
 `crates/ox-gate/src/subscriptions/mod.rs::register_all`:
 
 ```rust
 broker.register_subscription(Arc::new(
-    config_export::ConfigExportSubscription::new(),
+    catalog_fetch_on_create::CatalogFetchOnCreate::new(transport.clone()),
+));
+broker.register_subscription(Arc::new(
+    account_test::AccountTestSubscription::new(transport.clone()),
 ));
 ```
 
-### 5. Spawning async work
+### Supersession
 
-```rust
-fn handle(&self, ctx: SubCtx<'_>) -> Vec<Write> {
-    let writer    = ctx.writer.clone();
-    let transport = self.transport.clone();
-    let synchronous_writes = vec![
-        Write {
-            path: status_path,
-            record: Record::parsed(/* Refreshing */),
-        },
-    ];
-    ctx.spawn.spawn(Box::pin(async move {
-        let outcome = transport.fetch_catalog(...).await;
-        // ... build the result write ...
-        let _ = writer.write(path, record).await;
-    }));
-    synchronous_writes
-}
-```
-
-### 6. Supersession
-
-Hold a `Mutex<HashMap<String, AbortHandle>>` in `&self`. Before
-spawning, abort the prior task for the same key:
+When a subscription spawns async work that may take a while, hold a
+`Mutex<HashMap<String, AbortHandle>>` in `&self` and abort prior
+in-flight tasks for the same key before spawning:
 
 ```rust
 in_flight: std::sync::Mutex<
@@ -423,6 +534,232 @@ if let Some(prior) = self.in_flight.lock().unwrap().remove(&name) {
 let handle = ctx.spawn.spawn(Box::pin(async move { ... }));
 self.in_flight.lock().unwrap().insert(name, handle);
 ```
+
+`AccountTestSubscription` and `CatalogRefreshSubscription` both use
+this shape — see `crates/ox-gate/src/subscriptions/`.
+
+---
+
+## Add an inline editing flow (a mode)
+
+Worked example: a "compose new connection" mode, triggered by `a`,
+where the user types a name inline and presses Enter to create.
+
+The principle: a mode is state at a named UI-state path, not a
+cursor scope. The cursor stays on the current page; the mode lives
+in state.
+
+### 1. Pick a UI-state path
+
+```rust
+ui/settings/new_account/buffer: Option<String>
+```
+
+Empty/absent = not in the mode. Present = in the mode with that
+buffer content.
+
+### 2. Open-mode command
+
+```rust
+command! {
+    struct_name: AccountsAdd,
+    id: "accounts.add",
+    title: "Add Connection",
+    description: "Open the inline name prompt.",
+    screen: Screen::Settings,
+    cursor: Some(oxpath!("settings", "accounts")),
+    run: |_snap, _ctx| vec![Write {
+        path: oxpath!("ui", "settings", "new_account", "buffer"),
+        record: Record::parsed(Value::String(String::new())),
+    }],
+}
+```
+
+Bind it: `a` → `accounts.add` at `Prefix(settings/accounts)`.
+
+### 3. Renderer reads the mode state
+
+The accounts-section renderer reads `new_account/buffer`. When
+`Some(buffer)`, it renders an inline `Name▸ <buffer>▏` prompt at the
+top of the section. When `None`, it renders a static
+`+ New connection` affordance line.
+
+```rust
+let buffer: Option<String> = read_typed(
+    ctx.data,
+    &oxpath!("ui", "settings", "new_account", "buffer"),
+);
+let header = match buffer {
+    Some(b) => inline_name_prompt(&b),
+    None    => static_create_affordance(),
+};
+```
+
+The visible-rows projection does not change. There is no
+`RowKind::AccountAdd`. The affordance is renderer-side only.
+
+### 4. While-in-mode bindings
+
+Bind printable keys, Backspace, Enter, Esc at a *mode-aware* scope.
+The dispatcher consults the UI-state path before regular row-keyed
+dispatch:
+
+```rust
+// Pseudocode for the dispatcher's mode-aware pass.
+if read_typed::<String>(snap, &new_account_buffer_path).is_some() {
+    match key {
+        KeyCodeRepr::Char(c) => return mode_insert_char(c),
+        KeyCodeRepr::Backspace => return mode_delete_back(),
+        KeyCodeRepr::Enter => return mode_commit_create(),
+        KeyCodeRepr::Esc => return mode_cancel(),
+        _ => {}
+    }
+}
+// Otherwise fall through to row-keyed dispatch.
+```
+
+(In practice this lives in `dispatch_settings_key`. See
+`crates/ox-cli/src/settings/dispatch.rs` for the actual shape.)
+
+### 5. Commit-mode command writes the data + clears the mode
+
+```rust
+fn commit_create(snap: &mut dyn Reader) -> Vec<Write> {
+    let buffer: String = read_typed(
+        snap,
+        &oxpath!("ui", "settings", "new_account", "buffer"),
+    ).unwrap_or_default();
+    let trimmed = buffer.trim();
+    if trimmed.is_empty() { return vec![]; }
+    let name = match AccountName::try_new(trimmed) {
+        Ok(n) => n,
+        Err(reason) => return vec![banner_error(reason)],
+    };
+    vec![
+        // The actual create — direct write, no sentinel.
+        write_typed(
+            &oxpath!("config", "gate", "accounts", name.as_path_component()),
+            &AccountConfig::default(),
+        ),
+        // UI cascade — focus the new row, clear the mode buffer.
+        write_path(
+            &oxpath!("ui", "settings", "focused_row"),
+            &row_path_for(&name),
+        ),
+        Write {
+            path: oxpath!("ui", "settings", "new_account", "buffer"),
+            record: Record::parsed(Value::Null),
+        },
+    ]
+}
+```
+
+Esc / cancel just writes `Null` to the buffer path — that exits the
+mode without doing the create.
+
+---
+
+## Add a confirmation flow
+
+Worked example: "delete this account — y/n confirmation."
+
+Same shape as the inline editing flow above, but the mode-state
+value carries the *target* of the action rather than a typing
+buffer.
+
+### 1. Pick a UI-state path
+
+```rust
+ui/settings/pending_delete: Option<AccountName>
+```
+
+Absent = no confirmation showing. Present = confirmation banner
+showing for that account.
+
+### 2. Open-confirmation command
+
+```rust
+command! {
+    struct_name: AccountsDeleteConfirm,
+    id: "accounts.delete_confirm",
+    title: "Delete Connection",
+    description: "Show the delete confirmation banner.",
+    screen: Screen::Settings,
+    cursor: Some(oxpath!("settings", "accounts")),
+    run: |snap, _ctx| {
+        let Some(name) = read_typed::<String>(
+            snap,
+            &oxpath!("ui", "settings", "accounts", "selected"),
+        ) else { return vec![]; };
+        vec![Write {
+            path: oxpath!("ui", "settings", "pending_delete"),
+            record: Record::parsed(Value::String(name)),
+        }]
+    },
+}
+```
+
+### 3. Renderer reads the pending-delete state
+
+```rust
+let pending: Option<String> = read_typed(
+    ctx.data,
+    &oxpath!("ui", "settings", "pending_delete"),
+);
+if let Some(name) = pending {
+    // Render an inline confirmation banner above the accounts list:
+    //   "Delete '<name>'? y / n"
+}
+```
+
+### 4. While-pending bindings
+
+The dispatcher's mode-aware pass routes `y` and `n`/`Esc` while
+`pending_delete` is set:
+
+```rust
+if let Some(target) = read_typed::<String>(
+    snap, &pending_delete_path,
+) {
+    match key {
+        KeyCodeRepr::Char('y') => return commit_delete(&target),
+        KeyCodeRepr::Char('n') | KeyCodeRepr::Esc => return cancel_pending(),
+        _ => {}  // ignore other keys while pending
+    }
+}
+```
+
+### 5. Commit / cancel
+
+```rust
+fn commit_delete(name: &str) -> Vec<Write> {
+    let comp = PathComponent::try_new(name).expect("validated on entry");
+    vec![
+        // The actual delete — Null write to the data path.
+        Write {
+            path: oxpath!("config", "gate", "accounts", comp),
+            record: Record::parsed(Value::Null),
+        },
+        // Clear the mode.
+        Write {
+            path: oxpath!("ui", "settings", "pending_delete"),
+            record: Record::parsed(Value::Null),
+        },
+    ]
+}
+
+fn cancel_pending() -> Vec<Write> {
+    vec![Write {
+        path: oxpath!("ui", "settings", "pending_delete"),
+        record: Record::parsed(Value::Null),
+    }]
+}
+```
+
+A subscription watching `Prefix(config/gate/accounts)` for null
+writes can do the side-data cleanup (drop the API key, drop the
+provider record if no other account uses it). That's reactive
+follow-up; the delete itself is the CLI's direct write.
 
 ---
 

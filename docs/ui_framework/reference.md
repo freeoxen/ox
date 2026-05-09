@@ -390,45 +390,63 @@ pub enum CatalogRefreshStatus {
 
 ## Paths
 
-### Settings namespace
+### Settings namespace (display tree)
+
+Cursors, focus, selection, and UI-mode state.
 
 | Path | Type | Meaning |
 |---|---|---|
-| `ui/settings/cursor` | `Path` | Currently-displayed page |
-| `ui/settings/_request_exit` | `bool` | Set to `true` to exit screen |
-| `ui/settings/index/selected` | `usize` | Index page selection |
-| `ui/settings/accounts/selected` | `Option<String>` | Account name |
-| `ui/settings/models/selected` | `Option<ModelKey>` | (account, model) |
-| `ui/settings/account_detail/field` | `AccountField` | Focused row |
-| `ui/settings/model_detail/field` | `ModelField` | Focused row |
-| `ui/settings/edit_cursor` | `u32` | Char cursor in text field |
-| `ui/settings/new_account/name_input` | `String` | Draft name |
-| `ui/global/banner` | `GlobalBanner` | App-wide banner |
-| `settings/index/entries/{id}` | `SettingsIndexEntry` | Index row |
+| `ui/settings/cursor` | `Path` | Currently-displayed *page*. Cursors are page navigation, not modes — see `architecture.md` §Modeling state. |
+| `ui/settings/_request_exit` | `bool` | Cross-component signal: event loop reads it to switch screens. |
+| `ui/settings/focused_row` | `Path` | Identifier path of the currently-focused row in the visible-rows projection. |
+| `ui/settings/expanded` | `Vec<String>` | Set (as list) of expanded accordion entries. |
+| `ui/settings/accounts/selected` | `Option<String>` | Currently selected account name. |
+| `ui/settings/models/selected` | `Option<ModelKey>` | Currently selected (account, model) pair. |
+| `ui/global/banner` | `GlobalBanner` | App-wide banner (errors, info). |
+| `settings/index/entries/{id}` | `SettingsIndexEntry` | Index page row metadata. |
 
-### Config namespace
+UI mode state (presence of value indicates the user is in that mode;
+`Null` clears the mode):
+
+| Path | Type | Mode |
+|---|---|---|
+| `ui/settings/new_account/buffer` | `Option<String>` | Composing a new account name. |
+| `ui/settings/pending_delete` | `Option<String>` | Showing a delete-confirmation for that account. |
+| `ui/settings/edit_buffer` | `Option<String>` | Inline-editing a field; carries the live typed text. |
+| `ui/settings/edit_field_path` | `Option<Path>` | Which row's field is being edited (when `edit_buffer` is set). |
+| `ui/settings/manual_model` | `Option<ManualModelDraft>` | Composing a new model entry inline. |
+
+### Config namespace (data tree)
+
+The world's actual state. Writes here change the world; reads
+project it.
 
 | Path | Type | Meaning |
 |---|---|---|
-| `config/gate/accounts/{name}` | `AccountConfig` | Per-account record |
+| `config/gate/accounts/{name}` | `AccountConfig` | Per-account record. *A write here creates the account; a `Null` write deletes it.* |
 | `config/gate/accounts/{name}/models` | `Vec<ModelInfo>` | Catalog |
-| `config/gate/accounts/{name}/test_status` | `AccountTestStatus` | |
-| `config/gate/accounts/{name}/refresh_status` | `CatalogRefreshStatus` | |
-| `config/gate/accounts/{name}/validation_status` | `ValidationDiagnostics` | |
+| `config/gate/accounts/{name}/test_status` | `AccountTestStatus` | Connectivity test outcome |
+| `config/gate/accounts/{name}/refresh_status` | `CatalogRefreshStatus` | Catalog refresh outcome |
+| `config/gate/accounts/{name}/validation_status` | `ValidationDiagnostics` | Per-field validation diagnostics |
 | `config/gate/providers/{name}` | `ProviderConfig` | endpoint+dialect |
 | `config/gate/completions/primary` | `CompletionRole` | (account, model) |
-| `config/save` | `Null` | Triggers save subscription |
+| `config/save` | `Null` | Async trigger: persist runtime config to disk. |
 
-Per-instance action paths (write `Null` to trigger):
+Per-instance async action triggers (write `Null` to trigger an
+async-only action; subscription performs the work):
 
-| Path | Subscription |
-|---|---|
-| `config/gate/accounts/{name}/test_now` | `AccountTestSubscription` |
-| `config/gate/accounts/{name}/refresh_now` | `CatalogRefreshSubscription` |
-| `config/gate/accounts/{name}/delete_now` | `AccountDeleteSubscription` |
-| `config/gate/accounts/_create_now` | `AccountCreateSubscription` |
+| Path | Subscription | Why a trigger |
+|---|---|---|
+| `config/gate/accounts/{name}/test_now` | `AccountTestSubscription` | Network call; no synchronous form. |
+| `config/gate/accounts/{name}/refresh_now` | `CatalogRefreshSubscription` | Network call; no synchronous form. |
 
-(`_create_now` takes a typed `CreateAccountRequest` payload, not Null.)
+There is **no** `config/gate/accounts/_create_now` and **no**
+`config/gate/accounts/{name}/delete_now`. Account creation is a
+direct write to `config/gate/accounts/{name}` carrying the
+`AccountConfig`. Deletion is a `Null` write to the same path. Any
+async or cross-cutting follow-up (catalog fetch on create, side-data
+cleanup on delete) lives in a reactive subscription watching
+`Prefix(config/gate/accounts)`.
 
 ### Secret namespace
 
@@ -441,22 +459,24 @@ Mounted separately from `config/`; backed by `keys.json` with
 
 ## Subscriptions
 
-### `AccountTestSubscription`
+### `AccountTestSubscription` (async action trigger)
 
 - Watches: `PrefixSuffix { prefix: config/gate/accounts,
   suffix: test_now }`
-- Validates the AccountConfig; writes `test_status: Testing`
-  synchronously; spawns `transport.test_connection`; writes
-  `Success`/`Failed` from the spawned task.
+- Reads the AccountConfig + ApiKey; writes
+  `test_status: Testing` synchronously; spawns
+  `transport.test_connection`; writes `Success`/`Failed` from the
+  spawned task. Network call, no synchronous form, hence the
+  `_now` trigger pattern.
 - Holds `Mutex<HashMap<String, AbortHandle>>` for supersession.
 
-### `CatalogRefreshSubscription`
+### `CatalogRefreshSubscription` (async action trigger)
 
 - Watches: `PrefixSuffix { prefix: config/gate/accounts,
   suffix: refresh_now }`
-- Validates; writes `refresh_status: Refreshing`; spawns
-  `transport.fetch_catalog`; on success writes the new
-  `Vec<ModelInfo>` to `…/models` plus
+- Reads the AccountConfig + ApiKey; writes
+  `refresh_status: Refreshing`; spawns `transport.fetch_catalog`; on
+  success writes the new `Vec<ModelInfo>` to `…/models` plus
   `refresh_status: Success { models_added, models_updated }`. On
   failure writes `Failed { reason }` and does **not** clobber the
   existing models.
@@ -464,34 +484,37 @@ Mounted separately from `config/`; backed by `keys.json` with
   `max_*_tokens`, setting `source: KnownTable`.
 - Holds the same supersession map shape as `AccountTestSubscription`.
 
-### `AccountDeleteSubscription`
+### `AccountDeleteCleanupSubscription` (reactive observer)
 
-- Watches: `PrefixSuffix { prefix: config/gate/accounts,
-  suffix: delete_now }`
-- Fully synchronous; no spawn. Returns one `Vec<Write>` removing the
-  account record + key + provider entry, clearing selection if it
-  matched, and popping the cursor to `settings/accounts`.
+- Watches: `Prefix(config/gate/accounts)`, filtering for null writes
+  at the account-record depth (`prefix.len() + 1`).
+- Cleans up side data: drops the matching `secret/keys/<name>`,
+  drops the provider record at `config/gate/providers/<name>` if no
+  other account references it, clears
+  `ui/settings/accounts/selected` if it matched the deleted name.
+- The actual delete (the `Null` write to
+  `config/gate/accounts/<name>`) was already performed by the CLI;
+  this subscription does the cross-cutting follow-up.
 
-### `AccountCreateSubscription`
+### `CatalogFetchOnCreateSubscription` (reactive observer)
 
-- Watches: `Exact(config/gate/accounts/_create_now)`
-- Reads `change.after` as `CreateAccountRequest { name }`; validates
-  via `PathComponent::try_new`; on success writes a default
-  `AccountConfig`, sets `ui/settings/accounts/selected: Some(name)`,
-  and writes the cursor to `settings/accounts/_detail`. On invalid
-  name writes a `GlobalBanner::Error`.
+- Watches: `Prefix(config/gate/accounts)`, filtering for new entries
+  at the account-record depth (`change.before.is_none()`).
+- Spawns a catalog fetch for the newly-created account. Same shape
+  as `CatalogRefreshSubscription` but triggered by the existence of
+  a new account record rather than by a `_now` trigger.
 
-### `ConfigSaveSubscription`
+### `ConfigSaveSubscription` (async action trigger)
 
 - Watches: `Exact(config/save)`
 - The actual save runs in `ConfigStore::save_runtime` (driven by the
   ConfigStore mount's Writer impl when it sees a write at `save`).
-  This subscription exists for protocol uniformity — it logs that
-  the trigger was observed.
+  File IO, hence the trigger pattern. The subscription itself logs
+  that the trigger was observed.
 
 ## Day-one commands
 
-27 commands in `crates/ox-cli/src/settings/commands/`:
+In `crates/ox-cli/src/settings/commands/`:
 
 `highlight.rs` — 6 commands (next/prev × 3 areas):
 
@@ -506,36 +529,64 @@ Mounted separately from `config/`; backed by `keys.json` with
 - `nav.descend.models`
 - `nav.ascend`
 
-`account_model.rs` — 17:
+`account_model.rs`:
 
-- `accounts.add`, `accounts.delete_confirm`, `accounts.cancel`
-- `accounts.create`, `accounts.delete`
-- `account.test`, `account.refresh`
+- `accounts.add` (opens the inline name-prompt mode)
+- `accounts.delete_confirm` (opens the inline confirmation mode)
+- `account.test`, `account.refresh` (write `test_now` / `refresh_now`)
 - `models.set_primary`
-- `app.save`
+- `app.save` (writes `config/save`)
 - `field.account.{next,prev}`, `field.model.{next,prev}`
-- `field.insert`, `field.delete_back`
 - `selector.cycle.protocol`, `selector.cycle.auth`
+
+`edit.rs` (mode-state buffer commands; the dispatcher's mode-aware
+pass routes printables + Backspace + Enter + Esc through these):
+
+- `edit.insert_char`, `edit.delete_back`
+- `edit.commit`, `edit.cancel`
+
+There is no `accounts.create` or `accounts.delete` command — those
+were modal-era RPC translation steps. In the current shape, the
+"create" action lives inside `edit.commit`'s `AccountAdd` arm and
+performs a direct write to `config/gate/accounts/<name>`. The
+"delete" action lives inside the `pending_delete` mode's
+y-key-handler and performs a direct `Null` write to the same path.
 
 ## Day-one bindings
 
-See `crates/ox-cli/src/settings/bindings.rs::register`. Indexed by
-cursor scope. The text-editing scope (`settings/accounts/_detail`)
-gets ~96 entries from `register_text_editing` covering printable
-ASCII + Backspace.
+See `crates/ox-cli/src/settings/bindings.rs::register`. Bindings are
+indexed by *page* cursor scope (real navigation targets only) and by
+mode (the dispatcher's mode-aware pass — see below).
 
-Per spec §6:
+Per page:
 
-- `settings/index`: `j`/`k` highlight; `Enter` descend; `Esc` ascend
-- `settings/accounts`: `j`/`k` + `Enter` + `a` (add) + `d` (delete) + `Esc`
-- `settings/accounts/_detail`: Tab/Down/Shift+Tab/Up cycle field;
-  `t` test; `Ctrl+s` save; `Esc` ascend; printable + Backspace
-  text-edit
-- `settings/accounts/_new`: `Enter` create; `Esc` cancel
-- `settings/accounts/_delete`: `y` delete; `n`/`Esc` cancel
-- `settings/models`: `j`/`k` + `Enter` + `P` set-primary + `r`
-  refresh + `Esc`
-- `settings/models/_detail`: Tab cycle; `Esc` ascend
+- `settings/index`: `j`/`k` highlight; `Enter` descend; `Esc` ascend.
+- `settings/accounts` (and `Prefix(settings/accounts)` for row-level
+  bindings): `j`/`k` navigate; `Enter` toggle expansion / activate;
+  `a` open compose-new mode; `d` open delete-confirm mode; `t` test
+  selected; `r` refresh; `Esc` ascend / collapse.
+- `settings/models` (and `Prefix(settings/models)`): `j`/`k`; `Enter`
+  toggle/activate; `P` set bootstrap; `Esc` ascend / collapse.
+- `settings/_edit_mode`: printable ASCII → `edit.insert_char`;
+  Backspace → `edit.delete_back`; Enter → `edit.commit`; Esc →
+  `edit.cancel`. ASCII uppercase letters bind with `shift_only()`
+  modifiers (mirroring the encode/parse round-trip).
+
+Mode-aware bindings (the dispatcher consults UI-state paths before
+row-keyed dispatch):
+
+- When `ui/settings/new_account/buffer` is set: the inline-edit-mode
+  scope above is active; Enter routes to "commit create."
+- When `ui/settings/pending_delete` is set: `y` confirms (Null-write
+  to the canonical account path); `n` / `Esc` cancels (Null-write to
+  the pending-delete path).
+- When `ui/settings/edit_buffer` + `edit_field_path` are set: the
+  inline-edit-mode scope is active; Enter routes to "commit field
+  edit."
+
+There are no bindings at `settings/accounts/_new` or
+`settings/accounts/_delete`. Those cursor scopes do not exist —
+they were modes masquerading as places.
 
 ## File map
 
@@ -587,19 +638,18 @@ crates/ox-cli/src/
       mod.rs                           # register_all
       util.rs                          # read_typed, child_names_under,
                                        # subtree_count
-      index.rs
-      accounts_list.rs
-      account_detail.rs
-      models_list.rs
-      model_detail.rs
-      overlay_new_account.rs
-      overlay_delete_account.rs
+      index.rs                         # accordion (reads UI-mode state +
+                                       # data tree, composes affordances)
     commands/
       mod.rs                           # command! macro + register_all
-      highlight.rs                     # 6 commands
-      navigation.rs                    # 4 commands + path_to_value /
+      highlight.rs                     # navigation highlights
+      navigation.rs                    # cursor moves + path_to_value /
                                        # path_from_value helpers
-      account_model.rs                 # 17 commands
+      account_model.rs                 # account / model actions
+      edit.rs                          # mode-state buffer commands
+                                       # (insert_char, delete_back,
+                                       # commit, cancel)
+      tree.rs                          # tree.activate (Enter dispatch)
 
 crates/ox-gate/src/
   api_key.rs                           # ApiKey newtype
@@ -626,27 +676,49 @@ crates/ox-gate/src/
 ## Glossary
 
 - **Cursor** — Path at `ui/settings/cursor` naming the
-  currently-displayed page.
+  currently-displayed *page*. Pages are real navigation targets;
+  cursor moves are explicit nav actions. Modes (composing,
+  confirming, editing) are NOT cursor scopes — see *UI mode*.
+- **UI mode** — A state the user is in within a page (composing a
+  name, confirming a delete, editing a field). Lives as a value at a
+  named UI-state path (e.g. `ui/settings/new_account/buffer`). The
+  dispatcher consults mode paths before row-keyed dispatch; the
+  renderer reads them to decorate the page. Modes are dismissed by
+  writing `Null` to the mode path, not by navigating.
 - **Renderer** — Pure `&mut dyn Reader → View` function, registered
-  against a cursor path.
+  against a cursor path. Reads both data-tree and display-tree
+  (UI-mode) state.
 - **Command** — Pure `&mut dyn Reader, &CommandCtx → Vec<Write>`
-  function, registered by `CommandId`.
+  function, registered by `CommandId`. Performs data-tree writes
+  directly when the work is synchronous; writes a trigger path only
+  when the work is fundamentally async.
 - **Binding** — `BindingEntry` mapping
   `(screen, cursor, mode, key) → CommandId`.
 - **Subscription** — Broker-side handler that fires on writes
-  matching its `PathPattern`. May return more writes
-  (cascade-bounded) or spawn async work.
+  matching its `PathPattern`. Either a *reactive observer* (watches
+  a real data path and does async/cross-cutting follow-up) or an
+  *async action trigger* (watches a `…/<verb>_now` path and performs
+  the requested async work). Never an RPC translator.
 - **Snapshot** — In-memory Reader populated by walking the broker's
   data; consumed by renderers and commands.
 - **Ascend rule** — A renderer's `NearestRegistered` or `ExitScreen`
   policy for Esc.
 - **Cascade bound** — Maximum recursion depth of
   subscription-triggered writes (default 64).
-- **`_request_exit`** — Sentinel boolean at
+- **`_request_exit`** — Cross-component signal at
   `ui/settings/_request_exit` written by `NavAscend` at `ExitScreen`;
-  the event loop reads it next iteration and switches screens.
-- **Action path** — A path like `…/test_now` or `…/_create_now` that
-  exists only to trigger a subscription. Writing `Null` (or a typed
-  payload for `_create_*` paths) fires the handler.
-- **Display tree** — The conceptual tree of "what's currently on
-  screen", inferred from cursor + data. Not a separate datastructure.
+  the event loop reads it next iteration and switches screens. One
+  of the framework's few legitimate sentinel paths — there is no
+  data-tree home for "please exit."
+- **Action trigger path** — A path like `…/test_now` or
+  `…/refresh_now` whose Null-write means "please perform this
+  async-only action on this instance." Subscription does the work.
+  Used only when the action has no synchronous form.
+- **Display tree** — The portion of the namespace under `ui/`
+  carrying UI state (cursors, selection, mode buffers). Distinct
+  from the data tree (`config/`, `secret/`) which carries facts
+  about the world. Both share the namespace; subscriptions watch
+  data-tree paths only.
+- **Data tree** — The portion of the namespace under `config/` and
+  `secret/` carrying facts about the world. A write here changes
+  the world; a `Null` write deletes the named record.

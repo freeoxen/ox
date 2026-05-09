@@ -8,21 +8,39 @@ after that, work from `howto.md`.
 The framework runs over three logically distinct trees, all keyed by
 `Path`:
 
-- **Data tree** — broker mounts (`config/`, `secret/`, `ui/`,
-  `settings/`). Persistent + ephemeral facts: AccountConfig, ApiKey,
-  validation_status, the `_request_exit` signal.
-- **Display tree** — inferred from the *cursor* + the data tree. What
-  the user is looking at right now: which page, which field is
-  focused, which row is selected. Not a separate datastructure;
-  selection pointers and focus indices are stored as data, the
-  renderer reads them and emits the View.
+- **Data tree** — broker mounts under `config/`, `secret/`, and the
+  data side of `settings/index/entries`. Persistent or
+  ephemeral *facts about the world*: AccountConfig, ApiKey,
+  ProviderConfig, model catalogs, validation status. A write to a
+  data-tree path is the act of changing the world: writing
+  `config/gate/accounts/<name>` creates an account, writing `Null`
+  deletes it.
+- **Display tree** — broker mounts under `ui/`. Where the user is
+  right now and what UI mode they're in: cursor, focused row,
+  selection pointers, edit buffer, pending-delete target,
+  composing-name buffer. Modes are values at named paths
+  (`ui/settings/new_account/buffer: Option<String>` is "the user is
+  composing a name"), not cursor scopes. The display tree is data
+  too — just data about the UI rather than the world.
 - **View tree** — constructed each frame by renderers. A curated
   `View` enum. In-memory only; no serde, no ratatui.
+
+The data tree and the display tree share one substrate (the
+namespace) but partition cleanly by prefix. Renderers read both;
+commands write both; subscriptions watch only data-tree paths (UI
+state is never the trigger for async work).
 
 ## The cursor
 
 `ui/settings/cursor: Path` holds the path of the page the user is
 currently viewing. Default: `oxpath!("settings", "index")`.
+
+The cursor is a *page* pointer, not a *mode* pointer. Pages are
+distinct screens you navigate to (`settings/index`,
+`settings/accounts`, `settings/models`). Modes are states the user
+is in within a page (composing a name, confirming a delete, editing
+a field) — those live as values at named UI-state paths, not as
+cursor scopes. See *Modeling state* below.
 
 Cursor moves are commands like everything else:
 
@@ -55,6 +73,12 @@ pub enum AscendRule {
 3. From the index itself, write `ui/settings/_request_exit: true`.
    The event loop reads that next frame and switches screens.
 
+`_request_exit` is one of a small handful of legitimate sentinel
+paths: it carries a cross-component signal (the event loop reads it
+to know when to switch screens) that genuinely has no other home. It
+is not a mode — there is no "exiting" state the user occupies. The
+write is the signal.
+
 ## Renderers
 
 A renderer is a pure function from a `Reader` to a `View`. It cannot
@@ -82,30 +106,166 @@ The registry maps cursor paths to renderers. Lookup is exact; misses
 fall back to `View::unknown_cursor_fallback(cursor)`, so the screen
 never panics.
 
-**Composition is value-shaped, not call-shaped.** A modal-over-page
-renderer recurses into the registry to build the background View,
-then wraps it:
+**Composition is value-shaped, not call-shaped.** A renderer reads
+both data-tree and display-tree state and emits a View that reflects
+both. The accordion's accounts section, for example, reads the list
+of real accounts from the data tree AND the inline-create buffer
+from the display tree, then composes them into a single rendered
+section:
 
 ```rust
 fn render(&self, ctx: &mut RenderCtx<'_>) -> View {
-    let bg = ctx.registry.render(
-        &oxpath!("settings", "accounts"),
-        ctx,
-    );
-    let fg = self.render_modal_body(ctx);
-    View::Modal {
-        background: Box::new(bg),
-        foreground: Box::new(fg),
-        dim: true,
+    let mut rows = self.real_account_rows(ctx);
+    if let Some(buffer) = read_typed::<String>(
+        ctx.data,
+        &oxpath!("ui", "settings", "new_account", "buffer"),
+    ) {
+        // Composing a new connection — render an inline name prompt
+        // at the top of the section, decorated with the live buffer.
+        rows.insert(0, inline_name_prompt(&buffer));
+    } else {
+        // Idle — render the static "+ New connection" affordance.
+        rows.insert(0, static_create_affordance());
     }
+    View::List { title: Some("Connections".into()), items: rows, selected: …  }
 }
 ```
 
-## The View tree
+The `+ New connection` affordance is *always* visible in some form,
+but it's a renderer-side decoration reading UI-mode state — never a
+synthetic row in the visible-rows projection, never a navigable
+cursor scope. Renderers that compose multi-page state (e.g. an index
+page that summarizes selection counts from sub-areas) can recurse
+into the registry; that's the same value-shaped composition.
 
-Lives in `crates/ox-view/src/lib.rs`. **No dependencies on `serde` or
-`ratatui`** — the crate is intentionally minimal. View is in-memory
-only in v1.
+## Modeling state: modes vs places
+
+The hardest design question in this framework is "where does this
+piece of state belong?" The answer follows from three commitments
+the framework makes — listed in `ui_framework.md` and elaborated
+here.
+
+### Mode is state, not place
+
+Cursor scopes are pages. Modes are states within a page. They look
+similar in the namespace (both are `Path`-typed values at well-known
+paths) but they carry different semantics and follow different
+conventions.
+
+When the user opens settings, the cursor is at `settings/index`.
+When they descend into accounts, the cursor moves to
+`settings/accounts`. When they press `a` to add a connection, the
+cursor *does not move*. They're still on the accounts page; they've
+just entered the "composing a new account" mode. That mode is a
+value at `ui/settings/new_account/buffer: Option<String>`. Empty or
+absent means not in the mode; present means in the mode with that
+buffer content.
+
+The renderer reads `new_account/buffer` and decorates the section
+accordingly (inline prompt vs. static affordance). The dispatcher
+reads it and routes Enter to the create action when the buffer is
+present. No cursor scope, no synthetic page, no `_new` sentinel.
+
+The same pattern handles every "user is in a sub-state of this
+page":
+
+| Mode | State path | Renderer behavior |
+|---|---|---|
+| Composing new account | `ui/settings/new_account/buffer: Option<String>` | Inline prompt |
+| Confirming a delete | `ui/settings/pending_delete: Option<AccountName>` | Inline confirmation banner |
+| Editing a field inline | `ui/settings/edit_buffer: Option<String>` + `edit_field_path: Option<Path>` | Live buffer overlaid on focused row |
+| Manual model entry | `ui/settings/manual_model: Option<ManualModelDraft>` | Inline three-stage form |
+
+When you reach for a cursor scope to encode "the user is doing X,"
+ask: would they *navigate* to that scope, or *enter* a state? If the
+answer is "enter a state," it's a mode and belongs at a UI-state
+path — not at a cursor scope. The Esc key on a mode dismisses the
+mode (writes `Null` to the state path); on a cursor scope it
+ascends. They're different verbs in the user's head, and they
+should be different verbs in the framework.
+
+### Display tree names only real things
+
+Every path in the display tree (`settings/…`, `ui/…`) names either:
+- a real thing in the data tree (e.g. `settings/accounts/<name>` is
+  the display identifier for the real account at
+  `config/gate/accounts/<name>`), OR
+- a UI-state value with semantic meaning (e.g.
+  `ui/settings/edit_buffer` carries the user's live typed input).
+
+There is no third category. There are no synthetic identifier paths
+(`settings/accounts/_new`, `settings/accounts/_delete`,
+`settings/models/<account>/_empty`). Synthetic UI affordances —
+"+ New connection", "no models — refresh", "+ add model manually" —
+are renderer-side decorations reading UI-mode state, not rows in the
+visible-rows projection.
+
+This is what makes path-equality dispatch safe. When `tree.activate`
+or `edit.commit` does `rows.iter().find(|r| r.path == field_path)`,
+every row in the projection names a real thing. There's no
+synthetic competing for the same namespace; no `_`-prefix reservation
+rule to maintain; no risk that a hand-edited TOML config could plant
+a real account at a path that the framework was using for a UI
+affordance.
+
+The visible-rows projection is the cleanest expression of this:
+
+```rust
+pub fn enumerate(data: &mut dyn Reader) -> Vec<VisibleRow> {
+    // Only data-tree-derived rows. The renderer composes synthetic
+    // affordances on top by reading UI-mode state separately.
+    self.real_account_rows(data)
+        .chain(self.real_model_rows(data))
+        .collect()
+}
+```
+
+### A write IS the action
+
+Subscriptions are reactive observers, not RPC handlers. The CLI's
+command handlers perform data writes directly:
+
+```rust
+// commands/account_model.rs — the CLI commits an account creation.
+fn commit_new_account(snap: &mut dyn Reader) -> Vec<Write> {
+    let name = read_buffer(snap);
+    vec![
+        // The actual create — a write to the canonical data path.
+        write_typed(&account_path(&name), &AccountConfig::default()),
+        // UI cascade — focus the new row, expand it, clear the buffer.
+        write_path(&focused_row_path(), &row_path(&name)),
+        update_expanded_to_include(&row_path(&name)),
+        clear_compose_buffer(),
+    ]
+}
+```
+
+A subscription watching `Prefix(config/gate/accounts)` may then react
+to the new entry by spawning a catalog fetch. That's
+async/cross-cutting work — exactly what subscriptions are for. The
+subscription does *not* "create the account in response to a
+sentinel write"; the CLI created the account directly, and the
+subscription is doing follow-up work that requires HTTP.
+
+The decision rule:
+
+- Can the work be done with a single synchronous write? → CLI writes
+  the data path directly. No subscription.
+- Does the work require async (HTTP, file IO) or touch many paths
+  with cross-cutting consistency? → CLI writes a data path; a
+  subscription watches that path and does the side effects.
+- Does the trigger represent "the user requested action X that can
+  *only* happen asynchronously" (connectivity test, catalog
+  refresh)? → A `…/test_now` or `…/refresh_now` Null-write trigger
+  is legitimate — there's no other shape for "please do this async
+  thing."
+
+The anti-pattern is: CLI writes a sentinel; subscription reads the
+sentinel; subscription does what the CLI could have done
+synchronously. That's RPC indirection through the substrate, and
+it's banned.
+
+
 
 ```rust
 pub enum View {
@@ -287,8 +447,34 @@ a shot.
 
 ## Subscriptions
 
-Subscriptions are the *only* place async work happens. They're a
-protocol layered over the broker's writes.
+Subscriptions are the *only* place async or cross-cutting work
+happens. They are reactive observers of data-tree changes — not RPC
+handlers. They watch path patterns; when a watched path changes,
+they respond with side effects (HTTP fetches, multi-path cleanup,
+file IO). They do not translate "please do X" sentinel writes into
+"do X" data writes — that's the CLI's job, and it does the data
+write directly.
+
+Two shapes earn a subscription:
+
+1. **Reactive observers**: watch a data-tree change and do follow-up.
+   "When a new entry appears under `config/gate/accounts/`, fetch
+   its catalog." `Prefix(config/gate/accounts)` watching new entries
+   is the natural shape.
+2. **Async action triggers**: the user requested work that can only
+   happen asynchronously. `config/gate/accounts/<name>/test_now`
+   carrying a `Null` write means "please run a connectivity test
+   for this account." The trigger is legitimate because the action
+   has no synchronous form.
+
+Anti-pattern: the CLI writes a sentinel like
+`config/gate/accounts/_create_now`, the subscription reads it,
+validates, and writes the AccountConfig that the CLI could have
+written directly. That's RPC indirection. The CLI should write the
+AccountConfig itself; the subscription, if any, should react to the
+new entry with whatever async follow-up is appropriate.
+
+The protocol shape itself:
 
 ```rust
 pub trait Subscription: Send + Sync {
@@ -340,11 +526,18 @@ Runtime contract:
 Day-one subscriptions live in `crates/ox-gate/src/subscriptions/`.
 See `reference.md` §Subscriptions for the full table.
 
-**Path convention**: per-instance actions live at
-`<collection>/{id}/<verb>_now`. Collection-level actions live at
-`<collection>/_<verb>_now` — leading `_` distinguishes sentinels from
-user identifiers (which are `PathComponent::try_new`-validated and
-never start with `_`).
+**Action-trigger path convention**: per-instance async actions live
+at `<collection>/{id}/<verb>_now` (e.g.
+`config/gate/accounts/<name>/test_now`). Writing `Null` to such a
+path means "please perform this async action on this instance"; the
+subscription handles it.
+
+There are no *collection-level* trigger paths — a request to act on
+the collection itself (e.g. "create a new account") is a write
+*to the collection*, not a write to a sentinel sibling. The CLI
+writes `config/gate/accounts/<name>` to create; a subscription
+watching `Prefix(config/gate/accounts)` reacts if any async
+follow-up is needed.
 
 ## The snapshot
 
@@ -391,10 +584,10 @@ translator — that cost is the point. It keeps the visual vocabulary
 curated.
 
 **Renderers pure** because they're easier to test, easier to compose
-(modal-over-page recurses through the registry), and impossible to
-desync from data (a stale render only happens if you held onto a
-snapshot too long, which the framework prevents by rebuilding it per
-frame).
+(by reading both data-tree and display-tree state and emitting a
+`View` that reflects both), and impossible to desync from data (a
+stale render only happens if you held onto a snapshot too long,
+which the framework prevents by rebuilding it per frame).
 
 **Commands pure** because the same argument applies and because
 testing them is `assert_eq!` over `Vec<Write>`. A command that
@@ -402,9 +595,42 @@ spawned async work would be untestable.
 
 **Subscriptions on the broker** rather than the renderer side because
 they need to react to writes from anywhere — not just the user's
-keypresses. The `t` key writes `…/test_now`; so does an
-auto-validation hook on save; so could a future `ox cli` admin
-command. All paths converge at the watched-pattern dispatch.
+keypresses. A network test fires from the `t` key today, from an
+auto-validation hook on save tomorrow, from a future `ox cli admin`
+command later. All paths converge at the watched-pattern dispatch.
 
 **Bindings as data** so v2 can let users edit them on disk. v1 ships
 them hardcoded but the shape is forward-compat.
+
+**Why mode is state, not place.** A cursor scope is a place the user
+*navigates to* with deliberate intent: settings → accounts → some
+detail. Modes — composing a name, confirming a delete, editing
+inline — aren't navigations; they're transient states the user
+enters and exits without leaving the page. Modeling them as cursor
+scopes meant adding a layer of indirection (a renderer to draw the
+modal, a binding scope to capture its keys, a sentinel path that
+isn't a real place) and pretending the user "went somewhere" when
+they didn't. Modeling them as state at named UI-state paths matches
+what's actually happening: a single page whose appearance and
+behavior depend on a few extra values.
+
+**Why the display tree names only real things.** Synthetic identifier
+paths (`settings/accounts/_new`, `…/_delete`,
+`settings/models/<account>/_empty`) put UI affordances and real
+domain identifiers in the same namespace, dispatched by string
+equality. That mostly works as long as no real domain identifier
+ever collides with a synthetic — but the convention has to be
+maintained at every write boundary in perpetuity, and a single
+hand-edited TOML config can pierce it. Pulling synthetic affordances
+out of the projection entirely (rendered by reading UI-mode state,
+never as rows) makes the namespace invariant structural rather than
+conventional. Path-equality dispatch becomes safe by construction.
+
+**Why a write IS the action.** The substrate already provides the
+verb. Wrapping a state change in a "request → subscription → state
+change" round-trip adds a name (the sentinel) and a translation
+layer (the subscription handler) without adding capability. When
+the subscription is doing real work (HTTP, multi-path cleanup), the
+indirection is justified by the work. When the subscription is
+*just translating*, it's pure overhead. The path-MVU model works
+because writes mean what they say; sentinel-as-RPC undermines that.
