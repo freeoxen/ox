@@ -29,6 +29,12 @@ scopes that are modes pretending to be pages, and `RowKind::AccountAdd`
 projection. This spec describes the migration that retires those
 shapes.
 
+A small framework primitive lands first — the focus model — that
+separates focus identity from the visible-rows projection (matching
+how Flutter, SwiftUI, Compose, and React Aria all handle focus, but
+with focus identity persisted in the broker as a `Path`). The
+substrate phases compose against it.
+
 The user-visible behavior does not change. The framework's substrate
 becomes consistent with what its docs now claim.
 
@@ -54,6 +60,10 @@ becomes consistent with what its docs now claim.
   (PrefixSuffix on `_now`). No subscription is a sentinel translator.
 - The `_`-prefix-name reservation rule (in `edit.commit` and
   `account_create.rs`) is unnecessary and removed.
+- The framework's focus model separates focus identity (a typed
+  `FocusId`) from rendering. Renderers tag widgets focusable
+  per-item; the dispatcher derives traversal by walking the View
+  tree. Decorations and affordances render but never focus.
 - After this spec lands, the convergence note in `ui_framework.md`
   can be removed.
 
@@ -132,7 +142,7 @@ After this work:
 |---|---|---|
 | `ui/settings/cursor` | `Path` | Currently-displayed page. Page navigation only. |
 | `ui/settings/_request_exit` | `bool` | Cross-component signal: switch screens. |
-| `ui/settings/focused_row` | `Path` | Identifier path of focused row in the visible-rows projection. |
+| `ui/settings/focused` | `Option<FocusId>` | Identity of the currently-focused widget; see §4.5. (Renamed from `focused_row`; new typed wrapper.) |
 | `ui/settings/expanded` | `Vec<String>` | Expanded accordion entries. |
 | `ui/settings/accounts/selected` | `Option<String>` | Selected account. |
 | `ui/settings/models/selected` | `Option<ModelKey>` | Selected (account, model). |
@@ -322,11 +332,180 @@ The mode-aware pass's existence is the only structural change to the
 dispatcher; everything else (cursor-scope binding lookup, command
 invocation, write dispatching) is unchanged.
 
+### 4.5 Framework primitive: focus model
+
+This is the only change to ox-view. It's a framework primitive
+update that the substrate phases (especially Phase 3 onward) build
+on, so it lands first as Phase 0.
+
+#### The pattern across declarative UI frameworks
+
+Flutter, SwiftUI, Jetpack Compose, and React Aria all separate
+focus from rendering. Different mechanisms — Flutter's parallel
+FocusNode tree, SwiftUI's `@FocusState` property bindings,
+Compose's `Modifier.focusable()`, React Aria's explicit `Item`
+identity — converge on the same architectural commitment:
+
+1. Focus is opt-in per component, not implicit.
+2. Focus state is separate from layout state.
+3. Traversal order is derived from the widget tree but customizable.
+4. Selection ≠ focus. Distinct concepts.
+
+Our framework today conflates focus with the visible-rows
+projection: `visible_rows::enumerate` is both the focus enumeration
+AND the data-derived row list, and `focused_row: Path` indexes by
+data-tree-derived path. That conflation is what makes "non-navigable
+decorations" awkward — there's no place in the projection for a
+thing that renders but isn't focusable.
+
+#### The StructFS-native version
+
+Focus identity is a `Path`, persisted in the broker. None of the
+four frameworks above can do this — their focus state is in-process
+memory. Ours can be observed by subscriptions, restored across
+crashes, and queried by other components. That's the substrate's
+gift.
+
+```rust
+/// Newtype wrapper signaling "this Path is a focus identity, not a
+/// data-tree path." Renderers tag focusable widgets with a FocusId;
+/// the dispatcher consults the View's focus enumeration to walk
+/// j/k navigation.
+pub struct FocusId(pub Path);
+
+pub struct ListItem {
+    pub primary:   String,
+    pub secondary: Option<String>,
+    pub badge:     Option<String>,
+    /// `Some` = focusable; the FocusId is this item's focus identity.
+    /// `None` = decoration; j/k skips it; cannot be the focus target.
+    pub focus:     Option<FocusId>,
+}
+
+impl View {
+    /// Walk the View tree and extract focusable items in traversal
+    /// order. Used by the dispatcher's j/k stepping.
+    pub fn focus_enumeration(&self) -> Vec<FocusId> { /* ... */ }
+}
+```
+
+`focused: Option<FocusId>` lives at `ui/settings/focused`
+(replacing `focused_row: Path`). The dispatcher's j/k logic:
+
+```rust
+fn step_focus(view: &View, focused: Option<&FocusId>, dir: Direction) -> Option<FocusId> {
+    let enumeration = view.focus_enumeration();
+    if enumeration.is_empty() { return None; }
+    let current = focused
+        .and_then(|f| enumeration.iter().position(|e| e == f))
+        .unwrap_or(0);
+    let next = match dir {
+        Direction::Next => (current + 1) % enumeration.len(),
+        Direction::Prev => (current + enumeration.len() - 1) % enumeration.len(),
+    };
+    Some(enumeration[next].clone())
+}
+```
+
+Renderers mark items as focusable by setting `focus: Some(...)`.
+The FocusId for a real account row is its display-tree path
+(`settings/accounts/<name>`); for any future focusable affordance,
+it's the affordance's UI-state path. Decorations and inline prompts
+emit `focus: None` and are simply skipped by traversal — no
+synthetic identity needed.
+
+#### What this gives us
+
+- **Real rows navigable, decorations not.** The "+ New connection"
+  affordance line emits as `focus: None`. j/k skips it. `focused`
+  always points at a real row.
+- **Activation by FocusId.** Pressing Enter reads `focused`,
+  resolves it through the View's focus enumeration, dispatches
+  based on what kind of FocusId it is. For `RowKind::Real`, that's
+  the existing path-equality dispatch.
+- **Affordances accessed by key, not navigation.** `a` is bound at
+  `Prefix(settings/accounts)` to `accounts.add` — pressing it from
+  any focused row in the section opens compose mode. The affordance
+  line is a discoverable visual hint; the actual entry point is the
+  keybinding.
+- **§6.1 dissolves.** "Where does focused_row point during compose
+  mode?" was awkward because the synthetic affordance row had no
+  good answer. With the focus model, `focused` points at whatever
+  real row was focused before compose was entered; compose mode is
+  driven by `new_account/buffer`, not by focus moving anywhere.
+
+#### What survives unchanged
+
+- `visible_rows::enumerate` keeps existing as a *renderer
+  convenience* — it produces the rows the index renderer maps into
+  ListItems. It's no longer the source of truth for navigation;
+  navigation is the View's focus enumeration. Renderers that want
+  to compose lists by walking visible_rows still can.
+- The View enum's variant set is unchanged. Only `ListItem` gains a
+  field. (Future widgets that need focus distinction — e.g.
+  `FormRow` — will gain similar fields when the need arrives. YAGNI
+  for now.)
+- The translator (`view_render.rs`) doesn't need to know about
+  focus — `focused` is dispatcher state, not render state. (The
+  renderer chooses how to highlight the focused item by reading
+  `focused` and matching it against ListItem.focus when emitting
+  the `selected: Option<usize>` index.)
+
+#### Compared to the four frameworks
+
+- **Flutter**: same separation of focus from rendering; ours is
+  derived from the View tree (one source) where Flutter has two
+  parallel trees.
+- **SwiftUI**: same opt-in-per-widget shape (`.focused()` modifier
+  ↔ our `focus: Some(...)` field).
+- **Compose**: same per-widget annotation pattern
+  (`Modifier.focusable()` ↔ our `focus: Some(...)`).
+- **React Aria**: same explicit identity for focusable items, same
+  separability of selection and focus.
+- **Unique to us**: focus identity is a `Path`, persisted in the
+  broker. Survives crashes, observable by subscriptions,
+  cross-component shareable.
+
 ## 5. Migration plan
 
-The work decomposes into seven phases. Each phase ships
-independently, leaves the workspace green, and does not depend on
-later phases for correctness.
+The work decomposes into a framework-primitive Phase 0 and seven
+substrate phases. Each phase ships independently, leaves the
+workspace green, and does not depend on later phases for
+correctness. Phase 0 lands first because Phases 3, 5, and 6
+compose against the focus model it introduces.
+
+### Phase 0: Land the focus model framework primitive
+
+Adds the `FocusId` newtype, the `focus: Option<FocusId>` field on
+`ListItem`, and the `View::focus_enumeration()` walk. Renames
+`ui/settings/focused_row: Path` to `ui/settings/focused: Option<FocusId>`.
+Updates the dispatcher's j/k stepping to walk `focus_enumeration`.
+
+After:
+
+- `ox-view::ListItem` gains the `focus` field. Existing call sites
+  initialize with `focus: Some(FocusId(<row's display path>))` for
+  real rows. Add the `View::focus_enumeration` method.
+- The dispatcher's `tree.next` / `tree.prev` switch from
+  `position_of(visible_rows, focused_row)` to
+  `view.focus_enumeration().position(|f| f == &focused)`. The
+  step-and-write logic is otherwise unchanged.
+- `ui/settings/focused_row: Path` becomes `ui/settings/focused: Option<FocusId>`.
+  All callers update the path string and the type.
+- `tree.activate` resolves the focused FocusId back to a row by
+  matching the FocusId against the visible-rows projection (via
+  the renderer's mapping from rows to ListItem focus values). The
+  existing `RowKind` dispatch follows from there.
+- The renderer continues to map `visible_rows::enumerate` into
+  `ListItem`s — it just sets `focus: Some(FocusId(row.path.clone()))`
+  on each. No structural change to the projection in this phase.
+- Tests: substantial, but mechanical. Existing tests asserting
+  on `focused_row` writes need the new path + new type. New tests
+  pin the focus_enumeration walk for representative View shapes.
+
+This phase doesn't touch any synthetic rows, mode states, or
+sentinels. It's pure framework work that subsequent phases build
+on.
 
 ### Phase 1: Eliminate `_create_now` and `AccountCreateSubscription`
 
@@ -384,25 +563,30 @@ that with `ui/settings/new_account/buffer: Option<String>`.
 After:
 
 - `accounts.add` writes `Some("")` to `new_account/buffer` (and
-  ensures the accounts section is in the expanded set, focuses the
-  affordance row — see below). Does not write `edit_mode`,
-  `edit_field_path`, or `edit_buffer`.
+  ensures the accounts section is in the expanded set). Does not
+  write `edit_mode`, `edit_field_path`, or `edit_buffer`. Does not
+  move `focused`.
 - The dispatcher's mode-aware pass handles `new_account/buffer`:
   printable → append; Backspace → pop; Enter → commit-create; Esc →
   clear.
 - Commit-create writes `AccountConfig` to
-  `config/gate/accounts/<name>`, plus UI cascade (focus the new row,
-  expand, clear `new_account/buffer`).
+  `config/gate/accounts/<name>`, plus UI cascade (write `focused` to
+  the new row's FocusId, expand, clear `new_account/buffer`).
 - `RowKind::AccountAdd` is dropped from the visible-rows enum and
   every match site that handles it.
 - The renderer (`index.rs::render`) reads `new_account/buffer` and
-  decorates the accounts section header: when `Some(buffer)`,
-  prepend an inline `Name▸ <buffer>▏` line; when `None`, prepend a
-  static `+ New connection` affordance line.
-- `focused_row` for the affordance: TBD — needs decision. See §6.
+  decorates the accounts section: when `Some(buffer)`, prepend an
+  inline `Name▸ <buffer>▏` line emitted as
+  `ListItem { focus: None, … }`; when `None`, prepend a static
+  `+ New connection` affordance line, also `focus: None`. Either
+  way the affordance is renderer decoration, not a row in the
+  projection, and not in the focus enumeration.
 
 The "no synthetic display rows" invariant is satisfied: the
 affordance is renderer decoration, not a row in the projection.
+Phase 0's focus model is what makes this clean — without it the
+affordance line would either need a synthetic FocusId or sit
+awkwardly outside the navigable list.
 
 ### Phase 4: Lift delete-confirm into `pending_delete` mode state
 
@@ -486,10 +670,11 @@ After:
   while focused on the connection." The `r` keystroke is already
   bound at `Prefix(settings/models)` to `account.refresh`; the
   affordance text just describes what's already available.
-- `focused_row` cannot point at a non-existent row, so `j`/`k`
-  navigation no longer lands on the empty-state line. The user
-  navigates to the connection itself, presses `r`. UX is slightly
-  different but cleaner.
+- The empty-state line emits as `ListItem { focus: None, … }` —
+  Phase 0's focus model skips it during j/k traversal. `focused`
+  always points at a real model row or its parent connection. The
+  user navigates to the connection itself, presses `r`. UX is
+  slightly different but cleaner.
 - Tests update.
 
 ### Phase 7: Cleanup
@@ -509,41 +694,38 @@ After:
   original purpose (sanitizing TOML-loaded names with hyphens).
 - The convergence note in `ui_framework.md` is removed.
 - `CreateAccountRequest` type: deleted if no callers remain.
-- `View::Modal` enum variant: deleted (decision deferred from
-  Phase 4).
-- `dim_buffer`: confirmed deletable in Phase 4; remove if not yet
-  done.
+
+`View::Modal`, `dim_buffer`, and the modal rendering primitives
+**stay** (per §6.2). Future modal use cases follow modes-as-state
+for their state shape and use these primitives for their visual
+treatment.
 
 ## 6. Open design questions
 
-### 6.1 Where does `focused_row` point during compose-new-account mode?
+### 6.1 Where does focus point during compose-new-account mode? — resolved
 
-The `+ New connection` affordance line is a renderer decoration, not
-a row in the projection. But `focused_row` and `j`/`k` navigation
-expect rows in the projection.
+Resolved by §4.5's focus model. The "+ New connection" affordance
+line emits as `ListItem { focus: None, … }` — j/k traversal skips
+it. `focused: Option<FocusId>` keeps pointing at whatever real row
+was focused before compose was entered. Compose mode is driven by
+`new_account/buffer`; the mode-aware pass intercepts printable keys
++ Backspace + Enter + Esc while the buffer is set; j/k continues to
+navigate real rows in the projection (no-op or freely allowed
+depending on UX choice — see below).
 
-Options:
+Sub-question: what should j/k do during compose mode? Three
+plausible answers:
 
-- **A. The affordance has its own UI-state path.** Something like
-  `ui/settings/affordance_focused: bool`. When `new_account/buffer`
-  is set, the renderer auto-focuses the affordance and `j`/`k` are
-  intercepted by the mode-aware pass. Heavyweight.
-- **B. `focused_row` is `None` while in compose mode.** The renderer
-  understands "compose mode + no focused row" as "focus the
-  affordance line." `j`/`k` are intercepted by the mode-aware pass
-  (no-op or some other behavior). Simpler.
-- **C. `focused_row` points at the first real account row even
-  during compose mode.** The user enters compose mode by pressing
-  `a`, types in the affordance line at the top of the section, and
-  the focused row indicator is somewhere irrelevant. `j`/`k` still
-  navigate real rows during compose mode. Simplest; least
-  consistent.
+- **No-op.** Once you're typing, j/k chars get appended to the
+  buffer (they're printable). Already handled by the mode-aware
+  pass — no extra work.
+- **Continue navigating real rows.** The user can scroll the list
+  underneath while composing. Visually distracting but harmless.
+- **Cancel compose mode and navigate.** "Pressing j escapes the
+  prompt." Surprises users who expect modes to be explicit.
 
-Recommendation: B. The mode-aware pass already intercepts j/k while
-in mode (no-op until the user commits or cancels). `focused_row =
-None` during compose mode is honest: there is no focused real row.
-The renderer renders the affordance with its own visual focus
-treatment.
+Recommendation: no-op (j/k as printable chars get appended). Matches
+how every other inline-edit field behaves.
 
 ### 6.2 Mutual exclusion of modes — guarded or trusted?
 
@@ -583,6 +765,14 @@ not because the modal pattern itself is being walked back.
 Unit tests:
 - Per-phase, the existing tests are updated to reflect new shapes.
   Most updates are mechanical (path renames, write-shape changes).
+- Phase 0 adds `View::focus_enumeration` tests pinning that the
+  enumeration walks ListItems in order, includes only items with
+  `focus: Some(...)`, and produces a stable order across renders
+  with the same input data.
+- Phase 0 also pins the dispatcher's j/k stepping: stepping past
+  the end wraps; stepping with `focused: None` lands at index 0;
+  stepping when the prior `focused` is no longer in the enumeration
+  (row vanished) lands at index 0.
 - New tests pin the mode-aware dispatch: each mode's open / commit /
   cancel produces the expected writes; opening any mode while
   another is active clears the other.
@@ -592,11 +782,12 @@ Unit tests:
 
 E2E tests (`crates/ox-cli/tests/settings_e2e.rs`):
 - `add_account_create_flow` — already rewritten in the inline branch.
-  Needs updating for Phase 1 (no more sentinel polling) and Phase 3
-  (mode-state path instead of `edit_field_path`).
-- `add_connection_inline_ghost_row_accepts_typing` — Phase 3 changes
-  the mode-state path; the test's setup and snapshot assertions
-  update.
+  Needs updating for Phase 0 (focused → FocusId), Phase 1 (no more
+  sentinel polling), and Phase 3 (mode-state path instead of
+  `edit_field_path`).
+- `add_connection_inline_ghost_row_accepts_typing` — Phase 0 changes
+  the focused-state path + type; Phase 3 changes the mode-state
+  path; the test's setup and snapshot assertions update.
 - `delete_account_flow` — Phase 4 reshapes this entirely. The test
   drives `d` to open `pending_delete`, asserts the inline banner
   renders, presses `y`, asserts the account is gone.
@@ -605,6 +796,9 @@ E2E tests (`crates/ox-cli/tests/settings_e2e.rs`):
 - New test: `model_empty_state_refreshes_on_r` — confirms the
   decoration line appears for accounts with empty catalogs and that
   `r` triggers refresh.
+- New test (Phase 0): `j_skips_decorations` — confirms that j/k
+  navigation lands only on items with `focus: Some(...)`, never on
+  decorations like banners or affordances.
 
 Snapshot tests:
 - The accordion snapshot tests pick up new shapes for the
@@ -643,6 +837,8 @@ see §6.3.
 UI-state paths (no longer written/read):
 - `ui/settings/edit_field_path` and `ui/settings/edit_buffer` *for
   AccountAdd usage* — the existing-field-edit usage stays.
+- `ui/settings/focused_row: Path` — replaced by
+  `ui/settings/focused: Option<FocusId>` (Phase 0).
 
 The `manual_model/*` sub-tree paths stay (the form's state shape is
 unchanged). What changes there is conceptual: `manual_model/account`
@@ -660,6 +856,11 @@ Tests:
 
 ## 9. What gets added
 
+Framework (`ox-view`) — Phase 0:
+- `FocusId(pub Path)` newtype.
+- `ListItem.focus: Option<FocusId>` field.
+- `View::focus_enumeration(&self) -> Vec<FocusId>` method.
+
 Types (`ox-types::settings`):
 - `ManualModelStage` enum (replaces the stringly-typed stage value
   at `manual_model/stage`).
@@ -676,17 +877,23 @@ Dispatcher:
   serialized to the broker).
 - A new top-of-`dispatch_settings_key` pass that consults
   `active_mode` before row-keyed dispatch.
+- j/k stepping switches from `position_of(visible_rows, focused_row)`
+  to `view.focus_enumeration().position(|f| f == &focused)` (Phase 0).
 
 UI-state paths:
+- `ui/settings/focused: Option<FocusId>` — Phase 0 (replaces
+  `focused_row: Path`).
 - `ui/settings/new_account/buffer` — Phase 3.
 - `ui/settings/pending_delete` — Phase 4.
 - The `manual_model/*` sub-tree's role formalizes — Phase 5 — but
   no new paths.
 
 Renderers:
+- All ListItem-emitting renderers gain `focus: Some(FocusId(...))`
+  for navigable items, `focus: None` for decorations (Phase 0).
 - New decoration logic in `index.rs::render` reading the mode-state
   paths and the per-account model count, composing inline
-  affordances and prompts.
+  affordances and prompts (Phase 3-6).
 
 ## 10. Risks
 
@@ -713,18 +920,40 @@ Renderers:
   `_create_now` or reads `manual_model/buffer`. Mitigation: each
   phase begins with a `grep` audit; the implementer reports the hit
   list before deletion.
+- **Phase 0 ripples through every focus-keyed test.** Renaming
+  `focused_row → focused` and changing the type from `Path` to
+  `Option<FocusId>` touches a large fraction of the existing test
+  suite — easily 50+ assertions. Mitigation: Phase 0 is a single
+  cohesive PR; all tests update in one commit; CI gates merge.
 
 ## 11. Execution
 
 Each phase becomes its own implementation plan
 (`docs/superpowers/plans/`). The plans are independent and can land
-in the order the phases describe (1 → 7) or paused/reordered as
-needed (Phases 5 and 6 are independent of 3 and 4 once 1+2 land).
+in the order the phases describe (Phase 0 → Phase 1 → … → Phase 7)
+or selectively reordered with caveats:
 
-Phase 1 is the safest first move and has the largest leverage —
-removing the `_create_now` sentinel and `AccountCreateSubscription`
-also retires the most prominent example of the anti-pattern in the
-codebase.
+- **Phase 0 lands first.** Phases 3, 5, and 6 explicitly compose
+  against the focus model — the `focus: None` decoration shape is
+  load-bearing for the affordance + empty-state + manual-model
+  renderer logic. Trying to land Phase 3 against the old
+  visible_rows-as-focus-source model means re-introducing the
+  workarounds the focus model retires.
+- **Phases 1 and 2 are independent of Phase 0.** They can land in
+  parallel with Phase 0 if convenient (different files), but
+  conventional ordering puts Phase 0 first to clear the framework
+  primitive question.
+- **Phases 3 and 4 are independent of each other** but both depend
+  on Phase 0.
+- **Phases 5 and 6 are independent of 3 and 4** but depend on
+  Phase 0.
+- **Phase 7 lands last.** It depends on every prior phase's
+  cleanup having happened.
+
+Phase 0 is the safest first move strategically — it's pure
+framework work, no behavior change, and unlocks every subsequent
+phase. Phase 1 retires the most prominent example of the
+sentinel-as-RPC anti-pattern in the codebase.
 
 After Phase 7 lands, the convergence note in `ui_framework.md`
 is removed and the framework docs no longer carry a "the code
