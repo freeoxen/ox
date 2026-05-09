@@ -139,38 +139,39 @@ After this work:
 | `ui/global/banner` | `GlobalBanner` | App-wide banner. |
 | `settings/index/entries/{id}` | `SettingsIndexEntry` | Index page row metadata. |
 
-UI mode state (presence indicates the user is in that mode; `Null`
-clears the mode):
+UI mode state. A mode's state is one or more values at a named
+UI-state path or sub-tree. Single-buffer modes live at a single
+path with `Option<T>` typing; the type's presence indicates the
+mode is active. Multi-field modes live at a sub-tree with one path
+serving as the discriminator (its presence indicates the mode is
+active); the other paths carry the rest of the form's state.
+Either shape is fine — pick the smallest one that fits the data.
+The substrate's strength is per-path granularity; a keystroke
+should be one path write, not a re-serialize-the-whole-struct.
+
+Single-buffer modes:
 
 | Path | Shape | Mode |
 |---|---|---|
-| `ui/settings/new_account/buffer` | `Option<String>` | Composing a new account name. |
-| `ui/settings/pending_delete` | `Option<String>` | Showing delete confirmation for that account. |
+| `ui/settings/new_account/buffer` | `Option<String>` | Composing a new account name. Discriminator: presence of buffer. |
+| `ui/settings/pending_delete` | `Option<String>` | Showing delete confirmation for the named account. Discriminator: presence of value. |
 | `ui/settings/edit_buffer` | `Option<String>` | Inline-editing a real field; carries live typed text. |
 | `ui/settings/edit_field_path` | `Option<Path>` | Which row's field is being edited (when `edit_buffer` set). |
-| `ui/settings/manual_model` | `Option<ManualModelDraft>` | Composing a new model entry inline. |
 
-What's gone:
+Multi-field mode (manual model entry; existing scattered-atoms shape
+preserved, with a designated discriminator path):
 
-- The `settings/accounts/_new` cursor scope — replaced by
-  `new_account/buffer` mode state.
-- The `settings/accounts/_delete` cursor scope — replaced by
-  `pending_delete` mode state.
-- The `ui/settings/manual_model/{stage,buffer,staged_id,staged_ctx,account}`
-  scattered atoms — collapsed into a single typed `ManualModelDraft`.
+| Path | Shape | Mode role |
+|---|---|---|
+| `ui/settings/manual_model/account` | `Option<String>` | **Discriminator.** Presence = in mode; carries the target account name. |
+| `ui/settings/manual_model/stage` | `ManualModelStage` | Current stage of the three-step form. |
+| `ui/settings/manual_model/buffer` | `String` | Live typed text for the current stage. |
+| `ui/settings/manual_model/staged_id` | `Option<String>` | Value committed in stage 1 (id). |
+| `ui/settings/manual_model/staged_ctx` | `Option<u32>` | Value committed in stage 2 (max_context_size). |
 
-`ManualModelDraft` is a new type in `ox-types::settings`:
+`ManualModelStage` is the only new type, in `ox-types::settings`:
 
 ```rust
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ManualModelDraft {
-    pub account:    String,
-    pub stage:      ManualModelStage,
-    pub buffer:     String,
-    pub staged_id:  Option<String>,
-    pub staged_ctx: Option<u32>,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ManualModelStage {
     Id,
@@ -178,6 +179,22 @@ pub enum ManualModelStage {
     Out,
 }
 ```
+
+(Today the stage path holds a `String` matched against `"id"` /
+`"ctx"` / `"out"`; promoting to a typed enum is a small win without
+collapsing the rest of the form into one record.)
+
+What's gone:
+
+- The `settings/accounts/_new` cursor scope — replaced by
+  `new_account/buffer` mode state.
+- The `settings/accounts/_delete` cursor scope — replaced by
+  `pending_delete` mode state.
+
+The `manual_model/*` sub-tree keeps its scattered-atoms shape; the
+only changes there are (a) `manual_model/account` is now formally
+the mode discriminator (the dispatcher reads it to determine mode)
+and (b) `stage` becomes typed.
 
 ### 4.3 Subscriptions
 
@@ -265,12 +282,21 @@ the enum is just a typed view at dispatch time):
 
 ```rust
 enum ActiveMode {
-    ComposingNewAccount { buffer: String },
-    ConfirmingDelete    { target: String },
-    EditingField        { field_path: Path, buffer: String },
-    ComposingManualModel { draft: ManualModelDraft },
+    ComposingNewAccount  { buffer: String },
+    ConfirmingDelete     { target: String },
+    EditingField         { field_path: Path, buffer: String },
+    ComposingManualModel { account: String, stage: ManualModelStage,
+                           buffer: String, staged_id: Option<String>,
+                           staged_ctx: Option<u32> },
 }
 ```
+
+`ComposingManualModel` is reconstructed by reading each
+`manual_model/*` path; the variant just gives the dispatcher a typed
+view. This is one extra read per keystroke vs. a single typed-sum
+read, but each read is cheap and the per-path shape keeps individual
+keystrokes as single-path writes. The trade-off favors the substrate
+over the dispatcher's read count.
 
 Priority order matches the order in `active_mode()`. The first match
 wins. If none match, the dispatcher falls through to row-keyed
@@ -392,44 +418,57 @@ After:
   `y` → write `Null` to `config/gate/accounts/<name>` + clear
   pending; `n` / `Esc` → clear pending.
 - `crates/ox-cli/src/settings/renderers/overlay_delete_account.rs`
-  is deleted.
+  is deleted (the renderer is the cursor-scope artifact, not the
+  modal pattern itself).
 - The `_delete` cursor scope's bindings are deleted from
   `bindings.rs`. The `accounts.cancel` command becomes the
   cancel-pending action (rename or repurpose).
-- `dim_buffer` in `view_render.rs` is deleted (no remaining
-  modal users).
-- `View::Modal` enum variant: kept if any future page-level modal is
-  anticipated, deleted if we're committed to the no-modal direction.
-  Recommendation: delete. The framework's principles imply
-  page-level modals are rare; bringing them back would be a
-  considered design choice that re-adds the variant.
-- The renderer composes a `View::Banner` (or similar) inline above
-  the accounts list when `pending_delete` is set.
+- The renderer composes an inline confirmation banner above the
+  accounts list when `pending_delete` is set. (Inline rather than
+  modal — the action is small and the user's already on the
+  accounts page.)
+- `View::Modal`, `dim_buffer`, and the modal rendering primitives
+  in `view_render.rs` **are kept**. Modals are a legitimate
+  rendering pattern and we expect to use them for future features
+  (help screens, larger interactive prompts, anything that genuinely
+  earns a centered overlay). The anti-pattern was driving modals
+  via cursor scopes and dedicated renderers; the variant itself is
+  fine. Future modal use cases follow the modes-as-state pattern: a
+  UI-state path indicates "this modal is showing"; the renderer
+  reads that path and composes
+  `View::Modal { background: <current_page>, foreground: <modal_body>, dim: true }`;
+  bindings while the modal is showing are mode-aware bindings, not
+  cursor-scope bindings. Phase 7 doesn't revisit this decision.
 - Tests update.
 
-### Phase 5: Lift manual-model into `manual_model` typed sum
+### Phase 5: Formalize `manual_model` as a mode + drop `ModelAddManual`
 
-The current `manual_model/{stage,buffer,staged_id,staged_ctx,account}`
-scattered atoms become a single typed value at
-`ui/settings/manual_model: Option<ManualModelDraft>`.
+The `manual_model/*` sub-tree's existing scattered-atoms shape stays.
+Three changes:
 
-After:
+1. `manual_model/account` is formally the mode discriminator. The
+   dispatcher's mode-aware pass reads it to determine "in mode";
+   when set, route per-stage as today.
+2. `manual_model/stage` becomes typed (`ManualModelStage` enum) instead
+   of a stringly-typed `"id"` / `"ctx"` / `"out"` value.
+3. `RowKind::ModelAddManual` is dropped from `visible_rows`. The
+   renderer reads `manual_model/account` to detect "in mode" and
+   composes the inline three-stage form decoration when set; when
+   unset, renders a static `+ add model manually` affordance line.
 
-- `ManualModelDraft` and `ManualModelStage` types added to
-  `ox-types::settings`.
-- All reads/writes of `manual_model/*` become reads/writes of
-  `ui/settings/manual_model: Option<ManualModelDraft>`.
-- The dispatcher's mode-aware pass handles `manual_model`:
-  per-stage routing as today.
-- `RowKind::ModelAddManual` is dropped.
-- The renderer reads `manual_model` and decorates the models section
-  with the inline three-stage form (when `Some`) or the static
-  `+ add model manually` affordance (when `None`).
-- `begin_manual_model` command writes `Some(ManualModelDraft {
-  account: <name>, stage: Id, buffer: String::new(), staged_id: None,
-  staged_ctx: None })`.
-- Tests update — substantial rewrite of `manual_model_*` tests in
-  `edit.rs`.
+The `manual_model/*` paths themselves don't change shape (still five
+paths under the sub-tree). The dispatcher and renderer just consult
+the discriminator instead of inferring mode from row identity.
+
+`begin_manual_model` already writes the right paths; this phase
+mostly removes the synthetic-row plumbing rather than restructuring
+the form's state. The mode-aware dispatch pass replaces the existing
+"focused row is `RowKind::ModelAddManual` so route to manual_model
+commit" flow.
+
+Tests: update `manual_model_*` tests in `edit.rs` to reflect the new
+discriminator-driven mode-detection (vs. the previous focused-row
+detection).
 
 ### Phase 6: Lift model empty-state into renderer decoration
 
@@ -519,17 +558,25 @@ boilerplate without preventing the bug class (the bug is in the
 command, not in the dispatcher). Tests that verify "opening mode X
 clears mode Y" catch regressions where they happen.
 
-### 6.3 `View::Modal` variant — keep or delete?
+### 6.3 `View::Modal` variant — resolved: kept
 
-Phase 4 deletes the last user. Should the variant stay (in case a
-future page-level modal is added) or go (forcing future modals to
-re-justify the variant)?
+Decided after the spec's first review: `View::Modal`, `dim_buffer`,
+and the framework's modal rendering primitives stay. Modals are
+legitimate UI for help screens, complex prompts, or anything that
+genuinely earns a centered overlay; deleting the variant would
+force a future feature to re-justify it from scratch.
 
-Recommendation: delete. The framework's principles imply page-level
-modals are rare and require deliberate design. If a future feature
-needs one, the design discussion will surface whether a real modal
-or another mode-state pattern is the right shape; the variant
-re-appears as part of that decision.
+The anti-pattern wasn't the variant — it was driving modals via
+cursor scopes and dedicated cursor-scope renderers. Future modal
+use cases follow modes-as-state: a UI-state path indicates the
+modal is showing; the renderer reads it and composes a
+`View::Modal { background, foreground, dim }`; bindings while the
+modal is showing are mode-aware, not cursor-scope. The variant is
+a rendering primitive; modes-as-state is the state shape.
+
+Phase 4 retires the only existing modal renderer
+(`overlay_delete_account.rs`) because it was cursor-scope-driven —
+not because the modal pattern itself is being walked back.
 
 ## 7. Test strategy
 
@@ -569,7 +616,7 @@ Snapshot tests:
 
 Files:
 - `crates/ox-cli/src/settings/renderers/overlay_delete_account.rs`
-- (Phase 7) any `dim_buffer`-related code if not removed in Phase 4
+  (Phase 4)
 
 Subscriptions:
 - `AccountCreateSubscription` (Phase 1)
@@ -587,17 +634,20 @@ Types:
 - `RowKind::AccountAdd` (Phase 3)
 - `RowKind::ModelAddManual` (Phase 5)
 - `RowKind::ModelEmptyState` (Phase 6)
-- `View::Modal` variant (Phase 7, decision deferred)
 - `CreateAccountRequest` (Phase 7, if no callers remain)
 
+`View::Modal`, `dim_buffer`, and the modal rendering primitives are
+**not** deleted. They remain available for future modal use cases;
+see §6.3.
+
 UI-state paths (no longer written/read):
-- `ui/settings/manual_model/stage`
-- `ui/settings/manual_model/buffer`
-- `ui/settings/manual_model/staged_id`
-- `ui/settings/manual_model/staged_ctx`
-- `ui/settings/manual_model/account`
 - `ui/settings/edit_field_path` and `ui/settings/edit_buffer` *for
   AccountAdd usage* — the existing-field-edit usage stays.
+
+The `manual_model/*` sub-tree paths stay (the form's state shape is
+unchanged). What changes there is conceptual: `manual_model/account`
+is formally the mode discriminator, and `manual_model/stage` is
+typed.
 
 Data-tree paths (no longer written/read):
 - `config/gate/accounts/_create_now`
@@ -611,8 +661,8 @@ Tests:
 ## 9. What gets added
 
 Types (`ox-types::settings`):
-- `ManualModelDraft`
-- `ManualModelStage`
+- `ManualModelStage` enum (replaces the stringly-typed stage value
+  at `manual_model/stage`).
 
 Subscriptions:
 - `CatalogFetchOnCreateSubscription` (Phase 1)
@@ -622,18 +672,21 @@ Subscriptions:
 Dispatcher:
 - `active_mode(snap: &mut dyn Reader) -> Option<ActiveMode>` helper
   in `crates/ox-cli/src/settings/dispatch.rs`.
-- `ActiveMode` enum in the same file.
+- `ActiveMode` enum in the same file (dispatcher-internal; not
+  serialized to the broker).
 - A new top-of-`dispatch_settings_key` pass that consults
   `active_mode` before row-keyed dispatch.
 
 UI-state paths:
-- `ui/settings/new_account/buffer`
-- `ui/settings/pending_delete`
-- `ui/settings/manual_model` (typed)
+- `ui/settings/new_account/buffer` — Phase 3.
+- `ui/settings/pending_delete` — Phase 4.
+- The `manual_model/*` sub-tree's role formalizes — Phase 5 — but
+  no new paths.
 
 Renderers:
-- New decoration logic in `index.rs::render` reading the three
-  mode-state paths and the per-account model count.
+- New decoration logic in `index.rs::render` reading the mode-state
+  paths and the per-account model count, composing inline
+  affordances and prompts.
 
 ## 10. Risks
 
