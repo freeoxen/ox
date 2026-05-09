@@ -1,13 +1,15 @@
 //! Account/model/field commands — the bulk of day-one settings actions.
 //!
-//! These commands cover: cursor moves to overlay pages, account create /
-//! delete (via subscription requests), test/refresh triggers, primary-model
-//! binding, an app-save trigger, field focus cycling, in-place text editing,
-//! and selector cycling for Protocol / Auth.
+//! These commands cover: opening compose/delete-confirm modes,
+//! test/refresh triggers, primary-model binding, an app-save trigger,
+//! field focus cycling, in-place text editing, and selector cycling
+//! for Protocol / Auth.
 //!
-//! All commands are pure (`run` returns `Vec<Write>`); subscriptions in
-//! Phase N pick up the request paths (`…/_create_now`, `…/delete_now`,
-//! `…/test_now`, `…/refresh_now`, `config/save`) and do the I/O.
+//! All commands are pure (`run` returns `Vec<Write>`). Async-only
+//! actions (test, refresh, save) write `…/<verb>_now` triggers that
+//! gate-side subscriptions consume. Synchronous actions (account
+//! create / delete) are direct writes from the CLI; they don't need
+//! a subscription middle-layer.
 
 use ox_path::oxpath;
 use ox_types::Screen;
