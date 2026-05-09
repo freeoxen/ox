@@ -1238,8 +1238,7 @@ async fn add_connection_inline_ghost_row_accepts_typing() {
     insta::assert_snapshot!("new_connection_inline_just_opened", &frame_after_a);
 
     let mut prior_frame = frame_after_a.clone();
-    let mut snap_idx = 1;
-    for ch in "Test".chars() {
+    for (snap_idx, ch) in (1..).zip("Test".chars()) {
         let key = ch.to_string();
         assert!(
             matches!(h.dispatch(&key).await, KeyDispatchOutcome::Handled),
@@ -1254,7 +1253,6 @@ async fn add_connection_inline_ghost_row_accepts_typing() {
              visible change in the rendered frame"
         );
         prior_frame = frame;
-        snap_idx += 1;
     }
 
     // The final frame's inline buffer must contain the full word —
