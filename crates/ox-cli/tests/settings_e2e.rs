@@ -433,44 +433,28 @@ async fn add_account_create_flow() {
         );
     }
 
-    // `Enter` runs edit.commit, which writes a CreateAccountRequest to
-    // config/gate/accounts/_create_now. AccountCreateSubscription picks
-    // it up cascade-bounded; poll for the materialized account.
+    // Enter routes through edit.commit, which writes the AccountConfig
+    // directly. The CLI's writes are synchronous; subsequent reads see
+    // the materialized state.
     assert!(matches!(
         h.dispatch("Enter").await,
         KeyDispatchOutcome::Handled
     ));
 
     let comp = ox_kernel::PathComponent::try_new("anthropic_personal").unwrap();
-    let account = poll_until(|| async {
-        h.client
-            .read_typed::<AccountConfig>(&oxpath!("config", "gate", "accounts", comp.clone()))
-            .await
-            .ok()
-            .flatten()
-    })
-    .await;
-    let account = account.expect("AccountCreateSubscription should materialize the account");
+    let account: AccountConfig = h
+        .client
+        .read_typed(&oxpath!("config", "gate", "accounts", comp.clone()))
+        .await
+        .expect("read account record")
+        .expect("account record present after synchronous create");
     assert_eq!(account.provider, "anthropic");
 
-    // The subscription clears `_create_now`, lands the cursor back at
-    // settings/index (the accordion), and points focused at the new
-    // account so the user sees their connection selected. Poll because
-    // the subscription's cascade may still be draining when dispatch
-    // returns.
-    let comp_settled = poll_until(|| async {
-        let cursor = h.current_cursor().await?;
-        let focused = h.focused().await;
-        if cursor == oxpath!("settings", "index")
-            && focused.as_ref() == Some(&oxpath!("settings", "accounts", comp.clone()))
-        {
-            Some(())
-        } else {
-            None
-        }
-    })
-    .await;
-    comp_settled.expect("cursor → settings/index and focused → new account");
+    // Cursor settled at settings/index and focused points at the new account row.
+    let cursor = h.current_cursor().await.expect("cursor present");
+    assert_eq!(cursor, oxpath!("settings", "index"));
+    let focused = h.focused().await.expect("focused present");
+    assert_eq!(focused, oxpath!("settings", "accounts", comp.clone()));
 
     // Expanded set must include both settings/accounts and the new
     // account's row so the user sees the field rows immediately.
