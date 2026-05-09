@@ -1,54 +1,56 @@
-//! `AccountDeleteSubscription` — fires on writes to
-//! `config/gate/accounts/{name}/delete_now`.
+//! `AccountDeleteCleanupSubscription` — fires on null writes at
+//! `config/gate/accounts/{name}` (account-record depth).
 //!
-//! Fully synchronous: there is no network call to make, just a fan-out
-//! of writes that delete the account's record, its API key, and its
-//! synthesized provider entry; clear the selection if it pointed at the
-//! deleted account; and pop the cursor back to the accounts list.
+//! Reactive observer of account deletion. The CLI's `accounts.delete`
+//! command writes `Null` to the canonical account path; this
+//! subscription watches the broader `Prefix(config/gate/accounts)`
+//! pattern and filters at the top of `handle` for null writes at
+//! account-record depth (one component below the prefix).
+//!
+//! Cleanup body fans out the cross-cutting work the CLI shouldn't do
+//! itself: deletes the API key, deletes the synthesized provider
+//! record, clears the `accounts/selected` pointer if it matched the
+//! deleted account, and pops the cursor back to the (modal-era)
+//! accounts page. The cursor write preserves today's behavior and the
+//! delete-confirm rebuild on mode state will reshape the cursor
+//! cascade later.
 //!
 //! Returning all the writes from `handle` (rather than issuing them as
 //! ad-hoc `writer.write` calls) lets the dispatcher cascade them as a
 //! single logical event, so the snapshot built for the next render
 //! sees the post-delete world atomically.
-//!
-//! Per spec §6.5.
 
 use ox_broker::subscription::{SubCtx, Subscription};
 use ox_path::oxpath;
 use ox_types::subscription::{PathPattern, SubscriptionId, Write};
 
-use crate::AccountConfig;
 use crate::subscriptions::util::{
-    account_path, instance_segment, null_write, provider_path, read_typed_via_reader,
-    secret_key_path, write_path,
+    null_write, provider_path, read_typed_via_reader, secret_key_path, write_path,
 };
 
-pub const ID: &str = "gate.account_delete";
+pub const ID: &str = "gate.account_delete_cleanup";
 
-pub struct AccountDeleteSubscription {
+pub struct AccountDeleteCleanupSubscription {
     id: SubscriptionId,
     watches: Vec<PathPattern>,
 }
 
-impl Default for AccountDeleteSubscription {
+impl Default for AccountDeleteCleanupSubscription {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl AccountDeleteSubscription {
+impl AccountDeleteCleanupSubscription {
     pub fn new() -> Self {
         Self {
             id: SubscriptionId(ID.to_string()),
-            watches: vec![PathPattern::PrefixSuffix {
-                prefix: oxpath!("config", "gate", "accounts"),
-                suffix: oxpath!("delete_now"),
-            }],
+            watches: vec![PathPattern::Prefix(oxpath!("config", "gate", "accounts"))],
         }
     }
 }
 
-impl Subscription for AccountDeleteSubscription {
+impl Subscription for AccountDeleteCleanupSubscription {
     fn id(&self) -> &SubscriptionId {
         &self.id
     }
@@ -58,25 +60,43 @@ impl Subscription for AccountDeleteSubscription {
     }
 
     fn handle(&self, ctx: SubCtx<'_>) -> Vec<Write> {
-        let prefix = oxpath!("config", "gate", "accounts");
-        let suffix = oxpath!("delete_now");
-        let Some(name) = instance_segment(&ctx.change.path, &prefix, &suffix) else {
-            return vec![];
-        };
+        use structfs_core_store::Value;
 
-        // No-op when the account doesn't exist: idempotent delete.
-        let Ok(acct_path) = account_path(&name) else {
-            return vec![];
-        };
-        let exists: Option<AccountConfig> = read_typed_via_reader(ctx.snapshot, &acct_path);
-        if exists.is_none() {
-            tracing::debug!(account = %name, "account_delete: no record at path; nothing to do");
+        let prefix = oxpath!("config", "gate", "accounts");
+
+        // Filter 1: only react at account-record depth (prefix + 1 component).
+        // Writes to children (`.../models`, `.../test_status`, etc.) get
+        // skipped here.
+        if ctx.change.path.len() != prefix.len() + 1 {
             return vec![];
         }
 
+        // Filter 2: only react to deletes (Null writes). Updates and
+        // creates fall through.
+        let Some(record) = ctx.change.after.as_ref() else {
+            return vec![];
+        };
+        if !matches!(record.as_value(), Some(Value::Null)) {
+            return vec![];
+        }
+
+        // Extract the account name. The path's last component is the
+        // account identifier; we already validated depth above.
+        let name = ctx
+            .change
+            .path
+            .components
+            .last()
+            .cloned()
+            .unwrap_or_default();
+        if name.is_empty() {
+            return vec![];
+        }
+
+        // Side-data cleanup. The account record itself is already gone
+        // (the user's null-write triggered us); we don't repeat that.
         let mut writes: Vec<Write> = Vec::new();
-        // Delete the account record.
-        writes.push(null_write(acct_path));
+
         // Delete the API key.
         if let Ok(p) = secret_key_path(&name) {
             writes.push(null_write(p));
@@ -122,15 +142,17 @@ mod tests {
 
     fn trigger_path(name: &str) -> Path {
         let comp = ox_kernel::PathComponent::try_new(name).unwrap();
-        oxpath!("config", "gate", "accounts", comp, "delete_now")
+        // Canonical account path; the user's null-write here IS the delete.
+        oxpath!("config", "gate", "accounts", comp)
     }
 
     fn drive(reader: &mut InMemoryReader, name: &str) -> Vec<Write> {
-        let sub = AccountDeleteSubscription::new();
+        let sub = AccountDeleteCleanupSubscription::new();
         let path = trigger_path(name);
         let change = PathChange {
             path,
-            before: None,
+            // The handler does not read `before`; any value is fine.
+            before: Some(Record::parsed(Value::Null)),
             after: Some(Record::parsed(Value::Null)),
         };
         let spawn = TestSpawn::new();
@@ -155,14 +177,16 @@ mod tests {
     }
 
     #[test]
-    fn delete_removes_account_record_key_and_provider() {
+    fn cleanup_removes_key_and_provider() {
         let mut reader = InMemoryReader::new();
         populate_anthropic_account(&mut reader, "alpha", "sk-key");
 
         let writes = drive(&mut reader, "alpha");
+        // The account record itself is deleted by the user's write;
+        // the cleanup body must not also write at that path.
         assert!(
-            null_record(&writes, "config/gate/accounts/alpha"),
-            "{:?}",
+            !null_record(&writes, "config/gate/accounts/alpha"),
+            "cleanup must not redo the account-record null-write; got {:?}",
             paths(&writes)
         );
         assert!(
@@ -178,7 +202,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_clears_selection_only_when_matching() {
+    fn cleanup_clears_selection_only_when_matching() {
         let mut reader = InMemoryReader::new();
         populate_anthropic_account(&mut reader, "alpha", "sk-key");
         reader.set("ui/settings/accounts/selected", &"alpha".to_string());
@@ -199,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_does_not_clear_selection_pointing_at_other_account() {
+    fn cleanup_does_not_clear_selection_pointing_at_other_account() {
         let mut reader = InMemoryReader::new();
         populate_anthropic_account(&mut reader, "alpha", "sk-key");
         populate_anthropic_account(&mut reader, "beta", "sk-key2");
@@ -217,7 +241,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_pops_cursor_back_to_accounts_list() {
+    fn cleanup_pops_cursor_back_to_accounts_list() {
         let mut reader = InMemoryReader::new();
         populate_anthropic_account(&mut reader, "alpha", "sk-key");
 
@@ -244,10 +268,64 @@ mod tests {
     }
 
     #[test]
-    fn delete_is_noop_when_account_missing() {
+    fn cleanup_skips_writes_to_child_paths() {
         let mut reader = InMemoryReader::new();
-        // No accounts populated.
-        let writes = drive(&mut reader, "ghost");
-        assert!(writes.is_empty(), "got: {:?}", paths(&writes));
+        populate_anthropic_account(&mut reader, "alpha", "sk-test");
+        // Drive a write to a child path (e.g. .../models). The subscription
+        // must not fire its cleanup body — that path isn't an account
+        // record, even though it matches the Prefix watch.
+        let sub = AccountDeleteCleanupSubscription::new();
+        let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
+        let path = oxpath!("config", "gate", "accounts", comp, "models");
+        let change = PathChange {
+            path,
+            before: None,
+            after: Some(Record::parsed(Value::Null)),
+        };
+        let spawn = TestSpawn::new();
+        let writer = Arc::new(CapturingWriter::new()) as Arc<dyn AsyncWriter>;
+        let ctx = SubCtx {
+            snapshot: &mut reader,
+            change: &change,
+            spawn: &spawn,
+            writer,
+        };
+        let writes = sub.handle(ctx);
+        assert!(
+            writes.is_empty(),
+            "child-path writes must not trigger cleanup; got {writes:?}"
+        );
+    }
+
+    #[test]
+    fn cleanup_skips_non_null_writes_at_account_depth() {
+        let mut reader = InMemoryReader::new();
+        populate_anthropic_account(&mut reader, "alpha", "sk-test");
+        // An update (non-null write) at the account-record path should not
+        // trigger the cleanup body — the account isn't being deleted.
+        let sub = AccountDeleteCleanupSubscription::new();
+        let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
+        let path = oxpath!("config", "gate", "accounts", comp);
+        let cfg = crate::AccountConfig {
+            provider: "anthropic".into(),
+        };
+        let change = PathChange {
+            path,
+            before: None,
+            after: Some(Record::parsed(structfs_serde_store::to_value(&cfg).unwrap())),
+        };
+        let spawn = TestSpawn::new();
+        let writer = Arc::new(CapturingWriter::new()) as Arc<dyn AsyncWriter>;
+        let ctx = SubCtx {
+            snapshot: &mut reader,
+            change: &change,
+            spawn: &spawn,
+            writer,
+        };
+        let writes = sub.handle(ctx);
+        assert!(
+            writes.is_empty(),
+            "non-null writes at account depth must not trigger cleanup; got {writes:?}"
+        );
     }
 }

@@ -514,8 +514,9 @@ async fn delete_account_flow() {
         oxpath!("settings", "accounts", "_delete"),
     );
 
-    // `y` — confirm delete. AccountDeleteSubscription fires async; poll
-    // for the account record's removal.
+    // `y` — confirm delete. The CLI's null-write removes the account
+    // record directly; AccountDeleteCleanupSubscription fires async to
+    // clean up side data. Poll for the account record's removal.
     assert!(matches!(h.dispatch("y").await, KeyDispatchOutcome::Handled));
 
     let comp = ox_kernel::PathComponent::try_new("anthropic").unwrap();

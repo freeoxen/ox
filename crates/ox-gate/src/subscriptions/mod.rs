@@ -28,7 +28,8 @@ use crate::transport::Transport;
 ///
 /// 1. `account_test` — instance-segment trigger, fires on `…/test_now`
 /// 2. `catalog_refresh` — instance-segment trigger, fires on `…/refresh_now`
-/// 3. `account_delete` — instance-segment trigger, fires on `…/delete_now`
+/// 3. `account_delete_cleanup` — reactive observer, fires on null
+///    writes to `config/gate/accounts/<name>` (account-record depth)
 /// 4. `config_save` — exact trigger, fires on `config/save`
 ///
 /// Today the patterns are mutually exclusive (different suffixes /
@@ -42,7 +43,9 @@ pub fn register_all(broker: &BrokerStore, transport: Arc<dyn Transport>) {
     broker.register_subscription(Arc::new(catalog_refresh::CatalogRefreshSubscription::new(
         transport,
     )));
-    broker.register_subscription(Arc::new(account_delete::AccountDeleteSubscription::new()));
+    broker.register_subscription(Arc::new(
+        account_delete::AccountDeleteCleanupSubscription::new(),
+    ));
     broker.register_subscription(Arc::new(config_save::ConfigSaveSubscription::new()));
 }
 

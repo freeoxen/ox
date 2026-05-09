@@ -355,10 +355,14 @@ fn accounts_delete(data: &mut dyn Reader) -> Vec<Write> {
         Some(n) => n,
         None => return Vec::new(),
     };
-    match account_request_path(&name, "delete_now") {
-        Some(p) => vec![null_write(p)],
-        None => Vec::new(),
-    }
+    let comp = match ox_kernel::PathComponent::try_new(&name) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    vec![Write {
+        path: oxpath!("config", "gate", "accounts", comp),
+        record: Record::parsed(Value::Null),
+    }]
 }
 
 fn account_test(data: &mut dyn Reader) -> Vec<Write> {
@@ -1134,15 +1138,12 @@ mod tests {
     // -- Subscription requests --------------------------------------------------
 
     #[test]
-    fn accounts_delete_writes_delete_now_when_selected() {
+    fn accounts_delete_writes_null_to_canonical_account_path_when_selected() {
         let mut snap = SettingsSnapshot::empty();
         select_account(&mut snap, "alpha");
         let writes = run_cmd(&AccountsDelete::new(), &mut snap);
         let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
-        assert_null_write(
-            &writes,
-            oxpath!("config", "gate", "accounts", comp, "delete_now"),
-        );
+        assert_null_write(&writes, oxpath!("config", "gate", "accounts", comp));
     }
 
     #[test]
