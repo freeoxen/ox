@@ -299,11 +299,7 @@ fn clear_edit_state() -> Vec<Write> {
     ]
 }
 
-/// Build a `GlobalBanner::Error` write for `ui/global/banner`. The
-/// `account_create` subscription has its own copy of this constructor
-/// — keeping a duplicate here avoids a cross-crate helper for two
-/// short string literals; if the messages drift, a future cleanup can
-/// extract.
+/// Build a `GlobalBanner::Error` write for `ui/global/banner`.
 fn banner_error(message: String) -> Write {
     let banner = GlobalBanner::Error {
         message,
@@ -461,10 +457,9 @@ fn commit(data: &mut dyn Reader) -> Vec<Write> {
                 provider: "anthropic".to_string(),
             };
 
-            // UI cascade — same shape AccountCreateSubscription used to
-            // produce. Cursor stays at settings/index (the accordion); the
-            // new account is surfaced via focused + expansion so its field
-            // rows are immediately visible in place.
+            // UI cascade. Cursor stays at settings/index (the accordion);
+            // the new account is surfaced via focused + expansion so its
+            // field rows are immediately visible in place.
             let new_account_row = oxpath!("settings", "accounts", comp.clone());
             let mut expanded: Vec<String> = super::super::renderers::util::read_typed(
                 data,

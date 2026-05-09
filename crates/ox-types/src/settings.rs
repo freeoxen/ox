@@ -90,13 +90,12 @@ pub enum GlobalBanner {
     Info { message: String, set_at_ms: u64 },
 }
 
-/// Request payload for the account-create subscription. Phase N6
-/// deserializes this from `config/gate/accounts/_create_now` and
-/// validates `name` as a `PathComponent` before allocating the account.
-///
-/// The CLI commands write this on user action (see
-/// `accounts.create` in `ox-cli/src/settings/commands/account_model.rs`)
-/// and the broker subscription consumes it.
+/// Historical request payload from the deprecated account-create
+/// subscription. The substrate convergence work moved account
+/// materialization into the CLI's `edit.commit` AccountAdd arm; this
+/// type is no longer wired into any active code path. It stays for
+/// now in case external callers depend on it; a later cleanup pass
+/// removes it once the codebase has settled.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateAccountRequest {
     pub name: String,

@@ -180,11 +180,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Wire the day-one settings subscriptions onto the broker before the
     // event loop starts its first frame. Each handler watches a typed
     // path under `config/gate/accounts/…` (or `config/save`) and reacts
-    // to user-driven writes (test_now, refresh_now, delete_now,
-    // _create_now, save) — registering them here means the moment the
-    // user triggers an action in the settings screen, the corresponding
-    // handler fires automatically. Subscriptions are registered exactly
-    // once, on the live `BrokerStore`, before any UI write can land.
+    // to user-driven writes (test_now, refresh_now, delete_now, save)
+    // — registering them here means the moment the user triggers an
+    // action in the settings screen, the corresponding handler fires
+    // automatically. Subscriptions are registered exactly once, on the
+    // live `BrokerStore`, before any UI write can land.
     {
         use std::sync::Arc;
         let transport: Arc<dyn ox_gate::transport::Transport> =
