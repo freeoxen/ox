@@ -337,14 +337,15 @@ fn insert_char(
         Some(p) => p,
         None => return Vec::new(),
     };
-    // Numeric fields only accept ASCII digits. Account text fields
-    // accept anything printable. The row's RowKind tells us which.
+    // Numeric fields only accept ASCII digits. Account text fields and
+    // the AccountAdd ghost-row name buffer accept anything printable.
+    // The row's RowKind tells us which.
     let row = visible_rows::enumerate(data)
         .into_iter()
         .find(|r| r.path == field_path);
     let accept = match row.as_ref().map(|r| &r.kind) {
         Some(RowKind::ModelField { .. }) => ch.is_ascii_digit(),
-        Some(RowKind::AccountField { .. }) => true,
+        Some(RowKind::AccountField { .. }) | Some(RowKind::AccountAdd) => true,
         _ => false,
     };
     if !accept {

@@ -326,14 +326,26 @@ fn register_row_prefixes(reg: &mut BindingRegistry) {
 fn register_edit_mode(reg: &mut BindingRegistry) {
     let scope = oxpath!("settings", "_edit_mode");
     // Printable ASCII (0x20..=0x7E) → edit.insert_char.
+    //
+    // Modifier handling mirrors the encode/parse round-trip:
+    // terminals report uppercase letters as (Char('A'), shift), and
+    // parse_key_str sets `shift: true` for any uppercase ASCII letter.
+    // Bind ASCII uppercase letters with shift_only() and everything
+    // else with no_mods(), so a typed capital reaches edit.insert_char
+    // instead of falling through to the input-store path.
     for byte in 0x20u8..=0x7E {
         let ch = byte as char;
+        let modifiers = if ch.is_ascii_uppercase() {
+            shift_only()
+        } else {
+            no_mods()
+        };
         reg.register(BindingEntry {
             screen: Screen::Settings,
             scope: BindingScope::Exact(scope.clone()),
             mode: None,
             key: KeyChord {
-                modifiers: no_mods(),
+                modifiers,
                 code: KeyCodeRepr::Char(ch),
             },
             command_id: cmd("edit.insert_char"),

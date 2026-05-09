@@ -407,25 +407,35 @@ async fn add_account_create_flow() {
     let h = E2eHarness::new().await;
     populate_index(&h).await;
 
-    // First-run state: no accounts, cursor at the new-account overlay.
+    // Cursor at the accordion, focused_row on the Accounts header so
+    // `a` resolves to accounts.add via Prefix(settings/accounts).
     h.write_path(
         &oxpath!("ui", "settings", "cursor"),
-        &oxpath!("settings", "accounts", "_new"),
+        &oxpath!("settings", "index"),
+    )
+    .await;
+    h.write_path(
+        &oxpath!("ui", "settings", "focused_row"),
+        &oxpath!("settings", "accounts"),
     )
     .await;
 
-    // The new-account overlay's binding scope only exposes Enter / Esc
-    // for the day-one design; the name input is filled via the broker.
-    // (See `ox-cli/src/settings/bindings.rs::register_account_new`.)
-    h.write_typed(
-        &oxpath!("ui", "settings", "new_account", "name_input"),
-        &"anthropic_personal".to_string(),
-    )
-    .await;
+    // `a` expands the section, focuses the ghost row, and enters edit mode.
+    assert!(matches!(h.dispatch("a").await, KeyDispatchOutcome::Handled));
 
-    // `Enter` runs `accounts.create`, which writes a CreateAccountRequest
-    // to `config/gate/accounts/_create_now`. The AccountCreateSubscription
-    // picks it up cascade-bounded; poll for the materialized account.
+    // Type the name through the dispatcher so the edit-mode pass routes
+    // each printable through edit.insert_char.
+    for ch in "anthropic_personal".chars() {
+        let key = ch.to_string();
+        assert!(
+            matches!(h.dispatch(&key).await, KeyDispatchOutcome::Handled),
+            "dispatch returned Unhandled for {key:?}"
+        );
+    }
+
+    // `Enter` runs edit.commit, which writes a CreateAccountRequest to
+    // config/gate/accounts/_create_now. AccountCreateSubscription picks
+    // it up cascade-bounded; poll for the materialized account.
     assert!(matches!(
         h.dispatch("Enter").await,
         KeyDispatchOutcome::Handled
@@ -461,6 +471,26 @@ async fn add_account_create_flow() {
     })
     .await;
     comp_settled.expect("cursor → settings/index and focused_row → new account");
+
+    // Expanded set must include both settings/accounts and the new
+    // account's row so the user sees the field rows immediately.
+    let expanded: Vec<String> = h
+        .client
+        .read_typed(&oxpath!("ui", "settings", "expanded"))
+        .await
+        .expect("read expanded")
+        .flatten()
+        .unwrap_or_default();
+    assert!(
+        expanded.iter().any(|s| s == "settings/accounts"),
+        "expanded set must contain settings/accounts; got {expanded:?}"
+    );
+    assert!(
+        expanded
+            .iter()
+            .any(|s| s == "settings/accounts/anthropic_personal"),
+        "expanded set must contain settings/accounts/anthropic_personal; got {expanded:?}"
+    );
 
     let selected: Option<String> = h
         .client
@@ -1177,22 +1207,23 @@ async fn protocol_cycle_visibly_toggles_in_rendered_carousel() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn add_connection_modal_accepts_lowercase_and_uppercase_typing() {
-    // End-to-end render assertion for the new-connection modal's
-    // typing surface. Opens the modal, types a mix of upper- and
-    // lowercase chars, captures the rendered frame after each
-    // keystroke. Each press must produce a visibly-different frame
-    // and the cumulative input must appear in the name field —
-    // catches both case-sensitive dispatch routing failures and
-    // text-input write-back failures with one assertion shape.
+async fn add_connection_inline_ghost_row_accepts_typing() {
+    // End-to-end render assertion for the inline new-connection ghost
+    // row's typing surface. Opens it via `a` from the Connections
+    // section, types a mix of upper- and lowercase chars, captures the
+    // rendered frame after each keystroke. Each press must produce a
+    // visibly-different frame and the cumulative input must appear in
+    // the focused ghost row's inline buffer — covers case-sensitive
+    // dispatch routing AND inline-edit write-back with one shape.
     let h = E2eHarness::new().await;
     populate_index(&h).await;
 
-    // Cursor + focused_row land us under settings/accounts so the
-    // `a` binding (Prefix(settings/accounts)) resolves to accounts.add.
+    // Cursor sits at the accordion (settings/index, where the renderer
+    // lives); focused_row sits on settings/accounts so the `a` binding
+    // (Prefix(settings/accounts)) resolves to accounts.add.
     h.write_path(
         &oxpath!("ui", "settings", "cursor"),
-        &oxpath!("settings", "accounts"),
+        &oxpath!("settings", "index"),
     )
     .await;
     h.write_path(
@@ -1203,14 +1234,10 @@ async fn add_connection_modal_accepts_lowercase_and_uppercase_typing() {
 
     assert!(matches!(h.dispatch("a").await, KeyDispatchOutcome::Handled));
 
-    let frame_modal_open = render_settings_to_string(&h, 80, 24).await;
-    insta::assert_snapshot!("new_connection_modal_just_opened", &frame_modal_open);
+    let frame_after_a = render_settings_to_string(&h, 80, 24).await;
+    insta::assert_snapshot!("new_connection_inline_just_opened", &frame_after_a);
 
-    // "Test" interleaves an uppercase letter (which arrives with
-    // shift_only) and three lowercase letters (no_mods) — a
-    // single-word check that both modifier shapes route into the
-    // modal's typing surface.
-    let mut prior_frame = frame_modal_open.clone();
+    let mut prior_frame = frame_after_a.clone();
     let mut snap_idx = 1;
     for ch in "Test".chars() {
         let key = ch.to_string();
@@ -1219,24 +1246,24 @@ async fn add_connection_modal_accepts_lowercase_and_uppercase_typing() {
             "dispatch returned Unhandled for {key:?}"
         );
         let frame = render_settings_to_string(&h, 80, 24).await;
-        let snap_name = format!("new_connection_modal_after_{}_{}", snap_idx, ch);
+        let snap_name = format!("new_connection_inline_after_{}_{}", snap_idx, ch);
         insta::assert_snapshot!(snap_name, &frame);
         assert_ne!(
             prior_frame, frame,
-            "typing {ch:?} into the new-connection modal must produce a \
+            "typing {ch:?} into the inline ghost row must produce a \
              visible change in the rendered frame"
         );
         prior_frame = frame;
         snap_idx += 1;
     }
 
-    // The final frame's name input must contain the full word —
+    // The final frame's inline buffer must contain the full word —
     // catches the case where each char produces *some* visual change
-    // (e.g. cursor blink) but the actual text input doesn't fill in.
+    // (e.g. cursor blink) but the actual write-back doesn't fill in.
     let final_frame = prior_frame;
     assert!(
         final_frame.contains("Test"),
-        "rendered modal must show 'Test' in the name input after typing it; \
+        "rendered ghost row must show 'Test' in the inline buffer after typing it; \
          got:\n{final_frame}"
     );
 }
