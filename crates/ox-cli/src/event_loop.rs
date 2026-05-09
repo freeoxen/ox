@@ -255,7 +255,7 @@ pub async fn run_async(
                 let mut snap = fetch_settings_view_state(client).await;
                 let cursor =
                     read_settings_cursor(&mut snap).unwrap_or_else(|| oxpath!("settings", "index"));
-                let focused_row = read_settings_focused_row(&mut snap);
+                let focused = read_settings_focused(&mut snap);
                 let edit_mode = read_settings_edit_mode(&mut snap);
                 // Override `key_hints` with the projection from the new
                 // settings registries. Threading the focused row + edit
@@ -266,7 +266,7 @@ pub async fn run_async(
                     &settings_bindings,
                     &settings_commands,
                     &cursor,
-                    focused_row.as_ref(),
+                    focused.as_ref(),
                     edit_mode,
                 );
                 let area = terminal.get_frame().area();
@@ -618,10 +618,10 @@ fn read_settings_cursor(snap: &mut SettingsSnapshot) -> Option<Path> {
     path_from_value(value)
 }
 
-/// Read the row-level focus pointer the accordion writes.
-fn read_settings_focused_row(snap: &mut SettingsSnapshot) -> Option<Path> {
+/// Read the focused-widget pointer the accordion writes.
+fn read_settings_focused(snap: &mut SettingsSnapshot) -> Option<Path> {
     let record = snap
-        .read(&oxpath!("ui", "settings", "focused_row"))
+        .read(&oxpath!("ui", "settings", "focused"))
         .ok()
         .flatten()?;
     let value = record.as_value()?;

@@ -256,12 +256,12 @@ fn read_cursor(data: &mut dyn structfs_core_store::Reader) -> Option<structfs_co
     use crate::settings::commands::navigation::path_from_value;
     use ox_path::oxpath;
 
-    // Reads the focused-row pointer, NOT `ui/settings/cursor`. The
+    // Reads the focused-widget pointer, NOT `ui/settings/cursor`. The
     // page-level cursor (binding scope) stays at `settings/index`
-    // while the accordion screen is active; the focused row inside
+    // while the accordion screen is active; the focused widget inside
     // the tree lives at its own path.
     let r = data
-        .read(&oxpath!("ui", "settings", "focused_row"))
+        .read(&oxpath!("ui", "settings", "focused"))
         .ok()
         .flatten()?;
     path_from_value(r.as_value()?)
@@ -471,7 +471,7 @@ mod tests {
             expanded_set_to_value(&["settings/accounts".to_string()]),
         );
         snap.insert(
-            &oxpath!("ui", "settings", "focused_row"),
+            &oxpath!("ui", "settings", "focused"),
             path_to_value(&oxpath!("settings", "accounts", "_new")),
         );
         snap.insert(&oxpath!("ui", "settings", "edit_mode"), Value::Bool(true));
@@ -511,11 +511,11 @@ mod tests {
     }
 
     #[test]
-    fn focused_row_drives_selected_index() {
+    fn focused_drives_selected_index() {
         let mut snap = SettingsSnapshot::empty();
         write_index(&mut snap);
         snap.insert(
-            &oxpath!("ui", "settings", "focused_row"),
+            &oxpath!("ui", "settings", "focused"),
             path_to_value(&oxpath!("settings", "models")),
         );
         let (_title, _items, selected) = assert_list(render(&mut snap));
@@ -523,11 +523,11 @@ mod tests {
     }
 
     #[test]
-    fn stale_focused_row_yields_no_selection() {
+    fn stale_focused_yields_no_selection() {
         let mut snap = SettingsSnapshot::empty();
         write_index(&mut snap);
         snap.insert(
-            &oxpath!("ui", "settings", "focused_row"),
+            &oxpath!("ui", "settings", "focused"),
             path_to_value(&oxpath!("nonsense")),
         );
         let (_title, _items, selected) = assert_list(render(&mut snap));
@@ -596,7 +596,7 @@ mod tests {
             ]),
         );
         snap.insert(
-            &oxpath!("ui", "settings", "focused_row"),
+            &oxpath!("ui", "settings", "focused"),
             path_to_value(&oxpath!("settings", "accounts", comp, "protocol")),
         );
 

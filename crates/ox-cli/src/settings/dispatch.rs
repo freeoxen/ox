@@ -64,7 +64,7 @@ pub fn dispatch_settings_key(
         None
     }
     .or_else(|| {
-        read_focused_row(snapshot)
+        read_focused(snapshot)
             .as_ref()
             .and_then(|focus| bindings.lookup(screen, focus, mode, key))
     })
@@ -82,13 +82,13 @@ pub fn dispatch_settings_key(
     command.run(snapshot, &ctx)
 }
 
-/// Read `ui/settings/focused_row` from the dispatch snapshot. Used as
-/// the focused-row binding-scope cursor so per-row bindings can fire
+/// Read `ui/settings/focused` from the dispatch snapshot. Used as
+/// the focused-widget binding-scope cursor so per-row bindings can fire
 /// while the page cursor sits at `settings/index`.
-fn read_focused_row(snapshot: &mut dyn Reader) -> Option<Path> {
+fn read_focused(snapshot: &mut dyn Reader) -> Option<Path> {
     use ox_path::oxpath;
     let record = snapshot
-        .read(&oxpath!("ui", "settings", "focused_row"))
+        .read(&oxpath!("ui", "settings", "focused"))
         .ok()
         .flatten()?;
     let value = record.as_value()?;

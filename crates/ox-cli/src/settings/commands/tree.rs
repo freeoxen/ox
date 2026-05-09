@@ -109,20 +109,20 @@ fn jump(data: &mut dyn Reader, to: JumpTo) -> Vec<Write> {
         JumpTo::Last => &rows[rows.len() - 1].path,
     };
     vec![Write {
-        path: oxpath!("ui", "settings", "focused_row"),
+        path: oxpath!("ui", "settings", "focused"),
         record: Record::parsed(path_to_value(target)),
     }]
 }
 
-/// Read the focused-row path. This is intentionally NOT
+/// Read the focused-widget path. This is intentionally NOT
 /// `ui/settings/cursor`: cursor identifies the active page (the
 /// renderer + binding-scope), which on the accordion screen is always
-/// `settings/index`. The focused row inside that page lives at
-/// `ui/settings/focused_row`. Conflating the two breaks binding
+/// `settings/index`. The focused widget inside that page lives at
+/// `ui/settings/focused`. Conflating the two breaks binding
 /// dispatch (the binding lookup uses cursor as its scope key).
 fn read_focused(data: &mut dyn Reader) -> Option<structfs_core_store::Path> {
     let record = data
-        .read(&oxpath!("ui", "settings", "focused_row"))
+        .read(&oxpath!("ui", "settings", "focused"))
         .ok()
         .flatten()?;
     let value = record.as_value()?;
@@ -145,7 +145,7 @@ fn step(data: &mut dyn Reader, direction: Direction) -> Vec<Write> {
     };
     let target = &rows[next_idx].path;
     vec![Write {
-        path: oxpath!("ui", "settings", "focused_row"),
+        path: oxpath!("ui", "settings", "focused"),
         record: Record::parsed(path_to_value(target)),
     }]
 }
@@ -241,7 +241,7 @@ fn activate(data: &mut dyn Reader) -> Vec<Write> {
 
 /// The selector helpers (`selector_cycle_protocol/auth`) read the
 /// account through `read_selected_account`, which now first tries
-/// `focused_row` — but in case the focused-row resolution misses
+/// `focused` — but in case the focused-row resolution misses
 /// (for any reason), we prepend an explicit `accounts/selected`
 /// write so the cycle hits the right account regardless.
 fn with_account_selected(account: &str, mut writes: Vec<Write>) -> Vec<Write> {
@@ -287,7 +287,7 @@ fn collapse_or_ascend(data: &mut dyn Reader) -> Vec<Write> {
                 for upstream in rows[..pos].iter().rev() {
                     if upstream.depth == 0 {
                         return vec![Write {
-                            path: oxpath!("ui", "settings", "focused_row"),
+                            path: oxpath!("ui", "settings", "focused"),
                             record: Record::parsed(path_to_value(&upstream.path)),
                         }];
                     }
@@ -386,14 +386,14 @@ mod tests {
 
     fn set_focused(snap: &mut SettingsSnapshot, target: &str) {
         snap.insert(
-            &oxpath!("ui", "settings", "focused_row"),
+            &oxpath!("ui", "settings", "focused"),
             path_to_value(&structfs_core_store::Path::parse(target).unwrap()),
         );
     }
 
     fn read_focused_raw(snap: &mut SettingsSnapshot) -> Option<structfs_core_store::Path> {
         let r = snap
-            .read(&oxpath!("ui", "settings", "focused_row"))
+            .read(&oxpath!("ui", "settings", "focused"))
             .ok()
             .flatten()?;
         path_from_value(r.as_value()?)
@@ -583,7 +583,7 @@ mod tests {
             crate::settings::visible_rows::expanded_set_to_value(&["settings/accounts".to_string()]),
         );
         snap.insert(
-            &oxpath!("ui", "settings", "focused_row"),
+            &oxpath!("ui", "settings", "focused"),
             crate::settings::commands::navigation::path_to_value(&oxpath!(
                 "settings", "accounts", "_new"
             )),
@@ -889,7 +889,7 @@ mod tests {
         set_focused(&mut snap, "settings/accounts/alpha");
         let writes = run(&TreeCollapseOrAscend::new(), &mut snap);
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "settings", "focused_row"));
+        assert_eq!(writes[0].path, oxpath!("ui", "settings", "focused"));
         let target = path_from_value(writes[0].record.as_value().unwrap()).unwrap();
         assert_eq!(target.to_string(), "settings/accounts");
     }

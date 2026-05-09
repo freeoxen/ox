@@ -160,13 +160,13 @@ impl E2eHarness {
         fetch_settings_view_state(&self.client).await
     }
 
-    /// Read the focused-row path written by the tree commands.
-    async fn focused_row(&self) -> Option<Path> {
+    /// Read the focused-widget path written by the tree commands.
+    async fn focused(&self) -> Option<Path> {
         let rec = self
             .client
-            .read(&oxpath!("ui", "settings", "focused_row"))
+            .read(&oxpath!("ui", "settings", "focused"))
             .await
-            .expect("read focused_row")?;
+            .expect("read focused")?;
         let value = rec.as_value()?.clone();
         match value {
             Value::Array(items) => {
@@ -329,14 +329,14 @@ async fn navigate_index_to_models_set_bootstrap() {
     write_models_for_account(&h, "anthropic", &["claude-haiku-4-5-20251001"]).await;
 
     // The page-level cursor (binding scope) sits at the index. The
-    // focused-row state lives at `ui/settings/focused_row`.
+    // focused-widget state lives at `ui/settings/focused`.
     h.write_path(
         &oxpath!("ui", "settings", "cursor"),
         &oxpath!("settings", "index"),
     )
     .await;
     h.write_path(
-        &oxpath!("ui", "settings", "focused_row"),
+        &oxpath!("ui", "settings", "focused"),
         &oxpath!("settings", "accounts"),
     )
     .await;
@@ -344,7 +344,7 @@ async fn navigate_index_to_models_set_bootstrap() {
     // `j` advances the focused row to Models (the only other
     // top-level row visible while nothing is expanded).
     assert!(matches!(h.dispatch("j").await, KeyDispatchOutcome::Handled));
-    let focused = h.focused_row().await.expect("focused_row written");
+    let focused = h.focused().await.expect("focused written");
     assert_eq!(focused, oxpath!("settings", "models"));
 
     // `Enter` on a category row toggles expansion in place.
@@ -367,7 +367,7 @@ async fn navigate_index_to_models_set_bootstrap() {
     // stays intact on the row's `RowKind`, which `tree.activate` reads
     // when descending to the legacy detail page.
     assert!(matches!(h.dispatch("j").await, KeyDispatchOutcome::Handled));
-    let focused = h.focused_row().await.expect("focused_row written");
+    let focused = h.focused().await.expect("focused written");
     assert_eq!(
         focused.to_string(),
         "settings/models/anthropic/claude_haiku_4_5_20251001",
@@ -407,7 +407,7 @@ async fn add_account_create_flow() {
     let h = E2eHarness::new().await;
     populate_index(&h).await;
 
-    // Cursor at the accordion, focused_row on the Accounts header so
+    // Cursor at the accordion, focused on the Accounts header so
     // `a` resolves to accounts.add via Prefix(settings/accounts).
     h.write_path(
         &oxpath!("ui", "settings", "cursor"),
@@ -415,7 +415,7 @@ async fn add_account_create_flow() {
     )
     .await;
     h.write_path(
-        &oxpath!("ui", "settings", "focused_row"),
+        &oxpath!("ui", "settings", "focused"),
         &oxpath!("settings", "accounts"),
     )
     .await;
@@ -454,13 +454,13 @@ async fn add_account_create_flow() {
     assert_eq!(account.provider, "anthropic");
 
     // The subscription clears `_create_now`, lands the cursor back at
-    // settings/index (the accordion), and points focused_row at the new
+    // settings/index (the accordion), and points focused at the new
     // account so the user sees their connection selected. Poll because
     // the subscription's cascade may still be draining when dispatch
     // returns.
     let comp_settled = poll_until(|| async {
         let cursor = h.current_cursor().await?;
-        let focused = h.focused_row().await;
+        let focused = h.focused().await;
         if cursor == oxpath!("settings", "index")
             && focused.as_ref() == Some(&oxpath!("settings", "accounts", comp.clone()))
         {
@@ -470,7 +470,7 @@ async fn add_account_create_flow() {
         }
     })
     .await;
-    comp_settled.expect("cursor → settings/index and focused_row → new account");
+    comp_settled.expect("cursor → settings/index and focused → new account");
 
     // Expanded set must include both settings/accounts and the new
     // account's row so the user sees the field rows immediately.
@@ -806,11 +806,11 @@ async fn production_ui_store_routes_settings_writes() {
         .expect("seed page cursor");
     client
         .write(
-            &oxpath!("ui", "settings", "focused_row"),
+            &oxpath!("ui", "settings", "focused"),
             Record::parsed(path_to_value(&oxpath!("settings", "accounts"))),
         )
         .await
-        .expect("seed focused_row");
+        .expect("seed focused");
 
     let mut snap = fetch_settings_view_state(&client).await;
     let cursor = oxpath!("settings", "index");
@@ -832,16 +832,16 @@ async fn production_ui_store_routes_settings_writes() {
     // settings sub-store. `None` here would mean the sub-store has
     // been removed or replaced with a typed-command surface.
     let focused_record = client
-        .read(&oxpath!("ui", "settings", "focused_row"))
+        .read(&oxpath!("ui", "settings", "focused"))
         .await
-        .expect("read focused_row")
+        .expect("read focused")
         .expect(
-            "focused_row write must persist — UiStore's settings sub-store is \
+            "focused write must persist — UiStore's settings sub-store is \
              gone if this is None (see crates/ox-ui/src/ui_store.rs)",
         );
     let new_focus =
         ox_cli::settings::commands::navigation::path_from_value(focused_record.as_value().unwrap())
-            .expect("focused_row decodes as path");
+            .expect("focused decodes as path");
     assert_eq!(
         new_focus.to_string(),
         "settings/models",
@@ -922,7 +922,7 @@ async fn cycling_protocol_with_toml_loaded_flat_keys_advances_through_broker() {
     )
     .await;
     h.write_path(
-        &oxpath!("ui", "settings", "focused_row"),
+        &oxpath!("ui", "settings", "focused"),
         &oxpath!("settings", "accounts", comp.clone(), "protocol"),
     )
     .await;
@@ -1012,7 +1012,7 @@ async fn cycling_protocol_mutates_bound_provider_dialect_not_account() {
     )
     .await;
     h.write_path(
-        &oxpath!("ui", "settings", "focused_row"),
+        &oxpath!("ui", "settings", "focused"),
         &oxpath!("settings", "accounts", acct_comp.clone(), "protocol"),
     )
     .await;
@@ -1165,7 +1165,7 @@ async fn protocol_cycle_visibly_toggles_in_rendered_carousel() {
         .await
         .expect("write expanded set");
     // Page cursor stays at settings/index for the accordion design — the
-    // index renderer is what renders the whole tree. focused_row is what
+    // index renderer is what renders the whole tree. focused is what
     // identifies the Protocol field row inside that tree (used for both
     // the renderer's `selected` highlight and binding-scope dispatch).
     h.write_path(
@@ -1174,7 +1174,7 @@ async fn protocol_cycle_visibly_toggles_in_rendered_carousel() {
     )
     .await;
     h.write_path(
-        &oxpath!("ui", "settings", "focused_row"),
+        &oxpath!("ui", "settings", "focused"),
         &oxpath!("settings", "accounts", acct_comp.clone(), "protocol"),
     )
     .await;
@@ -1219,7 +1219,7 @@ async fn add_connection_inline_ghost_row_accepts_typing() {
     populate_index(&h).await;
 
     // Cursor sits at the accordion (settings/index, where the renderer
-    // lives); focused_row sits on settings/accounts so the `a` binding
+    // lives); focused sits on settings/accounts so the `a` binding
     // (Prefix(settings/accounts)) resolves to accounts.add.
     h.write_path(
         &oxpath!("ui", "settings", "cursor"),
@@ -1227,7 +1227,7 @@ async fn add_connection_inline_ghost_row_accepts_typing() {
     )
     .await;
     h.write_path(
-        &oxpath!("ui", "settings", "focused_row"),
+        &oxpath!("ui", "settings", "focused"),
         &oxpath!("settings", "accounts"),
     )
     .await;

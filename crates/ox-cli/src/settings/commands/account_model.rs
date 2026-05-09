@@ -47,7 +47,7 @@ command! {
     screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "accounts")),
     // Same input-scope isolation as accounts.add. The overlay's
-    // bindings are only y/n/Esc, but a stale focused_row or
+    // bindings are only y/n/Esc, but a stale focused or
     // edit_mode could still misroute stray printable keys.
     run: |_snap, _ctx| vec![
         Write {
@@ -55,7 +55,7 @@ command! {
             record: Record::parsed(path_to_value(&oxpath!("settings", "accounts", "_delete"))),
         },
         Write {
-            path: oxpath!("ui", "settings", "focused_row"),
+            path: oxpath!("ui", "settings", "focused"),
             record: Record::parsed(Value::Null),
         },
         Write {
@@ -257,7 +257,7 @@ fn read_selected_model(data: &mut dyn Reader) -> Option<ModelKey> {
 /// account name. Row paths in the visible tree pass user-supplied ids
 /// through `safe_component`, which substitutes any non-identifier
 /// char with `_`; the original id lives on `RowKind`. Walking the
-/// enumeration to find the row whose path matches `focused_row`
+/// enumeration to find the row whose path matches `focused`
 /// recovers the original.
 fn focused_account(data: &mut dyn Reader) -> Option<String> {
     use crate::settings::visible_rows::{self, RowKind};
@@ -300,7 +300,7 @@ fn focused_model(data: &mut dyn Reader) -> Option<ModelKey> {
 
 fn focused_path(data: &mut dyn Reader) -> Option<Path> {
     let r = data
-        .read(&oxpath!("ui", "settings", "focused_row"))
+        .read(&oxpath!("ui", "settings", "focused"))
         .ok()
         .flatten()?;
     super::navigation::path_from_value(r.as_value()?)
@@ -336,7 +336,7 @@ fn accounts_add(data: &mut dyn Reader) -> Vec<Write> {
     // Focus the ghost row before flipping edit_mode so the renderer's
     // overlay locks onto the right row.
     writes.push(Write {
-        path: oxpath!("ui", "settings", "focused_row"),
+        path: oxpath!("ui", "settings", "focused"),
         record: Record::parsed(path_to_value(&oxpath!(
             "settings", "accounts", "_new"
         ))),
@@ -1016,10 +1016,10 @@ mod tests {
             "expanded set must include settings/accounts; got {set:?}"
         );
 
-        // focused_row → settings/accounts/_new (the ghost row).
+        // focused → settings/accounts/_new (the ghost row).
         let focus = by_path
-            .get("ui/settings/focused_row")
-            .expect("focused_row write");
+            .get("ui/settings/focused")
+            .expect("focused write");
         match focus {
             Record::Parsed(v) => {
                 let parts: Vec<String> = match v {
@@ -1102,11 +1102,11 @@ mod tests {
         assert_cursor_write(&writes, oxpath!("settings", "accounts", "_delete"));
         let focused = writes
             .iter()
-            .find(|w| w.path == oxpath!("ui", "settings", "focused_row"))
-            .expect("focused_row write");
+            .find(|w| w.path == oxpath!("ui", "settings", "focused"))
+            .expect("focused write");
         match &focused.record {
             Record::Parsed(Value::Null) => {}
-            other => panic!("expected focused_row=Null, got {other:?}"),
+            other => panic!("expected focused=Null, got {other:?}"),
         }
         let edit_mode = writes
             .iter()

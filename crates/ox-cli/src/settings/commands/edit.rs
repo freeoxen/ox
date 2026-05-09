@@ -127,9 +127,9 @@ pub fn register(reg: &mut CommandRegistry) {
 // ---------------------------------------------------------------------------
 
 /// Resolve the focused row to its path + RowKind. Returns `None` when
-/// `focused_row` is unset or names a row that vanished from the
+/// `focused` is unset or names a row that vanished from the
 /// visible tree (e.g. an account got deleted under the user's cursor).
-fn focused_row(data: &mut dyn Reader) -> Option<visible_rows::VisibleRow> {
+fn focused_visible_row(data: &mut dyn Reader) -> Option<visible_rows::VisibleRow> {
     let path = read_focused_path(data)?;
     visible_rows::enumerate(data)
         .into_iter()
@@ -138,7 +138,7 @@ fn focused_row(data: &mut dyn Reader) -> Option<visible_rows::VisibleRow> {
 
 fn read_focused_path(data: &mut dyn Reader) -> Option<Path> {
     let r = data
-        .read(&oxpath!("ui", "settings", "focused_row"))
+        .read(&oxpath!("ui", "settings", "focused"))
         .ok()
         .flatten()?;
     path_from_value(r.as_value()?)
@@ -174,7 +174,7 @@ pub(super) fn begin_edit_model_field(data: &mut dyn Reader) -> Vec<Write> {
 }
 
 fn begin_edit_account_text(data: &mut dyn Reader, field: AccountField) -> Vec<Write> {
-    let row = match focused_row(data) {
+    let row = match focused_visible_row(data) {
         Some(r) => r,
         None => return Vec::new(),
     };
@@ -199,7 +199,7 @@ fn begin_edit_account_text(data: &mut dyn Reader, field: AccountField) -> Vec<Wr
 /// max_output_tokens). Seeds the buffer with the current decimal
 /// representation, or empty when the override is `None`.
 fn begin_edit_model_field_inner(data: &mut dyn Reader) -> Vec<Write> {
-    let row = match focused_row(data) {
+    let row = match focused_visible_row(data) {
         Some(r) => r,
         None => return Vec::new(),
     };
@@ -889,7 +889,7 @@ mod tests {
             .unwrap(),
         );
         snap.insert(
-            &oxpath!("ui", "settings", "focused_row"),
+            &oxpath!("ui", "settings", "focused"),
             path_to_value(&oxpath!("settings", "accounts", "alpha", "endpoint")),
         );
 

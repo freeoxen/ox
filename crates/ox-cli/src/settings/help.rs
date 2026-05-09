@@ -40,7 +40,7 @@ pub fn key_hints_for_context(
     bindings: &BindingRegistry,
     commands: &CommandRegistry,
     page_cursor: &Path,
-    focused_row: Option<&Path>,
+    focused: Option<&Path>,
     edit_mode: bool,
 ) -> Vec<KeyHint> {
     let mut out: Vec<KeyHint> = Vec::new();
@@ -50,7 +50,7 @@ pub fn key_hints_for_context(
         edit_scope = ox_path::oxpath!("settings", "_edit_mode");
         emit_for_cursor(bindings, commands, &edit_scope, &mut seen_keys, &mut out);
     }
-    if let Some(focus) = focused_row {
+    if let Some(focus) = focused {
         emit_for_cursor(bindings, commands, focus, &mut seen_keys, &mut out);
     }
     emit_for_cursor(bindings, commands, page_cursor, &mut seen_keys, &mut out);

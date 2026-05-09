@@ -516,7 +516,7 @@ mod tests {
     // --- Form ------------------------------------------------------------
 
     #[test]
-    fn renders_form_with_focused_row() {
+    fn renders_form_with_focused_field() {
         let view = View::Frame {
             title: Some("provider".into()),
             title_right: None,

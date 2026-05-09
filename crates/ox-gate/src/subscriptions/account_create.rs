@@ -126,7 +126,7 @@ impl Subscription for AccountCreateSubscription {
         };
 
         // Cursor stays at settings/index — the accordion never left it; the
-        // new account is surfaced via focused_row + expansion so its field
+        // new account is surfaced via focused + expansion so its field
         // rows are immediately visible in place.
         let new_account_row = oxpath!(
             "settings",
@@ -157,7 +157,7 @@ impl Subscription for AccountCreateSubscription {
                 &oxpath!("ui", "settings", "cursor"),
                 &oxpath!("settings", "index"),
             ),
-            write_path(&oxpath!("ui", "settings", "focused_row"), &new_account_row),
+            write_path(&oxpath!("ui", "settings", "focused"), &new_account_row),
             write_typed(&oxpath!("ui", "settings", "expanded"), &expanded),
             null_write(oxpath!("config", "gate", "accounts", "_create_now")),
         ]
@@ -260,8 +260,8 @@ mod tests {
         //    new account's row inside the accordion.
         let focus_write = writes
             .iter()
-            .find(|w| w.path.to_string() == "ui/settings/focused_row")
-            .expect("missing focused_row write");
+            .find(|w| w.path.to_string() == "ui/settings/focused")
+            .expect("missing focused write");
         match focus_write.record.as_value() {
             Some(Value::Array(segs)) => {
                 let parts: Vec<String> = segs
@@ -273,7 +273,7 @@ mod tests {
                     .collect();
                 assert_eq!(parts.join("/"), "settings/accounts/alpha");
             }
-            other => panic!("focused_row must be Value::Array, got {other:?}"),
+            other => panic!("focused must be Value::Array, got {other:?}"),
         }
 
         // 5. Expanded set contains both `settings/accounts` and

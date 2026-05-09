@@ -575,7 +575,7 @@ mod tests {
     }
 
     #[test]
-    fn view_form_with_focused_row() {
+    fn view_form_with_focused_field() {
         let v = View::Form {
             rows: vec![
                 FormRow {
