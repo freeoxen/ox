@@ -22,7 +22,7 @@
 
 use ox_path::oxpath;
 use ox_types::Screen;
-use ox_types::settings::{AccountField, CreateAccountRequest, GlobalBanner, ModelField, ModelKey};
+use ox_types::settings::{AccountField, GlobalBanner, ModelField, ModelKey};
 use ox_types::subscription::Write;
 use structfs_core_store::{Path, Reader, Record, Value};
 use structfs_serde_store::to_value;
@@ -426,37 +426,96 @@ fn commit(data: &mut dyn Reader) -> Vec<Write> {
             field,
         }) => commit_model_field(data, &account, &model_id, field, &buffer),
         Some(RowKind::AccountAdd) => {
+            use ox_gate::AccountConfig;
+            use ox_kernel::PathComponent;
+
             let trimmed = buffer.trim();
-            // Empty/whitespace: silent no-op. The absence of typed
-            // characters is its own feedback — the user can see they
-            // haven't entered anything yet — so no banner is needed.
-            // Edit mode stays open.
+            // Empty/whitespace: silent no-op so edit mode stays open.
             if trimmed.is_empty() {
                 return Vec::new();
             }
-            // `_`-prefixed names collide with the synthetic ghost-row
-            // path (`_new`) and the `_create_now` sentinel; a real
-            // account materialized at one of those paths would shadow
-            // the UI machinery. Surface a banner so the user sees an
-            // actionable message, and skip clear_edit_state so they
-            // can fix the input in place.
+            // `_`-prefix: kept as a transitional rule. After Phase 3 lifts
+            // the inline-create flow into mode state and there's no
+            // synthetic ghost-row path to collide with, this rule and its
+            // banner go away (Phase 7 cleanup).
             if trimmed.starts_with('_') {
                 return vec![banner_error(format!(
                     "Account name '{}' starts with '_', which is reserved. Try a name without the leading underscore.",
                     trimmed
                 ))];
             }
-            let req = CreateAccountRequest {
-                name: trimmed.to_string(),
+            // Validate locally: any name we'd write to
+            // `config/gate/accounts/<name>` must be a real PathComponent.
+            let comp = match PathComponent::try_new(trimmed.to_string()) {
+                Ok(c) => c,
+                Err(_) => {
+                    return vec![banner_error(format!(
+                        "Invalid account name: '{}'",
+                        trimmed
+                    ))];
+                }
             };
-            let value = match to_value(&req) {
+
+            // Materialize a default AccountConfig at the canonical path.
+            let cfg = AccountConfig {
+                provider: "anthropic".to_string(),
+            };
+
+            // UI cascade — same shape AccountCreateSubscription used to
+            // produce. Cursor stays at settings/index (the accordion); the
+            // new account is surfaced via focused + expansion so its field
+            // rows are immediately visible in place.
+            let new_account_row = oxpath!("settings", "accounts", comp.clone());
+            let mut expanded: Vec<String> = super::super::renderers::util::read_typed(
+                data,
+                &oxpath!("ui", "settings", "expanded"),
+            )
+            .unwrap_or_default();
+            let accounts_key = "settings/accounts".to_string();
+            let new_row_key = format!("settings/accounts/{}", trimmed);
+            if !expanded.iter().any(|s| s == &accounts_key) {
+                expanded.push(accounts_key);
+            }
+            if !expanded.iter().any(|s| s == &new_row_key) {
+                expanded.push(new_row_key);
+            }
+
+            let acct_path = oxpath!("config", "gate", "accounts", comp);
+            let cfg_value = match to_value(&cfg) {
                 Ok(v) => v,
                 Err(_) => return Vec::new(),
             };
-            vec![Write {
-                path: oxpath!("config", "gate", "accounts", "_create_now"),
-                record: Record::parsed(value),
-            }]
+            let selected_value = match to_value(&Some(trimmed.to_string())) {
+                Ok(v) => v,
+                Err(_) => return Vec::new(),
+            };
+            let expanded_value = match to_value(&expanded) {
+                Ok(v) => v,
+                Err(_) => return Vec::new(),
+            };
+
+            vec![
+                Write {
+                    path: acct_path,
+                    record: Record::parsed(cfg_value),
+                },
+                Write {
+                    path: oxpath!("ui", "settings", "accounts", "selected"),
+                    record: Record::parsed(selected_value),
+                },
+                Write {
+                    path: oxpath!("ui", "settings", "cursor"),
+                    record: Record::parsed(path_to_value(&oxpath!("settings", "index"))),
+                },
+                Write {
+                    path: oxpath!("ui", "settings", "focused"),
+                    record: Record::parsed(path_to_value(&new_account_row)),
+                },
+                Write {
+                    path: oxpath!("ui", "settings", "expanded"),
+                    record: Record::parsed(expanded_value),
+                },
+            ]
         }
         _ => Vec::new(),
     };
@@ -1089,8 +1148,8 @@ mod tests {
     }
 
     #[test]
-    fn commit_account_add_writes_create_request_and_clears_state() {
-        use ox_types::settings::CreateAccountRequest;
+    fn commit_account_add_writes_account_record_and_cascade() {
+        use ox_gate::AccountConfig;
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
             &oxpath!("settings", "index", "entries", "accounts"),
@@ -1123,17 +1182,84 @@ mod tests {
             .map(|w| (w.path.to_string(), w.record.clone()))
             .collect();
 
-        // _create_now carries the CreateAccountRequest.
-        let create = by_path
-            .get("config/gate/accounts/_create_now")
-            .expect("_create_now write");
-        let req: CreateAccountRequest = match create {
+        // 1. Account record materialized at config/gate/accounts/alpha.
+        let acct = by_path
+            .get("config/gate/accounts/alpha")
+            .expect("account record write");
+        let cfg: AccountConfig = match acct {
             Record::Parsed(v) => structfs_serde_store::from_value(v.clone()).unwrap(),
             other => panic!("unexpected record: {other:?}"),
         };
-        assert_eq!(req.name, "alpha");
+        assert_eq!(cfg.provider, "anthropic");
 
-        // Edit state is cleared.
+        // 2. Selection.
+        let sel = by_path
+            .get("ui/settings/accounts/selected")
+            .expect("selected write");
+        let selected: Option<String> = match sel {
+            Record::Parsed(v) => structfs_serde_store::from_value(v.clone()).unwrap(),
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert_eq!(selected.as_deref(), Some("alpha"));
+
+        // 3. Cursor → settings/index.
+        let cur = by_path.get("ui/settings/cursor").expect("cursor write");
+        match cur {
+            Record::Parsed(Value::Array(segs)) => {
+                let parts: Vec<String> = segs
+                    .iter()
+                    .map(|v| match v {
+                        Value::String(s) => s.clone(),
+                        _ => panic!(),
+                    })
+                    .collect();
+                assert_eq!(parts.join("/"), "settings/index");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+
+        // 4. focused → settings/accounts/alpha.
+        let focused = by_path
+            .get("ui/settings/focused")
+            .expect("focused write");
+        match focused {
+            Record::Parsed(Value::Array(segs)) => {
+                let parts: Vec<String> = segs
+                    .iter()
+                    .map(|v| match v {
+                        Value::String(s) => s.clone(),
+                        _ => panic!(),
+                    })
+                    .collect();
+                assert_eq!(parts.join("/"), "settings/accounts/alpha");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+
+        // 5. expanded set contains both settings/accounts and settings/accounts/alpha.
+        let exp = by_path
+            .get("ui/settings/expanded")
+            .expect("expanded write");
+        let set: Vec<String> = match exp {
+            Record::Parsed(v) => structfs_serde_store::from_value(v.clone()).unwrap(),
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert!(
+            set.iter().any(|s| s == "settings/accounts"),
+            "expanded must include settings/accounts; got {set:?}"
+        );
+        assert!(
+            set.iter().any(|s| s == "settings/accounts/alpha"),
+            "expanded must include settings/accounts/alpha; got {set:?}"
+        );
+
+        // 6. NO _create_now write (the sentinel is gone).
+        assert!(
+            !by_path.contains_key("config/gate/accounts/_create_now"),
+            "_create_now sentinel must not be written; got writes: {writes:?}"
+        );
+
+        // 7. Edit state cleared.
         assert!(matches!(
             by_path.get("ui/settings/edit_mode").unwrap(),
             Record::Parsed(Value::Bool(false))
@@ -1146,6 +1272,58 @@ mod tests {
             by_path.get("ui/settings/edit_field_path").unwrap(),
             Record::Parsed(Value::Null)
         ));
+    }
+
+    #[test]
+    fn commit_account_add_with_invalid_name_emits_banner_keeps_edit_mode_open() {
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("settings", "index", "entries", "accounts"),
+            to_value(&SettingsIndexEntry {
+                id: "accounts".into(),
+                label: "Accounts".into(),
+                description: String::new(),
+                target_cursor: Path::parse("settings/accounts").unwrap(),
+                badge: BadgeSource::None,
+            })
+            .unwrap(),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&["settings/accounts".to_string()]),
+        );
+        snap.insert(&oxpath!("ui", "settings", "edit_mode"), Value::Bool(true));
+        snap.insert(
+            &oxpath!("ui", "settings", "edit_field_path"),
+            path_to_value(&oxpath!("settings", "accounts", "_new")),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "edit_buffer"),
+            Value::String("bad-name".into()),
+        );
+
+        let writes = run(&Commit::new(), &mut snap);
+        // Exactly one write: the banner. No account record, no UI cascade,
+        // no clear_edit_state — edit mode stays open so the user can fix.
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].path, oxpath!("ui", "global", "banner"));
+        let banner: ox_types::settings::GlobalBanner = match &writes[0].record {
+            Record::Parsed(v) => structfs_serde_store::from_value(v.clone()).unwrap(),
+            other => panic!("unexpected record: {other:?}"),
+        };
+        match banner {
+            ox_types::settings::GlobalBanner::Error { message, .. } => {
+                assert!(
+                    message.contains("Invalid"),
+                    "banner must mention the rule; got {message:?}"
+                );
+                assert!(
+                    message.contains("bad-name"),
+                    "banner must mention the offending name; got {message:?}"
+                );
+            }
+            other => panic!("expected Error banner, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1244,11 +1422,10 @@ mod tests {
     }
 
     #[test]
-    fn commit_account_add_with_interior_underscore_writes_create_request() {
+    fn commit_account_add_with_interior_underscore_writes_account_record() {
         // Only the *leading* underscore is reserved — interior
         // underscores like `alpha_beta` are valid identifiers and must
         // commit normally.
-        use ox_types::settings::CreateAccountRequest;
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
             &oxpath!("settings", "index", "entries", "accounts"),
@@ -1281,15 +1458,23 @@ mod tests {
             .map(|w| (w.path.to_string(), w.record.clone()))
             .collect();
 
-        let create = by_path
-            .get("config/gate/accounts/_create_now")
-            .expect("_create_now write");
-        let req: CreateAccountRequest = match create {
+        // Account record materialized at the interior-underscore path.
+        let acct = by_path
+            .get("config/gate/accounts/alpha_beta")
+            .expect("account record write");
+        let cfg: AccountConfig = match acct {
             Record::Parsed(v) => structfs_serde_store::from_value(v.clone()).unwrap(),
             other => panic!("unexpected record: {other:?}"),
         };
-        assert_eq!(req.name, "alpha_beta");
+        assert_eq!(cfg.provider, "anthropic");
 
+        // No _create_now write (the sentinel is gone).
+        assert!(
+            !by_path.contains_key("config/gate/accounts/_create_now"),
+            "_create_now sentinel must not be written; got writes: {writes:?}"
+        );
+
+        // Edit state cleared.
         assert!(matches!(
             by_path.get("ui/settings/edit_mode").unwrap(),
             Record::Parsed(Value::Bool(false))
