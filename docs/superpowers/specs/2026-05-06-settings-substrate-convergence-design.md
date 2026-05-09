@@ -237,27 +237,23 @@ from the old `AccountDeleteSubscription`).
 - The actual delete (the `Null` write to
   `config/gate/accounts/<name>`) was performed by the CLI.
 
-**`CatalogFetchOnCreateSubscription`** (reactive observer, new —
-replaces what `AccountCreateSubscription` did beyond the create
-itself).
-- Watches: `Prefix(config/gate/accounts)`.
-- Filters: `change.before.is_none() && change.after.is_some()` AND
-  the path is at account-record depth.
-- Spawns `transport.fetch_catalog` for the new account; writes
-  catalog + status as `CatalogRefreshSubscription` does.
-- Optional: hold the same supersession map shape so a rapid
-  delete-then-recreate doesn't race.
-
 **`ConfigSaveSubscription`** (async action trigger, unchanged).
 - Watches: `Exact(config/save)`.
 
 What's gone:
 
 - `AccountCreateSubscription` — replaced by direct writes from the
-  CLI plus `CatalogFetchOnCreateSubscription` for the catalog
-  follow-up.
+  CLI in `edit.commit`'s AccountAdd arm. No replacement subscription;
+  the create flow is fully synchronous.
 - `AccountDeleteSubscription` — transformed into
   `AccountDeleteCleanupSubscription`.
+
+Auto-fetch-on-create is intentionally NOT introduced here. A new
+account has no API key yet, so an auto-spawned catalog fetch would
+always fail and surface a `refresh_status: Failed` to the user
+before they've finished onboarding. If auto-fetch becomes desirable
+later, the trigger should be the API key being set (a write at
+`secret/keys/<name>`), not the account record being created.
 
 ### 4.4 Mode-aware dispatch
 
@@ -519,16 +515,14 @@ After:
   writes the `AccountConfig` directly to
   `config/gate/accounts/<name>` plus the existing UI cascade (focus,
   expansion, selection, banner on invalid name).
-- `AccountCreateSubscription` is deleted.
-- A new `CatalogFetchOnCreateSubscription` watches
-  `Prefix(config/gate/accounts)` for new entries and spawns the
-  catalog fetch.
+- `AccountCreateSubscription` is deleted with no replacement. The
+  create flow becomes fully synchronous in the CLI.
 - `CreateAccountRequest` type stays for now — it's referenced by the
   existing inline-create code; Phase 7 cleans it up if no callers
   remain.
 - E2E test `add_account_create_flow` no longer needs the
-  poll-for-materialization step (the CLI's writes are synchronous);
-  it does still need to poll for catalog fetch.
+  poll-for-materialization step (the CLI's writes are synchronous).
+  Other polls (e.g. for follow-on subscription work) are unaffected.
 
 ### Phase 2: Eliminate `delete_now` sentinel
 
@@ -547,11 +541,8 @@ After:
   the actual delete rather than the sentinel.
 - Tests update.
 
-This phase MUST land after Phase 1, because Phase 1 introduces
-`CatalogFetchOnCreateSubscription` which also watches `Prefix` and
-filters for *new* entries (`before.is_none()`); Phase 2 introduces a
-sibling that filters for *deletions* (`after.is_none()`). The two
-must coexist cleanly.
+Phase 2 is independent of Phase 1 (different subscription, different
+trigger). It can land before, after, or in parallel with Phase 1.
 
 ### Phase 3: Lift inline-create into `new_account/buffer` mode state
 
@@ -776,9 +767,9 @@ Unit tests:
 - New tests pin the mode-aware dispatch: each mode's open / commit /
   cancel produces the expected writes; opening any mode while
   another is active clears the other.
-- New tests pin the reactive subscriptions' filter logic: the
-  cleanup subscription fires only on null writes at account-record
-  depth; the catalog-fetch subscription fires only on new entries.
+- New tests pin the cleanup subscription's filter logic: it fires
+  only on null writes at account-record depth, never on writes to
+  child paths or non-null updates.
 
 E2E tests (`crates/ox-cli/tests/settings_e2e.rs`):
 - `add_account_create_flow` — already rewritten in the inline branch.
@@ -866,7 +857,6 @@ Types (`ox-types::settings`):
   at `manual_model/stage`).
 
 Subscriptions:
-- `CatalogFetchOnCreateSubscription` (Phase 1)
 - `AccountDeleteCleanupSubscription` (Phase 2; replaces
   `AccountDeleteSubscription`)
 
