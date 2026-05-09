@@ -9,8 +9,8 @@
 //! - serialize a typed value back into a `Write`
 //!
 //! Centralizing these here keeps `account_test.rs`, `catalog_refresh.rs`,
-//! `account_delete.rs`, `account_create.rs`, and `config_save.rs`
-//! focused on the subscription's domain logic instead of path plumbing.
+//! `account_delete.rs`, and `config_save.rs` focused on the
+//! subscription's domain logic instead of path plumbing.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

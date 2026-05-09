@@ -7,7 +7,6 @@
 //!
 //! Wire them all up at startup with [`register_all`].
 
-pub mod account_create;
 pub mod account_delete;
 pub mod account_test;
 pub mod catalog_refresh;
@@ -30,8 +29,7 @@ use crate::transport::Transport;
 /// 1. `account_test` — instance-segment trigger, fires on `…/test_now`
 /// 2. `catalog_refresh` — instance-segment trigger, fires on `…/refresh_now`
 /// 3. `account_delete` — instance-segment trigger, fires on `…/delete_now`
-/// 4. `account_create` — exact trigger, fires on `…/_create_now`
-/// 5. `config_save` — exact trigger, fires on `config/save`
+/// 4. `config_save` — exact trigger, fires on `config/save`
 ///
 /// Today the patterns are mutually exclusive (different suffixes /
 /// exact paths), so order is informational; pinning it here makes any
@@ -45,7 +43,6 @@ pub fn register_all(broker: &BrokerStore, transport: Arc<dyn Transport>) {
         transport,
     )));
     broker.register_subscription(Arc::new(account_delete::AccountDeleteSubscription::new()));
-    broker.register_subscription(Arc::new(account_create::AccountCreateSubscription::new()));
     broker.register_subscription(Arc::new(config_save::ConfigSaveSubscription::new()));
 }
 
