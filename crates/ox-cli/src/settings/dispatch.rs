@@ -39,30 +39,49 @@ pub fn dispatch_settings_key(
     bindings: &BindingRegistry,
     renderers: &RendererRegistry,
 ) -> Vec<Write> {
-    // Three-pass binding lookup ordered by specificity of context:
+    // Four-pass binding lookup ordered by specificity of context:
     //
-    //   1. Edit mode — when `ui/settings/edit_mode = true`, the
+    //   1. Compose mode — when `ui/settings/new_account/buffer` is
+    //      `Some(_)`, the user is composing a new connection name.
+    //      Bindings live at `Exact(settings/_compose_new_account)`
+    //      and capture printable / Backspace / Enter / Esc. Compose
+    //      and edit mode are mutually exclusive (per the spec's
+    //      mutual-exclusion invariant) but we let compose win first
+    //      so a stale `edit_mode = true` flag can't shadow a
+    //      legitimate compose; deterministic priority order is
+    //      sufficient until Phase 7's cleanup tightens the check.
+    //
+    //   2. Edit mode — when `ui/settings/edit_mode = true`, the
     //      dispatcher routes printable chars and Backspace to
-    //      `field.insert` / `field.delete_back` and Enter/Esc to
-    //      `edit.exit`. These bindings live under
+    //      `edit.insert_char` / `edit.delete_back` and Enter/Esc to
+    //      `edit.commit` / `edit.cancel`. These bindings live under
     //      `Exact(settings/_edit_mode)`. The synthetic cursor lets us
     //      reuse the regular registry/lookup machinery without a
     //      special branch — it's data, not code.
     //
-    //   2. Focused-row scope — `Prefix(settings/{accounts,models})`
+    //   3. Focused-row scope — `Prefix(settings/{accounts,models})`
     //      bindings fire on whichever row the user has focused. This
     //      is the per-row action surface (t/r/P/d on a focused leaf).
     //
-    //   3. Page cursor — the accordion's tree commands at
+    //   4. Page cursor — the accordion's tree commands at
     //      `Exact(settings/index)`, plus the legacy `_detail` field
     //      bindings at their own exact cursors.
+    let compose_active = read_compose_buffer(snapshot).is_some();
+    let compose_scope = ox_path::oxpath!("settings", "_compose_new_account");
     let edit_mode_active = read_edit_mode(snapshot);
     let edit_scope = ox_path::oxpath!("settings", "_edit_mode");
-    let cmd_id = if edit_mode_active {
-        bindings.lookup(screen, &edit_scope, mode, key)
+    let cmd_id = if compose_active {
+        bindings.lookup(screen, &compose_scope, mode, key)
     } else {
         None
     }
+    .or_else(|| {
+        if edit_mode_active {
+            bindings.lookup(screen, &edit_scope, mode, key)
+        } else {
+            None
+        }
+    })
     .or_else(|| {
         read_focused(snapshot)
             .as_ref()
@@ -110,6 +129,21 @@ fn read_edit_mode(snapshot: &mut dyn Reader) -> bool {
         .unwrap_or(false)
 }
 
+/// Read `ui/settings/new_account/buffer`. Returns `Some(_)` when the
+/// user is composing a new account name (compose-mode active).
+fn read_compose_buffer(snapshot: &mut dyn Reader) -> Option<String> {
+    use ox_path::oxpath;
+    use structfs_core_store::Value;
+    let record = snapshot
+        .read(&oxpath!("ui", "settings", "new_account", "buffer"))
+        .ok()
+        .flatten()?;
+    match record.as_value()? {
+        Value::String(s) => Some(s.clone()),
+        _ => None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -122,7 +156,7 @@ mod tests {
     use ox_store_util::local_config::LocalConfig;
     use ox_types::key_chord::{KeyCodeRepr, KeyModifierSet};
     use ox_types::{BindingEntry, CommandDisplay, CommandId, CommandScope};
-    use structfs_core_store::{Record, Value};
+    use structfs_core_store::{Record, Value, Writer};
 
     use super::super::command_registry::Command;
 
@@ -315,6 +349,78 @@ mod tests {
             &bindings,
             &renderers,
         );
+        assert!(writes.is_empty());
+    }
+
+    #[test]
+    fn compose_mode_routes_to_compose_scope_when_buffer_is_some() {
+        let mut cmds = CommandRegistry::new();
+        cmds.register(Box::new(WriteSentinel::new()));
+
+        let mut bindings = BindingRegistry::new();
+        bindings.register(BindingEntry {
+            screen: Screen::Settings,
+            scope: ox_types::BindingScope::Exact(oxpath!("settings", "_compose_new_account")),
+            mode: None,
+            key: key_char('a'),
+            command_id: cmd_id("test.sentinel"),
+        });
+
+        let renderers = RendererRegistry::new();
+        let mut reader = LocalConfig::default();
+        // Seed the buffer so the dispatcher sees compose-mode active.
+        reader
+            .write(
+                &oxpath!("ui", "settings", "new_account", "buffer"),
+                Record::parsed(Value::String(String::new())),
+            )
+            .unwrap();
+
+        let writes = dispatch_settings_key(
+            &mut reader,
+            Screen::Settings,
+            &oxpath!("settings", "index"),
+            None,
+            &key_char('a'),
+            &cmds,
+            &bindings,
+            &renderers,
+        );
+
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].path, oxpath!("ui", "sentinel"));
+    }
+
+    #[test]
+    fn compose_mode_falls_through_when_buffer_is_absent() {
+        let mut cmds = CommandRegistry::new();
+        cmds.register(Box::new(WriteSentinel::new()));
+
+        let mut bindings = BindingRegistry::new();
+        // Bind ONLY at the compose scope — should not match because
+        // the buffer is unset (no fallthrough scope picks 'a' up).
+        bindings.register(BindingEntry {
+            screen: Screen::Settings,
+            scope: ox_types::BindingScope::Exact(oxpath!("settings", "_compose_new_account")),
+            mode: None,
+            key: key_char('a'),
+            command_id: cmd_id("test.sentinel"),
+        });
+
+        let renderers = RendererRegistry::new();
+        let mut reader = LocalConfig::default();
+
+        let writes = dispatch_settings_key(
+            &mut reader,
+            Screen::Settings,
+            &oxpath!("settings", "index"),
+            None,
+            &key_char('a'),
+            &cmds,
+            &bindings,
+            &renderers,
+        );
+
         assert!(writes.is_empty());
     }
 

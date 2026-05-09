@@ -368,6 +368,57 @@ fn register_edit_mode(reg: &mut BindingRegistry) {
     bind(reg, Some(scope), no_mods(), KeyCodeRepr::Esc, "edit.cancel");
 }
 
+/// Register the compose-new-account mode's bindings at the synthetic
+/// `settings/_compose_new_account` cursor scope. The dispatcher routes
+/// to this scope when `ui/settings/new_account/buffer` is `Some(_)`.
+///
+/// Mirrors `register_edit_mode`'s shape: printable ASCII +
+/// Backspace/Enter/Esc, with shift-only modifier on uppercase letters
+/// so the encode/parse round-trip lines up with the input store.
+fn register_compose_new_account(reg: &mut BindingRegistry) {
+    let scope = oxpath!("settings", "_compose_new_account");
+
+    for byte in 0x20u8..=0x7E {
+        let ch = byte as char;
+        let modifiers = if ch.is_ascii_uppercase() {
+            shift_only()
+        } else {
+            no_mods()
+        };
+        reg.register(BindingEntry {
+            screen: Screen::Settings,
+            scope: BindingScope::Exact(scope.clone()),
+            mode: None,
+            key: KeyChord {
+                modifiers,
+                code: KeyCodeRepr::Char(ch),
+            },
+            command_id: cmd("accounts.compose.insert_char"),
+        });
+    }
+    bind(
+        reg,
+        Some(scope.clone()),
+        no_mods(),
+        KeyCodeRepr::Backspace,
+        "accounts.compose.delete_back",
+    );
+    bind(
+        reg,
+        Some(scope.clone()),
+        no_mods(),
+        KeyCodeRepr::Enter,
+        "accounts.compose.commit",
+    );
+    bind(
+        reg,
+        Some(scope),
+        no_mods(),
+        KeyCodeRepr::Esc,
+        "accounts.compose.cancel",
+    );
+}
+
 /// Whole-screen `?` toggles the shortcuts modal regardless of cursor
 /// depth. `BindingScope::Anywhere` means specific scopes can still
 /// shadow it by registering a same-key binding (none do today).
@@ -402,6 +453,7 @@ fn register_global(reg: &mut BindingRegistry) {
 pub fn register(reg: &mut BindingRegistry) {
     register_global(reg);
     register_edit_mode(reg);
+    register_compose_new_account(reg);
     register_index(reg);
     register_account_delete(reg);
     register_row_prefixes(reg);

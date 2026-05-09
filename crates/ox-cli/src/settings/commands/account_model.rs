@@ -41,6 +41,54 @@ command! {
     run: |snap, _ctx| accounts_add(snap),
 }
 
+// Compose-mode commands. The dispatcher routes printable / Backspace /
+// Enter / Esc to these while `ui/settings/new_account/buffer` is `Some`,
+// via the synthetic `settings/_compose_new_account` binding scope.
+// The buffer is the single source of truth for the in-flight name.
+
+command! {
+    struct_name: AccountsComposeInsertChar,
+    id: "accounts.compose.insert_char",
+    title: "Insert character",
+    description: "Append the just-pressed printable char to the new-account name buffer.",
+    screen: Screen::Settings,
+    cursor: None,
+    run: |snap, ctx| accounts_compose_insert_char(snap, ctx),
+}
+
+command! {
+    struct_name: AccountsComposeDeleteBack,
+    id: "accounts.compose.delete_back",
+    title: "Backspace",
+    description: "Pop the last character from the new-account name buffer.",
+    screen: Screen::Settings,
+    cursor: None,
+    run: |snap, _ctx| accounts_compose_delete_back(snap),
+}
+
+command! {
+    struct_name: AccountsComposeCommit,
+    id: "accounts.compose.commit",
+    title: "Create connection",
+    description: "Validate the buffered name and materialize the AccountConfig.",
+    screen: Screen::Settings,
+    cursor: None,
+    run: |snap, _ctx| accounts_compose_commit(snap),
+}
+
+command! {
+    struct_name: AccountsComposeCancel,
+    id: "accounts.compose.cancel",
+    title: "Cancel new connection",
+    description: "Discard the new-account buffer; exit compose mode.",
+    screen: Screen::Settings,
+    cursor: None,
+    run: |_snap, _ctx| vec![Write {
+        path: oxpath!("ui", "settings", "new_account", "buffer"),
+        record: Record::parsed(Value::Null),
+    }],
+}
+
 command! {
     struct_name: AccountsDeleteConfirm,
     id: "accounts.delete_confirm",
@@ -348,6 +396,144 @@ fn accounts_add(data: &mut dyn Reader) -> Vec<Write> {
     // produces from the same row.
     writes.extend(super::edit::begin_account_add());
     writes
+}
+
+fn accounts_compose_insert_char(
+    data: &mut dyn Reader,
+    ctx: &super::super::command_registry::CommandCtx<'_>,
+) -> Vec<Write> {
+    use ox_types::key_chord::KeyCodeRepr;
+    let chord = match ctx.last_keystroke.as_ref() {
+        Some(c) => c,
+        None => return Vec::new(),
+    };
+    let ch = match chord.code {
+        KeyCodeRepr::Char(c) => c,
+        _ => return Vec::new(),
+    };
+    let current: String =
+        read_typed(data, &oxpath!("ui", "settings", "new_account", "buffer")).unwrap_or_default();
+    let mut next = current;
+    next.push(ch);
+    vec![Write {
+        path: oxpath!("ui", "settings", "new_account", "buffer"),
+        record: Record::parsed(Value::String(next)),
+    }]
+}
+
+fn accounts_compose_delete_back(data: &mut dyn Reader) -> Vec<Write> {
+    let mut current: String =
+        read_typed(data, &oxpath!("ui", "settings", "new_account", "buffer")).unwrap_or_default();
+    if current.pop().is_none() {
+        return Vec::new();
+    }
+    vec![Write {
+        path: oxpath!("ui", "settings", "new_account", "buffer"),
+        record: Record::parsed(Value::String(current)),
+    }]
+}
+
+fn accounts_compose_commit(data: &mut dyn Reader) -> Vec<Write> {
+    use ox_kernel::PathComponent;
+
+    let buffer: String =
+        read_typed(data, &oxpath!("ui", "settings", "new_account", "buffer")).unwrap_or_default();
+    let trimmed = buffer.trim();
+    // Empty/whitespace: silent no-op so compose mode stays open.
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    // `_`-prefix: kept as a transitional rule. Phase 7 retires it once
+    // there are no remaining sentinel paths to collide with.
+    if trimmed.starts_with('_') {
+        return vec![banner_error(format!(
+            "Account name '{}' starts with '_', which is reserved. Try a name without the leading underscore.",
+            trimmed
+        ))];
+    }
+    let comp = match PathComponent::try_new(trimmed.to_string()) {
+        Ok(c) => c,
+        Err(_) => {
+            return vec![banner_error(format!(
+                "Invalid account name: '{}'",
+                trimmed
+            ))];
+        }
+    };
+
+    let cfg = AccountConfig {
+        provider: "anthropic".to_string(),
+    };
+    let new_account_row = oxpath!("settings", "accounts", comp.clone());
+    let mut expanded: Vec<String> =
+        read_typed(data, &oxpath!("ui", "settings", "expanded")).unwrap_or_default();
+    let accounts_key = "settings/accounts".to_string();
+    let new_row_key = format!("settings/accounts/{}", trimmed);
+    if !expanded.iter().any(|s| s == &accounts_key) {
+        expanded.push(accounts_key);
+    }
+    if !expanded.iter().any(|s| s == &new_row_key) {
+        expanded.push(new_row_key);
+    }
+
+    let acct_path = oxpath!("config", "gate", "accounts", comp);
+    let cfg_value = match to_value(&cfg) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let selected_value = match to_value(&Some(trimmed.to_string())) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let expanded_value = match to_value(&expanded) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+
+    vec![
+        Write {
+            path: acct_path,
+            record: Record::parsed(cfg_value),
+        },
+        Write {
+            path: oxpath!("ui", "settings", "accounts", "selected"),
+            record: Record::parsed(selected_value),
+        },
+        Write {
+            path: oxpath!("ui", "settings", "cursor"),
+            record: Record::parsed(path_to_value(&oxpath!("settings", "index"))),
+        },
+        Write {
+            path: oxpath!("ui", "settings", "focused"),
+            record: Record::parsed(path_to_value(&new_account_row)),
+        },
+        Write {
+            path: oxpath!("ui", "settings", "expanded"),
+            record: Record::parsed(expanded_value),
+        },
+        Write {
+            path: oxpath!("ui", "settings", "new_account", "buffer"),
+            record: Record::parsed(Value::Null),
+        },
+    ]
+}
+
+/// Build a `GlobalBanner::Error` write for `ui/global/banner`. Mirrors
+/// the same-named helper in `edit.rs`; kept private here so the
+/// compose-mode commands stay self-contained.
+fn banner_error(message: String) -> Write {
+    use ox_types::settings::GlobalBanner;
+    let banner = GlobalBanner::Error {
+        message,
+        set_at_ms: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0),
+    };
+    Write {
+        path: oxpath!("ui", "global", "banner"),
+        record: Record::parsed(to_value(&banner).unwrap()),
+    }
 }
 
 fn accounts_delete(data: &mut dyn Reader) -> Vec<Write> {
@@ -895,6 +1081,10 @@ fn accounts_fork_provider(data: &mut dyn Reader) -> Vec<Write> {
 
 pub fn register(reg: &mut CommandRegistry) {
     reg.register(Box::new(AccountsAdd::new()));
+    reg.register(Box::new(AccountsComposeInsertChar::new()));
+    reg.register(Box::new(AccountsComposeDeleteBack::new()));
+    reg.register(Box::new(AccountsComposeCommit::new()));
+    reg.register(Box::new(AccountsComposeCancel::new()));
     reg.register(Box::new(AccountsDeleteConfirm::new()));
     reg.register(Box::new(AccountsCancel::new()));
     reg.register(Box::new(AccountsDelete::new()));

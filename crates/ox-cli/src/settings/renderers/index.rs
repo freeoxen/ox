@@ -54,7 +54,7 @@ impl Renderer for IndexRenderer {
             })
             .unwrap_or_default();
 
-        let items: Vec<ListItem> = rows
+        let mut items: Vec<ListItem> = rows
             .iter()
             .enumerate()
             .map(|(i, row)| {
@@ -93,6 +93,36 @@ impl Renderer for IndexRenderer {
             })
             .collect();
 
+        let mut selected = selected;
+
+        // Compose-mode affordance. While `ui/settings/new_account/buffer`
+        // is `Some(_)` — i.e. the user is actively naming a new
+        // connection — prepend an inline name prompt right after the
+        // expanded Accounts header. `focus: None` keeps j/k from
+        // landing on it. A future commit extends this to also emit a
+        // static "+ New connection" affordance when the buffer is None
+        // (replacing the synthetic AccountAdd ghost row in
+        // `visible_rows`); for now the static line still comes from
+        // that ghost row, so we only emit during compose.
+        let buffer: Option<String> =
+            crate::settings::renderers::util::read_typed(
+                ctx.data,
+                &ox_path::oxpath!("ui", "settings", "new_account", "buffer"),
+            );
+        if let Some(buf) = buffer {
+            if let Some(insert_idx) = find_accounts_header_followup_idx(&rows) {
+                let prompt = ListItem {
+                    primary: format!("    Name▸ {}\u{258F}", buf),
+                    primary_spans: None,
+                    secondary: None,
+                    badge: None,
+                    focus: None,
+                };
+                items.insert(insert_idx, prompt);
+                selected = selected.map(|s| if s >= insert_idx { s + 1 } else { s });
+            }
+        }
+
         let selected = selected.filter(|i| !items.is_empty() && *i < items.len());
 
         // Right-aligned dirty indicator on the title bar. Reads
@@ -113,6 +143,19 @@ impl Renderer for IndexRenderer {
     fn ascend_to(&self) -> AscendRule {
         AscendRule::ExitScreen
     }
+}
+
+/// Find the index right AFTER the Accounts entry header in the
+/// visible-rows enumeration. Returns `None` when the Accounts entry
+/// isn't expanded (or doesn't exist). The returned index is the
+/// position in the `items` vector where the compose-mode affordance
+/// should be inserted.
+fn find_accounts_header_followup_idx(rows: &[visible_rows::VisibleRow]) -> Option<usize> {
+    rows.iter()
+        .position(|r| {
+            matches!(&r.kind, RowKind::Entry { entry_id } if entry_id == "accounts") && r.expanded
+        })
+        .map(|i| i + 1)
 }
 
 /// For a focused selector row, build the flanked carousel as styled
