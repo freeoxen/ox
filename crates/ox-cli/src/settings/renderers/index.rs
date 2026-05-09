@@ -13,7 +13,7 @@
 //! glyph on the primary text; the legacy badge slot still carries
 //! the entry's badge string.
 
-use ox_view::{ListItem, ModifierSet, Span, Style, View};
+use ox_view::{FocusId, ListItem, ModifierSet, Span, Style, View};
 
 use crate::settings::commands::account_model::{AUTH_DISPLAY, resolve_protocol_options};
 use crate::settings::commands::edit::read_edit_state;
@@ -78,6 +78,7 @@ impl Renderer for IndexRenderer {
                             primary_spans: Some(spans),
                             secondary: row.secondary.clone(),
                             badge: row.badge.clone(),
+                            focus: Some(FocusId(row.path.clone())),
                         };
                     }
                 }
@@ -87,6 +88,7 @@ impl Renderer for IndexRenderer {
                     primary_spans: None,
                     secondary: row.secondary.clone(),
                     badge: row.badge.clone(),
+                    focus: Some(FocusId(row.path.clone())),
                 }
             })
             .collect();

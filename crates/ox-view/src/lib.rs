@@ -88,6 +88,11 @@ pub struct ListItem {
     pub primary_spans: Option<Vec<Span>>,
     pub secondary: Option<String>,
     pub badge: Option<String>,
+    /// Focus identity. `Some(FocusId(path))` marks this item as a
+    /// navigation target — the dispatcher's `j`/`k` cycles through
+    /// items with `focus: Some(...)` only. `None` marks the item as
+    /// a non-navigable decoration (banner, affordance, header).
+    pub focus: Option<FocusId>,
 }
 
 /// Identity of a focusable widget. The dispatcher's keyboard
@@ -358,12 +363,14 @@ mod tests {
                     primary_spans: None,
                     secondary: Some("anthropic".into()),
                     badge: Some("default".into()),
+                    focus: None,
                 },
                 ListItem {
                     primary: "work".into(),
                     primary_spans: None,
                     secondary: Some("openai".into()),
                     badge: None,
+                    focus: None,
                 },
             ],
             selected: Some(1),
@@ -375,12 +382,14 @@ mod tests {
                     primary_spans: None,
                     secondary: Some("anthropic".into()),
                     badge: Some("default".into()),
+                    focus: None,
                 },
                 ListItem {
                     primary: "work".into(),
                     primary_spans: None,
                     secondary: Some("openai".into()),
                     badge: None,
+                    focus: None,
                 },
             ],
             selected: Some(1),
@@ -396,6 +405,7 @@ mod tests {
                 primary_spans: None,
                 secondary: None,
                 badge: None,
+                focus: None,
             }],
             selected: Some(0),
         };
@@ -489,6 +499,7 @@ mod tests {
                             primary_spans: None,
                             secondary: None,
                             badge: None,
+                            focus: None,
                         }],
                         selected: Some(0),
                     }),
