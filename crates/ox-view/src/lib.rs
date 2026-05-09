@@ -286,6 +286,61 @@ impl View {
 }
 
 // ---------------------------------------------------------------------------
+// Focus enumeration
+// ---------------------------------------------------------------------------
+
+impl View {
+    /// Walk the View tree and collect every focusable widget's
+    /// `FocusId` in display order. The dispatcher uses this to
+    /// determine `j`/`k` traversal targets.
+    ///
+    /// Decorations (items with `focus: None`, banners, status
+    /// blocks, etc.) are skipped. Composite widgets (`Stack`,
+    /// `Modal`, `Pad`, `Frame`) recurse into their children.
+    pub fn focus_enumeration(&self) -> Vec<FocusId> {
+        let mut out = Vec::new();
+        self.collect_focus_into(&mut out);
+        out
+    }
+
+    fn collect_focus_into(&self, out: &mut Vec<FocusId>) {
+        match self {
+            View::Empty
+            | View::Text { .. }
+            | View::Form { .. }
+            | View::Banner { .. }
+            | View::StatusBlock { .. } => {}
+            View::List { items, .. } => {
+                for item in items {
+                    if let Some(id) = &item.focus {
+                        out.push(id.clone());
+                    }
+                }
+            }
+            View::Stack { children, .. } => {
+                for (child, _) in children {
+                    child.collect_focus_into(out);
+                }
+            }
+            View::Modal {
+                background,
+                foreground,
+                ..
+            } => {
+                background.collect_focus_into(out);
+                foreground.collect_focus_into(out);
+            }
+            View::Pad { child, .. } => {
+                child.collect_focus_into(out);
+            }
+            View::Frame { content, .. } => {
+                content.collect_focus_into(out);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -301,6 +356,97 @@ mod tests {
         let p3 = Path::parse("settings/accounts/beta").unwrap();
         assert_eq!(FocusId(p1.clone()), FocusId(p2));
         assert_ne!(FocusId(p1), FocusId(p3));
+    }
+
+    #[test]
+    fn focus_enumeration_empty_for_view_without_focusables() {
+        let view = View::Text {
+            spans: vec![Span::plain("hi")],
+            align: Align::Left,
+        };
+        assert!(view.focus_enumeration().is_empty());
+    }
+
+    #[test]
+    fn focus_enumeration_collects_list_items_in_order() {
+        use structfs_core_store::Path;
+        let view = View::List {
+            items: vec![
+                ListItem {
+                    primary: "alpha".into(),
+                    primary_spans: None,
+                    secondary: None,
+                    badge: None,
+                    focus: Some(FocusId(Path::parse("a").unwrap())),
+                },
+                ListItem {
+                    primary: "decoration".into(),
+                    primary_spans: None,
+                    secondary: None,
+                    badge: None,
+                    focus: None,
+                },
+                ListItem {
+                    primary: "beta".into(),
+                    primary_spans: None,
+                    secondary: None,
+                    badge: None,
+                    focus: Some(FocusId(Path::parse("b").unwrap())),
+                },
+            ],
+            selected: None,
+        };
+        let ids = view.focus_enumeration();
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids[0], FocusId(Path::parse("a").unwrap()));
+        assert_eq!(ids[1], FocusId(Path::parse("b").unwrap()));
+    }
+
+    #[test]
+    fn focus_enumeration_descends_into_stack_and_pad_and_modal() {
+        use structfs_core_store::Path;
+        let make_list_with_one = |id: &str| View::List {
+            items: vec![ListItem {
+                primary: id.into(),
+                primary_spans: None,
+                secondary: None,
+                badge: None,
+                focus: Some(FocusId(Path::parse(id).unwrap())),
+            }],
+            selected: None,
+        };
+        let stack = View::Stack {
+            dir: Direction::Vertical,
+            children: vec![
+                (make_list_with_one("a"), Sizing::Fill),
+                (make_list_with_one("b"), Sizing::Fill),
+            ],
+        };
+        let padded = View::Pad {
+            padding: Padding {
+                top: 0,
+                right: 0,
+                bottom: 0,
+                left: 0,
+            },
+            child: Box::new(stack),
+        };
+        let modal = View::Modal {
+            background: Box::new(make_list_with_one("bg")),
+            foreground: Box::new(padded),
+            dim: true,
+        };
+        let ids = modal.focus_enumeration();
+        // Both background and foreground contribute. Background first
+        // (it's drawn first); foreground after.
+        assert_eq!(
+            ids,
+            vec![
+                FocusId(Path::parse("bg").unwrap()),
+                FocusId(Path::parse("a").unwrap()),
+                FocusId(Path::parse("b").unwrap()),
+            ]
+        );
     }
 
     // Sanity: D1's original test, preserved as the canonical Text example.
