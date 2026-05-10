@@ -1400,30 +1400,24 @@ async fn delete_account_removes_connection_from_rendered_frame() {
     );
 
     // Direct broker reads — diagnostic output for the test report.
-    // Read at the empty path to inspect the flat-keyed root map; the
-    // renderer's `child_names_under` uses the same shape. Walking the
-    // keys and counting which ones still announce a child segment
-    // under `config/gate/accounts/` is the most direct proxy for what
-    // the renderer sees.
-    let root = h
+    // Walk the broker's enumeration of `config/gate/accounts` via
+    // `read_subtree`, which is the same shape the snapshot pipeline
+    // uses. Counting which entries still announce a child segment is
+    // the most direct proxy for what the renderer sees.
+    let entries = h
         .client
-        .read(&oxpath!())
+        .read_subtree(&oxpath!("config", "gate", "accounts"))
         .await
-        .expect("read root")
-        .expect("root present");
+        .expect("read_subtree accounts");
     let mut child_names: Vec<String> = Vec::new();
-    if let Some(Value::Map(m)) = root.as_value() {
-        let prefix = "config/gate/accounts/";
-        for key in m.keys() {
-            if let Some(rest) = key.strip_prefix(prefix) {
-                let segment = match rest.split('/').next() {
-                    Some(s) if !s.is_empty() => s.to_string(),
-                    _ => continue,
-                };
-                if !child_names.contains(&segment) {
-                    child_names.push(segment);
-                }
-            }
+    let prefix_len = oxpath!("config", "gate", "accounts").len();
+    for path in entries.keys() {
+        if path.len() <= prefix_len {
+            continue;
+        }
+        let segment = path.components[prefix_len].clone();
+        if !child_names.contains(&segment) {
+            child_names.push(segment);
         }
     }
     assert!(

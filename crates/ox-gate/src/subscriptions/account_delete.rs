@@ -69,12 +69,22 @@ impl Subscription for AccountDeleteCleanupSubscription {
             return vec![];
         }
 
-        // Filter 2: only react to deletes (Null writes). Updates and
-        // creates fall through.
-        let Some(record) = ctx.change.after.as_ref() else {
+        // Filter 2: only react to deletes. Two store-side shapes both
+        // represent "this account is gone" depending on whether the
+        // store implements StructFS's Null-write cascade convention as
+        // tombstone-Null (after = Some(Null)) or as outright removal
+        // (after = None). A subscription that watches deletions has to
+        // accept both, paired with a non-None `before` so we don't
+        // mistake a no-op write for a delete. Updates and creates fall
+        // through.
+        if ctx.change.before.is_none() {
             return vec![];
+        }
+        let after_is_delete = match ctx.change.after.as_ref() {
+            None => true,
+            Some(record) => matches!(record.as_value(), Some(Value::Null)),
         };
-        if !matches!(record.as_value(), Some(Value::Null)) {
+        if !after_is_delete {
             return vec![];
         }
 

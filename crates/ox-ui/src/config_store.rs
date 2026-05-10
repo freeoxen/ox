@@ -163,7 +163,11 @@ impl Reader for ConfigStore {
             return Ok(Some(Record::parsed(Value::Bool(self.is_dirty()))));
         }
 
-        // Root read: return all effective values as a map
+        // Root read: return all effective values as a map. Runtime Null
+        // entries are tombstones — base values masked, or fresh deletes
+        // — and must be filtered out so consumers that walk this Map
+        // (e.g. the renderer's `child_names_under`) don't observe a
+        // path the convention says is gone.
         if key.is_empty() {
             tracing::debug!("config root read");
             let mut map = BTreeMap::new();
@@ -171,7 +175,11 @@ impl Reader for ConfigStore {
                 map.insert(k.clone(), v.clone());
             }
             for (k, v) in &self.runtime {
-                map.insert(k.clone(), v.clone());
+                if *v == Value::Null {
+                    map.remove(k);
+                } else {
+                    map.insert(k.clone(), v.clone());
+                }
             }
             return Ok(Some(Record::parsed(Value::Map(map))));
         }
@@ -208,6 +216,57 @@ impl Writer for ConfigStore {
             .as_value()
             .ok_or_else(|| StoreError::store("config", "write", "expected parsed value"))?
             .clone();
+
+        // StructFS convention: writing `Value::Null` deletes `to` AND
+        // its subtree. ConfigStore has an immutable base layer
+        // underneath the mutable runtime, so the cascade has to mask
+        // every base descendant with a runtime tombstone (so reads at
+        // those paths return `Ok(None)`) and drop runtime descendants
+        // that already exist (the runtime entry is gone, no need to
+        // tombstone it).
+        //
+        // Component-aware prefix: deleting `accounts` must not touch
+        // `accounts_other`. The `<key>/` separator check enforces
+        // alignment at component boundaries.
+        if matches!(value, Value::Null) {
+            let descendant_prefix = format!("{}/", key);
+
+            // Tombstone every base descendant that the runtime hasn't
+            // already shadowed, then collect runtime descendants for
+            // removal. We can't mutate `runtime` while iterating it,
+            // so collect keys first.
+            let runtime_descendants: Vec<String> = self
+                .runtime
+                .keys()
+                .filter(|k| k.starts_with(&descendant_prefix))
+                .cloned()
+                .collect();
+            for k in runtime_descendants {
+                self.runtime.remove(&k);
+            }
+            for base_key in self.base.keys() {
+                if base_key.starts_with(&descendant_prefix) {
+                    self.runtime.insert(base_key.clone(), Value::Null);
+                }
+            }
+
+            // The target itself: tombstone if base has anything to
+            // shadow (either an exact key or any descendant), else
+            // remove from runtime — `Ok(None)` is the natural read
+            // result when no layer holds the path.
+            let base_shadows = self.base.contains_key(&key)
+                || self
+                    .base
+                    .keys()
+                    .any(|k| k.starts_with(&descendant_prefix));
+            if base_shadows {
+                self.runtime.insert(key, Value::Null);
+            } else {
+                self.runtime.remove(&key);
+            }
+            return Ok(to.clone());
+        }
+
         self.runtime.insert(key, value);
         Ok(to.clone())
     }
@@ -538,5 +597,77 @@ mod tests {
             record.as_value().unwrap(),
             &Value::String("from-disk".into())
         );
+    }
+
+    #[test]
+    fn null_write_cascades_subtree_and_filters_root_read() {
+        // StructFS convention: writing `Value::Null` at K1 deletes K1
+        // AND every descendant. ConfigStore has an immutable base layer
+        // underneath the runtime, so the cascade has to mask base
+        // descendants with runtime tombstones; descendants written into
+        // runtime are dropped outright. The root-read Map (the shape
+        // `child_names_under` walks) must reflect the post-delete world.
+        let mut base = BTreeMap::new();
+        base.insert(
+            "gate/k1".to_string(),
+            Value::String("base-k1".into()),
+        );
+        base.insert(
+            "gate/k1/sub1".to_string(),
+            Value::String("base-sub1".into()),
+        );
+        base.insert(
+            "gate/k1/sub2".to_string(),
+            Value::String("base-sub2".into()),
+        );
+        // Sibling that shares the string prefix `gate/k1` up to a
+        // non-separator character — guards the component-aware match.
+        base.insert(
+            "gate/k1_other".to_string(),
+            Value::String("sibling".into()),
+        );
+        let mut config = ConfigStore::new(base);
+
+        // Add a runtime entry under the doomed subtree to confirm both
+        // layers get swept.
+        config
+            .write(
+                &path!("gate/k1/sub2/deep"),
+                Record::parsed(Value::String("runtime-deep".into())),
+            )
+            .unwrap();
+
+        config
+            .write(&path!("gate/k1"), Record::parsed(Value::Null))
+            .unwrap();
+
+        // Reads at K1 and every descendant return `Ok(None)`.
+        assert!(read_val(&mut config, "gate/k1").is_none());
+        assert!(read_val(&mut config, "gate/k1/sub1").is_none());
+        assert!(read_val(&mut config, "gate/k1/sub2").is_none());
+        assert!(read_val(&mut config, "gate/k1/sub2/deep").is_none());
+
+        // Sibling untouched.
+        assert_eq!(
+            read_val(&mut config, "gate/k1_other"),
+            Some(Value::String("sibling".into()))
+        );
+
+        // Root-read Map drops every key under the deleted subtree but
+        // retains the sibling.
+        let root = read_val(&mut config, "").unwrap();
+        match root {
+            Value::Map(m) => {
+                assert!(!m.contains_key("gate/k1"));
+                assert!(!m.contains_key("gate/k1/sub1"));
+                assert!(!m.contains_key("gate/k1/sub2"));
+                assert!(!m.contains_key("gate/k1/sub2/deep"));
+                assert_eq!(
+                    m.get("gate/k1_other"),
+                    Some(&Value::String("sibling".into()))
+                );
+            }
+            _ => panic!("expected Map"),
+        }
     }
 }
