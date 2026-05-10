@@ -123,6 +123,25 @@ impl Renderer for IndexRenderer {
             selected = selected.map(|s| if s >= insert_idx { s + 1 } else { s });
         }
 
+        // Pending-delete confirmation banner. Emitted as a ListItem
+        // prepended to the items vector when ui/settings/pending_delete
+        // is Some(name). Decoration only — focus: None; j/k skips it.
+        let pending: Option<String> = crate::settings::renderers::util::read_typed(
+            ctx.data,
+            &ox_path::oxpath!("ui", "settings", "pending_delete"),
+        );
+        if let Some(name) = pending {
+            let banner = ListItem {
+                primary: format!("Delete '{}'? y / n", name),
+                primary_spans: None,
+                secondary: None,
+                badge: None,
+                focus: None,
+            };
+            items.insert(0, banner);
+            selected = selected.map(|s| s + 1);
+        }
+
         let selected = selected.filter(|i| !items.is_empty() && *i < items.len());
 
         // Right-aligned dirty indicator on the title bar. Reads

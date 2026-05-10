@@ -39,9 +39,17 @@ pub fn dispatch_settings_key(
     bindings: &BindingRegistry,
     renderers: &RendererRegistry,
 ) -> Vec<Write> {
-    // Four-pass binding lookup ordered by specificity of context:
+    // Five-pass binding lookup ordered by specificity of context:
     //
-    //   1. Compose mode — when `ui/settings/new_account/buffer` is
+    //   1. Pending-delete mode — when `ui/settings/pending_delete` is
+    //      `Some(_)`, the user is being asked to confirm a delete.
+    //      Bindings live at `Exact(settings/_pending_delete)` and
+    //      capture y / n / Esc. Highest priority among modes because
+    //      "ready-to-take-action" (y/n) should win deterministically
+    //      if any other mode flag was somehow also set; the modes are
+    //      mutually exclusive by design.
+    //
+    //   2. Compose mode — when `ui/settings/new_account/buffer` is
     //      `Some(_)`, the user is composing a new connection name.
     //      Bindings live at `Exact(settings/_compose_new_account)`
     //      and capture printable / Backspace / Enter / Esc. Compose
@@ -51,7 +59,7 @@ pub fn dispatch_settings_key(
     //      legitimate compose; deterministic priority order is
     //      sufficient until Phase 7's cleanup tightens the check.
     //
-    //   2. Edit mode — when `ui/settings/edit_mode = true`, the
+    //   3. Edit mode — when `ui/settings/edit_mode = true`, the
     //      dispatcher routes printable chars and Backspace to
     //      `edit.insert_char` / `edit.delete_back` and Enter/Esc to
     //      `edit.commit` / `edit.cancel`. These bindings live under
@@ -59,22 +67,31 @@ pub fn dispatch_settings_key(
     //      reuse the regular registry/lookup machinery without a
     //      special branch — it's data, not code.
     //
-    //   3. Focused-row scope — `Prefix(settings/{accounts,models})`
+    //   4. Focused-row scope — `Prefix(settings/{accounts,models})`
     //      bindings fire on whichever row the user has focused. This
     //      is the per-row action surface (t/r/P/d on a focused leaf).
     //
-    //   4. Page cursor — the accordion's tree commands at
+    //   5. Page cursor — the accordion's tree commands at
     //      `Exact(settings/index)`, plus the legacy `_detail` field
     //      bindings at their own exact cursors.
+    let pending_delete_active = read_pending_delete(snapshot).is_some();
+    let pending_delete_scope = ox_path::oxpath!("settings", "_pending_delete");
     let compose_active = read_compose_buffer(snapshot).is_some();
     let compose_scope = ox_path::oxpath!("settings", "_compose_new_account");
     let edit_mode_active = read_edit_mode(snapshot);
     let edit_scope = ox_path::oxpath!("settings", "_edit_mode");
-    let cmd_id = if compose_active {
-        bindings.lookup(screen, &compose_scope, mode, key)
+    let cmd_id = if pending_delete_active {
+        bindings.lookup(screen, &pending_delete_scope, mode, key)
     } else {
         None
     }
+    .or_else(|| {
+        if compose_active {
+            bindings.lookup(screen, &compose_scope, mode, key)
+        } else {
+            None
+        }
+    })
     .or_else(|| {
         if edit_mode_active {
             bindings.lookup(screen, &edit_scope, mode, key)
@@ -136,6 +153,21 @@ fn read_compose_buffer(snapshot: &mut dyn Reader) -> Option<String> {
     use structfs_core_store::Value;
     let record = snapshot
         .read(&oxpath!("ui", "settings", "new_account", "buffer"))
+        .ok()
+        .flatten()?;
+    match record.as_value()? {
+        Value::String(s) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+/// Read `ui/settings/pending_delete`. Returns `Some(_)` when the
+/// user is being asked to confirm a delete (pending-delete mode).
+fn read_pending_delete(snapshot: &mut dyn Reader) -> Option<String> {
+    use ox_path::oxpath;
+    use structfs_core_store::Value;
+    let record = snapshot
+        .read(&oxpath!("ui", "settings", "pending_delete"))
         .ok()
         .flatten()?;
     match record.as_value()? {
@@ -422,6 +454,44 @@ mod tests {
         );
 
         assert!(writes.is_empty());
+    }
+
+    #[test]
+    fn pending_delete_routes_to_pending_delete_scope_when_set() {
+        let mut cmds = CommandRegistry::new();
+        cmds.register(Box::new(WriteSentinel::new()));
+
+        let mut bindings = BindingRegistry::new();
+        bindings.register(BindingEntry {
+            screen: Screen::Settings,
+            scope: ox_types::BindingScope::Exact(oxpath!("settings", "_pending_delete")),
+            mode: None,
+            key: key_char('y'),
+            command_id: cmd_id("test.sentinel"),
+        });
+
+        let renderers = RendererRegistry::new();
+        let mut reader = LocalConfig::default();
+        reader
+            .write(
+                &oxpath!("ui", "settings", "pending_delete"),
+                Record::parsed(Value::String("alpha".into())),
+            )
+            .unwrap();
+
+        let writes = dispatch_settings_key(
+            &mut reader,
+            Screen::Settings,
+            &oxpath!("settings", "index"),
+            None,
+            &key_char('y'),
+            &cmds,
+            &bindings,
+            &renderers,
+        );
+
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].path, oxpath!("ui", "sentinel"));
     }
 
     #[test]

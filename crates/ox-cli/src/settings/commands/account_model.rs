@@ -89,6 +89,34 @@ command! {
     }],
 }
 
+// Pending-delete confirmation commands. The dispatcher routes y / n / Esc
+// to these while `ui/settings/pending_delete` is `Some(_)`, via the
+// synthetic `settings/_pending_delete` binding scope. The pending pointer
+// is the single source of truth for which account is being confirmed.
+
+command! {
+    struct_name: AccountsConfirmDelete,
+    id: "accounts.confirm.delete",
+    title: "Confirm delete",
+    description: "Delete the pending account record; clear the pending-delete pointer.",
+    screen: Screen::Settings,
+    cursor: None,
+    run: |snap, _ctx| accounts_confirm_delete(snap),
+}
+
+command! {
+    struct_name: AccountsConfirmCancel,
+    id: "accounts.confirm.cancel",
+    title: "Cancel delete",
+    description: "Dismiss the delete-confirmation banner without deleting.",
+    screen: Screen::Settings,
+    cursor: None,
+    run: |_snap, _ctx| vec![Write {
+        path: oxpath!("ui", "settings", "pending_delete"),
+        record: Record::parsed(Value::Null),
+    }],
+}
+
 command! {
     struct_name: AccountsDeleteConfirm,
     id: "accounts.delete_confirm",
@@ -549,6 +577,46 @@ fn accounts_delete(data: &mut dyn Reader) -> Vec<Write> {
         path: oxpath!("config", "gate", "accounts", comp),
         record: Record::parsed(Value::Null),
     }]
+}
+
+fn accounts_confirm_delete(data: &mut dyn Reader) -> Vec<Write> {
+    use ox_kernel::PathComponent;
+
+    // Read the pending account name. If unset, the dispatch shouldn't
+    // have routed here — defensive no-op.
+    let name: String = read_typed(data, &oxpath!("ui", "settings", "pending_delete"))
+        .unwrap_or_default();
+    if name.is_empty() {
+        return Vec::new();
+    }
+    let comp = match PathComponent::try_new(&name) {
+        Ok(c) => c,
+        Err(_) => {
+            // Pending pointer somehow got an invalid name. Clear it
+            // defensively so we don't leave the user stuck in
+            // confirmation mode.
+            return vec![Write {
+                path: oxpath!("ui", "settings", "pending_delete"),
+                record: Record::parsed(Value::Null),
+            }];
+        }
+    };
+
+    vec![
+        // The actual delete — Null write to the canonical account
+        // path. The AccountDeleteCleanupSubscription watches Prefix
+        // for null writes at account-record depth and does the
+        // cross-cutting side-data cleanup.
+        Write {
+            path: oxpath!("config", "gate", "accounts", comp),
+            record: Record::parsed(Value::Null),
+        },
+        // Clear the pending pointer.
+        Write {
+            path: oxpath!("ui", "settings", "pending_delete"),
+            record: Record::parsed(Value::Null),
+        },
+    ]
 }
 
 fn account_test(data: &mut dyn Reader) -> Vec<Write> {
@@ -1088,6 +1156,8 @@ pub fn register(reg: &mut CommandRegistry) {
     reg.register(Box::new(AccountsDeleteConfirm::new()));
     reg.register(Box::new(AccountsCancel::new()));
     reg.register(Box::new(AccountsDelete::new()));
+    reg.register(Box::new(AccountsConfirmDelete::new()));
+    reg.register(Box::new(AccountsConfirmCancel::new()));
     reg.register(Box::new(AccountTest::new()));
     reg.register(Box::new(AccountRefresh::new()));
     reg.register(Box::new(ModelsSetBootstrap::new()));

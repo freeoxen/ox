@@ -419,6 +419,34 @@ fn register_compose_new_account(reg: &mut BindingRegistry) {
     );
 }
 
+/// Register the pending-delete confirmation mode's bindings at the
+/// synthetic `settings/_pending_delete` cursor scope. The dispatcher
+/// routes to this scope when `ui/settings/pending_delete` is `Some(_)`.
+fn register_pending_delete(reg: &mut BindingRegistry) {
+    let scope = oxpath!("settings", "_pending_delete");
+    bind(
+        reg,
+        Some(scope.clone()),
+        no_mods(),
+        KeyCodeRepr::Char('y'),
+        "accounts.confirm.delete",
+    );
+    bind(
+        reg,
+        Some(scope.clone()),
+        no_mods(),
+        KeyCodeRepr::Char('n'),
+        "accounts.confirm.cancel",
+    );
+    bind(
+        reg,
+        Some(scope),
+        no_mods(),
+        KeyCodeRepr::Esc,
+        "accounts.confirm.cancel",
+    );
+}
+
 /// Whole-screen `?` toggles the shortcuts modal regardless of cursor
 /// depth. `BindingScope::Anywhere` means specific scopes can still
 /// shadow it by registering a same-key binding (none do today).
@@ -454,6 +482,7 @@ pub fn register(reg: &mut BindingRegistry) {
     register_global(reg);
     register_edit_mode(reg);
     register_compose_new_account(reg);
+    register_pending_delete(reg);
     register_index(reg);
     register_account_delete(reg);
     register_row_prefixes(reg);
