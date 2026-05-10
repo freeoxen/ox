@@ -285,10 +285,21 @@ fn register_row_prefixes(reg: &mut BindingRegistry) {
     );
     bind_prefix(
         reg,
-        models_subtree,
+        models_subtree.clone(),
         no_mods(),
         KeyCodeRepr::Char('d'),
         "models.toggle_default",
+    );
+    // `m` opens the manual-model entry form for the focused account.
+    // Bound at Prefix(settings/models) so it fires anywhere inside the
+    // expanded Models section — the empty-catalog rows are the natural
+    // launch point but a focused model row works too.
+    bind_prefix(
+        reg,
+        models_subtree,
+        no_mods(),
+        KeyCodeRepr::Char('m'),
+        "models.add_manual",
     );
 }
 
@@ -394,6 +405,56 @@ fn register_compose_new_account(reg: &mut BindingRegistry) {
     );
 }
 
+/// Register the manual-model entry mode's bindings at the synthetic
+/// `settings/_manual_model` cursor scope. The dispatcher routes to
+/// this scope when `ui/settings/manual_model/stage` holds a typed
+/// `ManualModelStage` value (PascalCase wire shape). Mirrors
+/// `register_compose_new_account`'s shape: printable ASCII +
+/// Backspace/Enter/Esc, with shift_only on uppercase letters.
+fn register_manual_model(reg: &mut BindingRegistry) {
+    let scope = oxpath!("settings", "_manual_model");
+
+    for byte in 0x20u8..=0x7E {
+        let ch = byte as char;
+        let modifiers = if ch.is_ascii_uppercase() {
+            shift_only()
+        } else {
+            no_mods()
+        };
+        reg.register(BindingEntry {
+            screen: Screen::Settings,
+            scope: BindingScope::Exact(scope.clone()),
+            mode: None,
+            key: KeyChord {
+                modifiers,
+                code: KeyCodeRepr::Char(ch),
+            },
+            command_id: cmd("models.compose_manual.insert_char"),
+        });
+    }
+    bind(
+        reg,
+        Some(scope.clone()),
+        no_mods(),
+        KeyCodeRepr::Backspace,
+        "models.compose_manual.delete_back",
+    );
+    bind(
+        reg,
+        Some(scope.clone()),
+        no_mods(),
+        KeyCodeRepr::Enter,
+        "models.compose_manual.commit",
+    );
+    bind(
+        reg,
+        Some(scope),
+        no_mods(),
+        KeyCodeRepr::Esc,
+        "models.compose_manual.cancel",
+    );
+}
+
 /// Register the pending-delete confirmation mode's bindings at the
 /// synthetic `settings/_pending_delete` cursor scope. The dispatcher
 /// routes to this scope when `ui/settings/pending_delete` is `Some(_)`.
@@ -457,6 +518,7 @@ pub fn register(reg: &mut BindingRegistry) {
     register_global(reg);
     register_edit_mode(reg);
     register_compose_new_account(reg);
+    register_manual_model(reg);
     register_pending_delete(reg);
     register_index(reg);
     register_row_prefixes(reg);

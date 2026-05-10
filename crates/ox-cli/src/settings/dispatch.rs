@@ -39,7 +39,7 @@ pub fn dispatch_settings_key(
     bindings: &BindingRegistry,
     renderers: &RendererRegistry,
 ) -> Vec<Write> {
-    // Five-pass binding lookup ordered by specificity of context:
+    // Six-pass binding lookup ordered by specificity of context:
     //
     //   1. Pending-delete mode — when `ui/settings/pending_delete` is
     //      `Some(_)`, the user is being asked to confirm a delete.
@@ -49,7 +49,17 @@ pub fn dispatch_settings_key(
     //      if any other mode flag was somehow also set; the modes are
     //      mutually exclusive by design.
     //
-    //   2. Compose mode — when `ui/settings/new_account/buffer` is
+    //   2. Manual-model mode — when `ui/settings/manual_model/stage`
+    //      holds a typed `ManualModelStage` value (PascalCase wire
+    //      shape), the user is filling the three-stage manual-model
+    //      form. Bindings live at `Exact(settings/_manual_model)` and
+    //      capture printable / Backspace / Enter / Esc. The typed
+    //      shape is the discriminator: legacy stringly-typed values
+    //      ("id"/"ctx"/"out") fail the typed deserialize and fall
+    //      through to the edit-mode pass — that lets the new flow
+    //      land before the old one retires.
+    //
+    //   3. Compose mode — when `ui/settings/new_account/buffer` is
     //      `Some(_)`, the user is composing a new connection name.
     //      Bindings live at `Exact(settings/_compose_new_account)`
     //      and capture printable / Backspace / Enter / Esc. Compose
@@ -59,7 +69,7 @@ pub fn dispatch_settings_key(
     //      legitimate compose; deterministic priority order is
     //      sufficient until Phase 7's cleanup tightens the check.
     //
-    //   3. Edit mode — when `ui/settings/edit_mode = true`, the
+    //   4. Edit mode — when `ui/settings/edit_mode = true`, the
     //      dispatcher routes printable chars and Backspace to
     //      `edit.insert_char` / `edit.delete_back` and Enter/Esc to
     //      `edit.commit` / `edit.cancel`. These bindings live under
@@ -67,15 +77,17 @@ pub fn dispatch_settings_key(
     //      reuse the regular registry/lookup machinery without a
     //      special branch — it's data, not code.
     //
-    //   4. Focused-row scope — `Prefix(settings/{accounts,models})`
+    //   5. Focused-row scope — `Prefix(settings/{accounts,models})`
     //      bindings fire on whichever row the user has focused. This
     //      is the per-row action surface (t/r/P/d on a focused leaf).
     //
-    //   5. Page cursor — the accordion's tree commands at
+    //   6. Page cursor — the accordion's tree commands at
     //      `Exact(settings/index)`, plus the legacy `_detail` field
     //      bindings at their own exact cursors.
     let pending_delete_active = read_pending_delete(snapshot).is_some();
     let pending_delete_scope = ox_path::oxpath!("settings", "_pending_delete");
+    let manual_model_active = read_manual_model_active(snapshot);
+    let manual_model_scope = ox_path::oxpath!("settings", "_manual_model");
     let compose_active = read_compose_buffer(snapshot).is_some();
     let compose_scope = ox_path::oxpath!("settings", "_compose_new_account");
     let edit_mode_active = read_edit_mode(snapshot);
@@ -85,6 +97,13 @@ pub fn dispatch_settings_key(
     } else {
         None
     }
+    .or_else(|| {
+        if manual_model_active {
+            bindings.lookup(screen, &manual_model_scope, mode, key)
+        } else {
+            None
+        }
+    })
     .or_else(|| {
         if compose_active {
             bindings.lookup(screen, &compose_scope, mode, key)
@@ -174,6 +193,35 @@ fn read_pending_delete(snapshot: &mut dyn Reader) -> Option<String> {
         Value::String(s) => Some(s.clone()),
         _ => None,
     }
+}
+
+/// Discriminate manual-model mode by attempting a typed deserialize at
+/// `ui/settings/manual_model/stage`. Returns `true` only when the
+/// stored value matches the new typed `ManualModelStage` shape (wire
+/// format `"Id"` / `"Ctx"` / `"Out"`).
+///
+/// The legacy stringly-typed write site stores `"id"` / `"ctx"` /
+/// `"out"` (snake_case strings); those fail the typed deserialize, so
+/// this returns `false` and the dispatcher falls through to the
+/// compose / edit-mode passes that the old flow already routes
+/// through. That coexistence is what keeps the new pass dormant until
+/// the entry point is rewired.
+fn read_manual_model_active(snapshot: &mut dyn Reader) -> bool {
+    use ox_path::oxpath;
+    use ox_types::settings::ManualModelStage;
+    let record = match snapshot
+        .read(&oxpath!("ui", "settings", "manual_model", "stage"))
+        .ok()
+        .flatten()
+    {
+        Some(r) => r,
+        None => return false,
+    };
+    let value = match record.as_value() {
+        Some(v) => v.clone(),
+        None => return false,
+    };
+    structfs_serde_store::from_value::<ManualModelStage>(value).is_ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -528,5 +576,88 @@ mod tests {
             Record::Parsed(Value::String(s)) => assert_eq!(s, "z"),
             other => panic!("unexpected record: {other:?}"),
         }
+    }
+
+    #[test]
+    fn manual_model_routes_to_manual_model_scope_when_typed_stage_set() {
+        use ox_types::settings::ManualModelStage;
+
+        let mut cmds = CommandRegistry::new();
+        cmds.register(Box::new(WriteSentinel::new()));
+
+        let mut bindings = BindingRegistry::new();
+        bindings.register(BindingEntry {
+            screen: Screen::Settings,
+            scope: ox_types::BindingScope::Exact(oxpath!("settings", "_manual_model")),
+            mode: None,
+            key: key_char('a'),
+            command_id: cmd_id("test.sentinel"),
+        });
+
+        let renderers = RendererRegistry::new();
+        let mut reader = LocalConfig::default();
+        reader
+            .write(
+                &oxpath!("ui", "settings", "manual_model", "stage"),
+                Record::parsed(structfs_serde_store::to_value(&ManualModelStage::Id).unwrap()),
+            )
+            .unwrap();
+
+        let writes = dispatch_settings_key(
+            &mut reader,
+            Screen::Settings,
+            &oxpath!("settings", "index"),
+            None,
+            &key_char('a'),
+            &cmds,
+            &bindings,
+            &renderers,
+        );
+
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].path, oxpath!("ui", "sentinel"));
+    }
+
+    #[test]
+    fn manual_model_falls_through_when_legacy_stringly_stage() {
+        // The old flow (begin_manual_model) writes Value::String("id") at
+        // the stage path. The new dispatcher pass deserializes the value as
+        // ManualModelStage; when it fails, falls through to edit-mode /
+        // page-cursor passes — preserving the old flow's behavior during
+        // the transition.
+        let cmds = CommandRegistry::new();
+        let mut bindings = BindingRegistry::new();
+        bindings.register(BindingEntry {
+            screen: Screen::Settings,
+            scope: ox_types::BindingScope::Exact(oxpath!("settings", "_manual_model")),
+            mode: None,
+            key: key_char('a'),
+            command_id: cmd_id("test.sentinel"),
+        });
+
+        let renderers = RendererRegistry::new();
+        let mut reader = LocalConfig::default();
+        reader
+            .write(
+                &oxpath!("ui", "settings", "manual_model", "stage"),
+                Record::parsed(Value::String("id".into())),
+            )
+            .unwrap();
+
+        let writes = dispatch_settings_key(
+            &mut reader,
+            Screen::Settings,
+            &oxpath!("settings", "index"),
+            None,
+            &key_char('a'),
+            &cmds,
+            &bindings,
+            &renderers,
+        );
+
+        // The new pass shouldn't fire — the value isn't the typed shape.
+        // Bindings would fall through; with no other binding registered,
+        // result is empty.
+        assert!(writes.is_empty());
     }
 }

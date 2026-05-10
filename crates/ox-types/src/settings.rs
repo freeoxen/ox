@@ -35,6 +35,28 @@ pub enum ModelField {
     OutputTokensOverride,
 }
 
+/// The current stage of the manual-model entry form.
+///
+/// The form is a three-step state machine: the user types a model id,
+/// then a context-window size, then a max-output-tokens size. Each
+/// stage's commit advances to the next; the final stage's commit
+/// finalizes the new `ModelInfo` into the account's catalog.
+///
+/// Wire format is PascalCase (`"Id"` / `"Ctx"` / `"Out"`) so it stays
+/// distinguishable on read from the legacy stringly-typed values
+/// (`"id"` / `"ctx"` / `"out"`) that older code paths still produce.
+/// The dispatcher's mode-aware pass treats this typed shape as the
+/// discriminator: typed → manual-model mode is active; legacy → fall
+/// through to other passes. That dual-shape coexistence lets the new
+/// command surface land before the old one retires.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum ManualModelStage {
+    Id,
+    Ctx,
+    Out,
+}
+
 /// Identifier for a (account, model) pair. The field name `model_id` matches
 /// `CompletionRole.model_id` in `ox-gate`.
 #[derive(Hash, Eq, PartialEq, Clone, Debug, Serialize, Deserialize)]
@@ -148,6 +170,43 @@ mod tests {
     #[test]
     fn model_field_output_tokens_override_roundtrip() {
         json_roundtrip(ModelField::OutputTokensOverride);
+    }
+
+    #[test]
+    fn manual_model_stage_id_roundtrip() {
+        json_roundtrip(ManualModelStage::Id);
+    }
+
+    #[test]
+    fn manual_model_stage_ctx_roundtrip() {
+        json_roundtrip(ManualModelStage::Ctx);
+    }
+
+    #[test]
+    fn manual_model_stage_out_roundtrip() {
+        json_roundtrip(ManualModelStage::Out);
+    }
+
+    #[test]
+    fn manual_model_stage_serializes_pascal_case() {
+        // Wire format must be PascalCase so the new typed value is
+        // distinguishable from the legacy stringly-typed "id"/"ctx"/"out"
+        // values that older write sites still produce. The dispatcher
+        // discriminates on shape; if these collided, the gating that
+        // keeps Commit A dormant would fire prematurely.
+        assert_eq!(serde_json::to_string(&ManualModelStage::Id).unwrap(), r#""Id""#);
+        assert_eq!(serde_json::to_string(&ManualModelStage::Ctx).unwrap(), r#""Ctx""#);
+        assert_eq!(serde_json::to_string(&ManualModelStage::Out).unwrap(), r#""Out""#);
+    }
+
+    #[test]
+    fn manual_model_stage_rejects_legacy_lowercase() {
+        // The legacy shape ("id", "ctx", "out") must NOT deserialize as
+        // ManualModelStage — that's how the dispatcher distinguishes the
+        // new typed value from the old stringly-typed one.
+        assert!(serde_json::from_str::<ManualModelStage>(r#""id""#).is_err());
+        assert!(serde_json::from_str::<ManualModelStage>(r#""ctx""#).is_err());
+        assert!(serde_json::from_str::<ManualModelStage>(r#""out""#).is_err());
     }
 
     #[test]

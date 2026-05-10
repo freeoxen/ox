@@ -262,6 +262,63 @@ command! {
     run: |snap, _ctx| accounts_fork_provider(snap),
 }
 
+// Manual-model commands. The dispatcher routes printable / Backspace /
+// Enter / Esc to these while `ui/settings/manual_model/stage` holds a
+// typed `ManualModelStage` value, via the synthetic
+// `settings/_manual_model` binding scope. The stage value doubles as
+// the mode discriminator: typed shape is the new flow; legacy
+// stringly-typed shape ("id"/"ctx"/"out") is the dormant old flow.
+
+command! {
+    struct_name: ModelsAddManual,
+    id: "models.add_manual",
+    title: "Add Model Manually",
+    description: "Open the inline three-stage manual-model entry form for the focused account.",
+    screen: Screen::Settings,
+    cursor: Some(oxpath!("settings", "models")),
+    run: |snap, _ctx| models_add_manual(snap),
+}
+
+command! {
+    struct_name: ModelsManualInsertChar,
+    id: "models.compose_manual.insert_char",
+    title: "Insert character (manual model)",
+    description: "Append the just-pressed char to the manual-model buffer (per-stage rules).",
+    screen: Screen::Settings,
+    cursor: None,
+    run: |snap, ctx| models_manual_insert_char(snap, ctx),
+}
+
+command! {
+    struct_name: ModelsManualDeleteBack,
+    id: "models.compose_manual.delete_back",
+    title: "Backspace (manual model)",
+    description: "Pop the last character from the manual-model buffer.",
+    screen: Screen::Settings,
+    cursor: None,
+    run: |snap, _ctx| models_manual_delete_back(snap),
+}
+
+command! {
+    struct_name: ModelsManualCommit,
+    id: "models.compose_manual.commit",
+    title: "Commit stage (manual model)",
+    description: "Advance the form's stage; the final stage finalizes the new ModelInfo into the catalog.",
+    screen: Screen::Settings,
+    cursor: None,
+    run: |snap, _ctx| models_manual_commit(snap),
+}
+
+command! {
+    struct_name: ModelsManualCancel,
+    id: "models.compose_manual.cancel",
+    title: "Cancel manual model",
+    description: "Discard the manual-model buffer and exit compose mode.",
+    screen: Screen::Settings,
+    cursor: None,
+    run: |snap, _ctx| models_manual_cancel(snap),
+}
+
 // ---------------------------------------------------------------------------
 // Implementation helpers
 // ---------------------------------------------------------------------------
@@ -519,6 +576,273 @@ fn banner_error(message: String) -> Write {
         path: oxpath!("ui", "global", "banner"),
         record: Record::parsed(to_value(&banner).unwrap()),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Manual-model helpers
+// ---------------------------------------------------------------------------
+
+/// Open the manual-model entry form for the focused account. Resolves
+/// the focused row to its un-sanitized account name (Model /
+/// ModelEmptyState / ModelField rows all carry it), then seeds
+/// `manual_model/{account, stage, buffer}` with the typed Stage::Id
+/// value. The PascalCase wire format distinguishes the new flow from
+/// the legacy stringly-typed write site, which lets the dispatcher
+/// gate cleanly on shape.
+fn models_add_manual(data: &mut dyn Reader) -> Vec<Write> {
+    use ox_types::settings::ManualModelStage;
+    use crate::settings::visible_rows::{enumerate, RowKind};
+
+    let focused = match focused_path(data) {
+        Some(p) => p,
+        None => return Vec::new(),
+    };
+    let rows = enumerate(data);
+    let account = rows.iter().find(|r| r.path == focused).and_then(|r| match &r.kind {
+        RowKind::Model { account, .. } => Some(account.clone()),
+        RowKind::ModelEmptyState { account } => Some(account.clone()),
+        RowKind::ModelField { account, .. } => Some(account.clone()),
+        _ => None,
+    });
+    let Some(account) = account else {
+        return Vec::new();
+    };
+
+    let stage_value = match to_value(&ManualModelStage::Id) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+
+    vec![
+        Write {
+            path: oxpath!("ui", "settings", "manual_model", "account"),
+            record: Record::parsed(Value::String(account)),
+        },
+        Write {
+            path: oxpath!("ui", "settings", "manual_model", "stage"),
+            record: Record::parsed(stage_value),
+        },
+        Write {
+            path: oxpath!("ui", "settings", "manual_model", "buffer"),
+            record: Record::parsed(Value::String(String::new())),
+        },
+    ]
+}
+
+/// Read the typed-shape stage. Returns `None` when absent or when the
+/// stored value is the legacy stringly-typed shape — the same
+/// discriminator the dispatcher uses, so once a command runs here it
+/// can trust the typed shape is in place.
+fn models_manual_read_stage(data: &mut dyn Reader) -> Option<ox_types::settings::ManualModelStage> {
+    read_typed(data, &oxpath!("ui", "settings", "manual_model", "stage"))
+}
+
+fn models_manual_insert_char(
+    data: &mut dyn Reader,
+    ctx: &super::super::command_registry::CommandCtx<'_>,
+) -> Vec<Write> {
+    use ox_types::key_chord::KeyCodeRepr;
+    use ox_types::settings::ManualModelStage;
+
+    let chord = match ctx.last_keystroke.as_ref() {
+        Some(c) => c,
+        None => return Vec::new(),
+    };
+    let ch = match chord.code {
+        KeyCodeRepr::Char(c) => c,
+        _ => return Vec::new(),
+    };
+    let stage = match models_manual_read_stage(data) {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+    // Per-stage accept rules: Id accepts any printable char; Ctx and
+    // Out accept ASCII digits only (the values are u32 sizes).
+    let accept = match stage {
+        ManualModelStage::Id => true,
+        ManualModelStage::Ctx | ManualModelStage::Out => ch.is_ascii_digit(),
+    };
+    if !accept {
+        return Vec::new();
+    }
+    let current: String =
+        read_typed(data, &oxpath!("ui", "settings", "manual_model", "buffer")).unwrap_or_default();
+    let mut next = current;
+    next.push(ch);
+    vec![Write {
+        path: oxpath!("ui", "settings", "manual_model", "buffer"),
+        record: Record::parsed(Value::String(next)),
+    }]
+}
+
+fn models_manual_delete_back(data: &mut dyn Reader) -> Vec<Write> {
+    let mut current: String =
+        read_typed(data, &oxpath!("ui", "settings", "manual_model", "buffer")).unwrap_or_default();
+    if current.pop().is_none() {
+        return Vec::new();
+    }
+    vec![Write {
+        path: oxpath!("ui", "settings", "manual_model", "buffer"),
+        record: Record::parsed(Value::String(current)),
+    }]
+}
+
+fn models_manual_commit(data: &mut dyn Reader) -> Vec<Write> {
+    use ox_gate::{ModelInfo, ModelInfoSource};
+    use ox_kernel::PathComponent;
+    use ox_types::settings::ManualModelStage;
+
+    let stage = match models_manual_read_stage(data) {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+    let buffer: String =
+        read_typed(data, &oxpath!("ui", "settings", "manual_model", "buffer")).unwrap_or_default();
+    let trimmed = buffer.trim();
+
+    match stage {
+        ManualModelStage::Id => {
+            if trimmed.is_empty() {
+                return Vec::new();
+            }
+            let next_stage = match to_value(&ManualModelStage::Ctx) {
+                Ok(v) => v,
+                Err(_) => return Vec::new(),
+            };
+            vec![
+                Write {
+                    path: oxpath!("ui", "settings", "manual_model", "stage"),
+                    record: Record::parsed(next_stage),
+                },
+                Write {
+                    path: oxpath!("ui", "settings", "manual_model", "staged_id"),
+                    record: Record::parsed(Value::String(trimmed.to_string())),
+                },
+                Write {
+                    path: oxpath!("ui", "settings", "manual_model", "buffer"),
+                    record: Record::parsed(Value::String(String::new())),
+                },
+            ]
+        }
+        ManualModelStage::Ctx => {
+            let n: u32 = match trimmed.parse() {
+                Ok(n) if n > 0 => n,
+                _ => return Vec::new(),
+            };
+            let next_stage = match to_value(&ManualModelStage::Out) {
+                Ok(v) => v,
+                Err(_) => return Vec::new(),
+            };
+            vec![
+                Write {
+                    path: oxpath!("ui", "settings", "manual_model", "stage"),
+                    record: Record::parsed(next_stage),
+                },
+                Write {
+                    path: oxpath!("ui", "settings", "manual_model", "staged_ctx"),
+                    record: Record::parsed(Value::String(n.to_string())),
+                },
+                Write {
+                    path: oxpath!("ui", "settings", "manual_model", "buffer"),
+                    record: Record::parsed(Value::String(String::new())),
+                },
+            ]
+        }
+        ManualModelStage::Out => {
+            let out: u32 = match trimmed.parse() {
+                Ok(n) if n > 0 => n,
+                _ => return Vec::new(),
+            };
+            let id: String = read_typed(
+                data,
+                &oxpath!("ui", "settings", "manual_model", "staged_id"),
+            )
+            .unwrap_or_default();
+            let ctx: u32 = read_typed::<String>(
+                data,
+                &oxpath!("ui", "settings", "manual_model", "staged_ctx"),
+            )
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+            let account: String = read_typed(
+                data,
+                &oxpath!("ui", "settings", "manual_model", "account"),
+            )
+            .unwrap_or_default();
+            let comp = match PathComponent::try_new(&account) {
+                Ok(c) => c,
+                Err(_) => return Vec::new(),
+            };
+
+            let catalog_path = oxpath!("config", "gate", "accounts", comp, "models");
+            let mut catalog: Vec<ModelInfo> = read_typed(data, &catalog_path).unwrap_or_default();
+            catalog.push(ModelInfo {
+                id: id.clone(),
+                display_name: id,
+                max_context_size: Some(ctx),
+                max_output_tokens: Some(out),
+                source: ModelInfoSource::UserEntered,
+            });
+            let catalog_value = match to_value(&catalog) {
+                Ok(v) => v,
+                Err(_) => return Vec::new(),
+            };
+
+            // Write the catalog and clear the form state.
+            vec![
+                Write {
+                    path: catalog_path,
+                    record: Record::parsed(catalog_value),
+                },
+                Write {
+                    path: oxpath!("ui", "settings", "manual_model", "account"),
+                    record: Record::parsed(Value::Null),
+                },
+                Write {
+                    path: oxpath!("ui", "settings", "manual_model", "stage"),
+                    record: Record::parsed(Value::Null),
+                },
+                Write {
+                    path: oxpath!("ui", "settings", "manual_model", "buffer"),
+                    record: Record::parsed(Value::Null),
+                },
+                Write {
+                    path: oxpath!("ui", "settings", "manual_model", "staged_id"),
+                    record: Record::parsed(Value::Null),
+                },
+                Write {
+                    path: oxpath!("ui", "settings", "manual_model", "staged_ctx"),
+                    record: Record::parsed(Value::Null),
+                },
+            ]
+        }
+    }
+}
+
+fn models_manual_cancel(_data: &mut dyn Reader) -> Vec<Write> {
+    // Clear all manual_model paths.
+    vec![
+        Write {
+            path: oxpath!("ui", "settings", "manual_model", "account"),
+            record: Record::parsed(Value::Null),
+        },
+        Write {
+            path: oxpath!("ui", "settings", "manual_model", "stage"),
+            record: Record::parsed(Value::Null),
+        },
+        Write {
+            path: oxpath!("ui", "settings", "manual_model", "buffer"),
+            record: Record::parsed(Value::Null),
+        },
+        Write {
+            path: oxpath!("ui", "settings", "manual_model", "staged_id"),
+            record: Record::parsed(Value::Null),
+        },
+        Write {
+            path: oxpath!("ui", "settings", "manual_model", "staged_ctx"),
+            record: Record::parsed(Value::Null),
+        },
+    ]
 }
 
 fn accounts_delete_confirm(data: &mut dyn Reader) -> Vec<Write> {
@@ -1120,6 +1444,11 @@ pub fn register(reg: &mut CommandRegistry) {
     reg.register(Box::new(AccountsForkProvider::new()));
     reg.register(Box::new(CycleFieldNext::new()));
     reg.register(Box::new(CycleFieldPrev::new()));
+    reg.register(Box::new(ModelsAddManual::new()));
+    reg.register(Box::new(ModelsManualInsertChar::new()));
+    reg.register(Box::new(ModelsManualDeleteBack::new()));
+    reg.register(Box::new(ModelsManualCommit::new()));
+    reg.register(Box::new(ModelsManualCancel::new()));
 }
 
 // ---------------------------------------------------------------------------
