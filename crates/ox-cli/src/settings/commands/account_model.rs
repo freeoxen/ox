@@ -2465,4 +2465,320 @@ mod tests {
         let writes = run_cmd(&ModelsToggleDefault::new(), &mut snap);
         assert!(writes.is_empty());
     }
+
+    // -- Manual-model mode tests ----------------------------------------------
+
+    use ox_types::settings::ManualModelStage;
+
+    fn write_index_entries_for_manual(snap: &mut SettingsSnapshot) {
+        use ox_types::{BadgeSource, SettingsIndexEntry};
+        use structfs_core_store::Path;
+        snap.insert(
+            &oxpath!("settings", "index", "entries", "accounts"),
+            to_value(&SettingsIndexEntry {
+                id: "accounts".into(),
+                label: "Accounts".into(),
+                description: String::new(),
+                target_cursor: Path::parse("settings/accounts").unwrap(),
+                badge: BadgeSource::None,
+            })
+            .unwrap(),
+        );
+        snap.insert(
+            &oxpath!("settings", "index", "entries", "models"),
+            to_value(&SettingsIndexEntry {
+                id: "models".into(),
+                label: "Models".into(),
+                description: String::new(),
+                target_cursor: Path::parse("settings/models").unwrap(),
+                badge: BadgeSource::None,
+            })
+            .unwrap(),
+        );
+    }
+
+    fn seed_manual_stage(snap: &mut SettingsSnapshot, stage: ManualModelStage) {
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "stage"),
+            to_value(&stage).unwrap(),
+        );
+    }
+
+    fn run_with_chord<C: Command>(
+        cmd: &C,
+        snap: &mut SettingsSnapshot,
+        ch: char,
+    ) -> Vec<Write> {
+        let registry = RendererRegistry::new();
+        let ctx = CommandCtx {
+            registry: &registry,
+            last_keystroke: Some(KeyChord {
+                modifiers: KeyModifierSet::default(),
+                code: KeyCodeRepr::Char(ch),
+            }),
+        };
+        cmd.run(snap, &ctx)
+    }
+
+    #[test]
+    fn models_add_manual_seeds_form_from_focused_empty_state_row() {
+        // Focus the synthetic empty-state row for an empty-catalog
+        // connection; add_manual reads the focused row's account and
+        // initializes the form at stage Id with an empty buffer.
+        let mut snap = SettingsSnapshot::empty();
+        write_index_entries_for_manual(&mut snap);
+        write_account(&mut snap, "alpha", "openai");
+        let expanded = crate::settings::visible_rows::expanded_set_to_value(&[
+            "settings/models".to_string(),
+        ]);
+        snap.insert(&oxpath!("ui", "settings", "expanded"), expanded);
+        snap.insert(
+            &oxpath!("ui", "settings", "focused"),
+            path_to_value(&oxpath!("settings", "models", "alpha", "_empty")),
+        );
+
+        let writes = run_cmd(&ModelsAddManual::new(), &mut snap);
+        let by_path: std::collections::BTreeMap<_, _> = writes
+            .iter()
+            .map(|w| (w.path.to_string(), w.record.as_value().unwrap().clone()))
+            .collect();
+        assert_eq!(
+            by_path.get("ui/settings/manual_model/account").unwrap(),
+            &Value::String("alpha".into())
+        );
+        assert_eq!(
+            by_path.get("ui/settings/manual_model/stage").unwrap(),
+            &to_value(&ManualModelStage::Id).unwrap()
+        );
+        assert_eq!(
+            by_path.get("ui/settings/manual_model/buffer").unwrap(),
+            &Value::String(String::new())
+        );
+    }
+
+    #[test]
+    fn models_add_manual_no_op_without_resolvable_focused_account() {
+        // No focused row → no account to compose for; produce no writes.
+        let mut snap = SettingsSnapshot::empty();
+        let writes = run_cmd(&ModelsAddManual::new(), &mut snap);
+        assert!(writes.is_empty());
+    }
+
+    #[test]
+    fn models_manual_commit_id_advances_to_ctx_with_staged_id() {
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "account"),
+            Value::String("alpha".into()),
+        );
+        seed_manual_stage(&mut snap, ManualModelStage::Id);
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "buffer"),
+            Value::String("custom-model".into()),
+        );
+        let writes = run_cmd(&ModelsManualCommit::new(), &mut snap);
+        let by_path: std::collections::BTreeMap<_, _> = writes
+            .iter()
+            .map(|w| (w.path.to_string(), w.record.as_value().unwrap().clone()))
+            .collect();
+        assert_eq!(
+            by_path.get("ui/settings/manual_model/stage").unwrap(),
+            &to_value(&ManualModelStage::Ctx).unwrap()
+        );
+        assert_eq!(
+            by_path.get("ui/settings/manual_model/staged_id").unwrap(),
+            &Value::String("custom-model".into())
+        );
+        assert_eq!(
+            by_path.get("ui/settings/manual_model/buffer").unwrap(),
+            &Value::String(String::new())
+        );
+    }
+
+    #[test]
+    fn models_manual_commit_id_rejects_empty_buffer() {
+        let mut snap = SettingsSnapshot::empty();
+        seed_manual_stage(&mut snap, ManualModelStage::Id);
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "buffer"),
+            Value::String("   ".into()),
+        );
+        let writes = run_cmd(&ModelsManualCommit::new(), &mut snap);
+        assert!(writes.is_empty());
+    }
+
+    #[test]
+    fn models_manual_commit_ctx_advances_to_out_with_parsed_u32() {
+        let mut snap = SettingsSnapshot::empty();
+        seed_manual_stage(&mut snap, ManualModelStage::Ctx);
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "buffer"),
+            Value::String("200000".into()),
+        );
+        let writes = run_cmd(&ModelsManualCommit::new(), &mut snap);
+        let by_path: std::collections::BTreeMap<_, _> = writes
+            .iter()
+            .map(|w| (w.path.to_string(), w.record.as_value().unwrap().clone()))
+            .collect();
+        assert_eq!(
+            by_path.get("ui/settings/manual_model/stage").unwrap(),
+            &to_value(&ManualModelStage::Out).unwrap()
+        );
+        assert_eq!(
+            by_path.get("ui/settings/manual_model/staged_ctx").unwrap(),
+            &Value::String("200000".into())
+        );
+    }
+
+    #[test]
+    fn models_manual_commit_ctx_rejects_non_numeric() {
+        let mut snap = SettingsSnapshot::empty();
+        seed_manual_stage(&mut snap, ManualModelStage::Ctx);
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "buffer"),
+            Value::String("not-a-number".into()),
+        );
+        let writes = run_cmd(&ModelsManualCommit::new(), &mut snap);
+        assert!(writes.is_empty());
+    }
+
+    #[test]
+    fn models_manual_commit_out_writes_full_modelinfo_and_clears_form() {
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "account"),
+            Value::String("alpha".into()),
+        );
+        seed_manual_stage(&mut snap, ManualModelStage::Out);
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "staged_id"),
+            Value::String("custom-model".into()),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "staged_ctx"),
+            Value::String("100000".into()),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "buffer"),
+            Value::String("8000".into()),
+        );
+        let writes = run_cmd(&ModelsManualCommit::new(), &mut snap);
+        let catalog_write = writes
+            .iter()
+            .find(|w| w.path.to_string() == "config/gate/accounts/alpha/models")
+            .expect("catalog write");
+        let models: Vec<ox_gate::ModelInfo> =
+            structfs_serde_store::from_value(catalog_write.record.as_value().unwrap().clone())
+                .unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "custom-model");
+        assert_eq!(models[0].max_context_size, Some(100_000));
+        assert_eq!(models[0].max_output_tokens, Some(8_000));
+        assert!(matches!(
+            models[0].source,
+            ox_gate::ModelInfoSource::UserEntered
+        ));
+        // All form-state paths nulled.
+        for sub in ["account", "stage", "buffer", "staged_id", "staged_ctx"] {
+            let comp = ox_kernel::PathComponent::try_new(sub).unwrap();
+            assert_null_write(&writes, oxpath!("ui", "settings", "manual_model", comp));
+        }
+    }
+
+    #[test]
+    fn models_manual_cancel_clears_all_form_state() {
+        let mut snap = SettingsSnapshot::empty();
+        seed_manual_stage(&mut snap, ManualModelStage::Ctx);
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "staged_id"),
+            Value::String("custom".into()),
+        );
+        let writes = run_cmd(&ModelsManualCancel::new(), &mut snap);
+        // No catalog write; every manual_model sub-path nulled.
+        assert!(
+            !writes
+                .iter()
+                .any(|w| w.path.to_string().starts_with("config/gate/accounts"))
+        );
+        for sub in ["account", "stage", "buffer", "staged_id", "staged_ctx"] {
+            let comp = ox_kernel::PathComponent::try_new(sub).unwrap();
+            assert_null_write(&writes, oxpath!("ui", "settings", "manual_model", comp));
+        }
+    }
+
+    #[test]
+    fn models_manual_insert_char_id_stage_accepts_any_printable() {
+        let mut snap = SettingsSnapshot::empty();
+        seed_manual_stage(&mut snap, ManualModelStage::Id);
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "buffer"),
+            Value::String("foo".into()),
+        );
+        let writes = run_with_chord(&ModelsManualInsertChar::new(), &mut snap, '-');
+        assert_eq!(writes.len(), 1);
+        assert_eq!(
+            writes[0].path,
+            oxpath!("ui", "settings", "manual_model", "buffer")
+        );
+        match &writes[0].record {
+            Record::Parsed(Value::String(s)) => assert_eq!(s, "foo-"),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn models_manual_insert_char_ctx_stage_accepts_digits_only() {
+        let mut snap = SettingsSnapshot::empty();
+        seed_manual_stage(&mut snap, ManualModelStage::Ctx);
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "buffer"),
+            Value::String("100".into()),
+        );
+        // Digit accepted.
+        let writes = run_with_chord(&ModelsManualInsertChar::new(), &mut snap, '5');
+        assert_eq!(writes.len(), 1);
+        match &writes[0].record {
+            Record::Parsed(Value::String(s)) => assert_eq!(s, "1005"),
+            other => panic!("unexpected: {other:?}"),
+        }
+        // Letter rejected.
+        let writes = run_with_chord(&ModelsManualInsertChar::new(), &mut snap, 'x');
+        assert!(writes.is_empty());
+    }
+
+    #[test]
+    fn models_manual_insert_char_no_op_without_typed_stage() {
+        // Without a typed-shape stage the insert-char must be a no-op —
+        // the dispatcher's gating already prevents it from firing, but
+        // the helper itself also short-circuits as a defense in depth.
+        let mut snap = SettingsSnapshot::empty();
+        let writes = run_with_chord(&ModelsManualInsertChar::new(), &mut snap, 'a');
+        assert!(writes.is_empty());
+    }
+
+    #[test]
+    fn models_manual_delete_back_pops_buffer() {
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "buffer"),
+            Value::String("abc".into()),
+        );
+        let writes = run_cmd(&ModelsManualDeleteBack::new(), &mut snap);
+        assert_eq!(writes.len(), 1);
+        match &writes[0].record {
+            Record::Parsed(Value::String(s)) => assert_eq!(s, "ab"),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn models_manual_delete_back_on_empty_is_no_op() {
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "buffer"),
+            Value::String(String::new()),
+        );
+        let writes = run_cmd(&ModelsManualDeleteBack::new(), &mut snap);
+        assert!(writes.is_empty());
+    }
 }

@@ -620,11 +620,12 @@ mod tests {
 
     #[test]
     fn manual_model_falls_through_when_legacy_stringly_stage() {
-        // The old flow (begin_manual_model) writes Value::String("id") at
-        // the stage path. The new dispatcher pass deserializes the value as
-        // ManualModelStage; when it fails, falls through to edit-mode /
-        // page-cursor passes — preserving the old flow's behavior during
-        // the transition.
+        // A stale Value::String("id") at the stage path (the legacy
+        // wire format) must not engage the manual-model scope — the
+        // dispatcher's discriminator deserializes as ManualModelStage
+        // and only fires the pass on success. Falls through to the
+        // remaining dispatch passes; with no other binding registered,
+        // result is empty.
         let cmds = CommandRegistry::new();
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {

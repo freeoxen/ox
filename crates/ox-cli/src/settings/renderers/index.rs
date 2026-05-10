@@ -123,6 +123,64 @@ impl Renderer for IndexRenderer {
             selected = selected.map(|s| if s >= insert_idx { s + 1 } else { s });
         }
 
+        // Manual-model affordance / inline form. For each empty-catalog
+        // connection (a `ModelEmptyState` row in the visible-rows list),
+        // emit a decoration ListItem directly under it. When
+        // `manual_model/account` matches that connection, render the
+        // per-stage form prompt (`Model id▸ <buf>▏`); otherwise render
+        // the static `+ add model manually (m)` affordance. `focus: None`
+        // — j/k skips both shapes; the dispatcher's manual-model pass
+        // handles input when the form is active.
+        //
+        // Iterate empty-state positions in REVERSE so each insertion
+        // doesn't invalidate the indices of earlier ones still queued.
+        let manual_account: Option<String> = crate::settings::renderers::util::read_typed(
+            ctx.data,
+            &ox_path::oxpath!("ui", "settings", "manual_model", "account"),
+        );
+        let mut empty_state_positions: Vec<(usize, String)> = Vec::new();
+        for (i, row) in rows.iter().enumerate() {
+            if let RowKind::ModelEmptyState { account } = &row.kind {
+                empty_state_positions.push((i, account.clone()));
+            }
+        }
+        for (i, account) in empty_state_positions.iter().rev() {
+            let in_mode_for_this_account =
+                manual_account.as_deref() == Some(account.as_str());
+            let primary = if in_mode_for_this_account {
+                let stage = crate::settings::renderers::util::read_typed::<
+                    ox_types::settings::ManualModelStage,
+                >(
+                    ctx.data,
+                    &ox_path::oxpath!("ui", "settings", "manual_model", "stage"),
+                );
+                let buffer: String = crate::settings::renderers::util::read_typed(
+                    ctx.data,
+                    &ox_path::oxpath!("ui", "settings", "manual_model", "buffer"),
+                )
+                .unwrap_or_default();
+                let prompt = match stage {
+                    Some(ox_types::settings::ManualModelStage::Id) => "Model id",
+                    Some(ox_types::settings::ManualModelStage::Ctx) => "Max context",
+                    Some(ox_types::settings::ManualModelStage::Out) => "Max output",
+                    None => "Model id",
+                };
+                format!("    {prompt}▸ {buffer}\u{258F}")
+            } else {
+                "    + add model manually (m)".to_string()
+            };
+            let decoration = ListItem {
+                primary,
+                primary_spans: None,
+                secondary: None,
+                badge: None,
+                focus: None,
+            };
+            let insert_at = i + 1;
+            items.insert(insert_at, decoration);
+            selected = selected.map(|s| if s >= insert_at { s + 1 } else { s });
+        }
+
         // Pending-delete confirmation banner. Emitted as a ListItem
         // prepended to the items vector when ui/settings/pending_delete
         // is Some(name). Decoration only — focus: None; j/k skips it.
