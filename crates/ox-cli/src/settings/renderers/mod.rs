@@ -8,11 +8,9 @@
 //! every renderer at its prescribed cursor path.
 
 pub mod index;
-pub mod overlay_delete_account;
 pub(crate) mod util;
 
 /// Register every settings renderer at its prescribed cursor path.
 pub fn register_all(reg: &mut crate::settings::registry::RendererRegistry) {
     index::register(reg);
-    overlay_delete_account::register(reg);
 }

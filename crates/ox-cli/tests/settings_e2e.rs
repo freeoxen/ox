@@ -507,11 +507,21 @@ async fn delete_account_flow() {
     )
     .await;
 
-    // `d` — open the delete overlay.
+    // `d` — arm the inline delete-confirmation banner. Cursor stays
+    // at settings/accounts; ui/settings/pending_delete becomes
+    // Some(<name>) and the dispatcher routes y/n/Esc through the
+    // synthetic `_pending_delete` scope.
     assert!(matches!(h.dispatch("d").await, KeyDispatchOutcome::Handled));
+    let pending: Option<String> = h
+        .client
+        .read_typed(&oxpath!("ui", "settings", "pending_delete"))
+        .await
+        .ok()
+        .flatten();
+    assert_eq!(pending.as_deref(), Some("anthropic"));
     assert_eq!(
         h.current_cursor().await.expect("cursor"),
-        oxpath!("settings", "accounts", "_delete"),
+        oxpath!("settings", "accounts"),
     );
 
     // `y` — confirm delete. The CLI's null-write removes the account
@@ -557,19 +567,20 @@ async fn delete_account_flow() {
         "selection should be cleared after delete"
     );
 
-    // Cursor pops back to settings/accounts.
-    let cursor = poll_until(|| async {
-        let c = h.current_cursor().await?;
-        if c == oxpath!("settings", "accounts") {
-            Some(c)
-        } else {
-            None
-        }
-    })
-    .await;
-    assert_eq!(
-        cursor.expect("cursor pops"),
-        oxpath!("settings", "accounts")
+    // Cursor stays at settings/accounts throughout — the inline
+    // banner never moved it. pending_delete is cleared by
+    // accounts.confirm.delete.
+    let cursor = h.current_cursor().await.expect("cursor");
+    assert_eq!(cursor, oxpath!("settings", "accounts"));
+    let pending_after: Option<String> = h
+        .client
+        .read_typed(&oxpath!("ui", "settings", "pending_delete"))
+        .await
+        .ok()
+        .flatten();
+    assert!(
+        pending_after.is_none(),
+        "pending_delete should be cleared after confirm; got {pending_after:?}"
     );
 }
 

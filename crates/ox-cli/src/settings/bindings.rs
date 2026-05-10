@@ -209,31 +209,6 @@ fn register_index(reg: &mut BindingRegistry) {
     );
 }
 
-fn register_account_delete(reg: &mut BindingRegistry) {
-    let cursor = oxpath!("settings", "accounts", "_delete");
-    bind(
-        reg,
-        Some(cursor.clone()),
-        no_mods(),
-        KeyCodeRepr::Char('y'),
-        "accounts.delete",
-    );
-    bind(
-        reg,
-        Some(cursor.clone()),
-        no_mods(),
-        KeyCodeRepr::Char('n'),
-        "accounts.cancel",
-    );
-    bind(
-        reg,
-        Some(cursor),
-        no_mods(),
-        KeyCodeRepr::Esc,
-        "accounts.cancel",
-    );
-}
-
 /// Per-row commands for accordion-focused leaf rows. Bound under
 /// `Prefix(settings/accounts)` and `Prefix(settings/models)` so they
 /// fire whenever the focused row sits anywhere inside that subtree —
@@ -484,7 +459,6 @@ pub fn register(reg: &mut BindingRegistry) {
     register_compose_new_account(reg);
     register_pending_delete(reg);
     register_index(reg);
-    register_account_delete(reg);
     register_row_prefixes(reg);
 }
 
@@ -697,20 +671,6 @@ mod tests {
             )
             .expect("should match");
         assert_eq!(hit, &cmd("models.toggle_default"));
-    }
-
-    #[test]
-    fn account_delete_y_resolves_to_delete() {
-        let reg = populated();
-        let hit = reg
-            .lookup(
-                Screen::Settings,
-                &oxpath!("settings", "accounts", "_delete"),
-                None,
-                &key(no_mods(), KeyCodeRepr::Char('y')),
-            )
-            .expect("should match");
-        assert_eq!(hit, &cmd("accounts.delete"));
     }
 
     #[test]

@@ -121,58 +121,15 @@ command! {
     struct_name: AccountsDeleteConfirm,
     id: "accounts.delete_confirm",
     title: "Delete Connection…",
-    description: "Open the delete-confirmation overlay.",
+    description: "Open the delete-confirmation banner for the selected Connection.",
     screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "accounts")),
-    // Same input-scope isolation as accounts.add. The overlay's
-    // bindings are only y/n/Esc, but a stale focused or
-    // edit_mode could still misroute stray printable keys.
-    run: |_snap, _ctx| vec![
-        Write {
-            path: oxpath!("ui", "settings", "cursor"),
-            record: Record::parsed(path_to_value(&oxpath!("settings", "accounts", "_delete"))),
-        },
-        Write {
-            path: oxpath!("ui", "settings", "focused"),
-            record: Record::parsed(Value::Null),
-        },
-        Write {
-            path: oxpath!("ui", "settings", "edit_mode"),
-            record: Record::parsed(Value::Bool(false)),
-        },
-        Write {
-            path: oxpath!("ui", "settings", "edit_field_path"),
-            record: Record::parsed(Value::Null),
-        },
-    ],
-}
-
-command! {
-    struct_name: AccountsCancel,
-    id: "accounts.cancel",
-    title: "Cancel",
-    description: "Dismiss the current overlay; return to the accordion.",
-    screen: Screen::Settings,
-    cursor: None,
-    run: |_snap, _ctx| vec![Write {
-        path: oxpath!("ui", "settings", "cursor"),
-        record: Record::parsed(path_to_value(&oxpath!("settings", "index"))),
-    }],
+    run: |snap, _ctx| accounts_delete_confirm(snap),
 }
 
 // ---------------------------------------------------------------------------
 // Subscription-request commands
 // ---------------------------------------------------------------------------
-
-command! {
-    struct_name: AccountsDelete,
-    id: "accounts.delete",
-    title: "Confirm Delete",
-    description: "Submit the delete request for the selected Connection.",
-    screen: Screen::Settings,
-    cursor: Some(oxpath!("settings", "accounts", "_delete")),
-    run: |snap, _ctx| accounts_delete(snap),
-}
 
 command! {
     struct_name: AccountTest,
@@ -564,18 +521,14 @@ fn banner_error(message: String) -> Write {
     }
 }
 
-fn accounts_delete(data: &mut dyn Reader) -> Vec<Write> {
+fn accounts_delete_confirm(data: &mut dyn Reader) -> Vec<Write> {
     let name = match read_selected_account(data) {
         Some(n) => n,
         None => return Vec::new(),
     };
-    let comp = match ox_kernel::PathComponent::try_new(&name) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
     vec![Write {
-        path: oxpath!("config", "gate", "accounts", comp),
-        record: Record::parsed(Value::Null),
+        path: oxpath!("ui", "settings", "pending_delete"),
+        record: Record::parsed(Value::String(name)),
     }]
 }
 
@@ -1154,8 +1107,6 @@ pub fn register(reg: &mut CommandRegistry) {
     reg.register(Box::new(AccountsComposeCommit::new()));
     reg.register(Box::new(AccountsComposeCancel::new()));
     reg.register(Box::new(AccountsDeleteConfirm::new()));
-    reg.register(Box::new(AccountsCancel::new()));
-    reg.register(Box::new(AccountsDelete::new()));
     reg.register(Box::new(AccountsConfirmDelete::new()));
     reg.register(Box::new(AccountsConfirmCancel::new()));
     reg.register(Box::new(AccountTest::new()));
@@ -1540,57 +1491,26 @@ mod tests {
     }
 
     #[test]
-    fn accounts_delete_confirm_writes_delete_cursor_and_isolates_input_scope() {
+    fn accounts_delete_confirm_writes_pending_delete_when_selected() {
         let mut snap = SettingsSnapshot::empty();
+        select_account(&mut snap, "alpha");
         let writes = run_cmd(&AccountsDeleteConfirm::new(), &mut snap);
-        assert_eq!(writes.len(), 4);
-        assert_cursor_write(&writes, oxpath!("settings", "accounts", "_delete"));
-        let focused = writes
-            .iter()
-            .find(|w| w.path == oxpath!("ui", "settings", "focused"))
-            .expect("focused write");
-        match &focused.record {
-            Record::Parsed(Value::Null) => {}
-            other => panic!("expected focused=Null, got {other:?}"),
-        }
-        let edit_mode = writes
-            .iter()
-            .find(|w| w.path == oxpath!("ui", "settings", "edit_mode"))
-            .expect("edit_mode write");
-        match &edit_mode.record {
-            Record::Parsed(Value::Bool(false)) => {}
-            other => panic!("expected edit_mode=false, got {other:?}"),
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].path, oxpath!("ui", "settings", "pending_delete"));
+        match &writes[0].record {
+            Record::Parsed(Value::String(s)) => assert_eq!(s, "alpha"),
+            other => panic!("expected pending_delete = Some(\"alpha\"); got {other:?}"),
         }
     }
 
     #[test]
-    fn accounts_cancel_returns_to_accordion_index() {
-        // Cancel from the new- or delete-account overlay returns to
-        // the accordion. The legacy `settings/accounts` list page is
-        // gone, so the cursor must land on `settings/index` instead.
+    fn accounts_delete_confirm_inert_without_selection() {
         let mut snap = SettingsSnapshot::empty();
-        let writes = run_cmd(&AccountsCancel::new(), &mut snap);
-        assert_eq!(writes.len(), 1);
-        assert_cursor_write(&writes, oxpath!("settings", "index"));
+        let writes = run_cmd(&AccountsDeleteConfirm::new(), &mut snap);
+        assert!(writes.is_empty());
     }
 
     // -- Subscription requests --------------------------------------------------
-
-    #[test]
-    fn accounts_delete_writes_null_to_canonical_account_path_when_selected() {
-        let mut snap = SettingsSnapshot::empty();
-        select_account(&mut snap, "alpha");
-        let writes = run_cmd(&AccountsDelete::new(), &mut snap);
-        let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
-        assert_null_write(&writes, oxpath!("config", "gate", "accounts", comp));
-    }
-
-    #[test]
-    fn accounts_delete_inert_without_selection() {
-        let mut snap = SettingsSnapshot::empty();
-        let writes = run_cmd(&AccountsDelete::new(), &mut snap);
-        assert!(writes.is_empty());
-    }
 
     #[test]
     fn fork_provider_clones_record_and_repoints_account() {

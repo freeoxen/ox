@@ -1,19 +1,19 @@
 //! `AccountDeleteCleanupSubscription` — fires on null writes at
 //! `config/gate/accounts/{name}` (account-record depth).
 //!
-//! Reactive observer of account deletion. The CLI's `accounts.delete`
-//! command writes `Null` to the canonical account path; this
-//! subscription watches the broader `Prefix(config/gate/accounts)`
-//! pattern and filters at the top of `handle` for null writes at
-//! account-record depth (one component below the prefix).
+//! Reactive observer of account deletion. The CLI's
+//! `accounts.confirm.delete` command writes `Null` to the canonical
+//! account path; this subscription watches the broader
+//! `Prefix(config/gate/accounts)` pattern and filters at the top of
+//! `handle` for null writes at account-record depth (one component
+//! below the prefix).
 //!
 //! Cleanup body fans out the cross-cutting work the CLI shouldn't do
 //! itself: deletes the API key, deletes the synthesized provider
-//! record, clears the `accounts/selected` pointer if it matched the
-//! deleted account, and pops the cursor back to the (modal-era)
-//! accounts page. The cursor write preserves today's behavior and the
-//! delete-confirm rebuild on mode state will reshape the cursor
-//! cascade later.
+//! record, and clears the `accounts/selected` pointer if it matched
+//! the deleted account. The cursor is intentionally not touched —
+//! the delete-confirm UI is an inline banner over `settings/index`,
+//! so the user never left a renderable cursor.
 //!
 //! Returning all the writes from `handle` (rather than issuing them as
 //! ad-hoc `writer.write` calls) lets the dispatcher cascade them as a
@@ -24,9 +24,7 @@ use ox_broker::subscription::{SubCtx, Subscription};
 use ox_path::oxpath;
 use ox_types::subscription::{PathPattern, SubscriptionId, Write};
 
-use crate::subscriptions::util::{
-    null_write, provider_path, read_typed_via_reader, secret_key_path, write_path,
-};
+use crate::subscriptions::util::{null_write, provider_path, read_typed_via_reader, secret_key_path};
 
 pub const ID: &str = "gate.account_delete_cleanup";
 
@@ -116,11 +114,6 @@ impl Subscription for AccountDeleteCleanupSubscription {
             // missing record the same as `None`.
             writes.push(null_write(selected_path));
         }
-
-        // Cursor back to the accounts list.
-        let cursor_path = oxpath!("ui", "settings", "cursor");
-        let new_cursor = oxpath!("settings", "accounts");
-        writes.push(write_path(&cursor_path, &new_cursor));
 
         writes
     }
@@ -241,30 +234,16 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_pops_cursor_back_to_accounts_list() {
+    fn cleanup_does_not_touch_cursor() {
         let mut reader = InMemoryReader::new();
-        populate_anthropic_account(&mut reader, "alpha", "sk-key");
-
+        populate_anthropic_account(&mut reader, "alpha", "sk-test");
         let writes = drive(&mut reader, "alpha");
-        let cursor_write = writes
-            .iter()
-            .find(|w| w.path.to_string() == "ui/settings/cursor")
-            .expect("cursor write missing");
-        // Cursors are encoded as Value::Array of segment strings — the
-        // shape `path_to_value` produces, mirroring the CLI commands.
-        match cursor_write.record.as_value() {
-            Some(Value::Array(segs)) => {
-                let parts: Vec<String> = segs
-                    .iter()
-                    .map(|v| match v {
-                        Value::String(s) => s.clone(),
-                        _ => panic!("non-string segment: {v:?}"),
-                    })
-                    .collect();
-                assert_eq!(parts.join("/"), "settings/accounts");
-            }
-            other => panic!("cursor must be Value::Array, got {other:?}"),
-        }
+        assert!(
+            !writes
+                .iter()
+                .any(|w| w.path == oxpath!("ui", "settings", "cursor")),
+            "cleanup must not touch the cursor; got {writes:?}"
+        );
     }
 
     #[test]
