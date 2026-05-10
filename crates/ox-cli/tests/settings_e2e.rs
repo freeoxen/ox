@@ -1449,3 +1449,109 @@ async fn delete_account_removes_connection_from_rendered_frame() {
         "config/gate/providers/anthropic should be gone after delete",
     );
 }
+
+// ---------------------------------------------------------------------------
+// Repro: cycling Auth doesn't visibly advance past `x-api-key` in the
+// rendered carousel.
+//
+// User report: "Auth seems to not actually show 'bearer-token' when
+// rotating, I think there's a bug somewhere?"
+//
+// The cycle command mutates `ProviderConfig.auth` correctly — a direct
+// read after one forward cycle returns `Some(BearerToken)`. But the
+// rendered carousel still shows `x-api-key`. The mismatch lives in
+// `visible_rows::append_account_field_rows`, which formats the auth row
+// label as `format!("{scheme:?}").to_lowercase()` ("xapikey",
+// "bearertoken", "none"). The renderer's index.rs then tries to match
+// that against `AUTH_DISPLAY = ["x-api-key", "bearer-token", "none"]` to
+// recover the carousel index, fails, and falls back to idx 0 — so the
+// carousel always renders as "x-api-key".
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn auth_cycle_renders_bearer_token_after_one_cycle() {
+    let h = E2eHarness::new().await;
+    populate_index(&h).await;
+    // anthropic provider, default auth = Some(XApiKey).
+    populate_account(&h, "anthropic", "sk-test").await;
+
+    let acct_comp = ox_kernel::PathComponent::try_new("anthropic").unwrap();
+
+    // Expand both the Connections section AND the account itself so the
+    // Auth field row is visible in the rendered tree.
+    h.client
+        .write(
+            &oxpath!("ui", "settings", "expanded"),
+            Record::parsed(ox_cli::settings::visible_rows::expanded_set_to_value(&[
+                "settings/accounts".to_string(),
+                "settings/accounts/anthropic".to_string(),
+            ])),
+        )
+        .await
+        .expect("write expanded set");
+
+    // Cursor at the index renderer; focused on the Auth field row so
+    // `cycle.field.next` (bound to `l`) routes to `selector_cycle_auth_dir`.
+    h.write_path(
+        &oxpath!("ui", "settings", "cursor"),
+        &oxpath!("settings", "index"),
+    )
+    .await;
+    h.write_path(
+        &oxpath!("ui", "settings", "focused"),
+        &oxpath!("settings", "accounts", acct_comp.clone(), "auth"),
+    )
+    .await;
+
+    // Frame before any cycle — initial state should render `x-api-key`
+    // as the current carousel option (this is correct for the initial
+    // anthropic default of `Some(XApiKey)`).
+    let frame_before = render_settings_to_string(&h, 80, 24).await;
+    insta::assert_snapshot!("auth_cycle_repro_before", &frame_before);
+
+    // One forward cycle: XApiKey -> BearerToken.
+    assert!(matches!(h.dispatch("l").await, KeyDispatchOutcome::Handled));
+
+    // Direct broker read: the cycle's state mutation must have landed.
+    // This is the floor — if even this fails, the bug is in the cycle
+    // command, not the renderer. (Spoiler: it is the renderer.)
+    let pc: ProviderConfig = h
+        .client
+        .read_typed(&oxpath!("config", "gate", "providers", acct_comp.clone()))
+        .await
+        .expect("read provider")
+        .expect("provider present after cycle");
+    assert_eq!(
+        pc.auth,
+        Some(ox_gate::AuthScheme::BearerToken),
+        "one forward auth cycle from XApiKey must land on BearerToken \
+         in the broker (state-mutation invariant)",
+    );
+
+    // Frame after one cycle. This is what the user actually sees.
+    let frame_after_one = render_settings_to_string(&h, 80, 24).await;
+    insta::assert_snapshot!("auth_cycle_repro_after_one_cycle", &frame_after_one);
+
+    // The bug-detector. State says BearerToken; the rendered carousel
+    // must reflect that. With the current `format!("{scheme:?}")`
+    // formatting in `append_account_field_rows`, the label is
+    // "bearertoken" (no hyphen), the renderer's `AUTH_DISPLAY.position`
+    // returns None, the `unwrap_or(0)` fallback fires, and the carousel
+    // re-renders as `x-api-key`.
+    //
+    // We check for `bearer-token` as the *current* (middle) carousel
+    // option, not just its presence in the row — `bearer-token` shows
+    // up as the `next` option in the buggy idx-0 fallback rendering
+    // too. The carousel is `◂ {prev}  {current}  {next} ▸`, so the
+    // discriminating substring when BearerToken is current is the
+    // contiguous run `x-api-key  bearer-token  none` (prev=x-api-key,
+    // current=bearer-token, next=none).
+    assert!(
+        frame_after_one.contains("x-api-key  bearer-token  none"),
+        "rendered frame after one auth cycle must show `bearer-token` as \
+         the *current* (middle) carousel option, with `x-api-key` as the \
+         prev option and `none` as the next option (matching the broker's \
+         BearerToken state at idx 1 of [x-api-key, bearer-token, none]); \
+         got:\n{frame_after_one}"
+    );
+}
