@@ -136,17 +136,6 @@ should make that data write directly. If you find yourself adding a
 synthetic row to the projection to drive a UI affordance, stop —
 that's a mode, not a row.
 
-## Convergence note
-
-The framework's day-one implementation predates these commitments and
-contains transitional shapes that the codebase is converging away
-from: `_create_now` / `delete_now` sentinel paths in `config/gate/…`,
-synthetic `_new` / `_delete` cursor scopes, and `RowKind::AccountAdd`
-/ `ModelEmptyState` / `ModelAddManual` rows in the visible-rows
-projection. New work should target the architecture this doc
-describes; existing surface is being migrated. Where this doc and
-the code disagree, the doc is the target.
-
 ## Branch / SHA
 
 Framework landed on branch `improvements`, commits `5b97d63` (the

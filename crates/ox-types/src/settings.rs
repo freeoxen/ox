@@ -112,17 +112,6 @@ pub enum GlobalBanner {
     Info { message: String, set_at_ms: u64 },
 }
 
-/// Historical request payload from the deprecated account-create
-/// subscription. The substrate convergence work moved account
-/// materialization into the CLI's `edit.commit` AccountAdd arm; this
-/// type is no longer wired into any active code path. It stays for
-/// now in case external callers depend on it; a later cleanup pass
-/// removes it once the codebase has settled.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CreateAccountRequest {
-    pub name: String,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,18 +290,4 @@ mod tests {
         });
     }
 
-    #[test]
-    fn create_account_request_roundtrip() {
-        json_roundtrip(CreateAccountRequest {
-            name: "alpha".to_string(),
-        });
-    }
-
-    #[test]
-    fn create_account_request_serializes_to_object_with_name() {
-        let req = CreateAccountRequest {
-            name: "alpha".to_string(),
-        };
-        assert_eq!(serde_json::to_string(&req).unwrap(), r#"{"name":"alpha"}"#);
-    }
 }

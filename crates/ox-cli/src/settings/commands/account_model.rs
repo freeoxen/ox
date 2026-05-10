@@ -485,14 +485,6 @@ fn accounts_compose_commit(data: &mut dyn Reader) -> Vec<Write> {
     if trimmed.is_empty() {
         return Vec::new();
     }
-    // `_`-prefix: kept as a transitional rule. Phase 7 retires it once
-    // there are no remaining sentinel paths to collide with.
-    if trimmed.starts_with('_') {
-        return vec![banner_error(format!(
-            "Account name '{}' starts with '_', which is reserved. Try a name without the leading underscore.",
-            trimmed
-        ))];
-    }
     let comp = match PathComponent::try_new(trimmed.to_string()) {
         Ok(c) => c,
         Err(_) => {
@@ -1675,32 +1667,31 @@ mod tests {
     }
 
     #[test]
-    fn accounts_compose_commit_with_underscore_prefix_emits_banner() {
+    fn accounts_compose_commit_with_leading_underscore_writes_account_record() {
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
             &oxpath!("ui", "settings", "new_account", "buffer"),
-            Value::String("_new".into()),
+            Value::String("_personal".into()),
         );
         let writes = run_cmd(&AccountsComposeCommit::new(), &mut snap);
-        assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "global", "banner"));
-        let banner: ox_types::settings::GlobalBanner = match &writes[0].record {
+        let by_path: std::collections::BTreeMap<_, _> = writes
+            .iter()
+            .map(|w| (w.path.to_string(), w.record.clone()))
+            .collect();
+
+        let acct = by_path
+            .get("config/gate/accounts/_personal")
+            .expect("account record write at canonical _personal path");
+        let cfg: AccountConfig = match acct {
             Record::Parsed(v) => structfs_serde_store::from_value(v.clone()).unwrap(),
             other => panic!("unexpected: {other:?}"),
         };
-        match banner {
-            ox_types::settings::GlobalBanner::Error { message, .. } => {
-                assert!(
-                    message.contains("reserved"),
-                    "banner must mention the reservation; got {message:?}"
-                );
-                assert!(
-                    message.contains("_new"),
-                    "banner must mention the offending name; got {message:?}"
-                );
-            }
-            other => panic!("expected Error banner; got {other:?}"),
-        }
+        assert_eq!(cfg.provider, "anthropic");
+
+        assert!(
+            !by_path.contains_key("ui/global/banner"),
+            "_-prefixed names must no longer emit a reservation banner"
+        );
     }
 
     #[test]
@@ -1734,9 +1725,8 @@ mod tests {
 
     #[test]
     fn accounts_compose_commit_with_interior_underscore_writes_account_record() {
-        // Only the *leading* underscore is reserved — interior
-        // underscores like `alpha_beta` are valid identifiers and must
-        // commit normally.
+        // Interior underscores like `alpha_beta` are valid identifiers
+        // and commit normally.
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
             &oxpath!("ui", "settings", "new_account", "buffer"),

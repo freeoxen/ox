@@ -338,8 +338,6 @@ pub enum GlobalBanner {
     Error { message: String, set_at_ms: u64 },
     Info  { message: String, set_at_ms: u64 },
 }
-
-pub struct CreateAccountRequest { pub name: String }
 ```
 
 ### Gate-domain records
@@ -598,8 +596,7 @@ crates/ox-types/src/                   # shared typed records
   command_binding.rs                   # CommandId, BindingEntry, etc.
   key_chord.rs                         # KeyChord, KeyCodeRepr
   settings.rs                          # SettingsIndexEntry, AccountField,
-                                       # ModelField, ModelKey, banners,
-                                       # CreateAccountRequest
+                                       # ModelField, ModelKey, banners
   subscription.rs                      # PathPattern, PathChange, Write,
                                        # SubscriptionId
   completion_role.rs                   # CompletionRole
