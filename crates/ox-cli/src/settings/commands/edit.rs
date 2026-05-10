@@ -183,7 +183,11 @@ fn begin_edit_account_text(data: &mut dyn Reader, field: AccountField) -> Vec<Wr
             account,
             field: row_field,
         } if row_field == field => account,
-        _ => return Vec::new(),
+        RowKind::AccountField { .. }
+        | RowKind::Entry { .. }
+        | RowKind::Account { .. }
+        | RowKind::Model { .. }
+        | RowKind::ModelField { .. } => return Vec::new(),
     };
     let initial = match field {
         AccountField::Endpoint => current_endpoint(data, &account).unwrap_or_default(),
@@ -209,7 +213,10 @@ fn begin_edit_model_field_inner(data: &mut dyn Reader) -> Vec<Write> {
             model_id,
             field,
         } => (account, model_id, field),
-        _ => return Vec::new(),
+        RowKind::Entry { .. }
+        | RowKind::Account { .. }
+        | RowKind::Model { .. }
+        | RowKind::AccountField { .. } => return Vec::new(),
     };
     let initial = current_model_override(data, &account, &model_id, field).unwrap_or_default();
     enter_edit_mode(row.path, initial)
@@ -291,7 +298,10 @@ fn insert_char(
     let accept = match row.as_ref().map(|r| &r.kind) {
         Some(RowKind::ModelField { .. }) => ch.is_ascii_digit(),
         Some(RowKind::AccountField { .. }) => true,
-        _ => false,
+        Some(RowKind::Entry { .. })
+        | Some(RowKind::Account { .. })
+        | Some(RowKind::Model { .. })
+        | None => false,
     };
     if !accept {
         return Vec::new();
@@ -338,7 +348,10 @@ fn commit(data: &mut dyn Reader) -> Vec<Write> {
             model_id,
             field,
         }) => commit_model_field(data, &account, &model_id, field, &buffer),
-        _ => Vec::new(),
+        Some(RowKind::Entry { .. })
+        | Some(RowKind::Account { .. })
+        | Some(RowKind::Model { .. })
+        | None => Vec::new(),
     };
     writes.extend(clear_edit_state());
     writes

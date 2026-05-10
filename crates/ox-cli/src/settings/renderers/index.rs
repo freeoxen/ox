@@ -368,7 +368,17 @@ fn selector_carousel_spans(
                 idx,
             )
         }
-        _ => return None,
+        RowKind::AccountField {
+            field:
+                ox_types::AccountField::Name
+                | ox_types::AccountField::Endpoint
+                | ox_types::AccountField::Key,
+            ..
+        }
+        | RowKind::Entry { .. }
+        | RowKind::Account { .. }
+        | RowKind::Model { .. }
+        | RowKind::ModelField { .. } => return None,
     };
     if options.is_empty() {
         return None;
@@ -455,7 +465,9 @@ fn decorate_row_label(
         } => "max_output_tokens",
         // Other row kinds aren't editable; fall through to the
         // original label.
-        _ => return row.label.clone(),
+        RowKind::Entry { .. } | RowKind::Account { .. } | RowKind::Model { .. } => {
+            return row.label.clone();
+        }
     };
     // `▏` (U+258F) renders as a thin vertical bar — a clear cursor
     // mark at end-of-buffer that doesn't get confused with text.

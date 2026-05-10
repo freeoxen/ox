@@ -364,7 +364,7 @@ fn focused_account(data: &mut dyn Reader) -> Option<String> {
             // Field rows under an expanded account also count — the
             // user has focused a field that belongs to that account.
             RowKind::AccountField { account, .. } => Some(account),
-            _ => None,
+            RowKind::Entry { .. } | RowKind::Model { .. } | RowKind::ModelField { .. } => None,
         }
     })
 }
@@ -385,7 +385,7 @@ fn focused_model(data: &mut dyn Reader) -> Option<ModelKey> {
             RowKind::ModelField {
                 account, model_id, ..
             } => Some(ModelKey { account, model_id }),
-            _ => None,
+            RowKind::Entry { .. } | RowKind::Account { .. } | RowKind::AccountField { .. } => None,
         }
     })
 }
@@ -593,7 +593,7 @@ fn models_add_manual(data: &mut dyn Reader) -> Vec<Write> {
     let account = rows.iter().find(|r| r.path == focused).and_then(|r| match &r.kind {
         RowKind::Model { account, .. } => Some(account.clone()),
         RowKind::ModelField { account, .. } => Some(account.clone()),
-        _ => None,
+        RowKind::Entry { .. } | RowKind::Account { .. } | RowKind::AccountField { .. } => None,
     });
     let Some(account) = account else {
         return Vec::new();
@@ -1236,7 +1236,14 @@ fn cycle_field(data: &mut dyn Reader, dir: CycleDir) -> Vec<Write> {
             field: AccountField::Auth,
             ..
         } => selector_cycle_auth_dir(data, dir),
-        _ => Vec::new(),
+        RowKind::AccountField {
+            field: AccountField::Name | AccountField::Endpoint | AccountField::Key,
+            ..
+        }
+        | RowKind::Entry { .. }
+        | RowKind::Account { .. }
+        | RowKind::Model { .. }
+        | RowKind::ModelField { .. } => Vec::new(),
     }
 }
 
