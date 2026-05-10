@@ -22,7 +22,7 @@
 
 use ox_path::oxpath;
 use ox_types::Screen;
-use ox_types::settings::{AccountField, GlobalBanner, ModelField, ModelKey};
+use ox_types::settings::{AccountField, ModelField, ModelKey};
 use ox_types::subscription::Write;
 use structfs_core_store::{Path, Reader, Record, Value};
 use structfs_serde_store::to_value;
@@ -254,21 +254,6 @@ fn clear_edit_state() -> Vec<Write> {
             record: Record::parsed(Value::Null),
         },
     ]
-}
-
-/// Build a `GlobalBanner::Error` write for `ui/global/banner`.
-fn banner_error(message: String) -> Write {
-    let banner = GlobalBanner::Error {
-        message,
-        set_at_ms: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0),
-    };
-    Write {
-        path: oxpath!("ui", "global", "banner"),
-        record: Record::parsed(to_value(&banner).unwrap()),
-    }
 }
 
 fn insert_char(

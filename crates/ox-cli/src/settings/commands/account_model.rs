@@ -14,7 +14,7 @@
 use ox_kernel::AccountName;
 use ox_path::oxpath;
 use ox_types::Screen;
-use ox_types::settings::{AccountField, ModelField, ModelKey};
+use ox_types::settings::{AccountField, GlobalBanner, ModelField, ModelKey};
 use ox_types::subscription::Write;
 use structfs_core_store::{Path, Reader, Record, Value};
 use structfs_serde_store::to_value;
@@ -507,10 +507,11 @@ fn accounts_compose_commit(data: &mut dyn Reader) -> Vec<Write> {
     let name = match AccountName::try_new(trimmed.to_string()) {
         Ok(n) => n,
         Err(_) => {
-            return vec![banner_error(format!(
-                "Invalid account name: '{}'",
-                trimmed
-            ))];
+            let banner = GlobalBanner::error(format!("Invalid account name: '{}'", trimmed));
+            return vec![Write {
+                path: oxpath!("ui", "global", "banner"),
+                record: Record::parsed(to_value(&banner).unwrap()),
+            }];
         }
     };
     let comp = name.to_path_component();
@@ -570,24 +571,6 @@ fn accounts_compose_commit(data: &mut dyn Reader) -> Vec<Write> {
             record: Record::parsed(Value::Null),
         },
     ]
-}
-
-/// Build a `GlobalBanner::Error` write for `ui/global/banner`. Mirrors
-/// the same-named helper in `edit.rs`; kept private here so the
-/// compose-mode commands stay self-contained.
-fn banner_error(message: String) -> Write {
-    use ox_types::settings::GlobalBanner;
-    let banner = GlobalBanner::Error {
-        message,
-        set_at_ms: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0),
-    };
-    Write {
-        path: oxpath!("ui", "global", "banner"),
-        record: Record::parsed(to_value(&banner).unwrap()),
-    }
 }
 
 // ---------------------------------------------------------------------------

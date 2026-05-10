@@ -112,6 +112,22 @@ pub enum GlobalBanner {
     Info { message: String, set_at_ms: u64 },
 }
 
+impl GlobalBanner {
+    /// Build a `GlobalBanner::Error` value with `set_at_ms` set to the
+    /// current epoch millis. Used by CLI command surfaces that surface
+    /// validation errors to the user (e.g. invalid account names,
+    /// reserved-prefix collisions).
+    pub fn error(message: impl Into<String>) -> Self {
+        GlobalBanner::Error {
+            message: message.into(),
+            set_at_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
