@@ -48,9 +48,14 @@ pub async fn populate_index_entries(client: &ClientHandle) -> Result<(), StoreEr
 }
 
 /// First-run hook: when no accounts exist and no settings cursor is set,
-/// land the user on the new-account overlay so they have a clear next
-/// step. Returns `true` when the hook fired, `false` otherwise.
+/// land the user mid-compose so they have a clear next step. Sets the
+/// page-level cursor to `settings/index` (the accordion's binding scope),
+/// expands the Accounts section, and arms the new-account compose buffer
+/// — the dispatcher's compose-mode pass takes over from there. Returns
+/// `true` when the hook fired, `false` otherwise.
 pub async fn maybe_first_run_cursor(client: &ClientHandle) -> Result<bool, StoreError> {
+    use structfs_core_store::Value;
+
     let cursor_path = oxpath!("ui", "settings", "cursor");
     if client.read(&cursor_path).await?.is_some() {
         return Ok(false);
@@ -66,9 +71,26 @@ pub async fn maybe_first_run_cursor(client: &ClientHandle) -> Result<bool, Store
     if !subtree.is_empty() {
         return Ok(false);
     }
-    let first_cursor = oxpath!("settings", "accounts", "_new");
-    let value = path_to_value(&first_cursor);
-    client.write(&cursor_path, Record::parsed(value)).await?;
+    client
+        .write(
+            &cursor_path,
+            Record::parsed(path_to_value(&oxpath!("settings", "index"))),
+        )
+        .await?;
+    client
+        .write(
+            &oxpath!("ui", "settings", "expanded"),
+            Record::parsed(super::visible_rows::expanded_set_to_value(&[
+                "settings/accounts".to_string(),
+            ])),
+        )
+        .await?;
+    client
+        .write(
+            &oxpath!("ui", "settings", "new_account", "buffer"),
+            Record::parsed(Value::String(String::new())),
+        )
+        .await?;
     Ok(true)
 }
 
@@ -177,12 +199,15 @@ mod tests {
         let client = broker.client();
         let fired = maybe_first_run_cursor(&client).await.unwrap();
         assert!(fired);
+
+        // Page-level cursor lands at settings/index — the accordion's
+        // binding scope. Compose mode is signalled by the buffer write,
+        // not a synthetic cursor identifier.
         let cursor = client
             .read(&oxpath!("ui", "settings", "cursor"))
             .await
             .unwrap()
             .expect("cursor written");
-        // Decode via the same Value::Array shape path_to_value uses.
         match cursor.as_value().unwrap() {
             Value::Array(items) => {
                 let comps: Vec<&str> = items
@@ -192,9 +217,42 @@ mod tests {
                         _ => None,
                     })
                     .collect();
-                assert_eq!(comps, vec!["settings", "accounts", "_new"]);
+                assert_eq!(comps, vec!["settings", "index"]);
             }
             other => panic!("unexpected cursor shape: {:?}", other),
+        }
+
+        // The Accounts section is expanded so the inline name prompt
+        // is visible directly under the section header.
+        let expanded = client
+            .read(&oxpath!("ui", "settings", "expanded"))
+            .await
+            .unwrap()
+            .expect("expanded set written");
+        match expanded.as_value().unwrap() {
+            Value::Array(items) => {
+                let names: Vec<&str> = items
+                    .iter()
+                    .filter_map(|v| match v {
+                        Value::String(s) => Some(s.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                assert!(names.contains(&"settings/accounts"));
+            }
+            other => panic!("unexpected expanded shape: {:?}", other),
+        }
+
+        // Compose buffer armed → dispatcher's compose-mode pass routes
+        // printable keys to accounts.compose.insert_char.
+        let buffer = client
+            .read(&oxpath!("ui", "settings", "new_account", "buffer"))
+            .await
+            .unwrap()
+            .expect("buffer written");
+        match buffer.as_value().unwrap() {
+            Value::String(s) => assert!(s.is_empty()),
+            other => panic!("expected empty string buffer, got {:?}", other),
         }
     }
 

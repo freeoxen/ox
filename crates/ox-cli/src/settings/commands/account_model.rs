@@ -372,30 +372,30 @@ fn null_write(path: Path) -> Write {
 fn accounts_add(data: &mut dyn Reader) -> Vec<Write> {
     use crate::settings::visible_rows::{expanded_set_to_value, read_expanded_set};
 
+    // Open compose mode by writing `Some("")` to the new-account buffer.
+    // The dispatcher's compose-mode pass picks this up and routes
+    // printable / Backspace / Enter / Esc into the
+    // `accounts.compose.*` commands; the renderer reads the buffer to
+    // emit the inline name prompt in place of the static
+    // "+ New connection" affordance. No focus / edit_mode / edit_buffer
+    // bookkeeping — this command's only job is to flip the section open
+    // and arm the buffer.
     let mut expanded = read_expanded_set(data);
     let accounts_key = "settings/accounts".to_string();
     if !expanded.iter().any(|s| s == &accounts_key) {
         expanded.push(accounts_key);
     }
 
-    let mut writes = vec![Write {
-        path: oxpath!("ui", "settings", "expanded"),
-        record: Record::parsed(expanded_set_to_value(&expanded)),
-    }];
-
-    // Focus the ghost row before flipping edit_mode so the renderer's
-    // overlay locks onto the right row.
-    writes.push(Write {
-        path: oxpath!("ui", "settings", "focused"),
-        record: Record::parsed(path_to_value(&oxpath!(
-            "settings", "accounts", "_new"
-        ))),
-    });
-
-    // Reuse edit.rs's helper so the seed shape matches what tree.activate
-    // produces from the same row.
-    writes.extend(super::edit::begin_account_add());
-    writes
+    vec![
+        Write {
+            path: oxpath!("ui", "settings", "expanded"),
+            record: Record::parsed(expanded_set_to_value(&expanded)),
+        },
+        Write {
+            path: oxpath!("ui", "settings", "new_account", "buffer"),
+            record: Record::parsed(Value::String(String::new())),
+        },
+    ]
 }
 
 fn accounts_compose_insert_char(
@@ -1193,7 +1193,7 @@ mod tests {
     // -- Cursor-shuffle tests ---------------------------------------------------
 
     #[test]
-    fn accounts_add_expands_section_focuses_ghost_and_enters_edit() {
+    fn accounts_add_writes_buffer_and_expands_section() {
         let mut snap = SettingsSnapshot::empty();
         let writes = run_cmd(&AccountsAdd::new(), &mut snap);
         let by_path: std::collections::BTreeMap<_, _> = writes
@@ -1212,56 +1212,21 @@ mod tests {
             "expanded set must include settings/accounts; got {set:?}"
         );
 
-        // focused → settings/accounts/_new (the ghost row).
-        let focus = by_path
-            .get("ui/settings/focused")
-            .expect("focused write");
-        match focus {
-            Record::Parsed(v) => {
-                let parts: Vec<String> = match v {
-                    Value::Array(segs) => segs
-                        .iter()
-                        .map(|s| match s {
-                            Value::String(s) => s.clone(),
-                            _ => panic!(),
-                        })
-                        .collect(),
-                    _ => panic!(),
-                };
-                assert_eq!(parts.join("/"), "settings/accounts/_new");
-            }
-            other => panic!("unexpected: {other:?}"),
-        }
-
-        // edit_field_path → settings/accounts/_new.
-        let efp = by_path
-            .get("ui/settings/edit_field_path")
-            .expect("edit_field_path write");
-        match efp {
-            Record::Parsed(Value::Array(segs)) => {
-                let parts: Vec<String> = segs
-                    .iter()
-                    .map(|s| match s {
-                        Value::String(s) => s.clone(),
-                        _ => panic!(),
-                    })
-                    .collect();
-                assert_eq!(parts.join("/"), "settings/accounts/_new");
-            }
-            other => panic!("unexpected: {other:?}"),
-        }
-
-        // edit_buffer = "".
-        match by_path.get("ui/settings/edit_buffer").unwrap() {
+        // new_account/buffer must be Some("").
+        let buf = by_path
+            .get("ui/settings/new_account/buffer")
+            .expect("buffer write");
+        match buf {
             Record::Parsed(Value::String(s)) => assert!(s.is_empty()),
-            other => panic!("unexpected: {other:?}"),
+            other => panic!("expected buffer = Some(\"\"); got {other:?}"),
         }
 
-        // edit_mode = true.
-        match by_path.get("ui/settings/edit_mode").unwrap() {
-            Record::Parsed(Value::Bool(true)) => {}
-            other => panic!("unexpected: {other:?}"),
-        }
+        // The new substrate doesn't touch edit-mode state nor focus —
+        // those belong to the field-edit flow now.
+        assert!(!by_path.contains_key("ui/settings/edit_mode"));
+        assert!(!by_path.contains_key("ui/settings/edit_field_path"));
+        assert!(!by_path.contains_key("ui/settings/edit_buffer"));
+        assert!(!by_path.contains_key("ui/settings/focused"));
     }
 
     #[test]
@@ -1288,6 +1253,220 @@ mod tests {
             set.iter().any(|s| s == "settings/accounts"),
             "must add settings/accounts; got {set:?}"
         );
+    }
+
+    // -- Compose-mode tests -----------------------------------------------------
+
+    #[test]
+    fn accounts_compose_commit_writes_account_record_and_cascade() {
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("ui", "settings", "new_account", "buffer"),
+            Value::String("alpha".into()),
+        );
+        let writes = run_cmd(&AccountsComposeCommit::new(), &mut snap);
+        let by_path: std::collections::BTreeMap<_, _> = writes
+            .iter()
+            .map(|w| (w.path.to_string(), w.record.clone()))
+            .collect();
+
+        // 1. Account record materialized at config/gate/accounts/alpha.
+        let acct = by_path
+            .get("config/gate/accounts/alpha")
+            .expect("account record write");
+        let cfg: AccountConfig = match acct {
+            Record::Parsed(v) => structfs_serde_store::from_value(v.clone()).unwrap(),
+            other => panic!("unexpected record: {other:?}"),
+        };
+        assert_eq!(cfg.provider, "anthropic");
+
+        // 2. Buffer cleared (Null write) — exits compose mode.
+        let buf = by_path
+            .get("ui/settings/new_account/buffer")
+            .expect("buffer cleared");
+        assert!(matches!(buf, Record::Parsed(Value::Null)));
+
+        // 3. Selection / cursor / focused / expanded all written.
+        assert!(by_path.contains_key("ui/settings/accounts/selected"));
+        assert!(by_path.contains_key("ui/settings/cursor"));
+        assert!(by_path.contains_key("ui/settings/focused"));
+        assert!(by_path.contains_key("ui/settings/expanded"));
+
+        // Expanded set contains both the section and the new account row.
+        let exp = by_path.get("ui/settings/expanded").unwrap();
+        let set: Vec<String> = match exp {
+            Record::Parsed(v) => structfs_serde_store::from_value(v.clone()).unwrap(),
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert!(set.iter().any(|s| s == "settings/accounts"));
+        assert!(set.iter().any(|s| s == "settings/accounts/alpha"));
+    }
+
+    #[test]
+    fn accounts_compose_commit_with_empty_buffer_silent_no_op() {
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("ui", "settings", "new_account", "buffer"),
+            Value::String("   ".into()),
+        );
+        let writes = run_cmd(&AccountsComposeCommit::new(), &mut snap);
+        assert!(
+            writes.is_empty(),
+            "expected no writes for whitespace buffer; got {writes:?}"
+        );
+    }
+
+    #[test]
+    fn accounts_compose_commit_with_underscore_prefix_emits_banner() {
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("ui", "settings", "new_account", "buffer"),
+            Value::String("_new".into()),
+        );
+        let writes = run_cmd(&AccountsComposeCommit::new(), &mut snap);
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].path, oxpath!("ui", "global", "banner"));
+        let banner: ox_types::settings::GlobalBanner = match &writes[0].record {
+            Record::Parsed(v) => structfs_serde_store::from_value(v.clone()).unwrap(),
+            other => panic!("unexpected: {other:?}"),
+        };
+        match banner {
+            ox_types::settings::GlobalBanner::Error { message, .. } => {
+                assert!(
+                    message.contains("reserved"),
+                    "banner must mention the reservation; got {message:?}"
+                );
+                assert!(
+                    message.contains("_new"),
+                    "banner must mention the offending name; got {message:?}"
+                );
+            }
+            other => panic!("expected Error banner; got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn accounts_compose_commit_with_invalid_name_emits_banner() {
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("ui", "settings", "new_account", "buffer"),
+            Value::String("bad-name".into()),
+        );
+        let writes = run_cmd(&AccountsComposeCommit::new(), &mut snap);
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].path, oxpath!("ui", "global", "banner"));
+        let banner: ox_types::settings::GlobalBanner = match &writes[0].record {
+            Record::Parsed(v) => structfs_serde_store::from_value(v.clone()).unwrap(),
+            other => panic!("unexpected: {other:?}"),
+        };
+        match banner {
+            ox_types::settings::GlobalBanner::Error { message, .. } => {
+                assert!(
+                    message.contains("Invalid"),
+                    "banner must mention invalidity; got {message:?}"
+                );
+                assert!(
+                    message.contains("bad-name"),
+                    "banner must mention the offending name; got {message:?}"
+                );
+            }
+            other => panic!("expected Error banner; got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn accounts_compose_commit_with_interior_underscore_writes_account_record() {
+        // Only the *leading* underscore is reserved — interior
+        // underscores like `alpha_beta` are valid identifiers and must
+        // commit normally.
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("ui", "settings", "new_account", "buffer"),
+            Value::String("alpha_beta".into()),
+        );
+        let writes = run_cmd(&AccountsComposeCommit::new(), &mut snap);
+        let by_path: std::collections::BTreeMap<_, _> = writes
+            .iter()
+            .map(|w| (w.path.to_string(), w.record.clone()))
+            .collect();
+        let acct = by_path
+            .get("config/gate/accounts/alpha_beta")
+            .expect("account record write");
+        let cfg: AccountConfig = match acct {
+            Record::Parsed(v) => structfs_serde_store::from_value(v.clone()).unwrap(),
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert_eq!(cfg.provider, "anthropic");
+    }
+
+    #[test]
+    fn accounts_compose_insert_char_appends_to_buffer() {
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("ui", "settings", "new_account", "buffer"),
+            Value::String("alph".into()),
+        );
+        // CommandCtx with last_keystroke = 'a'.
+        let registry = RendererRegistry::new();
+        let ctx = CommandCtx {
+            registry: &registry,
+            last_keystroke: Some(KeyChord {
+                modifiers: KeyModifierSet::default(),
+                code: KeyCodeRepr::Char('a'),
+            }),
+        };
+        let writes = AccountsComposeInsertChar::new().run(&mut snap, &ctx);
+        assert_eq!(writes.len(), 1);
+        assert_eq!(
+            writes[0].path,
+            oxpath!("ui", "settings", "new_account", "buffer")
+        );
+        match &writes[0].record {
+            Record::Parsed(Value::String(s)) => assert_eq!(s, "alpha"),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn accounts_compose_delete_back_pops_buffer() {
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("ui", "settings", "new_account", "buffer"),
+            Value::String("alpha".into()),
+        );
+        let writes = run_cmd(&AccountsComposeDeleteBack::new(), &mut snap);
+        assert_eq!(writes.len(), 1);
+        assert_eq!(
+            writes[0].path,
+            oxpath!("ui", "settings", "new_account", "buffer")
+        );
+        match &writes[0].record {
+            Record::Parsed(Value::String(s)) => assert_eq!(s, "alph"),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn accounts_compose_delete_back_on_empty_is_no_op() {
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("ui", "settings", "new_account", "buffer"),
+            Value::String(String::new()),
+        );
+        let writes = run_cmd(&AccountsComposeDeleteBack::new(), &mut snap);
+        assert!(writes.is_empty());
+    }
+
+    #[test]
+    fn accounts_compose_cancel_clears_buffer() {
+        let mut snap = SettingsSnapshot::empty();
+        let writes = run_cmd(&AccountsComposeCancel::new(), &mut snap);
+        assert_eq!(writes.len(), 1);
+        assert_eq!(
+            writes[0].path,
+            oxpath!("ui", "settings", "new_account", "buffer")
+        );
+        assert!(matches!(&writes[0].record, Record::Parsed(Value::Null)));
     }
 
     #[test]

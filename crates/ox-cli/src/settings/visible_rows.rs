@@ -36,12 +36,6 @@ pub enum RowKind {
     /// model row of a non-empty catalog so users can add custom entries
     /// alongside auto-enumerated ones.
     ModelAddManual { account: String },
-    /// Synthetic ghost row at the top of the expanded Accounts section.
-    /// Activating it (Enter) opens the inline name prompt; commit
-    /// writes the new-connection request via `edit.commit`. The new
-    /// connection lands as a real `Account` row when the subscription
-    /// replies.
-    AccountAdd,
     /// One field row under an expanded account.
     AccountField {
         account: String,
@@ -139,22 +133,11 @@ pub fn enumerate(data: &mut dyn Reader) -> Vec<VisibleRow> {
 fn append_account_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, expanded: &[String]) {
     use ox_gate::AccountConfig;
 
-    // The ghost row is pushed *before* any per-account iteration so it
-    // always sits at the top of the expanded section, independent of
-    // account ordering. The path identifier `_new` is a synthetic
-    // sentinel — activation/commit dispatch on this row by path
-    // equality. (The create subscription will reject `_`-prefixed
-    // account names in a later task, sealing the reservation.)
-    rows.push(VisibleRow {
-        path: oxpath!("settings", "accounts", "_new"),
-        depth: 1,
-        label: "+ New connection".into(),
-        secondary: None,
-        badge: None,
-        kind: RowKind::AccountAdd,
-        expandable: false,
-        expanded: false,
-    });
+    // The "+ New connection" affordance is no longer a synthetic ghost
+    // row in this enumeration; the renderer prepends it (and its
+    // compose-mode inline-prompt sibling) directly into its rendered
+    // items list with `focus: None`, so j/k skip it. This keeps
+    // visible_rows a projection of real data only.
 
     let names = child_names_under(data, "config/gate/accounts");
     // Pre-compute the provider-to-accounts map so the share-set lookup
@@ -793,41 +776,6 @@ mod tests {
     }
 
     #[test]
-    fn expanded_accounts_section_starts_with_account_add_ghost_row() {
-        let mut snap = SettingsSnapshot::empty();
-        write_index_entries(&mut snap);
-        write_account(&mut snap, "alpha");
-        snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
-            expanded_set_to_value(&["settings/accounts".to_string()]),
-        );
-        let rows = enumerate(&mut snap);
-        // Accounts header + ghost + alpha + Models header = 4
-        assert_eq!(rows.len(), 4);
-        assert!(matches!(&rows[0].kind, RowKind::Entry { entry_id } if entry_id == "accounts"));
-        assert!(matches!(&rows[1].kind, RowKind::AccountAdd));
-        assert_eq!(rows[1].depth, 1);
-        assert_eq!(rows[1].label, "+ New connection");
-        assert!(!rows[1].expandable);
-        assert_eq!(
-            rows[1].path,
-            oxpath!("settings", "accounts", "_new"),
-        );
-        assert!(matches!(&rows[2].kind, RowKind::Account { name } if name == "alpha"));
-    }
-
-    #[test]
-    fn collapsed_accounts_section_has_no_ghost_row() {
-        let mut snap = SettingsSnapshot::empty();
-        write_index_entries(&mut snap);
-        write_account(&mut snap, "alpha");
-        let rows = enumerate(&mut snap);
-        // Collapsed: just the two top-level entries.
-        assert_eq!(rows.len(), 2);
-        assert!(rows.iter().all(|r| !matches!(r.kind, RowKind::AccountAdd)));
-    }
-
-    #[test]
     fn expanded_accounts_inlines_account_rows() {
         let mut snap = SettingsSnapshot::empty();
         write_index_entries(&mut snap);
@@ -838,13 +786,15 @@ mod tests {
             expanded_set_to_value(&["settings/accounts".to_string()]),
         );
         let rows = enumerate(&mut snap);
-        // Accounts header + ghost + 2 accounts + Models header = 5
-        assert_eq!(rows.len(), 5);
-        assert!(matches!(&rows[1].kind, RowKind::AccountAdd));
-        assert!(matches!(&rows[2].kind, RowKind::Account { name } if name == "alpha"));
-        assert_eq!(rows[2].depth, 1);
-        assert!(matches!(&rows[3].kind, RowKind::Account { name } if name == "beta"));
-        assert!(matches!(&rows[4].kind, RowKind::Entry { entry_id } if entry_id == "models"));
+        // Accounts header + 2 accounts + Models header = 4. The
+        // "+ New connection" affordance is not part of visible_rows;
+        // the renderer prepends it as a non-focusable item.
+        assert_eq!(rows.len(), 4);
+        assert!(matches!(&rows[0].kind, RowKind::Entry { entry_id } if entry_id == "accounts"));
+        assert!(matches!(&rows[1].kind, RowKind::Account { name } if name == "alpha"));
+        assert_eq!(rows[1].depth, 1);
+        assert!(matches!(&rows[2].kind, RowKind::Account { name } if name == "beta"));
+        assert!(matches!(&rows[3].kind, RowKind::Entry { entry_id } if entry_id == "models"));
     }
 
     #[test]
@@ -1413,8 +1363,8 @@ mod tests {
             "accounts",
             ox_kernel::PathComponent::try_new("alpha").unwrap()
         );
-        // Accounts header (0), ghost row (1), alpha (2).
-        assert_eq!(position_of(&rows, &alpha_path), Some(2));
+        // Accounts header (0), alpha (1).
+        assert_eq!(position_of(&rows, &alpha_path), Some(1));
         assert_eq!(
             position_of(&rows, &oxpath!("settings", "accounts")),
             Some(0)

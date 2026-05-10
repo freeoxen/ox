@@ -220,7 +220,6 @@ fn activate(data: &mut dyn Reader) -> Vec<Write> {
             // The expandable arm above already handles every Entry,
             // Account, and Model row.
             RowKind::Entry { .. } | RowKind::Account { .. } | RowKind::Model { .. } => Vec::new(),
-            RowKind::AccountAdd => super::edit::begin_account_add(),
             RowKind::ModelEmptyState { account } => {
                 // Write the connection's refresh trigger. The
                 // gate.catalog_refresh subscription (PrefixSuffix on
@@ -456,20 +455,21 @@ mod tests {
             &oxpath!("ui", "settings", "expanded"),
             expanded_set_to_value(&["settings/accounts".to_string()]),
         );
-        // Visible: [Accounts, ghost, alpha, beta, Models]
+        // Visible rows (j/k-focusable): [Accounts, alpha, beta, Models].
+        // The renderer's "+ New connection" affordance has `focus: None`
+        // and is not a tree row, so j skips straight from the section
+        // header to the first real account.
         set_focused(&mut snap, "settings/accounts");
         let writes = run(&TreeNext::new(), &mut snap);
         let target = path_from_value(writes[0].record.as_value().unwrap()).unwrap();
-        assert_eq!(target.to_string(), "settings/accounts/_new");
-        // Apply the focus write so the next step resolves from the
-        // ghost row's index, not the stale `settings/accounts` cursor.
+        assert_eq!(target.to_string(), "settings/accounts/alpha");
         snap.insert(
             &writes[0].path,
             writes[0].record.as_value().unwrap().clone(),
         );
         let writes = run(&TreeNext::new(), &mut snap);
         let target = path_from_value(writes[0].record.as_value().unwrap()).unwrap();
-        assert_eq!(target.to_string(), "settings/accounts/alpha");
+        assert_eq!(target.to_string(), "settings/accounts/beta");
     }
 
     #[test]
@@ -571,68 +571,6 @@ mod tests {
         }
         for w in &writes {
             assert_ne!(w.path, oxpath!("ui", "settings", "cursor"));
-        }
-    }
-
-    #[test]
-    fn activate_on_account_add_ghost_enters_inline_edit_mode() {
-        let mut snap = SettingsSnapshot::empty();
-        snap.insert(
-            &oxpath!("settings", "index", "entries", "accounts"),
-            to_value(&entry("accounts", "settings/accounts")).unwrap(),
-        );
-        snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
-            crate::settings::visible_rows::expanded_set_to_value(&["settings/accounts".to_string()]),
-        );
-        snap.insert(
-            &oxpath!("ui", "settings", "focused"),
-            crate::settings::commands::navigation::path_to_value(&oxpath!(
-                "settings", "accounts", "_new"
-            )),
-        );
-
-        let writes = run(&TreeActivate::new(), &mut snap);
-        let by_path: std::collections::BTreeMap<_, _> = writes
-            .iter()
-            .map(|w| (w.path.to_string(), w.record.clone()))
-            .collect();
-
-        // edit_field_path → settings/accounts/_new
-        let efp = by_path
-            .get("ui/settings/edit_field_path")
-            .expect("edit_field_path write");
-        match efp {
-            Record::Parsed(v) => {
-                let parts: Vec<String> = match v {
-                    Value::Array(segs) => segs
-                        .iter()
-                        .map(|s| match s {
-                            Value::String(s) => s.clone(),
-                            _ => panic!(),
-                        })
-                        .collect(),
-                    _ => panic!("expected array, got {v:?}"),
-                };
-                assert_eq!(parts.join("/"), "settings/accounts/_new");
-            }
-            other => panic!("unexpected record: {other:?}"),
-        }
-
-        // edit_buffer = ""
-        let buf = by_path
-            .get("ui/settings/edit_buffer")
-            .expect("edit_buffer write");
-        match buf {
-            Record::Parsed(Value::String(s)) => assert!(s.is_empty()),
-            other => panic!("unexpected buffer record: {other:?}"),
-        }
-
-        // edit_mode = true
-        let em = by_path.get("ui/settings/edit_mode").expect("edit_mode write");
-        match em {
-            Record::Parsed(Value::Bool(true)) => {}
-            other => panic!("unexpected edit_mode record: {other:?}"),
         }
     }
 
@@ -944,15 +882,9 @@ mod tests {
         let w = run(&TreeActivate::new(), &mut snap);
         snap.insert(&w[0].path, w[0].record.as_value().unwrap().clone());
 
-        // j past the synthetic + New connection ghost row.
-        let w = run(&TreeNext::new(), &mut snap);
-        snap.insert(&w[0].path, w[0].record.as_value().unwrap().clone());
-        assert_eq!(
-            read_focused_raw(&mut snap).unwrap().to_string(),
-            "settings/accounts/_new"
-        );
-
-        // j to first account
+        // j to first account — the "+ New connection" affordance is a
+        // non-focusable renderer-level decoration and is not part of
+        // visible_rows, so j moves directly from section header to alpha.
         let w = run(&TreeNext::new(), &mut snap);
         snap.insert(&w[0].path, w[0].record.as_value().unwrap().clone());
         assert_eq!(

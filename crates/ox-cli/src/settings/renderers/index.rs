@@ -95,32 +95,32 @@ impl Renderer for IndexRenderer {
 
         let mut selected = selected;
 
-        // Compose-mode affordance. While `ui/settings/new_account/buffer`
-        // is `Some(_)` — i.e. the user is actively naming a new
-        // connection — prepend an inline name prompt right after the
-        // expanded Accounts header. `focus: None` keeps j/k from
-        // landing on it. A future commit extends this to also emit a
-        // static "+ New connection" affordance when the buffer is None
-        // (replacing the synthetic AccountAdd ghost row in
-        // `visible_rows`); for now the static line still comes from
-        // that ghost row, so we only emit during compose.
+        // Always emit an affordance directly after the expanded Accounts
+        // header. When compose mode is active (the buffer is `Some(_)`),
+        // it's an inline name prompt reflecting the live buffer; when
+        // inactive, it's the static "+ New connection" line. `focus: None`
+        // keeps j/k from landing on it, so the affordance is purely
+        // decorative — the dispatcher's compose-mode pass handles input
+        // routing.
         let buffer: Option<String> =
             crate::settings::renderers::util::read_typed(
                 ctx.data,
                 &ox_path::oxpath!("ui", "settings", "new_account", "buffer"),
             );
-        if let Some(buf) = buffer {
-            if let Some(insert_idx) = find_accounts_header_followup_idx(&rows) {
-                let prompt = ListItem {
-                    primary: format!("    Name▸ {}\u{258F}", buf),
-                    primary_spans: None,
-                    secondary: None,
-                    badge: None,
-                    focus: None,
-                };
-                items.insert(insert_idx, prompt);
-                selected = selected.map(|s| if s >= insert_idx { s + 1 } else { s });
-            }
+        if let Some(insert_idx) = find_accounts_header_followup_idx(&rows) {
+            let primary = match &buffer {
+                Some(buf) => format!("    Name▸ {}\u{258F}", buf),
+                None => "    + New connection".to_string(),
+            };
+            let affordance = ListItem {
+                primary,
+                primary_spans: None,
+                secondary: None,
+                badge: None,
+                focus: None,
+            };
+            items.insert(insert_idx, affordance);
+            selected = selected.map(|s| if s >= insert_idx { s + 1 } else { s });
         }
 
         let selected = selected.filter(|i| !items.is_empty() && *i < items.len());
@@ -285,7 +285,6 @@ fn decorate_row_label(
             field: ox_types::ModelField::OutputTokensOverride,
             ..
         } => "max_output_tokens",
-        RowKind::AccountAdd => "Name",
         // Other row kinds aren't editable; fall through to the
         // original label.
         _ => return row.label.clone(),
@@ -506,7 +505,12 @@ mod tests {
     }
 
     #[test]
-    fn account_add_ghost_row_renders_inline_buffer_during_edit() {
+    fn compose_buffer_renders_inline_name_prompt() {
+        // While `ui/settings/new_account/buffer` is `Some(_)`, the
+        // affordance line directly under the Accounts header swaps from
+        // the static "+ New connection" to a live `Name▸ <buf>▏` prompt.
+        // The line has `focus: None` and isn't in visible_rows, so it
+        // doesn't claim selection.
         let mut snap = SettingsSnapshot::empty();
         write_index(&mut snap);
         snap.insert(
@@ -514,30 +518,21 @@ mod tests {
             expanded_set_to_value(&["settings/accounts".to_string()]),
         );
         snap.insert(
-            &oxpath!("ui", "settings", "focused"),
-            path_to_value(&oxpath!("settings", "accounts", "_new")),
-        );
-        snap.insert(&oxpath!("ui", "settings", "edit_mode"), Value::Bool(true));
-        snap.insert(
-            &oxpath!("ui", "settings", "edit_field_path"),
-            path_to_value(&oxpath!("settings", "accounts", "_new")),
-        );
-        snap.insert(
-            &oxpath!("ui", "settings", "edit_buffer"),
+            &oxpath!("ui", "settings", "new_account", "buffer"),
             Value::String("per".into()),
         );
-        let (_title, items, selected) = assert_list(render(&mut snap));
-        let i = selected.expect("ghost row is selected");
-        // Ghost row should render its "Name▸ per▏" label, not "+ New connection".
+        let (_title, items, _selected) = assert_list(render(&mut snap));
+        // Accounts header (0), affordance (1), Models header (2).
         assert!(
-            items[i].primary.contains("Name▸ per\u{258F}"),
+            items[1].primary.contains("Name▸ per\u{258F}"),
             "expected inline-edit decoration; got {:?}",
-            items[i].primary
+            items[1].primary
         );
+        assert!(items[1].focus.is_none(), "affordance must be unfocusable");
     }
 
     #[test]
-    fn account_add_ghost_row_renders_plain_label_when_not_editing() {
+    fn affordance_renders_static_label_when_buffer_is_absent() {
         let mut snap = SettingsSnapshot::empty();
         write_index(&mut snap);
         snap.insert(
@@ -545,12 +540,13 @@ mod tests {
             expanded_set_to_value(&["settings/accounts".to_string()]),
         );
         let (_title, items, _selected) = assert_list(render(&mut snap));
-        // Ghost row at index 1 (Accounts header at 0).
+        // Affordance at index 1 (Accounts header at 0).
         assert!(
             items[1].primary.contains("+ New connection"),
-            "expected plain ghost label; got {:?}",
+            "expected static affordance; got {:?}",
             items[1].primary
         );
+        assert!(items[1].focus.is_none(), "affordance must be unfocusable");
     }
 
     #[test]
