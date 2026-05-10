@@ -583,8 +583,8 @@ fn banner_error(message: String) -> Write {
 // ---------------------------------------------------------------------------
 
 /// Open the manual-model entry form for the focused account. Resolves
-/// the focused row to its un-sanitized account name (Model /
-/// ModelEmptyState / ModelField rows all carry it), then seeds
+/// the focused row to its un-sanitized account name (Model and
+/// ModelField rows both carry it), then seeds
 /// `manual_model/{account, stage, buffer}` with the typed Stage::Id
 /// value. The PascalCase wire format distinguishes the new flow from
 /// the legacy stringly-typed write site, which lets the dispatcher
@@ -600,7 +600,6 @@ fn models_add_manual(data: &mut dyn Reader) -> Vec<Write> {
     let rows = enumerate(data);
     let account = rows.iter().find(|r| r.path == focused).and_then(|r| match &r.kind {
         RowKind::Model { account, .. } => Some(account.clone()),
-        RowKind::ModelEmptyState { account } => Some(account.clone()),
         RowKind::ModelField { account, .. } => Some(account.clone()),
         _ => None,
     });
@@ -908,11 +907,20 @@ fn account_test(data: &mut dyn Reader) -> Vec<Write> {
 }
 
 fn account_refresh(data: &mut dyn Reader) -> Vec<Write> {
-    let key = match read_selected_model(data) {
-        Some(k) => k,
-        None => return Vec::new(),
+    // Resolve the target account from whatever row is focused. The
+    // Models-section path (Model / ModelField rows) stays — `r` was
+    // historically bound there. Accounts-section paths (Account /
+    // AccountField rows) are the fallback so empty-catalog accounts —
+    // which contribute zero rows in the Models section — remain
+    // refreshable from their Connections-section row.
+    let name = match read_selected_model(data) {
+        Some(k) => k.account,
+        None => match read_selected_account(data) {
+            Some(n) => n,
+            None => return Vec::new(),
+        },
     };
-    match account_request_path(&key.account, "refresh_now") {
+    match account_request_path(&name, "refresh_now") {
         Some(p) => vec![null_write(p)],
         None => Vec::new(),
     }
@@ -1917,6 +1925,31 @@ mod tests {
     }
 
     #[test]
+    fn account_refresh_falls_back_to_focused_account_row() {
+        // Empty-catalog accounts have no focusable Model rows so
+        // `read_selected_model` returns None. account.refresh must
+        // still find the target via the focused Account row — that's
+        // what makes `r` reachable from the Connections section.
+        let mut snap = SettingsSnapshot::empty();
+        write_index_entries_for_manual(&mut snap);
+        write_account(&mut snap, "alpha", "openai");
+        let expanded = crate::settings::visible_rows::expanded_set_to_value(&[
+            "settings/accounts".to_string(),
+        ]);
+        snap.insert(&oxpath!("ui", "settings", "expanded"), expanded);
+        let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
+        snap.insert(
+            &oxpath!("ui", "settings", "focused"),
+            path_to_value(&oxpath!("settings", "accounts", comp.clone())),
+        );
+        let writes = run_cmd(&AccountRefresh::new(), &mut snap);
+        assert_null_write(
+            &writes,
+            oxpath!("config", "gate", "accounts", comp, "refresh_now"),
+        );
+    }
+
+    #[test]
     fn models_set_bootstrap_writes_both_paths_for_migration() {
         let mut snap = SettingsSnapshot::empty();
         select_model(&mut snap, "alpha", "claude-sonnet-4");
@@ -2521,20 +2554,43 @@ mod tests {
     }
 
     #[test]
-    fn models_add_manual_seeds_form_from_focused_empty_state_row() {
-        // Focus the synthetic empty-state row for an empty-catalog
-        // connection; add_manual reads the focused row's account and
-        // initializes the form at stage Id with an empty buffer.
+    fn models_add_manual_seeds_form_from_focused_model_row() {
+        // Focus a Model row in the expanded Models section; add_manual
+        // reads the row's account and seeds the form at stage Id with
+        // an empty buffer. Empty-catalog connections no longer
+        // contribute focusable rows — the user reaches manual-model
+        // entry from any focused Model row in the section.
+        use ox_gate::ModelInfo;
+        use ox_types::ModelInfoSource;
         let mut snap = SettingsSnapshot::empty();
         write_index_entries_for_manual(&mut snap);
-        write_account(&mut snap, "alpha", "openai");
+        let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
+        snap.insert(
+            &oxpath!("config", "gate", "accounts", comp.clone()),
+            to_value(&AccountConfig {
+                provider: "openai".into(),
+            })
+            .unwrap(),
+        );
+        snap.insert(
+            &oxpath!("config", "gate", "accounts", comp.clone(), "models"),
+            to_value(&vec![ModelInfo {
+                id: "m1".into(),
+                display_name: "M1".into(),
+                max_context_size: None,
+                max_output_tokens: None,
+                source: ModelInfoSource::Server,
+            }])
+            .unwrap(),
+        );
         let expanded = crate::settings::visible_rows::expanded_set_to_value(&[
             "settings/models".to_string(),
         ]);
         snap.insert(&oxpath!("ui", "settings", "expanded"), expanded);
+        let m_comp = ox_kernel::PathComponent::try_new("m1").unwrap();
         snap.insert(
             &oxpath!("ui", "settings", "focused"),
-            path_to_value(&oxpath!("settings", "models", "alpha", "_empty")),
+            path_to_value(&oxpath!("settings", "models", comp, m_comp)),
         );
 
         let writes = run_cmd(&ModelsAddManual::new(), &mut snap);

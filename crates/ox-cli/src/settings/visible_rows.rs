@@ -24,12 +24,6 @@ pub enum RowKind {
     Account { name: String },
     /// One (account, model_id) row inside an expanded Models entry.
     Model { account: String, model_id: String },
-    /// Synthetic placeholder when a connection has no cataloged models.
-    /// Activating it (Enter) triggers a catalog refresh for the named
-    /// connection — gives the user a discoverable next action where the
-    /// natural one ("expand to see models") would otherwise yield a
-    /// silent zero-row expansion.
-    ModelEmptyState { account: String },
     /// One field row under an expanded account.
     AccountField {
         account: String,
@@ -327,24 +321,11 @@ fn append_model_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, expanded
         let models: Vec<ox_gate::ModelInfo> = read_typed(data, &models_path).unwrap_or_default();
 
         if models.is_empty() {
-            let path = row_path(&[
-                "settings",
-                "models",
-                &safe_component(account_name),
-                "_empty",
-            ]);
-            rows.push(VisibleRow {
-                path,
-                depth: 1,
-                label: format!("{} / (no models — Enter to refresh)", account_name),
-                secondary: None,
-                badge: None,
-                kind: RowKind::ModelEmptyState {
-                    account: account_name.clone(),
-                },
-                expandable: false,
-                expanded: false,
-            });
+            // Empty-catalog accounts contribute no rows to the
+            // visible-rows projection — the renderer reads the data
+            // tree directly and inserts decoration ListItems
+            // (empty-state line + manual-model affordance) at the
+            // alphabetically-correct position.
             continue;
         }
 
@@ -1154,11 +1135,12 @@ mod tests {
     }
 
     #[test]
-    fn empty_catalog_yields_one_empty_state_row_per_connection() {
-        // Two accounts: one with a model, one with no catalog at all.
-        // The Models section, when expanded, should show the cataloged
-        // model row PLUS one synthetic ModelEmptyState row for the empty
-        // connection — never silently zero rows for that connection.
+    fn empty_catalog_contributes_no_rows() {
+        // Empty-catalog accounts no longer surface in the visible-rows
+        // projection — the renderer reads the data tree directly and
+        // inserts decoration ListItems (empty-state line + manual-model
+        // affordance) at the alphabetically-correct position. Pin the
+        // contract here: the projection is "real-thing rows only".
         let mut snap = SettingsSnapshot::empty();
         write_index_entries(&mut snap);
         write_account_with_models(&mut snap, "alpha", &["m1"]);
@@ -1168,41 +1150,14 @@ mod tests {
             expanded_set_to_value(&["settings/models".to_string()]),
         );
         let rows = enumerate(&mut snap);
-        // Visible: [Accounts header, Models header, alpha/m1 row,
-        // beta empty-state row] = 4
-        assert_eq!(rows.len(), 4);
-        let empty = rows
-            .iter()
-            .find(|r| matches!(&r.kind, RowKind::ModelEmptyState { .. }))
-            .expect("empty-state row for beta");
-        match &empty.kind {
-            RowKind::ModelEmptyState { account } => assert_eq!(account, "beta"),
-            other => panic!("unexpected: {other:?}"),
-        }
-        assert_eq!(empty.depth, 1);
-        assert!(!empty.expandable);
-        assert!(empty.label.contains("no models"));
-    }
-
-    #[test]
-    fn empty_catalog_row_has_unique_path_per_connection() {
-        // Two empty connections must produce two distinct rows; their
-        // paths must be unique so cursor tracking can distinguish them.
-        let mut snap = SettingsSnapshot::empty();
-        write_index_entries(&mut snap);
-        write_account(&mut snap, "alpha");
-        write_account(&mut snap, "beta");
-        snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
-            expanded_set_to_value(&["settings/models".to_string()]),
+        // Visible: [Accounts header, Models header, alpha/m1 row] = 3
+        assert_eq!(rows.len(), 3);
+        // No rows whose path lives under settings/models/beta/* exist.
+        assert!(
+            !rows
+                .iter()
+                .any(|r| matches!(&r.kind, RowKind::Model { account, .. } if account == "beta")),
         );
-        let rows = enumerate(&mut snap);
-        let empty: Vec<_> = rows
-            .iter()
-            .filter(|r| matches!(&r.kind, RowKind::ModelEmptyState { .. }))
-            .collect();
-        assert_eq!(empty.len(), 2);
-        assert_ne!(empty[0].path, empty[1].path);
     }
 
     // -- format_token_count ---------------------------------------------

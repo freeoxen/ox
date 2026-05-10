@@ -123,62 +123,153 @@ impl Renderer for IndexRenderer {
             selected = selected.map(|s| if s >= insert_idx { s + 1 } else { s });
         }
 
-        // Manual-model affordance / inline form. For each empty-catalog
-        // connection (a `ModelEmptyState` row in the visible-rows list),
-        // emit a decoration ListItem directly under it. When
-        // `manual_model/account` matches that connection, render the
-        // per-stage form prompt (`Model id▸ <buf>▏`); otherwise render
-        // the static `+ add model manually (m)` affordance. `focus: None`
-        // — j/k skips both shapes; the dispatcher's manual-model pass
-        // handles input when the form is active.
-        //
-        // Iterate empty-state positions in REVERSE so each insertion
-        // doesn't invalidate the indices of earlier ones still queued.
+        // Empty-catalog connections contribute zero rows to the
+        // visible-rows projection — the renderer reads the data tree
+        // directly, identifies them, and inserts two decoration
+        // ListItems per account at the alphabetically-correct position
+        // in the Models section: an empty-state line ("…(no models —
+        // press r to refresh)") and either a static "+ add model
+        // manually (m)" affordance or — when `manual_model/account`
+        // names this account — the per-stage inline form prompt
+        // ("Model id▸ <buf>▏"). Both lines are `focus: None`; j/k
+        // skips them. `r` (bound at Prefix(settings/accounts) AND
+        // Prefix(settings/models)) keeps refresh reachable; the
+        // dispatcher's manual-model scope routes input when the form
+        // is active.
         let manual_account: Option<String> = crate::settings::renderers::util::read_typed(
             ctx.data,
             &ox_path::oxpath!("ui", "settings", "manual_model", "account"),
         );
-        let mut empty_state_positions: Vec<(usize, String)> = Vec::new();
-        for (i, row) in rows.iter().enumerate() {
-            if let RowKind::ModelEmptyState { account } = &row.kind {
-                empty_state_positions.push((i, account.clone()));
+
+        let models_header_idx: Option<usize> = rows
+            .iter()
+            .position(|r| matches!(&r.kind, RowKind::Entry { entry_id } if entry_id == "models"));
+        if let Some(models_idx) = models_header_idx {
+            // Decorations only emit while the Models section is
+            // expanded. A collapsed Models entry shows only its
+            // header; inserting decorations past the header would
+            // leak rows the user explicitly hid.
+            let expanded = rows.get(models_idx).map(|r| r.expanded).unwrap_or(false);
+            if expanded {
+                // Map each non-empty account to its last Model-row
+                // index in the items vector — the natural insertion
+                // point for an alphabetically-later empty account is
+                // "after the last Model row of the previous account".
+                let mut last_model_idx_per_account: std::collections::BTreeMap<String, usize> =
+                    std::collections::BTreeMap::new();
+                for (i, row) in rows.iter().enumerate() {
+                    if let RowKind::Model { account, .. } = &row.kind {
+                        last_model_idx_per_account.insert(account.clone(), i);
+                    }
+                }
+
+                // Sorted account names from the data tree drive the
+                // alphabetical placement; the same sort that
+                // append_model_rows uses on its iteration is what
+                // makes "alphabetically-previous account" well-defined.
+                let mut sorted_accounts: Vec<String> =
+                    crate::settings::renderers::util::child_names_under(
+                        ctx.data,
+                        "config/gate/accounts",
+                    )
+                    .into_iter()
+                    .filter(|n| ox_kernel::PathComponent::try_new(n.as_str()).is_ok())
+                    .collect();
+                sorted_accounts.sort();
+
+                // Filter the sorted list to just the empty-catalog
+                // accounts. Iterate in REVERSE so each insertion
+                // doesn't invalidate the indices we computed for
+                // alphabetically-earlier accounts still to process.
+                let mut empty_accounts: Vec<String> = sorted_accounts
+                    .iter()
+                    .filter(|name| {
+                        let comp = match ox_kernel::PathComponent::try_new(name.as_str()) {
+                            Ok(c) => c,
+                            Err(_) => return false,
+                        };
+                        let models: Vec<ox_gate::ModelInfo> =
+                            crate::settings::renderers::util::read_typed(
+                                ctx.data,
+                                &ox_path::oxpath!(
+                                    "config",
+                                    "gate",
+                                    "accounts",
+                                    comp,
+                                    "models"
+                                ),
+                            )
+                            .unwrap_or_default();
+                        models.is_empty()
+                    })
+                    .cloned()
+                    .collect();
+                empty_accounts.reverse();
+
+                for name in empty_accounts {
+                    // Insertion point: after the last Model row of the
+                    // alphabetically-previous account, or right after
+                    // the Models header if no earlier account has
+                    // model rows.
+                    let prev_model_idx = sorted_accounts
+                        .iter()
+                        .filter(|n| n.as_str() < name.as_str())
+                        .filter_map(|n| last_model_idx_per_account.get(n))
+                        .max()
+                        .copied();
+                    let insert_idx = match prev_model_idx {
+                        Some(idx) => idx + 1,
+                        None => models_idx + 1,
+                    };
+
+                    let empty_state = ListItem {
+                        primary: format!("  {} / (no models — press r to refresh)", name),
+                        primary_spans: None,
+                        secondary: None,
+                        badge: None,
+                        focus: None,
+                    };
+
+                    let in_mode_for_this_account =
+                        manual_account.as_deref() == Some(name.as_str());
+                    let manual_primary = if in_mode_for_this_account {
+                        let stage = crate::settings::renderers::util::read_typed::<
+                            ox_types::settings::ManualModelStage,
+                        >(
+                            ctx.data,
+                            &ox_path::oxpath!("ui", "settings", "manual_model", "stage"),
+                        );
+                        let buffer: String = crate::settings::renderers::util::read_typed(
+                            ctx.data,
+                            &ox_path::oxpath!("ui", "settings", "manual_model", "buffer"),
+                        )
+                        .unwrap_or_default();
+                        let prompt = match stage {
+                            Some(ox_types::settings::ManualModelStage::Id) => "Model id",
+                            Some(ox_types::settings::ManualModelStage::Ctx) => "Max context",
+                            Some(ox_types::settings::ManualModelStage::Out) => "Max output",
+                            None => "Model id",
+                        };
+                        format!("    {prompt}▸ {buffer}\u{258F}")
+                    } else {
+                        "    + add model manually (m)".to_string()
+                    };
+                    let manual = ListItem {
+                        primary: manual_primary,
+                        primary_spans: None,
+                        secondary: None,
+                        badge: None,
+                        focus: None,
+                    };
+
+                    // Insert manual first then empty_state at the same
+                    // index so they end up [empty_state, manual].
+                    items.insert(insert_idx, manual);
+                    items.insert(insert_idx, empty_state);
+
+                    selected = selected.map(|s| if s >= insert_idx { s + 2 } else { s });
+                }
             }
-        }
-        for (i, account) in empty_state_positions.iter().rev() {
-            let in_mode_for_this_account =
-                manual_account.as_deref() == Some(account.as_str());
-            let primary = if in_mode_for_this_account {
-                let stage = crate::settings::renderers::util::read_typed::<
-                    ox_types::settings::ManualModelStage,
-                >(
-                    ctx.data,
-                    &ox_path::oxpath!("ui", "settings", "manual_model", "stage"),
-                );
-                let buffer: String = crate::settings::renderers::util::read_typed(
-                    ctx.data,
-                    &ox_path::oxpath!("ui", "settings", "manual_model", "buffer"),
-                )
-                .unwrap_or_default();
-                let prompt = match stage {
-                    Some(ox_types::settings::ManualModelStage::Id) => "Model id",
-                    Some(ox_types::settings::ManualModelStage::Ctx) => "Max context",
-                    Some(ox_types::settings::ManualModelStage::Out) => "Max output",
-                    None => "Model id",
-                };
-                format!("    {prompt}▸ {buffer}\u{258F}")
-            } else {
-                "    + add model manually (m)".to_string()
-            };
-            let decoration = ListItem {
-                primary,
-                primary_spans: None,
-                secondary: None,
-                badge: None,
-                focus: None,
-            };
-            let insert_at = i + 1;
-            items.insert(insert_at, decoration);
-            selected = selected.map(|s| if s >= insert_at { s + 1 } else { s });
         }
 
         // Pending-delete confirmation banner. Emitted as a ListItem
@@ -685,6 +776,142 @@ mod tests {
             },
             other => panic!("expected Frame, got {other:?}"),
         }
+    }
+
+    /// Helper: write an account along with a non-empty models catalog
+    /// so the Models section shows a real Model row for it. Used by
+    /// the empty-state decoration tests below to verify the
+    /// alphabetical-position contract against a non-empty neighbor.
+    fn write_account_with_models(
+        snap: &mut SettingsSnapshot,
+        name: &str,
+        ids: &[&str],
+    ) {
+        use ox_gate::ModelInfo;
+        use ox_types::ModelInfoSource;
+        let comp = ox_kernel::PathComponent::try_new(name).unwrap();
+        snap.insert(
+            &oxpath!("config", "gate", "accounts", comp.clone()),
+            to_value(&AccountConfig {
+                provider: name.into(),
+            })
+            .unwrap(),
+        );
+        let models: Vec<ModelInfo> = ids
+            .iter()
+            .map(|id| ModelInfo {
+                id: (*id).into(),
+                display_name: (*id).into(),
+                max_context_size: None,
+                max_output_tokens: None,
+                source: ModelInfoSource::Server,
+            })
+            .collect();
+        snap.insert(
+            &oxpath!("config", "gate", "accounts", comp, "models"),
+            to_value(&models).unwrap(),
+        );
+    }
+
+    #[test]
+    fn empty_catalog_account_renders_decoration_pair_under_models() {
+        // An empty-catalog account contributes no rows to visible_rows;
+        // the renderer reads the data tree, identifies the empty
+        // account, and inserts two unfocusable decoration ListItems —
+        // an empty-state line and a manual-model affordance.
+        let mut snap = SettingsSnapshot::empty();
+        write_index(&mut snap);
+        write_account(&mut snap, "alpha");
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&["settings/models".to_string()]),
+        );
+        let (_title, items, _selected) = assert_list(render(&mut snap));
+        // Accounts header (▸), Models header (▾), empty-state line,
+        // manual affordance = 4 items.
+        assert_eq!(items.len(), 4);
+        assert!(
+            items[2].primary.contains("alpha")
+                && items[2].primary.contains("no models")
+                && items[2].primary.contains("press r to refresh"),
+            "expected empty-state line at idx 2; got {:?}",
+            items[2].primary
+        );
+        assert!(items[2].focus.is_none(), "empty-state line is decoration");
+        assert!(
+            items[3].primary.contains("+ add model manually (m)"),
+            "expected manual affordance at idx 3; got {:?}",
+            items[3].primary
+        );
+        assert!(items[3].focus.is_none(), "manual affordance is decoration");
+    }
+
+    #[test]
+    fn empty_catalog_decoration_lands_at_alphabetical_position() {
+        // Two accounts: alpha has a model (so a Model row exists),
+        // beta is empty. The empty-state decoration for beta must
+        // land AFTER alpha's Model row, not before.
+        let mut snap = SettingsSnapshot::empty();
+        write_index(&mut snap);
+        write_account_with_models(&mut snap, "alpha", &["m1"]);
+        write_account(&mut snap, "beta");
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&["settings/models".to_string()]),
+        );
+        let (_title, items, _selected) = assert_list(render(&mut snap));
+        // Accounts (▸), Models (▾), alpha/m1, beta empty-state, beta manual = 5
+        assert_eq!(items.len(), 5);
+        assert!(items[2].primary.contains("alpha"));
+        assert!(items[2].primary.contains("m1"));
+        assert!(items[3].primary.contains("beta"));
+        assert!(items[3].primary.contains("no models"));
+        assert!(items[4].primary.contains("+ add model manually"));
+    }
+
+    #[test]
+    fn empty_catalog_decoration_renders_inline_form_when_in_manual_mode() {
+        // When `manual_model/account` matches the empty account, the
+        // affordance line swaps to a stage-prompt with the live buffer.
+        let mut snap = SettingsSnapshot::empty();
+        write_index(&mut snap);
+        write_account(&mut snap, "alpha");
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&["settings/models".to_string()]),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "account"),
+            Value::String("alpha".into()),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "stage"),
+            to_value(&ox_types::settings::ManualModelStage::Id).unwrap(),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "buffer"),
+            Value::String("custom".into()),
+        );
+        let (_title, items, _selected) = assert_list(render(&mut snap));
+        // The manual affordance is now an inline form prompt.
+        assert!(
+            items[3].primary.contains("Model id▸ custom\u{258F}"),
+            "expected inline manual form prompt; got {:?}",
+            items[3].primary
+        );
+        assert!(items[3].focus.is_none());
+    }
+
+    #[test]
+    fn empty_catalog_decoration_skipped_when_models_section_collapsed() {
+        // The Models section is collapsed → no decorations leak past
+        // the header row.
+        let mut snap = SettingsSnapshot::empty();
+        write_index(&mut snap);
+        write_account(&mut snap, "alpha");
+        let (_title, items, _selected) = assert_list(render(&mut snap));
+        // Just the two top-level headers.
+        assert_eq!(items.len(), 2);
     }
 
     #[test]
