@@ -11,6 +11,7 @@
 //! create / delete) are direct writes from the CLI; they don't need
 //! a subscription middle-layer.
 
+use ox_kernel::AccountName;
 use ox_path::oxpath;
 use ox_types::Screen;
 use ox_types::settings::{AccountField, ModelField, ModelKey};
@@ -329,11 +330,18 @@ command! {
 /// legacy `_detail` page (still used by editing flows) writes its
 /// selection to `ui/settings/accounts/selected` and we fall back to
 /// that if no focus is set.
-fn read_selected_account(data: &mut dyn Reader) -> Option<String> {
+///
+/// Validates the read string at this boundary: a stored value that
+/// fails `AccountName::try_new` is treated as "no account selected"
+/// rather than propagated as an unvalidated `String`.
+fn read_selected_account(data: &mut dyn Reader) -> Option<AccountName> {
     if let Some(name) = focused_account(data) {
         return Some(name);
     }
-    read_typed::<Option<String>>(data, &oxpath!("ui", "settings", "accounts", "selected")).flatten()
+    let raw: Option<String> =
+        read_typed::<Option<String>>(data, &oxpath!("ui", "settings", "accounts", "selected"))
+            .flatten();
+    raw.and_then(|s| AccountName::try_new(s).ok())
 }
 
 /// Same shape for models. Reads the focused row first, falls back to
@@ -351,7 +359,12 @@ fn read_selected_model(data: &mut dyn Reader) -> Option<ModelKey> {
 /// char with `_`; the original id lives on `RowKind`. Walking the
 /// enumeration to find the row whose path matches `focused`
 /// recovers the original.
-fn focused_account(data: &mut dyn Reader) -> Option<String> {
+///
+/// `RowKind` carries the un-sanitized name as a `String`. This
+/// boundary re-validates via `AccountName::try_new`; a row whose
+/// account name fails validation produces no match (the same behavior
+/// as having no row focused).
+fn focused_account(data: &mut dyn Reader) -> Option<AccountName> {
     use crate::settings::visible_rows::{self, RowKind};
     let path = focused_path(data)?;
     let rows = visible_rows::enumerate(data);
@@ -359,13 +372,16 @@ fn focused_account(data: &mut dyn Reader) -> Option<String> {
         if r.path != path {
             return None;
         }
-        match r.kind {
-            RowKind::Account { name } => Some(name),
+        let name = match r.kind {
+            RowKind::Account { name } => name,
             // Field rows under an expanded account also count — the
             // user has focused a field that belongs to that account.
-            RowKind::AccountField { account, .. } => Some(account),
-            RowKind::Entry { .. } | RowKind::Model { .. } | RowKind::ModelField { .. } => None,
-        }
+            RowKind::AccountField { account, .. } => account,
+            RowKind::Entry { .. } | RowKind::Model { .. } | RowKind::ModelField { .. } => {
+                return None;
+            }
+        };
+        AccountName::try_new(name).ok()
     })
 }
 
@@ -398,10 +414,15 @@ fn focused_path(data: &mut dyn Reader) -> Option<Path> {
     super::navigation::path_from_value(r.as_value()?)
 }
 
-fn account_request_path(name: &str, suffix: &str) -> Option<Path> {
-    let acct = ox_kernel::PathComponent::try_new(name).ok()?;
+fn account_request_path(name: &AccountName, suffix: &str) -> Option<Path> {
     let suf = ox_kernel::PathComponent::try_new(suffix).ok()?;
-    Some(oxpath!("config", "gate", "accounts", acct, suf))
+    Some(oxpath!(
+        "config",
+        "gate",
+        "accounts",
+        name.to_path_component(),
+        suf
+    ))
 }
 
 fn null_write(path: Path) -> Write {
@@ -476,8 +497,6 @@ fn accounts_compose_delete_back(data: &mut dyn Reader) -> Vec<Write> {
 }
 
 fn accounts_compose_commit(data: &mut dyn Reader) -> Vec<Write> {
-    use ox_kernel::PathComponent;
-
     let buffer: String =
         read_typed(data, &oxpath!("ui", "settings", "new_account", "buffer")).unwrap_or_default();
     let trimmed = buffer.trim();
@@ -485,8 +504,8 @@ fn accounts_compose_commit(data: &mut dyn Reader) -> Vec<Write> {
     if trimmed.is_empty() {
         return Vec::new();
     }
-    let comp = match PathComponent::try_new(trimmed.to_string()) {
-        Ok(c) => c,
+    let name = match AccountName::try_new(trimmed.to_string()) {
+        Ok(n) => n,
         Err(_) => {
             return vec![banner_error(format!(
                 "Invalid account name: '{}'",
@@ -494,6 +513,7 @@ fn accounts_compose_commit(data: &mut dyn Reader) -> Vec<Write> {
             ))];
         }
     };
+    let comp = name.to_path_component();
 
     let cfg = AccountConfig {
         provider: "anthropic".to_string(),
@@ -502,7 +522,7 @@ fn accounts_compose_commit(data: &mut dyn Reader) -> Vec<Write> {
     let mut expanded: Vec<String> =
         read_typed(data, &oxpath!("ui", "settings", "expanded")).unwrap_or_default();
     let accounts_key = "settings/accounts".to_string();
-    let new_row_key = format!("settings/accounts/{}", trimmed);
+    let new_row_key = format!("settings/accounts/{}", name);
     if !expanded.iter().any(|s| s == &accounts_key) {
         expanded.push(accounts_key);
     }
@@ -515,7 +535,7 @@ fn accounts_compose_commit(data: &mut dyn Reader) -> Vec<Write> {
         Ok(v) => v,
         Err(_) => return Vec::new(),
     };
-    let selected_value = match to_value(&Some(trimmed.to_string())) {
+    let selected_value = match to_value(&Some(name.as_str().to_string())) {
         Ok(v) => v,
         Err(_) => return Vec::new(),
     };
@@ -680,7 +700,6 @@ fn models_manual_delete_back(data: &mut dyn Reader) -> Vec<Write> {
 
 fn models_manual_commit(data: &mut dyn Reader) -> Vec<Write> {
     use ox_gate::{ModelInfo, ModelInfoSource};
-    use ox_kernel::PathComponent;
     use ox_types::settings::ManualModelStage;
 
     let stage = match models_manual_read_stage(data) {
@@ -755,15 +774,17 @@ fn models_manual_commit(data: &mut dyn Reader) -> Vec<Write> {
             )
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
-            let account: String = read_typed(
+            let account_raw: String = read_typed(
                 data,
                 &oxpath!("ui", "settings", "manual_model", "account"),
             )
             .unwrap_or_default();
-            let comp = match PathComponent::try_new(&account) {
-                Ok(c) => c,
+            // Broker-read boundary: lift the raw String into AccountName.
+            let account = match AccountName::try_new(account_raw) {
+                Ok(n) => n,
                 Err(_) => return Vec::new(),
             };
+            let comp = account.to_path_component();
 
             let catalog_path = oxpath!("config", "gate", "accounts", comp, "models");
             let mut catalog: Vec<ModelInfo> = read_typed(data, &catalog_path).unwrap_or_default();
@@ -843,7 +864,7 @@ fn accounts_delete_confirm(data: &mut dyn Reader) -> Vec<Write> {
     };
     vec![Write {
         path: oxpath!("ui", "settings", "pending_delete"),
-        record: Record::parsed(Value::String(name)),
+        record: Record::parsed(Value::String(name.into_string())),
     }]
 }
 
@@ -906,7 +927,12 @@ fn account_refresh(data: &mut dyn Reader) -> Vec<Write> {
     // which contribute zero rows in the Models section — remain
     // refreshable from their Connections-section row.
     let name = match read_selected_model(data) {
-        Some(k) => k.account,
+        // ModelKey.account is still a plain String; validate at this
+        // boundary so the rest of the function operates on AccountName.
+        Some(k) => match AccountName::try_new(k.account) {
+            Ok(n) => n,
+            Err(_) => return Vec::new(),
+        },
         None => match read_selected_account(data) {
             Some(n) => n,
             None => return Vec::new(),
@@ -1118,13 +1144,7 @@ fn selector_cycle_protocol_dir(data: &mut dyn Reader, dir: CycleDir) -> Vec<Writ
             return Vec::new();
         }
     };
-    let acct_name_comp = match ox_kernel::PathComponent::try_new(&selected) {
-        Ok(c) => c,
-        Err(_) => {
-            tracing::info!(account = %selected, "selector.cycle.protocol: account name not a valid PathComponent, no-op");
-            return Vec::new();
-        }
-    };
+    let acct_name_comp = selected.to_path_component();
     let acct_path = oxpath!("config", "gate", "accounts", acct_name_comp);
     // TOML-loaded accounts may not have a parent `AccountConfig` leaf
     // — only child fields. Synthesize one (using a child `provider`
@@ -1250,12 +1270,19 @@ fn cycle_field(data: &mut dyn Reader, dir: CycleDir) -> Vec<Write> {
 /// Read a child string under `config/gate/accounts/{name}/{child}`
 /// — the shape TOML-loaded accounts produce when there's no
 /// AccountConfig leaf at the parent.
-fn read_account_child_string(data: &mut dyn Reader, account: &str, child: &str) -> Option<String> {
-    let acct_comp = ox_kernel::PathComponent::try_new(account).ok()?;
+fn read_account_child_string(
+    data: &mut dyn Reader,
+    account: &AccountName,
+    child: &str,
+) -> Option<String> {
     let child_comp = ox_kernel::PathComponent::try_new(child).ok()?;
     let r = data
         .read(&oxpath!(
-            "config", "gate", "accounts", acct_comp, child_comp
+            "config",
+            "gate",
+            "accounts",
+            account.to_path_component(),
+            child_comp
         ))
         .ok()
         .flatten()?;
@@ -1284,10 +1311,7 @@ fn selector_cycle_auth_dir(data: &mut dyn Reader, dir: CycleDir) -> Vec<Write> {
         Some(s) => s,
         None => return Vec::new(),
     };
-    let name_comp = match ox_kernel::PathComponent::try_new(&selected) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
+    let name_comp = selected.to_path_component();
     // Synthesize a default `AccountConfig` when the parent leaf is
     // missing (TOML-loaded accounts), pulling the provider name
     // from the child path if present.
@@ -1343,10 +1367,7 @@ fn accounts_fork_provider(data: &mut dyn Reader) -> Vec<Write> {
         Some(s) => s,
         None => return Vec::new(),
     };
-    let acct_comp = match ox_kernel::PathComponent::try_new(&selected) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
+    let acct_comp = selected.to_path_component();
     let acct_path = oxpath!("config", "gate", "accounts", acct_comp.clone());
     let mut acct: AccountConfig = match read_typed(data, &acct_path) {
         Some(a) => a,
@@ -1359,7 +1380,7 @@ fn accounts_fork_provider(data: &mut dyn Reader) -> Vec<Write> {
     let names = crate::settings::renderers::util::child_names_under(data, "config/gate/accounts");
     let mut other_users = 0;
     for n in &names {
-        if n == &selected {
+        if n == selected.as_str() {
             continue;
         }
         if let Ok(other_comp) = ox_kernel::PathComponent::try_new(n) {

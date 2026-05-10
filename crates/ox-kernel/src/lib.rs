@@ -29,6 +29,9 @@ pub use ox_path::oxpath;
 mod path_component;
 pub use path_component::PathComponent;
 
+mod account_name;
+pub use account_name::{AccountName, AccountNameError};
+
 pub mod snapshot;
 
 pub mod backing;
