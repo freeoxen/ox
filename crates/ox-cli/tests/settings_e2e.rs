@@ -1555,3 +1555,171 @@ async fn auth_cycle_renders_bearer_token_after_one_cycle() {
          got:\n{frame_after_one}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Repro: each new connection shares the same provider record.
+//
+// User report: "When I added a connection named 'Test' it added a
+// gate.providers.anthropic entry. When I added another with a different
+// endpoint, it overwrote the endpoint and functionally edited the other
+// connection."
+//
+// Diagnosis: `accounts_compose_commit` hardcodes `AccountConfig { provider:
+// "anthropic".to_string() }` for every newly-created account. The `provider`
+// field is the broker key for the provider record at
+// `config/gate/providers/<provider>`. Every default-created account points
+// at the same provider record, so editing one connection's endpoint mutates
+// a record shared by every other "anthropic"-defaulted account.
+//
+// This test reproduces the shared-record shape at create-time and asserts
+// the desired invariant: each account should have its own provider record.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn add_connections_have_independent_providers() {
+    let h = E2eHarness::new().await;
+    populate_index(&h).await;
+
+    // Cursor at the accordion, focused on the Accounts header so the `a`
+    // binding (Prefix(settings/accounts)) resolves to accounts.add.
+    h.write_path(
+        &oxpath!("ui", "settings", "cursor"),
+        &oxpath!("settings", "index"),
+    )
+    .await;
+    h.write_path(
+        &oxpath!("ui", "settings", "focused"),
+        &oxpath!("settings", "accounts"),
+    )
+    .await;
+
+    // --- Create first connection "alpha" via the dispatcher.
+    assert!(matches!(h.dispatch("a").await, KeyDispatchOutcome::Handled));
+    for ch in "alpha".chars() {
+        let key = ch.to_string();
+        assert!(
+            matches!(h.dispatch(&key).await, KeyDispatchOutcome::Handled),
+            "dispatch returned Unhandled for {key:?}"
+        );
+    }
+    assert!(matches!(
+        h.dispatch("Enter").await,
+        KeyDispatchOutcome::Handled
+    ));
+
+    let alpha_comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
+    let account_alpha: AccountConfig = h
+        .client
+        .read_typed(&oxpath!("config", "gate", "accounts", alpha_comp.clone()))
+        .await
+        .expect("read alpha account record")
+        .expect("alpha account record present after create");
+
+    // Mirror what a user editing alpha's endpoint would write: stamp a
+    // distinctive endpoint into the ProviderConfig at the path implied by
+    // alpha's `provider` field. This isolates the test from any inline
+    // field-edit machinery — we exercise only the create-time path.
+    let alpha_provider_comp =
+        ox_kernel::PathComponent::try_new(&account_alpha.provider).unwrap();
+    h.write_typed(
+        &oxpath!("config", "gate", "providers", alpha_provider_comp.clone()),
+        &ProviderConfig {
+            dialect: "anthropic".to_string(),
+            endpoint: "https://alpha.example.com".to_string(),
+            version: "2023-06-01".to_string(),
+            auth: Some(ox_gate::AuthScheme::XApiKey),
+        },
+    )
+    .await;
+
+    // --- Create second connection "beta" via the dispatcher.
+    //
+    // Re-focus the Accounts header so `a` resolves to accounts.add again.
+    // After the first commit the focused row sits on the new account row;
+    // we want the section header so the binding picks up cleanly.
+    h.write_path(
+        &oxpath!("ui", "settings", "focused"),
+        &oxpath!("settings", "accounts"),
+    )
+    .await;
+    assert!(matches!(h.dispatch("a").await, KeyDispatchOutcome::Handled));
+    for ch in "beta".chars() {
+        let key = ch.to_string();
+        assert!(
+            matches!(h.dispatch(&key).await, KeyDispatchOutcome::Handled),
+            "dispatch returned Unhandled for {key:?}"
+        );
+    }
+    assert!(matches!(
+        h.dispatch("Enter").await,
+        KeyDispatchOutcome::Handled
+    ));
+
+    let beta_comp = ox_kernel::PathComponent::try_new("beta").unwrap();
+    let account_beta: AccountConfig = h
+        .client
+        .read_typed(&oxpath!("config", "gate", "accounts", beta_comp.clone()))
+        .await
+        .expect("read beta account record")
+        .expect("beta account record present after create");
+
+    // --- Diagnostic: enumerate `config/gate/providers/` child names so the
+    // failure output makes the bug shape obvious. read_subtree returns a
+    // flat map keyed by absolute path; the first segment past the prefix
+    // is the provider record's name.
+    let providers_prefix = oxpath!("config", "gate", "providers");
+    let provider_entries = h
+        .client
+        .read_subtree(&providers_prefix)
+        .await
+        .expect("read_subtree providers");
+    let mut provider_child_names: Vec<String> = Vec::new();
+    let prefix_len = providers_prefix.len();
+    for path in provider_entries.keys() {
+        if path.len() <= prefix_len {
+            continue;
+        }
+        let segment = path.components[prefix_len].clone();
+        if !provider_child_names.contains(&segment) {
+            provider_child_names.push(segment);
+        }
+    }
+    provider_child_names.sort();
+
+    // --- The bug-detector. If alpha.provider == beta.provider, both
+    // accounts reference the SAME provider record by name. Any endpoint
+    // edit to one will mutate the other's view — which is exactly what
+    // the user reported. Each connection should have its own provider
+    // record so endpoint edits don't bleed across accounts.
+    assert_ne!(
+        account_alpha.provider, account_beta.provider,
+        "alpha and beta must reference distinct provider records so editing \
+         one connection's endpoint cannot leak into the other; \
+         got account_alpha.provider={:?}, account_beta.provider={:?}, \
+         providers/ child names={:?}",
+        account_alpha.provider, account_beta.provider, provider_child_names,
+    );
+
+    // Belt-and-suspenders: alpha's endpoint must still match what we wrote
+    // through alpha's provider path. If beta's create flow stomped on the
+    // shared record (e.g., wrote a default ProviderConfig at the same
+    // path) the endpoint we stamped above will be gone.
+    let alpha_provider_after: ProviderConfig = h
+        .client
+        .read_typed(&oxpath!(
+            "config",
+            "gate",
+            "providers",
+            alpha_provider_comp.clone()
+        ))
+        .await
+        .expect("read alpha provider after beta create")
+        .expect("alpha provider record present after beta create");
+    assert_eq!(
+        alpha_provider_after.endpoint, "https://alpha.example.com",
+        "alpha's distinctive endpoint must survive beta's creation; if it \
+         has been reset to the anthropic default then beta's create wrote \
+         over the shared provider record. providers/ child names={:?}",
+        provider_child_names,
+    );
+}
