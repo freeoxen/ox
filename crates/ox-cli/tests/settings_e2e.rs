@@ -1261,3 +1261,197 @@ async fn add_connection_inline_ghost_row_accepts_typing() {
          got:\n{final_frame}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Repro: deletion-doesn't-clear-connection bug.
+//
+// User report: "Deletion doesn't seem to work? I get most of the UI signals
+// but the actual connection doesn't go away?"
+//
+// Hypothesis: `accounts.confirm.delete` writes `Value::Null` at
+// `config/gate/accounts/<name>`, but the renderer enumerates accounts via
+// `child_names_under("config/gate/accounts")`. If the broker's flat-keyed
+// LocalConfig map still surfaces the account's path components after a
+// Null write — even though the record value is Null — the row will still
+// appear in the rendered tree.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn delete_account_removes_connection_from_rendered_frame() {
+    let h = E2eHarness::new().await;
+    populate_index(&h).await;
+    populate_account(&h, "anthropic", "sk-test").await;
+
+    // Expand the Connections section so the account row is visible in
+    // the rendered tree. Without this the bug is masked — a collapsed
+    // section never asks the renderer to enumerate accounts.
+    h.client
+        .write(
+            &oxpath!("ui", "settings", "expanded"),
+            Record::parsed(ox_cli::settings::visible_rows::expanded_set_to_value(&[
+                "settings/accounts".to_string(),
+            ])),
+        )
+        .await
+        .expect("write expanded set");
+
+    // Page cursor at the index renderer, focused on the account row so
+    // `d` resolves via the `Prefix(settings/accounts)` binding to
+    // `accounts.delete_confirm`. `accounts_delete_confirm` reads the
+    // focused row first, falling back to `accounts/selected`; we set
+    // both so the resolution path is unambiguous.
+    let acct_comp = ox_kernel::PathComponent::try_new("anthropic").unwrap();
+    h.write_path(
+        &oxpath!("ui", "settings", "cursor"),
+        &oxpath!("settings", "index"),
+    )
+    .await;
+    h.write_path(
+        &oxpath!("ui", "settings", "focused"),
+        &oxpath!("settings", "accounts", acct_comp.clone()),
+    )
+    .await;
+    h.write_typed(
+        &oxpath!("ui", "settings", "accounts", "selected"),
+        &Some("anthropic".to_string()),
+    )
+    .await;
+
+    // Frame before any keystroke — the account row should be visible.
+    let frame_before = render_settings_to_string(&h, 80, 24).await;
+    insta::assert_snapshot!("delete_repro_before_delete", &frame_before);
+    assert!(
+        frame_before.contains("anthropic"),
+        "pre-delete frame must show the account row; got:\n{frame_before}",
+    );
+
+    // `d` — arms the inline delete-confirmation banner.
+    assert!(matches!(h.dispatch("d").await, KeyDispatchOutcome::Handled));
+    let pending: Option<String> = h
+        .client
+        .read_typed(&oxpath!("ui", "settings", "pending_delete"))
+        .await
+        .ok()
+        .flatten();
+    assert_eq!(
+        pending.as_deref(),
+        Some("anthropic"),
+        "pressing `d` must arm pending_delete with the focused account name",
+    );
+
+    let frame_after_d = render_settings_to_string(&h, 80, 24).await;
+    insta::assert_snapshot!("delete_repro_after_d_pressed", &frame_after_d);
+    assert!(
+        frame_after_d.contains("Delete 'anthropic'?"),
+        "after `d`, the inline confirmation banner must be visible; got:\n{frame_after_d}",
+    );
+
+    // `y` — confirms the delete. The CLI writes Value::Null at the
+    // account path; AccountDeleteCleanupSubscription fires async to
+    // clear the secret and provider records. Wait for the side-data
+    // cleanup to settle before snapshotting so the result is stable.
+    assert!(matches!(h.dispatch("y").await, KeyDispatchOutcome::Handled));
+
+    // Wait until the account record is at least Null at its canonical
+    // path — proves the synchronous delete write landed.
+    let acct_path = oxpath!("config", "gate", "accounts", acct_comp.clone());
+    let _ = poll_until(|| async {
+        match h.client.read(&acct_path).await {
+            Ok(None) => Some(()),
+            Ok(Some(rec)) => match rec.as_value() {
+                Some(Value::Null) => Some(()),
+                _ => None,
+            },
+            Err(_) => None,
+        }
+    })
+    .await;
+    // Wait for the side-data cleanup subscription to remove the secret
+    // key. This is the canonical "delete fully completed" signal — if
+    // the renderer still shows the account at this point, the bug is
+    // surfaced.
+    let _ = poll_until(|| async {
+        match h
+            .client
+            .read(&oxpath!("secret", "keys", acct_comp.clone()))
+            .await
+        {
+            Ok(None) => Some(()),
+            Ok(Some(rec)) => match rec.as_value() {
+                Some(Value::Null) => Some(()),
+                _ => None,
+            },
+            Err(_) => None,
+        }
+    })
+    .await;
+
+    let frame_after_y = render_settings_to_string(&h, 80, 24).await;
+    insta::assert_snapshot!("delete_repro_after_y_pressed", &frame_after_y);
+
+    // The bug-detection assertion: the account name must no longer
+    // appear in the rendered tree.
+    assert!(
+        !frame_after_y.contains("anthropic"),
+        "after confirming delete with `y`, the account row must be gone from the \
+         rendered tree — the bug is that the renderer still enumerates the deleted \
+         account because the broker's flat-key map retains the path components \
+         after a Null write.\n\nFrame:\n{frame_after_y}",
+    );
+
+    // Direct broker reads — diagnostic output for the test report.
+    // Read at the empty path to inspect the flat-keyed root map; the
+    // renderer's `child_names_under` uses the same shape. Walking the
+    // keys and counting which ones still announce a child segment
+    // under `config/gate/accounts/` is the most direct proxy for what
+    // the renderer sees.
+    let root = h
+        .client
+        .read(&oxpath!())
+        .await
+        .expect("read root")
+        .expect("root present");
+    let mut child_names: Vec<String> = Vec::new();
+    if let Some(Value::Map(m)) = root.as_value() {
+        let prefix = "config/gate/accounts/";
+        for key in m.keys() {
+            if let Some(rest) = key.strip_prefix(prefix) {
+                let segment = match rest.split('/').next() {
+                    Some(s) if !s.is_empty() => s.to_string(),
+                    _ => continue,
+                };
+                if !child_names.contains(&segment) {
+                    child_names.push(segment);
+                }
+            }
+        }
+    }
+    assert!(
+        !child_names.iter().any(|n| n == "anthropic"),
+        "child enumeration of `config/gate/accounts` must not return \"anthropic\" \
+         after delete; got: {child_names:?}",
+    );
+    let key_after = h
+        .client
+        .read(&oxpath!("secret", "keys", acct_comp.clone()))
+        .await
+        .expect("read secret key");
+    let key_gone = match key_after {
+        None => true,
+        Some(rec) => matches!(rec.as_value(), Some(Value::Null)),
+    };
+    assert!(key_gone, "secret/keys/anthropic should be gone after delete");
+    let prov_after = h
+        .client
+        .read(&oxpath!("config", "gate", "providers", acct_comp))
+        .await
+        .expect("read provider");
+    let prov_gone = match prov_after {
+        None => true,
+        Some(rec) => matches!(rec.as_value(), Some(Value::Null)),
+    };
+    assert!(
+        prov_gone,
+        "config/gate/providers/anthropic should be gone after delete",
+    );
+}
