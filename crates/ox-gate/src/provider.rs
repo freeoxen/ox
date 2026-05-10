@@ -9,6 +9,8 @@
 //! "does this provider need an API key?" has one answer (the field), not many
 //! (heuristics scattered across UI / startup / transport that drift apart).
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 /// How a provider authenticates.
@@ -29,6 +31,16 @@ pub enum AuthScheme {
 }
 
 impl AuthScheme {
+    /// Every variant in cycle order. The Settings UI's Auth carousel
+    /// reads this — and `Display` below — as the single source of truth
+    /// for "what options exist and how they're labeled," so adding a new
+    /// variant here automatically extends the carousel.
+    pub const ALL: [AuthScheme; 3] = [
+        AuthScheme::XApiKey,
+        AuthScheme::BearerToken,
+        AuthScheme::None,
+    ];
+
     /// `true` if a key is required for this scheme. Used by validation
     /// at the Settings save boundary and at startup.
     pub fn requires_key(&self) -> bool {
@@ -43,6 +55,22 @@ impl AuthScheme {
             "openai" => AuthScheme::BearerToken,
             _ => AuthScheme::XApiKey,
         }
+    }
+}
+
+/// Kebab-case display labels — same strings the `serde(rename_all =
+/// "kebab-case")` wire format produces. Keeping the wire format and the
+/// UI label aligned means the Settings carousel and the on-disk config
+/// agree on every variant's name; there's no second "label" table to
+/// drift out of sync with the enum.
+impl fmt::Display for AuthScheme {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            AuthScheme::XApiKey => "x-api-key",
+            AuthScheme::BearerToken => "bearer-token",
+            AuthScheme::None => "none",
+        };
+        f.write_str(s)
     }
 }
 

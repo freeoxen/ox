@@ -1066,12 +1066,6 @@ fn field_model_step(data: &mut dyn Reader, delta: isize) -> Vec<Write> {
     }]
 }
 
-/// Ordered display labels for the Auth carousel. Auth's options are a
-/// fixed wire-protocol enum (`AuthScheme`), so the labels are static —
-/// unlike Protocol, whose options come from the broker via
-/// `resolve_protocol_options`.
-pub const AUTH_DISPLAY: &[&str] = &["x-api-key", "bearer-token", "none"];
-
 /// Resolve the carousel options for the Protocol field.
 ///
 /// Protocol characterizes *what wire format the endpoint speaks* — the
@@ -1275,12 +1269,6 @@ fn read_account_child_string(
     }
 }
 
-const AUTH_OPTIONS: [AuthScheme; 3] = [
-    AuthScheme::XApiKey,
-    AuthScheme::BearerToken,
-    AuthScheme::None,
-];
-
 pub(crate) fn selector_cycle_auth(data: &mut dyn Reader) -> Vec<Write> {
     selector_cycle_auth_dir(data, CycleDir::Forward)
 }
@@ -1321,10 +1309,11 @@ fn selector_cycle_auth_dir(data: &mut dyn Reader, dir: CycleDir) -> Vec<Write> {
             auth: None,
         });
     let current = provider.resolved_auth();
-    let idx = AUTH_OPTIONS.iter().position(|a| *a == current).unwrap_or(0);
+    let options = AuthScheme::ALL;
+    let idx = options.iter().position(|a| *a == current).unwrap_or(0);
     let next = match dir {
-        CycleDir::Forward => AUTH_OPTIONS[(idx + 1) % AUTH_OPTIONS.len()].clone(),
-        CycleDir::Back => AUTH_OPTIONS[(idx + AUTH_OPTIONS.len() - 1) % AUTH_OPTIONS.len()].clone(),
+        CycleDir::Forward => options[(idx + 1) % options.len()].clone(),
+        CycleDir::Back => options[(idx + options.len() - 1) % options.len()].clone(),
     };
     provider.auth = Some(next);
     let value = match to_value(&provider) {

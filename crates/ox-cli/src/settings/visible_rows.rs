@@ -420,7 +420,11 @@ fn append_account_field_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, 
             AccountField::Auth => provider
                 .as_ref()
                 .map(|p| match &p.auth {
-                    Some(scheme) => format!("{scheme:?}").to_lowercase(),
+                    // Display matches the kebab-case wire format AND the
+                    // carousel's option list (`AuthScheme::ALL`); using
+                    // anything else here breaks the carousel's
+                    // value-to-index lookup.
+                    Some(scheme) => scheme.to_string(),
                     None => String::from("(default)"),
                 })
                 .unwrap_or_default(),

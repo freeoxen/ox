@@ -15,7 +15,9 @@
 
 use ox_view::{FocusId, ListItem, ModifierSet, Span, Style, View};
 
-use crate::settings::commands::account_model::{AUTH_DISPLAY, resolve_protocol_options};
+use ox_gate::AuthScheme;
+
+use crate::settings::commands::account_model::resolve_protocol_options;
 use crate::settings::commands::edit::read_edit_state;
 use crate::settings::registry::{AscendRule, RenderCtx, Renderer, RendererRegistry};
 use crate::settings::visible_rows::{self, RowKind};
@@ -54,6 +56,23 @@ impl Renderer for IndexRenderer {
             })
             .unwrap_or_default();
 
+        // Resolve the Auth carousel's current scheme directly from the
+        // typed `ProviderConfig` (via `resolved_auth()` so legacy configs
+        // without an `auth` field still resolve to the dialect default).
+        // Reading the enum here — instead of round-tripping the row label
+        // through a string lookup — keeps the carousel locked to the
+        // same source of truth that `selector_cycle_auth_dir` mutates.
+        let auth_current: Option<AuthScheme> = selected
+            .and_then(|i| rows.get(i))
+            .and_then(|r| match &r.kind {
+                RowKind::AccountField {
+                    account,
+                    field: ox_types::AccountField::Auth,
+                } => Some(account.clone()),
+                _ => None,
+            })
+            .and_then(|account| resolve_account_auth(ctx.data, &account));
+
         let mut items: Vec<ListItem> = rows
             .iter()
             .enumerate()
@@ -70,9 +89,13 @@ impl Renderer for IndexRenderer {
                 // the plain label.
                 let is_focused = selected.is_some_and(|sel| sel == i);
                 if is_focused {
-                    if let Some(spans) =
-                        selector_carousel_spans(row, &indent, glyph, &protocol_options)
-                    {
+                    if let Some(spans) = selector_carousel_spans(
+                        row,
+                        &indent,
+                        glyph,
+                        &protocol_options,
+                        auth_current.as_ref(),
+                    ) {
                         return ListItem {
                             primary: format!("{indent}{glyph}{}", row.label),
                             primary_spans: Some(spans),
@@ -335,11 +358,13 @@ fn selector_carousel_spans(
     indent: &str,
     glyph: &str,
     protocol_options: &[String],
+    auth_current: Option<&AuthScheme>,
 ) -> Option<Vec<Span>> {
-    // Build an owned option list per arm. Auth's options are a fixed
-    // wire-protocol enum (`AUTH_DISPLAY`); Protocol's are resolved
-    // per-frame from the broker (`protocol_options`). Owned strings on
-    // both branches keep the formatting block below uniform.
+    // Build an owned option list per arm. Auth's options are the fixed
+    // `AuthScheme::ALL` cycle, formatted via `Display` so the label and
+    // the wire format never diverge; Protocol's are resolved per-frame
+    // from the broker (`protocol_options`). Owned strings on both
+    // branches keep the formatting block below uniform.
     let (label, options, current_idx): (&str, Vec<String>, usize) = match &row.kind {
         RowKind::AccountField {
             account: _,
@@ -360,11 +385,16 @@ fn selector_carousel_spans(
             account: _,
             field: ox_types::AccountField::Auth,
         } => {
-            let value = row.label.split(": ").nth(1).unwrap_or("");
-            let idx = AUTH_DISPLAY.iter().position(|o| *o == value).unwrap_or(0);
+            // Read the current scheme from the typed `ProviderConfig`
+            // resolved upstream — never from the row label. The label
+            // is a string projection of the same enum; treating the
+            // enum as authoritative is what keeps the carousel and the
+            // cycle command in lockstep.
+            let current = auth_current.cloned().unwrap_or(AuthScheme::XApiKey);
+            let idx = AuthScheme::ALL.iter().position(|a| a == &current).unwrap_or(0);
             (
                 "Auth",
-                AUTH_DISPLAY.iter().map(|s| s.to_string()).collect(),
+                AuthScheme::ALL.iter().map(|a| a.to_string()).collect(),
                 idx,
             )
         }
@@ -472,6 +502,21 @@ fn decorate_row_label(
     // `▏` (U+258F) renders as a thin vertical bar — a clear cursor
     // mark at end-of-buffer that doesn't get confused with text.
     format!("{label}▸ {}\u{258F}", state.buffer)
+}
+
+/// Resolve the effective `AuthScheme` for an account by walking the
+/// account → provider binding and applying `ProviderConfig::resolved_auth()`.
+/// Returns `None` only when the account or provider records are
+/// missing/malformed; the caller falls back to the default carousel
+/// position. Mirrors `selector_cycle_auth_dir`'s read pattern so the
+/// renderer and the cycle command see the same effective state.
+fn resolve_account_auth(
+    data: &mut dyn structfs_core_store::Reader,
+    account: &str,
+) -> Option<AuthScheme> {
+    let acct = visible_rows::read_account_assembling_flat(data, account)?;
+    let provider = visible_rows::read_provider_assembling_flat(data, &acct.provider)?;
+    Some(provider.resolved_auth())
 }
 
 fn read_cursor(data: &mut dyn structfs_core_store::Reader) -> Option<structfs_core_store::Path> {

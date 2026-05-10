@@ -11,7 +11,7 @@ expression: "&frame_after_one"
 │      Name: anthropic                                                         │
 │      Protocol: anthropic                                                     │
 │      Endpoint: https://api.anthropic.com                                     │
-│      Auth: ◂ none  x-api-key  bearer-token ▸                                 │
+│      Auth: ◂ x-api-key  bearer-token  none ▸                                 │
 │      Key: (set)                                                              │
 │▸ Models                                                                      │
 │                                                                              │
