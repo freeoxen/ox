@@ -169,7 +169,7 @@ fn append_account_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, expand
             }
         };
 
-        let path = row_path(&["settings", "accounts", &safe_component(name)]);
+        let path = row_path(&["settings", "accounts", name]);
         let path_str = path_to_string(&path);
         let is_expanded = expanded.iter().any(|s| s == &path_str);
         rows.push(VisibleRow {
@@ -333,7 +333,7 @@ fn append_model_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, expanded
             let path = row_path(&[
                 "settings",
                 "models",
-                &safe_component(account_name),
+                account_name,
                 &safe_component(&m.id),
             ]);
             let path_str = path_to_string(&path);
@@ -439,7 +439,7 @@ fn append_account_field_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, 
         let path = row_path(&[
             "settings",
             "accounts",
-            &safe_component(name),
+            name,
             field_segment_account(field),
         ]);
         rows.push(VisibleRow {
@@ -481,7 +481,7 @@ fn append_model_field_rows(rows: &mut Vec<VisibleRow>, model: &ox_gate::ModelInf
         let path = row_path(&[
             "settings",
             "models",
-            &safe_component(account),
+            account,
             &safe_component(&model.id),
             field_segment_model(field),
         ]);
@@ -522,21 +522,36 @@ fn field_segment_model(field: ModelField) -> &'static str {
 /// Build a row identifier `Path` from a slice of component strings.
 /// Total: every caller passes statically-known prefix segments
 /// (`"settings"`, `"accounts"`, `"models"`) plus user-derived strings
-/// pre-sanitized through [`safe_component`]. The combination always
-/// satisfies UAX#31, so the construction can't fail — `expect` here
-/// pins the invariant rather than silently dropping rows.
+/// that are already path-component-valid — account names are gated by
+/// `PathComponent::try_new` upstream (callers `continue` past invalid
+/// names), and model ids pass through [`safe_component`]. The
+/// combination always satisfies UAX#31, so the construction can't
+/// fail — `expect` here pins the invariant rather than silently
+/// dropping rows.
 fn row_path(parts: &[&str]) -> Path {
     let owned: Vec<String> = parts.iter().map(|s| (*s).to_string()).collect();
     Path::try_from_components(owned)
         .expect("row_path callers always supply identifier-safe components")
 }
 
-/// Sanitize a free-form identifier (account name, model id) into a
-/// component the path validator accepts. Replaces every char that
-/// would be rejected by UAX#31 identifier rules with `_`. The result
-/// only needs to be stable and unique enough to identify the row in
-/// the visible list — the real identifier lives on `RowKind`, which
-/// commands consult before issuing any data write.
+/// Sanitize a model id for use as a path component. Replaces every
+/// char that would be rejected by UAX#31 identifier rules with `_`.
+/// Model ids come from API responses or user-entered manual entries;
+/// they are NOT `PathComponent`-validated at write time, so they may
+/// contain hyphens, dots, or other characters the path validator
+/// rejects. The result only needs to be stable and unique enough to
+/// identify the row in the visible list — the real identifier lives
+/// on `RowKind`, which commands consult before issuing any data write.
+///
+/// **Not used for account names.** Account names pass
+/// `PathComponent::try_new` at every write boundary (and the
+/// visible-rows enumerator filters out any leftover invalid names
+/// before reaching the row-construction step). Their display-tree
+/// paths use the bare validated name; passing them through
+/// `safe_component` would be redundant in the common case and
+/// destructive in the edge case — two distinct names that differ only
+/// in non-PathComponent characters (e.g. `bad-name` vs `bad_name`)
+/// would both substitute to `bad_name` and collide.
 pub(crate) fn safe_component(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut empty = true;
