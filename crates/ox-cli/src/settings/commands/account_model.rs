@@ -791,6 +791,103 @@ fn accounts_compose_delete_back(data: &mut dyn Reader) -> Vec<Write> {
 /// in lockstep.
 pub(crate) const PROTOCOL_OPTIONS: &[&str] = &["anthropic", "openai"];
 
+/// Project the compose draft state as a typed `View::Form`. One row per
+/// field in `FIELD_ORDER`; text fields surface their live buffer (Key is
+/// masked), selector fields surface their option list + current index
+/// (or a `(not selected)` placeholder when the user hasn't picked yet);
+/// every row threads through the matching slot from the `errors` record.
+///
+/// The renderer composes this into a `View::Stack { [Form, List] }` only
+/// when `ui/settings/new_account/active` is true; outside compose mode
+/// the form has nothing to project and the caller emits the bare list.
+pub(crate) fn compose_form_view(data: &mut dyn Reader) -> ox_view::View {
+    use ox_view::{FormRow, View};
+    let focused_field = read_focused_field(data);
+    let errors: ValidationErrors =
+        read_typed(data, &oxpath!("ui", "settings", "new_account", "errors"))
+            .unwrap_or_default();
+
+    let rows: Vec<FormRow> = FIELD_ORDER
+        .iter()
+        .map(|f| project_compose_field(data, *f, errors.for_field(*f)))
+        .collect();
+
+    let focused = FIELD_ORDER.iter().position(|f| *f == focused_field);
+    View::Form { rows, focused }
+}
+
+fn project_compose_field(
+    data: &mut dyn Reader,
+    field: AccountField,
+    error: Option<&str>,
+) -> ox_view::FormRow {
+    use ox_view::FormRow;
+
+    let label = field_label(field).to_string();
+    let error = error.map(String::from);
+
+    let (value, hint) = match field {
+        AccountField::Name | AccountField::Endpoint => {
+            let v: String = read_typed(data, &field_state_path(field)).unwrap_or_default();
+            (text_form_value(v, /*masked=*/ false), None)
+        }
+        AccountField::Key => {
+            let v: String = read_typed(data, &field_state_path(field)).unwrap_or_default();
+            // Hint clarifies why the key is required (auth schemes that
+            // need one) without leaking the actual value.
+            (
+                text_form_value(v, /*masked=*/ true),
+                Some("required for x-api-key / bearer-token".into()),
+            )
+        }
+        AccountField::Protocol => {
+            let current: Option<String> = read_typed(data, &field_state_path(field));
+            (selector_form_value(current.as_deref(), PROTOCOL_OPTIONS), None)
+        }
+        AccountField::Auth => {
+            let current: Option<AuthScheme> = read_typed(data, &field_state_path(field));
+            // Format the enum through Display so the form's wire-format
+            // labels stay aligned with on-disk serialization (the same
+            // alignment the carousel commands rely on).
+            let auth_strs: Vec<String> = AuthScheme::ALL.iter().map(|a| a.to_string()).collect();
+            let current_str = current.map(|a| a.to_string());
+            let refs: Vec<&str> = auth_strs.iter().map(|s| s.as_str()).collect();
+            (selector_form_value(current_str.as_deref(), &refs), None)
+        }
+    };
+
+    FormRow {
+        label,
+        value,
+        error,
+        hint,
+    }
+}
+
+fn text_form_value(value: String, masked: bool) -> ox_view::FormValue {
+    let cursor = value.chars().count() as u32;
+    ox_view::FormValue::Text {
+        value,
+        cursor,
+        masked,
+    }
+}
+
+fn selector_form_value(current: Option<&str>, options: &[&str]) -> ox_view::FormValue {
+    match current.and_then(|c| options.iter().position(|o| *o == c)) {
+        // `(not selected)` is the read-only placeholder the form shows
+        // for a selector the user hasn't pressed h/l on yet. The
+        // ReadOnly variant keeps it visually distinct from a chosen
+        // option and means no carousel decoration shows when the row
+        // takes focus before a pick.
+        None => ox_view::FormValue::ReadOnly("(not selected)".into()),
+        Some(idx) => ox_view::FormValue::Selector {
+            options: options.iter().map(|s| s.to_string()).collect(),
+            current: idx,
+        },
+    }
+}
+
 /// Snapshot path of the compose-mode focused-field discriminator.
 fn field_focus_path() -> Path {
     oxpath!("ui", "settings", "new_account", "focused_field")

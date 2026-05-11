@@ -13,11 +13,11 @@
 //! glyph on the primary text; the legacy badge slot still carries
 //! the entry's badge string.
 
-use ox_view::{FocusId, ListItem, ModifierSet, Span, Style, View};
+use ox_view::{Direction, FocusId, ListItem, ModifierSet, Sizing, Span, Style, View};
 
 use ox_gate::AuthScheme;
 
-use crate::settings::commands::account_model::resolve_protocol_options;
+use crate::settings::commands::account_model::{compose_form_view, resolve_protocol_options};
 use crate::settings::commands::edit::read_edit_state;
 use crate::settings::registry::{AscendRule, RenderCtx, Renderer, RendererRegistry};
 use crate::settings::visible_rows::{self, RowKind};
@@ -118,32 +118,35 @@ impl Renderer for IndexRenderer {
 
         let mut selected = selected;
 
-        // Always emit an affordance directly after the expanded Accounts
-        // header. When compose mode is active (the buffer is `Some(_)`),
-        // it's an inline name prompt reflecting the live buffer; when
-        // inactive, it's the static "+ New connection" line. `focus: None`
-        // keeps j/k from landing on it, so the affordance is purely
-        // decorative — the dispatcher's compose-mode pass handles input
-        // routing.
-        let buffer: Option<String> =
-            crate::settings::renderers::util::read_typed(
-                ctx.data,
-                &ox_path::oxpath!("ui", "settings", "new_account", "buffer"),
-            );
-        if let Some(insert_idx) = find_accounts_header_followup_idx(&rows) {
-            let primary = match &buffer {
-                Some(buf) => format!("    Name▸ {}\u{258F}", buf),
-                None => "    + New connection".to_string(),
-            };
-            let affordance = ListItem {
-                primary,
-                primary_spans: None,
-                secondary: None,
-                badge: None,
-                focus: None,
-            };
-            items.insert(insert_idx, affordance);
-            selected = selected.map(|s| if s >= insert_idx { s + 1 } else { s });
+        // Compose mode is the discriminator that drives both the inline
+        // "+ New connection" affordance (inactive) AND the
+        // `View::Stack { [Form, List] }` projection (active). Reading it
+        // once up here keeps the two decisions in lockstep — if active
+        // is false the inline affordance shows; if true the form takes
+        // over and the inline affordance is suppressed.
+        let compose_active: bool = crate::settings::renderers::util::read_typed(
+            ctx.data,
+            &ox_path::oxpath!("ui", "settings", "new_account", "active"),
+        )
+        .unwrap_or(false);
+
+        // Emit the inline "+ New connection" affordance directly after the
+        // expanded Accounts header — but only when compose mode is NOT
+        // active. When active the compose form is projected above the
+        // list, so the inline affordance would be redundant. `focus: None`
+        // keeps j/k from landing on it.
+        if !compose_active {
+            if let Some(insert_idx) = find_accounts_header_followup_idx(&rows) {
+                let affordance = ListItem {
+                    primary: "    + New connection".to_string(),
+                    primary_spans: None,
+                    secondary: None,
+                    badge: None,
+                    focus: None,
+                };
+                items.insert(insert_idx, affordance);
+                selected = selected.map(|s| if s >= insert_idx { s + 1 } else { s });
+            }
         }
 
         // Empty-catalog connections contribute zero rows to the
@@ -324,15 +327,47 @@ impl Renderer for IndexRenderer {
         // edits exist but haven't been saved yet.
         let title_right = read_dirty_indicator(ctx.data);
 
+        let list = View::List { items, selected };
+        let inner = if compose_active {
+            // Project the compose draft as a typed `View::Form` above
+            // the accounts/models list. `Sizing::Fixed(form_height)`
+            // pins the form to exactly its line count; the list takes
+            // the remaining vertical space. The form is rendered by
+            // the existing `render_form` translator — no new translator
+            // code needed.
+            let form = compose_form_view(ctx.data);
+            let h = form_height(&form);
+            View::Stack {
+                dir: Direction::Vertical,
+                children: vec![(form, Sizing::Fixed(h)), (list, Sizing::Fill)],
+            }
+        } else {
+            list
+        };
+
         View::Frame {
             title: Some("Settings".into()),
             title_right,
-            content: Box::new(View::List { items, selected }),
+            content: Box::new(inner),
         }
     }
 
     fn ascend_to(&self) -> AscendRule {
         AscendRule::ExitScreen
+    }
+}
+
+/// Vertical space the compose Form needs, in terminal lines.
+/// `render_form` draws one line per `FormRow` (errors and hints render
+/// inline on the same line as the value), so the height equals the row
+/// count. Other variants fall through to 0 because this helper is only
+/// ever called with the output of `compose_form_view`, which is always
+/// a `View::Form` — the catch-all is defensive in case the projection
+/// gets reshaped without the caller noticing.
+fn form_height(view: &View) -> u16 {
+    match view {
+        View::Form { rows, .. } => rows.len() as u16,
+        _ => 0,
     }
 }
 
@@ -731,33 +766,6 @@ mod tests {
     }
 
     #[test]
-    fn compose_buffer_renders_inline_name_prompt() {
-        // While `ui/settings/new_account/buffer` is `Some(_)`, the
-        // affordance line directly under the Accounts header swaps from
-        // the static "+ New connection" to a live `Name▸ <buf>▏` prompt.
-        // The line has `focus: None` and isn't in visible_rows, so it
-        // doesn't claim selection.
-        let mut snap = SettingsSnapshot::empty();
-        write_index(&mut snap);
-        snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
-            expanded_set_to_value(&["settings/accounts".to_string()]),
-        );
-        snap.insert(
-            &oxpath!("ui", "settings", "new_account", "buffer"),
-            Value::String("per".into()),
-        );
-        let (_title, items, _selected) = assert_list(render(&mut snap));
-        // Accounts header (0), affordance (1), Models header (2).
-        assert!(
-            items[1].primary.contains("Name▸ per\u{258F}"),
-            "expected inline-edit decoration; got {:?}",
-            items[1].primary
-        );
-        assert!(items[1].focus.is_none(), "affordance must be unfocusable");
-    }
-
-    #[test]
     fn affordance_renders_static_label_when_buffer_is_absent() {
         let mut snap = SettingsSnapshot::empty();
         write_index(&mut snap);
@@ -1015,5 +1023,257 @@ mod tests {
             joined.contains("LMStudio"),
             "expected carousel to include 'LMStudio'; got {joined:?}"
         );
+    }
+
+    // -- compose-mode View::Form projection --------------------------------------
+
+    /// Open `Accounts` accordion. The compose-form projection only ever
+    /// emits while the accordion is expanded — when collapsed there's
+    /// no accounts list to stack the form above.
+    fn snap_at_accounts_page() -> SettingsSnapshot {
+        let mut snap = SettingsSnapshot::empty();
+        write_index(&mut snap);
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&["settings/accounts".to_string()]),
+        );
+        snap
+    }
+
+    /// Compose-mode snapshot: accordion expanded + compose active +
+    /// every field at its open-state default. Mirrors the shape
+    /// `accounts.compose.open` writes (T5).
+    fn snap_with_compose_active() -> SettingsSnapshot {
+        let mut snap = snap_at_accounts_page();
+        snap.insert(
+            &oxpath!("ui", "settings", "new_account", "active"),
+            Value::Bool(true),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "new_account", "focused_field"),
+            Value::String("name".into()),
+        );
+        for sub in ["name", "endpoint", "key"] {
+            let comp = ox_kernel::PathComponent::try_new(sub).unwrap();
+            snap.insert(
+                &oxpath!("ui", "settings", "new_account", comp),
+                Value::String(String::new()),
+            );
+        }
+        for sub in ["protocol", "auth"] {
+            let comp = ox_kernel::PathComponent::try_new(sub).unwrap();
+            snap.insert(
+                &oxpath!("ui", "settings", "new_account", comp),
+                Value::Null,
+            );
+        }
+        snap
+    }
+
+    /// Walk `Frame -> (Stack | Form)` and return the `View::Form` payload.
+    /// Returns `None` when the view isn't a compose-active form layout.
+    fn extract_form(view: View) -> Option<(Vec<ox_view::FormRow>, Option<usize>)> {
+        use ox_view::View as V;
+        match view {
+            V::Frame { content, .. } => match *content {
+                V::Stack { children, .. } => {
+                    for (child, _) in children {
+                        if let V::Form { rows, focused } = child {
+                            return Some((rows, focused));
+                        }
+                    }
+                    None
+                }
+                V::Form { rows, focused } => Some((rows, focused)),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn index_renderer_emits_frame_list_when_compose_inactive() {
+        let mut snap = snap_at_accounts_page();
+        let view = render(&mut snap);
+        match view {
+            View::Frame { content, .. } => match *content {
+                View::List { .. } => {}
+                other => panic!("expected View::List inside Frame when compose inactive, got {other:?}"),
+            },
+            other => panic!("expected View::Frame, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn index_renderer_emits_frame_stack_form_list_when_compose_active() {
+        use ox_view::{Direction, Sizing};
+        let mut snap = snap_with_compose_active();
+        let view = render(&mut snap);
+        match view {
+            View::Frame { content, .. } => match *content {
+                View::Stack { dir, children } => {
+                    assert_eq!(dir, Direction::Vertical);
+                    assert_eq!(children.len(), 2, "expected Form + List children");
+                    let (form, _) = &children[0];
+                    let (list, list_sizing) = &children[1];
+                    assert!(
+                        matches!(form, View::Form { .. }),
+                        "first child must be the compose Form; got {form:?}"
+                    );
+                    assert!(
+                        matches!(list, View::List { .. }),
+                        "second child must be the accounts/models List; got {list:?}"
+                    );
+                    assert_eq!(*list_sizing, Sizing::Fill);
+                }
+                other => panic!("expected Stack inside Frame, got {other:?}"),
+            },
+            other => panic!("expected Frame, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compose_form_has_one_row_per_field_in_order() {
+        use crate::settings::commands::account_model::{FIELD_ORDER, field_label};
+        let mut snap = snap_with_compose_active();
+        let view = render(&mut snap);
+        let (rows, _) = extract_form(view).expect("Form present");
+        assert_eq!(rows.len(), FIELD_ORDER.len());
+        for (i, field) in FIELD_ORDER.iter().enumerate() {
+            assert_eq!(rows[i].label, field_label(*field));
+        }
+    }
+
+    #[test]
+    fn compose_form_row_kinds_match_field_kinds() {
+        // Text fields → FormValue::Text. Selector fields → at compose
+        // open-state (no protocol/auth picked yet) → FormValue::ReadOnly
+        // placeholder. The kind alignment pins that the projection picks
+        // the correct variant per field.
+        use crate::settings::commands::account_model::{FIELD_ORDER, FieldKind, field_kind};
+        use ox_view::FormValue;
+        let mut snap = snap_with_compose_active();
+        let view = render(&mut snap);
+        let (rows, _) = extract_form(view).expect("Form present");
+        for (i, field) in FIELD_ORDER.iter().enumerate() {
+            match (field_kind(*field), &rows[i].value) {
+                (FieldKind::Text, FormValue::Text { .. }) => {}
+                (FieldKind::Selector, FormValue::ReadOnly(_)) => {}
+                (kind, value) => {
+                    panic!("field {field:?} kind={kind:?} got value={value:?}")
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn compose_form_focused_index_tracks_focused_field() {
+        use crate::settings::commands::account_model::FIELD_ORDER;
+        for field in FIELD_ORDER {
+            let mut snap = snap_with_compose_active();
+            // Override the focused-field discriminator.
+            let subpath = match field {
+                ox_types::AccountField::Name => "name",
+                ox_types::AccountField::Protocol => "protocol",
+                ox_types::AccountField::Endpoint => "endpoint",
+                ox_types::AccountField::Auth => "auth",
+                ox_types::AccountField::Key => "key",
+            };
+            snap.insert(
+                &oxpath!("ui", "settings", "new_account", "focused_field"),
+                Value::String(subpath.into()),
+            );
+            let view = render(&mut snap);
+            let (_rows, focused) = extract_form(view).expect("Form present");
+            let expected = FIELD_ORDER.iter().position(|f| *f == field);
+            assert_eq!(focused, expected, "field {field:?}");
+        }
+    }
+
+    #[test]
+    fn compose_form_threads_errors_into_form_rows() {
+        use crate::settings::commands::account_model::FIELD_ORDER;
+        use ox_types::settings::ValidationErrors;
+        let mut snap = snap_with_compose_active();
+        let errors = ValidationErrors {
+            name: Some("'with space' is not a valid identifier".into()),
+            ..Default::default()
+        };
+        snap.insert(
+            &oxpath!("ui", "settings", "new_account", "errors"),
+            to_value(&errors).unwrap(),
+        );
+        let view = render(&mut snap);
+        let (rows, _) = extract_form(view).expect("Form present");
+        let name_idx = FIELD_ORDER
+            .iter()
+            .position(|f| *f == ox_types::AccountField::Name)
+            .unwrap();
+        assert!(
+            rows[name_idx].error.is_some(),
+            "name error must thread into the Name FormRow"
+        );
+        // Other rows have no error in this fixture.
+        for (i, row) in rows.iter().enumerate() {
+            if i == name_idx {
+                continue;
+            }
+            assert!(
+                row.error.is_none(),
+                "row {i} ({}) should have no error",
+                row.label
+            );
+        }
+    }
+
+    #[test]
+    fn key_field_renders_masked_text_value() {
+        use crate::settings::commands::account_model::FIELD_ORDER;
+        use ox_view::FormValue;
+        let mut snap = snap_with_compose_active();
+        snap.insert(
+            &oxpath!("ui", "settings", "new_account", "key"),
+            Value::String("sk-secret".into()),
+        );
+        let view = render(&mut snap);
+        let (rows, _) = extract_form(view).expect("Form present");
+        let key_idx = FIELD_ORDER
+            .iter()
+            .position(|f| *f == ox_types::AccountField::Key)
+            .unwrap();
+        match &rows[key_idx].value {
+            FormValue::Text { value, masked, .. } => {
+                assert!(*masked, "Key value must be masked");
+                assert_eq!(value, "sk-secret");
+            }
+            other => panic!("expected FormValue::Text, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn selector_with_value_renders_selector_form_value() {
+        // Once the user has picked a protocol, the row switches from
+        // the placeholder `ReadOnly` to a `Selector { options, current }`.
+        use crate::settings::commands::account_model::FIELD_ORDER;
+        use ox_view::FormValue;
+        let mut snap = snap_with_compose_active();
+        snap.insert(
+            &oxpath!("ui", "settings", "new_account", "protocol"),
+            Value::String("anthropic".into()),
+        );
+        let view = render(&mut snap);
+        let (rows, _) = extract_form(view).expect("Form present");
+        let proto_idx = FIELD_ORDER
+            .iter()
+            .position(|f| *f == ox_types::AccountField::Protocol)
+            .unwrap();
+        match &rows[proto_idx].value {
+            FormValue::Selector { options, current } => {
+                assert!(!options.is_empty(), "options must be non-empty");
+                assert!(*current < options.len(), "current must index into options");
+                assert_eq!(options[*current], "anthropic");
+            }
+            other => panic!("expected FormValue::Selector, got {other:?}"),
+        }
     }
 }
