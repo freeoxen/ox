@@ -135,6 +135,11 @@ pub(crate) fn validate_compose_protocol(protocol: Option<&str>) -> Option<String
     }
 }
 
+/// UX-level endpoint validation: rejects empty/whitespace only.
+/// Parseability/reachability checks live at the gate layer
+/// (`ox_gate::provider::validate_endpoint`). The split is deliberate:
+/// compose mode shouldn't block a user mid-draft on URL formatting
+/// quirks — invalid endpoints surface at first use of the connection.
 pub(crate) fn validate_compose_endpoint(endpoint: &str) -> Option<String> {
     if endpoint.trim().is_empty() {
         Some("required".into())
@@ -246,7 +251,7 @@ command! {
     struct_name: AccountsComposeCommit,
     id: "accounts.compose.commit",
     title: "Create connection",
-    description: "Validate the buffered name and materialize the AccountConfig.",
+    description: "Validate the compose-mode draft and materialize the new connection.",
     screen: Screen::Settings,
     cursor: None,
     run: |snap, _ctx| accounts_compose_commit(snap),
@@ -1033,6 +1038,12 @@ fn accounts_compose_commit(data: &mut dyn Reader) -> Vec<Write> {
 
     // Clear draft state via subtree Null-cascade — one write at the
     // subtree root rather than per-field cleanup.
+    //
+    // Intentionally do NOT write `ui/settings/cursor` or
+    // `ui/settings/accounts/selected`. Both downstream readers
+    // (`read_selected_account`, `accounts_step`) prefer `focused`, which
+    // is set above; the legacy commit's writes to those paths were
+    // redundant under the new convention.
     writes.push(Write {
         path: oxpath!("ui", "settings", "new_account"),
         record: Record::parsed(Value::Null),
