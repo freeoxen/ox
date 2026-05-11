@@ -210,11 +210,13 @@ command! {
     struct_name: AccountsComposeCancel,
     id: "accounts.compose.cancel",
     title: "Cancel new connection",
-    description: "Discard the new-account buffer; exit compose mode.",
+    description: "Discard the new-account draft; exit compose mode.",
     screen: Screen::Settings,
     cursor: None,
+    // One write at the subtree root; the store-layer Null-cascade clears
+    // every child field atomically — no per-field enumeration here.
     run: |_snap, _ctx| vec![Write {
-        path: oxpath!("ui", "settings", "new_account", "buffer"),
+        path: oxpath!("ui", "settings", "new_account"),
         record: Record::parsed(Value::Null),
     }],
 }
@@ -2161,14 +2163,13 @@ mod tests {
     }
 
     #[test]
-    fn accounts_compose_cancel_clears_buffer() {
-        let mut snap = SettingsSnapshot::empty();
+    fn compose_cancel_writes_null_to_new_account_root() {
+        let mut snap = test_snapshot_with_compose_state("partial", "name");
         let writes = run_cmd(&AccountsComposeCancel::new(), &mut snap);
+
+        // Single Null write to the subtree root; Phase-8 cascade clears children.
         assert_eq!(writes.len(), 1);
-        assert_eq!(
-            writes[0].path,
-            oxpath!("ui", "settings", "new_account", "buffer")
-        );
+        assert_eq!(writes[0].path, oxpath!("ui", "settings", "new_account"));
         assert!(matches!(&writes[0].record, Record::Parsed(Value::Null)));
     }
 
