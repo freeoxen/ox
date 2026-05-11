@@ -616,10 +616,6 @@ fn accounts_compose_insert_char(
 ) -> Vec<Write> {
     use ox_types::key_chord::KeyCodeRepr;
 
-    let focused = read_focused_field(data);
-    if field_kind(focused) != FieldKind::Text {
-        return Vec::new();
-    }
     let chord = match ctx.last_keystroke.as_ref() {
         Some(c) => c,
         None => return Vec::new(),
@@ -628,6 +624,10 @@ fn accounts_compose_insert_char(
         KeyCodeRepr::Char(c) => c,
         _ => return Vec::new(),
     };
+    let focused = read_focused_field(data);
+    if field_kind(focused) != FieldKind::Text {
+        return Vec::new();
+    }
     let path = field_state_path(focused);
     let mut buf: String = read_typed(data, &path).unwrap_or_default();
     buf.push(ch);
