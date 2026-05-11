@@ -220,6 +220,26 @@ command! {
 }
 
 command! {
+    struct_name: AccountsComposeFocusNext,
+    id: "accounts.compose.focus_next",
+    title: "Next field",
+    description: "Advance compose-mode focus to the next field.",
+    screen: Screen::Settings,
+    cursor: None,
+    run: |snap, _ctx| accounts_compose_focus_next(snap),
+}
+
+command! {
+    struct_name: AccountsComposeFocusPrev,
+    id: "accounts.compose.focus_prev",
+    title: "Previous field",
+    description: "Retreat compose-mode focus to the previous field.",
+    screen: Screen::Settings,
+    cursor: None,
+    run: |snap, _ctx| accounts_compose_focus_prev(snap),
+}
+
+command! {
     struct_name: AccountsComposeCommit,
     id: "accounts.compose.commit",
     title: "Create connection",
@@ -762,6 +782,36 @@ fn accounts_compose_delete_back(data: &mut dyn Reader) -> Vec<Write> {
 /// `ox_gate::presets()` gains a new non-custom dialect, extend this list
 /// in lockstep.
 pub(crate) const PROTOCOL_OPTIONS: &[&str] = &["anthropic", "openai"];
+
+/// Snapshot path of the compose-mode focused-field discriminator.
+fn field_focus_path() -> Path {
+    oxpath!("ui", "settings", "new_account", "focused_field")
+}
+
+/// Advance compose-mode focus to the next field in `FIELD_ORDER`,
+/// wrapping past the last entry. Pure: one write to `focused_field`;
+/// no validation recompute (focus changes don't change buffer
+/// contents, so the errors record is unaffected).
+fn accounts_compose_focus_next(data: &mut dyn Reader) -> Vec<Write> {
+    let current = read_focused_field(data);
+    let next = focus_next(current);
+    vec![Write {
+        path: field_focus_path(),
+        record: Record::parsed(to_value(&next).unwrap()),
+    }]
+}
+
+/// Retreat compose-mode focus to the previous field in `FIELD_ORDER`,
+/// wrapping past the first entry. See `accounts_compose_focus_next`
+/// for the no-recompute rationale.
+fn accounts_compose_focus_prev(data: &mut dyn Reader) -> Vec<Write> {
+    let current = read_focused_field(data);
+    let prev = focus_prev(current);
+    vec![Write {
+        path: field_focus_path(),
+        record: Record::parsed(to_value(&prev).unwrap()),
+    }]
+}
 
 fn accounts_compose_cycle(data: &mut dyn Reader, dir: CycleDir) -> Vec<Write> {
     let focused = read_focused_field(data);
@@ -1783,6 +1833,8 @@ pub fn register(reg: &mut CommandRegistry) {
     reg.register(Box::new(AccountsComposeDeleteBack::new()));
     reg.register(Box::new(AccountsComposeCycleForward::new()));
     reg.register(Box::new(AccountsComposeCycleBack::new()));
+    reg.register(Box::new(AccountsComposeFocusNext::new()));
+    reg.register(Box::new(AccountsComposeFocusPrev::new()));
     reg.register(Box::new(AccountsComposeCommit::new()));
     reg.register(Box::new(AccountsComposeCancel::new()));
     reg.register(Box::new(AccountsDeleteConfirm::new()));
@@ -2359,6 +2411,42 @@ mod tests {
         let written = writes_value(&writes, "ui/settings/new_account/auth")
             .and_then(|v| structfs_serde_store::from_value::<AuthScheme>(v).ok());
         assert_eq!(written, Some(AuthScheme::ALL[0].clone()));
+    }
+
+    // -- compose.focus_next / focus_prev ----------------------------------------
+
+    #[test]
+    fn focus_next_command_advances_focused_field() {
+        let mut snap = test_snapshot_with_compose_state_focus("name");
+        let writes = accounts_compose_focus_next(&mut snap);
+        assert_eq!(
+            writes_value(&writes, "ui/settings/new_account/focused_field"),
+            Some(Value::String("protocol".into())),
+        );
+    }
+
+    #[test]
+    fn focus_prev_command_retreats_focused_field() {
+        let mut snap = test_snapshot_with_compose_state_focus("name");
+        let writes = accounts_compose_focus_prev(&mut snap);
+        // Wraps to Key (FIELD_ORDER is Name → Protocol → Endpoint → Auth → Key → Name).
+        assert_eq!(
+            writes_value(&writes, "ui/settings/new_account/focused_field"),
+            Some(Value::String("key".into())),
+        );
+    }
+
+    #[test]
+    fn focus_change_only_writes_focused_field() {
+        let mut snap = test_snapshot_with_compose_state("abc", "name");
+        let writes = accounts_compose_focus_next(&mut snap);
+        // Only focused_field should change; no other state touched
+        // (no error recompute either).
+        assert_eq!(writes.len(), 1);
+        assert_eq!(
+            writes[0].path,
+            oxpath!("ui", "settings", "new_account", "focused_field"),
+        );
     }
 
     // -- compose hierarchical dispatch (capture / target / bubble) --------------

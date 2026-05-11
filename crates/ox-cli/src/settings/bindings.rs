@@ -402,11 +402,14 @@ fn register_compose_form(reg: &mut BindingRegistry) {
             "accounts.compose.focus_next",
         );
     }
-    // focus_prev: Shift+Tab (terminals emit `BackTab`) / Up.
+    // focus_prev: Shift+Tab (terminals emit `BackTab` carrying the
+    // canonical `shift` modifier — matches `encode_keychord_to_str` /
+    // `parse_key_str` which encode BackTab as the wire string
+    // "Shift+Tab" with `shift: true`) / Up.
     bind(
         reg,
         Some(scope.clone()),
-        no_mods(),
+        shift_only(),
         KeyCodeRepr::BackTab,
         "accounts.compose.focus_prev",
     );
