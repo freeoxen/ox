@@ -354,30 +354,89 @@ fn register_edit_mode(reg: &mut BindingRegistry) {
     bind(reg, Some(scope), no_mods(), KeyCodeRepr::Esc, "edit.cancel");
 }
 
-/// Register the compose-new-account mode's bindings at the synthetic
-/// `settings/_compose_new_account` cursor scope. The dispatcher routes
-/// to this scope when `ui/settings/new_account/buffer` is `Some(_)`.
+/// Register the compose-new-account mode's bindings across two
+/// synthetic scopes: the outer **form** scope and the inner **field**
+/// scopes (one per field kind). The dispatcher walks them in three
+/// phases (capture → target → bubble) when
+/// `ui/settings/new_account/active` is `true`. See
+/// `docs/ui_framework/architecture.md` "Hierarchical dispatch" for the
+/// model.
 ///
-/// Mirrors `register_edit_mode`'s shape: printable ASCII +
-/// Backspace/Enter/Esc, with shift-only modifier on uppercase letters
-/// so the encode/parse round-trip lines up with the input store.
+/// Phase classification is implicit in *which scope* owns each binding
+/// and is enforced by the dispatcher's per-phase lookups — the
+/// `BindingEntry` struct itself doesn't carry a phase field.
 fn register_compose_new_account(reg: &mut BindingRegistry) {
-    let scope = oxpath!("settings", "_compose_new_account");
+    register_compose_form(reg);
+    register_compose_field_text(reg);
+    register_compose_field_selector(reg);
+}
 
-    // Selector-cycling keys go in FIRST. Both the cycle bindings and
-    // the printable-ASCII loop register under `Exact(scope)` with no
-    // mode — they share a specificity class, so the registry's
-    // first-registered-wins tie-break is what shadows the insert_char
-    // fallback for h / l. Left / Right have no insert_char competitor
-    // but live here for proximity.
-    for (key, id) in [
-        (KeyCodeRepr::Char('h'), "accounts.compose.cycle_back"),
-        (KeyCodeRepr::Left, "accounts.compose.cycle_back"),
-        (KeyCodeRepr::Char('l'), "accounts.compose.cycle_forward"),
-        (KeyCodeRepr::Right, "accounts.compose.cycle_forward"),
-    ] {
-        bind(reg, Some(scope.clone()), no_mods(), key, id);
+/// Outer/container scope for the compose form: lifecycle keys owned by
+/// the form regardless of which field is focused. Capture-phase keys
+/// (Esc cancel, Tab/Shift+Tab/Up/Down focus traversal) and the
+/// bubble-phase commit (Enter) all live here. The dispatcher
+/// distinguishes phases by *which* keys it queries on each phase
+/// pass — Esc/Tab/BackTab/Up/Down are queried on capture, Enter on
+/// bubble — so no per-entry phase tag is required.
+fn register_compose_form(reg: &mut BindingRegistry) {
+    let scope = oxpath!("settings", "_compose_form");
+
+    // Capture phase: lifecycle keys the form claims before the leaf is
+    // consulted.
+    bind(
+        reg,
+        Some(scope.clone()),
+        no_mods(),
+        KeyCodeRepr::Esc,
+        "accounts.compose.cancel",
+    );
+    // focus_next: Tab / Down. The command lands in T11; the binding is
+    // wired now so the three-phase dispatch shape is observable on
+    // arrival.
+    for key in [KeyCodeRepr::Tab, KeyCodeRepr::Down] {
+        bind(
+            reg,
+            Some(scope.clone()),
+            no_mods(),
+            key,
+            "accounts.compose.focus_next",
+        );
     }
+    // focus_prev: Shift+Tab (terminals emit `BackTab`) / Up.
+    bind(
+        reg,
+        Some(scope.clone()),
+        no_mods(),
+        KeyCodeRepr::BackTab,
+        "accounts.compose.focus_prev",
+    );
+    bind(
+        reg,
+        Some(scope.clone()),
+        no_mods(),
+        KeyCodeRepr::Up,
+        "accounts.compose.focus_prev",
+    );
+
+    // Bubble phase: caught only if the leaf didn't claim Enter at
+    // target. (No leaf does today; a future multiline text field
+    // could.)
+    bind(
+        reg,
+        Some(scope),
+        no_mods(),
+        KeyCodeRepr::Enter,
+        "accounts.compose.commit",
+    );
+}
+
+/// Inner/leaf scope for compose form fields of kind `Text` (Name /
+/// Endpoint / Key). Target-phase only: printable ASCII goes to
+/// insert_char, Backspace pops the focused field's buffer. Uppercase
+/// letters bind with `shift_only()` so the encode/parse round-trip
+/// lines up with the input store (mirrors `register_edit_mode`).
+fn register_compose_field_text(reg: &mut BindingRegistry) {
+    let scope = oxpath!("settings", "_compose_field_text");
 
     for byte in 0x20u8..=0x7E {
         let ch = byte as char;
@@ -399,25 +458,31 @@ fn register_compose_new_account(reg: &mut BindingRegistry) {
     }
     bind(
         reg,
-        Some(scope.clone()),
+        Some(scope),
         no_mods(),
         KeyCodeRepr::Backspace,
         "accounts.compose.delete_back",
     );
-    bind(
-        reg,
-        Some(scope.clone()),
-        no_mods(),
-        KeyCodeRepr::Enter,
-        "accounts.compose.commit",
-    );
-    bind(
-        reg,
-        Some(scope),
-        no_mods(),
-        KeyCodeRepr::Esc,
-        "accounts.compose.cancel",
-    );
+}
+
+/// Inner/leaf scope for compose form fields of kind `Selector`
+/// (Protocol / Auth). Target-phase only: h / Left cycle back, l /
+/// Right cycle forward. Selector fields don't consume typed chars, so
+/// no printable-ASCII bindings live here — when the user types `h`
+/// while focused on a selector, the dispatcher routes the keystroke
+/// through this scope's `Char('h')` binding rather than the text
+/// scope's insert_char.
+fn register_compose_field_selector(reg: &mut BindingRegistry) {
+    let scope = oxpath!("settings", "_compose_field_selector");
+
+    for (key, id) in [
+        (KeyCodeRepr::Char('h'), "accounts.compose.cycle_back"),
+        (KeyCodeRepr::Left, "accounts.compose.cycle_back"),
+        (KeyCodeRepr::Char('l'), "accounts.compose.cycle_forward"),
+        (KeyCodeRepr::Right, "accounts.compose.cycle_forward"),
+    ] {
+        bind(reg, Some(scope.clone()), no_mods(), key, id);
+    }
 }
 
 /// Register the manual-model entry mode's bindings at the synthetic
@@ -784,17 +849,18 @@ mod tests {
         // registered binding with the same scope+key wins. Anything
         // unexpected here means a registration ordering bug.
         //
-        // Two known shadow shapes are intentional:
+        // One known shadow shape is intentional:
         //   - `field.insert`: the inline-edit text helper blankets
         //     printable ASCII, then per-row keys (e.g. `t` → `account.test`)
         //     are registered earlier under the same scope to override.
-        //   - `accounts.compose.insert_char`: the compose-mode text helper
-        //     does the same; h / l are registered earlier as cycle
-        //     bindings so they cycle selectors instead of typing.
+        //
+        // Compose-mode no longer shadows within a single scope: the
+        // h / l selector bindings live in `_compose_field_selector`
+        // while the printable-ASCII insert_char bindings live in
+        // `_compose_field_text`, so they never share a key+scope.
         for (entry, winner) in &shadowed {
             let id = &entry.command_id.0;
-            let is_known_text_helper =
-                id == "field.insert" || id == "accounts.compose.insert_char";
+            let is_known_text_helper = id == "field.insert";
             assert!(
                 is_known_text_helper,
                 "unexpected shadowing: {entry:?} shadowed by {winner:?}"

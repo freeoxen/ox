@@ -13,11 +13,14 @@
 
 use structfs_core_store::{Path, Reader};
 
+use ox_types::key_chord::KeyCodeRepr;
+use ox_types::settings::AccountField;
 use ox_types::subscription::Write;
-use ox_types::{KeyChord, Mode, Screen};
+use ox_types::{CommandId, KeyChord, Mode, Screen};
 
 use super::binding_registry::BindingRegistry;
 use super::command_registry::{CommandCtx, CommandRegistry};
+use super::commands::account_model::{FieldKind, field_kind};
 use super::registry::RendererRegistry;
 
 /// Resolve `(screen, cursor, mode, key)` to a sequence of writes by
@@ -60,10 +63,18 @@ pub fn dispatch_settings_key(
     //      land before the old one retires.
     //
     //   3. Compose mode — when `ui/settings/new_account/active` is
-    //      `true`, the user is composing a new connection. Bindings
-    //      live at `Exact(settings/_compose_new_account)` and capture
-    //      printable / Backspace / Enter / Esc / Tab / h / l. The
-    //      explicit boolean discriminator is single-purpose: it
+    //      `true`, the user is composing a new connection. The compose
+    //      form is a compound widget: lifecycle keys (Esc, Tab,
+    //      Shift+Tab, Up, Down, Enter) belong to the form regardless
+    //      of focus, while focus-kind-specific keys (printable ASCII
+    //      for Text fields; h / l / Left / Right for Selector fields)
+    //      belong to the focused leaf. To mirror DOM event-flow shape,
+    //      dispatch walks the form + field scopes in three phases —
+    //      capture (form lifecycle keys), target (leaf), bubble
+    //      (form Enter) — implemented inline below. See
+    //      `docs/ui_framework/architecture.md` "Hierarchical dispatch".
+    //
+    //      The explicit boolean discriminator is single-purpose: it
     //      doesn't entangle with the per-field draft values
     //      (name/provider/...) the way the legacy `buffer` Option
     //      did, so a half-typed field can't accidentally drop us out
@@ -92,7 +103,6 @@ pub fn dispatch_settings_key(
     let manual_model_active = read_manual_model_active(snapshot);
     let manual_model_scope = ox_path::oxpath!("settings", "_manual_model");
     let compose_active = read_compose_active(snapshot);
-    let compose_scope = ox_path::oxpath!("settings", "_compose_new_account");
     let edit_mode_active = read_edit_mode(snapshot);
     let edit_scope = ox_path::oxpath!("settings", "_edit_mode");
     let cmd_id = if pending_delete_active {
@@ -109,7 +119,7 @@ pub fn dispatch_settings_key(
     })
     .or_else(|| {
         if compose_active {
-            bindings.lookup(screen, &compose_scope, mode, key)
+            lookup_compose(bindings, screen, mode, key, snapshot)
         } else {
             None
         }
@@ -166,6 +176,109 @@ fn read_edit_mode(snapshot: &mut dyn Reader) -> bool {
             _ => None,
         })
         .unwrap_or(false)
+}
+
+/// Hierarchical compose-mode dispatch: walk the form + field synthetic
+/// scopes in three phases (capture → target → bubble) and return the
+/// first matching `CommandId`.
+///
+/// Pattern (b) from the T10b plan: a single `BindingRegistry` holds
+/// all bindings; this helper queries the *right scope* per phase based
+/// on the keystroke's role:
+///
+/// - **Capture**: lifecycle keys the form claims regardless of focus
+///   (Esc, Tab, BackTab, Up, Down). Looked up under
+///   `settings/_compose_form`.
+/// - **Target**: focus-kind-specific keys the leaf claims. The leaf
+///   scope is `settings/_compose_field_text` when the focused field is
+///   a Text variant (Name / Endpoint / Key) or
+///   `settings/_compose_field_selector` when it's a Selector variant
+///   (Protocol / Auth). The dispatcher picks the leaf scope by reading
+///   `ui/settings/new_account/focused_field` and consulting
+///   `field_kind`.
+/// - **Bubble**: keys the leaf didn't claim, caught by the form
+///   (Enter). Looked up under `settings/_compose_form` again.
+///
+/// `BindingEntry` has no `phase` field today; phase classification is
+/// compose-pass-local rather than registry-wide. Generalizing into the
+/// `BindingEntry` shape is convergence work tracked separately.
+fn lookup_compose<'a>(
+    bindings: &'a BindingRegistry,
+    screen: Screen,
+    mode: Option<Mode>,
+    key: &KeyChord,
+    snapshot: &mut dyn Reader,
+) -> Option<&'a CommandId> {
+    let form = ox_path::oxpath!("settings", "_compose_form");
+    let field_text = ox_path::oxpath!("settings", "_compose_field_text");
+    let field_selector = ox_path::oxpath!("settings", "_compose_field_selector");
+    let leaf = match field_kind(read_focused_compose_field(snapshot)) {
+        FieldKind::Text => &field_text,
+        FieldKind::Selector => &field_selector,
+    };
+    // Phase 1 — Capture: lifecycle keys queried on the form scope only.
+    if is_capture_key(&key.code) {
+        if let Some(hit) = bindings.lookup(screen, &form, mode, key) {
+            return Some(hit);
+        }
+    }
+    // Phase 2 — Target: leaf scope only, for any non-capture key.
+    if !is_capture_key(&key.code) {
+        if let Some(hit) = bindings.lookup(screen, leaf, mode, key) {
+            return Some(hit);
+        }
+    }
+    // Phase 3 — Bubble: bubble keys queried on the form scope, only if
+    // the leaf didn't claim them.
+    if is_bubble_key(&key.code) {
+        if let Some(hit) = bindings.lookup(screen, &form, mode, key) {
+            return Some(hit);
+        }
+    }
+    None
+}
+
+/// Capture-phase keys: lifecycle controls the form owns regardless of
+/// which field is focused.
+fn is_capture_key(code: &KeyCodeRepr) -> bool {
+    matches!(
+        code,
+        KeyCodeRepr::Esc
+            | KeyCodeRepr::Tab
+            | KeyCodeRepr::BackTab
+            | KeyCodeRepr::Up
+            | KeyCodeRepr::Down,
+    )
+}
+
+/// Bubble-phase keys: keys the form claims only after the leaf has had
+/// a chance to consume them. Day-one this is just Enter (compose
+/// commit). A future multiline text leaf could bind Enter at target
+/// (newline insert), in which case the leaf lookup runs first and
+/// shadows this phase.
+fn is_bubble_key(code: &KeyCodeRepr) -> bool {
+    matches!(code, KeyCodeRepr::Enter)
+}
+
+/// Read `ui/settings/new_account/focused_field` as an `AccountField`,
+/// defaulting to `Name` when missing or untyped. Mirrors the helper of
+/// the same purpose in `commands/account_model.rs` but inlined here so
+/// the dispatcher doesn't have to import a private snapshot reader.
+fn read_focused_compose_field(snapshot: &mut dyn Reader) -> AccountField {
+    use ox_path::oxpath;
+    let record = match snapshot
+        .read(&oxpath!("ui", "settings", "new_account", "focused_field"))
+        .ok()
+        .flatten()
+    {
+        Some(r) => r,
+        None => return AccountField::Name,
+    };
+    let value = match record.as_value() {
+        Some(v) => v.clone(),
+        None => return AccountField::Name,
+    };
+    structfs_serde_store::from_value::<AccountField>(value).unwrap_or(AccountField::Name)
 }
 
 /// Read the compose-mode discriminator at
@@ -446,9 +559,12 @@ mod tests {
         cmds.register(Box::new(WriteSentinel::new()));
 
         let mut bindings = BindingRegistry::new();
+        // `'a'` is a target-phase key on a text field; bind it under the
+        // text-field leaf scope so the dispatcher's three-phase walk
+        // picks it up at target.
         bindings.register(BindingEntry {
             screen: Screen::Settings,
-            scope: ox_types::BindingScope::Exact(oxpath!("settings", "_compose_new_account")),
+            scope: ox_types::BindingScope::Exact(oxpath!("settings", "_compose_field_text")),
             mode: None,
             key: key_char('a'),
             command_id: cmd_id("test.sentinel"),
@@ -499,11 +615,11 @@ mod tests {
         cmds.register(Box::new(WriteSentinel::new()));
 
         let mut bindings = BindingRegistry::new();
-        // Bind ONLY at the compose scope — should not match because
-        // `active` is unset (no fallthrough scope picks 'a' up).
+        // Bind ONLY at the compose-field scope — should not match
+        // because `active` is unset (no fallthrough scope picks 'a' up).
         bindings.register(BindingEntry {
             screen: Screen::Settings,
-            scope: ox_types::BindingScope::Exact(oxpath!("settings", "_compose_new_account")),
+            scope: ox_types::BindingScope::Exact(oxpath!("settings", "_compose_field_text")),
             mode: None,
             key: key_char('a'),
             command_id: cmd_id("test.sentinel"),
@@ -537,7 +653,7 @@ mod tests {
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
             screen: Screen::Settings,
-            scope: ox_types::BindingScope::Exact(oxpath!("settings", "_compose_new_account")),
+            scope: ox_types::BindingScope::Exact(oxpath!("settings", "_compose_field_text")),
             mode: None,
             key: key_char('a'),
             command_id: cmd_id("test.sentinel"),

@@ -171,10 +171,13 @@ command! {
     run: |snap, _ctx| accounts_compose_open(snap),
 }
 
-// Compose-mode commands. The dispatcher routes printable / Backspace /
-// Enter / Esc to these while `ui/settings/new_account/buffer` is `Some`,
-// via the synthetic `settings/_compose_new_account` binding scope.
-// The buffer is the single source of truth for the in-flight name.
+// Compose-mode commands. While `ui/settings/new_account/active` is
+// `true` the dispatcher walks the synthetic compose scopes in three
+// phases (capture/target/bubble): the form scope
+// `settings/_compose_form` owns lifecycle keys (Esc/Tab/.../Enter) and
+// the per-kind field scopes (`_compose_field_text`,
+// `_compose_field_selector`) own the leaf bindings the focused field
+// type cares about.
 
 command! {
     struct_name: AccountsComposeInsertChar,
@@ -2358,11 +2361,106 @@ mod tests {
         assert_eq!(written, Some(AuthScheme::ALL[0].clone()));
     }
 
+    // -- compose hierarchical dispatch (capture / target / bubble) --------------
+    //
+    // These tests pin the user-visible behavior of the three-phase
+    // compose dispatcher: `h` / `l` are inserted as literal characters
+    // when a text field is focused (target-phase Text binding) and
+    // cycle the selector when a selector field is focused (target-phase
+    // Selector binding). `Esc` cancels regardless of focused field
+    // (capture-phase form binding).
+    //
+    // `simulate_compose_keystroke` wires the production binding +
+    // command registries (`bindings::register` / `commands::register_all`)
+    // against `dispatch_settings_key`, so any binding-side regression
+    // shows up directly.
+    fn simulate_compose_keystroke(snap: &mut SettingsSnapshot, code: KeyCodeRepr) -> Vec<Write> {
+        let mut cmds = CommandRegistry::new();
+        crate::settings::commands::register_all(&mut cmds);
+        let mut bindings = crate::settings::binding_registry::BindingRegistry::new();
+        crate::settings::bindings::register(&mut bindings);
+        let renderers = RendererRegistry::new();
+        // Match terminal behavior: uppercase ASCII letters arrive with
+        // the shift modifier set; other keys arrive with no modifiers.
+        let modifiers = match code {
+            KeyCodeRepr::Char(c) if c.is_ascii_uppercase() => KeyModifierSet {
+                shift: true,
+                ..KeyModifierSet::default()
+            },
+            _ => KeyModifierSet::default(),
+        };
+        let chord = KeyChord { modifiers, code };
+        crate::settings::dispatch::dispatch_settings_key(
+            snap,
+            Screen::Settings,
+            &oxpath!("settings", "accounts"),
+            None,
+            &chord,
+            &cmds,
+            &bindings,
+            &renderers,
+        )
+    }
+
     #[test]
-    fn cycle_noop_when_focused_on_text_field() {
-        let mut snap = test_snapshot_with_compose_state_focus("name");
-        assert!(run_cmd(&AccountsComposeCycleForward::new(), &mut snap).is_empty());
-        assert!(run_cmd(&AccountsComposeCycleBack::new(), &mut snap).is_empty());
+    fn h_inserted_when_text_field_focused() {
+        let mut snap = test_snapshot_with_compose_state("", "name");
+        let writes = simulate_compose_keystroke(&mut snap, KeyCodeRepr::Char('h'));
+        // Target-phase: the leaf Text binding for `h` is insert_char,
+        // not cycle_back. The char lands in the Name buffer.
+        assert_eq!(
+            writes_value(&writes, "ui/settings/new_account/name"),
+            Some(Value::String("h".into())),
+        );
+    }
+
+    #[test]
+    fn h_cycles_back_when_selector_focused() {
+        let mut snap = test_snapshot_with_compose_protocol(PROTOCOL_OPTIONS[1]);
+        let writes = simulate_compose_keystroke(&mut snap, KeyCodeRepr::Char('h'));
+        assert_eq!(
+            writes_value(&writes, "ui/settings/new_account/protocol"),
+            Some(Value::String(PROTOCOL_OPTIONS[0].into())),
+        );
+    }
+
+    #[test]
+    fn l_inserted_when_text_field_focused() {
+        let mut snap = test_snapshot_with_compose_state("", "name");
+        let writes = simulate_compose_keystroke(&mut snap, KeyCodeRepr::Char('l'));
+        assert_eq!(
+            writes_value(&writes, "ui/settings/new_account/name"),
+            Some(Value::String("l".into())),
+        );
+    }
+
+    #[test]
+    fn l_cycles_forward_when_selector_focused() {
+        let mut snap = test_snapshot_with_compose_protocol(PROTOCOL_OPTIONS[0]);
+        let writes = simulate_compose_keystroke(&mut snap, KeyCodeRepr::Char('l'));
+        assert_eq!(
+            writes_value(&writes, "ui/settings/new_account/protocol"),
+            Some(Value::String(PROTOCOL_OPTIONS[1].into())),
+        );
+    }
+
+    #[test]
+    fn esc_cancels_regardless_of_focused_field() {
+        // Esc is form-scope capture: must fire even when focused on a
+        // text field that could theoretically have bound Esc at target.
+        // Today no field binds Esc; this test pins the contract.
+        for field in ["name", "protocol", "endpoint", "auth", "key"] {
+            let mut snap = test_snapshot_with_compose_state_focus(field);
+            let writes = simulate_compose_keystroke(&mut snap, KeyCodeRepr::Esc);
+            // Single Null write at the new_account root (cancel command).
+            assert_eq!(
+                writes.len(),
+                1,
+                "field {field}: expected one write, got {writes:?}",
+            );
+            assert_eq!(writes[0].path, oxpath!("ui", "settings", "new_account"));
+            assert!(matches!(&writes[0].record, Record::Parsed(Value::Null)));
+        }
     }
 
     #[test]
