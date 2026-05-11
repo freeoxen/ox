@@ -2167,7 +2167,7 @@ mod tests {
         let mut snap = test_snapshot_with_compose_state("partial", "name");
         let writes = run_cmd(&AccountsComposeCancel::new(), &mut snap);
 
-        // Single Null write to the subtree root; Phase-8 cascade clears children.
+        // Single Null write to the subtree root; the StructFS Null-delete cascade clears children.
         assert_eq!(writes.len(), 1);
         assert_eq!(writes[0].path, oxpath!("ui", "settings", "new_account"));
         assert!(matches!(&writes[0].record, Record::Parsed(Value::Null)));
