@@ -29,6 +29,53 @@ use super::command;
 use super::navigation::path_to_value;
 
 // ---------------------------------------------------------------------------
+// Per-field metadata: label, kind, draft-state subpath, and canonical order.
+// Exhaustive matches over AccountField — adding a variant must fail compile
+// here until every helper is updated.
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FieldKind {
+    Text,
+    Selector,
+}
+
+pub(crate) fn field_label(f: AccountField) -> &'static str {
+    match f {
+        AccountField::Name => "Name",
+        AccountField::Protocol => "Protocol",
+        AccountField::Endpoint => "Endpoint",
+        AccountField::Auth => "Auth",
+        AccountField::Key => "Key",
+    }
+}
+
+pub(crate) fn field_kind(f: AccountField) -> FieldKind {
+    match f {
+        AccountField::Name | AccountField::Endpoint | AccountField::Key => FieldKind::Text,
+        AccountField::Protocol | AccountField::Auth => FieldKind::Selector,
+    }
+}
+
+pub(crate) fn field_state_subpath(f: AccountField) -> &'static str {
+    match f {
+        AccountField::Name => "name",
+        AccountField::Protocol => "protocol",
+        AccountField::Endpoint => "endpoint",
+        AccountField::Auth => "auth",
+        AccountField::Key => "key",
+    }
+}
+
+pub(crate) const FIELD_ORDER: [AccountField; 5] = [
+    AccountField::Name,
+    AccountField::Protocol,
+    AccountField::Endpoint,
+    AccountField::Auth,
+    AccountField::Key,
+];
+
+// ---------------------------------------------------------------------------
 // Cursor-shuffle commands (overlays)
 // ---------------------------------------------------------------------------
 
@@ -2826,5 +2873,52 @@ mod tests {
         );
         let writes = run_cmd(&ModelsManualDeleteBack::new(), &mut snap);
         assert!(writes.is_empty());
+    }
+
+    #[test]
+    fn field_label_matches_variant() {
+        use ox_types::settings::AccountField;
+        assert_eq!(field_label(AccountField::Name), "Name");
+        assert_eq!(field_label(AccountField::Protocol), "Protocol");
+        assert_eq!(field_label(AccountField::Endpoint), "Endpoint");
+        assert_eq!(field_label(AccountField::Auth), "Auth");
+        assert_eq!(field_label(AccountField::Key), "Key");
+    }
+
+    #[test]
+    fn field_kind_separates_text_from_selector() {
+        use ox_types::settings::AccountField;
+        assert_eq!(field_kind(AccountField::Name), FieldKind::Text);
+        assert_eq!(field_kind(AccountField::Endpoint), FieldKind::Text);
+        assert_eq!(field_kind(AccountField::Key), FieldKind::Text);
+        assert_eq!(field_kind(AccountField::Protocol), FieldKind::Selector);
+        assert_eq!(field_kind(AccountField::Auth), FieldKind::Selector);
+    }
+
+    #[test]
+    fn field_state_subpath_matches_spec() {
+        use ox_types::settings::AccountField;
+        assert_eq!(field_state_subpath(AccountField::Name), "name");
+        assert_eq!(field_state_subpath(AccountField::Protocol), "protocol");
+        assert_eq!(field_state_subpath(AccountField::Endpoint), "endpoint");
+        assert_eq!(field_state_subpath(AccountField::Auth), "auth");
+        assert_eq!(field_state_subpath(AccountField::Key), "key");
+    }
+
+    #[test]
+    fn field_order_lists_every_variant_exactly_once() {
+        use std::collections::HashSet;
+        use ox_types::settings::AccountField;
+        let seen: HashSet<_> = FIELD_ORDER.iter().copied().collect();
+        assert_eq!(seen.len(), FIELD_ORDER.len(), "FIELD_ORDER has duplicates");
+        for v in [
+            AccountField::Name,
+            AccountField::Protocol,
+            AccountField::Endpoint,
+            AccountField::Auth,
+            AccountField::Key,
+        ] {
+            assert!(seen.contains(&v), "FIELD_ORDER missing {v:?}");
+        }
     }
 }
