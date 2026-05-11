@@ -712,15 +712,21 @@ fn recompute_errors_writes(
 }
 
 fn accounts_compose_delete_back(data: &mut dyn Reader) -> Vec<Write> {
-    let mut current: String =
-        read_typed(data, &oxpath!("ui", "settings", "new_account", "buffer")).unwrap_or_default();
-    if current.pop().is_none() {
+    let focused = read_focused_field(data);
+    if field_kind(focused) != FieldKind::Text {
         return Vec::new();
     }
-    vec![Write {
-        path: oxpath!("ui", "settings", "new_account", "buffer"),
-        record: Record::parsed(Value::String(current)),
-    }]
+    let path = field_state_path(focused);
+    let mut buf: String = read_typed(data, &path).unwrap_or_default();
+    if buf.pop().is_none() {
+        return Vec::new();
+    }
+
+    let writes = vec![Write {
+        path: path.clone(),
+        record: Record::parsed(Value::String(buf.clone())),
+    }];
+    recompute_errors_writes(data, focused, Some(&buf), writes)
 }
 
 fn accounts_compose_commit(data: &mut dyn Reader) -> Vec<Write> {
@@ -2120,31 +2126,36 @@ mod tests {
     }
 
     #[test]
-    fn accounts_compose_delete_back_pops_buffer() {
-        let mut snap = SettingsSnapshot::empty();
-        snap.insert(
-            &oxpath!("ui", "settings", "new_account", "buffer"),
-            Value::String("alpha".into()),
-        );
+    fn compose_delete_back_pops_focused_text_field() {
+        let mut snap = test_snapshot_with_compose_state("myacc", "name");
         let writes = run_cmd(&AccountsComposeDeleteBack::new(), &mut snap);
-        assert_eq!(writes.len(), 1);
         assert_eq!(
-            writes[0].path,
-            oxpath!("ui", "settings", "new_account", "buffer")
+            writes_value(&writes, "ui/settings/new_account/name"),
+            Some(Value::String("myac".into())),
         );
-        match &writes[0].record {
-            Record::Parsed(Value::String(s)) => assert_eq!(s, "alph"),
-            other => panic!("unexpected: {other:?}"),
-        }
+        // Errors recomputed after popping.
+        assert!(
+            writes_value(&writes, "ui/settings/new_account/errors").is_some(),
+            "errors must be recomputed after delete_back"
+        );
+        // Legacy single-field buffer must NOT be written.
+        assert!(
+            writes_value(&writes, "ui/settings/new_account/buffer").is_none(),
+            "legacy buffer must not be written"
+        );
     }
 
     #[test]
-    fn accounts_compose_delete_back_on_empty_is_no_op() {
-        let mut snap = SettingsSnapshot::empty();
-        snap.insert(
-            &oxpath!("ui", "settings", "new_account", "buffer"),
-            Value::String(String::new()),
-        );
+    fn compose_delete_back_on_empty_is_noop() {
+        let mut snap = test_snapshot_with_compose_state("", "name");
+        let writes = run_cmd(&AccountsComposeDeleteBack::new(), &mut snap);
+        // Empty buffer: nothing to pop, no writes.
+        assert!(writes.is_empty());
+    }
+
+    #[test]
+    fn compose_delete_back_noop_on_selector_focus() {
+        let mut snap = test_snapshot_with_compose_state_focus("protocol");
         let writes = run_cmd(&AccountsComposeDeleteBack::new(), &mut snap);
         assert!(writes.is_empty());
     }
