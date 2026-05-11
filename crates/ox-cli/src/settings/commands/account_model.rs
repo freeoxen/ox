@@ -615,6 +615,11 @@ fn accounts_compose_insert_char(
     ctx: &super::super::command_registry::CommandCtx<'_>,
 ) -> Vec<Write> {
     use ox_types::key_chord::KeyCodeRepr;
+
+    let focused = read_focused_field(data);
+    if field_kind(focused) != FieldKind::Text {
+        return Vec::new();
+    }
     let chord = match ctx.last_keystroke.as_ref() {
         Some(c) => c,
         None => return Vec::new(),
@@ -623,14 +628,87 @@ fn accounts_compose_insert_char(
         KeyCodeRepr::Char(c) => c,
         _ => return Vec::new(),
     };
-    let current: String =
-        read_typed(data, &oxpath!("ui", "settings", "new_account", "buffer")).unwrap_or_default();
-    let mut next = current;
-    next.push(ch);
-    vec![Write {
-        path: oxpath!("ui", "settings", "new_account", "buffer"),
-        record: Record::parsed(Value::String(next)),
-    }]
+    let path = field_state_path(focused);
+    let mut buf: String = read_typed(data, &path).unwrap_or_default();
+    buf.push(ch);
+
+    let writes = vec![Write {
+        path: path.clone(),
+        record: Record::parsed(Value::String(buf.clone())),
+    }];
+    recompute_errors_writes(data, focused, Some(&buf), writes)
+}
+
+/// Resolve the full snapshot path of the given field's draft buffer
+/// (`ui/settings/new_account/<subpath>`). Total: every variant of
+/// `AccountField` maps to a fixed identifier, so the `PathComponent`
+/// validation cannot fail.
+fn field_state_path(f: AccountField) -> Path {
+    let comp = PathComponent::try_new(field_state_subpath(f))
+        .expect("field_state_subpath returns valid identifiers");
+    oxpath!("ui", "settings", "new_account", comp)
+}
+
+/// Read the currently focused compose field from the snapshot. Defaults
+/// to `Name` if the path is missing or unparseable — totality matters
+/// more than ceremony at this read site because the dispatcher only
+/// routes here while compose mode is active, and `open` always seeds
+/// `focused_field`.
+fn read_focused_field(data: &mut dyn Reader) -> AccountField {
+    read_typed::<AccountField>(
+        data,
+        &oxpath!("ui", "settings", "new_account", "focused_field"),
+    )
+    .unwrap_or(AccountField::Name)
+}
+
+/// Recompute the validation-errors record from the current draft, append
+/// the resulting `Write` to `writes`, and return the augmented vec.
+///
+/// `override_field` + `override_value` let the caller substitute the
+/// just-written value of one text field without round-tripping through
+/// the snapshot — keystroke handlers can show their effect on errors
+/// before the snapshot has the new buffer applied. Pass
+/// `override_value = None` (or a non-text `override_field`) to read all
+/// fields from the snapshot.
+fn recompute_errors_writes(
+    data: &mut dyn Reader,
+    override_field: AccountField,
+    override_value: Option<&str>,
+    mut writes: Vec<Write>,
+) -> Vec<Write> {
+    use crate::settings::renderers::util::child_names_under;
+
+    let read_text = |data: &mut dyn Reader, f: AccountField| -> String {
+        if f == override_field {
+            if let Some(v) = override_value {
+                return v.to_string();
+            }
+        }
+        read_typed::<String>(data, &field_state_path(f)).unwrap_or_default()
+    };
+    let name = read_text(data, AccountField::Name);
+    let endpoint = read_text(data, AccountField::Endpoint);
+    let key = read_text(data, AccountField::Key);
+    let protocol: Option<String> =
+        read_typed(data, &oxpath!("ui", "settings", "new_account", "protocol"));
+    let auth: Option<AuthScheme> =
+        read_typed(data, &oxpath!("ui", "settings", "new_account", "auth"));
+    let existing = child_names_under(data, "config/gate/accounts");
+
+    let errors = validate_compose_draft(
+        &name,
+        protocol.as_deref(),
+        &endpoint,
+        auth.as_ref(),
+        &key,
+        &existing,
+    );
+    writes.push(Write {
+        path: oxpath!("ui", "settings", "new_account", "errors"),
+        record: Record::parsed(to_value(&errors).unwrap()),
+    });
+    writes
 }
 
 fn accounts_compose_delete_back(data: &mut dyn Reader) -> Vec<Write> {
@@ -1926,32 +2004,119 @@ mod tests {
         assert_eq!(cfg.provider, "anthropic");
     }
 
-    #[test]
-    fn accounts_compose_insert_char_appends_to_buffer() {
+    /// Build a snapshot in compose mode with the focused text field
+    /// pre-populated with `name_value`, and the focus set to
+    /// `focused_field_name` (the snake_case `AccountField` discriminator).
+    /// All other compose-mode fields are initialized to their
+    /// open-state defaults (empty for text, Null for selectors).
+    fn test_snapshot_with_compose_state(
+        name_value: &str,
+        focused_field_name: &str,
+    ) -> SettingsSnapshot {
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
-            &oxpath!("ui", "settings", "new_account", "buffer"),
-            Value::String("alph".into()),
+            &oxpath!("ui", "settings", "new_account", "active"),
+            Value::Bool(true),
         );
-        // CommandCtx with last_keystroke = 'a'.
+        snap.insert(
+            &oxpath!("ui", "settings", "new_account", "focused_field"),
+            Value::String(focused_field_name.into()),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "new_account", "name"),
+            Value::String(name_value.into()),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "new_account", "protocol"),
+            Value::Null,
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "new_account", "endpoint"),
+            Value::String(String::new()),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "new_account", "auth"),
+            Value::Null,
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "new_account", "key"),
+            Value::String(String::new()),
+        );
+        snap
+    }
+
+    /// Build a snapshot in compose mode with focus set to `focused_field_name`
+    /// and all field buffers at their open-state defaults.
+    fn test_snapshot_with_compose_state_focus(focused_field_name: &str) -> SettingsSnapshot {
+        test_snapshot_with_compose_state("", focused_field_name)
+    }
+
+    /// Owned `CommandCtx` builder that carries a `Char` keystroke. The
+    /// returned tuple keeps the renderer registry alive for the borrow
+    /// duration of the context.
+    fn ctx_with_char(ch: char) -> (RendererRegistry, KeyChord) {
         let registry = RendererRegistry::new();
+        let chord = KeyChord {
+            modifiers: KeyModifierSet::default(),
+            code: KeyCodeRepr::Char(ch),
+        };
+        (registry, chord)
+    }
+
+    #[test]
+    fn compose_insert_char_appends_to_focused_text_field() {
+        let mut snap = test_snapshot_with_compose_state("my", "name");
+        let (registry, chord) = ctx_with_char('p');
         let ctx = CommandCtx {
             registry: &registry,
-            last_keystroke: Some(KeyChord {
-                modifiers: KeyModifierSet::default(),
-                code: KeyCodeRepr::Char('a'),
-            }),
+            last_keystroke: Some(chord),
         };
         let writes = AccountsComposeInsertChar::new().run(&mut snap, &ctx);
-        assert_eq!(writes.len(), 1);
+
         assert_eq!(
-            writes[0].path,
-            oxpath!("ui", "settings", "new_account", "buffer")
+            writes_value(&writes, "ui/settings/new_account/name"),
+            Some(Value::String("myp".into())),
         );
-        match &writes[0].record {
-            Record::Parsed(Value::String(s)) => assert_eq!(s, "alpha"),
-            other => panic!("unexpected: {other:?}"),
-        }
+        // Errors recomputed on every keystroke.
+        assert!(
+            writes_value(&writes, "ui/settings/new_account/errors").is_some(),
+            "errors must be recomputed per-keystroke"
+        );
+        // Legacy single-field buffer must NOT be written.
+        assert!(
+            writes_value(&writes, "ui/settings/new_account/buffer").is_none(),
+            "legacy buffer must not be written"
+        );
+    }
+
+    #[test]
+    fn compose_insert_char_noop_on_selector_focus() {
+        let mut snap = test_snapshot_with_compose_state_focus("protocol");
+        let (registry, chord) = ctx_with_char('p');
+        let ctx = CommandCtx {
+            registry: &registry,
+            last_keystroke: Some(chord),
+        };
+        let writes = AccountsComposeInsertChar::new().run(&mut snap, &ctx);
+        assert!(writes.is_empty(), "should be no-op on selector field");
+    }
+
+    #[test]
+    fn compose_insert_char_recomputes_errors_per_keystroke() {
+        let mut snap = test_snapshot_with_compose_state("", "name");
+        let (registry, chord) = ctx_with_char('f');
+        let ctx = CommandCtx {
+            registry: &registry,
+            last_keystroke: Some(chord),
+        };
+        let writes = AccountsComposeInsertChar::new().run(&mut snap, &ctx);
+
+        let errors_val = writes_value(&writes, "ui/settings/new_account/errors")
+            .expect("errors written");
+        let errors: ValidationErrors =
+            structfs_serde_store::from_value(errors_val).unwrap();
+        // After typing one valid char, name is no longer "required".
+        assert_eq!(errors.name, None);
     }
 
     #[test]
