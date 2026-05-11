@@ -14,7 +14,7 @@
 use ox_kernel::{AccountName, PathComponent};
 use ox_path::oxpath;
 use ox_types::Screen;
-use ox_types::settings::{AccountField, GlobalBanner, ModelField, ModelKey, ValidationErrors};
+use ox_types::settings::{AccountField, ModelField, ModelKey, ValidationErrors};
 use ox_types::subscription::Write;
 use structfs_core_store::{Path, Reader, Record, Value};
 use structfs_serde_store::to_value;
@@ -902,82 +902,154 @@ fn cycle_enum_options<T: Clone + PartialEq>(
     }
 }
 
+/// Materialize the compose draft into per-account config records.
+///
+/// Reads draft state from `ui/settings/new_account/*`, validates the full
+/// draft, and (only if validation passes) emits writes for:
+/// - `config/gate/accounts/<path_id>` — `AccountConfig` with `provider =
+///   path_id` and `display_name = Some(typed_name)`. Each new connection
+///   gets its own `path_id`, so two connections never share a provider
+///   record (the bug this commit fixes).
+/// - `config/gate/providers/<path_id>` — `ProviderConfig` carrying the
+///   draft's dialect/endpoint/auth.
+/// - `secret/keys/<path_id>` — `ApiKey`, only when the chosen auth
+///   `requires_key()`.
+/// - `ui/settings/focused` and `ui/settings/expanded` — focus + expand the
+///   new account row.
+/// - `ui/settings/new_account` ← `Null` — subtree cascade clears the draft
+///   in one write.
+///
+/// When validation fails the function returns `Vec::new()`: the commit is
+/// atomic from the user's perspective, so a partial draft never produces
+/// a partial record. The renderer already surfaces per-field error
+/// messages from the `errors` record kept current by every keystroke, so
+/// no banner is needed here.
+///
+/// `path_id = namecode::encode(display_name)` encodes the user-typed name
+/// into a valid XID identifier suitable as a path component. The encoding
+/// is idempotent on names that are already valid XIDs (e.g. `"personal"
+/// → "personal"`), so the common case adds no transformation; non-XID
+/// inputs (hyphens, spaces, unicode) are bootstring-encoded.
 fn accounts_compose_commit(data: &mut dyn Reader) -> Vec<Write> {
-    let buffer: String =
-        read_typed(data, &oxpath!("ui", "settings", "new_account", "buffer")).unwrap_or_default();
-    let trimmed = buffer.trim();
-    // Empty/whitespace: silent no-op so compose mode stays open.
-    if trimmed.is_empty() {
+    use crate::settings::renderers::util::child_names_under;
+    use ox_gate::ApiKey;
+    use std::collections::BTreeSet;
+
+    let display_name = read_typed::<String>(data, &field_state_path(AccountField::Name))
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let protocol: Option<String> =
+        read_typed(data, &field_state_path(AccountField::Protocol));
+    let endpoint = read_typed::<String>(data, &field_state_path(AccountField::Endpoint))
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let auth: Option<AuthScheme> = read_typed(data, &field_state_path(AccountField::Auth));
+    let key = read_typed::<String>(data, &field_state_path(AccountField::Key))
+        .unwrap_or_default();
+
+    let existing = child_names_under(data, "config/gate/accounts");
+    let errors = validate_compose_draft(
+        &display_name,
+        protocol.as_deref(),
+        &endpoint,
+        auth.as_ref(),
+        &key,
+        &existing,
+    );
+    if !errors.is_clean() {
         return Vec::new();
     }
-    let name = match AccountName::try_new(trimmed.to_string()) {
-        Ok(n) => n,
-        Err(_) => {
-            let banner = GlobalBanner::error(format!("Invalid account name: '{}'", trimmed));
-            return vec![Write {
-                path: oxpath!("ui", "global", "banner"),
-                record: Record::parsed(to_value(&banner).unwrap()),
-            }];
-        }
-    };
-    let comp = name.to_path_component();
 
-    let cfg = AccountConfig {
-        provider: "anthropic".to_string(),
-        ..Default::default()
+    // Safe: validation rejected `None` for both selectors above.
+    let protocol = protocol.expect("validated Some");
+    let auth = auth.expect("validated Some");
+
+    // Encode the typed display name into a valid XID path component.
+    // Idempotent on already-valid identifiers (`"personal" -> "personal"`),
+    // so the common ASCII case stays human-readable; non-XID input
+    // (hyphens, spaces, unicode) gets bootstring-encoded.
+    let path_id = namecode::encode(&display_name);
+    let path_component = PathComponent::try_new(&path_id)
+        .expect("namecode::encode produces a valid XID by construction");
+
+    let acct = AccountConfig {
+        provider: path_id.clone(),
+        display_name: Some(display_name.clone()),
     };
-    let new_account_row = oxpath!("settings", "accounts", comp.clone());
-    let mut expanded: Vec<String> =
-        read_typed(data, &oxpath!("ui", "settings", "expanded")).unwrap_or_default();
-    let accounts_key = "settings/accounts".to_string();
-    let new_row_key = format!("settings/accounts/{}", name);
-    if !expanded.iter().any(|s| s == &accounts_key) {
-        expanded.push(accounts_key);
+    let provider = ProviderConfig {
+        dialect: protocol.clone(),
+        endpoint: endpoint.clone(),
+        version: protocol_default_version(&protocol),
+        auth: Some(auth.clone()),
+    };
+
+    let mut writes = vec![
+        Write {
+            path: oxpath!("config", "gate", "accounts", path_component.clone()),
+            record: Record::parsed(to_value(&acct).unwrap()),
+        },
+        Write {
+            path: oxpath!("config", "gate", "providers", path_component.clone()),
+            record: Record::parsed(to_value(&provider).unwrap()),
+        },
+    ];
+
+    if auth.requires_key() {
+        // `ApiKey` is `#[serde(transparent)]` over the wrapped String, so
+        // this writes a plain `Value::String` at the secret path — same
+        // shape `current_api_key` reads back via `read_typed`.
+        writes.push(Write {
+            path: oxpath!("secret", "keys", path_component.clone()),
+            record: Record::parsed(to_value(&ApiKey::new(key.trim().to_string())).unwrap()),
+        });
     }
-    if !expanded.iter().any(|s| s == &new_row_key) {
-        expanded.push(new_row_key);
+
+    // Focus + expand the new account row. `expanded` is stored as a
+    // sorted set; using BTreeSet locally dedupes a re-expansion of an
+    // already-expanded section without an explicit `contains` walk.
+    let mut expanded: BTreeSet<String> =
+        read_typed::<Vec<String>>(data, &oxpath!("ui", "settings", "expanded"))
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+    expanded.insert("settings/accounts".to_string());
+    expanded.insert(format!("settings/accounts/{path_id}"));
+    let expanded_vec: Vec<String> = expanded.into_iter().collect();
+
+    writes.push(Write {
+        path: oxpath!("ui", "settings", "focused"),
+        record: Record::parsed(path_to_value(&oxpath!(
+            "settings",
+            "accounts",
+            path_component.clone()
+        ))),
+    });
+    writes.push(Write {
+        path: oxpath!("ui", "settings", "expanded"),
+        record: Record::parsed(to_value(&expanded_vec).unwrap()),
+    });
+
+    // Clear draft state via subtree Null-cascade — one write at the
+    // subtree root rather than per-field cleanup.
+    writes.push(Write {
+        path: oxpath!("ui", "settings", "new_account"),
+        record: Record::parsed(Value::Null),
+    });
+
+    writes
+}
+
+/// API-version header default for the given dialect. Matches the values
+/// the corresponding `ProviderConfig` constructors use (e.g.
+/// `ProviderConfig::anthropic()` carries `"2023-06-01"`); empty for
+/// dialects (OpenAI, custom) that don't pin a version header.
+fn protocol_default_version(protocol: &str) -> String {
+    match protocol {
+        "anthropic" => "2023-06-01".to_string(),
+        _ => String::new(),
     }
-
-    let acct_path = oxpath!("config", "gate", "accounts", comp);
-    let cfg_value = match to_value(&cfg) {
-        Ok(v) => v,
-        Err(_) => return Vec::new(),
-    };
-    let selected_value = match to_value(&Some(name.as_str().to_string())) {
-        Ok(v) => v,
-        Err(_) => return Vec::new(),
-    };
-    let expanded_value = match to_value(&expanded) {
-        Ok(v) => v,
-        Err(_) => return Vec::new(),
-    };
-
-    vec![
-        Write {
-            path: acct_path,
-            record: Record::parsed(cfg_value),
-        },
-        Write {
-            path: oxpath!("ui", "settings", "accounts", "selected"),
-            record: Record::parsed(selected_value),
-        },
-        Write {
-            path: oxpath!("ui", "settings", "cursor"),
-            record: Record::parsed(path_to_value(&oxpath!("settings", "index"))),
-        },
-        Write {
-            path: oxpath!("ui", "settings", "focused"),
-            record: Record::parsed(path_to_value(&new_account_row)),
-        },
-        Write {
-            path: oxpath!("ui", "settings", "expanded"),
-            record: Record::parsed(expanded_value),
-        },
-        Write {
-            path: oxpath!("ui", "settings", "new_account", "buffer"),
-            record: Record::parsed(Value::Null),
-        },
-    ]
 }
 
 // ---------------------------------------------------------------------------
@@ -2050,145 +2122,172 @@ mod tests {
     }
 
     // -- Compose-mode tests -----------------------------------------------------
+    //
+    // The legacy single-buffer commit tests were removed when commit
+    // grew its multi-field shape: validation now runs across the whole
+    // draft and a failing field is a silent no-op (the errors record is
+    // already current from the keystroke handler, so no banner write is
+    // needed). The replacement coverage below pins (a) the no-op contract
+    // when validation fails, (b) the happy path with an already-XID
+    // display name (the path_id equals the name), and (c) the encoding
+    // path for non-XID display names.
 
-    #[test]
-    fn accounts_compose_commit_writes_account_record_and_cascade() {
-        let mut snap = SettingsSnapshot::empty();
+    /// Build a snapshot in compose mode with every draft field set to a
+    /// concrete value. Mirrors `test_snapshot_with_compose_state` plus a
+    /// fully-typed protocol / endpoint / auth / key. Focus lands on the
+    /// last field, which doesn't matter for commit (commit reads each
+    /// field by name) but keeps the snapshot identical to one you'd get
+    /// by typing through the whole form.
+    fn test_snapshot_with_compose_full_draft(
+        name: &str,
+        protocol: &str,
+        endpoint: &str,
+        auth: AuthScheme,
+        key: &str,
+    ) -> SettingsSnapshot {
+        let mut snap = test_snapshot_with_compose_state(name, "key");
         snap.insert(
-            &oxpath!("ui", "settings", "new_account", "buffer"),
-            Value::String("alpha".into()),
+            &oxpath!("ui", "settings", "new_account", "protocol"),
+            Value::String(protocol.into()),
         );
-        let writes = run_cmd(&AccountsComposeCommit::new(), &mut snap);
-        let by_path: std::collections::BTreeMap<_, _> = writes
-            .iter()
-            .map(|w| (w.path.to_string(), w.record.clone()))
-            .collect();
-
-        // 1. Account record materialized at config/gate/accounts/alpha.
-        let acct = by_path
-            .get("config/gate/accounts/alpha")
-            .expect("account record write");
-        let cfg: AccountConfig = match acct {
-            Record::Parsed(v) => structfs_serde_store::from_value(v.clone()).unwrap(),
-            other => panic!("unexpected record: {other:?}"),
-        };
-        assert_eq!(cfg.provider, "anthropic");
-
-        // 2. Buffer cleared (Null write) — exits compose mode.
-        let buf = by_path
-            .get("ui/settings/new_account/buffer")
-            .expect("buffer cleared");
-        assert!(matches!(buf, Record::Parsed(Value::Null)));
-
-        // 3. Selection / cursor / focused / expanded all written.
-        assert!(by_path.contains_key("ui/settings/accounts/selected"));
-        assert!(by_path.contains_key("ui/settings/cursor"));
-        assert!(by_path.contains_key("ui/settings/focused"));
-        assert!(by_path.contains_key("ui/settings/expanded"));
-
-        // Expanded set contains both the section and the new account row.
-        let exp = by_path.get("ui/settings/expanded").unwrap();
-        let set: Vec<String> = match exp {
-            Record::Parsed(v) => structfs_serde_store::from_value(v.clone()).unwrap(),
-            other => panic!("unexpected: {other:?}"),
-        };
-        assert!(set.iter().any(|s| s == "settings/accounts"));
-        assert!(set.iter().any(|s| s == "settings/accounts/alpha"));
+        snap.insert(
+            &oxpath!("ui", "settings", "new_account", "endpoint"),
+            Value::String(endpoint.into()),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "new_account", "auth"),
+            to_value(&auth).unwrap(),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "new_account", "key"),
+            Value::String(key.into()),
+        );
+        snap
     }
 
     #[test]
-    fn accounts_compose_commit_with_empty_buffer_silent_no_op() {
-        let mut snap = SettingsSnapshot::empty();
-        snap.insert(
-            &oxpath!("ui", "settings", "new_account", "buffer"),
-            Value::String("   ".into()),
-        );
+    fn compose_commit_with_errors_is_noop() {
+        // Empty name → validation fails (name "required"); other fields
+        // also fail. The contract: commit produces zero writes — no
+        // partial record, no banner. The renderer surfaces errors via
+        // the live `errors` record that keystrokes maintain.
+        let mut snap = test_snapshot_with_compose_state("", "name");
         let writes = run_cmd(&AccountsComposeCommit::new(), &mut snap);
         assert!(
             writes.is_empty(),
-            "expected no writes for whitespace buffer; got {writes:?}"
+            "commit must no-op when errors present; got {writes:?}",
         );
     }
 
     #[test]
-    fn accounts_compose_commit_with_leading_underscore_writes_account_record() {
-        let mut snap = SettingsSnapshot::empty();
-        snap.insert(
-            &oxpath!("ui", "settings", "new_account", "buffer"),
-            Value::String("_personal".into()),
+    fn compose_commit_writes_per_account_provider_record_with_valid_xid_name() {
+        // "personal" is already a valid XID — namecode encodes it to
+        // itself, so the path_id equals the display name. This is the
+        // common case and pins that the encoding is idempotent on valid
+        // identifiers.
+        let mut snap = test_snapshot_with_compose_full_draft(
+            "personal",
+            "anthropic",
+            "https://api.example.com",
+            AuthScheme::XApiKey,
+            "sk-xxx",
         );
         let writes = run_cmd(&AccountsComposeCommit::new(), &mut snap);
-        let by_path: std::collections::BTreeMap<_, _> = writes
-            .iter()
-            .map(|w| (w.path.to_string(), w.record.clone()))
-            .collect();
 
-        let acct = by_path
-            .get("config/gate/accounts/_personal")
-            .expect("account record write at canonical _personal path");
-        let cfg: AccountConfig = match acct {
-            Record::Parsed(v) => structfs_serde_store::from_value(v.clone()).unwrap(),
-            other => panic!("unexpected: {other:?}"),
-        };
-        assert_eq!(cfg.provider, "anthropic");
+        // Account record at the per-account path.
+        let acct_val = writes_value(&writes, "config/gate/accounts/personal")
+            .expect("account record written");
+        let acct: AccountConfig =
+            structfs_serde_store::from_value(acct_val).expect("decode AccountConfig");
+        assert_eq!(acct.provider, "personal");
+        assert_eq!(acct.display_name.as_deref(), Some("personal"));
 
+        // Provider record at the SAME per-account name (NOT shared
+        // `anthropic`). This is the bug-fix invariant: distinct accounts
+        // get distinct provider records, named after the account.
+        let prov_val = writes_value(&writes, "config/gate/providers/personal")
+            .expect("provider record written");
+        let prov: ProviderConfig =
+            structfs_serde_store::from_value(prov_val).expect("decode ProviderConfig");
+        assert_eq!(prov.dialect, "anthropic");
+        assert_eq!(prov.endpoint, "https://api.example.com");
+        assert_eq!(prov.auth, Some(AuthScheme::XApiKey));
+
+        // The shared-anthropic provider record MUST NOT be touched.
         assert!(
-            !by_path.contains_key("ui/global/banner"),
-            "_-prefixed names must no longer emit a reservation banner"
+            writes_value(&writes, "config/gate/providers/anthropic").is_none(),
+            "compose commit must NOT touch the shared anthropic provider"
+        );
+
+        // API key written under the per-account name (x-api-key
+        // requires a key, so the key write is present).
+        let key_val = writes_value(&writes, "secret/keys/personal")
+            .expect("api key written for x-api-key auth");
+        assert_eq!(key_val, Value::String("sk-xxx".into()));
+
+        // Compose state cleared at the subtree root (cascade Null-write).
+        assert_eq!(
+            writes_value(&writes, "ui/settings/new_account"),
+            Some(Value::Null),
+            "draft state cleared by subtree cascade",
+        );
+
+        // Focus moves to the new account row (path-array form).
+        let focused_val = writes_value(&writes, "ui/settings/focused")
+            .expect("focused path written");
+        let focused_path = super::super::navigation::path_from_value(&focused_val)
+            .expect("focused value decodes as Path");
+        assert_eq!(
+            focused_path,
+            oxpath!("settings", "accounts", "personal"),
+            "focused row should be the new account",
         );
     }
 
     #[test]
-    fn accounts_compose_commit_with_invalid_name_emits_banner() {
-        let mut snap = SettingsSnapshot::empty();
-        snap.insert(
-            &oxpath!("ui", "settings", "new_account", "buffer"),
-            Value::String("bad-name".into()),
+    fn compose_commit_namecodes_non_xid_display_name() {
+        // "my-personal" is NOT a valid XID (hyphen); namecode encodes
+        // it. The on-disk records land at the encoded path component,
+        // but the user-visible display name preserves the original
+        // input via `AccountConfig.display_name`.
+        let mut snap = test_snapshot_with_compose_full_draft(
+            "my-personal",
+            "anthropic",
+            "https://api.example.com",
+            AuthScheme::XApiKey,
+            "sk-xxx",
         );
         let writes = run_cmd(&AccountsComposeCommit::new(), &mut snap);
-        assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "global", "banner"));
-        let banner: ox_types::settings::GlobalBanner = match &writes[0].record {
-            Record::Parsed(v) => structfs_serde_store::from_value(v.clone()).unwrap(),
-            other => panic!("unexpected: {other:?}"),
-        };
-        match banner {
-            ox_types::settings::GlobalBanner::Error { message, .. } => {
-                assert!(
-                    message.contains("Invalid"),
-                    "banner must mention invalidity; got {message:?}"
-                );
-                assert!(
-                    message.contains("bad-name"),
-                    "banner must mention the offending name; got {message:?}"
-                );
-            }
-            other => panic!("expected Error banner; got {other:?}"),
-        }
-    }
 
-    #[test]
-    fn accounts_compose_commit_with_interior_underscore_writes_account_record() {
-        // Interior underscores like `alpha_beta` are valid identifiers
-        // and commit normally.
-        let mut snap = SettingsSnapshot::empty();
-        snap.insert(
-            &oxpath!("ui", "settings", "new_account", "buffer"),
-            Value::String("alpha_beta".into()),
+        let path_id = namecode::encode("my-personal");
+        assert_ne!(
+            path_id, "my-personal",
+            "hyphen must force encoding; if namecode is idempotent here \
+             this test no longer exercises the encoding path"
         );
-        let writes = run_cmd(&AccountsComposeCommit::new(), &mut snap);
-        let by_path: std::collections::BTreeMap<_, _> = writes
-            .iter()
-            .map(|w| (w.path.to_string(), w.record.clone()))
-            .collect();
-        let acct = by_path
-            .get("config/gate/accounts/alpha_beta")
-            .expect("account record write");
-        let cfg: AccountConfig = match acct {
-            Record::Parsed(v) => structfs_serde_store::from_value(v.clone()).unwrap(),
-            other => panic!("unexpected: {other:?}"),
-        };
-        assert_eq!(cfg.provider, "anthropic");
+
+        let acct_path = format!("config/gate/accounts/{path_id}");
+        let acct_val = writes_value(&writes, &acct_path)
+            .expect("account record at encoded path");
+        let acct: AccountConfig =
+            structfs_serde_store::from_value(acct_val).expect("decode AccountConfig");
+        // provider points at the encoded path_id (so the provider
+        // record sits alongside the account record at the same name).
+        assert_eq!(acct.provider, path_id);
+        // display_name preserves the original Unicode-rich input.
+        assert_eq!(acct.display_name.as_deref(), Some("my-personal"));
+
+        let provider_path = format!("config/gate/providers/{path_id}");
+        assert!(
+            writes_value(&writes, &provider_path).is_some(),
+            "provider record written at encoded path {provider_path}",
+        );
+
+        let key_path = format!("secret/keys/{path_id}");
+        assert!(
+            writes_value(&writes, &key_path).is_some(),
+            "api key written at encoded path {key_path}",
+        );
     }
 
     /// Build a snapshot in compose mode with the focused text field
