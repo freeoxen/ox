@@ -11,10 +11,10 @@
 //! create / delete) are direct writes from the CLI; they don't need
 //! a subscription middle-layer.
 
-use ox_kernel::AccountName;
+use ox_kernel::{AccountName, PathComponent};
 use ox_path::oxpath;
 use ox_types::Screen;
-use ox_types::settings::{AccountField, GlobalBanner, ModelField, ModelKey};
+use ox_types::settings::{AccountField, GlobalBanner, ModelField, ModelKey, ValidationErrors};
 use ox_types::subscription::Write;
 use structfs_core_store::{Path, Reader, Record, Value};
 use structfs_serde_store::to_value;
@@ -83,6 +83,78 @@ pub(crate) fn focus_next(field: AccountField) -> AccountField {
 pub(crate) fn focus_prev(field: AccountField) -> AccountField {
     let idx = FIELD_ORDER.iter().position(|f| *f == field).expect("variant in FIELD_ORDER");
     FIELD_ORDER[(idx + FIELD_ORDER.len() - 1) % FIELD_ORDER.len()]
+}
+
+// ---------------------------------------------------------------------------
+// Per-field validators. Each is pure and total: returns `None` for a valid
+// input or `Some(message)` for the first rule that rejects it. Cross-field
+// rules (key required iff auth requires key) live inside the relevant
+// per-field validator, so the aggregator stays a simple struct-of-Option
+// build.
+// ---------------------------------------------------------------------------
+
+pub(crate) fn validate_compose_draft(
+    name: &str,
+    protocol: Option<&str>,
+    endpoint: &str,
+    auth: Option<&AuthScheme>,
+    key: &str,
+    existing_accounts: &[String],
+) -> ValidationErrors {
+    ValidationErrors {
+        name: validate_compose_name(name, existing_accounts),
+        protocol: validate_compose_protocol(protocol),
+        endpoint: validate_compose_endpoint(endpoint),
+        auth: validate_compose_auth(auth),
+        key: validate_compose_key(key, auth),
+    }
+}
+
+pub(crate) fn validate_compose_name(name: &str, existing: &[String]) -> Option<String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Some("required".into());
+    }
+    if PathComponent::try_new(trimmed).is_err() {
+        return Some(format!("'{trimmed}' is not a valid identifier"));
+    }
+    if existing.iter().any(|n| n == trimmed) {
+        return Some(format!("'{trimmed}' already exists"));
+    }
+    None
+}
+
+pub(crate) fn validate_compose_protocol(protocol: Option<&str>) -> Option<String> {
+    if protocol.is_none() {
+        Some("select a protocol".into())
+    } else {
+        None
+    }
+}
+
+pub(crate) fn validate_compose_endpoint(endpoint: &str) -> Option<String> {
+    if endpoint.trim().is_empty() {
+        Some("required".into())
+    } else {
+        None
+    }
+}
+
+pub(crate) fn validate_compose_auth(auth: Option<&AuthScheme>) -> Option<String> {
+    if auth.is_none() {
+        Some("select an auth scheme".into())
+    } else {
+        None
+    }
+}
+
+pub(crate) fn validate_compose_key(key: &str, auth: Option<&AuthScheme>) -> Option<String> {
+    match auth {
+        Some(scheme) if scheme.requires_key() && key.trim().is_empty() => {
+            Some("required for this auth scheme".into())
+        }
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2974,5 +3046,84 @@ mod tests {
                 AccountField::Name, // wraps
             ]
         );
+    }
+
+    #[test]
+    fn validate_compose_name_flags_empty_invalid_and_duplicate() {
+        assert_eq!(validate_compose_name("", &[]), Some("required".into()));
+        assert!(validate_compose_name("with space", &[])
+            .unwrap()
+            .contains("not a valid identifier"));
+        assert!(validate_compose_name("foo", &["foo".into()])
+            .unwrap()
+            .contains("already exists"));
+        assert_eq!(validate_compose_name("foo", &["bar".into()]), None);
+        // Trim whitespace before checking
+        assert_eq!(validate_compose_name("  foo  ", &["bar".into()]), None);
+    }
+
+    #[test]
+    fn validate_compose_protocol_requires_some() {
+        assert!(validate_compose_protocol(None).is_some());
+        assert!(validate_compose_protocol(Some("anthropic")).is_none());
+    }
+
+    #[test]
+    fn validate_compose_endpoint_requires_nonempty() {
+        assert_eq!(validate_compose_endpoint(""), Some("required".into()));
+        assert_eq!(validate_compose_endpoint("  "), Some("required".into()));
+        assert_eq!(validate_compose_endpoint("https://x.example"), None);
+    }
+
+    #[test]
+    fn validate_compose_auth_requires_some() {
+        use ox_gate::provider::AuthScheme;
+        assert!(validate_compose_auth(None).is_some());
+        assert!(validate_compose_auth(Some(&AuthScheme::XApiKey)).is_none());
+    }
+
+    #[test]
+    fn validate_compose_key_required_only_when_auth_requires_it() {
+        use ox_gate::provider::AuthScheme;
+        // No auth selected: key is irrelevant
+        assert_eq!(validate_compose_key("", None), None);
+        // Auth doesn't require key
+        assert_eq!(validate_compose_key("", Some(&AuthScheme::None)), None);
+        // Auth requires key, empty
+        assert!(validate_compose_key("", Some(&AuthScheme::XApiKey)).is_some());
+        // Auth requires key, non-empty
+        assert_eq!(validate_compose_key("sk-...", Some(&AuthScheme::XApiKey)), None);
+    }
+
+    #[test]
+    fn validate_compose_draft_collects_all_errors() {
+        use ox_gate::provider::AuthScheme;
+        let errors = validate_compose_draft(
+            "",         // name
+            None,       // protocol
+            "",         // endpoint
+            None,       // auth
+            "",         // key
+            &[],        // existing accounts
+        );
+        assert!(errors.name.is_some());
+        assert!(errors.protocol.is_some());
+        assert!(errors.endpoint.is_some());
+        assert!(errors.auth.is_some());
+        // Key is not required when auth is None
+        assert!(errors.key.is_none());
+
+        // `my-account` would be invalid: PathComponent::try_new rejects
+        // hyphens (UAX#31 identifier), and the commit path also rejects
+        // them — keep the test data consistent with the rule.
+        let clean = validate_compose_draft(
+            "my_account",
+            Some("anthropic"),
+            "https://api.example.com",
+            Some(&AuthScheme::XApiKey),
+            "sk-abc",
+            &[],
+        );
+        assert!(clean.is_clean());
     }
 }
