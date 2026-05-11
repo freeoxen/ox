@@ -103,6 +103,39 @@ pub struct ValidationDiagnostics {
     pub computed_at_ms: u64,
 }
 
+/// Compose-mode validation results. Distinct from `ValidationDiagnostics`
+/// because compose has no `computed_at_ms` cache-coherence concern and
+/// uses a closed struct-of-`Option` shape for exhaustive `match` in
+/// `for_field`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ValidationErrors {
+    pub name:     Option<String>,
+    pub protocol: Option<String>,
+    pub endpoint: Option<String>,
+    pub auth:     Option<String>,
+    pub key:      Option<String>,
+}
+
+impl ValidationErrors {
+    pub fn is_clean(&self) -> bool {
+        self.name.is_none()
+            && self.protocol.is_none()
+            && self.endpoint.is_none()
+            && self.auth.is_none()
+            && self.key.is_none()
+    }
+
+    pub fn for_field(&self, field: AccountField) -> Option<&str> {
+        match field {
+            AccountField::Name     => self.name.as_deref(),
+            AccountField::Protocol => self.protocol.as_deref(),
+            AccountField::Endpoint => self.endpoint.as_deref(),
+            AccountField::Auth     => self.auth.as_deref(),
+            AccountField::Key      => self.key.as_deref(),
+        }
+    }
+}
+
 /// Cross-screen banner state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
@@ -304,6 +337,36 @@ mod tests {
             message: "saved".to_string(),
             set_at_ms: 1_700_000_000_000,
         });
+    }
+
+    #[test]
+    fn validation_errors_roundtrips() {
+        json_roundtrip(ValidationErrors::default());
+
+        let mut e = ValidationErrors::default();
+        e.name = Some("required".into());
+        e.endpoint = Some("bad".into());
+        json_roundtrip(e);
+    }
+
+    #[test]
+    fn validation_errors_for_field_returns_matching_slot() {
+        let mut e = ValidationErrors::default();
+        e.name = Some("required".into());
+        e.protocol = Some("pick one".into());
+
+        assert_eq!(e.for_field(AccountField::Name), Some("required"));
+        assert_eq!(e.for_field(AccountField::Protocol), Some("pick one"));
+        assert_eq!(e.for_field(AccountField::Endpoint), None);
+    }
+
+    #[test]
+    fn validation_errors_is_clean_when_all_none() {
+        assert!(ValidationErrors::default().is_clean());
+
+        let mut e = ValidationErrors::default();
+        e.key = Some("required".into());
+        assert!(!e.is_clean());
     }
 
 }
