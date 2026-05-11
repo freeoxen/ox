@@ -223,7 +223,7 @@ fn register_row_prefixes(reg: &mut BindingRegistry) {
         accounts_subtree.clone(),
         no_mods(),
         KeyCodeRepr::Char('a'),
-        "accounts.add",
+        "accounts.compose.open",
     );
     bind_prefix(
         reg,
@@ -585,7 +585,7 @@ mod tests {
     }
 
     #[test]
-    fn accounts_a_resolves_to_accounts_add() {
+    fn accounts_a_resolves_to_accounts_compose_open() {
         let reg = populated();
         let hit = reg
             .lookup(
@@ -595,7 +595,7 @@ mod tests {
                 &key(no_mods(), KeyCodeRepr::Char('a')),
             )
             .expect("should match");
-        assert_eq!(hit, &cmd("accounts.add"));
+        assert_eq!(hit, &cmd("accounts.compose.open"));
     }
 
     #[test]

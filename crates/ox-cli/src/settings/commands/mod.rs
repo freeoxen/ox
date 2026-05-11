@@ -132,10 +132,10 @@ mod tests {
     }
 
     #[test]
-    fn register_all_includes_accounts_add() {
+    fn register_all_includes_accounts_compose_open() {
         let reg = populated();
         assert!(
-            reg.lookup(&CommandId(String::from("accounts.add")))
+            reg.lookup(&CommandId(String::from("accounts.compose.open")))
                 .is_some()
         );
     }
