@@ -169,6 +169,7 @@ impl OxAgent {
         if !has_account {
             let config = AccountConfig {
                 provider: provider.to_string(),
+                ..Default::default()
             };
             let value = to_value(&config).map_err(|e| JsValue::from_str(&e.to_string()))?;
             let account_path = oxpath!("gate", "accounts", provider_comp);

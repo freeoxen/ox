@@ -357,7 +357,10 @@ fn current_endpoint(data: &mut dyn Reader, account: &str) -> Option<String> {
         // default. The provider name lives at the child path; pull it
         // there if present.
         let provider_str: Option<String> = read_child_string(data, account, "provider").or(None);
-        provider_str.map(|p| ox_gate::AccountConfig { provider: p })
+        provider_str.map(|p| ox_gate::AccountConfig {
+            provider: p,
+            ..Default::default()
+        })
     })?;
     let provider_comp = ox_kernel::PathComponent::try_new(&acct.provider).ok()?;
     let provider: ox_gate::ProviderConfig = super::super::renderers::util::read_typed(
@@ -428,10 +431,14 @@ fn commit_account_field(
             )
             .or_else(|| {
                 read_child_string(data, account, "provider")
-                    .map(|p| ox_gate::AccountConfig { provider: p })
+                    .map(|p| ox_gate::AccountConfig {
+                        provider: p,
+                        ..Default::default()
+                    })
             })
             .unwrap_or(ox_gate::AccountConfig {
                 provider: "anthropic".to_string(),
+                ..Default::default()
             });
             let provider_comp = match ox_kernel::PathComponent::try_new(&acct.provider) {
                 Ok(c) => c,
@@ -602,6 +609,7 @@ mod tests {
             &oxpath!("config", "gate", "accounts", comp),
             to_value(&AccountConfig {
                 provider: provider.to_string(),
+                ..Default::default()
             })
             .unwrap(),
         );
@@ -694,6 +702,7 @@ mod tests {
             &oxpath!("config", "gate", "accounts", comp.clone()),
             to_value(&AccountConfig {
                 provider: "alpha".into(),
+                ..Default::default()
             })
             .unwrap(),
         );

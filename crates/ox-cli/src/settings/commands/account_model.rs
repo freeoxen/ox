@@ -115,10 +115,13 @@ pub(crate) fn validate_compose_name(name: &str, existing: &[String]) -> Option<S
     if trimmed.is_empty() {
         return Some("required".into());
     }
-    if PathComponent::try_new(trimmed).is_err() {
-        return Some(format!("'{trimmed}' is not a valid identifier"));
+    if trimmed.chars().count() > 256 {
+        return Some("too long (max 256 chars)".into());
     }
-    if existing.iter().any(|n| n == trimmed) {
+    // `existing` holds on-disk path components (already namecoded).
+    // Encode the proposed name and compare.
+    let encoded = namecode::encode(trimmed);
+    if existing.iter().any(|n| n == &encoded) {
         return Some(format!("'{trimmed}' already exists"));
     }
     None
@@ -921,6 +924,7 @@ fn accounts_compose_commit(data: &mut dyn Reader) -> Vec<Write> {
 
     let cfg = AccountConfig {
         provider: "anthropic".to_string(),
+        ..Default::default()
     };
     let new_account_row = oxpath!("settings", "accounts", comp.clone());
     let mut expanded: Vec<String> =
@@ -1533,6 +1537,7 @@ fn selector_cycle_protocol_dir(data: &mut dyn Reader, dir: CycleDir) -> Vec<Writ
     let acct: AccountConfig = read_typed(data, &acct_path).unwrap_or_else(|| AccountConfig {
         provider: read_account_child_string(data, &selected, "provider")
             .unwrap_or_else(|| "anthropic".to_string()),
+        ..Default::default()
     });
 
     // The carousel cycles *dialects*, not provider record names. The
@@ -1696,6 +1701,7 @@ fn selector_cycle_auth_dir(data: &mut dyn Reader, dir: CycleDir) -> Vec<Write> {
     .unwrap_or_else(|| AccountConfig {
         provider: read_account_child_string(data, &selected, "provider")
             .unwrap_or_else(|| "anthropic".to_string()),
+        ..Default::default()
     });
     let provider_comp = match ox_kernel::PathComponent::try_new(&acct.provider) {
         Ok(c) => c,
@@ -1887,6 +1893,7 @@ mod tests {
             &oxpath!("config", "gate", "accounts", comp),
             to_value(&AccountConfig {
                 provider: provider.into(),
+                ..Default::default()
             })
             .unwrap(),
         );
@@ -3293,6 +3300,7 @@ mod tests {
             &oxpath!("config", "gate", "accounts", comp.clone()),
             to_value(&AccountConfig {
                 provider: "openai".into(),
+                ..Default::default()
             })
             .unwrap(),
         );
@@ -3654,17 +3662,34 @@ mod tests {
     }
 
     #[test]
-    fn validate_compose_name_flags_empty_invalid_and_duplicate() {
+    fn validate_compose_name_flags_empty_and_duplicate() {
         assert_eq!(validate_compose_name("", &[]), Some("required".into()));
-        assert!(validate_compose_name("with space", &[])
-            .unwrap()
-            .contains("not a valid identifier"));
-        assert!(validate_compose_name("foo", &["foo".into()])
+
+        // Hyphenated names are now ACCEPTED (they get namecode-encoded at commit).
+        assert_eq!(validate_compose_name("my-personal", &[]), None);
+
+        // Arbitrary Unicode is accepted.
+        assert_eq!(validate_compose_name("Personal 1", &[]), None);
+
+        // Length cap.
+        let long = "a".repeat(257);
+        assert!(validate_compose_name(&long, &[]).unwrap().contains("too long"));
+
+        // Duplicate check: `existing` holds path components (namecoded form).
+        // "anthropic" encodes to "anthropic" (already valid XID).
+        assert!(validate_compose_name("anthropic", &["anthropic".into()])
             .unwrap()
             .contains("already exists"));
-        assert_eq!(validate_compose_name("foo", &["bar".into()]), None);
-        // Trim whitespace before checking
-        assert_eq!(validate_compose_name("  foo  ", &["bar".into()]), None);
+
+        // Duplicate check via encoding: "my-personal" namecodes to some encoded form.
+        // If we already have that encoded form on disk, the proposal collides.
+        let encoded = namecode::encode("my-personal");
+        assert!(validate_compose_name("my-personal", &[encoded])
+            .unwrap()
+            .contains("already exists"));
+
+        // Trim whitespace.
+        assert_eq!(validate_compose_name("  foo  ", &[]), None);
     }
 
     #[test]
@@ -3718,11 +3743,8 @@ mod tests {
         // Key is not required when auth is None
         assert!(errors.key.is_none());
 
-        // `my-account` would be invalid: PathComponent::try_new rejects
-        // hyphens (UAX#31 identifier), and the commit path also rejects
-        // them — keep the test data consistent with the rule.
         let clean = validate_compose_draft(
-            "my_account",
+            "my-account",          // hyphen is now fine
             Some("anthropic"),
             "https://api.example.com",
             Some(&AuthScheme::XApiKey),

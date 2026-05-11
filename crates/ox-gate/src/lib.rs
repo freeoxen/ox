@@ -91,12 +91,14 @@ impl GateStore {
             "anthropic".to_string(),
             AccountConfig {
                 provider: "anthropic".to_string(),
+                ..Default::default()
             },
         );
         accounts.insert(
             "openai".to_string(),
             AccountConfig {
                 provider: "openai".to_string(),
+                ..Default::default()
             },
         );
 
@@ -161,7 +163,10 @@ impl GateStore {
             }
             if let Some(provider) = self.config_string(&format!("gate/accounts/{name}/provider")) {
                 tracing::debug!(name, "account resolved from config-handle leaf");
-                return Some(AccountConfig { provider });
+                return Some(AccountConfig {
+                    provider,
+                    ..Default::default()
+                });
             }
         }
         self.accounts.get(name).cloned()
@@ -340,7 +345,13 @@ impl GateStore {
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();
-                        new_accounts.insert(name.clone(), AccountConfig { provider });
+                        new_accounts.insert(
+                            name.clone(),
+                            AccountConfig {
+                                provider,
+                                ..Default::default()
+                            },
+                        );
                     }
                 }
                 _ => return Err(StoreError::store("gate", "write", "accounts must be a map")),
@@ -718,6 +729,7 @@ mod tests {
 
         let config = AccountConfig {
             provider: "anthropic".to_string(),
+            ..Default::default()
         };
         let value = to_value(&config).unwrap();
         gate.write(&path!("accounts/custom"), Record::parsed(value))

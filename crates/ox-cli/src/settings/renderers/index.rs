@@ -631,6 +631,7 @@ mod tests {
             &oxpath!("config", "gate", "accounts", comp),
             to_value(&AccountConfig {
                 provider: name.into(),
+                ..Default::default()
             })
             .unwrap(),
         );
@@ -851,6 +852,7 @@ mod tests {
             &oxpath!("config", "gate", "accounts", comp.clone()),
             to_value(&AccountConfig {
                 provider: name.into(),
+                ..Default::default()
             })
             .unwrap(),
         );
@@ -985,6 +987,7 @@ mod tests {
             &oxpath!("config", "gate", "accounts", comp.clone()),
             to_value(&AccountConfig {
                 provider: "LMStudio".into(),
+                ..Default::default()
             })
             .unwrap(),
         );

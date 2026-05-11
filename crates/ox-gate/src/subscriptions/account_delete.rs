@@ -297,6 +297,7 @@ mod tests {
         let path = oxpath!("config", "gate", "accounts", comp);
         let cfg = crate::AccountConfig {
             provider: "anthropic".into(),
+            ..Default::default()
         };
         let change = PathChange {
             path,

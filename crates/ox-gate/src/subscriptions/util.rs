@@ -374,6 +374,7 @@ pub(crate) mod testing {
             &format!("config/gate/accounts/{name}"),
             &AccountConfig {
                 provider: name.to_string(),
+                ..Default::default()
             },
         );
         reader.set(

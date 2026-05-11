@@ -329,6 +329,7 @@ mod tests {
         .unwrap();
         let mutated_account = ox_gate::AccountConfig {
             provider: "openai".to_string(),
+            ..Default::default()
         };
         let mutated_value = structfs_serde_store::to_value(&mutated_account).unwrap();
         ns.write(

@@ -39,6 +39,7 @@ ratatui = "0.29"
 unicode-width = "0.2"
 reqwest = { version = "0.12", features = ["blocking"] }
 clash = "0.6"
+namecode = "0.1"
 toml = "0.8"
 figment = { version = "0.10", features = ["toml", "env"] }
 serde = { version = "1", features = ["derive"] }

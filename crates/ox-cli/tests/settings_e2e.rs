@@ -285,6 +285,7 @@ async fn populate_account(h: &E2eHarness, name: &str, key: &str) {
         &oxpath!("config", "gate", "accounts", comp.clone()),
         &AccountConfig {
             provider: name.to_string(),
+            ..Default::default()
         },
     )
     .await;
@@ -974,6 +975,7 @@ async fn cycling_protocol_mutates_bound_provider_dialect_not_account() {
         &oxpath!("config", "gate", "accounts", acct_comp.clone()),
         &AccountConfig {
             provider: "LMStudio".to_string(),
+            ..Default::default()
         },
     )
     .await;

@@ -294,6 +294,7 @@ mod tests {
             &oxpath!("config", "gate", "accounts", comp),
             to_value(&AccountConfig {
                 provider: name.into(),
+                ..Default::default()
             })
             .unwrap(),
         );

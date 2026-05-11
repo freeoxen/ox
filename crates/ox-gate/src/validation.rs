@@ -90,6 +90,7 @@ mod tests {
     fn account() -> AccountConfig {
         AccountConfig {
             provider: "anthropic".into(),
+            ..Default::default()
         }
     }
 

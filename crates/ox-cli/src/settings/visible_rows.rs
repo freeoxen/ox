@@ -153,6 +153,7 @@ fn append_account_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, expand
         let acct: AccountConfig =
             read_account_assembling_flat(data, name).unwrap_or(AccountConfig {
                 provider: "anthropic".to_string(),
+                ..Default::default()
             });
 
         let secondary = {
@@ -229,7 +230,10 @@ pub(crate) fn read_account_assembling_flat(
         return Some(a);
     }
     let provider = read_account_child_string_in_visible_rows(data, name, "provider")?;
-    Some(ox_gate::AccountConfig { provider })
+    Some(ox_gate::AccountConfig {
+        provider,
+        ..Default::default()
+    })
 }
 
 /// Read a `ProviderConfig` from the snapshot, trying the parent path
@@ -686,6 +690,7 @@ mod tests {
             &oxpath!("config", "gate", "accounts", comp),
             to_value(&AccountConfig {
                 provider: name.into(),
+                ..Default::default()
             })
             .unwrap(),
         );
@@ -697,6 +702,7 @@ mod tests {
             &oxpath!("config", "gate", "accounts", comp),
             to_value(&AccountConfig {
                 provider: provider.into(),
+                ..Default::default()
             })
             .unwrap(),
         );
@@ -1212,6 +1218,7 @@ mod tests {
             &oxpath!("config", "gate", "accounts", comp.clone()),
             to_value(&AccountConfig {
                 provider: "anthropic".into(),
+                ..Default::default()
             })
             .unwrap(),
         );
@@ -1252,6 +1259,7 @@ mod tests {
             &oxpath!("config", "gate", "accounts", comp.clone()),
             to_value(&AccountConfig {
                 provider: "anthropic".into(),
+                ..Default::default()
             })
             .unwrap(),
         );
