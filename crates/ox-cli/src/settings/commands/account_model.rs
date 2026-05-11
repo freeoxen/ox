@@ -75,6 +75,16 @@ pub(crate) const FIELD_ORDER: [AccountField; 5] = [
     AccountField::Key,
 ];
 
+pub(crate) fn focus_next(field: AccountField) -> AccountField {
+    let idx = FIELD_ORDER.iter().position(|f| *f == field).expect("variant in FIELD_ORDER");
+    FIELD_ORDER[(idx + 1) % FIELD_ORDER.len()]
+}
+
+pub(crate) fn focus_prev(field: AccountField) -> AccountField {
+    let idx = FIELD_ORDER.iter().position(|f| *f == field).expect("variant in FIELD_ORDER");
+    FIELD_ORDER[(idx + FIELD_ORDER.len() - 1) % FIELD_ORDER.len()]
+}
+
 // ---------------------------------------------------------------------------
 // Cursor-shuffle commands (overlays)
 // ---------------------------------------------------------------------------
@@ -2920,5 +2930,49 @@ mod tests {
         ] {
             assert!(seen.contains(&v), "FIELD_ORDER missing {v:?}");
         }
+    }
+
+    #[test]
+    fn focus_next_walks_field_order() {
+        use ox_types::settings::AccountField;
+        let walk: Vec<_> = std::iter::successors(
+            Some(AccountField::Name),
+            |f| Some(focus_next(*f)),
+        )
+        .take(6)
+        .collect();
+        assert_eq!(
+            walk,
+            vec![
+                AccountField::Name,
+                AccountField::Protocol,
+                AccountField::Endpoint,
+                AccountField::Auth,
+                AccountField::Key,
+                AccountField::Name, // wraps
+            ]
+        );
+    }
+
+    #[test]
+    fn focus_prev_walks_field_order_reversed() {
+        use ox_types::settings::AccountField;
+        let walk: Vec<_> = std::iter::successors(
+            Some(AccountField::Name),
+            |f| Some(focus_prev(*f)),
+        )
+        .take(6)
+        .collect();
+        assert_eq!(
+            walk,
+            vec![
+                AccountField::Name,
+                AccountField::Key,
+                AccountField::Auth,
+                AccountField::Endpoint,
+                AccountField::Protocol,
+                AccountField::Name, // wraps
+            ]
+        );
     }
 }
