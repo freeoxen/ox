@@ -59,15 +59,18 @@ pub fn dispatch_settings_key(
     //      through to the edit-mode pass — that lets the new flow
     //      land before the old one retires.
     //
-    //   3. Compose mode — when `ui/settings/new_account/buffer` is
-    //      `Some(_)`, the user is composing a new connection name.
-    //      Bindings live at `Exact(settings/_compose_new_account)`
-    //      and capture printable / Backspace / Enter / Esc. Compose
-    //      and edit mode are mutually exclusive (per the spec's
-    //      mutual-exclusion invariant) but we let compose win first
-    //      so a stale `edit_mode = true` flag can't shadow a
-    //      legitimate compose; deterministic priority order is
-    //      sufficient until Phase 7's cleanup tightens the check.
+    //   3. Compose mode — when `ui/settings/new_account/active` is
+    //      `true`, the user is composing a new connection. Bindings
+    //      live at `Exact(settings/_compose_new_account)` and capture
+    //      printable / Backspace / Enter / Esc / Tab / h / l. The
+    //      explicit boolean discriminator is single-purpose: it
+    //      doesn't entangle with the per-field draft values
+    //      (name/provider/...) the way the legacy `buffer` Option
+    //      did, so a half-typed field can't accidentally drop us out
+    //      of compose. Compose and edit mode are mutually exclusive
+    //      (per the spec's mutual-exclusion invariant) but we let
+    //      compose win first so a stale `edit_mode = true` flag can't
+    //      shadow a legitimate compose.
     //
     //   4. Edit mode — when `ui/settings/edit_mode = true`, the
     //      dispatcher routes printable chars and Backspace to
@@ -88,7 +91,7 @@ pub fn dispatch_settings_key(
     let pending_delete_scope = ox_path::oxpath!("settings", "_pending_delete");
     let manual_model_active = read_manual_model_active(snapshot);
     let manual_model_scope = ox_path::oxpath!("settings", "_manual_model");
-    let compose_active = read_compose_buffer(snapshot).is_some();
+    let compose_active = read_compose_active(snapshot);
     let compose_scope = ox_path::oxpath!("settings", "_compose_new_account");
     let edit_mode_active = read_edit_mode(snapshot);
     let edit_scope = ox_path::oxpath!("settings", "_edit_mode");
@@ -165,19 +168,24 @@ fn read_edit_mode(snapshot: &mut dyn Reader) -> bool {
         .unwrap_or(false)
 }
 
-/// Read `ui/settings/new_account/buffer`. Returns `Some(_)` when the
-/// user is composing a new account name (compose-mode active).
-fn read_compose_buffer(snapshot: &mut dyn Reader) -> Option<String> {
+/// Read the compose-mode discriminator at
+/// `ui/settings/new_account/active`. Returns `true` only when the
+/// stored value is `Bool(true)`; any other shape (missing, wrong
+/// type, `false`) reads as inactive. Compose state lives in the
+/// `new_account/*` subtree as a whole form; this flag is the single
+/// signal the dispatcher keys on.
+fn read_compose_active(snapshot: &mut dyn Reader) -> bool {
     use ox_path::oxpath;
     use structfs_core_store::Value;
-    let record = snapshot
-        .read(&oxpath!("ui", "settings", "new_account", "buffer"))
+    snapshot
+        .read(&oxpath!("ui", "settings", "new_account", "active"))
         .ok()
-        .flatten()?;
-    match record.as_value()? {
-        Value::String(s) => Some(s.clone()),
-        _ => None,
-    }
+        .flatten()
+        .and_then(|r| match r.as_value() {
+            Some(Value::Bool(b)) => Some(*b),
+            _ => None,
+        })
+        .unwrap_or(false)
 }
 
 /// Read `ui/settings/pending_delete`. Returns `Some(_)` when the
@@ -433,7 +441,7 @@ mod tests {
     }
 
     #[test]
-    fn compose_mode_routes_to_compose_scope_when_buffer_is_some() {
+    fn dispatcher_enters_compose_scope_when_active_is_true() {
         let mut cmds = CommandRegistry::new();
         cmds.register(Box::new(WriteSentinel::new()));
 
@@ -448,10 +456,24 @@ mod tests {
 
         let renderers = RendererRegistry::new();
         let mut reader = LocalConfig::default();
-        // Seed the buffer so the dispatcher sees compose-mode active.
+        // Seed the form snapshot the compose flow writes on open: an
+        // explicit `active = true` discriminator plus the focused-field
+        // and name fields the View::Form renders from.
         reader
             .write(
-                &oxpath!("ui", "settings", "new_account", "buffer"),
+                &oxpath!("ui", "settings", "new_account", "active"),
+                Record::parsed(Value::Bool(true)),
+            )
+            .unwrap();
+        reader
+            .write(
+                &oxpath!("ui", "settings", "new_account", "focused_field"),
+                Record::parsed(Value::String("name".into())),
+            )
+            .unwrap();
+        reader
+            .write(
+                &oxpath!("ui", "settings", "new_account", "name"),
                 Record::parsed(Value::String(String::new())),
             )
             .unwrap();
@@ -472,13 +494,13 @@ mod tests {
     }
 
     #[test]
-    fn compose_mode_falls_through_when_buffer_is_absent() {
+    fn dispatcher_skips_compose_scope_when_active_absent() {
         let mut cmds = CommandRegistry::new();
         cmds.register(Box::new(WriteSentinel::new()));
 
         let mut bindings = BindingRegistry::new();
         // Bind ONLY at the compose scope — should not match because
-        // the buffer is unset (no fallthrough scope picks 'a' up).
+        // `active` is unset (no fallthrough scope picks 'a' up).
         bindings.register(BindingEntry {
             screen: Screen::Settings,
             scope: ox_types::BindingScope::Exact(oxpath!("settings", "_compose_new_account")),
@@ -489,6 +511,46 @@ mod tests {
 
         let renderers = RendererRegistry::new();
         let mut reader = LocalConfig::default();
+
+        let writes = dispatch_settings_key(
+            &mut reader,
+            Screen::Settings,
+            &oxpath!("settings", "index"),
+            None,
+            &key_char('a'),
+            &cmds,
+            &bindings,
+            &renderers,
+        );
+
+        assert!(writes.is_empty());
+    }
+
+    #[test]
+    fn dispatcher_skips_compose_scope_when_legacy_buffer_alone() {
+        // Legacy stale state at `new_account/buffer` must not engage
+        // compose mode under the new discriminator — only an explicit
+        // `active == true` opens the synthetic scope.
+        let mut cmds = CommandRegistry::new();
+        cmds.register(Box::new(WriteSentinel::new()));
+
+        let mut bindings = BindingRegistry::new();
+        bindings.register(BindingEntry {
+            screen: Screen::Settings,
+            scope: ox_types::BindingScope::Exact(oxpath!("settings", "_compose_new_account")),
+            mode: None,
+            key: key_char('a'),
+            command_id: cmd_id("test.sentinel"),
+        });
+
+        let renderers = RendererRegistry::new();
+        let mut reader = LocalConfig::default();
+        reader
+            .write(
+                &oxpath!("ui", "settings", "new_account", "buffer"),
+                Record::parsed(Value::String("partial".into())),
+            )
+            .unwrap();
 
         let writes = dispatch_settings_key(
             &mut reader,
