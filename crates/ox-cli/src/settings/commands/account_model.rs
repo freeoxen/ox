@@ -197,6 +197,26 @@ command! {
 }
 
 command! {
+    struct_name: AccountsComposeCycleForward,
+    id: "accounts.compose.cycle_forward",
+    title: "Next option",
+    description: "Cycle the focused selector to the next option.",
+    screen: Screen::Settings,
+    cursor: None,
+    run: |snap, _ctx| accounts_compose_cycle(snap, CycleDir::Forward),
+}
+
+command! {
+    struct_name: AccountsComposeCycleBack,
+    id: "accounts.compose.cycle_back",
+    title: "Previous option",
+    description: "Cycle the focused selector to the previous option.",
+    screen: Screen::Settings,
+    cursor: None,
+    run: |snap, _ctx| accounts_compose_cycle(snap, CycleDir::Back),
+}
+
+command! {
     struct_name: AccountsComposeCommit,
     id: "accounts.compose.commit",
     title: "Create connection",
@@ -729,6 +749,101 @@ fn accounts_compose_delete_back(data: &mut dyn Reader) -> Vec<Write> {
         record: Record::parsed(Value::String(buf.clone())),
     }];
     recompute_errors_writes(data, focused, Some(&buf), writes)
+}
+
+/// Carousel options for the compose-draft Protocol field. Mirrors the
+/// set produced by `resolve_protocol_options(_, "")` (presets table,
+/// non-custom, deduped) — kept as a `&[&str]` constant because compose
+/// mode has no current dialect-anchor to drive the dynamic version, and
+/// the user can't type a custom value through a selector field. If
+/// `ox_gate::presets()` gains a new non-custom dialect, extend this list
+/// in lockstep.
+pub(crate) const PROTOCOL_OPTIONS: &[&str] = &["anthropic", "openai"];
+
+fn accounts_compose_cycle(data: &mut dyn Reader, dir: CycleDir) -> Vec<Write> {
+    let focused = read_focused_field(data);
+    if field_kind(focused) != FieldKind::Selector {
+        return Vec::new();
+    }
+    let writes = match focused {
+        AccountField::Protocol => cycle_compose_protocol(data, dir),
+        AccountField::Auth => cycle_compose_auth(data, dir),
+        AccountField::Name | AccountField::Endpoint | AccountField::Key => Vec::new(),
+    };
+    // Selector writes don't pre-stage a text-field override; pass None so
+    // `recompute_errors_writes` re-reads every field from the snapshot.
+    recompute_errors_writes(data, focused, None, writes)
+}
+
+fn cycle_compose_protocol(data: &mut dyn Reader, dir: CycleDir) -> Vec<Write> {
+    let current: Option<String> =
+        read_typed(data, &field_state_path(AccountField::Protocol));
+    let next = cycle_str_options(PROTOCOL_OPTIONS, current.as_deref(), dir);
+    vec![Write {
+        path: field_state_path(AccountField::Protocol),
+        record: Record::parsed(Value::String(next.to_string())),
+    }]
+}
+
+fn cycle_compose_auth(data: &mut dyn Reader, dir: CycleDir) -> Vec<Write> {
+    let current: Option<AuthScheme> =
+        read_typed(data, &field_state_path(AccountField::Auth));
+    let next = cycle_enum_options(&AuthScheme::ALL, current.as_ref(), dir);
+    let value = match to_value(&next) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    vec![Write {
+        path: field_state_path(AccountField::Auth),
+        record: Record::parsed(value),
+    }]
+}
+
+/// Pick the next option after `current` (forward) or before it (back),
+/// wrapping at the ends. When `current` isn't in `options` — including
+/// `None` (first press) — forward picks `options[0]`, back picks the
+/// last entry. Caller must ensure `options` is non-empty.
+fn cycle_str_options<'a>(
+    options: &'a [&'a str],
+    current: Option<&str>,
+    dir: CycleDir,
+) -> &'a str {
+    match current.and_then(|c| options.iter().position(|o| *o == c)) {
+        None => match dir {
+            CycleDir::Forward => options[0],
+            CycleDir::Back => options[options.len() - 1],
+        },
+        Some(idx) => {
+            let step = match dir {
+                CycleDir::Forward => 1,
+                CycleDir::Back => options.len() - 1,
+            };
+            options[(idx + step) % options.len()]
+        }
+    }
+}
+
+/// `cycle_str_options`'s enum cousin. Returns a clone of the next
+/// option — `T: Clone` rather than `Copy` so `AuthScheme` (not `Copy`
+/// for forward-compat) works without a wrapper type.
+fn cycle_enum_options<T: Clone + PartialEq>(
+    options: &[T],
+    current: Option<&T>,
+    dir: CycleDir,
+) -> T {
+    match current.and_then(|c| options.iter().position(|o| o == c)) {
+        None => match dir {
+            CycleDir::Forward => options[0].clone(),
+            CycleDir::Back => options[options.len() - 1].clone(),
+        },
+        Some(idx) => {
+            let step = match dir {
+                CycleDir::Forward => 1,
+                CycleDir::Back => options.len() - 1,
+            };
+            options[(idx + step) % options.len()].clone()
+        }
+    }
 }
 
 fn accounts_compose_commit(data: &mut dyn Reader) -> Vec<Write> {
@@ -1663,6 +1778,8 @@ pub fn register(reg: &mut CommandRegistry) {
     reg.register(Box::new(AccountsComposeOpen::new()));
     reg.register(Box::new(AccountsComposeInsertChar::new()));
     reg.register(Box::new(AccountsComposeDeleteBack::new()));
+    reg.register(Box::new(AccountsComposeCycleForward::new()));
+    reg.register(Box::new(AccountsComposeCycleBack::new()));
     reg.register(Box::new(AccountsComposeCommit::new()));
     reg.register(Box::new(AccountsComposeCancel::new()));
     reg.register(Box::new(AccountsDeleteConfirm::new()));
@@ -2171,6 +2288,81 @@ mod tests {
         assert_eq!(writes.len(), 1);
         assert_eq!(writes[0].path, oxpath!("ui", "settings", "new_account"));
         assert!(matches!(&writes[0].record, Record::Parsed(Value::Null)));
+    }
+
+    // -- compose.cycle_forward / cycle_back --------------------------------------
+
+    /// `test_snapshot_with_compose_state_focus("protocol")` plus a typed
+    /// protocol value at `ui/settings/new_account/protocol`.
+    fn test_snapshot_with_compose_protocol(protocol: &str) -> SettingsSnapshot {
+        let mut snap = test_snapshot_with_compose_state_focus("protocol");
+        snap.insert(
+            &oxpath!("ui", "settings", "new_account", "protocol"),
+            Value::String(protocol.into()),
+        );
+        snap
+    }
+
+    /// `test_snapshot_with_compose_state_focus("auth")` plus a typed
+    /// auth scheme value at `ui/settings/new_account/auth`.
+    fn test_snapshot_with_compose_auth(auth: AuthScheme) -> SettingsSnapshot {
+        let mut snap = test_snapshot_with_compose_state_focus("auth");
+        snap.insert(
+            &oxpath!("ui", "settings", "new_account", "auth"),
+            to_value(&auth).unwrap(),
+        );
+        snap
+    }
+
+    #[test]
+    fn cycle_forward_picks_first_option_when_none_selected() {
+        let mut snap = test_snapshot_with_compose_state_focus("protocol");
+        let writes = run_cmd(&AccountsComposeCycleForward::new(), &mut snap);
+
+        assert_eq!(
+            writes_value(&writes, "ui/settings/new_account/protocol"),
+            Some(Value::String(PROTOCOL_OPTIONS[0].into())),
+        );
+    }
+
+    #[test]
+    fn cycle_forward_advances_among_protocol_options() {
+        let mut snap = test_snapshot_with_compose_protocol(PROTOCOL_OPTIONS[0]);
+        let writes = run_cmd(&AccountsComposeCycleForward::new(), &mut snap);
+
+        assert_eq!(
+            writes_value(&writes, "ui/settings/new_account/protocol"),
+            Some(Value::String(PROTOCOL_OPTIONS[1].into())),
+        );
+    }
+
+    #[test]
+    fn cycle_forward_wraps_protocol() {
+        let last = *PROTOCOL_OPTIONS.last().unwrap();
+        let mut snap = test_snapshot_with_compose_protocol(last);
+        let writes = run_cmd(&AccountsComposeCycleForward::new(), &mut snap);
+
+        assert_eq!(
+            writes_value(&writes, "ui/settings/new_account/protocol"),
+            Some(Value::String(PROTOCOL_OPTIONS[0].into())),
+        );
+    }
+
+    #[test]
+    fn cycle_back_retreats_among_auth_options() {
+        let mut snap = test_snapshot_with_compose_auth(AuthScheme::ALL[1].clone());
+        let writes = run_cmd(&AccountsComposeCycleBack::new(), &mut snap);
+
+        let written = writes_value(&writes, "ui/settings/new_account/auth")
+            .and_then(|v| structfs_serde_store::from_value::<AuthScheme>(v).ok());
+        assert_eq!(written, Some(AuthScheme::ALL[0].clone()));
+    }
+
+    #[test]
+    fn cycle_noop_when_focused_on_text_field() {
+        let mut snap = test_snapshot_with_compose_state_focus("name");
+        assert!(run_cmd(&AccountsComposeCycleForward::new(), &mut snap).is_empty());
+        assert!(run_cmd(&AccountsComposeCycleBack::new(), &mut snap).is_empty());
     }
 
     #[test]

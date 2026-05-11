@@ -364,6 +364,21 @@ fn register_edit_mode(reg: &mut BindingRegistry) {
 fn register_compose_new_account(reg: &mut BindingRegistry) {
     let scope = oxpath!("settings", "_compose_new_account");
 
+    // Selector-cycling keys go in FIRST. Both the cycle bindings and
+    // the printable-ASCII loop register under `Exact(scope)` with no
+    // mode — they share a specificity class, so the registry's
+    // first-registered-wins tie-break is what shadows the insert_char
+    // fallback for h / l. Left / Right have no insert_char competitor
+    // but live here for proximity.
+    for (key, id) in [
+        (KeyCodeRepr::Char('h'), "accounts.compose.cycle_back"),
+        (KeyCodeRepr::Left, "accounts.compose.cycle_back"),
+        (KeyCodeRepr::Char('l'), "accounts.compose.cycle_forward"),
+        (KeyCodeRepr::Right, "accounts.compose.cycle_forward"),
+    ] {
+        bind(reg, Some(scope.clone()), no_mods(), key, id);
+    }
+
     for byte in 0x20u8..=0x7E {
         let ch = byte as char;
         let modifiers = if ch.is_ascii_uppercase() {
@@ -768,13 +783,20 @@ mod tests {
         // Shadowing should be rare and the cause obvious: an earlier-
         // registered binding with the same scope+key wins. Anything
         // unexpected here means a registration ordering bug.
+        //
+        // Two known shadow shapes are intentional:
+        //   - `field.insert`: the inline-edit text helper blankets
+        //     printable ASCII, then per-row keys (e.g. `t` → `account.test`)
+        //     are registered earlier under the same scope to override.
+        //   - `accounts.compose.insert_char`: the compose-mode text helper
+        //     does the same; h / l are registered earlier as cycle
+        //     bindings so they cycle selectors instead of typing.
         for (entry, winner) in &shadowed {
-            // The text-editing helper binds every printable ASCII char to
-            // `field.insert`; a same-scope earlier binding (e.g. `t` →
-            // `account.test`) shadows that entry. Anything *not* of that
-            // shape is a real surprise.
-            assert_eq!(
-                entry.command_id.0, "field.insert",
+            let id = &entry.command_id.0;
+            let is_known_text_helper =
+                id == "field.insert" || id == "accounts.compose.insert_char";
+            assert!(
+                is_known_text_helper,
                 "unexpected shadowing: {entry:?} shadowed by {winner:?}"
             );
         }
