@@ -173,10 +173,15 @@ fn append_account_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, expand
         let path = row_path(&["settings", "accounts", name]);
         let path_str = path_to_string(&path);
         let is_expanded = expanded.iter().any(|s| s == &path_str);
+        // The row's primary label prefers the user-typed display name
+        // when present; only legacy records (or untouched defaults) fall
+        // back to the path component. Two accounts that namecode to the
+        // same on-disk id can still surface as distinct rows.
+        let label = acct.display_name.clone().unwrap_or_else(|| name.clone());
         rows.push(VisibleRow {
             path: path.clone(),
             depth: 1,
-            label: name.clone(),
+            label,
             secondary,
             badge: None,
             kind: RowKind::Account { name: name.clone() },
@@ -1308,6 +1313,60 @@ mod tests {
             Some(0)
         );
         assert_eq!(position_of(&rows, &oxpath!("nonexistent")), None);
+    }
+
+    #[test]
+    fn account_row_label_uses_display_name_when_present() {
+        // The account row's label is what the renderer projects as the
+        // row's primary text. With `display_name = Some(...)` the row
+        // must surface the user-typed Unicode name, not the on-disk
+        // path component.
+        let mut snap = SettingsSnapshot::empty();
+        write_index_entries(&mut snap);
+        let comp = ox_kernel::PathComponent::try_new("personal").unwrap();
+        snap.insert(
+            &oxpath!("config", "gate", "accounts", comp),
+            to_value(&AccountConfig {
+                provider: "personal".into(),
+                display_name: Some("My Personal".into()),
+            })
+            .unwrap(),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&["settings/accounts".to_string()]),
+        );
+        let rows = enumerate(&mut snap);
+        let row = rows
+            .iter()
+            .find(|r| matches!(&r.kind, RowKind::Account { name } if name == "personal"))
+            .expect("account row present");
+        assert_eq!(row.label, "My Personal");
+    }
+
+    #[test]
+    fn account_row_label_falls_back_to_path_component_when_display_name_absent() {
+        let mut snap = SettingsSnapshot::empty();
+        write_index_entries(&mut snap);
+        let comp = ox_kernel::PathComponent::try_new("anthropic").unwrap();
+        snap.insert(
+            &oxpath!("config", "gate", "accounts", comp),
+            to_value(&AccountConfig {
+                provider: "anthropic".into(),
+                display_name: None,
+            })
+            .unwrap(),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&["settings/accounts".to_string()]),
+        );
+        let rows = enumerate(&mut snap);
+        let row = rows
+            .iter()
+            .find(|r| matches!(&r.kind, RowKind::Account { name } if name == "anthropic"))
+            .expect("account row present");
+        assert_eq!(row.label, "anthropic");
     }
 
     #[test]
