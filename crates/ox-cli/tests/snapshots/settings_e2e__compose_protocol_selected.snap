@@ -5,7 +5,7 @@ expression: "&frame_protocol"
 ---
 ┌Settings──────────────────────────────────────────────────────────────────────┐
 │Name: my-personal                                                             │
-│Protocol: < anthropic >  select a protocol                                    │
+│Protocol: < anthropic >                                                       │
 │Endpoint:   required                                                          │
 │Auth: (not selected)  select an auth scheme                                   │
 │Key:   required for x-api-key / bearer-token                                  │

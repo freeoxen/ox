@@ -689,7 +689,7 @@ fn accounts_compose_insert_char(
         path: path.clone(),
         record: Record::parsed(Value::String(buf.clone())),
     }];
-    recompute_errors_writes(data, focused, Some(&buf), writes)
+    recompute_errors_writes(data, writes)
 }
 
 /// Resolve the full snapshot path of the given field's draft buffer
@@ -718,35 +718,60 @@ fn read_focused_field(data: &mut dyn Reader) -> AccountField {
 /// Recompute the validation-errors record from the current draft, append
 /// the resulting `Write` to `writes`, and return the augmented vec.
 ///
-/// `override_field` + `override_value` let the caller substitute the
-/// just-written value of one text field without round-tripping through
-/// the snapshot — keystroke handlers can show their effect on errors
-/// before the snapshot has the new buffer applied. Pass
-/// `override_value = None` (or a non-text `override_field`) to read all
-/// fields from the snapshot.
-fn recompute_errors_writes(
-    data: &mut dyn Reader,
-    override_field: AccountField,
-    override_value: Option<&str>,
-    mut writes: Vec<Write>,
-) -> Vec<Write> {
+/// Each field's value is taken from a pending Write in `writes` if one
+/// targets the matching `ui/settings/new_account/<subpath>` path, falling
+/// back to the snapshot otherwise. That lets keystroke / cycle handlers
+/// reflect their own just-emitted writes in the recomputed errors before
+/// the snapshot has applied them — without that override the freshly
+/// cycled selector would see the pre-cycle (stale) value and re-emit the
+/// "select a …" error one frame after the user picked a value.
+fn recompute_errors_writes(data: &mut dyn Reader, mut writes: Vec<Write>) -> Vec<Write> {
     use crate::settings::renderers::util::child_names_under;
 
-    let read_text = |data: &mut dyn Reader, f: AccountField| -> String {
-        if f == override_field {
-            if let Some(v) = override_value {
-                return v.to_string();
+    // Look up a write at `path` in the pending vec and return its parsed
+    // value, if any. Each field has a single canonical path so a linear
+    // scan is fine here (writes is at most a handful of entries).
+    let pending_value = |path: &Path| -> Option<Value> {
+        writes.iter().find_map(|w| {
+            if &w.path == path {
+                w.record.as_value().cloned()
+            } else {
+                None
             }
-        }
-        read_typed::<String>(data, &field_state_path(f)).unwrap_or_default()
+        })
     };
+
+    let read_text = |data: &mut dyn Reader, f: AccountField| -> String {
+        let path = field_state_path(f);
+        if let Some(Value::String(s)) = pending_value(&path) {
+            return s;
+        }
+        read_typed::<String>(data, &path).unwrap_or_default()
+    };
+    let read_protocol = |data: &mut dyn Reader| -> Option<String> {
+        let path = field_state_path(AccountField::Protocol);
+        match pending_value(&path) {
+            Some(Value::String(s)) => Some(s),
+            Some(Value::Null) => None,
+            // Non-string / non-null pending write: fall back to snapshot
+            // rather than guess a coercion.
+            Some(_) | None => read_typed(data, &path),
+        }
+    };
+    let read_auth = |data: &mut dyn Reader| -> Option<AuthScheme> {
+        let path = field_state_path(AccountField::Auth);
+        match pending_value(&path) {
+            Some(Value::Null) => None,
+            Some(v) => structfs_serde_store::from_value(v).ok(),
+            None => read_typed(data, &path),
+        }
+    };
+
     let name = read_text(data, AccountField::Name);
     let endpoint = read_text(data, AccountField::Endpoint);
     let key = read_text(data, AccountField::Key);
-    let protocol: Option<String> =
-        read_typed(data, &oxpath!("ui", "settings", "new_account", "protocol"));
-    let auth: Option<AuthScheme> =
-        read_typed(data, &oxpath!("ui", "settings", "new_account", "auth"));
+    let protocol = read_protocol(data);
+    let auth = read_auth(data);
     let existing = child_names_under(data, "config/gate/accounts");
 
     let errors = validate_compose_draft(
@@ -779,7 +804,7 @@ fn accounts_compose_delete_back(data: &mut dyn Reader) -> Vec<Write> {
         path: path.clone(),
         record: Record::parsed(Value::String(buf.clone())),
     }];
-    recompute_errors_writes(data, focused, Some(&buf), writes)
+    recompute_errors_writes(data, writes)
 }
 
 /// Carousel options for the compose-draft Protocol field. Mirrors the
@@ -928,9 +953,11 @@ fn accounts_compose_cycle(data: &mut dyn Reader, dir: CycleDir) -> Vec<Write> {
         AccountField::Auth => cycle_compose_auth(data, dir),
         AccountField::Name | AccountField::Endpoint | AccountField::Key => Vec::new(),
     };
-    // Selector writes don't pre-stage a text-field override; pass None so
-    // `recompute_errors_writes` re-reads every field from the snapshot.
-    recompute_errors_writes(data, focused, None, writes)
+    // `recompute_errors_writes` scans `writes` for pending field writes so
+    // the just-cycled value drives validation immediately — without that
+    // override the stale "select a …" error from the pre-cycle snapshot
+    // would survive one frame past the user's keystroke.
+    recompute_errors_writes(data, writes)
 }
 
 fn cycle_compose_protocol(data: &mut dyn Reader, dir: CycleDir) -> Vec<Write> {
@@ -2625,6 +2652,54 @@ mod tests {
         let written = writes_value(&writes, "ui/settings/new_account/auth")
             .and_then(|v| structfs_serde_store::from_value::<AuthScheme>(v).ok());
         assert_eq!(written, Some(AuthScheme::ALL[0].clone()));
+    }
+
+    /// Regression: cycling a selector must clear the "select a …" error
+    /// for that field in the SAME write batch. The pre-cycle snapshot has
+    /// `protocol = Null`, so the snapshot-only validator would re-emit
+    /// `errors.protocol = Some("required")` even after the cycle write.
+    /// `recompute_errors_writes` must read the just-emitted protocol
+    /// write out of `writes` and validate against that value.
+    #[test]
+    fn cycle_clears_pre_cycle_protocol_error() {
+        let mut snap = test_snapshot_with_compose_state_focus("protocol");
+        let writes = run_cmd(&AccountsComposeCycleForward::new(), &mut snap);
+
+        // Protocol was written by the cycle command.
+        assert_eq!(
+            writes_value(&writes, "ui/settings/new_account/protocol"),
+            Some(Value::String(PROTOCOL_OPTIONS[0].into())),
+        );
+
+        // Errors were recomputed against the new value, not the
+        // pre-cycle snapshot (which had protocol = Null).
+        let errors_val = writes_value(&writes, "ui/settings/new_account/errors")
+            .expect("errors recomputed after cycle");
+        let errors: ValidationErrors =
+            structfs_serde_store::from_value(errors_val).unwrap();
+        assert_eq!(
+            errors.protocol, None,
+            "after cycling protocol, the stale 'select a protocol' error must clear",
+        );
+    }
+
+    /// Same regression check on the Auth selector — the cycle write goes
+    /// through `to_value(&AuthScheme)` (an enum-as-string), and
+    /// `recompute_errors_writes` must round-trip that back through
+    /// `from_value` to validate.
+    #[test]
+    fn cycle_clears_pre_cycle_auth_error() {
+        let mut snap = test_snapshot_with_compose_state_focus("auth");
+        let writes = run_cmd(&AccountsComposeCycleForward::new(), &mut snap);
+
+        let errors_val = writes_value(&writes, "ui/settings/new_account/errors")
+            .expect("errors recomputed after cycle");
+        let errors: ValidationErrors =
+            structfs_serde_store::from_value(errors_val).unwrap();
+        assert_eq!(
+            errors.auth, None,
+            "after cycling auth, the stale 'select an auth scheme' error must clear",
+        );
     }
 
     // -- compose.focus_next / focus_prev ----------------------------------------
