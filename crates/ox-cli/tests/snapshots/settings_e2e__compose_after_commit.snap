@@ -1,19 +1,19 @@
 ---
 source: crates/ox-cli/tests/settings_e2e.rs
-assertion_line: 1238
-expression: "&frame_after_a"
+assertion_line: 1465
+expression: "&frame_after"
 ---
 ┌Settings──────────────────────────────────────────────────────────────────────┐
-│▾ Connections [0]                                                             │
-│    Name▸ ▏                                                                   │
+│▾ Connections [1]                                                             │
+│    + New connection                                                          │
+│  ▾ my-personal                                                               │
+│  _N_mypersonal__ca1d                                                         │
+│      Name: _N_mypersonal__ca1d                                               │
+│      Protocol: anthropic                                                     │
+│      Endpoint: https://api.example.com                                       │
+│      Auth: x-api-key                                                         │
+│      Key: (set)                                                              │
 │▸ Models                                                                      │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
 │                                                                              │
 │                                                                              │
 │                                                                              │

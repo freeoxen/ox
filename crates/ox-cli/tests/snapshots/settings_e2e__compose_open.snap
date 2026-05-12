@@ -1,16 +1,16 @@
 ---
 source: crates/ox-cli/tests/settings_e2e.rs
-assertion_line: 1250
-expression: "&frame"
+assertion_line: 1336
+expression: "&frame_open"
 ---
 ┌Settings──────────────────────────────────────────────────────────────────────┐
-│▾ Connections [0]                                                             │
-│    Name▸ Tes▏                                                                │
+│Name:   required                                                              │
+│Protocol: (not selected)  select a protocol                                   │
+│Endpoint:   required                                                          │
+│Auth: (not selected)  select an auth scheme                                   │
+│Key:   required for x-api-key / bearer-token                                  │
+│▸ Connections [0]                                                             │
 │▸ Models                                                                      │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
 │                                                                              │
 │                                                                              │
 │                                                                              │

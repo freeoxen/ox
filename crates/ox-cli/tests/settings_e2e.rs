@@ -401,7 +401,84 @@ async fn navigate_index_to_models_set_bootstrap() {
 
 // ---------------------------------------------------------------------------
 // Scenario: add account creation flow
+//
+// Drives the whole-form compose: open with `a`, then field-by-field via
+// Tab/`l`/typing, then `Enter` to commit. The committed shape has one
+// AccountConfig + one ProviderConfig + one secret key, all keyed at the
+// same `namecode::encode(display_name)` path component.
 // ---------------------------------------------------------------------------
+
+/// Drive the full multi-field compose form from the open-state through
+/// commit. Names are typed directly (no XApiKey requires_key check) so
+/// the helper covers every successful create path.
+///
+/// Assumes the harness is positioned at `settings/index` with focused on
+/// `settings/accounts` (or any other position that lets `a` reach
+/// `accounts.compose.open`).
+async fn drive_compose_full_flow(
+    h: &E2eHarness,
+    name: &str,
+    endpoint: &str,
+    api_key: &str,
+) {
+    // Re-focus the Accounts header before pressing `a`. After a prior
+    // commit, `focused` points at the newly-created account row, where
+    // the `Prefix(settings/accounts/<name>)` binding doesn't carry
+    // `accounts.compose.open`.
+    h.write_path(
+        &oxpath!("ui", "settings", "focused"),
+        &oxpath!("settings", "accounts"),
+    )
+    .await;
+
+    assert!(matches!(h.dispatch("a").await, KeyDispatchOutcome::Handled));
+    for ch in name.chars() {
+        let key = ch.to_string();
+        assert!(
+            matches!(h.dispatch(&key).await, KeyDispatchOutcome::Handled),
+            "dispatch returned Unhandled for {key:?}"
+        );
+    }
+    assert!(matches!(
+        h.dispatch("Tab").await,
+        KeyDispatchOutcome::Handled
+    ));
+    // Protocol[0] = anthropic. `l` from the null open-state lands on the
+    // first option.
+    assert!(matches!(h.dispatch("l").await, KeyDispatchOutcome::Handled));
+    assert!(matches!(
+        h.dispatch("Tab").await,
+        KeyDispatchOutcome::Handled
+    ));
+    for ch in endpoint.chars() {
+        let key = ch.to_string();
+        assert!(
+            matches!(h.dispatch(&key).await, KeyDispatchOutcome::Handled),
+            "dispatch returned Unhandled for endpoint char {key:?}"
+        );
+    }
+    assert!(matches!(
+        h.dispatch("Tab").await,
+        KeyDispatchOutcome::Handled
+    ));
+    // Auth[0] = XApiKey (rendered as "x-api-key").
+    assert!(matches!(h.dispatch("l").await, KeyDispatchOutcome::Handled));
+    assert!(matches!(
+        h.dispatch("Tab").await,
+        KeyDispatchOutcome::Handled
+    ));
+    for ch in api_key.chars() {
+        let key = ch.to_string();
+        assert!(
+            matches!(h.dispatch(&key).await, KeyDispatchOutcome::Handled),
+            "dispatch returned Unhandled for key char {key:?}"
+        );
+    }
+    assert!(matches!(
+        h.dispatch("Enter").await,
+        KeyDispatchOutcome::Handled
+    ));
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn add_account_create_flow() {
@@ -409,7 +486,7 @@ async fn add_account_create_flow() {
     populate_index(&h).await;
 
     // Cursor at the accordion, focused on the Accounts header so
-    // `a` resolves to accounts.add via Prefix(settings/accounts).
+    // `a` resolves to accounts.compose.open via Prefix(settings/accounts).
     h.write_path(
         &oxpath!("ui", "settings", "cursor"),
         &oxpath!("settings", "index"),
@@ -421,35 +498,53 @@ async fn add_account_create_flow() {
     )
     .await;
 
-    // `a` expands the section, focuses the ghost row, and enters edit mode.
-    assert!(matches!(h.dispatch("a").await, KeyDispatchOutcome::Handled));
+    // "anthropic_personal" is already a valid XID so namecode encoding is
+    // idempotent here: the on-disk path component matches the typed name.
+    drive_compose_full_flow(
+        &h,
+        "anthropic_personal",
+        "https://api.anthropic.com",
+        "sk-test",
+    )
+    .await;
 
-    // Type the name through the dispatcher so the edit-mode pass routes
-    // each printable through edit.insert_char.
-    for ch in "anthropic_personal".chars() {
-        let key = ch.to_string();
-        assert!(
-            matches!(h.dispatch(&key).await, KeyDispatchOutcome::Handled),
-            "dispatch returned Unhandled for {key:?}"
-        );
-    }
-
-    // Enter routes through edit.commit, which writes the AccountConfig
-    // directly. The CLI's writes are synchronous; subsequent reads see
-    // the materialized state.
-    assert!(matches!(
-        h.dispatch("Enter").await,
-        KeyDispatchOutcome::Handled
-    ));
-
-    let comp = ox_kernel::PathComponent::try_new("anthropic_personal").unwrap();
+    let path_id = namecode::encode("anthropic_personal");
+    assert_eq!(path_id, "anthropic_personal", "valid XID must be idempotent");
+    let comp = ox_kernel::PathComponent::try_new(&path_id).unwrap();
     let account: AccountConfig = h
         .client
         .read_typed(&oxpath!("config", "gate", "accounts", comp.clone()))
         .await
         .expect("read account record")
         .expect("account record present after synchronous create");
-    assert_eq!(account.provider, "anthropic");
+    // The commit now records `display_name` (the user-typed string) and
+    // points `provider` at the same namecoded path component — one
+    // record per account, no aliasing.
+    assert_eq!(account.display_name.as_deref(), Some("anthropic_personal"));
+    assert_eq!(account.provider, "anthropic_personal");
+
+    // ProviderConfig record at the per-account path: dialect=anthropic
+    // (cycled by `l` from null), endpoint from the typed Endpoint field,
+    // auth=XApiKey (cycled by `l` from null), version=anthropic default.
+    let provider: ProviderConfig = h
+        .client
+        .read_typed(&oxpath!("config", "gate", "providers", comp.clone()))
+        .await
+        .expect("read provider record")
+        .expect("provider record present after synchronous create");
+    assert_eq!(provider.dialect, "anthropic");
+    assert_eq!(provider.endpoint, "https://api.anthropic.com");
+    assert_eq!(provider.auth, Some(ox_gate::AuthScheme::XApiKey));
+
+    // Secret key written at the per-account path because XApiKey requires
+    // a key.
+    let key: ApiKey = h
+        .client
+        .read_typed(&oxpath!("secret", "keys", comp.clone()))
+        .await
+        .expect("read secret key")
+        .expect("secret key present after commit with XApiKey auth");
+    assert_eq!(key.expose(), "sk-test");
 
     // Cursor settled at settings/index and focused points at the new account row.
     let cursor = h.current_cursor().await.expect("cursor present");
@@ -477,13 +572,19 @@ async fn add_account_create_flow() {
         "expanded set must contain settings/accounts/anthropic_personal; got {expanded:?}"
     );
 
-    let selected: Option<String> = h
+    // Compose draft state must be fully cleared after commit. The cancel/
+    // commit paths null-cascade the whole `new_account` subtree, so the
+    // `active` discriminator must read as None (not Some(true)).
+    let active: Option<bool> = h
         .client
-        .read_typed(&oxpath!("ui", "settings", "accounts", "selected"))
+        .read_typed(&oxpath!("ui", "settings", "new_account", "active"))
         .await
-        .expect("read selected")
+        .expect("read new_account/active")
         .flatten();
-    assert_eq!(selected.as_deref(), Some("anthropic_personal"));
+    assert!(
+        active != Some(true),
+        "compose `active` discriminator must be cleared after commit; got {active:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1205,20 +1306,18 @@ async fn protocol_cycle_visibly_toggles_in_rendered_carousel() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn add_connection_inline_ghost_row_accepts_typing() {
-    // End-to-end render assertion for the inline new-connection ghost
-    // row's typing surface. Opens it via `a` from the Connections
-    // section, types a mix of upper- and lowercase chars, captures the
-    // rendered frame after each keystroke. Each press must produce a
-    // visibly-different frame and the cumulative input must appear in
-    // the focused ghost row's inline buffer — covers case-sensitive
-    // dispatch routing AND inline-edit write-back with one shape.
+async fn add_connection_form_accepts_field_by_field_input() {
+    // End-to-end render assertion for the whole-form compose flow.
+    // Opens with `a`, types a hyphenated display name, then walks every
+    // field by Tab + `l` (selectors) or typing (text). Each waypoint
+    // captures a snapshot; on commit, the per-account records land at
+    // `namecode::encode(display_name)`-keyed paths.
     let h = E2eHarness::new().await;
     populate_index(&h).await;
 
     // Cursor sits at the accordion (settings/index, where the renderer
     // lives); focused sits on settings/accounts so the `a` binding
-    // (Prefix(settings/accounts)) resolves to accounts.add.
+    // (Prefix(settings/accounts)) resolves to accounts.compose.open.
     h.write_path(
         &oxpath!("ui", "settings", "cursor"),
         &oxpath!("settings", "index"),
@@ -1232,36 +1331,138 @@ async fn add_connection_inline_ghost_row_accepts_typing() {
 
     assert!(matches!(h.dispatch("a").await, KeyDispatchOutcome::Handled));
 
-    let frame_after_a = render_settings_to_string(&h, 80, 24).await;
-    insta::assert_snapshot!("new_connection_inline_just_opened", &frame_after_a);
+    // Open state: every required field shows its open-time error inline.
+    let frame_open = render_settings_to_string(&h, 80, 24).await;
+    insta::assert_snapshot!("compose_open", &frame_open);
 
-    let mut prior_frame = frame_after_a.clone();
-    for (snap_idx, ch) in (1..).zip("Test".chars()) {
+    // Type the hyphenated name. Hyphens are invalid in XID identifiers,
+    // so the commit will route the display name through `namecode::encode`
+    // before using it as a path component — exercising the non-trivial
+    // arm of the encoding contract.
+    for ch in "my-personal".chars() {
         let key = ch.to_string();
         assert!(
             matches!(h.dispatch(&key).await, KeyDispatchOutcome::Handled),
             "dispatch returned Unhandled for {key:?}"
         );
-        let frame = render_settings_to_string(&h, 80, 24).await;
-        let snap_name = format!("new_connection_inline_after_{}_{}", snap_idx, ch);
-        insta::assert_snapshot!(snap_name, &frame);
-        assert_ne!(
-            prior_frame, frame,
-            "typing {ch:?} into the inline ghost row must produce a \
-             visible change in the rendered frame"
+    }
+    let frame_typed = render_settings_to_string(&h, 80, 24).await;
+    insta::assert_snapshot!("compose_typed_name", &frame_typed);
+
+    // Tab → Protocol; `l` cycles from null to options[0] = "anthropic".
+    assert!(matches!(
+        h.dispatch("Tab").await,
+        KeyDispatchOutcome::Handled
+    ));
+    assert!(matches!(h.dispatch("l").await, KeyDispatchOutcome::Handled));
+    let frame_protocol = render_settings_to_string(&h, 80, 24).await;
+    insta::assert_snapshot!("compose_protocol_selected", &frame_protocol);
+
+    // Tab → Endpoint; type the endpoint URL.
+    assert!(matches!(
+        h.dispatch("Tab").await,
+        KeyDispatchOutcome::Handled
+    ));
+    for ch in "https://api.example.com".chars() {
+        let key = ch.to_string();
+        assert!(
+            matches!(h.dispatch(&key).await, KeyDispatchOutcome::Handled),
+            "dispatch returned Unhandled for endpoint char {key:?}"
         );
-        prior_frame = frame;
     }
 
-    // The final frame's inline buffer must contain the full word —
-    // catches the case where each char produces *some* visual change
-    // (e.g. cursor blink) but the actual write-back doesn't fill in.
-    let final_frame = prior_frame;
-    assert!(
-        final_frame.contains("Test"),
-        "rendered ghost row must show 'Test' in the inline buffer after typing it; \
-         got:\n{final_frame}"
+    // Tab → Auth; `l` cycles from null to AuthScheme::ALL[0] = XApiKey
+    // (rendered "x-api-key").
+    assert!(matches!(
+        h.dispatch("Tab").await,
+        KeyDispatchOutcome::Handled
+    ));
+    assert!(matches!(h.dispatch("l").await, KeyDispatchOutcome::Handled));
+
+    // Tab → Key; type the api key. Key field renders masked (the
+    // FormValue::Text variant carries `masked: true`), so the snapshot
+    // surface won't show "sk-test" verbatim.
+    assert!(matches!(
+        h.dispatch("Tab").await,
+        KeyDispatchOutcome::Handled
+    ));
+    for ch in "sk-test".chars() {
+        let key = ch.to_string();
+        assert!(
+            matches!(h.dispatch(&key).await, KeyDispatchOutcome::Handled),
+            "dispatch returned Unhandled for key char {key:?}"
+        );
+    }
+    let frame_full = render_settings_to_string(&h, 80, 24).await;
+    insta::assert_snapshot!("compose_full_draft", &frame_full);
+
+    // Enter commits. `accounts.compose.commit` writes:
+    //  * config/gate/accounts/<path_id>
+    //  * config/gate/providers/<path_id>
+    //  * secret/keys/<path_id>          (XApiKey.requires_key() == true)
+    //  * ui/settings/focused, expanded   (post-commit focus settle)
+    //  * ui/settings/new_account = Null (subtree clear)
+    assert!(matches!(
+        h.dispatch("Enter").await,
+        KeyDispatchOutcome::Handled
+    ));
+
+    let path_id = namecode::encode("my-personal");
+    assert_ne!(
+        path_id, "my-personal",
+        "hyphen must force a non-identity encoding"
     );
+    let comp = ox_kernel::PathComponent::try_new(&path_id)
+        .expect("namecode::encode produces a valid XID");
+
+    let account: AccountConfig = h
+        .client
+        .read_typed(&oxpath!("config", "gate", "accounts", comp.clone()))
+        .await
+        .expect("read account record")
+        .expect("account record present after commit");
+    assert_eq!(
+        account.display_name.as_deref(),
+        Some("my-personal"),
+        "display_name preserves the user-typed string"
+    );
+    assert_eq!(
+        account.provider, path_id,
+        "provider field points at the same namecoded path"
+    );
+
+    let provider: ProviderConfig = h
+        .client
+        .read_typed(&oxpath!("config", "gate", "providers", comp.clone()))
+        .await
+        .expect("read provider record")
+        .expect("provider record present at namecoded path");
+    assert_eq!(provider.dialect, "anthropic");
+    assert_eq!(provider.endpoint, "https://api.example.com");
+    assert_eq!(provider.auth, Some(ox_gate::AuthScheme::XApiKey));
+
+    let key: ApiKey = h
+        .client
+        .read_typed(&oxpath!("secret", "keys", comp.clone()))
+        .await
+        .expect("read api key")
+        .expect("secret key present for XApiKey auth");
+    assert_eq!(key.expose(), "sk-test");
+
+    // Compose draft state cleared.
+    let active: Option<bool> = h
+        .client
+        .read_typed(&oxpath!("ui", "settings", "new_account", "active"))
+        .await
+        .expect("read new_account/active")
+        .flatten();
+    assert!(
+        active != Some(true),
+        "compose `active` discriminator must be cleared after commit; got {active:?}"
+    );
+
+    let frame_after = render_settings_to_string(&h, 80, 24).await;
+    insta::assert_snapshot!("compose_after_commit", &frame_after);
 }
 
 // ---------------------------------------------------------------------------
@@ -1583,7 +1784,7 @@ async fn add_connections_have_independent_providers() {
     populate_index(&h).await;
 
     // Cursor at the accordion, focused on the Accounts header so the `a`
-    // binding (Prefix(settings/accounts)) resolves to accounts.add.
+    // binding (Prefix(settings/accounts)) resolves to accounts.compose.open.
     h.write_path(
         &oxpath!("ui", "settings", "cursor"),
         &oxpath!("settings", "index"),
@@ -1595,19 +1796,13 @@ async fn add_connections_have_independent_providers() {
     )
     .await;
 
-    // --- Create first connection "alpha" via the dispatcher.
-    assert!(matches!(h.dispatch("a").await, KeyDispatchOutcome::Handled));
-    for ch in "alpha".chars() {
-        let key = ch.to_string();
-        assert!(
-            matches!(h.dispatch(&key).await, KeyDispatchOutcome::Handled),
-            "dispatch returned Unhandled for {key:?}"
-        );
-    }
-    assert!(matches!(
-        h.dispatch("Enter").await,
-        KeyDispatchOutcome::Handled
-    ));
+    // --- Create first connection "alpha" via the full compose flow.
+    // Each form field gets a distinct, observable value so a shared-
+    // record bug shows up as one connection's endpoint clobbering the
+    // other's. "alpha"/"beta" are already valid XID identifiers, so
+    // `namecode::encode` is idempotent here and on-disk path components
+    // match the typed names.
+    drive_compose_full_flow(&h, "alpha", "https://api-a.example.com", "key-a").await;
 
     let alpha_comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
     let account_alpha: AccountConfig = h
@@ -1617,45 +1812,8 @@ async fn add_connections_have_independent_providers() {
         .expect("read alpha account record")
         .expect("alpha account record present after create");
 
-    // Mirror what a user editing alpha's endpoint would write: stamp a
-    // distinctive endpoint into the ProviderConfig at the path implied by
-    // alpha's `provider` field. This isolates the test from any inline
-    // field-edit machinery — we exercise only the create-time path.
-    let alpha_provider_comp =
-        ox_kernel::PathComponent::try_new(&account_alpha.provider).unwrap();
-    h.write_typed(
-        &oxpath!("config", "gate", "providers", alpha_provider_comp.clone()),
-        &ProviderConfig {
-            dialect: "anthropic".to_string(),
-            endpoint: "https://alpha.example.com".to_string(),
-            version: "2023-06-01".to_string(),
-            auth: Some(ox_gate::AuthScheme::XApiKey),
-        },
-    )
-    .await;
-
-    // --- Create second connection "beta" via the dispatcher.
-    //
-    // Re-focus the Accounts header so `a` resolves to accounts.add again.
-    // After the first commit the focused row sits on the new account row;
-    // we want the section header so the binding picks up cleanly.
-    h.write_path(
-        &oxpath!("ui", "settings", "focused"),
-        &oxpath!("settings", "accounts"),
-    )
-    .await;
-    assert!(matches!(h.dispatch("a").await, KeyDispatchOutcome::Handled));
-    for ch in "beta".chars() {
-        let key = ch.to_string();
-        assert!(
-            matches!(h.dispatch(&key).await, KeyDispatchOutcome::Handled),
-            "dispatch returned Unhandled for {key:?}"
-        );
-    }
-    assert!(matches!(
-        h.dispatch("Enter").await,
-        KeyDispatchOutcome::Handled
-    ));
+    // --- Create second connection "beta" via the same flow.
+    drive_compose_full_flow(&h, "beta", "https://api-b.example.com", "key-b").await;
 
     let beta_comp = ox_kernel::PathComponent::try_new("beta").unwrap();
     let account_beta: AccountConfig = h
@@ -1701,27 +1859,47 @@ async fn add_connections_have_independent_providers() {
          providers/ child names={:?}",
         account_alpha.provider, account_beta.provider, provider_child_names,
     );
-
-    // Belt-and-suspenders: alpha's endpoint must still match what we wrote
-    // through alpha's provider path. If beta's create flow stomped on the
-    // shared record (e.g., wrote a default ProviderConfig at the same
-    // path) the endpoint we stamped above will be gone.
-    let alpha_provider_after: ProviderConfig = h
-        .client
-        .read_typed(&oxpath!(
-            "config",
-            "gate",
-            "providers",
-            alpha_provider_comp.clone()
-        ))
-        .await
-        .expect("read alpha provider after beta create")
-        .expect("alpha provider record present after beta create");
     assert_eq!(
-        alpha_provider_after.endpoint, "https://alpha.example.com",
-        "alpha's distinctive endpoint must survive beta's creation; if it \
-         has been reset to the anthropic default then beta's create wrote \
-         over the shared provider record. providers/ child names={:?}",
+        account_alpha.provider, "alpha",
+        "alpha's provider field must point at its own namecoded path; \
+         providers/ child names={:?}",
+        provider_child_names,
+    );
+    assert_eq!(
+        account_beta.provider, "beta",
+        "beta's provider field must point at its own namecoded path; \
+         providers/ child names={:?}",
+        provider_child_names,
+    );
+
+    // The compose flow itself now writes each account's ProviderConfig
+    // (with the typed endpoint) at its own path — no separate "stamp the
+    // endpoint" step is needed. Each provider record must survive the
+    // OTHER account's creation; if the two were aliased, beta's commit
+    // would have stomped on alpha's endpoint when it ran.
+    let alpha_provider: ProviderConfig = h
+        .client
+        .read_typed(&oxpath!("config", "gate", "providers", alpha_comp.clone()))
+        .await
+        .expect("read alpha provider")
+        .expect("alpha provider record present after beta create");
+    let beta_provider: ProviderConfig = h
+        .client
+        .read_typed(&oxpath!("config", "gate", "providers", beta_comp.clone()))
+        .await
+        .expect("read beta provider")
+        .expect("beta provider record present after beta create");
+    assert_eq!(
+        alpha_provider.endpoint, "https://api-a.example.com",
+        "alpha's typed endpoint must survive beta's creation; if it has been \
+         overwritten by beta's value then the create flow is writing both \
+         accounts' ProviderConfig records to the same path. providers/ child \
+         names={:?}",
+        provider_child_names,
+    );
+    assert_eq!(
+        beta_provider.endpoint, "https://api-b.example.com",
+        "beta's typed endpoint must persist; providers/ child names={:?}",
         provider_child_names,
     );
 }
