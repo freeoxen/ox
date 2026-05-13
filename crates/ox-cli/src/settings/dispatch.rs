@@ -872,6 +872,152 @@ mod tests {
     }
 
     #[test]
+    fn manual_model_esc_routes_via_capture() {
+        // Esc on the manual-model wizard is a lifecycle key — the form
+        // scope claims it at Capture before any per-stage leaf sees it.
+        // Mirrors pending-delete's Esc shape.
+        use ox_types::settings::ManualModelStage;
+
+        let mut cmds = CommandRegistry::new();
+        cmds.register(Box::new(WriteSentinel::new()));
+
+        let mut bindings = BindingRegistry::new();
+        bindings.register(BindingEntry {
+            screen: Screen::Settings,
+            scope: ox_types::BindingScope::Exact(oxpath!("settings", "_manual_model")),
+            mode: None,
+            key: KeyChord {
+                modifiers: KeyModifierSet::default(),
+                code: KeyCodeRepr::Esc,
+            },
+            command_id: cmd_id("test.sentinel"),
+            phase: Phase::Capture,
+        });
+
+        let renderers = RendererRegistry::new();
+        let mut reader = LocalConfig::default();
+        reader
+            .write(
+                &oxpath!("ui", "settings", "manual_model", "stage"),
+                Record::parsed(structfs_serde_store::to_value(&ManualModelStage::Id).unwrap()),
+            )
+            .unwrap();
+
+        let writes = dispatch_settings_key(
+            &mut reader,
+            Screen::Settings,
+            &oxpath!("settings", "models"),
+            None,
+            &KeyChord {
+                modifiers: KeyModifierSet::default(),
+                code: KeyCodeRepr::Esc,
+            },
+            &cmds,
+            &bindings,
+            &renderers,
+        );
+
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].path, oxpath!("ui", "sentinel"));
+    }
+
+    #[test]
+    fn manual_model_enter_routes_via_bubble() {
+        // Enter advances the wizard at the form scope on Bubble: leaf
+        // stages get first crack at Enter (Target) so a future
+        // multi-line stage could insert a newline; nothing claims it
+        // there today, so a Bubble binding at `_manual_model` fires.
+        use ox_types::settings::ManualModelStage;
+
+        let mut cmds = CommandRegistry::new();
+        cmds.register(Box::new(WriteSentinel::new()));
+
+        let mut bindings = BindingRegistry::new();
+        bindings.register(BindingEntry {
+            screen: Screen::Settings,
+            scope: ox_types::BindingScope::Exact(oxpath!("settings", "_manual_model")),
+            mode: None,
+            key: KeyChord {
+                modifiers: KeyModifierSet::default(),
+                code: KeyCodeRepr::Enter,
+            },
+            command_id: cmd_id("test.sentinel"),
+            phase: Phase::Bubble,
+        });
+
+        let renderers = RendererRegistry::new();
+        let mut reader = LocalConfig::default();
+        reader
+            .write(
+                &oxpath!("ui", "settings", "manual_model", "stage"),
+                Record::parsed(structfs_serde_store::to_value(&ManualModelStage::Id).unwrap()),
+            )
+            .unwrap();
+
+        let writes = dispatch_settings_key(
+            &mut reader,
+            Screen::Settings,
+            &oxpath!("settings", "models"),
+            None,
+            &KeyChord {
+                modifiers: KeyModifierSet::default(),
+                code: KeyCodeRepr::Enter,
+            },
+            &cmds,
+            &bindings,
+            &renderers,
+        );
+
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].path, oxpath!("ui", "sentinel"));
+    }
+
+    #[test]
+    fn manual_model_printable_routes_via_target_at_stage_leaf() {
+        // Printable ASCII on the manual-model wizard targets the active
+        // stage's leaf scope (`_manual_model/<stage>`), not the form
+        // scope. A Target binding at `_manual_model/Id` must fire when
+        // the stage is Id.
+        use ox_types::settings::ManualModelStage;
+
+        let mut cmds = CommandRegistry::new();
+        cmds.register(Box::new(WriteSentinel::new()));
+
+        let mut bindings = BindingRegistry::new();
+        bindings.register(BindingEntry {
+            screen: Screen::Settings,
+            scope: ox_types::BindingScope::Exact(oxpath!("settings", "_manual_model", "Id")),
+            mode: None,
+            key: key_char('x'),
+            command_id: cmd_id("test.sentinel"),
+            phase: Phase::Target,
+        });
+
+        let renderers = RendererRegistry::new();
+        let mut reader = LocalConfig::default();
+        reader
+            .write(
+                &oxpath!("ui", "settings", "manual_model", "stage"),
+                Record::parsed(structfs_serde_store::to_value(&ManualModelStage::Id).unwrap()),
+            )
+            .unwrap();
+
+        let writes = dispatch_settings_key(
+            &mut reader,
+            Screen::Settings,
+            &oxpath!("settings", "models"),
+            None,
+            &key_char('x'),
+            &cmds,
+            &bindings,
+            &renderers,
+        );
+
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].path, oxpath!("ui", "sentinel"));
+    }
+
+    #[test]
     fn manual_model_falls_through_when_legacy_stringly_stage() {
         // A stale Value::String("id") at the stage path (the legacy
         // wire format) must not engage the manual-model scope — the

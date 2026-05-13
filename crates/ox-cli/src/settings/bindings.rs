@@ -510,55 +510,88 @@ fn register_compose_field_selector(reg: &mut BindingRegistry) {
     }
 }
 
-/// Register the manual-model entry mode's bindings at the synthetic
-/// `settings/_manual_model` cursor scope. The dispatcher routes to
-/// this scope when `ui/settings/manual_model/stage` holds a typed
-/// `ManualModelStage` value (PascalCase wire shape). Mirrors
-/// `register_compose_new_account`'s shape: printable ASCII +
-/// Backspace/Enter/Esc, with shift_only on uppercase letters.
+/// Register the manual-model entry mode's bindings across the
+/// compound widget's scopes. The dispatcher routes to these scopes
+/// when `ui/settings/manual_model/stage` holds a typed
+/// `ManualModelStage` value (PascalCase wire shape).
+///
+/// Phase split:
+/// - Form scope `settings/_manual_model` claims lifecycle keys:
+///   Esc (Capture, cancels the wizard) and Enter (Bubble, advances
+///   the stage so a future multi-line stage can claim Enter at Target
+///   first).
+/// - Per-stage leaf scopes `_manual_model/Id`, `_manual_model/Ctx`,
+///   `_manual_model/Out` claim text-input keys: printable ASCII
+///   (`insert_char`) and Backspace (`delete_back`) at Target. The
+///   command bodies read the active stage from snapshot, so a single
+///   command id services all three stages.
 fn register_manual_model(reg: &mut BindingRegistry) {
-    let scope = oxpath!("settings", "_manual_model");
+    let form_scope = oxpath!("settings", "_manual_model");
 
-    for byte in 0x20u8..=0x7E {
-        let ch = byte as char;
-        let modifiers = if ch.is_ascii_uppercase() {
-            shift_only()
-        } else {
-            no_mods()
-        };
-        reg.register(BindingEntry {
-            screen: Screen::Settings,
-            scope: BindingScope::Exact(scope.clone()),
-            mode: None,
-            key: KeyChord {
-                modifiers,
-                code: KeyCodeRepr::Char(ch),
-            },
-            command_id: cmd("models.compose_manual.insert_char"),
-            phase: Phase::Target,
-        });
+    // Esc — Capture phase: the wizard claims Esc before any leaf, so
+    // a future per-stage Esc handler can't shadow lifecycle cancel.
+    reg.register(BindingEntry {
+        screen: Screen::Settings,
+        scope: BindingScope::Exact(form_scope.clone()),
+        mode: None,
+        key: KeyChord {
+            modifiers: no_mods(),
+            code: KeyCodeRepr::Esc,
+        },
+        command_id: cmd("models.compose_manual.cancel"),
+        phase: Phase::Capture,
+    });
+
+    // Enter — Bubble phase: leaf stages get first crack at Enter
+    // (Target) so a future multi-line stage can insert a newline; if
+    // nothing claims it there, the form advances on Bubble.
+    reg.register(BindingEntry {
+        screen: Screen::Settings,
+        scope: BindingScope::Exact(form_scope),
+        mode: None,
+        key: KeyChord {
+            modifiers: no_mods(),
+            code: KeyCodeRepr::Enter,
+        },
+        command_id: cmd("models.compose_manual.commit"),
+        phase: Phase::Bubble,
+    });
+
+    // Per-stage leaves: printable ASCII + Backspace at Target. Stages
+    // share command ids; the commands read the active stage from
+    // snapshot and apply per-stage rules (e.g. Ctx/Out digits-only).
+    for stage_scope in [
+        oxpath!("settings", "_manual_model", "Id"),
+        oxpath!("settings", "_manual_model", "Ctx"),
+        oxpath!("settings", "_manual_model", "Out"),
+    ] {
+        for byte in 0x20u8..=0x7E {
+            let ch = byte as char;
+            let modifiers = if ch.is_ascii_uppercase() {
+                shift_only()
+            } else {
+                no_mods()
+            };
+            reg.register(BindingEntry {
+                screen: Screen::Settings,
+                scope: BindingScope::Exact(stage_scope.clone()),
+                mode: None,
+                key: KeyChord {
+                    modifiers,
+                    code: KeyCodeRepr::Char(ch),
+                },
+                command_id: cmd("models.compose_manual.insert_char"),
+                phase: Phase::Target,
+            });
+        }
+        bind(
+            reg,
+            Some(stage_scope),
+            no_mods(),
+            KeyCodeRepr::Backspace,
+            "models.compose_manual.delete_back",
+        );
     }
-    bind(
-        reg,
-        Some(scope.clone()),
-        no_mods(),
-        KeyCodeRepr::Backspace,
-        "models.compose_manual.delete_back",
-    );
-    bind(
-        reg,
-        Some(scope.clone()),
-        no_mods(),
-        KeyCodeRepr::Enter,
-        "models.compose_manual.commit",
-    );
-    bind(
-        reg,
-        Some(scope),
-        no_mods(),
-        KeyCodeRepr::Esc,
-        "models.compose_manual.cancel",
-    );
 }
 
 /// Register the pending-delete confirmation mode's bindings at the
@@ -862,6 +895,90 @@ mod tests {
             )
             .expect("should match");
         assert_eq!(hit, &cmd("models.toggle_default"));
+    }
+
+    #[test]
+    fn manual_model_esc_at_form_scope_is_capture_phase() {
+        // Esc is registered at the form scope `_manual_model` under
+        // Phase::Capture — the wizard claims it before any per-stage
+        // leaf sees it.
+        let reg = populated();
+        let hit = reg
+            .lookup(
+                Screen::Settings,
+                &oxpath!("settings", "_manual_model"),
+                None,
+                &key(no_mods(), KeyCodeRepr::Esc),
+                Phase::Capture,
+            )
+            .expect("Esc should resolve at Capture");
+        assert_eq!(hit, &cmd("models.compose_manual.cancel"));
+    }
+
+    #[test]
+    fn manual_model_enter_at_form_scope_is_bubble_phase() {
+        // Enter advances the wizard from the form scope on Bubble; this
+        // leaves Target free for a future multi-line stage to claim
+        // Enter as "insert newline" at the leaf.
+        let reg = populated();
+        let hit = reg
+            .lookup(
+                Screen::Settings,
+                &oxpath!("settings", "_manual_model"),
+                None,
+                &key(no_mods(), KeyCodeRepr::Enter),
+                Phase::Bubble,
+            )
+            .expect("Enter should resolve at Bubble");
+        assert_eq!(hit, &cmd("models.compose_manual.commit"));
+    }
+
+    #[test]
+    fn manual_model_printable_at_id_leaf_is_target_phase() {
+        // Printable ASCII lives on the per-stage leaf scope; same
+        // command id services all three stages (the command body reads
+        // the active stage from snapshot).
+        let reg = populated();
+        let hit = reg
+            .lookup(
+                Screen::Settings,
+                &oxpath!("settings", "_manual_model", "Id"),
+                None,
+                &key(no_mods(), KeyCodeRepr::Char('x')),
+                Phase::Target,
+            )
+            .expect("'x' should resolve at the Id leaf scope");
+        assert_eq!(hit, &cmd("models.compose_manual.insert_char"));
+    }
+
+    #[test]
+    fn manual_model_backspace_at_ctx_leaf_is_target_phase() {
+        let reg = populated();
+        let hit = reg
+            .lookup(
+                Screen::Settings,
+                &oxpath!("settings", "_manual_model", "Ctx"),
+                None,
+                &key(no_mods(), KeyCodeRepr::Backspace),
+                Phase::Target,
+            )
+            .expect("Backspace should resolve at the Ctx leaf scope");
+        assert_eq!(hit, &cmd("models.compose_manual.delete_back"));
+    }
+
+    #[test]
+    fn manual_model_printable_at_out_leaf_is_target_phase() {
+        let reg = populated();
+        let hit = reg
+            .lookup(
+                Screen::Settings,
+                &oxpath!("settings", "_manual_model", "Out"),
+                None,
+                &key(no_mods(), KeyCodeRepr::Char('7')),
+                Phase::Target,
+            )
+            .expect("'7' should resolve at the Out leaf scope");
+        assert_eq!(hit, &cmd("models.compose_manual.insert_char"));
     }
 
     #[test]
