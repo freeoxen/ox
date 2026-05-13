@@ -1125,4 +1125,156 @@ mod tests {
         assert_eq!(writes.len(), 1);
         assert_eq!(writes[0].path, oxpath!("ui", "sentinel"));
     }
+
+    /// Seed `ui/settings/edit_mode = true` (plus the field path the
+    /// edit machinery commits to) so `read_edit_mode_active` returns
+    /// true and `compute_scope_path` pushes the `_edit_mode` leaf.
+    fn seed_edit_mode(reader: &mut LocalConfig, field_path: Path) {
+        use super::super::commands::navigation::path_to_value;
+        reader
+            .write(
+                &oxpath!("ui", "settings", "edit_mode"),
+                Record::parsed(Value::Bool(true)),
+            )
+            .unwrap();
+        reader
+            .write(
+                &oxpath!("ui", "settings", "edit_field_path"),
+                Record::parsed(path_to_value(&field_path)),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn edit_mode_esc_routes_via_capture() {
+        // Esc on inline edit-mode is a lifecycle key — the `_edit_mode`
+        // scope claims it at Capture before any leaf sees it. A binding
+        // registered at Phase::Capture on `_edit_mode` must fire when
+        // Esc is pressed while edit_mode is active.
+        let mut cmds = CommandRegistry::new();
+        cmds.register(Box::new(WriteSentinel::new()));
+
+        let mut bindings = BindingRegistry::new();
+        bindings.register(BindingEntry {
+            screen: Screen::Settings,
+            scope: BindingScope::Exact(oxpath!("settings", "_edit_mode")),
+            mode: None,
+            key: KeyChord {
+                modifiers: KeyModifierSet::default(),
+                code: KeyCodeRepr::Esc,
+            },
+            command_id: cmd_id("test.sentinel"),
+            phase: Phase::Capture,
+        });
+
+        let renderers = RendererRegistry::new();
+        let mut reader = LocalConfig::default();
+        seed_edit_mode(
+            &mut reader,
+            oxpath!("config", "gate", "providers", "alpha", "endpoint"),
+        );
+
+        let writes = dispatch_settings_key(
+            &mut reader,
+            Screen::Settings,
+            &oxpath!("settings", "accounts"),
+            None,
+            &KeyChord {
+                modifiers: KeyModifierSet::default(),
+                code: KeyCodeRepr::Esc,
+            },
+            &cmds,
+            &bindings,
+            &renderers,
+        );
+
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].path, oxpath!("ui", "sentinel"));
+    }
+
+    #[test]
+    fn edit_mode_enter_routes_via_bubble() {
+        // Enter commits the edit buffer at Bubble: leaves (none today,
+        // but a future multi-line text editor at Target) get first crack
+        // at Enter. A Bubble binding at `_edit_mode` fires.
+        let mut cmds = CommandRegistry::new();
+        cmds.register(Box::new(WriteSentinel::new()));
+
+        let mut bindings = BindingRegistry::new();
+        bindings.register(BindingEntry {
+            screen: Screen::Settings,
+            scope: BindingScope::Exact(oxpath!("settings", "_edit_mode")),
+            mode: None,
+            key: KeyChord {
+                modifiers: KeyModifierSet::default(),
+                code: KeyCodeRepr::Enter,
+            },
+            command_id: cmd_id("test.sentinel"),
+            phase: Phase::Bubble,
+        });
+
+        let renderers = RendererRegistry::new();
+        let mut reader = LocalConfig::default();
+        seed_edit_mode(
+            &mut reader,
+            oxpath!("config", "gate", "providers", "alpha", "endpoint"),
+        );
+
+        let writes = dispatch_settings_key(
+            &mut reader,
+            Screen::Settings,
+            &oxpath!("settings", "accounts"),
+            None,
+            &KeyChord {
+                modifiers: KeyModifierSet::default(),
+                code: KeyCodeRepr::Enter,
+            },
+            &cmds,
+            &bindings,
+            &renderers,
+        );
+
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].path, oxpath!("ui", "sentinel"));
+    }
+
+    #[test]
+    fn edit_mode_printable_routes_via_target() {
+        // Printable ASCII on inline edit-mode mutates the buffer — the
+        // leaf claim. A Target binding at `_edit_mode` must fire when a
+        // printable char is pressed while edit_mode is active.
+        let mut cmds = CommandRegistry::new();
+        cmds.register(Box::new(WriteSentinel::new()));
+
+        let mut bindings = BindingRegistry::new();
+        bindings.register(BindingEntry {
+            screen: Screen::Settings,
+            scope: BindingScope::Exact(oxpath!("settings", "_edit_mode")),
+            mode: None,
+            key: key_char('x'),
+            command_id: cmd_id("test.sentinel"),
+            phase: Phase::Target,
+        });
+
+        let renderers = RendererRegistry::new();
+        let mut reader = LocalConfig::default();
+        seed_edit_mode(
+            &mut reader,
+            oxpath!("config", "gate", "providers", "alpha", "endpoint"),
+        );
+
+        let writes = dispatch_settings_key(
+            &mut reader,
+            Screen::Settings,
+            &oxpath!("settings", "accounts"),
+            None,
+            &key_char('x'),
+            &cmds,
+            &bindings,
+            &renderers,
+        );
+
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].path, oxpath!("ui", "sentinel"));
+    }
 }

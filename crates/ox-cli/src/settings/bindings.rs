@@ -313,6 +313,13 @@ fn register_row_prefixes(reg: &mut BindingRegistry) {
 /// per-row keys. Printable chars and Backspace mutate the edit
 /// buffer; Enter commits the buffer to the field's data path; Esc
 /// cancels without writing.
+///
+/// Phase classification mirrors the compose form: Esc is a lifecycle
+/// key the scope claims at `Phase::Capture` (cancel always wins over
+/// any leaf claim); Enter commits at `Phase::Bubble` so a future
+/// multi-line text leaf could shadow it with a `Phase::Target`
+/// newline-insert binding; printable chars and Backspace stay at
+/// `Phase::Target` (they mutate the buffer — the leaf claim).
 fn register_edit_mode(reg: &mut BindingRegistry) {
     let scope = oxpath!("settings", "_edit_mode");
     // Printable ASCII (0x20..=0x7E) → edit.insert_char.
@@ -349,14 +356,31 @@ fn register_edit_mode(reg: &mut BindingRegistry) {
         KeyCodeRepr::Backspace,
         "edit.delete_back",
     );
-    bind(
-        reg,
-        Some(scope.clone()),
-        no_mods(),
-        KeyCodeRepr::Enter,
-        "edit.commit",
-    );
-    bind(reg, Some(scope), no_mods(), KeyCodeRepr::Esc, "edit.cancel");
+    // Enter commits at Bubble: leaves (none today, but a future
+    // multi-line text editor at Target) get first crack at Enter.
+    reg.register(BindingEntry {
+        screen: Screen::Settings,
+        scope: BindingScope::Exact(scope.clone()),
+        mode: None,
+        key: KeyChord {
+            modifiers: no_mods(),
+            code: KeyCodeRepr::Enter,
+        },
+        command_id: cmd("edit.commit"),
+        phase: Phase::Bubble,
+    });
+    // Esc cancels at Capture: lifecycle key claimed before any leaf.
+    reg.register(BindingEntry {
+        screen: Screen::Settings,
+        scope: BindingScope::Exact(scope),
+        mode: None,
+        key: KeyChord {
+            modifiers: no_mods(),
+            code: KeyCodeRepr::Esc,
+        },
+        command_id: cmd("edit.cancel"),
+        phase: Phase::Capture,
+    });
 }
 
 /// Register the compose-new-account mode's bindings across two
@@ -842,7 +866,7 @@ mod tests {
                 &oxpath!("settings", "_edit_mode"),
                 None,
                 &key(no_mods(), KeyCodeRepr::Enter),
-                Phase::Target,
+                Phase::Bubble,
             )
             .expect("should match");
         assert_eq!(hit, &cmd("edit.commit"));
@@ -857,7 +881,7 @@ mod tests {
                 &oxpath!("settings", "_edit_mode"),
                 None,
                 &key(no_mods(), KeyCodeRepr::Esc),
-                Phase::Target,
+                Phase::Capture,
             )
             .expect("should match");
         assert_eq!(hit, &cmd("edit.cancel"));
