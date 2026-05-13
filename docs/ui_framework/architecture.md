@@ -483,6 +483,50 @@ The path is reconstructed per keystroke. No mutable
 "currently-active-scope-stack" state lives anywhere; the snapshot is
 the source of truth.
 
+### `BindingScope::Anywhere` and the dispatch walk
+
+`BindingScope::Anywhere` is the lowest-specificity scope tier and the
+one place the dispatcher's scope-path walk does not name. Anywhere
+bindings are **not** pushed onto `compute_scope_path`'s `Vec<BindingScope>`;
+they ride into dispatch through the registry's specificity ordering
+instead. Each per-phase `bindings.lookup(screen, scope, mode, key, phase)`
+call considers every registered entry whose `scope.matches(cursor)`
+returns true — and `BindingScope::Anywhere::matches` returns true for
+*any* cursor. So at every scope the dispatcher visits in any phase,
+Anywhere entries are candidates; the specificity sort
+(`Exact > Prefix(deeper) > Prefix(shallower) > Anywhere`) keeps them
+ranked last.
+
+Practical effect: an Anywhere binding fires only when no more-specific
+entry registered at the same phase claims the key. Within a given
+phase, the walk produces the same outcome as if Anywhere had been
+appended as an extra "outermost" scope; the registry collapses that
+extra step into the per-scope query.
+
+This is why the dispatcher code makes no mention of Anywhere. The
+phase order — Capture (outer→inner), Target (leaf only), Bubble
+(inner→outer) — is what callers reason about; Anywhere is a
+specificity property of *individual bindings* layered on top, not a
+fourth pass. An Anywhere+Capture binding is reachable on the first
+Capture query at the outermost scope; an Anywhere+Bubble binding is
+the final fallback at every Bubble query.
+
+Convention for which phase an Anywhere binding should declare:
+
+- **Lifecycle interceptors that should out-rank inner scopes** —
+  declare `Phase::Capture`. The Anywhere+Capture binding fires at the
+  outermost scope's Capture query, before any focused leaf sees the
+  key. Reserved for keys with no per-screen meaning (e.g. a global
+  panic-exit).
+- **Ambient fallbacks that only fire when nothing else wants the key**
+  — declare `Phase::Bubble`. The Anywhere+Bubble binding is queried
+  last at every scope's Bubble pass, so `?` for help or `Ctrl+S` for
+  save fire only when no inner leaf claims them.
+- **`Phase::Target`** is rarely the right choice for Anywhere: Target
+  only queries the leaf, so an Anywhere+Target binding only fires when
+  the leaf has no Target binding for the key — which is brittle if the
+  set of leaves grows. Prefer Bubble for "ambient" semantics.
+
 ### Worked example: typing `h` while composing
 
 Snapshot state: `active==true`, `focused_field == Protocol` (a

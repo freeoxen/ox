@@ -118,7 +118,13 @@ pub fn dispatch_settings_key(
 ///
 /// Compound widgets are mutually exclusive by design — a `debug_assert`
 /// enforces that at most one is active at a time.
-fn compute_scope_path(snapshot: &mut dyn Reader, cursor: &Path) -> Vec<BindingScope> {
+///
+/// `pub(crate)` so the dispatcher's tests can assert the returned
+/// ordering directly. The structural ordering — cursor → focused-row →
+/// compound-widget-container → compound-widget-leaf — is the contract
+/// every phase-walk in the dispatcher depends on; the tests in this
+/// file pin it.
+pub(crate) fn compute_scope_path(snapshot: &mut dyn Reader, cursor: &Path) -> Vec<BindingScope> {
     let mut path = vec![BindingScope::Exact(cursor.clone())];
 
     // Focused row is the widget the user has navigated to inside the
@@ -1269,5 +1275,286 @@ mod tests {
 
         assert_eq!(writes.len(), 1);
         assert_eq!(writes[0].path, oxpath!("ui", "sentinel"));
+    }
+
+    // -----------------------------------------------------------------
+    // `compute_scope_path` structural ordering tests
+    //
+    // The dispatcher's three-phase walk (Capture outer→inner, Target on
+    // the leaf only, Bubble inner→outer) depends on the scope path
+    // being assembled in a fixed order:
+    //
+    //   cursor → focused-row → compound-widget-container → compound-widget-leaf
+    //
+    // Today that ordering is convention enforced by reading
+    // `compute_scope_path`. These tests pin it position-by-position so
+    // a reorder that quietly swaps inner / outer trips a unit test
+    // instead of a runtime keystroke routing to the wrong widget.
+    // -----------------------------------------------------------------
+
+    /// Seed `ui/settings/focused = <path>` so `compute_scope_path` pushes
+    /// the focused-row scope between the cursor and any compound widget.
+    fn seed_focused_row(reader: &mut LocalConfig, focused: Path) {
+        use super::super::commands::navigation::path_to_value;
+        reader
+            .write(
+                &oxpath!("ui", "settings", "focused"),
+                Record::parsed(path_to_value(&focused)),
+            )
+            .unwrap();
+    }
+
+    /// Seed `ui/settings/new_account/active = true` so
+    /// `compute_scope_path` enters compose mode.
+    fn seed_compose_active(reader: &mut LocalConfig) {
+        reader
+            .write(
+                &oxpath!("ui", "settings", "new_account", "active"),
+                Record::parsed(Value::Bool(true)),
+            )
+            .unwrap();
+    }
+
+    /// Seed `ui/settings/new_account/focused_field` to the wire form of
+    /// the given `AccountField`. The dispatcher's compose-leaf branch
+    /// reads this to pick between the text and selector leaves.
+    fn seed_focused_compose_field(reader: &mut LocalConfig, field: AccountField) {
+        let value = structfs_serde_store::to_value(&field).unwrap();
+        reader
+            .write(
+                &oxpath!("ui", "settings", "new_account", "focused_field"),
+                Record::parsed(value),
+            )
+            .unwrap();
+    }
+
+    /// Seed `ui/settings/manual_model/stage` to the typed wire form of
+    /// `stage`, engaging manual-model mode for `compute_scope_path`.
+    fn seed_manual_model_stage(
+        reader: &mut LocalConfig,
+        stage: ox_types::settings::ManualModelStage,
+    ) {
+        reader
+            .write(
+                &oxpath!("ui", "settings", "manual_model", "stage"),
+                Record::parsed(structfs_serde_store::to_value(&stage).unwrap()),
+            )
+            .unwrap();
+    }
+
+    /// Seed `ui/settings/pending_delete = <name>`, engaging
+    /// pending-delete mode for `compute_scope_path`.
+    fn seed_pending_delete(reader: &mut LocalConfig, name: &str) {
+        reader
+            .write(
+                &oxpath!("ui", "settings", "pending_delete"),
+                Record::parsed(Value::String(name.into())),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn scope_path_outer_to_inner_with_no_compound_widget() {
+        // Cursor with no focused row and no compound widget yields a
+        // one-element path — just the cursor.
+        let mut reader = LocalConfig::default();
+        let cursor = oxpath!("settings", "accounts");
+
+        let path = compute_scope_path(&mut reader, &cursor);
+
+        assert_eq!(path.len(), 1, "expected only the cursor scope");
+        assert_eq!(path[0], BindingScope::Exact(cursor));
+    }
+
+    #[test]
+    fn scope_path_includes_focused_row_after_cursor() {
+        // Focused row distinct from the cursor sits between the cursor
+        // (outer) and any compound widget (inner). With no compound
+        // widget active, the path is [cursor, focused-row].
+        let mut reader = LocalConfig::default();
+        let cursor = oxpath!("settings", "accounts");
+        seed_focused_row(&mut reader, oxpath!("settings", "accounts", "alpha"));
+
+        let path = compute_scope_path(&mut reader, &cursor);
+
+        assert_eq!(path.len(), 2);
+        assert_eq!(path[0], BindingScope::Exact(cursor));
+        assert_eq!(
+            path[1],
+            BindingScope::Exact(oxpath!("settings", "accounts", "alpha"))
+        );
+    }
+
+    #[test]
+    fn scope_path_omits_focused_row_when_same_as_cursor() {
+        // The focused-row scope is only pushed when distinct from the
+        // cursor — otherwise the path would carry a duplicate entry and
+        // the Bubble walk would hit the same scope twice.
+        let mut reader = LocalConfig::default();
+        let cursor = oxpath!("settings", "accounts");
+        seed_focused_row(&mut reader, cursor.clone());
+
+        let path = compute_scope_path(&mut reader, &cursor);
+
+        assert_eq!(path.len(), 1);
+        assert_eq!(path[0], BindingScope::Exact(cursor));
+    }
+
+    #[test]
+    fn scope_path_for_compose_is_cursor_then_form_then_text_leaf() {
+        // Compose mode with a text-kind field focused (Name): the path
+        // is cursor → _compose_form → _compose_field_text. The leaf
+        // sits at the inner end so the Target phase fires on the leaf.
+        let mut reader = LocalConfig::default();
+        let cursor = oxpath!("settings", "accounts");
+        seed_compose_active(&mut reader);
+        seed_focused_compose_field(&mut reader, AccountField::Name);
+
+        let path = compute_scope_path(&mut reader, &cursor);
+
+        assert_eq!(path.len(), 3);
+        assert_eq!(path[0], BindingScope::Exact(cursor));
+        assert_eq!(
+            path[1],
+            BindingScope::Exact(oxpath!("settings", "_compose_form"))
+        );
+        assert_eq!(
+            path[2],
+            BindingScope::Exact(oxpath!("settings", "_compose_field_text"))
+        );
+    }
+
+    #[test]
+    fn scope_path_for_compose_selector_focus_uses_selector_leaf() {
+        // Compose mode with a selector-kind field focused (Protocol):
+        // same outer shape but the leaf flips to _compose_field_selector.
+        // The form scope is unchanged — only the leaf depends on field
+        // kind.
+        let mut reader = LocalConfig::default();
+        let cursor = oxpath!("settings", "accounts");
+        seed_compose_active(&mut reader);
+        seed_focused_compose_field(&mut reader, AccountField::Protocol);
+
+        let path = compute_scope_path(&mut reader, &cursor);
+
+        assert_eq!(path.len(), 3);
+        assert_eq!(path[0], BindingScope::Exact(cursor));
+        assert_eq!(
+            path[1],
+            BindingScope::Exact(oxpath!("settings", "_compose_form"))
+        );
+        assert_eq!(
+            path[2],
+            BindingScope::Exact(oxpath!("settings", "_compose_field_selector"))
+        );
+    }
+
+    #[test]
+    fn scope_path_for_manual_model_is_cursor_then_form_then_stage_leaf() {
+        // Manual-model mode with stage Ctx: path is cursor → _manual_model
+        // → _manual_model/Ctx. The per-stage leaf sits innermost so
+        // stage-specific Target bindings see the key first.
+        use ox_types::settings::ManualModelStage;
+        let mut reader = LocalConfig::default();
+        let cursor = oxpath!("settings", "models");
+        seed_manual_model_stage(&mut reader, ManualModelStage::Ctx);
+
+        let path = compute_scope_path(&mut reader, &cursor);
+
+        assert_eq!(path.len(), 3);
+        assert_eq!(path[0], BindingScope::Exact(cursor));
+        assert_eq!(
+            path[1],
+            BindingScope::Exact(oxpath!("settings", "_manual_model"))
+        );
+        assert_eq!(
+            path[2],
+            BindingScope::Exact(oxpath!("settings", "_manual_model", "Ctx"))
+        );
+    }
+
+    #[test]
+    fn scope_path_for_manual_model_id_stage_uses_id_leaf() {
+        // Spot-check the stage discriminator drives the leaf. With
+        // ManualModelStage::Id the leaf must be `_manual_model/Id`, not
+        // a shared singleton.
+        use ox_types::settings::ManualModelStage;
+        let mut reader = LocalConfig::default();
+        seed_manual_model_stage(&mut reader, ManualModelStage::Id);
+
+        let path = compute_scope_path(&mut reader, &oxpath!("settings", "models"));
+
+        assert_eq!(
+            path.last().unwrap(),
+            &BindingScope::Exact(oxpath!("settings", "_manual_model", "Id"))
+        );
+    }
+
+    #[test]
+    fn scope_path_for_pending_delete_appends_pending_delete_scope() {
+        // Pending-delete mode pushes a single `_pending_delete` leaf
+        // after the cursor — it's a single-leaf compound widget (no
+        // sub-form). The leaf must be innermost so Target / Capture
+        // bindings on the dialog get first crack at the key.
+        let mut reader = LocalConfig::default();
+        seed_pending_delete(&mut reader, "alpha");
+
+        let path = compute_scope_path(&mut reader, &oxpath!("settings", "accounts"));
+
+        assert_eq!(
+            path.last().unwrap(),
+            &BindingScope::Exact(oxpath!("settings", "_pending_delete"))
+        );
+        // No focused-row, no other compound widget → just cursor + leaf.
+        assert_eq!(path.len(), 2);
+    }
+
+    #[test]
+    fn scope_path_for_edit_mode_appends_edit_mode_scope() {
+        // Inline edit-mode pushes a single `_edit_mode` leaf at the
+        // inner end. Mirrors the pending-delete shape: no separate
+        // form scope, the mode is one leaf.
+        let mut reader = LocalConfig::default();
+        seed_edit_mode(
+            &mut reader,
+            oxpath!("config", "gate", "providers", "alpha", "endpoint"),
+        );
+
+        let path = compute_scope_path(&mut reader, &oxpath!("settings", "accounts"));
+
+        assert_eq!(
+            path.last().unwrap(),
+            &BindingScope::Exact(oxpath!("settings", "_edit_mode"))
+        );
+    }
+
+    #[test]
+    fn scope_path_with_focused_row_and_compose_keeps_order() {
+        // When a focused row AND a compound widget are both engaged,
+        // the focused row sits between the cursor and the widget:
+        //   cursor → focused-row → _compose_form → _compose_field_*.
+        // Pins the four-level ordering against accidental reshuffling.
+        let mut reader = LocalConfig::default();
+        let cursor = oxpath!("settings", "accounts");
+        seed_focused_row(&mut reader, oxpath!("settings", "accounts", "alpha"));
+        seed_compose_active(&mut reader);
+        seed_focused_compose_field(&mut reader, AccountField::Name);
+
+        let path = compute_scope_path(&mut reader, &cursor);
+
+        assert_eq!(path.len(), 4);
+        assert_eq!(path[0], BindingScope::Exact(cursor));
+        assert_eq!(
+            path[1],
+            BindingScope::Exact(oxpath!("settings", "accounts", "alpha"))
+        );
+        assert_eq!(
+            path[2],
+            BindingScope::Exact(oxpath!("settings", "_compose_form"))
+        );
+        assert_eq!(
+            path[3],
+            BindingScope::Exact(oxpath!("settings", "_compose_field_text"))
+        );
     }
 }
