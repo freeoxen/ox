@@ -14,7 +14,7 @@
 
 use structfs_core_store::Path;
 
-use ox_types::{BindingEntry, BindingScope, CommandId, KeyChord, Mode, Screen};
+use ox_types::{BindingEntry, BindingScope, CommandId, KeyChord, Mode, Phase, Screen};
 
 /// Indexes bindings for `(screen, cursor, mode, key)` → `CommandId`.
 pub struct BindingRegistry {
@@ -46,14 +46,18 @@ impl BindingRegistry {
         &self.entries
     }
 
-    /// Find the binding matching all four selectors, in specificity order.
-    /// Returns the `CommandId` of the first match, or `None`.
+    /// Find the binding matching all five selectors, in specificity order.
+    /// Returns the `CommandId` of the first match, or `None`. The `phase`
+    /// argument filters by hierarchical-dispatch phase — `Target` is the
+    /// single-phase default for callers that don't yet split capture /
+    /// target / bubble.
     pub fn lookup(
         &self,
         screen: Screen,
         cursor: &Path,
         mode: Option<Mode>,
         key: &KeyChord,
+        phase: Phase,
     ) -> Option<&CommandId> {
         for e in &self.entries {
             if e.screen != screen {
@@ -63,6 +67,9 @@ impl BindingRegistry {
                 continue;
             }
             if !e.scope.matches(cursor) {
+                continue;
+            }
+            if e.phase != phase {
                 continue;
             }
             if let Some(m) = e.mode {
@@ -145,6 +152,7 @@ mod tests {
             mode: None,
             key: key_char('a'),
             command_id: cmd("screen_wide"),
+            phase: Phase::Target,
         });
         reg.register(BindingEntry {
             screen: Screen::Settings,
@@ -152,10 +160,11 @@ mod tests {
             mode: None,
             key: key_char('a'),
             command_id: cmd("cursor_specific"),
+            phase: Phase::Target,
         });
 
         let hit = reg
-            .lookup(Screen::Settings, &p, None, &key_char('a'))
+            .lookup(Screen::Settings, &p, None, &key_char('a'), Phase::Target)
             .expect("should match");
         assert_eq!(hit, &cmd("cursor_specific"));
     }
@@ -171,6 +180,7 @@ mod tests {
             mode: None,
             key: key_char('a'),
             command_id: cmd("mode_any"),
+            phase: Phase::Target,
         });
         reg.register(BindingEntry {
             screen: Screen::Settings,
@@ -178,10 +188,17 @@ mod tests {
             mode: Some(Mode::Insert),
             key: key_char('a'),
             command_id: cmd("mode_insert"),
+            phase: Phase::Target,
         });
 
         let hit = reg
-            .lookup(Screen::Settings, &p, Some(Mode::Insert), &key_char('a'))
+            .lookup(
+                Screen::Settings,
+                &p,
+                Some(Mode::Insert),
+                &key_char('a'),
+                Phase::Target,
+            )
             .expect("should match");
         assert_eq!(hit, &cmd("mode_insert"));
     }
@@ -195,6 +212,7 @@ mod tests {
             mode: None,
             key: key_char('q'),
             command_id: cmd("quit"),
+            phase: Phase::Target,
         });
 
         // Any cursor — there's no cursor-specific entry, so the
@@ -205,12 +223,19 @@ mod tests {
                 &oxpath!("settings", "anywhere"),
                 None,
                 &key_char('q'),
+                Phase::Target,
             )
             .expect("should match");
         assert_eq!(hit, &cmd("quit"));
 
         let hit = reg
-            .lookup(Screen::Settings, &oxpath!(), None, &key_char('q'))
+            .lookup(
+                Screen::Settings,
+                &oxpath!(),
+                None,
+                &key_char('q'),
+                Phase::Target,
+            )
             .expect("should match");
         assert_eq!(hit, &cmd("quit"));
     }
@@ -226,6 +251,7 @@ mod tests {
             mode: None,
             key: key_char('x'),
             command_id: cmd("first"),
+            phase: Phase::Target,
         });
         reg.register(BindingEntry {
             screen: Screen::Settings,
@@ -233,10 +259,17 @@ mod tests {
             mode: None,
             key: key_char('x'),
             command_id: cmd("second"),
+            phase: Phase::Target,
         });
 
         let hit = reg
-            .lookup(Screen::Settings, &oxpath!("settings"), None, &key_char('x'))
+            .lookup(
+                Screen::Settings,
+                &oxpath!("settings"),
+                None,
+                &key_char('x'),
+                Phase::Target,
+            )
             .expect("should match");
         assert_eq!(hit, &cmd("first"));
     }
@@ -250,9 +283,16 @@ mod tests {
             mode: None,
             key: key_char('j'),
             command_id: cmd("down"),
+            phase: Phase::Target,
         });
 
-        let hit = reg.lookup(Screen::Settings, &oxpath!(), None, &key_char('k'));
+        let hit = reg.lookup(
+            Screen::Settings,
+            &oxpath!(),
+            None,
+            &key_char('k'),
+            Phase::Target,
+        );
         assert!(hit.is_none());
     }
 
@@ -265,9 +305,16 @@ mod tests {
             mode: None,
             key: key_char('j'),
             command_id: cmd("down"),
+            phase: Phase::Target,
         });
 
-        let hit = reg.lookup(Screen::Inbox, &oxpath!(), None, &key_char('j'));
+        let hit = reg.lookup(
+            Screen::Inbox,
+            &oxpath!(),
+            None,
+            &key_char('j'),
+            Phase::Target,
+        );
         assert!(hit.is_none());
     }
 
@@ -283,6 +330,7 @@ mod tests {
             mode: Some(Mode::Insert),
             key: key_char('a'),
             command_id: cmd("insert_only"),
+            phase: Phase::Target,
         });
 
         let hit = reg.lookup(
@@ -290,6 +338,7 @@ mod tests {
             &oxpath!(),
             Some(Mode::Normal),
             &key_char('a'),
+            Phase::Target,
         );
         assert!(hit.is_none());
     }
@@ -305,16 +354,66 @@ mod tests {
             mode: Some(Mode::Insert),
             key: key_char('a'),
             command_id: cmd("insert_only"),
+            phase: Phase::Target,
         });
 
-        let hit = reg.lookup(Screen::Settings, &oxpath!(), None, &key_char('a'));
+        let hit = reg.lookup(
+            Screen::Settings,
+            &oxpath!(),
+            None,
+            &key_char('a'),
+            Phase::Target,
+        );
         assert!(hit.is_none());
     }
 
     #[test]
     fn empty_registry_returns_none() {
         let reg = BindingRegistry::new();
-        let hit = reg.lookup(Screen::Settings, &oxpath!(), None, &key_char('a'));
+        let hit = reg.lookup(
+            Screen::Settings,
+            &oxpath!(),
+            None,
+            &key_char('a'),
+            Phase::Target,
+        );
         assert!(hit.is_none());
+    }
+
+    #[test]
+    fn phase_filters_lookup() {
+        // An entry registered as Capture must not match a Target lookup,
+        // and vice versa.
+        let mut reg = BindingRegistry::new();
+        reg.register(BindingEntry {
+            screen: Screen::Settings,
+            scope: BindingScope::Anywhere,
+            mode: None,
+            key: key_char('a'),
+            command_id: cmd("capture_only"),
+            phase: Phase::Capture,
+        });
+
+        // Target lookup misses the Capture entry.
+        let hit = reg.lookup(
+            Screen::Settings,
+            &oxpath!(),
+            None,
+            &key_char('a'),
+            Phase::Target,
+        );
+        assert!(hit.is_none());
+
+        // Capture lookup finds it.
+        let hit = reg
+            .lookup(
+                Screen::Settings,
+                &oxpath!(),
+                None,
+                &key_char('a'),
+                Phase::Capture,
+            )
+            .expect("should match");
+        assert_eq!(hit, &cmd("capture_only"));
     }
 }

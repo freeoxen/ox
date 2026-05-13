@@ -14,7 +14,7 @@ use ox_path::oxpath;
 use structfs_core_store::Path;
 
 use ox_types::key_chord::{KeyCodeRepr, KeyModifierSet};
-use ox_types::{BindingEntry, BindingScope, CommandId, KeyChord, Screen};
+use ox_types::{BindingEntry, BindingScope, CommandId, KeyChord, Phase, Screen};
 
 use crate::settings::binding_registry::BindingRegistry;
 
@@ -61,6 +61,7 @@ fn bind(
         mode: None,
         key: KeyChord { modifiers, code },
         command_id: cmd(command_id),
+        phase: Phase::Target,
     });
 }
 
@@ -81,6 +82,7 @@ fn bind_prefix(
         mode: None,
         key: KeyChord { modifiers, code },
         command_id: cmd(command_id),
+        phase: Phase::Target,
     });
 }
 
@@ -104,6 +106,7 @@ fn register_text_editing(reg: &mut BindingRegistry, cursor: Path) {
                 code: KeyCodeRepr::Char(ch),
             },
             command_id: cmd("field.insert"),
+            phase: Phase::Target,
         });
     }
     // Backspace.
@@ -116,6 +119,7 @@ fn register_text_editing(reg: &mut BindingRegistry, cursor: Path) {
             code: KeyCodeRepr::Backspace,
         },
         command_id: cmd("field.delete_back"),
+        phase: Phase::Target,
     });
 }
 
@@ -335,6 +339,7 @@ fn register_edit_mode(reg: &mut BindingRegistry) {
                 code: KeyCodeRepr::Char(ch),
             },
             command_id: cmd("edit.insert_char"),
+            phase: Phase::Target,
         });
     }
     bind(
@@ -457,6 +462,7 @@ fn register_compose_field_text(reg: &mut BindingRegistry) {
                 code: KeyCodeRepr::Char(ch),
             },
             command_id: cmd("accounts.compose.insert_char"),
+            phase: Phase::Target,
         });
     }
     bind(
@@ -513,6 +519,7 @@ fn register_manual_model(reg: &mut BindingRegistry) {
                 code: KeyCodeRepr::Char(ch),
             },
             command_id: cmd("models.compose_manual.insert_char"),
+            phase: Phase::Target,
         });
     }
     bind(
@@ -579,6 +586,7 @@ fn register_global(reg: &mut BindingRegistry) {
             code: KeyCodeRepr::Char('?'),
         },
         command_id: cmd("modal.toggle_shortcuts"),
+        phase: Phase::Target,
     });
     // Ctrl+S persists the in-memory runtime config to ~/.ox/config.toml.
     // Without this binding `app.save` was registered but unreachable —
@@ -593,6 +601,7 @@ fn register_global(reg: &mut BindingRegistry) {
             code: KeyCodeRepr::Char('s'),
         },
         command_id: cmd("app.save"),
+        phase: Phase::Target,
     });
 }
 
@@ -634,6 +643,7 @@ mod tests {
                 &oxpath!("settings", "index"),
                 None,
                 &key(no_mods(), KeyCodeRepr::Char('j')),
+                Phase::Target,
             )
             .expect("should match");
         assert_eq!(hit, &cmd("tree.next"));
@@ -648,6 +658,7 @@ mod tests {
                 &oxpath!("settings", "index"),
                 None,
                 &key(no_mods(), KeyCodeRepr::Enter),
+                Phase::Target,
             )
             .expect("should match");
         assert_eq!(hit, &cmd("tree.activate"));
@@ -662,6 +673,7 @@ mod tests {
                 &oxpath!("settings", "index"),
                 None,
                 &key(no_mods(), KeyCodeRepr::Esc),
+                Phase::Target,
             )
             .expect("should match");
         assert_eq!(hit, &cmd("tree.collapse_or_ascend"));
@@ -676,6 +688,7 @@ mod tests {
                 &oxpath!("settings", "accounts"),
                 None,
                 &key(no_mods(), KeyCodeRepr::Char('a')),
+                Phase::Target,
             )
             .expect("should match");
         assert_eq!(hit, &cmd("accounts.compose.open"));
@@ -694,6 +707,7 @@ mod tests {
                 &oxpath!("settings", "accounts", comp),
                 None,
                 &key(no_mods(), KeyCodeRepr::Char('t')),
+                Phase::Target,
             )
             .expect("should match");
         assert_eq!(hit, &cmd("account.test"));
@@ -709,6 +723,7 @@ mod tests {
                 &oxpath!("settings", "accounts", comp),
                 None,
                 &key(no_mods(), KeyCodeRepr::Char('r')),
+                Phase::Target,
             )
             .expect("should match");
         assert_eq!(hit, &cmd("account.refresh"));
@@ -725,6 +740,7 @@ mod tests {
                 &oxpath!("settings", "models", acct, model),
                 None,
                 &key(shift_only(), KeyCodeRepr::Char('P')),
+                Phase::Target,
             )
             .expect("should match");
         assert_eq!(hit, &cmd("models.set_bootstrap"));
@@ -739,6 +755,7 @@ mod tests {
                 &oxpath!("settings", "_edit_mode"),
                 None,
                 &key(no_mods(), KeyCodeRepr::Char('x')),
+                Phase::Target,
             )
             .expect("should match");
         assert_eq!(hit, &cmd("edit.insert_char"));
@@ -753,6 +770,7 @@ mod tests {
                 &oxpath!("settings", "_edit_mode"),
                 None,
                 &key(no_mods(), KeyCodeRepr::Backspace),
+                Phase::Target,
             )
             .expect("should match");
         assert_eq!(hit, &cmd("edit.delete_back"));
@@ -767,6 +785,7 @@ mod tests {
                 &oxpath!("settings", "_edit_mode"),
                 None,
                 &key(no_mods(), KeyCodeRepr::Enter),
+                Phase::Target,
             )
             .expect("should match");
         assert_eq!(hit, &cmd("edit.commit"));
@@ -781,6 +800,7 @@ mod tests {
                 &oxpath!("settings", "_edit_mode"),
                 None,
                 &key(no_mods(), KeyCodeRepr::Esc),
+                Phase::Target,
             )
             .expect("should match");
         assert_eq!(hit, &cmd("edit.cancel"));
@@ -795,6 +815,7 @@ mod tests {
                 &oxpath!("settings", "models"),
                 None,
                 &key(shift_only(), KeyCodeRepr::Char('P')),
+                Phase::Target,
             )
             .expect("should match");
         assert_eq!(hit, &cmd("models.set_bootstrap"));
@@ -813,6 +834,7 @@ mod tests {
                 &oxpath!("settings", "models"),
                 None,
                 &key(no_mods(), KeyCodeRepr::Char('d')),
+                Phase::Target,
             )
             .expect("should match");
         assert_eq!(hit, &cmd("models.toggle_default"));
@@ -838,7 +860,7 @@ mod tests {
         for entry in entries {
             let cursor = entry.scope.keyed_path().unwrap_or(&empty_path);
             let resolved = reg
-                .lookup(entry.screen, cursor, entry.mode, &entry.key)
+                .lookup(entry.screen, cursor, entry.mode, &entry.key, entry.phase)
                 .unwrap_or_else(|| {
                     panic!("binding {entry:?} resolved to None — structurally unreachable")
                 });

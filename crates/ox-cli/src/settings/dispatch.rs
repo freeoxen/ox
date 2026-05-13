@@ -16,7 +16,7 @@ use structfs_core_store::{Path, Reader};
 use ox_types::key_chord::KeyCodeRepr;
 use ox_types::settings::AccountField;
 use ox_types::subscription::Write;
-use ox_types::{CommandId, KeyChord, Mode, Screen};
+use ox_types::{CommandId, KeyChord, Mode, Phase, Screen};
 
 use super::binding_registry::BindingRegistry;
 use super::command_registry::{CommandCtx, CommandRegistry};
@@ -106,13 +106,13 @@ pub fn dispatch_settings_key(
     let edit_mode_active = read_edit_mode(snapshot);
     let edit_scope = ox_path::oxpath!("settings", "_edit_mode");
     let cmd_id = if pending_delete_active {
-        bindings.lookup(screen, &pending_delete_scope, mode, key)
+        bindings.lookup(screen, &pending_delete_scope, mode, key, Phase::Target)
     } else {
         None
     }
     .or_else(|| {
         if manual_model_active {
-            bindings.lookup(screen, &manual_model_scope, mode, key)
+            bindings.lookup(screen, &manual_model_scope, mode, key, Phase::Target)
         } else {
             None
         }
@@ -126,7 +126,7 @@ pub fn dispatch_settings_key(
     })
     .or_else(|| {
         if edit_mode_active {
-            bindings.lookup(screen, &edit_scope, mode, key)
+            bindings.lookup(screen, &edit_scope, mode, key, Phase::Target)
         } else {
             None
         }
@@ -134,9 +134,9 @@ pub fn dispatch_settings_key(
     .or_else(|| {
         read_focused(snapshot)
             .as_ref()
-            .and_then(|focus| bindings.lookup(screen, focus, mode, key))
+            .and_then(|focus| bindings.lookup(screen, focus, mode, key, Phase::Target))
     })
-    .or_else(|| bindings.lookup(screen, cursor, mode, key));
+    .or_else(|| bindings.lookup(screen, cursor, mode, key, Phase::Target));
     let Some(cmd_id) = cmd_id else {
         return vec![];
     };
@@ -199,9 +199,12 @@ fn read_edit_mode(snapshot: &mut dyn Reader) -> bool {
 /// - **Bubble**: keys the leaf didn't claim, caught by the form
 ///   (Enter). Looked up under `settings/_compose_form` again.
 ///
-/// `BindingEntry` has no `phase` field today; phase classification is
-/// compose-pass-local rather than registry-wide. Generalizing into the
-/// `BindingEntry` shape is convergence work tracked separately.
+/// `BindingEntry` now carries a `phase` field, so each lookup picks the
+/// phase its keystroke role demands. The compose bindings themselves
+/// are still registered with the default `Phase::Target`, so capture-
+/// and bubble-phase queries fall back to `Target` to preserve today's
+/// behavior. The Target fallback is removed in S2 once compose
+/// bindings declare their phases explicitly.
 fn lookup_compose<'a>(
     bindings: &'a BindingRegistry,
     screen: Screen,
@@ -216,23 +219,30 @@ fn lookup_compose<'a>(
         FieldKind::Text => &field_text,
         FieldKind::Selector => &field_selector,
     };
-    // Phase 1 — Capture: lifecycle keys queried on the form scope only.
+    // Phase 1 — Capture (form scope, lifecycle keys).
     if is_capture_key(&key.code) {
-        if let Some(hit) = bindings.lookup(screen, &form, mode, key) {
-            return Some(hit);
+        for phase in [Phase::Capture, Phase::Target] {
+            // Temporary fallback to Phase::Target — removed in S2 once
+            // bindings declare phases explicitly.
+            if let Some(hit) = bindings.lookup(screen, &form, mode, key, phase) {
+                return Some(hit);
+            }
         }
     }
-    // Phase 2 — Target: leaf scope only, for any non-capture key.
+    // Phase 2 — Target (leaf scope, field-kind-specific).
     if !is_capture_key(&key.code) {
-        if let Some(hit) = bindings.lookup(screen, leaf, mode, key) {
+        if let Some(hit) = bindings.lookup(screen, leaf, mode, key, Phase::Target) {
             return Some(hit);
         }
     }
-    // Phase 3 — Bubble: bubble keys queried on the form scope, only if
-    // the leaf didn't claim them.
+    // Phase 3 — Bubble (form scope, fallback after leaf).
     if is_bubble_key(&key.code) {
-        if let Some(hit) = bindings.lookup(screen, &form, mode, key) {
-            return Some(hit);
+        for phase in [Phase::Bubble, Phase::Target] {
+            // Temporary fallback to Phase::Target — removed in S2 once
+            // bindings declare phases explicitly.
+            if let Some(hit) = bindings.lookup(screen, &form, mode, key, phase) {
+                return Some(hit);
+            }
         }
     }
     None
@@ -357,6 +367,7 @@ mod tests {
     use ox_store_util::local_config::LocalConfig;
     use ox_types::key_chord::{KeyCodeRepr, KeyModifierSet};
     use ox_types::{BindingEntry, CommandDisplay, CommandId, CommandScope};
+    // Phase is already in scope via the parent use at the top of the file.
     use structfs_core_store::{Record, Value, Writer};
 
     use super::super::command_registry::Command;
@@ -478,6 +489,7 @@ mod tests {
             mode: None,
             key: key_char('a'),
             command_id: cmd_id("test.sentinel"),
+            phase: Phase::Target,
         });
 
         let renderers = RendererRegistry::new();
@@ -535,6 +547,7 @@ mod tests {
             mode: None,
             key: key_char('a'),
             command_id: cmd_id("not.registered"),
+            phase: Phase::Target,
         });
 
         let renderers = RendererRegistry::new();
@@ -568,6 +581,7 @@ mod tests {
             mode: None,
             key: key_char('a'),
             command_id: cmd_id("test.sentinel"),
+            phase: Phase::Target,
         });
 
         let renderers = RendererRegistry::new();
@@ -623,6 +637,7 @@ mod tests {
             mode: None,
             key: key_char('a'),
             command_id: cmd_id("test.sentinel"),
+            phase: Phase::Target,
         });
 
         let renderers = RendererRegistry::new();
@@ -657,6 +672,7 @@ mod tests {
             mode: None,
             key: key_char('a'),
             command_id: cmd_id("test.sentinel"),
+            phase: Phase::Target,
         });
 
         let renderers = RendererRegistry::new();
@@ -694,6 +710,7 @@ mod tests {
             mode: None,
             key: key_char('y'),
             command_id: cmd_id("test.sentinel"),
+            phase: Phase::Target,
         });
 
         let renderers = RendererRegistry::new();
@@ -732,6 +749,7 @@ mod tests {
             mode: None,
             key: key_char('z'),
             command_id: cmd_id("test.report_keystroke"),
+            phase: Phase::Target,
         });
 
         let renderers = RendererRegistry::new();
@@ -770,6 +788,7 @@ mod tests {
             mode: None,
             key: key_char('a'),
             command_id: cmd_id("test.sentinel"),
+            phase: Phase::Target,
         });
 
         let renderers = RendererRegistry::new();
@@ -812,6 +831,7 @@ mod tests {
             mode: None,
             key: key_char('a'),
             command_id: cmd_id("test.sentinel"),
+            phase: Phase::Target,
         });
 
         let renderers = RendererRegistry::new();

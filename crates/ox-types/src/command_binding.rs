@@ -88,8 +88,34 @@ impl BindingScope {
     }
 }
 
-/// One row in the binding registry: under (screen, scope, mode), the
-/// keystroke `key` invokes `command_id`.
+/// Hierarchical-dispatch phase a binding fires in. Models the DOM
+/// event-flow shape:
+///
+/// - `Capture`: container-owned lifecycle keys that fire before the
+///   focused leaf sees them (e.g. compose `Esc`/`Tab`).
+/// - `Target`: keys the focused leaf claims (the bulk of bindings).
+/// - `Bubble`: container fallbacks that fire only when the leaf
+///   didn't consume the key (e.g. compose `Enter` commit).
+///
+/// `Default` returns `Target` so existing call sites that don't yet
+/// declare a phase preserve their current single-pass behavior — the
+/// per-phase splits are migrated incrementally.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Phase {
+    Capture,
+    Target,
+    Bubble,
+}
+
+impl Default for Phase {
+    fn default() -> Self {
+        Phase::Target
+    }
+}
+
+/// One row in the binding registry: under (screen, scope, mode, phase),
+/// the keystroke `key` invokes `command_id`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BindingEntry {
     pub screen: Screen,
@@ -97,6 +123,8 @@ pub struct BindingEntry {
     pub mode: Option<Mode>,
     pub key: KeyChord,
     pub command_id: CommandId,
+    #[serde(default)]
+    pub phase: Phase,
 }
 
 #[cfg(test)]
@@ -163,6 +191,7 @@ mod tests {
                 code: KeyCodeRepr::Char('a'),
             },
             command_id: CommandId("settings.account.add".to_string()),
+            phase: Phase::Target,
         });
     }
 
@@ -177,6 +206,7 @@ mod tests {
                 code: KeyCodeRepr::Char('t'),
             },
             command_id: CommandId("account.test".to_string()),
+            phase: Phase::Target,
         });
     }
 
@@ -194,6 +224,7 @@ mod tests {
                 code: KeyCodeRepr::Char('s'),
             },
             command_id: CommandId("inbox.send".to_string()),
+            phase: Phase::Target,
         });
     }
 
