@@ -380,23 +380,26 @@ There is **no on-the-wire effect DSL.** No `PathTemplate`, no
 
 ```rust
 pub struct BindingEntry {
-    pub screen:      Screen,
-    pub cursor_path: Option<Path>,  // None = whole-screen scope
-    pub mode:        Option<Mode>,
-    pub key:         KeyChord,
-    pub command_id:  CommandId,
+    pub screen:     Screen,
+    pub scope:      BindingScope,  // Anywhere | Exact(Path) | Prefix(Path)
+    pub mode:       Option<Mode>,
+    pub key:        KeyChord,
+    pub command_id: CommandId,
+    pub phase:      Phase,
+}
+
+pub enum Phase {
+    Capture,
+    Target,
+    Bubble,
 }
 ```
 
-Lookup specificity (most → least):
-
-1. `cursor_path: Some + mode: Some`
-2. `cursor_path: Some + mode: None`
-3. `cursor_path: None + mode: Some`
-4. `cursor_path: None + mode: None`
-
-Ties broken by registration order. The registry sorts at startup;
-lookup is a linear scan.
+`Phase` is first-class and required at every registration — there is
+no `Default` impl, so each `BindingEntry` constructed in Rust must
+declare its phase explicitly. Phase is the routing decision the
+dispatcher uses to walk the scope path; see "Hierarchical dispatch"
+below.
 
 `KeyChord` is a typed struct: `{ modifiers: KeyModifierSet, code:
 KeyCodeRepr }`. `KeyCodeRepr` covers `Char(char)`, `Enter`, `Esc`,
@@ -405,8 +408,136 @@ KeyCodeRepr }`. `KeyCodeRepr` covers `Char(char)`, `Enter`, `Esc`,
 
 The text-editing scope (`settings/accounts/_detail`) gets ~96 bindings
 from a helper that registers one `BindingEntry` per printable ASCII
-char → `field.insert`, plus one for `Backspace` →
-`field.delete_back`.
+char → `field.insert` at `Phase::Target`, plus one for `Backspace` →
+`field.delete_back` at `Phase::Target`.
+
+## Hierarchical dispatch
+
+Phase is declared at registration on every `BindingEntry`. The
+dispatcher walks the scope path through three phases generically; the
+registry's `lookup` is phase-aware; there is no per-widget pass logic
+in the dispatcher and no transitional Target-fallback shim.
+
+A user keystroke routes through a *scope path* — the ordered chain of
+nested scopes from the outermost (the screen) to the innermost (the
+focused leaf widget). Each scope on the path is either:
+
+- a **page scope**: a static cursor scope (`settings`, `settings/accounts`),
+- a **compound widget scope**: synthetic scope tied to a mode
+  (`settings/_compose_form`, `settings/_compose_field`,
+  `settings/_pending_delete`),
+- a **leaf scope**: the active child of a compound widget, picked at
+  lookup time by reading focus state (e.g.,
+  `settings/_compose_field` resolves differently when
+  `focused_field` is `Name` vs `Protocol`).
+
+The dispatcher walks the path in three phases, in order:
+
+1. **Capture phase** — outermost-to-innermost, asking each scope for
+   bindings registered with `phase: Capture`. First match fires and
+   dispatch ends. Capture is for *lifecycle keys an outer scope
+   always owns regardless of focus*: `Esc` to cancel a form, `Tab` to
+   advance focus.
+
+2. **Target phase** — only the innermost scope (the focused leaf) is
+   consulted, for bindings with `phase: Target`. This is where the
+   leaf claims its semantic keys: a text leaf claims printable ASCII;
+   a selector leaf claims `h`/`l`. The same key can mean different
+   things at different leaves because the binding lives on the leaf
+   scope, not the form scope.
+
+3. **Bubble phase** — innermost-to-outermost, asking each scope for
+   bindings registered with `phase: Bubble`. First match fires.
+   Bubble catches keys the leaf didn't claim. `Enter` on a compose
+   form is bubble: a future multiline text field could bind `Enter`
+   at target phase for newline insertion; the form's commit handler
+   only fires if the leaf passed.
+
+Lookup specificity within a single phase (most → least):
+
+1. `scope: Exact + mode: Some`
+2. `scope: Exact + mode: None`
+3. `scope: Prefix(deeper) + mode: ...`
+4. `scope: Prefix(shallower) + mode: ...`
+5. `scope: Anywhere + mode: Some`
+6. `scope: Anywhere + mode: None`
+
+Ties broken by registration order.
+
+### Scopes and the focus path
+
+A scope's `cursor_path` is the focus identity at which the scope is
+active. The dispatcher reads UI-state paths to compute the current
+scope path:
+
+- Screen: always present (`Screen::Settings`).
+- Page scope: derived from the cursor (`settings/accounts` etc.).
+- Compound widget scope: present iff its mode discriminator is set
+  (`ui/settings/new_account/active == true` →
+  `settings/_compose_form` + `settings/_compose_field` are on the
+  path).
+- Leaf scope: derived from the compound widget's focused-child path
+  (`ui/settings/new_account/focused_field`).
+
+The path is reconstructed per keystroke. No mutable
+"currently-active-scope-stack" state lives anywhere; the snapshot is
+the source of truth.
+
+### Worked example: typing `h` while composing
+
+Snapshot state: `active==true`, `focused_field == Protocol` (a
+Selector field).
+
+Scope path (outer → inner):
+- `Screen::Settings`
+- `settings/accounts` (page scope)
+- `settings/_compose_form` (compound widget)
+- `settings/_compose_field` resolved to its Selector binding set
+  (active leaf)
+
+Dispatch:
+1. **Capture**: walk outer-to-inner. None of the scopes have `h`
+   registered at Capture. (Capture-phase bindings on the form are
+   `Esc`, `Tab`, `Shift+Tab`, `Up`, `Down`.)
+2. **Target**: leaf scope's Target bindings include `h` →
+   `accounts.compose.cycle_back`. Fires. Done.
+
+Same keystroke, different focus: `focused_field == Name` (Text):
+1. **Capture**: no `h` at Capture on any scope.
+2. **Target**: leaf scope (Text variant) has printable ASCII → `accounts.compose.insert_char`. Fires.
+
+Same keystroke, no compose mode active:
+1. **Capture**: form scope isn't on the path (no compound widget); no
+   scope on the path has `h` at Capture.
+2. **Target**: the leaf scope is the focused-row scope (or the page
+   scope when no row is focused). Whichever scope is innermost gets
+   queried at `Phase::Target`; `h` is not registered there for the
+   accounts page.
+3. **Bubble**: page-cursor bindings (`h`/`j`/`k`/`l` for navigation,
+   focused-row `a`/`t`/`r`/`d`, whole-screen `?`) are registered at
+   `Phase::Bubble` on the page scope and fire here. The dispatcher
+   has no per-widget pass logic; it walks the path inner-to-outer at
+   Bubble and the first registered match wins.
+
+### When you'd add a new scope
+
+Adding a new compound widget (modal, wizard, inline form) means:
+
+1. Define a mode discriminator at a UI-state path
+   (`ui/.../<widget>/active: bool` or similar).
+2. Register a compound widget scope under a synthetic
+   `cursor_path` (e.g., `settings/_my_widget_form`). Its bindings
+   are the lifecycle keys at Capture (Esc, Tab) and the
+   form-commit at Bubble (Enter).
+3. If the widget has multiple focusable children, register one leaf
+   scope per child kind under a sibling cursor_path
+   (`settings/_my_widget_field`), with Target-phase bindings.
+4. Extend the dispatcher to read the discriminator and place the
+   scopes on the path when active.
+
+Anti-pattern: a single flat scope that does everything via
+conditional logic inside command bodies. That works for a single
+widget; it doesn't compose with siblings.
 
 ## Dispatch flow
 
@@ -424,10 +555,26 @@ dispatch::send_key(client, key_str, Screen::Settings, flags,
   ↓
 parse_key_str(key_str) → KeyChord
   ↓
-settings::dispatch::dispatch_settings_key:
-  bindings.lookup(screen, cursor, mode, key) → CommandId
-  commands.lookup(&command_id) → &dyn Command
-  command.run(&mut snapshot, &CommandCtx { ... }) → Vec<Write>
+settings::dispatch::dispatch_settings_key(snapshot, screen, cursor,
+                                          mode, key, cmds, bindings,
+                                          renderers):
+  scope_path = compute_scope_path(snapshot, cursor)
+  // Capture: outer → inner
+  for scope in &scope_path:
+      if let Some(cmd) = bindings.lookup(screen, scope, mode, key,
+                                         Phase::Capture):
+          return commands.lookup(cmd).run(snapshot, &ctx)
+  // Target: leaf only
+  if let Some(leaf) = scope_path.last():
+      if let Some(cmd) = bindings.lookup(screen, leaf, mode, key,
+                                         Phase::Target):
+          return commands.lookup(cmd).run(snapshot, &ctx)
+  // Bubble: inner → outer
+  for scope in scope_path.iter().rev():
+      if let Some(cmd) = bindings.lookup(screen, scope, mode, key,
+                                         Phase::Bubble):
+          return commands.lookup(cmd).run(snapshot, &ctx)
+  return vec![]  // inert; caller falls through to input-store path
   ↓
 for write in writes: client.write(&write.path, write.record).await
   ↓
