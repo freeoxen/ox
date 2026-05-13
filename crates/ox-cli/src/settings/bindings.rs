@@ -44,7 +44,38 @@ fn cmd(id: &str) -> CommandId {
     CommandId(String::from(id))
 }
 
-fn bind(
+/// Bind a key at `Phase::Capture` — lifecycle keys claimed by a
+/// container before any leaf scope sees them (e.g. Esc cancels a
+/// modal regardless of which inner cursor holds focus). The
+/// dispatcher walks Capture outer → inner, so a Capture binding at
+/// the container scope fires before any Target binding inside.
+fn bind_capture(
+    reg: &mut BindingRegistry,
+    cursor: Option<Path>,
+    modifiers: KeyModifierSet,
+    code: KeyCodeRepr,
+    command_id: &str,
+) {
+    let scope = match cursor {
+        Some(p) => BindingScope::Exact(p),
+        None => BindingScope::Anywhere,
+    };
+    reg.register(BindingEntry {
+        screen: Screen::Settings,
+        scope,
+        mode: None,
+        key: KeyChord { modifiers, code },
+        command_id: cmd(command_id),
+        phase: Phase::Capture,
+    });
+}
+
+/// Bind a key at `Phase::Target` — the leaf-scope binding that
+/// claims a key for the currently-focused cursor. Use for text-input
+/// keys on a text-editing leaf, action keys on a single-scope widget,
+/// and any binding that should fire only when its exact scope holds
+/// focus (no inner/outer shadowing semantics needed).
+fn bind_target(
     reg: &mut BindingRegistry,
     cursor: Option<Path>,
     modifiers: KeyModifierSet,
@@ -65,12 +96,11 @@ fn bind(
     });
 }
 
-/// `bind` for outer-scope default bindings — page-cursor navigation,
-/// focused-row prefix actions, whole-screen fallbacks. These declare
-/// `Phase::Bubble` so an inner compound widget's leaf can claim the
-/// same key at `Phase::Target` and shadow them. The dispatcher walks
-/// Bubble inner → outer, so outer-scope defaults fire only when no
-/// inner scope claimed the key.
+/// Bind a key at `Phase::Bubble` for outer-scope default bindings —
+/// page-cursor navigation, focused-row prefix actions, whole-screen
+/// fallbacks. The dispatcher walks Bubble inner → outer, so an inner
+/// compound widget's leaf can claim the same key at `Phase::Target`
+/// and shadow these outer defaults.
 fn bind_bubble(
     reg: &mut BindingRegistry,
     cursor: Option<Path>,
@@ -385,7 +415,7 @@ fn register_edit_mode(reg: &mut BindingRegistry) {
             phase: Phase::Target,
         });
     }
-    bind(
+    bind_target(
         reg,
         Some(scope.clone()),
         no_mods(),
@@ -541,7 +571,7 @@ fn register_compose_field_text(reg: &mut BindingRegistry) {
             phase: Phase::Target,
         });
     }
-    bind(
+    bind_target(
         reg,
         Some(scope),
         no_mods(),
@@ -566,7 +596,7 @@ fn register_compose_field_selector(reg: &mut BindingRegistry) {
         (KeyCodeRepr::Char('l'), "accounts.compose.cycle_forward"),
         (KeyCodeRepr::Right, "accounts.compose.cycle_forward"),
     ] {
-        bind(reg, Some(scope.clone()), no_mods(), key, id);
+        bind_target(reg, Some(scope.clone()), no_mods(), key, id);
     }
 }
 
@@ -644,7 +674,7 @@ fn register_manual_model(reg: &mut BindingRegistry) {
                 phase: Phase::Target,
             });
         }
-        bind(
+        bind_target(
             reg,
             Some(stage_scope),
             no_mods(),
@@ -663,14 +693,14 @@ fn register_manual_model(reg: &mut BindingRegistry) {
 /// (Capture) — same shape as compose-Esc.
 fn register_pending_delete(reg: &mut BindingRegistry) {
     let scope = oxpath!("settings", "_pending_delete");
-    bind(
+    bind_target(
         reg,
         Some(scope.clone()),
         no_mods(),
         KeyCodeRepr::Char('y'),
         "accounts.confirm.delete",
     );
-    bind(
+    bind_target(
         reg,
         Some(scope.clone()),
         no_mods(),
