@@ -22,12 +22,9 @@
 //!    fire before the focused leaf sees them (e.g. compose Esc/Tab).
 //! 2. **Target** (leaf only): the focused leaf claims the key.
 //! 3. **Bubble** (inner → outer): container fallbacks for keys the
-//!    leaf didn't consume (e.g. compose Enter). At each scope the
-//!    pass tries `Phase::Bubble` first, then falls back to
-//!    `Phase::Target` so legacy outer-scope bindings (page-cursor
-//!    `j`/`k`, focused-row `a`/`t`) still fire when the leaf misses.
-//!    The fallback retires once those scopes' bindings are migrated
-//!    to declare `Phase::Bubble` explicitly.
+//!    leaf didn't consume (e.g. compose Enter, page-cursor j/k,
+//!    focused-row a/t/r/d). Each scope is queried at `Phase::Bubble`
+//!    only — outer-scope defaults declare Bubble explicitly.
 //!
 //! `compute_scope_path` reads UI-state discriminators to assemble the
 //! path. Adding a new compound widget = extend `compute_scope_path` +
@@ -86,20 +83,15 @@ pub fn dispatch_settings_key(
     }
 
     // Bubble (inner → outer): containers handle keys the leaf didn't
-    // consume. The Target fallback per scope is the bridge that keeps
-    // unmigrated outer-scope bindings (page-cursor `j`/`k`, focused-row
-    // `a`/`t`) reachable while S3–S5 migrate them to declare
-    // `Phase::Bubble` explicitly.
+    // consume. Outer-scope defaults (page-cursor `j`/`k`, focused-row
+    // `a`/`t`, whole-screen `?`, compose Enter, ...) declare
+    // `Phase::Bubble` directly — no per-scope Target fallback.
     if cmd_id_opt.is_none() {
         for scope_path_entry in scope_path.iter().rev() {
             let Some(p) = scope_path_entry.keyed_path() else {
                 continue;
             };
             if let Some(hit) = bindings.lookup(screen, p, mode, key, Phase::Bubble) {
-                cmd_id_opt = Some(hit);
-                break;
-            }
-            if let Some(hit) = bindings.lookup(screen, p, mode, key, Phase::Target) {
                 cmd_id_opt = Some(hit);
                 break;
             }
@@ -832,6 +824,12 @@ mod tests {
 
     #[test]
     fn manual_model_routes_to_manual_model_scope_when_typed_stage_set() {
+        // Structural: the dispatcher pushes `_manual_model` (the form
+        // scope) onto the scope_path when `manual_model/stage` holds a
+        // typed value. A Bubble binding at the form scope fires — the
+        // form scope is an outer container, not the leaf (the leaf is
+        // `_manual_model/<stage>`), so Bubble is the right phase to
+        // pin.
         use ox_types::settings::ManualModelStage;
 
         let mut cmds = CommandRegistry::new();
@@ -844,7 +842,7 @@ mod tests {
             mode: None,
             key: key_char('a'),
             command_id: cmd_id("test.sentinel"),
-            phase: Phase::Target,
+            phase: Phase::Bubble,
         });
 
         let renderers = RendererRegistry::new();
@@ -1063,43 +1061,39 @@ mod tests {
     }
 
     #[test]
-    fn page_cursor_target_binding_fires_via_bubble_when_no_compound_widget_active() {
-        // The Bubble loop falls back to Phase::Target per scope. This is
-        // a transitional bridge that keeps unmigrated page-cursor and
-        // focused-row bindings reachable until S5.5 migrates them to
-        // declare Phase::Bubble explicitly. Pin the behavior so that
-        // removal is a controlled diff rather than a silent break.
+    fn page_cursor_binding_fires_via_bubble_when_no_compound_widget_active() {
+        // Page-cursor bindings (j/k navigation at settings/index, the
+        // page's *default* row-nav handlers) declare Phase::Bubble. The
+        // dispatcher's Bubble pass walks inner → outer and finds them at
+        // the outer (cursor) scope, even though the leaf is a deeper
+        // focused-row scope.
         //
         // Setup: cursor at settings/index with a focused row at
-        // settings/accounts, no compound widget active. The scope path
-        // is then [Exact(settings/index), Exact(settings/accounts)] —
-        // leaf is `settings/accounts`, not the cursor. With the page
-        // cursor's `j` binding still at Phase::Target (current state),
-        // it reaches via the Bubble loop's Target fallback at the outer
-        // (cursor) scope. After S5.5 the same binding will declare
-        // Phase::Bubble and fire on the Bubble pass directly; either
-        // way this test passes.
+        // settings/accounts, no compound widget active. Scope path:
+        // [Exact(settings/index), Exact(settings/accounts)]. The leaf
+        // (`settings/accounts`) has no Bubble binding for `j`; the Bubble
+        // walk continues outward to the cursor scope where `j` is
+        // registered.
         let mut cmds = CommandRegistry::new();
         cmds.register(Box::new(WriteSentinel::new()));
 
         let mut bindings = BindingRegistry::new();
-        // Page-cursor `j` lives on the outer scope (`settings/index`)
-        // at Phase::Target — the shape the dispatcher's Bubble→Target
-        // fallback is the only route for, given a deeper leaf scope.
+        // Page-cursor `j` lives on the outer scope (`settings/index`) at
+        // Phase::Bubble — the dispatcher's Bubble pass walks inner → outer
+        // and finds it without any per-scope Target fallback.
         bindings.register(BindingEntry {
             screen: Screen::Settings,
             scope: ox_types::BindingScope::Exact(oxpath!("settings", "index")),
             mode: None,
             key: key_char('j'),
             command_id: cmd_id("test.sentinel"),
-            phase: Phase::Target,
+            phase: Phase::Bubble,
         });
 
         let renderers = RendererRegistry::new();
         let mut reader = LocalConfig::default();
-        // Seed the focused-row scope so the leaf differs from the cursor;
-        // otherwise Target phase at the leaf would hit directly and the
-        // fallback wouldn't be exercised.
+        // Seed the focused-row scope so the leaf differs from the cursor.
+        // The Bubble pass still finds `j` at the outer (cursor) scope.
         use super::super::commands::navigation::path_to_value;
         reader
             .write(
@@ -1119,9 +1113,8 @@ mod tests {
             &renderers,
         );
 
-        // The sentinel fires only if the Bubble loop's Target fallback
-        // routes `j` from the outer (cursor) scope. Asserting the write
-        // pins the fallback: removing it today would flip this test red.
+        // The sentinel fires because the Bubble pass walks outward from
+        // the leaf to the cursor scope where the binding lives.
         assert_eq!(writes.len(), 1);
         assert_eq!(writes[0].path, oxpath!("ui", "sentinel"));
     }

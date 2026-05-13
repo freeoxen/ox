@@ -65,11 +65,38 @@ fn bind(
     });
 }
 
-/// Bind a key under a `Prefix` scope — fires when the cursor sits at
-/// `prefix` itself or any deeper component path. Used by per-row
-/// commands that act on a focused subtree (e.g. `t` testing whichever
-/// account is currently focused at `settings/accounts/{any}`).
-fn bind_prefix(
+/// `bind` for outer-scope default bindings — page-cursor navigation,
+/// focused-row prefix actions, whole-screen fallbacks. These declare
+/// `Phase::Bubble` so an inner compound widget's leaf can claim the
+/// same key at `Phase::Target` and shadow them. The dispatcher walks
+/// Bubble inner → outer, so outer-scope defaults fire only when no
+/// inner scope claimed the key.
+fn bind_bubble(
+    reg: &mut BindingRegistry,
+    cursor: Option<Path>,
+    modifiers: KeyModifierSet,
+    code: KeyCodeRepr,
+    command_id: &str,
+) {
+    let scope = match cursor {
+        Some(p) => BindingScope::Exact(p),
+        None => BindingScope::Anywhere,
+    };
+    reg.register(BindingEntry {
+        screen: Screen::Settings,
+        scope,
+        mode: None,
+        key: KeyChord { modifiers, code },
+        command_id: cmd(command_id),
+        phase: Phase::Bubble,
+    });
+}
+
+/// Bind a key under a `Prefix` scope at `Phase::Bubble` — per-row
+/// commands that act on whichever subtree row is currently focused.
+/// Same Bubble semantics as `bind_bubble`: an inner compound widget's
+/// leaf can shadow with a `Phase::Target` binding.
+fn bind_prefix_bubble(
     reg: &mut BindingRegistry,
     prefix: Path,
     modifiers: KeyModifierSet,
@@ -82,7 +109,7 @@ fn bind_prefix(
         mode: None,
         key: KeyChord { modifiers, code },
         command_id: cmd(command_id),
-        phase: Phase::Target,
+        phase: Phase::Bubble,
     });
 }
 
@@ -128,36 +155,40 @@ fn register_text_editing(reg: &mut BindingRegistry, cursor: Path) {
 // ---------------------------------------------------------------------------
 
 fn register_index(reg: &mut BindingRegistry) {
+    // Page-cursor bindings live at `Phase::Bubble`: they're the page's
+    // *default* row-navigation handlers, fired only when no inner
+    // compound widget (compose / manual-model / edit-mode /
+    // pending-delete) claimed the key at Target.
     let cursor = oxpath!("settings", "index");
-    bind(
+    bind_bubble(
         reg,
         Some(cursor.clone()),
         no_mods(),
         KeyCodeRepr::Char('j'),
         "tree.next",
     );
-    bind(
+    bind_bubble(
         reg,
         Some(cursor.clone()),
         no_mods(),
         KeyCodeRepr::Down,
         "tree.next",
     );
-    bind(
+    bind_bubble(
         reg,
         Some(cursor.clone()),
         no_mods(),
         KeyCodeRepr::Char('k'),
         "tree.prev",
     );
-    bind(
+    bind_bubble(
         reg,
         Some(cursor.clone()),
         no_mods(),
         KeyCodeRepr::Up,
         "tree.prev",
     );
-    bind(
+    bind_bubble(
         reg,
         Some(cursor.clone()),
         no_mods(),
@@ -171,7 +202,7 @@ fn register_index(reg: &mut BindingRegistry) {
     // muscle-memory paths for vim users without inventing per-key
     // semantics.
     for ch in ['e', 'o', 'i'] {
-        bind(
+        bind_bubble(
             reg,
             Some(cursor.clone()),
             no_mods(),
@@ -183,28 +214,28 @@ fn register_index(reg: &mut BindingRegistry) {
     // doesn't have today. Single-key `G` (Shift+g) for last row is
     // the achievable subset; `Home` / `End` cover the same ground
     // for non-vim users.
-    bind(
+    bind_bubble(
         reg,
         Some(cursor.clone()),
         shift_only(),
         KeyCodeRepr::Char('G'),
         "tree.last",
     );
-    bind(
+    bind_bubble(
         reg,
         Some(cursor.clone()),
         no_mods(),
         KeyCodeRepr::End,
         "tree.last",
     );
-    bind(
+    bind_bubble(
         reg,
         Some(cursor.clone()),
         no_mods(),
         KeyCodeRepr::Home,
         "tree.first",
     );
-    bind(
+    bind_bubble(
         reg,
         Some(cursor),
         no_mods(),
@@ -221,36 +252,41 @@ fn register_index(reg: &mut BindingRegistry) {
 /// field rows). The commands themselves read the focused row to
 /// figure out *which* account/model to act on.
 fn register_row_prefixes(reg: &mut BindingRegistry) {
+    // Focused-row prefix bindings declare `Phase::Bubble`: they're the
+    // outer page's default actions for whichever row sits inside the
+    // subtree, and an inner compound widget's leaf (compose field,
+    // manual-model stage, edit-mode buffer) can shadow the same key
+    // at `Phase::Target`.
     let accounts_subtree = oxpath!("settings", "accounts");
-    bind_prefix(
+    bind_prefix_bubble(
         reg,
         accounts_subtree.clone(),
         no_mods(),
         KeyCodeRepr::Char('a'),
         "accounts.compose.open",
     );
-    bind_prefix(
+    bind_prefix_bubble(
         reg,
         accounts_subtree.clone(),
         no_mods(),
         KeyCodeRepr::Char('t'),
         "account.test",
     );
-    bind_prefix(
+    bind_prefix_bubble(
         reg,
         accounts_subtree.clone(),
         no_mods(),
         KeyCodeRepr::Char('r'),
         "account.refresh",
     );
-    bind_prefix(
+    bind_prefix_bubble(
         reg,
         accounts_subtree.clone(),
         no_mods(),
         KeyCodeRepr::Char('d'),
         "accounts.delete_confirm",
     );
-    bind_prefix(
+    bind_prefix_bubble(
         reg,
         accounts_subtree.clone(),
         no_mods(),
@@ -267,10 +303,10 @@ fn register_row_prefixes(reg: &mut BindingRegistry) {
         (KeyCodeRepr::Char('l'), "cycle.field.next"),
         (KeyCodeRepr::Right, "cycle.field.next"),
     ] {
-        bind_prefix(reg, accounts_subtree.clone(), no_mods(), key, id);
+        bind_prefix_bubble(reg, accounts_subtree.clone(), no_mods(), key, id);
     }
     let models_subtree = oxpath!("settings", "models");
-    bind_prefix(
+    bind_prefix_bubble(
         reg,
         models_subtree.clone(),
         shift_only(),
@@ -280,14 +316,14 @@ fn register_row_prefixes(reg: &mut BindingRegistry) {
     // `r` refreshes the focused model's owning account catalog. Useful
     // both when focused on an account row and when focused on a model
     // row (the latter is what the accordion makes natural).
-    bind_prefix(
+    bind_prefix_bubble(
         reg,
         models_subtree.clone(),
         no_mods(),
         KeyCodeRepr::Char('r'),
         "account.refresh",
     );
-    bind_prefix(
+    bind_prefix_bubble(
         reg,
         models_subtree.clone(),
         no_mods(),
@@ -298,7 +334,7 @@ fn register_row_prefixes(reg: &mut BindingRegistry) {
     // Bound at Prefix(settings/models) so it fires anywhere inside the
     // expanded Models section — the empty-catalog rows are the natural
     // launch point but a focused model row works too.
-    bind_prefix(
+    bind_prefix_bubble(
         reg,
         models_subtree,
         no_mods(),
@@ -656,7 +692,9 @@ fn register_pending_delete(reg: &mut BindingRegistry) {
 
 /// Whole-screen `?` toggles the shortcuts modal regardless of cursor
 /// depth. `BindingScope::Anywhere` means specific scopes can still
-/// shadow it by registering a same-key binding (none do today).
+/// shadow it by registering a same-key binding (none do today). Bound
+/// at `Phase::Bubble` so an inner widget's leaf can claim `?` at Target
+/// (no such leaf today; future help-context leaves could).
 fn register_global(reg: &mut BindingRegistry) {
     reg.register(BindingEntry {
         screen: Screen::Settings,
@@ -667,12 +705,14 @@ fn register_global(reg: &mut BindingRegistry) {
             code: KeyCodeRepr::Char('?'),
         },
         command_id: cmd("modal.toggle_shortcuts"),
-        phase: Phase::Target,
+        phase: Phase::Bubble,
     });
     // Ctrl+S persists the in-memory runtime config to ~/.ox/config.toml.
     // Without this binding `app.save` was registered but unreachable —
     // every edit lived only in the broker's runtime layer and was lost
     // on restart. Anywhere-scoped so save works from any cursor depth.
+    // Bubble-phase: a future text-leaf that wants to capture Ctrl+S for
+    // some leaf-local semantic could shadow at Target.
     reg.register(BindingEntry {
         screen: Screen::Settings,
         scope: BindingScope::Anywhere,
@@ -682,7 +722,7 @@ fn register_global(reg: &mut BindingRegistry) {
             code: KeyCodeRepr::Char('s'),
         },
         command_id: cmd("app.save"),
-        phase: Phase::Target,
+        phase: Phase::Bubble,
     });
 }
 
@@ -717,6 +757,8 @@ mod tests {
 
     #[test]
     fn index_j_resolves_to_tree_next() {
+        // Page-cursor `j` declares `Phase::Bubble` — it's an outer-scope
+        // default that fires only when no inner widget claims the key.
         let reg = populated();
         let hit = reg
             .lookup(
@@ -724,7 +766,7 @@ mod tests {
                 &oxpath!("settings", "index"),
                 None,
                 &key(no_mods(), KeyCodeRepr::Char('j')),
-                Phase::Target,
+                Phase::Bubble,
             )
             .expect("should match");
         assert_eq!(hit, &cmd("tree.next"));
@@ -739,7 +781,7 @@ mod tests {
                 &oxpath!("settings", "index"),
                 None,
                 &key(no_mods(), KeyCodeRepr::Enter),
-                Phase::Target,
+                Phase::Bubble,
             )
             .expect("should match");
         assert_eq!(hit, &cmd("tree.activate"));
@@ -754,7 +796,7 @@ mod tests {
                 &oxpath!("settings", "index"),
                 None,
                 &key(no_mods(), KeyCodeRepr::Esc),
-                Phase::Target,
+                Phase::Bubble,
             )
             .expect("should match");
         assert_eq!(hit, &cmd("tree.collapse_or_ascend"));
@@ -762,6 +804,7 @@ mod tests {
 
     #[test]
     fn accounts_a_resolves_to_accounts_compose_open() {
+        // Focused-row prefix bindings declare `Phase::Bubble`.
         let reg = populated();
         let hit = reg
             .lookup(
@@ -769,7 +812,7 @@ mod tests {
                 &oxpath!("settings", "accounts"),
                 None,
                 &key(no_mods(), KeyCodeRepr::Char('a')),
-                Phase::Target,
+                Phase::Bubble,
             )
             .expect("should match");
         assert_eq!(hit, &cmd("accounts.compose.open"));
@@ -779,7 +822,7 @@ mod tests {
     fn focused_account_row_t_resolves_to_account_test() {
         // Per-row prefix binding: `t` fires whenever the cursor sits
         // under `settings/accounts`, including the account leaf row
-        // — no page-flip required.
+        // — no page-flip required. Bubble phase — outer-scope default.
         let reg = populated();
         let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
         let hit = reg
@@ -788,7 +831,7 @@ mod tests {
                 &oxpath!("settings", "accounts", comp),
                 None,
                 &key(no_mods(), KeyCodeRepr::Char('t')),
-                Phase::Target,
+                Phase::Bubble,
             )
             .expect("should match");
         assert_eq!(hit, &cmd("account.test"));
@@ -804,7 +847,7 @@ mod tests {
                 &oxpath!("settings", "accounts", comp),
                 None,
                 &key(no_mods(), KeyCodeRepr::Char('r')),
-                Phase::Target,
+                Phase::Bubble,
             )
             .expect("should match");
         assert_eq!(hit, &cmd("account.refresh"));
@@ -821,7 +864,7 @@ mod tests {
                 &oxpath!("settings", "models", acct, model),
                 None,
                 &key(shift_only(), KeyCodeRepr::Char('P')),
-                Phase::Target,
+                Phase::Bubble,
             )
             .expect("should match");
         assert_eq!(hit, &cmd("models.set_bootstrap"));
@@ -896,7 +939,7 @@ mod tests {
                 &oxpath!("settings", "models"),
                 None,
                 &key(shift_only(), KeyCodeRepr::Char('P')),
-                Phase::Target,
+                Phase::Bubble,
             )
             .expect("should match");
         assert_eq!(hit, &cmd("models.set_bootstrap"));
@@ -915,7 +958,7 @@ mod tests {
                 &oxpath!("settings", "models"),
                 None,
                 &key(no_mods(), KeyCodeRepr::Char('d')),
-                Phase::Target,
+                Phase::Bubble,
             )
             .expect("should match");
         assert_eq!(hit, &cmd("models.toggle_default"));
