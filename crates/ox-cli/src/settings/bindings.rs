@@ -1110,4 +1110,206 @@ mod tests {
             entries.len()
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Cross-cutting binding-phase invariants
+    //
+    // These tests scan the production registry built by `register()` and
+    // pin phase choices that previously lived only in code-review folklore
+    // and per-widget tests. Drift surfaces here at the boundary, with a
+    // failure message that names the offending entry — so a future
+    // contributor learns the rule without re-reading the dispatcher docs.
+    //
+    // Compound-widget scope classification (path-prefix predicates):
+    //
+    //   Compound-widget scope (general):
+    //     `BindingScope::Exact(p)` where `p` begins
+    //     `settings/_…` — the convention for synthetic
+    //     compound-widget cursors. Concretely:
+    //       _compose_form, _compose_field_text, _compose_field_selector,
+    //       _manual_model, _manual_model/{Id,Ctx,Out},
+    //       _pending_delete, _edit_mode.
+    //
+    //   Container scope (has a separate leaf scope below it):
+    //     _compose_form, _manual_model.
+    //
+    //   Leaf scope (the focused inner target):
+    //     _compose_field_*  — children of the compose form.
+    //     _manual_model/{Id,Ctx,Out} — per-stage children.
+    //     _pending_delete, _edit_mode — single-scope widgets: the scope
+    //     IS the leaf when active (no separate form+leaf split). For
+    //     these, lifecycle keys (Esc/Enter/Tab/BackTab/Up/Down) are still
+    //     hosted on the same scope but at Capture/Bubble, so the
+    //     leaf-Target invariant deliberately excludes lifecycle keys.
+    // -----------------------------------------------------------------------
+
+    /// True iff the path's first two components are `settings/_*` —
+    /// the synthetic compound-widget cursor convention.
+    fn is_compound_widget_scope(p: &Path) -> bool {
+        p.components.len() >= 2
+            && p.components[0] == "settings"
+            && p.components[1].starts_with('_')
+    }
+
+    /// True iff `p` is the container scope for a widget that has a
+    /// separate leaf scope below it (compose form / manual-model form).
+    fn is_container_scope(p: &Path) -> bool {
+        // Both containers have exactly two components: settings/_name.
+        // The single-scope widgets (_pending_delete, _edit_mode) also
+        // have shape settings/_name but no leaf below — they're handled
+        // by the leaf classifier and explicitly excluded here.
+        if p.components.len() != 2 || p.components[0] != "settings" {
+            return false;
+        }
+        matches!(p.components[1].as_str(), "_compose_form" | "_manual_model")
+    }
+
+    /// True iff `p` is a leaf scope of a compound widget.
+    ///
+    /// Two shapes:
+    /// - children of a form-and-leaf widget (`_compose_field_*`,
+    ///   `_manual_model/Id|Ctx|Out`);
+    /// - single-scope widgets where the same scope hosts both lifecycle
+    ///   and leaf bindings (`_pending_delete`, `_edit_mode`).
+    fn is_leaf_scope(p: &Path) -> bool {
+        if p.components.len() < 2 || p.components[0] != "settings" {
+            return false;
+        }
+        let head = p.components[1].as_str();
+        // Split-widget leaves.
+        if head.starts_with("_compose_field_") && p.components.len() == 2 {
+            return true;
+        }
+        if head == "_manual_model" && p.components.len() == 3 {
+            return matches!(p.components[2].as_str(), "Id" | "Ctx" | "Out");
+        }
+        // Single-scope widgets: scope IS the leaf.
+        if p.components.len() == 2 {
+            return matches!(head, "_pending_delete" | "_edit_mode");
+        }
+        false
+    }
+
+    /// Keys that compound widgets route as container lifecycle (not
+    /// leaf semantics) even when the leaf and the container share a
+    /// single scope. Excluded from the "every leaf binding is Target"
+    /// scan because on single-scope widgets these are deliberately
+    /// hosted at Capture/Bubble on the same scope.
+    fn is_lifecycle_key(code: &KeyCodeRepr) -> bool {
+        matches!(
+            code,
+            KeyCodeRepr::Esc
+                | KeyCodeRepr::Enter
+                | KeyCodeRepr::Tab
+                | KeyCodeRepr::BackTab
+                | KeyCodeRepr::Up
+                | KeyCodeRepr::Down
+        )
+    }
+
+    fn format_offenders(offenders: &[&BindingEntry]) -> String {
+        offenders
+            .iter()
+            .map(|e| {
+                format!(
+                    "  scope={:?} key={:?} command_id={:?} phase={:?}",
+                    e.scope, e.key, e.command_id, e.phase
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn every_esc_on_compound_widget_scope_is_capture_phase() {
+        // Esc on a compound-widget scope is always a lifecycle cancel
+        // that the container claims before any leaf — so it must fire
+        // at Capture. Drift would let a leaf swallow Esc and trap the
+        // user inside a sub-mode.
+        let reg = populated();
+        let offenders: Vec<&BindingEntry> = reg
+            .entries()
+            .iter()
+            .filter(|e| {
+                matches!(&e.scope, BindingScope::Exact(p) if is_compound_widget_scope(p))
+            })
+            .filter(|e| e.key.code == KeyCodeRepr::Esc)
+            .filter(|e| e.phase != Phase::Capture)
+            .collect();
+
+        assert!(
+            offenders.is_empty(),
+            "Esc bindings on compound-widget scopes must be Phase::Capture but these aren't:\n{}",
+            format_offenders(&offenders),
+        );
+    }
+
+    #[test]
+    fn every_enter_on_compound_widget_container_scope_is_bubble_phase() {
+        // Enter on a container scope is the form's commit fallback —
+        // it must fire only when no leaf claimed Enter at Target. So
+        // every container Enter is Bubble; a future multi-line leaf
+        // gets to insert a newline at Target without being shadowed.
+        let reg = populated();
+        let offenders: Vec<&BindingEntry> = reg
+            .entries()
+            .iter()
+            .filter(|e| matches!(&e.scope, BindingScope::Exact(p) if is_container_scope(p)))
+            .filter(|e| e.key.code == KeyCodeRepr::Enter)
+            .filter(|e| e.phase != Phase::Bubble)
+            .collect();
+
+        assert!(
+            offenders.is_empty(),
+            "Enter bindings on compound-widget container scopes must be Phase::Bubble but these aren't:\n{}",
+            format_offenders(&offenders),
+        );
+    }
+
+    #[test]
+    fn every_binding_on_compound_widget_leaf_scope_is_target_phase() {
+        // The leaf scope is where the focused inner widget claims keys
+        // — Target phase by definition. Lifecycle keys (Esc/Enter/Tab/
+        // BackTab/Up/Down) are excluded: on single-scope widgets like
+        // _pending_delete / _edit_mode the same scope hosts both
+        // lifecycle (Capture/Bubble) and leaf (Target) bindings, and
+        // the lifecycle ones are pinned by the Esc-Capture and
+        // container-Enter-Bubble invariants above.
+        let reg = populated();
+        let offenders: Vec<&BindingEntry> = reg
+            .entries()
+            .iter()
+            .filter(|e| matches!(&e.scope, BindingScope::Exact(p) if is_leaf_scope(p)))
+            .filter(|e| !is_lifecycle_key(&e.key.code))
+            .filter(|e| e.phase != Phase::Target)
+            .collect();
+
+        assert!(
+            offenders.is_empty(),
+            "Non-lifecycle bindings on compound-widget leaf scopes must be Phase::Target but these aren't:\n{}",
+            format_offenders(&offenders),
+        );
+    }
+
+    #[test]
+    fn every_anywhere_binding_is_bubble_phase() {
+        // `BindingScope::Anywhere` is the lowest-specificity scope —
+        // it's the screen-wide fallback. Anywhere bindings must fire
+        // at Bubble so any inner compound widget's leaf can shadow
+        // the same key at Target. A non-Bubble Anywhere would trap
+        // the key globally and break the hierarchical-dispatch model.
+        let reg = populated();
+        let offenders: Vec<&BindingEntry> = reg
+            .entries()
+            .iter()
+            .filter(|e| matches!(&e.scope, BindingScope::Anywhere))
+            .filter(|e| e.phase != Phase::Bubble)
+            .collect();
+
+        assert!(
+            offenders.is_empty(),
+            "Bindings at BindingScope::Anywhere must be Phase::Bubble but these aren't:\n{}",
+            format_offenders(&offenders),
+        );
+    }
 }
