@@ -564,6 +564,10 @@ fn register_manual_model(reg: &mut BindingRegistry) {
 /// Register the pending-delete confirmation mode's bindings at the
 /// synthetic `settings/_pending_delete` cursor scope. The dispatcher
 /// routes to this scope when `ui/settings/pending_delete` is `Some(_)`.
+///
+/// Phases: y/n are semantic actions on the focused dialog (Target). Esc
+/// is a lifecycle key that the container claims before any leaf sees it
+/// (Capture) — same shape as compose-Esc.
 fn register_pending_delete(reg: &mut BindingRegistry) {
     let scope = oxpath!("settings", "_pending_delete");
     bind(
@@ -580,13 +584,17 @@ fn register_pending_delete(reg: &mut BindingRegistry) {
         KeyCodeRepr::Char('n'),
         "accounts.confirm.cancel",
     );
-    bind(
-        reg,
-        Some(scope),
-        no_mods(),
-        KeyCodeRepr::Esc,
-        "accounts.confirm.cancel",
-    );
+    reg.register(BindingEntry {
+        screen: Screen::Settings,
+        scope: BindingScope::Exact(scope),
+        mode: None,
+        key: KeyChord {
+            modifiers: no_mods(),
+            code: KeyCodeRepr::Esc,
+        },
+        command_id: cmd("accounts.confirm.cancel"),
+        phase: Phase::Capture,
+    });
 }
 
 /// Whole-screen `?` toggles the shortcuts modal regardless of cursor

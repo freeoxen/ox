@@ -699,6 +699,101 @@ mod tests {
     }
 
     #[test]
+    fn pending_delete_esc_routes_via_capture() {
+        // Esc on the pending-delete confirmation dialog is a lifecycle
+        // key — the container claims it at Capture before any leaf sees
+        // it. A binding registered at Phase::Capture on the
+        // `_pending_delete` scope must fire when Esc is pressed while
+        // pending_delete is set.
+        let mut cmds = CommandRegistry::new();
+        cmds.register(Box::new(WriteSentinel::new()));
+
+        let mut bindings = BindingRegistry::new();
+        bindings.register(BindingEntry {
+            screen: Screen::Settings,
+            scope: ox_types::BindingScope::Exact(oxpath!("settings", "_pending_delete")),
+            mode: None,
+            key: KeyChord {
+                modifiers: KeyModifierSet::default(),
+                code: KeyCodeRepr::Esc,
+            },
+            command_id: cmd_id("test.sentinel"),
+            phase: Phase::Capture,
+        });
+
+        let renderers = RendererRegistry::new();
+        let mut reader = LocalConfig::default();
+        reader
+            .write(
+                &oxpath!("ui", "settings", "pending_delete"),
+                Record::parsed(Value::String("alpha".into())),
+            )
+            .unwrap();
+
+        let writes = dispatch_settings_key(
+            &mut reader,
+            Screen::Settings,
+            &oxpath!("settings", "accounts"),
+            None,
+            &KeyChord {
+                modifiers: KeyModifierSet::default(),
+                code: KeyCodeRepr::Esc,
+            },
+            &cmds,
+            &bindings,
+            &renderers,
+        );
+
+        // Sentinel fires → Capture-phase lookup at the pending-delete
+        // scope worked.
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].path, oxpath!("ui", "sentinel"));
+    }
+
+    #[test]
+    fn pending_delete_y_routes_via_target() {
+        // Symmetric to the Esc-Capture test: `y` is a semantic action on
+        // the focused dialog (Target), and a Phase::Target binding on
+        // `_pending_delete` must fire when `y` is pressed while
+        // pending_delete is set.
+        let mut cmds = CommandRegistry::new();
+        cmds.register(Box::new(WriteSentinel::new()));
+
+        let mut bindings = BindingRegistry::new();
+        bindings.register(BindingEntry {
+            screen: Screen::Settings,
+            scope: ox_types::BindingScope::Exact(oxpath!("settings", "_pending_delete")),
+            mode: None,
+            key: key_char('y'),
+            command_id: cmd_id("test.sentinel"),
+            phase: Phase::Target,
+        });
+
+        let renderers = RendererRegistry::new();
+        let mut reader = LocalConfig::default();
+        reader
+            .write(
+                &oxpath!("ui", "settings", "pending_delete"),
+                Record::parsed(Value::String("alpha".into())),
+            )
+            .unwrap();
+
+        let writes = dispatch_settings_key(
+            &mut reader,
+            Screen::Settings,
+            &oxpath!("settings", "accounts"),
+            None,
+            &key_char('y'),
+            &cmds,
+            &bindings,
+            &renderers,
+        );
+
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].path, oxpath!("ui", "sentinel"));
+    }
+
+    #[test]
     fn command_sees_dispatched_keystroke() {
         let mut cmds = CommandRegistry::new();
         cmds.register(Box::new(ReportKeystroke::new()));
