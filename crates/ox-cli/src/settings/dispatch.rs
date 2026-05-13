@@ -143,6 +143,13 @@ fn compute_scope_path(snapshot: &mut dyn Reader, cursor: &Path) -> Vec<BindingSc
     let compose_active = read_compose_active(snapshot);
     let edit_mode_active = read_edit_mode_active(snapshot);
 
+    // Compound-widget modes are mutually exclusive by design. Violating
+    // this invariant isn't just hygiene: `compute_scope_path` would push
+    // both compound widgets' scopes, the second-pushed becomes the leaf,
+    // and the first widget's Target bindings get bypassed (Capture and
+    // Bubble still reach them, but the Target phase — the leaf claim —
+    // skips its semantics). Net effect: keystrokes route to the wrong
+    // widget.
     debug_assert!(
         [
             pending_delete,
@@ -154,7 +161,7 @@ fn compute_scope_path(snapshot: &mut dyn Reader, cursor: &Path) -> Vec<BindingSc
         .filter(|b| **b)
         .count()
             <= 1,
-        "at most one compound-widget mode active at a time",
+        "at most one compound-widget mode active at a time; violation routes keys to wrong widget",
     );
 
     if pending_delete {
@@ -812,5 +819,69 @@ mod tests {
         // Bindings would fall through; with no other binding registered,
         // result is empty.
         assert!(writes.is_empty());
+    }
+
+    #[test]
+    fn page_cursor_target_binding_fires_via_bubble_when_no_compound_widget_active() {
+        // The Bubble loop falls back to Phase::Target per scope. This is
+        // a transitional bridge that keeps unmigrated page-cursor and
+        // focused-row bindings reachable until S5.5 migrates them to
+        // declare Phase::Bubble explicitly. Pin the behavior so that
+        // removal is a controlled diff rather than a silent break.
+        //
+        // Setup: cursor at settings/index with a focused row at
+        // settings/accounts, no compound widget active. The scope path
+        // is then [Exact(settings/index), Exact(settings/accounts)] —
+        // leaf is `settings/accounts`, not the cursor. With the page
+        // cursor's `j` binding still at Phase::Target (current state),
+        // it reaches via the Bubble loop's Target fallback at the outer
+        // (cursor) scope. After S5.5 the same binding will declare
+        // Phase::Bubble and fire on the Bubble pass directly; either
+        // way this test passes.
+        let mut cmds = CommandRegistry::new();
+        cmds.register(Box::new(WriteSentinel::new()));
+
+        let mut bindings = BindingRegistry::new();
+        // Page-cursor `j` lives on the outer scope (`settings/index`)
+        // at Phase::Target — the shape the dispatcher's Bubble→Target
+        // fallback is the only route for, given a deeper leaf scope.
+        bindings.register(BindingEntry {
+            screen: Screen::Settings,
+            scope: ox_types::BindingScope::Exact(oxpath!("settings", "index")),
+            mode: None,
+            key: key_char('j'),
+            command_id: cmd_id("test.sentinel"),
+            phase: Phase::Target,
+        });
+
+        let renderers = RendererRegistry::new();
+        let mut reader = LocalConfig::default();
+        // Seed the focused-row scope so the leaf differs from the cursor;
+        // otherwise Target phase at the leaf would hit directly and the
+        // fallback wouldn't be exercised.
+        use super::super::commands::navigation::path_to_value;
+        reader
+            .write(
+                &oxpath!("ui", "settings", "focused"),
+                Record::parsed(path_to_value(&oxpath!("settings", "accounts"))),
+            )
+            .unwrap();
+
+        let writes = dispatch_settings_key(
+            &mut reader,
+            Screen::Settings,
+            &oxpath!("settings", "index"),
+            None,
+            &key_char('j'),
+            &cmds,
+            &bindings,
+            &renderers,
+        );
+
+        // The sentinel fires only if the Bubble loop's Target fallback
+        // routes `j` from the outer (cursor) scope. Asserting the write
+        // pins the fallback: removing it today would flip this test red.
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].path, oxpath!("ui", "sentinel"));
     }
 }
