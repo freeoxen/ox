@@ -10,13 +10,35 @@
 //! `Reader::read(&mut self, ...)` requires a mutable receiver. Matches
 //! the same deviation in `Command::run` (Phase H1) and `RenderCtx::data`
 //! (Phase G).
+//!
+//! ## Hierarchical dispatch
+//!
+//! The dispatcher resolves a keystroke by walking a *scope path* — the
+//! chain of nested scopes the user is currently "inside", from outer
+//! (whole page) to inner (innermost active compound widget). Three
+//! phases run in order:
+//!
+//! 1. **Capture** (outer → inner): container-owned lifecycle keys that
+//!    fire before the focused leaf sees them (e.g. compose Esc/Tab).
+//! 2. **Target** (leaf only): the focused leaf claims the key.
+//! 3. **Bubble** (inner → outer): container fallbacks for keys the
+//!    leaf didn't consume (e.g. compose Enter). At each scope the
+//!    pass tries `Phase::Bubble` first, then falls back to
+//!    `Phase::Target` so legacy outer-scope bindings (page-cursor
+//!    `j`/`k`, focused-row `a`/`t`) still fire when the leaf misses.
+//!    The fallback retires once those scopes' bindings are migrated
+//!    to declare `Phase::Bubble` explicitly.
+//!
+//! `compute_scope_path` reads UI-state discriminators to assemble the
+//! path. Adding a new compound widget = extend `compute_scope_path` +
+//! register bindings under the new scope with appropriate phases. No
+//! dispatcher changes.
 
 use structfs_core_store::{Path, Reader};
 
-use ox_types::key_chord::KeyCodeRepr;
 use ox_types::settings::AccountField;
 use ox_types::subscription::Write;
-use ox_types::{CommandId, KeyChord, Mode, Phase, Screen};
+use ox_types::{BindingScope, KeyChord, Mode, Phase, Screen};
 
 use super::binding_registry::BindingRegistry;
 use super::command_registry::{CommandCtx, CommandRegistry};
@@ -42,102 +64,49 @@ pub fn dispatch_settings_key(
     bindings: &BindingRegistry,
     renderers: &RendererRegistry,
 ) -> Vec<Write> {
-    // Six-pass binding lookup ordered by specificity of context:
-    //
-    //   1. Pending-delete mode — when `ui/settings/pending_delete` is
-    //      `Some(_)`, the user is being asked to confirm a delete.
-    //      Bindings live at `Exact(settings/_pending_delete)` and
-    //      capture y / n / Esc. Highest priority among modes because
-    //      "ready-to-take-action" (y/n) should win deterministically
-    //      if any other mode flag was somehow also set; the modes are
-    //      mutually exclusive by design.
-    //
-    //   2. Manual-model mode — when `ui/settings/manual_model/stage`
-    //      holds a typed `ManualModelStage` value (PascalCase wire
-    //      shape), the user is filling the three-stage manual-model
-    //      form. Bindings live at `Exact(settings/_manual_model)` and
-    //      capture printable / Backspace / Enter / Esc. The typed
-    //      shape is the discriminator: legacy stringly-typed values
-    //      ("id"/"ctx"/"out") fail the typed deserialize and fall
-    //      through to the edit-mode pass — that lets the new flow
-    //      land before the old one retires.
-    //
-    //   3. Compose mode — when `ui/settings/new_account/active` is
-    //      `true`, the user is composing a new connection. The compose
-    //      form is a compound widget: lifecycle keys (Esc, Tab,
-    //      Shift+Tab, Up, Down, Enter) belong to the form regardless
-    //      of focus, while focus-kind-specific keys (printable ASCII
-    //      for Text fields; h / l / Left / Right for Selector fields)
-    //      belong to the focused leaf. To mirror DOM event-flow shape,
-    //      dispatch walks the form + field scopes in three phases —
-    //      capture (form lifecycle keys), target (leaf), bubble
-    //      (form Enter) — implemented inline below. See
-    //      `docs/ui_framework/architecture.md` "Hierarchical dispatch".
-    //
-    //      The explicit boolean discriminator is single-purpose: it
-    //      doesn't entangle with the per-field draft values
-    //      (name/provider/...) the way the legacy `buffer` Option
-    //      did, so a half-typed field can't accidentally drop us out
-    //      of compose. Compose and edit mode are mutually exclusive
-    //      (per the spec's mutual-exclusion invariant) but we let
-    //      compose win first so a stale `edit_mode = true` flag can't
-    //      shadow a legitimate compose.
-    //
-    //   4. Edit mode — when `ui/settings/edit_mode = true`, the
-    //      dispatcher routes printable chars and Backspace to
-    //      `edit.insert_char` / `edit.delete_back` and Enter/Esc to
-    //      `edit.commit` / `edit.cancel`. These bindings live under
-    //      `Exact(settings/_edit_mode)`. The synthetic cursor lets us
-    //      reuse the regular registry/lookup machinery without a
-    //      special branch — it's data, not code.
-    //
-    //   5. Focused-row scope — `Prefix(settings/{accounts,models})`
-    //      bindings fire on whichever row the user has focused. This
-    //      is the per-row action surface (t/r/P/d on a focused leaf).
-    //
-    //   6. Page cursor — the accordion's tree commands at
-    //      `Exact(settings/index)`, plus the legacy `_detail` field
-    //      bindings at their own exact cursors.
-    let pending_delete_active = read_pending_delete(snapshot).is_some();
-    let pending_delete_scope = ox_path::oxpath!("settings", "_pending_delete");
-    let manual_model_active = read_manual_model_active(snapshot);
-    let manual_model_scope = ox_path::oxpath!("settings", "_manual_model");
-    let compose_active = read_compose_active(snapshot);
-    let edit_mode_active = read_edit_mode(snapshot);
-    let edit_scope = ox_path::oxpath!("settings", "_edit_mode");
-    let cmd_id = if pending_delete_active {
-        bindings.lookup(screen, &pending_delete_scope, mode, key, Phase::Target)
-    } else {
-        None
+    let scope_path = compute_scope_path(snapshot, cursor);
+
+    // Capture (outer → inner): containers claim lifecycle keys before
+    // the leaf sees them.
+    let mut cmd_id_opt = None;
+    for scope_path_entry in &scope_path {
+        if let Some(p) = scope_path_entry.keyed_path() {
+            if let Some(hit) = bindings.lookup(screen, p, mode, key, Phase::Capture) {
+                cmd_id_opt = Some(hit);
+                break;
+            }
+        }
     }
-    .or_else(|| {
-        if manual_model_active {
-            bindings.lookup(screen, &manual_model_scope, mode, key, Phase::Target)
-        } else {
-            None
+
+    // Target (leaf only): the innermost scope claims the key.
+    if cmd_id_opt.is_none() {
+        if let Some(leaf) = scope_path.last().and_then(BindingScope::keyed_path) {
+            cmd_id_opt = bindings.lookup(screen, leaf, mode, key, Phase::Target);
         }
-    })
-    .or_else(|| {
-        if compose_active {
-            lookup_compose(bindings, screen, mode, key, snapshot)
-        } else {
-            None
+    }
+
+    // Bubble (inner → outer): containers handle keys the leaf didn't
+    // consume. The Target fallback per scope is the bridge that keeps
+    // unmigrated outer-scope bindings (page-cursor `j`/`k`, focused-row
+    // `a`/`t`) reachable while S3–S5 migrate them to declare
+    // `Phase::Bubble` explicitly.
+    if cmd_id_opt.is_none() {
+        for scope_path_entry in scope_path.iter().rev() {
+            let Some(p) = scope_path_entry.keyed_path() else {
+                continue;
+            };
+            if let Some(hit) = bindings.lookup(screen, p, mode, key, Phase::Bubble) {
+                cmd_id_opt = Some(hit);
+                break;
+            }
+            if let Some(hit) = bindings.lookup(screen, p, mode, key, Phase::Target) {
+                cmd_id_opt = Some(hit);
+                break;
+            }
         }
-    })
-    .or_else(|| {
-        if edit_mode_active {
-            bindings.lookup(screen, &edit_scope, mode, key, Phase::Target)
-        } else {
-            None
-        }
-    })
-    .or_else(|| {
-        read_focused(snapshot)
-            .as_ref()
-            .and_then(|focus| bindings.lookup(screen, focus, mode, key, Phase::Target))
-    })
-    .or_else(|| bindings.lookup(screen, cursor, mode, key, Phase::Target));
-    let Some(cmd_id) = cmd_id else {
+    }
+
+    let Some(cmd_id) = cmd_id_opt else {
         return vec![];
     };
     let Some(command) = cmds.lookup(cmd_id) else {
@@ -150,8 +119,91 @@ pub fn dispatch_settings_key(
     command.run(snapshot, &ctx)
 }
 
-/// Read `ui/settings/focused` from the dispatch snapshot. Used as
-/// the focused-widget binding-scope cursor so per-row bindings can fire
+/// Assemble the outer → inner scope path the dispatcher walks. The
+/// page cursor is always outermost; the focused-row scope (when set
+/// and distinct from the cursor) sits one level deeper; the active
+/// compound widget pushes its own scope(s) on top.
+///
+/// Compound widgets are mutually exclusive by design — a `debug_assert`
+/// enforces that at most one is active at a time.
+fn compute_scope_path(snapshot: &mut dyn Reader, cursor: &Path) -> Vec<BindingScope> {
+    let mut path = vec![BindingScope::Exact(cursor.clone())];
+
+    // Focused row is the widget the user has navigated to inside the
+    // page. When set and different from the cursor, it sits between
+    // the cursor (outer container) and any compound widget (innermost).
+    if let Some(focused) = read_focused(snapshot) {
+        if &focused != cursor {
+            path.push(BindingScope::Exact(focused));
+        }
+    }
+
+    let pending_delete = read_pending_delete(snapshot).is_some();
+    let manual_model_stage = read_manual_model_stage(snapshot);
+    let compose_active = read_compose_active(snapshot);
+    let edit_mode_active = read_edit_mode_active(snapshot);
+
+    debug_assert!(
+        [
+            pending_delete,
+            manual_model_stage.is_some(),
+            compose_active,
+            edit_mode_active,
+        ]
+        .iter()
+        .filter(|b| **b)
+        .count()
+            <= 1,
+        "at most one compound-widget mode active at a time",
+    );
+
+    if pending_delete {
+        path.push(BindingScope::Exact(ox_path::oxpath!(
+            "settings",
+            "_pending_delete"
+        )));
+    }
+    if let Some(stage) = manual_model_stage {
+        path.push(BindingScope::Exact(ox_path::oxpath!(
+            "settings",
+            "_manual_model"
+        )));
+        // Per-stage leaf scope. S4 migrates per-stage bindings here;
+        // for now `_manual_model/<stage>` has no entries but
+        // pre-allocating it in the path keeps S4 a pure bindings.rs
+        // change. The path component is a string literal per stage so
+        // the `oxpath!` macro can validate at compile time.
+        use ox_types::settings::ManualModelStage;
+        let stage_scope = match stage {
+            ManualModelStage::Id => ox_path::oxpath!("settings", "_manual_model", "Id"),
+            ManualModelStage::Ctx => ox_path::oxpath!("settings", "_manual_model", "Ctx"),
+            ManualModelStage::Out => ox_path::oxpath!("settings", "_manual_model", "Out"),
+        };
+        path.push(BindingScope::Exact(stage_scope));
+    }
+    if compose_active {
+        path.push(BindingScope::Exact(ox_path::oxpath!(
+            "settings",
+            "_compose_form"
+        )));
+        let leaf = match field_kind(read_focused_compose_field(snapshot)) {
+            FieldKind::Text => ox_path::oxpath!("settings", "_compose_field_text"),
+            FieldKind::Selector => ox_path::oxpath!("settings", "_compose_field_selector"),
+        };
+        path.push(BindingScope::Exact(leaf));
+    }
+    if edit_mode_active {
+        path.push(BindingScope::Exact(ox_path::oxpath!(
+            "settings",
+            "_edit_mode"
+        )));
+    }
+
+    path
+}
+
+/// Read `ui/settings/focused` from the dispatch snapshot. Used as the
+/// focused-widget binding-scope cursor so per-row bindings can fire
 /// while the page cursor sits at `settings/index`.
 fn read_focused(snapshot: &mut dyn Reader) -> Option<Path> {
     use ox_path::oxpath;
@@ -164,7 +216,7 @@ fn read_focused(snapshot: &mut dyn Reader) -> Option<Path> {
 }
 
 /// Read the inline edit-mode flag.
-fn read_edit_mode(snapshot: &mut dyn Reader) -> bool {
+fn read_edit_mode_active(snapshot: &mut dyn Reader) -> bool {
     use ox_path::oxpath;
     use structfs_core_store::Value;
     snapshot
@@ -176,98 +228,6 @@ fn read_edit_mode(snapshot: &mut dyn Reader) -> bool {
             _ => None,
         })
         .unwrap_or(false)
-}
-
-/// Hierarchical compose-mode dispatch: walk the form + field synthetic
-/// scopes in three phases (capture → target → bubble) and return the
-/// first matching `CommandId`.
-///
-/// Pattern (b) from the T10b plan: a single `BindingRegistry` holds
-/// all bindings; this helper queries the *right scope* per phase based
-/// on the keystroke's role:
-///
-/// - **Capture**: lifecycle keys the form claims regardless of focus
-///   (Esc, Tab, BackTab, Up, Down). Looked up under
-///   `settings/_compose_form`.
-/// - **Target**: focus-kind-specific keys the leaf claims. The leaf
-///   scope is `settings/_compose_field_text` when the focused field is
-///   a Text variant (Name / Endpoint / Key) or
-///   `settings/_compose_field_selector` when it's a Selector variant
-///   (Protocol / Auth). The dispatcher picks the leaf scope by reading
-///   `ui/settings/new_account/focused_field` and consulting
-///   `field_kind`.
-/// - **Bubble**: keys the leaf didn't claim, caught by the form
-///   (Enter). Looked up under `settings/_compose_form` again.
-///
-/// `BindingEntry` now carries a `phase` field, so each lookup picks the
-/// phase its keystroke role demands. The compose bindings themselves
-/// are still registered with the default `Phase::Target`, so capture-
-/// and bubble-phase queries fall back to `Target` to preserve today's
-/// behavior. The Target fallback is removed in S2 once compose
-/// bindings declare their phases explicitly.
-fn lookup_compose<'a>(
-    bindings: &'a BindingRegistry,
-    screen: Screen,
-    mode: Option<Mode>,
-    key: &KeyChord,
-    snapshot: &mut dyn Reader,
-) -> Option<&'a CommandId> {
-    let form = ox_path::oxpath!("settings", "_compose_form");
-    let field_text = ox_path::oxpath!("settings", "_compose_field_text");
-    let field_selector = ox_path::oxpath!("settings", "_compose_field_selector");
-    let leaf = match field_kind(read_focused_compose_field(snapshot)) {
-        FieldKind::Text => &field_text,
-        FieldKind::Selector => &field_selector,
-    };
-    // Phase 1 — Capture (form scope, lifecycle keys).
-    if is_capture_key(&key.code) {
-        for phase in [Phase::Capture, Phase::Target] {
-            // Temporary fallback to Phase::Target — removed in S2 once
-            // bindings declare phases explicitly.
-            if let Some(hit) = bindings.lookup(screen, &form, mode, key, phase) {
-                return Some(hit);
-            }
-        }
-    }
-    // Phase 2 — Target (leaf scope, field-kind-specific).
-    if !is_capture_key(&key.code) {
-        if let Some(hit) = bindings.lookup(screen, leaf, mode, key, Phase::Target) {
-            return Some(hit);
-        }
-    }
-    // Phase 3 — Bubble (form scope, fallback after leaf).
-    if is_bubble_key(&key.code) {
-        for phase in [Phase::Bubble, Phase::Target] {
-            // Temporary fallback to Phase::Target — removed in S2 once
-            // bindings declare phases explicitly.
-            if let Some(hit) = bindings.lookup(screen, &form, mode, key, phase) {
-                return Some(hit);
-            }
-        }
-    }
-    None
-}
-
-/// Capture-phase keys: lifecycle controls the form owns regardless of
-/// which field is focused.
-fn is_capture_key(code: &KeyCodeRepr) -> bool {
-    matches!(
-        code,
-        KeyCodeRepr::Esc
-            | KeyCodeRepr::Tab
-            | KeyCodeRepr::BackTab
-            | KeyCodeRepr::Up
-            | KeyCodeRepr::Down,
-    )
-}
-
-/// Bubble-phase keys: keys the form claims only after the leaf has had
-/// a chance to consume them. Day-one this is just Enter (compose
-/// commit). A future multiline text leaf could bind Enter at target
-/// (newline insert), in which case the leaf lookup runs first and
-/// shadows this phase.
-fn is_bubble_key(code: &KeyCodeRepr) -> bool {
-    matches!(code, KeyCodeRepr::Enter)
 }
 
 /// Read `ui/settings/new_account/focused_field` as an `AccountField`,
@@ -293,8 +253,8 @@ fn read_focused_compose_field(snapshot: &mut dyn Reader) -> AccountField {
 
 /// Read the compose-mode discriminator at
 /// `ui/settings/new_account/active`. Returns `true` only when the
-/// stored value is `Bool(true)`; any other shape (missing, wrong
-/// type, `false`) reads as inactive. Compose state lives in the
+/// stored value is `Bool(true)`; any other shape (missing, wrong type,
+/// `false`) reads as inactive. Compose state lives in the
 /// `new_account/*` subtree as a whole form; this flag is the single
 /// signal the dispatcher keys on.
 fn read_compose_active(snapshot: &mut dyn Reader) -> bool {
@@ -311,8 +271,8 @@ fn read_compose_active(snapshot: &mut dyn Reader) -> bool {
         .unwrap_or(false)
 }
 
-/// Read `ui/settings/pending_delete`. Returns `Some(_)` when the
-/// user is being asked to confirm a delete (pending-delete mode).
+/// Read `ui/settings/pending_delete`. Returns `Some(_)` when the user
+/// is being asked to confirm a delete (pending-delete mode).
 fn read_pending_delete(snapshot: &mut dyn Reader) -> Option<String> {
     use ox_path::oxpath;
     use structfs_core_store::Value;
@@ -326,33 +286,27 @@ fn read_pending_delete(snapshot: &mut dyn Reader) -> Option<String> {
     }
 }
 
-/// Discriminate manual-model mode by attempting a typed deserialize at
-/// `ui/settings/manual_model/stage`. Returns `true` only when the
-/// stored value matches the new typed `ManualModelStage` shape (wire
-/// format `"Id"` / `"Ctx"` / `"Out"`).
+/// Read `ui/settings/manual_model/stage` as a typed `ManualModelStage`.
+/// Returns `Some(stage)` only when the stored value matches the typed
+/// wire shape (`"Id"` / `"Ctx"` / `"Out"`).
 ///
 /// The legacy stringly-typed write site stores `"id"` / `"ctx"` /
-/// `"out"` (snake_case strings); those fail the typed deserialize, so
-/// this returns `false` and the dispatcher falls through to the
-/// compose / edit-mode passes that the old flow already routes
-/// through. That coexistence is what keeps the new pass dormant until
-/// the entry point is rewired.
-fn read_manual_model_active(snapshot: &mut dyn Reader) -> bool {
+/// `"out"` (snake_case); those fail the typed deserialize, so the
+/// caller treats them as "manual-model mode not active" and the
+/// dispatcher falls through to the remaining scope-path walks. That
+/// coexistence is what keeps the new pass dormant until the entry
+/// point is rewired.
+fn read_manual_model_stage(
+    snapshot: &mut dyn Reader,
+) -> Option<ox_types::settings::ManualModelStage> {
     use ox_path::oxpath;
     use ox_types::settings::ManualModelStage;
-    let record = match snapshot
+    let record = snapshot
         .read(&oxpath!("ui", "settings", "manual_model", "stage"))
         .ok()
-        .flatten()
-    {
-        Some(r) => r,
-        None => return false,
-    };
-    let value = match record.as_value() {
-        Some(v) => v.clone(),
-        None => return false,
-    };
-    structfs_serde_store::from_value::<ManualModelStage>(value).is_ok()
+        .flatten()?;
+    let value = record.as_value()?.clone();
+    structfs_serde_store::from_value::<ManualModelStage>(value).ok()
 }
 
 // ---------------------------------------------------------------------------

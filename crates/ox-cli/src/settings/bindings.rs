@@ -367,9 +367,9 @@ fn register_edit_mode(reg: &mut BindingRegistry) {
 /// `docs/ui_framework/architecture.md` "Hierarchical dispatch" for the
 /// model.
 ///
-/// Phase classification is implicit in *which scope* owns each binding
-/// and is enforced by the dispatcher's per-phase lookups — the
-/// `BindingEntry` struct itself doesn't carry a phase field.
+/// Phase classification is carried by each `BindingEntry`'s `phase`
+/// field; the dispatcher's generic walk picks bindings up at the phase
+/// they declare.
 fn register_compose_new_account(reg: &mut BindingRegistry) {
     register_compose_form(reg);
     register_compose_field_text(reg);
@@ -377,65 +377,81 @@ fn register_compose_new_account(reg: &mut BindingRegistry) {
 }
 
 /// Outer/container scope for the compose form: lifecycle keys owned by
-/// the form regardless of which field is focused. Capture-phase keys
-/// (Esc cancel, Tab/Shift+Tab/Up/Down focus traversal) and the
-/// bubble-phase commit (Enter) all live here. The dispatcher
-/// distinguishes phases by *which* keys it queries on each phase
-/// pass — Esc/Tab/BackTab/Up/Down are queried on capture, Enter on
-/// bubble — so no per-entry phase tag is required.
+/// the form regardless of which field is focused. Esc/Tab/Shift+Tab/
+/// Up/Down register at `Phase::Capture` so they preempt the focused
+/// leaf; Enter registers at `Phase::Bubble` so a future multiline text
+/// leaf could shadow it with a `Phase::Target` newline-insert binding.
 fn register_compose_form(reg: &mut BindingRegistry) {
     let scope = oxpath!("settings", "_compose_form");
 
     // Capture phase: lifecycle keys the form claims before the leaf is
     // consulted.
-    bind(
-        reg,
-        Some(scope.clone()),
-        no_mods(),
-        KeyCodeRepr::Esc,
-        "accounts.compose.cancel",
-    );
-    // focus_next: Tab / Down. The command lands in T11; the binding is
-    // wired now so the three-phase dispatch shape is observable on
-    // arrival.
+    reg.register(BindingEntry {
+        screen: Screen::Settings,
+        scope: BindingScope::Exact(scope.clone()),
+        mode: None,
+        key: KeyChord {
+            modifiers: no_mods(),
+            code: KeyCodeRepr::Esc,
+        },
+        command_id: cmd("accounts.compose.cancel"),
+        phase: Phase::Capture,
+    });
+    // focus_next: Tab / Down.
     for key in [KeyCodeRepr::Tab, KeyCodeRepr::Down] {
-        bind(
-            reg,
-            Some(scope.clone()),
-            no_mods(),
-            key,
-            "accounts.compose.focus_next",
-        );
+        reg.register(BindingEntry {
+            screen: Screen::Settings,
+            scope: BindingScope::Exact(scope.clone()),
+            mode: None,
+            key: KeyChord {
+                modifiers: no_mods(),
+                code: key,
+            },
+            command_id: cmd("accounts.compose.focus_next"),
+            phase: Phase::Capture,
+        });
     }
     // focus_prev: Shift+Tab (terminals emit `BackTab` carrying the
     // canonical `shift` modifier — matches `encode_keychord_to_str` /
     // `parse_key_str` which encode BackTab as the wire string
     // "Shift+Tab" with `shift: true`) / Up.
-    bind(
-        reg,
-        Some(scope.clone()),
-        shift_only(),
-        KeyCodeRepr::BackTab,
-        "accounts.compose.focus_prev",
-    );
-    bind(
-        reg,
-        Some(scope.clone()),
-        no_mods(),
-        KeyCodeRepr::Up,
-        "accounts.compose.focus_prev",
-    );
+    reg.register(BindingEntry {
+        screen: Screen::Settings,
+        scope: BindingScope::Exact(scope.clone()),
+        mode: None,
+        key: KeyChord {
+            modifiers: shift_only(),
+            code: KeyCodeRepr::BackTab,
+        },
+        command_id: cmd("accounts.compose.focus_prev"),
+        phase: Phase::Capture,
+    });
+    reg.register(BindingEntry {
+        screen: Screen::Settings,
+        scope: BindingScope::Exact(scope.clone()),
+        mode: None,
+        key: KeyChord {
+            modifiers: no_mods(),
+            code: KeyCodeRepr::Up,
+        },
+        command_id: cmd("accounts.compose.focus_prev"),
+        phase: Phase::Capture,
+    });
 
     // Bubble phase: caught only if the leaf didn't claim Enter at
     // target. (No leaf does today; a future multiline text field
     // could.)
-    bind(
-        reg,
-        Some(scope),
-        no_mods(),
-        KeyCodeRepr::Enter,
-        "accounts.compose.commit",
-    );
+    reg.register(BindingEntry {
+        screen: Screen::Settings,
+        scope: BindingScope::Exact(scope),
+        mode: None,
+        key: KeyChord {
+            modifiers: no_mods(),
+            code: KeyCodeRepr::Enter,
+        },
+        command_id: cmd("accounts.compose.commit"),
+        phase: Phase::Bubble,
+    });
 }
 
 /// Inner/leaf scope for compose form fields of kind `Text` (Name /
