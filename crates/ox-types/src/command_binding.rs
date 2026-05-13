@@ -123,6 +123,14 @@ pub struct BindingEntry {
     pub mode: Option<Mode>,
     pub key: KeyChord,
     pub command_id: CommandId,
+    /// The dispatch phase at which this binding fires. `#[serde(default)]`
+    /// makes deserialization of older payloads (lacking the `phase` key)
+    /// coerce silently to `Phase::Target` — i.e., wire compat is one-way:
+    /// new readers tolerate old payloads, but old readers consuming new
+    /// payloads that include explicit `Capture` / `Bubble` bindings will
+    /// silently coerce those to `Target` and route the wrong command. If
+    /// the registry ever serializes across a version boundary, bump a
+    /// schema version when phase declarations land.
     #[serde(default)]
     pub phase: Phase,
 }

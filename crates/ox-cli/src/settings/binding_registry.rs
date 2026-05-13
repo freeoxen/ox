@@ -416,4 +416,72 @@ mod tests {
             .expect("should match");
         assert_eq!(hit, &cmd("capture_only"));
     }
+
+    #[test]
+    fn specificity_tie_breaking_within_phase() {
+        // Specificity ordering still wins WITHIN a phase: two Capture
+        // entries differing only by scope specificity must resolve to
+        // the more-specific one.
+        let mut reg = BindingRegistry::new();
+        let p = oxpath!("settings", "accounts");
+
+        // Less-specific (Anywhere) registered first to prove it's not
+        // just registration order.
+        reg.register(BindingEntry {
+            screen: Screen::Settings,
+            scope: BindingScope::Anywhere,
+            mode: None,
+            key: key_char('x'),
+            command_id: cmd("less_specific"),
+            phase: Phase::Capture,
+        });
+        reg.register(BindingEntry {
+            screen: Screen::Settings,
+            scope: BindingScope::Exact(p.clone()),
+            mode: None,
+            key: key_char('x'),
+            command_id: cmd("more_specific"),
+            phase: Phase::Capture,
+        });
+
+        let hit = reg
+            .lookup(Screen::Settings, &p, None, &key_char('x'), Phase::Capture)
+            .expect("should match");
+        assert_eq!(hit, &cmd("more_specific"));
+    }
+
+    #[test]
+    fn same_key_different_phases_route_independently() {
+        // Same (screen, scope, mode, key) under two different phases must
+        // coexist and route independently per the lookup phase.
+        let mut reg = BindingRegistry::new();
+        let p = oxpath!("settings", "accounts");
+
+        reg.register(BindingEntry {
+            screen: Screen::Settings,
+            scope: BindingScope::Exact(p.clone()),
+            mode: None,
+            key: key_char('x'),
+            command_id: cmd("on_capture"),
+            phase: Phase::Capture,
+        });
+        reg.register(BindingEntry {
+            screen: Screen::Settings,
+            scope: BindingScope::Exact(p.clone()),
+            mode: None,
+            key: key_char('x'),
+            command_id: cmd("on_target"),
+            phase: Phase::Target,
+        });
+
+        let capture_hit = reg
+            .lookup(Screen::Settings, &p, None, &key_char('x'), Phase::Capture)
+            .expect("capture should match");
+        assert_eq!(capture_hit, &cmd("on_capture"));
+
+        let target_hit = reg
+            .lookup(Screen::Settings, &p, None, &key_char('x'), Phase::Target)
+            .expect("target should match");
+        assert_eq!(target_hit, &cmd("on_target"));
+    }
 }
