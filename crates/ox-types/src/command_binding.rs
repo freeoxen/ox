@@ -97,9 +97,9 @@ impl BindingScope {
 /// - `Bubble`: container fallbacks that fire only when the leaf
 ///   didn't consume the key (e.g. compose `Enter` commit).
 ///
-/// `Default` returns `Target` so existing call sites that don't yet
-/// declare a phase preserve their current single-pass behavior — the
-/// per-phase splits are migrated incrementally.
+/// No `Default` impl: every in-process `BindingEntry` registration must
+/// declare its phase explicitly. Phase is a load-bearing routing
+/// decision, not a default to fall back into.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
@@ -108,10 +108,12 @@ pub enum Phase {
     Bubble,
 }
 
-impl Default for Phase {
-    fn default() -> Self {
-        Phase::Target
-    }
+/// Wire-compat fallback for deserializing legacy payloads that lack the
+/// `phase` field. Not exposed as `impl Default for Phase` because we
+/// want every Rust-side construction to declare phase explicitly — only
+/// the serde path tolerates the missing key.
+fn default_phase() -> Phase {
+    Phase::Target
 }
 
 /// One row in the binding registry: under (screen, scope, mode, phase),
@@ -123,15 +125,21 @@ pub struct BindingEntry {
     pub mode: Option<Mode>,
     pub key: KeyChord,
     pub command_id: CommandId,
-    /// The dispatch phase at which this binding fires. `#[serde(default)]`
-    /// makes deserialization of older payloads (lacking the `phase` key)
-    /// coerce silently to `Phase::Target` — i.e., wire compat is one-way:
-    /// new readers tolerate old payloads, but old readers consuming new
-    /// payloads that include explicit `Capture` / `Bubble` bindings will
-    /// silently coerce those to `Target` and route the wrong command. If
-    /// the registry ever serializes across a version boundary, bump a
-    /// schema version when phase declarations land.
-    #[serde(default)]
+    /// The dispatch phase at which this binding fires.
+    ///
+    /// Required at registration. The `#[serde(default = "default_phase")]`
+    /// annotation accepts legacy payloads that predate the phase field —
+    /// those bindings deserialize as `Phase::Target`, the pre-migration
+    /// shape. New payloads must include `phase` explicitly; the Rust code
+    /// path has no `Default` impl on `Phase`, so every in-process
+    /// registration is forced to declare its phase.
+    ///
+    /// Wire compat is one-way: new readers tolerate old payloads, but
+    /// old readers consuming new payloads that include explicit
+    /// `Capture` / `Bubble` bindings will silently coerce those to
+    /// `Target` and route the wrong command. If the registry ever
+    /// serializes across a version boundary, bump a schema version.
+    #[serde(default = "default_phase")]
     pub phase: Phase,
 }
 
