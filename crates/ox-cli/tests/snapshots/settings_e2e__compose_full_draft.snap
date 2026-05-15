@@ -5,13 +5,13 @@ expression: "&frame_full"
 ---
 ┌Settings──────────────────────────────────────────────────────────────────────┐
 │▸ Connections [0]                                                             │
-│Name: my-personal                                                             │
-│Protocol: < anthropic >                                                       │
-│Endpoint: https://api.example.com                                             │
-│Auth: < x-api-key >                                                           │
-│Key: •••••••  required for x-api-key / bearer-token                           │
+│    + New connection (Tab to navigate, Enter to create, Esc to cancel)        │
+│    Name: my-personal                                                         │
+│    Protocol: < anthropic >                                                   │
+│    Endpoint: https://api.example.com                                         │
+│    Auth: < x-api-key >                                                       │
+│    Key: •••••••  required for x-api-key / bearer-token                       │
 │▸ Models                                                                      │
-│                                                                              │
 │                                                                              │
 │                                                                              │
 │                                                                              │

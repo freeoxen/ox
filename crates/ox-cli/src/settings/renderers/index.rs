@@ -13,7 +13,7 @@
 //! glyph on the primary text; the legacy badge slot still carries
 //! the entry's badge string.
 
-use ox_view::{Direction, FocusId, ListItem, ModifierSet, Sizing, Span, Style, View};
+use ox_view::{Direction, FocusId, ListItem, ModifierSet, Padding, Sizing, Span, Style, View};
 
 use ox_gate::AuthScheme;
 
@@ -220,13 +220,47 @@ fn render_accounts_section(
     let header_list = build_list_from_rows(std::slice::from_ref(header_row), ctx);
     children.push((header_list, Sizing::Fixed(1)));
 
-    // Middle slot: Form > affordance > nothing.
+    // Middle slot: heading+padded Form > affordance > nothing.
     if compose_active {
+        // Promote the "+ New connection" affordance into a heading for
+        // the compose form, with parenthetical help text. Same 4-space
+        // indent as the inactive affordance; non-focusable (j/k skips).
+        let heading_item = ListItem {
+            primary: "    + New connection (Tab to navigate, Enter to create, Esc to cancel)"
+                .to_string(),
+            primary_spans: None,
+            secondary: None,
+            badge: None,
+            focus: None,
+        };
+        let heading_list = View::List {
+            items: vec![heading_item],
+            selected: None,
+        };
         let form = compose_form_view(data);
-        let h = form_height(&form);
-        // Use Min(h) so the form occupies exactly its row count when
-        // there's vertical room and clips gracefully when there isn't.
-        children.push((form, Sizing::Min(h)));
+        let form_h = form_height(&form);
+        // Indent the form to align with depth-1 content (four spaces);
+        // wrap as View::Pad so the translator inserts the left margin.
+        let padded_form = View::Pad {
+            padding: Padding {
+                left: 4,
+                right: 0,
+                top: 0,
+                bottom: 0,
+            },
+            child: Box::new(form),
+        };
+        let compose_block = View::Stack {
+            dir: Direction::Vertical,
+            children: vec![
+                (heading_list, Sizing::Fixed(1)),
+                (padded_form, Sizing::Min(form_h)),
+            ],
+        };
+        // The compose block measures as heading (1) + form rows; +1 over
+        // the bare-form slot. section_height() walks Stack/List/Form so
+        // the outer page Stack still sees the right size.
+        children.push((compose_block, Sizing::Min(form_h + 1)));
     } else if header_expanded {
         let affordance = ListItem {
             primary: "    + New connection".to_string(),
@@ -510,6 +544,14 @@ fn section_height(view: &View) -> u16 {
             .sum::<usize>() as u16,
         View::Form { rows, .. } => rows.len() as u16,
         View::Stack { children, .. } => children.iter().map(|(c, _)| section_height(c)).sum(),
+        // `View::Pad` wraps the compose form for indentation; left/right
+        // padding doesn't change row count, and the only padded child
+        // we emit has zero top/bottom padding, so the inner child's
+        // measured rows pass through unchanged. If the renderer ever
+        // grows top/bottom padding we'll need to add it here.
+        View::Pad { child, padding } => {
+            section_height(child) + padding.top + padding.bottom
+        }
         _ => 0,
     }
 }
@@ -1462,13 +1504,24 @@ mod tests {
             View::Stack { children, .. } => children,
             _ => panic!("AccountsSection should be a Stack"),
         };
-        // Header + Form. (Content list also present when Accounts is
-        // expanded; snap_with_compose_active expands Accounts.)
+        // Header + compose_block (Stack of heading List + Pad → Form).
+        // (Content list also present when Accounts is expanded;
+        // snap_with_compose_active expands Accounts.)
         assert!(children.len() >= 2);
-        let form_child_present = children
-            .iter()
-            .any(|(v, _)| matches!(v, View::Form { .. }));
-        assert!(form_child_present, "compose Form must be inside Accounts section");
+        // The Form is nested inside the compose_block; do a recursive
+        // walk so this test stays anchored to the invariant "form lives
+        // inside the Accounts section" without pinning its exact shape.
+        fn contains_form(v: &View) -> bool {
+            match v {
+                View::Form { .. } => true,
+                View::Stack { children, .. } => children.iter().any(|(c, _)| contains_form(c)),
+                View::Pad { child, .. } => contains_form(child),
+                View::Frame { content, .. } => contains_form(content),
+                _ => false,
+            }
+        }
+        let form_present = children.iter().any(|(v, _)| contains_form(v));
+        assert!(form_present, "compose Form must be inside Accounts section");
         // Header must be the first child (sets the ordering invariant
         // that the positioning regression test covers visually).
         assert!(matches!(children[0].0, View::List { .. }));
@@ -1719,6 +1772,85 @@ mod tests {
             }
             other => panic!("expected FormValue::Text, got {other:?}"),
         }
+    }
+
+    /// Recursive walker: returns true if any `View::Pad` is found whose
+    /// subtree contains a `View::Form`. Used by the compose-form padding
+    /// test to assert the indent wrapping without pinning the exact
+    /// nesting depth.
+    fn view_contains_pad_wrapping_form(view: &View) -> bool {
+        fn contains_form(v: &View) -> bool {
+            match v {
+                View::Form { .. } => true,
+                View::Stack { children, .. } => children.iter().any(|(c, _)| contains_form(c)),
+                View::Frame { content, .. } => contains_form(content),
+                View::Pad { child, .. } => contains_form(child),
+                _ => false,
+            }
+        }
+        match view {
+            View::Pad { child, .. } if contains_form(child) => true,
+            View::Stack { children, .. } => {
+                children.iter().any(|(c, _)| view_contains_pad_wrapping_form(c))
+            }
+            View::Frame { content, .. } => view_contains_pad_wrapping_form(content),
+            View::Pad { child, .. } => view_contains_pad_wrapping_form(child),
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn compose_active_renders_heading_above_form() {
+        let mut snap = snap_with_compose_active();
+        let view = render(&mut snap);
+        let flat = flatten_to_strings(&view);
+
+        let heading_pos = flat
+            .iter()
+            .position(|s| s.contains("+ New connection") && s.contains("Tab to navigate"))
+            .expect("heading present with help text");
+        let name_field_pos = flat
+            .iter()
+            .position(|s| s == "Name")
+            .expect("Name field present");
+        assert!(
+            heading_pos < name_field_pos,
+            "heading must appear before Name field; flat = {flat:?}"
+        );
+    }
+
+    #[test]
+    fn compose_active_form_is_padded() {
+        let mut snap = snap_with_compose_active();
+        let view = render(&mut snap);
+        assert!(
+            view_contains_pad_wrapping_form(&view),
+            "compose form must be wrapped in View::Pad for indentation"
+        );
+    }
+
+    #[test]
+    fn compose_inactive_affordance_unchanged() {
+        let mut snap = SettingsSnapshot::empty();
+        write_index(&mut snap);
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&["settings/accounts".to_string()]),
+        );
+        write_account(&mut snap, "alpha");
+
+        let view = render(&mut snap);
+        let flat = flatten_to_strings(&view);
+        // Still has the bare "+ New connection" affordance, NO Tab/Enter/Esc
+        // help text — that text only appears when compose is active and the
+        // affordance has been promoted to a heading.
+        let bare_affordance = flat
+            .iter()
+            .any(|s| s.contains("+ New connection") && !s.contains("Tab to navigate"));
+        assert!(
+            bare_affordance,
+            "inactive affordance is the plain '+ New connection' line; flat = {flat:?}"
+        );
     }
 
     #[test]

@@ -5,13 +5,13 @@ expression: "&frame_typed"
 ---
 ┌Settings──────────────────────────────────────────────────────────────────────┐
 │▸ Connections [0]                                                             │
-│Name: my-personal                                                             │
-│Protocol: (not selected)  select a protocol                                   │
-│Endpoint:   required                                                          │
-│Auth: (not selected)  select an auth scheme                                   │
-│Key:   required for x-api-key / bearer-token                                  │
+│    + New connection (Tab to navigate, Enter to create, Esc to cancel)        │
+│    Name: my-personal                                                         │
+│    Protocol: (not selected)  select a protocol                               │
+│    Endpoint:   required                                                      │
+│    Auth: (not selected)  select an auth scheme                               │
+│    Key:   required for x-api-key / bearer-token                              │
 │▸ Models                                                                      │
-│                                                                              │
 │                                                                              │
 │                                                                              │
 │                                                                              │
