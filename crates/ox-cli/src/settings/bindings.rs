@@ -610,20 +610,24 @@ fn register_compose_selector_field(reg: &mut BindingRegistry, field: &str) {
 }
 
 /// Register the manual-model entry mode's bindings across the
-/// compound widget's scopes. The dispatcher routes to these scopes
-/// when `ui/settings/manual_model/stage` holds a typed
-/// `ManualModelStage` value (PascalCase wire shape).
+/// compound widget's scopes. Under cursor-as-focus, the cursor's path
+/// encodes both the mode (cursor under `settings/_manual_model`) and
+/// the focused sub-element (`settings/_manual_model/<stage>`); the
+/// dispatcher's scope path walks cursor ancestors so both scopes sit
+/// on the active path with the stage scope as the leaf.
 ///
 /// Phase split:
 /// - Form scope `settings/_manual_model` claims lifecycle keys:
 ///   Esc (Capture, cancels the wizard) and Enter (Bubble, advances
 ///   the stage so a future multi-line stage can claim Enter at Target
 ///   first).
-/// - Per-stage leaf scopes `_manual_model/Id`, `_manual_model/Ctx`,
-///   `_manual_model/Out` claim text-input keys: printable ASCII
+/// - Per-stage leaf scopes `_manual_model/id`, `_manual_model/ctx`,
+///   `_manual_model/out` claim text-input keys: printable ASCII
 ///   (`insert_char`) and Backspace (`delete_back`) at Target. The
-///   command bodies read the active stage from snapshot, so a single
-///   command id services all three stages.
+///   command bodies read the active stage from the cursor, so a single
+///   command id services all three stages. The lowercase segment
+///   names match compose's per-field convention; the dispatcher only
+///   cares that the cursor-string and binding-scope-string agree.
 fn register_manual_model(reg: &mut BindingRegistry) {
     let form_scope = oxpath!("settings", "_manual_model");
 
@@ -657,12 +661,12 @@ fn register_manual_model(reg: &mut BindingRegistry) {
     });
 
     // Per-stage leaves: printable ASCII + Backspace at Target. Stages
-    // share command ids; the commands read the active stage from
-    // snapshot and apply per-stage rules (e.g. Ctx/Out digits-only).
+    // share command ids; the commands read the active stage from the
+    // cursor and apply per-stage rules (e.g. Ctx/Out digits-only).
     for stage_scope in [
-        oxpath!("settings", "_manual_model", "Id"),
-        oxpath!("settings", "_manual_model", "Ctx"),
-        oxpath!("settings", "_manual_model", "Out"),
+        oxpath!("settings", "_manual_model", "id"),
+        oxpath!("settings", "_manual_model", "ctx"),
+        oxpath!("settings", "_manual_model", "out"),
     ] {
         for byte in 0x20u8..=0x7E {
             let ch = byte as char;
@@ -1043,17 +1047,17 @@ mod tests {
     fn manual_model_printable_at_id_leaf_is_target_phase() {
         // Printable ASCII lives on the per-stage leaf scope; same
         // command id services all three stages (the command body reads
-        // the active stage from snapshot).
+        // the active stage from the cursor).
         let reg = populated();
         let hit = reg
             .lookup(
                 Screen::Settings,
-                &oxpath!("settings", "_manual_model", "Id"),
+                &oxpath!("settings", "_manual_model", "id"),
                 None,
                 &key(no_mods(), KeyCodeRepr::Char('x')),
                 Phase::Target,
             )
-            .expect("'x' should resolve at the Id leaf scope");
+            .expect("'x' should resolve at the id leaf scope");
         assert_eq!(hit, &cmd("models.compose_manual.insert_char"));
     }
 
@@ -1063,12 +1067,12 @@ mod tests {
         let hit = reg
             .lookup(
                 Screen::Settings,
-                &oxpath!("settings", "_manual_model", "Ctx"),
+                &oxpath!("settings", "_manual_model", "ctx"),
                 None,
                 &key(no_mods(), KeyCodeRepr::Backspace),
                 Phase::Target,
             )
-            .expect("Backspace should resolve at the Ctx leaf scope");
+            .expect("Backspace should resolve at the ctx leaf scope");
         assert_eq!(hit, &cmd("models.compose_manual.delete_back"));
     }
 
@@ -1078,12 +1082,12 @@ mod tests {
         let hit = reg
             .lookup(
                 Screen::Settings,
-                &oxpath!("settings", "_manual_model", "Out"),
+                &oxpath!("settings", "_manual_model", "out"),
                 None,
                 &key(no_mods(), KeyCodeRepr::Char('7')),
                 Phase::Target,
             )
-            .expect("'7' should resolve at the Out leaf scope");
+            .expect("'7' should resolve at the out leaf scope");
         assert_eq!(hit, &cmd("models.compose_manual.insert_char"));
     }
 
@@ -1168,7 +1172,7 @@ mod tests {
     //     `settings/_…` — the convention for synthetic
     //     compound-widget cursors. Concretely:
     //       _compose_form, _compose_form/{name,protocol,endpoint,auth,key},
-    //       _manual_model, _manual_model/{Id,Ctx,Out},
+    //       _manual_model, _manual_model/{id,ctx,out},
     //       _pending_delete, _edit_mode.
     //
     //   Container scope (has a separate leaf scope below it):
@@ -1177,7 +1181,7 @@ mod tests {
     //   Leaf scope (the focused inner target):
     //     _compose_form/{name,protocol,endpoint,auth,key} — per-field
     //       children of the compose form.
-    //     _manual_model/{Id,Ctx,Out} — per-stage children.
+    //     _manual_model/{id,ctx,out} — per-stage children.
     //     _pending_delete, _edit_mode — single-scope widgets: the scope
     //     IS the leaf when active (no separate form+leaf split). For
     //     these, lifecycle keys (Esc/Enter/Tab/BackTab/Up/Down) are still
@@ -1210,7 +1214,7 @@ mod tests {
     ///
     /// Two shapes:
     /// - children of a form-and-leaf widget (`_compose_form/<field>`,
-    ///   `_manual_model/Id|Ctx|Out`);
+    ///   `_manual_model/id|ctx|out`);
     /// - single-scope widgets where the same scope hosts both lifecycle
     ///   and leaf bindings (`_pending_delete`, `_edit_mode`).
     fn is_leaf_scope(p: &Path) -> bool {
@@ -1226,7 +1230,7 @@ mod tests {
             );
         }
         if head == "_manual_model" && p.components.len() == 3 {
-            return matches!(p.components[2].as_str(), "Id" | "Ctx" | "Out");
+            return matches!(p.components[2].as_str(), "id" | "ctx" | "out");
         }
         // Single-scope widgets: scope IS the leaf.
         if p.components.len() == 2 {

@@ -138,6 +138,53 @@ pub(crate) fn path_ancestors(path: &Path) -> Vec<Path> {
         .collect()
 }
 
+/// Synthetic cursor path for the manual-model wizard's focused stage.
+/// `manual_model_focus_path(Id) = settings/_manual_model/id`. The
+/// lowercase segment matches compose's per-field naming convention; it
+/// is intentionally distinct from `ManualModelStage`'s PascalCase serde
+/// wire format (the stage no longer goes through serde for routing).
+pub(crate) fn manual_model_focus_path(stage: ox_types::settings::ManualModelStage) -> Path {
+    use ox_types::settings::ManualModelStage;
+    let name = match stage {
+        ManualModelStage::Id => "id",
+        ManualModelStage::Ctx => "ctx",
+        ManualModelStage::Out => "out",
+    };
+    let comp = PathComponent::try_new(name).expect("manual-model stage names are valid XIDs");
+    oxpath!("settings", "_manual_model", comp)
+}
+
+/// Inverse of `manual_model_focus_path`: map a cursor path back to
+/// the manual-model stage it points at. Returns `None` when the cursor
+/// is not inside `settings/_manual_model/<stage>`.
+pub(crate) fn cursor_to_manual_model_stage(
+    cursor: &Path,
+) -> Option<ox_types::settings::ManualModelStage> {
+    use ox_types::settings::ManualModelStage;
+    if cursor.components.len() != 3 {
+        return None;
+    }
+    if cursor.components[0] != "settings" || cursor.components[1] != "_manual_model" {
+        return None;
+    }
+    match cursor.components[2].as_str() {
+        "id" => Some(ManualModelStage::Id),
+        "ctx" => Some(ManualModelStage::Ctx),
+        "out" => Some(ManualModelStage::Out),
+        _ => None,
+    }
+}
+
+/// True iff `cursor`'s prefix is `settings/_manual_model` (either the
+/// container itself or any descendant). The dispatcher uses this to
+/// decide whether to push the manual-model form scope onto the binding
+/// scope path under cursor-as-focus.
+pub(crate) fn cursor_is_in_manual_model(cursor: &Path) -> bool {
+    cursor.components.len() >= 2
+        && cursor.components[0] == "settings"
+        && cursor.components[1] == "_manual_model"
+}
+
 // ---------------------------------------------------------------------------
 // Per-field validators. Each is pure and total: returns `None` for a valid
 // input or `Some(message)` for the first rule that rejects it. Cross-field
@@ -493,12 +540,13 @@ command! {
     run: |snap, _ctx| accounts_fork_provider(snap),
 }
 
-// Manual-model commands. The dispatcher routes printable / Backspace /
-// Enter / Esc to these while `ui/settings/manual_model/stage` holds a
-// typed `ManualModelStage` value, via the synthetic
-// `settings/_manual_model` binding scope. The stage value doubles as
-// the mode discriminator: typed shape is the new flow; legacy
-// stringly-typed shape ("id"/"ctx"/"out") is the dormant old flow.
+// Manual-model commands. The cursor at
+// `settings/_manual_model/<stage>` IS the open state — no separate
+// `manual_model/stage` discriminator exists. The dispatcher walks
+// cursor ancestors so the form scope `settings/_manual_model` and
+// per-stage leaf scope `settings/_manual_model/<stage>` both sit on
+// the binding scope path. Lifecycle keys (Esc/Enter) live on the
+// form scope; text-input keys live on the per-stage leaf scopes.
 
 command! {
     struct_name: ModelsAddManual,
@@ -1295,11 +1343,16 @@ fn protocol_default_version(protocol: &str) -> String {
 
 /// Open the manual-model entry form for the focused account. Resolves
 /// the focused row to its un-sanitized account name (Model and
-/// ModelField rows both carry it), then seeds
-/// `manual_model/{account, stage, buffer}` with the typed Stage::Id
-/// value. The PascalCase wire format distinguishes the new flow from
-/// the legacy stringly-typed write site, which lets the dispatcher
-/// gate cleanly on shape.
+/// ModelField rows both carry it), saves the prior cursor for
+/// cancel-restore, then writes the cursor into the synthetic form
+/// namespace at the Id stage and seeds `manual_model/{account, buffer}`.
+///
+/// Cursor-as-focus: the act of moving the cursor INTO
+/// `settings/_manual_model/<stage>` IS the open. Mode is encoded in
+/// the cursor's path segments — no separate `manual_model/stage`
+/// discriminator. The dispatcher's `compute_scope_path` walks cursor
+/// ancestors so the form scope plus per-stage leaf scope sit on the
+/// binding scope path naturally.
 fn models_add_manual(data: &mut dyn Reader) -> Vec<Write> {
     use ox_types::settings::ManualModelStage;
     use crate::settings::visible_rows::{enumerate, RowKind};
@@ -1318,10 +1371,9 @@ fn models_add_manual(data: &mut dyn Reader) -> Vec<Write> {
         return Vec::new();
     };
 
-    let stage_value = match to_value(&ManualModelStage::Id) {
-        Ok(v) => v,
-        Err(_) => return Vec::new(),
-    };
+    // Save the prior cursor so cancel can restore it. Commit walks
+    // back to the new model's row directly and supersedes this save.
+    let cursor_saved = read_focused_path(data);
 
     vec![
         Write {
@@ -1329,22 +1381,36 @@ fn models_add_manual(data: &mut dyn Reader) -> Vec<Write> {
             record: Record::parsed(Value::String(account)),
         },
         Write {
-            path: oxpath!("ui", "settings", "manual_model", "stage"),
-            record: Record::parsed(stage_value),
-        },
-        Write {
             path: oxpath!("ui", "settings", "manual_model", "buffer"),
             record: Record::parsed(Value::String(String::new())),
+        },
+        Write {
+            path: oxpath!("ui", "settings", "manual_model", "cursor_saved"),
+            record: Record::parsed(match cursor_saved.as_ref() {
+                Some(p) => path_to_value(p),
+                None => Value::Null,
+            }),
+        },
+        Write {
+            path: oxpath!("ui", "settings", "focused"),
+            record: Record::parsed(path_to_value(&manual_model_focus_path(
+                ManualModelStage::Id,
+            ))),
         },
     ]
 }
 
-/// Read the typed-shape stage. Returns `None` when absent or when the
-/// stored value is the legacy stringly-typed shape — the same
-/// discriminator the dispatcher uses, so once a command runs here it
-/// can trust the typed shape is in place.
-fn models_manual_read_stage(data: &mut dyn Reader) -> Option<ox_types::settings::ManualModelStage> {
-    read_typed(data, &oxpath!("ui", "settings", "manual_model", "stage"))
+/// Read the active manual-model stage from the cursor. Under
+/// cursor-as-focus the cursor's leaf segment IS the active stage;
+/// `manual_model/stage` is retired. Returns `None` when the cursor
+/// isn't at a manual-model stage path — command bodies only run while
+/// the dispatcher has routed via the manual-model scope, so this only
+/// ever returns `None` for stale snapshots that the dispatcher's gate
+/// has already excluded.
+fn models_manual_active_stage(data: &mut dyn Reader) -> Option<ox_types::settings::ManualModelStage> {
+    read_focused_path(data)
+        .as_ref()
+        .and_then(cursor_to_manual_model_stage)
 }
 
 fn models_manual_insert_char(
@@ -1362,7 +1428,7 @@ fn models_manual_insert_char(
         KeyCodeRepr::Char(c) => c,
         _ => return Vec::new(),
     };
-    let stage = match models_manual_read_stage(data) {
+    let stage = match models_manual_active_stage(data) {
         Some(s) => s,
         None => return Vec::new(),
     };
@@ -1401,7 +1467,7 @@ fn models_manual_commit(data: &mut dyn Reader) -> Vec<Write> {
     use ox_gate::{ModelInfo, ModelInfoSource};
     use ox_types::settings::ManualModelStage;
 
-    let stage = match models_manual_read_stage(data) {
+    let stage = match models_manual_active_stage(data) {
         Some(s) => s,
         None => return Vec::new(),
     };
@@ -1414,14 +1480,15 @@ fn models_manual_commit(data: &mut dyn Reader) -> Vec<Write> {
             if trimmed.is_empty() {
                 return Vec::new();
             }
-            let next_stage = match to_value(&ManualModelStage::Ctx) {
-                Ok(v) => v,
-                Err(_) => return Vec::new(),
-            };
+            // Cursor-as-focus: advance the wizard by rewriting the
+            // cursor's leaf to the next stage. No `manual_model/stage`
+            // write — the cursor IS the stage.
             vec![
                 Write {
-                    path: oxpath!("ui", "settings", "manual_model", "stage"),
-                    record: Record::parsed(next_stage),
+                    path: oxpath!("ui", "settings", "focused"),
+                    record: Record::parsed(path_to_value(&manual_model_focus_path(
+                        ManualModelStage::Ctx,
+                    ))),
                 },
                 Write {
                     path: oxpath!("ui", "settings", "manual_model", "staged_id"),
@@ -1438,14 +1505,12 @@ fn models_manual_commit(data: &mut dyn Reader) -> Vec<Write> {
                 Ok(n) if n > 0 => n,
                 _ => return Vec::new(),
             };
-            let next_stage = match to_value(&ManualModelStage::Out) {
-                Ok(v) => v,
-                Err(_) => return Vec::new(),
-            };
             vec![
                 Write {
-                    path: oxpath!("ui", "settings", "manual_model", "stage"),
-                    record: Record::parsed(next_stage),
+                    path: oxpath!("ui", "settings", "focused"),
+                    record: Record::parsed(path_to_value(&manual_model_focus_path(
+                        ManualModelStage::Out,
+                    ))),
                 },
                 Write {
                     path: oxpath!("ui", "settings", "manual_model", "staged_ctx"),
@@ -1485,11 +1550,11 @@ fn models_manual_commit(data: &mut dyn Reader) -> Vec<Write> {
             };
             let comp = account.to_path_component();
 
-            let catalog_path = oxpath!("config", "gate", "accounts", comp, "models");
+            let catalog_path = oxpath!("config", "gate", "accounts", comp.clone(), "models");
             let mut catalog: Vec<ModelInfo> = read_typed(data, &catalog_path).unwrap_or_default();
             catalog.push(ModelInfo {
                 id: id.clone(),
-                display_name: id,
+                display_name: id.clone(),
                 max_context_size: Some(ctx),
                 max_output_tokens: Some(out),
                 source: ModelInfoSource::UserEntered,
@@ -1499,30 +1564,35 @@ fn models_manual_commit(data: &mut dyn Reader) -> Vec<Write> {
                 Err(_) => return Vec::new(),
             };
 
-            // Write the catalog and clear the form state.
+            // Move the cursor to the new model's row so the user lands
+            // on what they just created. Row paths follow
+            // `settings/models/<account>/<safe(model_id)>` — same
+            // encoding the visible-rows enumerator uses. Non-XID ids
+            // degrade to the parent Models page if the safe form
+            // can't be reconstructed as a PathComponent (the
+            // visible-rows filter would also have dropped such a row,
+            // so the user simply lands on the parent section).
+            let safe_id = crate::settings::visible_rows::safe_component(&id);
+            let new_cursor = match PathComponent::try_new(&safe_id) {
+                Ok(model_comp) => oxpath!("settings", "models", comp.clone(), model_comp),
+                Err(_) => oxpath!("settings", "models"),
+            };
+
+            // Write the catalog, restore the cursor to the new row,
+            // and clear the form state. The Null-cascade at the
+            // manual_model root clears every child in one entry
+            // (including `cursor_saved` from open).
             vec![
                 Write {
                     path: catalog_path,
                     record: Record::parsed(catalog_value),
                 },
                 Write {
-                    path: oxpath!("ui", "settings", "manual_model", "account"),
-                    record: Record::parsed(Value::Null),
+                    path: oxpath!("ui", "settings", "focused"),
+                    record: Record::parsed(path_to_value(&new_cursor)),
                 },
                 Write {
-                    path: oxpath!("ui", "settings", "manual_model", "stage"),
-                    record: Record::parsed(Value::Null),
-                },
-                Write {
-                    path: oxpath!("ui", "settings", "manual_model", "buffer"),
-                    record: Record::parsed(Value::Null),
-                },
-                Write {
-                    path: oxpath!("ui", "settings", "manual_model", "staged_id"),
-                    record: Record::parsed(Value::Null),
-                },
-                Write {
-                    path: oxpath!("ui", "settings", "manual_model", "staged_ctx"),
+                    path: oxpath!("ui", "settings", "manual_model"),
                     record: Record::parsed(Value::Null),
                 },
             ]
@@ -1530,27 +1600,32 @@ fn models_manual_commit(data: &mut dyn Reader) -> Vec<Write> {
     }
 }
 
-fn models_manual_cancel(_data: &mut dyn Reader) -> Vec<Write> {
-    // Clear all manual_model paths.
+/// Discard the manual-model draft and restore the cursor to where it
+/// was before `open`. Reads `cursor_saved` BEFORE the Null-cascade
+/// write applies (the snapshot read happens here; the writes apply in
+/// batch order later). When no save is present — pathological seed —
+/// fall back to `settings/models` so the user lands somewhere sensible.
+fn models_manual_cancel(data: &mut dyn Reader) -> Vec<Write> {
+    use crate::settings::commands::navigation::path_from_value;
+
+    let saved: Option<Path> = data
+        .read(&oxpath!("ui", "settings", "manual_model", "cursor_saved"))
+        .ok()
+        .flatten()
+        .and_then(|r| r.as_value().cloned())
+        .and_then(|v| path_from_value(&v));
+
+    let restored = saved.unwrap_or_else(|| oxpath!("settings", "models"));
+
     vec![
         Write {
-            path: oxpath!("ui", "settings", "manual_model", "account"),
-            record: Record::parsed(Value::Null),
+            path: oxpath!("ui", "settings", "focused"),
+            record: Record::parsed(path_to_value(&restored)),
         },
+        // Cascade-clear every child path at the manual_model root in
+        // one write; this also clears `cursor_saved` we just read above.
         Write {
-            path: oxpath!("ui", "settings", "manual_model", "stage"),
-            record: Record::parsed(Value::Null),
-        },
-        Write {
-            path: oxpath!("ui", "settings", "manual_model", "buffer"),
-            record: Record::parsed(Value::Null),
-        },
-        Write {
-            path: oxpath!("ui", "settings", "manual_model", "staged_id"),
-            record: Record::parsed(Value::Null),
-        },
-        Write {
-            path: oxpath!("ui", "settings", "manual_model", "staged_ctx"),
+            path: oxpath!("ui", "settings", "manual_model"),
             record: Record::parsed(Value::Null),
         },
     ]
@@ -3739,10 +3814,13 @@ mod tests {
         );
     }
 
+    /// Seed `ui/settings/focused = settings/_manual_model/<stage>` —
+    /// the cursor IS the stage discriminator under cursor-as-focus.
     fn seed_manual_stage(snap: &mut SettingsSnapshot, stage: ManualModelStage) {
+        let focus_path = manual_model_focus_path(stage);
         snap.insert(
-            &oxpath!("ui", "settings", "manual_model", "stage"),
-            to_value(&stage).unwrap(),
+            &oxpath!("ui", "settings", "focused"),
+            super::super::navigation::path_to_value(&focus_path),
         );
     }
 
@@ -3812,14 +3890,79 @@ mod tests {
             by_path.get("ui/settings/manual_model/account").unwrap(),
             &Value::String("alpha".into())
         );
+        // Cursor-as-focus: opening writes cursor to the Id-stage path.
+        // No `manual_model/stage` write — the cursor IS the stage.
+        let focused_val = by_path
+            .get("ui/settings/focused")
+            .expect("cursor written");
+        let focused = super::super::navigation::path_from_value(focused_val)
+            .expect("cursor value decodes as Path");
         assert_eq!(
-            by_path.get("ui/settings/manual_model/stage").unwrap(),
-            &to_value(&ManualModelStage::Id).unwrap()
+            focused,
+            oxpath!("settings", "_manual_model", "id"),
+            "open writes cursor to the Id stage",
+        );
+        assert!(
+            !by_path.contains_key("ui/settings/manual_model/stage"),
+            "retired discriminator must not be written",
         );
         assert_eq!(
             by_path.get("ui/settings/manual_model/buffer").unwrap(),
             &Value::String(String::new())
         );
+    }
+
+    #[test]
+    fn models_add_manual_saves_prior_cursor() {
+        // Before open, the user's cursor sits at a Model row. After
+        // open, the prior cursor lives at
+        // `ui/settings/manual_model/cursor_saved` so cancel can restore
+        // it. (Commit doesn't restore — it writes cursor to the new
+        // model's row directly.)
+        use ox_gate::ModelInfo;
+        use ox_types::ModelInfoSource;
+        let mut snap = SettingsSnapshot::empty();
+        write_index_entries_for_manual(&mut snap);
+        let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
+        snap.insert(
+            &oxpath!("config", "gate", "accounts", comp.clone()),
+            to_value(&AccountConfig {
+                provider: "openai".into(),
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        snap.insert(
+            &oxpath!("config", "gate", "accounts", comp.clone(), "models"),
+            to_value(&vec![ModelInfo {
+                id: "m1".into(),
+                display_name: "M1".into(),
+                max_context_size: None,
+                max_output_tokens: None,
+                source: ModelInfoSource::Server,
+            }])
+            .unwrap(),
+        );
+        let expanded = crate::settings::visible_rows::expanded_set_to_value(&[
+            "settings/models".to_string(),
+        ]);
+        snap.insert(&oxpath!("ui", "settings", "expanded"), expanded);
+        let m_comp = ox_kernel::PathComponent::try_new("m1").unwrap();
+        let prior_cursor = oxpath!("settings", "models", comp, m_comp);
+        snap.insert(
+            &oxpath!("ui", "settings", "focused"),
+            path_to_value(&prior_cursor),
+        );
+
+        let writes = run_cmd(&ModelsAddManual::new(), &mut snap);
+        let saved_val = writes
+            .iter()
+            .find(|w| w.path == oxpath!("ui", "settings", "manual_model", "cursor_saved"))
+            .map(|w| w.record.as_value().unwrap().clone())
+            .expect("cursor_saved written");
+        let saved =
+            super::super::navigation::path_from_value(&saved_val).expect("decode saved cursor");
+        assert_eq!(saved, prior_cursor);
     }
 
     #[test]
@@ -3847,9 +3990,15 @@ mod tests {
             .iter()
             .map(|w| (w.path.to_string(), w.record.as_value().unwrap().clone()))
             .collect();
-        assert_eq!(
-            by_path.get("ui/settings/manual_model/stage").unwrap(),
-            &to_value(&ManualModelStage::Ctx).unwrap()
+        // Cursor advances to the Ctx-stage path.
+        let focused_val = by_path
+            .get("ui/settings/focused")
+            .expect("cursor advanced");
+        let focused = super::super::navigation::path_from_value(focused_val).unwrap();
+        assert_eq!(focused, oxpath!("settings", "_manual_model", "ctx"));
+        assert!(
+            !by_path.contains_key("ui/settings/manual_model/stage"),
+            "retired discriminator must not be written",
         );
         assert_eq!(
             by_path.get("ui/settings/manual_model/staged_id").unwrap(),
@@ -3886,9 +4035,15 @@ mod tests {
             .iter()
             .map(|w| (w.path.to_string(), w.record.as_value().unwrap().clone()))
             .collect();
-        assert_eq!(
-            by_path.get("ui/settings/manual_model/stage").unwrap(),
-            &to_value(&ManualModelStage::Out).unwrap()
+        // Cursor advances to the Out-stage path.
+        let focused_val = by_path
+            .get("ui/settings/focused")
+            .expect("cursor advanced");
+        let focused = super::super::navigation::path_from_value(focused_val).unwrap();
+        assert_eq!(focused, oxpath!("settings", "_manual_model", "out"));
+        assert!(
+            !by_path.contains_key("ui/settings/manual_model/stage"),
+            "retired discriminator must not be written",
         );
         assert_eq!(
             by_path.get("ui/settings/manual_model/staged_ctx").unwrap(),
@@ -3944,11 +4099,23 @@ mod tests {
             models[0].source,
             ox_gate::ModelInfoSource::UserEntered
         ));
-        // All form-state paths nulled.
-        for sub in ["account", "stage", "buffer", "staged_id", "staged_ctx"] {
-            let comp = ox_kernel::PathComponent::try_new(sub).unwrap();
-            assert_null_write(&writes, oxpath!("ui", "settings", "manual_model", comp));
-        }
+        // Single Null write at the manual_model subtree root; the
+        // StructFS Null-delete cascade clears every child atomically.
+        assert_null_write(&writes, oxpath!("ui", "settings", "manual_model"));
+        // Cursor moves to the new model row.
+        let cursor_write = writes
+            .iter()
+            .find(|w| w.path == oxpath!("ui", "settings", "focused"))
+            .expect("cursor write to new model row");
+        let cursor = super::super::navigation::path_from_value(
+            cursor_write.record.as_value().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            cursor,
+            oxpath!("settings", "models", "alpha", "custom_model"),
+            "commit should focus the new model's row",
+        );
     }
 
     #[test]
@@ -3960,16 +4127,134 @@ mod tests {
             Value::String("custom".into()),
         );
         let writes = run_cmd(&ModelsManualCancel::new(), &mut snap);
-        // No catalog write; every manual_model sub-path nulled.
+        // No catalog write.
         assert!(
             !writes
                 .iter()
                 .any(|w| w.path.to_string().starts_with("config/gate/accounts"))
         );
-        for sub in ["account", "stage", "buffer", "staged_id", "staged_ctx"] {
-            let comp = ox_kernel::PathComponent::try_new(sub).unwrap();
-            assert_null_write(&writes, oxpath!("ui", "settings", "manual_model", comp));
-        }
+        // Single Null write at the manual_model root cascades to clear
+        // every child.
+        assert_null_write(&writes, oxpath!("ui", "settings", "manual_model"));
+    }
+
+    #[test]
+    fn models_manual_cancel_restores_saved_cursor() {
+        // After open writes `cursor_saved`, cancel reads it and writes
+        // it back at `ui/settings/focused`. The save survives the
+        // pre-cancel snapshot (the Null write applies later in the
+        // batch, after the read here).
+        let mut snap = SettingsSnapshot::empty();
+        seed_manual_stage(&mut snap, ManualModelStage::Ctx);
+        let prior = oxpath!("settings", "models", "alpha", "m1");
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "cursor_saved"),
+            super::super::navigation::path_to_value(&prior),
+        );
+        let writes = run_cmd(&ModelsManualCancel::new(), &mut snap);
+        let cursor_val = writes
+            .iter()
+            .find(|w| w.path == oxpath!("ui", "settings", "focused"))
+            .map(|w| w.record.as_value().unwrap().clone())
+            .expect("cursor restored");
+        let cursor = super::super::navigation::path_from_value(&cursor_val).unwrap();
+        assert_eq!(cursor, prior);
+    }
+
+    #[test]
+    fn models_manual_cancel_falls_back_to_models_when_no_save() {
+        // Pathological seed (no `cursor_saved`): cancel still restores a
+        // sensible cursor so the user doesn't get stranded.
+        let mut snap = SettingsSnapshot::empty();
+        seed_manual_stage(&mut snap, ManualModelStage::Id);
+        let writes = run_cmd(&ModelsManualCancel::new(), &mut snap);
+        let cursor_val = writes
+            .iter()
+            .find(|w| w.path == oxpath!("ui", "settings", "focused"))
+            .map(|w| w.record.as_value().unwrap().clone())
+            .expect("cursor written");
+        let cursor = super::super::navigation::path_from_value(&cursor_val).unwrap();
+        assert_eq!(cursor, oxpath!("settings", "models"));
+    }
+
+    #[test]
+    fn manual_model_open_writes_cursor_to_id_stage() {
+        // Pin the cursor-as-focus invariant: open writes
+        // `ui/settings/focused = settings/_manual_model/id`. Anchors
+        // CF-2's "cursor IS the stage" rewrite for future readers.
+        use ox_gate::ModelInfo;
+        use ox_types::ModelInfoSource;
+        let mut snap = SettingsSnapshot::empty();
+        write_index_entries_for_manual(&mut snap);
+        let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
+        snap.insert(
+            &oxpath!("config", "gate", "accounts", comp.clone()),
+            to_value(&AccountConfig {
+                provider: "openai".into(),
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        snap.insert(
+            &oxpath!("config", "gate", "accounts", comp.clone(), "models"),
+            to_value(&vec![ModelInfo {
+                id: "m1".into(),
+                display_name: "M1".into(),
+                max_context_size: None,
+                max_output_tokens: None,
+                source: ModelInfoSource::Server,
+            }])
+            .unwrap(),
+        );
+        let expanded = crate::settings::visible_rows::expanded_set_to_value(&[
+            "settings/models".to_string(),
+        ]);
+        snap.insert(&oxpath!("ui", "settings", "expanded"), expanded);
+        let m_comp = ox_kernel::PathComponent::try_new("m1").unwrap();
+        snap.insert(
+            &oxpath!("ui", "settings", "focused"),
+            path_to_value(&oxpath!("settings", "models", comp, m_comp)),
+        );
+        let writes = run_cmd(&ModelsAddManual::new(), &mut snap);
+        let focused_val = writes
+            .iter()
+            .find(|w| w.path == oxpath!("ui", "settings", "focused"))
+            .map(|w| w.record.as_value().unwrap().clone())
+            .expect("focused written");
+        let focused =
+            super::super::navigation::path_from_value(&focused_val).expect("decode focused path");
+        assert_eq!(focused, oxpath!("settings", "_manual_model", "id"));
+    }
+
+    #[test]
+    fn models_manual_stage_advance_moves_cursor() {
+        // Pin the cursor-as-focus invariant for stage advance: starting
+        // at Id, commit advances cursor to Ctx; from Ctx to Out. No
+        // `manual_model/stage` writes.
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "account"),
+            Value::String("alpha".into()),
+        );
+        seed_manual_stage(&mut snap, ManualModelStage::Id);
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "buffer"),
+            Value::String("model-x".into()),
+        );
+        let writes = run_cmd(&ModelsManualCommit::new(), &mut snap);
+        let focused_val = writes
+            .iter()
+            .find(|w| w.path == oxpath!("ui", "settings", "focused"))
+            .map(|w| w.record.as_value().unwrap().clone())
+            .expect("cursor advanced");
+        let focused = super::super::navigation::path_from_value(&focused_val).unwrap();
+        assert_eq!(focused, oxpath!("settings", "_manual_model", "ctx"));
+        assert!(
+            !writes
+                .iter()
+                .any(|w| w.path == oxpath!("ui", "settings", "manual_model", "stage")),
+            "stage discriminator must not be written",
+        );
     }
 
     #[test]
@@ -4013,10 +4298,11 @@ mod tests {
     }
 
     #[test]
-    fn models_manual_insert_char_no_op_without_typed_stage() {
-        // Without a typed-shape stage the insert-char must be a no-op —
-        // the dispatcher's gating already prevents it from firing, but
-        // the helper itself also short-circuits as a defense in depth.
+    fn models_manual_insert_char_no_op_without_cursor_at_stage() {
+        // Without a cursor at a manual-model stage path the insert-char
+        // must be a no-op — the dispatcher's gating already prevents it
+        // from firing, but the helper itself also short-circuits as a
+        // defense in depth.
         let mut snap = SettingsSnapshot::empty();
         let writes = run_with_chord(&ModelsManualInsertChar::new(), &mut snap, 'a');
         assert!(writes.is_empty());

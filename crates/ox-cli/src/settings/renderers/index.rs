@@ -18,7 +18,8 @@ use ox_view::{Direction, FocusId, ListItem, ModifierSet, Padding, Sizing, Span, 
 use ox_gate::AuthScheme;
 
 use crate::settings::commands::account_model::{
-    compose_form_view, cursor_is_in_compose_form, resolve_protocol_options,
+    compose_form_view, cursor_is_in_compose_form, cursor_to_manual_model_stage,
+    resolve_protocol_options,
 };
 use crate::settings::commands::edit::read_edit_state;
 use crate::settings::registry::{AscendRule, RenderCtx, Renderer, RendererRegistry};
@@ -497,12 +498,15 @@ fn interleave_empty_catalog_decorations(
 
         let in_mode_for_this_account = manual_account.as_deref() == Some(name.as_str());
         let manual_primary = if in_mode_for_this_account {
-            let stage = crate::settings::renderers::util::read_typed::<
-                ox_types::settings::ManualModelStage,
-            >(
-                data,
-                &ox_path::oxpath!("ui", "settings", "manual_model", "stage"),
-            );
+            // Cursor-as-focus: the cursor's leaf segment under
+            // `settings/_manual_model/<stage>` IS the active stage.
+            // Falls back to Id-stage prompt when the cursor isn't in
+            // the form — defensive; the dispatcher only routes here
+            // while cursor is at a stage path, but the renderer also
+            // reaches this branch from `manual_model/account` matching
+            // alone, so we keep a sensible default.
+            let cursor = read_cursor(data);
+            let stage = cursor.as_ref().and_then(cursor_to_manual_model_stage);
             let buffer: String = crate::settings::renderers::util::read_typed(
                 data,
                 &ox_path::oxpath!("ui", "settings", "manual_model", "buffer"),
@@ -1260,8 +1264,9 @@ mod tests {
 
     #[test]
     fn empty_catalog_decoration_renders_inline_form_when_in_manual_mode() {
-        // When `manual_model/account` matches the empty account, the
-        // affordance line swaps to a stage-prompt with the live buffer.
+        // When `manual_model/account` matches the empty account AND the
+        // cursor sits at a manual-model stage path, the affordance line
+        // swaps to a stage-prompt with the live buffer.
         let mut snap = SettingsSnapshot::empty();
         write_index(&mut snap);
         write_account(&mut snap, "alpha");
@@ -1273,9 +1278,10 @@ mod tests {
             &oxpath!("ui", "settings", "manual_model", "account"),
             Value::String("alpha".into()),
         );
+        // Cursor encodes the active stage under cursor-as-focus.
         snap.insert(
-            &oxpath!("ui", "settings", "manual_model", "stage"),
-            to_value(&ox_types::settings::ManualModelStage::Id).unwrap(),
+            &oxpath!("ui", "settings", "focused"),
+            path_to_value(&oxpath!("settings", "_manual_model", "id")),
         );
         snap.insert(
             &oxpath!("ui", "settings", "manual_model", "buffer"),

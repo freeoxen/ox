@@ -38,7 +38,9 @@ use ox_types::{BindingScope, KeyChord, Mode, Phase, Screen};
 
 use super::binding_registry::BindingRegistry;
 use super::command_registry::{CommandCtx, CommandRegistry};
-use super::commands::account_model::{cursor_is_in_compose_form, path_ancestors};
+use super::commands::account_model::{
+    cursor_is_in_compose_form, cursor_is_in_manual_model, path_ancestors,
+};
 use super::registry::RendererRegistry;
 
 /// Resolve `(screen, cursor, mode, key)` to a sequence of writes by
@@ -145,10 +147,12 @@ pub(crate) fn compute_scope_path(snapshot: &mut dyn Reader, cursor: &Path) -> Ve
     }
 
     let pending_delete = read_pending_delete(snapshot).is_some();
-    let manual_model_stage = read_manual_model_stage(snapshot);
     let compose_focused = focused_for_compose
         .as_ref()
         .is_some_and(cursor_is_in_compose_form);
+    let manual_model_focused = focused_for_compose
+        .as_ref()
+        .is_some_and(cursor_is_in_manual_model);
     let edit_mode_active = read_edit_mode_active(snapshot);
 
     // Compound-widget modes are mutually exclusive by design. Violating
@@ -161,7 +165,7 @@ pub(crate) fn compute_scope_path(snapshot: &mut dyn Reader, cursor: &Path) -> Ve
     debug_assert!(
         [
             pending_delete,
-            manual_model_stage.is_some(),
+            manual_model_focused,
             compose_focused,
             edit_mode_active,
         ]
@@ -178,25 +182,10 @@ pub(crate) fn compute_scope_path(snapshot: &mut dyn Reader, cursor: &Path) -> Ve
             "_pending_delete"
         )));
     }
-    if let Some(stage) = manual_model_stage {
-        path.push(BindingScope::Exact(ox_path::oxpath!(
-            "settings",
-            "_manual_model"
-        )));
-        // Per-stage leaf scope. CF-2 will migrate per-stage routing to
-        // cursor-as-focus; for now `_manual_model/<stage>` continues
-        // to be pushed from the stage discriminator. The path
-        // component is a string literal per stage so the `oxpath!`
-        // macro can validate at compile time.
-        use ox_types::settings::ManualModelStage;
-        let stage_scope = match stage {
-            ManualModelStage::Id => ox_path::oxpath!("settings", "_manual_model", "Id"),
-            ManualModelStage::Ctx => ox_path::oxpath!("settings", "_manual_model", "Ctx"),
-            ManualModelStage::Out => ox_path::oxpath!("settings", "_manual_model", "Out"),
-        };
-        path.push(BindingScope::Exact(stage_scope));
-    }
-    if let Some(compose_cursor) = focused_for_compose.filter(cursor_is_in_compose_form) {
+    if let Some(compose_cursor) = focused_for_compose
+        .clone()
+        .filter(cursor_is_in_compose_form)
+    {
         // Cursor-as-focus: derive the compose-form scope chain from the
         // cursor's ancestors. The per-field leaf scope is already on
         // the path (pushed via `read_focused` above). What's missing
@@ -217,6 +206,23 @@ pub(crate) fn compute_scope_path(snapshot: &mut dyn Reader, cursor: &Path) -> Ve
         // Insert just before the last element (the per-field leaf).
         // If the path's tail is the per-field leaf (always true here),
         // pop it, append intermediates, then push the leaf back.
+        if let Some(leaf) = path.pop() {
+            path.append(&mut to_insert);
+            path.push(leaf);
+        }
+    }
+    if let Some(manual_cursor) = focused_for_compose.filter(cursor_is_in_manual_model) {
+        // Cursor-as-focus: same pattern as compose. The cursor sits at
+        // `settings/_manual_model/<stage>` and is already on the path
+        // as the focused-row leaf; we inject the intermediate
+        // container scope `settings/_manual_model` between the leaf
+        // and the outer page cursor.
+        let ancestors = path_ancestors(&manual_cursor);
+        let mut to_insert: Vec<BindingScope> = ancestors
+            .into_iter()
+            .filter(|a| a.components.len() == 2) // settings/_manual_model
+            .map(BindingScope::Exact)
+            .collect();
         if let Some(leaf) = path.pop() {
             path.append(&mut to_insert);
             path.push(leaf);
@@ -273,29 +279,6 @@ fn read_pending_delete(snapshot: &mut dyn Reader) -> Option<String> {
         Value::String(s) => Some(s.clone()),
         _ => None,
     }
-}
-
-/// Read `ui/settings/manual_model/stage` as a typed `ManualModelStage`.
-/// Returns `Some(stage)` only when the stored value matches the typed
-/// wire shape (`"Id"` / `"Ctx"` / `"Out"`).
-///
-/// The legacy stringly-typed write site stores `"id"` / `"ctx"` /
-/// `"out"` (snake_case); those fail the typed deserialize, so the
-/// caller treats them as "manual-model mode not active" and the
-/// dispatcher falls through to the remaining scope-path walks. That
-/// coexistence is what keeps the new pass dormant until the entry
-/// point is rewired.
-fn read_manual_model_stage(
-    snapshot: &mut dyn Reader,
-) -> Option<ox_types::settings::ManualModelStage> {
-    use ox_path::oxpath;
-    use ox_types::settings::ManualModelStage;
-    let record = snapshot
-        .read(&oxpath!("ui", "settings", "manual_model", "stage"))
-        .ok()
-        .flatten()?;
-    let value = record.as_value()?.clone();
-    structfs_serde_store::from_value::<ManualModelStage>(value).ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -817,15 +800,13 @@ mod tests {
     }
 
     #[test]
-    fn manual_model_routes_to_manual_model_scope_when_typed_stage_set() {
-        // Structural: the dispatcher pushes `_manual_model` (the form
-        // scope) onto the scope_path when `manual_model/stage` holds a
-        // typed value. A Bubble binding at the form scope fires — the
-        // form scope is an outer container, not the leaf (the leaf is
+    fn manual_model_routes_to_manual_model_scope_when_cursor_at_stage() {
+        // Cursor-as-focus: the cursor sitting at
+        // `settings/_manual_model/id` is what activates the manual-model
+        // scope. A Bubble binding at the form scope fires — the form
+        // scope is an outer container, not the leaf (the leaf is
         // `_manual_model/<stage>`), so Bubble is the right phase to
         // pin.
-        use ox_types::settings::ManualModelStage;
-
         let mut cmds = CommandRegistry::new();
         cmds.register(Box::new(WriteSentinel::new()));
 
@@ -841,10 +822,15 @@ mod tests {
 
         let renderers = RendererRegistry::new();
         let mut reader = LocalConfig::default();
+        use super::super::commands::navigation::path_to_value;
         reader
             .write(
-                &oxpath!("ui", "settings", "manual_model", "stage"),
-                Record::parsed(structfs_serde_store::to_value(&ManualModelStage::Id).unwrap()),
+                &oxpath!("ui", "settings", "focused"),
+                Record::parsed(path_to_value(&oxpath!(
+                    "settings",
+                    "_manual_model",
+                    "id"
+                ))),
             )
             .unwrap();
 
@@ -868,8 +854,6 @@ mod tests {
         // Esc on the manual-model wizard is a lifecycle key — the form
         // scope claims it at Capture before any per-stage leaf sees it.
         // Mirrors pending-delete's Esc shape.
-        use ox_types::settings::ManualModelStage;
-
         let mut cmds = CommandRegistry::new();
         cmds.register(Box::new(WriteSentinel::new()));
 
@@ -888,10 +872,15 @@ mod tests {
 
         let renderers = RendererRegistry::new();
         let mut reader = LocalConfig::default();
+        use super::super::commands::navigation::path_to_value;
         reader
             .write(
-                &oxpath!("ui", "settings", "manual_model", "stage"),
-                Record::parsed(structfs_serde_store::to_value(&ManualModelStage::Id).unwrap()),
+                &oxpath!("ui", "settings", "focused"),
+                Record::parsed(path_to_value(&oxpath!(
+                    "settings",
+                    "_manual_model",
+                    "id"
+                ))),
             )
             .unwrap();
 
@@ -919,8 +908,6 @@ mod tests {
         // stages get first crack at Enter (Target) so a future
         // multi-line stage could insert a newline; nothing claims it
         // there today, so a Bubble binding at `_manual_model` fires.
-        use ox_types::settings::ManualModelStage;
-
         let mut cmds = CommandRegistry::new();
         cmds.register(Box::new(WriteSentinel::new()));
 
@@ -939,10 +926,15 @@ mod tests {
 
         let renderers = RendererRegistry::new();
         let mut reader = LocalConfig::default();
+        use super::super::commands::navigation::path_to_value;
         reader
             .write(
-                &oxpath!("ui", "settings", "manual_model", "stage"),
-                Record::parsed(structfs_serde_store::to_value(&ManualModelStage::Id).unwrap()),
+                &oxpath!("ui", "settings", "focused"),
+                Record::parsed(path_to_value(&oxpath!(
+                    "settings",
+                    "_manual_model",
+                    "id"
+                ))),
             )
             .unwrap();
 
@@ -968,17 +960,15 @@ mod tests {
     fn manual_model_printable_routes_via_target_at_stage_leaf() {
         // Printable ASCII on the manual-model wizard targets the active
         // stage's leaf scope (`_manual_model/<stage>`), not the form
-        // scope. A Target binding at `_manual_model/Id` must fire when
-        // the stage is Id.
-        use ox_types::settings::ManualModelStage;
-
+        // scope. A Target binding at `_manual_model/id` must fire when
+        // the cursor sits at the Id stage.
         let mut cmds = CommandRegistry::new();
         cmds.register(Box::new(WriteSentinel::new()));
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
             screen: Screen::Settings,
-            scope: ox_types::BindingScope::Exact(oxpath!("settings", "_manual_model", "Id")),
+            scope: ox_types::BindingScope::Exact(oxpath!("settings", "_manual_model", "id")),
             mode: None,
             key: key_char('x'),
             command_id: cmd_id("test.sentinel"),
@@ -987,10 +977,15 @@ mod tests {
 
         let renderers = RendererRegistry::new();
         let mut reader = LocalConfig::default();
+        use super::super::commands::navigation::path_to_value;
         reader
             .write(
-                &oxpath!("ui", "settings", "manual_model", "stage"),
-                Record::parsed(structfs_serde_store::to_value(&ManualModelStage::Id).unwrap()),
+                &oxpath!("ui", "settings", "focused"),
+                Record::parsed(path_to_value(&oxpath!(
+                    "settings",
+                    "_manual_model",
+                    "id"
+                ))),
             )
             .unwrap();
 
@@ -1010,18 +1005,17 @@ mod tests {
     }
 
     #[test]
-    fn manual_model_falls_through_when_legacy_stringly_stage() {
-        // A stale Value::String("id") at the stage path (the legacy
-        // wire format) must not engage the manual-model scope — the
-        // dispatcher's discriminator deserializes as ManualModelStage
-        // and only fires the pass on success. Falls through to the
-        // remaining dispatch passes; with no other binding registered,
-        // result is empty.
-        let cmds = CommandRegistry::new();
+    fn manual_model_skips_scope_when_cursor_not_in_manual_model() {
+        // No cursor under `settings/_manual_model/...` → the
+        // per-stage scope is never on the path. A binding registered
+        // there alone is unreachable.
+        let mut cmds = CommandRegistry::new();
+        cmds.register(Box::new(WriteSentinel::new()));
+
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
             screen: Screen::Settings,
-            scope: ox_types::BindingScope::Exact(oxpath!("settings", "_manual_model")),
+            scope: ox_types::BindingScope::Exact(oxpath!("settings", "_manual_model", "id")),
             mode: None,
             key: key_char('a'),
             command_id: cmd_id("test.sentinel"),
@@ -1030,12 +1024,6 @@ mod tests {
 
         let renderers = RendererRegistry::new();
         let mut reader = LocalConfig::default();
-        reader
-            .write(
-                &oxpath!("ui", "settings", "manual_model", "stage"),
-                Record::parsed(Value::String("id".into())),
-            )
-            .unwrap();
 
         let writes = dispatch_settings_key(
             &mut reader,
@@ -1048,9 +1036,7 @@ mod tests {
             &renderers,
         );
 
-        // The new pass shouldn't fire — the value isn't the typed shape.
-        // Bindings would fall through; with no other binding registered,
-        // result is empty.
+        // No cursor in `_manual_model/*` → scope never on the path.
         assert!(writes.is_empty());
     }
 
@@ -1309,16 +1295,22 @@ mod tests {
             .unwrap();
     }
 
-    /// Seed `ui/settings/manual_model/stage` to the typed wire form of
-    /// `stage`, engaging manual-model mode for `compute_scope_path`.
-    fn seed_manual_model_stage(
+    /// Seed `ui/settings/focused = settings/_manual_model/<stage>` —
+    /// under cursor-as-focus this single write puts the user inside
+    /// the manual-model wizard at the named stage. The dispatcher's
+    /// `compute_scope_path` walks the cursor's ancestors to derive
+    /// both the form scope and the per-stage leaf scope.
+    fn seed_manual_model_cursor(
         reader: &mut LocalConfig,
         stage: ox_types::settings::ManualModelStage,
     ) {
+        use super::super::commands::account_model::manual_model_focus_path;
+        use super::super::commands::navigation::path_to_value;
+        let path = manual_model_focus_path(stage);
         reader
             .write(
-                &oxpath!("ui", "settings", "manual_model", "stage"),
-                Record::parsed(structfs_serde_store::to_value(&stage).unwrap()),
+                &oxpath!("ui", "settings", "focused"),
+                Record::parsed(path_to_value(&path)),
             )
             .unwrap();
     }
@@ -1467,12 +1459,12 @@ mod tests {
     #[test]
     fn scope_path_for_manual_model_is_cursor_then_form_then_stage_leaf() {
         // Manual-model mode with stage Ctx: path is cursor → _manual_model
-        // → _manual_model/Ctx. The per-stage leaf sits innermost so
+        // → _manual_model/ctx. The per-stage leaf sits innermost so
         // stage-specific Target bindings see the key first.
         use ox_types::settings::ManualModelStage;
         let mut reader = LocalConfig::default();
         let cursor = oxpath!("settings", "models");
-        seed_manual_model_stage(&mut reader, ManualModelStage::Ctx);
+        seed_manual_model_cursor(&mut reader, ManualModelStage::Ctx);
 
         let path = compute_scope_path(&mut reader, &cursor);
 
@@ -1484,24 +1476,47 @@ mod tests {
         );
         assert_eq!(
             path[2],
-            BindingScope::Exact(oxpath!("settings", "_manual_model", "Ctx"))
+            BindingScope::Exact(oxpath!("settings", "_manual_model", "ctx"))
         );
     }
 
     #[test]
     fn scope_path_for_manual_model_id_stage_uses_id_leaf() {
-        // Spot-check the stage discriminator drives the leaf. With
-        // ManualModelStage::Id the leaf must be `_manual_model/Id`, not
-        // a shared singleton.
+        // Spot-check the cursor's leaf segment drives the binding scope.
+        // With cursor at `settings/_manual_model/id` the leaf must be
+        // `_manual_model/id`, not a shared singleton.
         use ox_types::settings::ManualModelStage;
         let mut reader = LocalConfig::default();
-        seed_manual_model_stage(&mut reader, ManualModelStage::Id);
+        seed_manual_model_cursor(&mut reader, ManualModelStage::Id);
 
         let path = compute_scope_path(&mut reader, &oxpath!("settings", "models"));
 
         assert_eq!(
             path.last().unwrap(),
-            &BindingScope::Exact(oxpath!("settings", "_manual_model", "Id"))
+            &BindingScope::Exact(oxpath!("settings", "_manual_model", "id"))
+        );
+    }
+
+    #[test]
+    fn compute_scope_path_includes_manual_model_when_cursor_at_stage() {
+        // Regression for cursor-as-focus: ALL of cursor, form scope,
+        // and per-stage leaf must appear on the path when the cursor
+        // sits at a manual-model stage path.
+        use ox_types::settings::ManualModelStage;
+        let mut reader = LocalConfig::default();
+        seed_manual_model_cursor(&mut reader, ManualModelStage::Id);
+        let path = compute_scope_path(&mut reader, &oxpath!("settings", "models"));
+        assert!(
+            path.contains(&BindingScope::Exact(oxpath!("settings", "_manual_model"))),
+            "expected form scope on path: {path:?}",
+        );
+        assert!(
+            path.contains(&BindingScope::Exact(oxpath!(
+                "settings",
+                "_manual_model",
+                "id"
+            ))),
+            "expected per-stage leaf scope on path: {path:?}",
         );
     }
 
