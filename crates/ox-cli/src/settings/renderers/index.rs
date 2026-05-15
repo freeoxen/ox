@@ -18,8 +18,8 @@ use ox_view::{Direction, FocusId, ListItem, ModifierSet, Padding, Sizing, Span, 
 use ox_gate::AuthScheme;
 
 use crate::settings::commands::account_model::{
-    compose_form_view, cursor_is_in_compose_form, cursor_to_manual_model_stage,
-    resolve_protocol_options,
+    compose_form_view, cursor_is_in_compose_form, cursor_is_in_confirm_delete,
+    cursor_to_manual_model_stage, resolve_protocol_options,
 };
 use crate::settings::commands::edit::read_edit_state;
 use crate::settings::registry::{AscendRule, RenderCtx, Renderer, RendererRegistry};
@@ -67,14 +67,21 @@ impl Renderer for IndexRenderer {
             render_accounts_section(ctx.data, accounts_rows, &ctx_state, compose_active);
         let models_section = render_models_section(ctx.data, models_rows, &ctx_state);
 
-        // Pending-delete confirmation banner. Emitted as a top-level
-        // ListItem prepended above the section stack when
-        // ui/settings/pending_delete is Some(name). Decoration only —
-        // focus: None; j/k skips it.
-        let pending: Option<String> = crate::settings::renderers::util::read_typed(
-            ctx.data,
-            &ox_path::oxpath!("ui", "settings", "pending_delete"),
-        );
+        // Confirm-delete banner. Emitted as a top-level ListItem
+        // prepended above the section stack when the cursor sits at
+        // `settings/_confirm_delete`. The target account name lives at
+        // the dedicated data path `ui/settings/pending_delete/
+        // target_account` (the value half of the retired value-flag).
+        // Decoration only — focus: None; j/k skips it.
+        let confirm_delete_active = cursor.as_ref().is_some_and(cursor_is_in_confirm_delete);
+        let pending: Option<String> = if confirm_delete_active {
+            crate::settings::renderers::util::read_typed(
+                ctx.data,
+                &ox_path::oxpath!("ui", "settings", "pending_delete", "target_account"),
+            )
+        } else {
+            None
+        };
 
         let title_right = read_dirty_indicator(ctx.data);
 

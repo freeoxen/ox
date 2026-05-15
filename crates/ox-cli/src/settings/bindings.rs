@@ -697,15 +697,17 @@ fn register_manual_model(reg: &mut BindingRegistry) {
     }
 }
 
-/// Register the pending-delete confirmation mode's bindings at the
-/// synthetic `settings/_pending_delete` cursor scope. The dispatcher
-/// routes to this scope when `ui/settings/pending_delete` is `Some(_)`.
+/// Register the confirm-delete mode's bindings at the synthetic
+/// `settings/_confirm_delete` cursor scope. Under cursor-as-focus the
+/// dispatcher routes to this scope when the cursor sits at
+/// `settings/_confirm_delete`; the target account being confirmed lives
+/// at the separate data path `ui/settings/pending_delete/target_account`.
 ///
 /// Phases: y/n are semantic actions on the focused dialog (Target). Esc
-/// is a lifecycle key that the container claims before any leaf sees it
+/// is a lifecycle key that the scope claims before any leaf sees it
 /// (Capture) — same shape as compose-Esc.
 fn register_pending_delete(reg: &mut BindingRegistry) {
-    let scope = oxpath!("settings", "_pending_delete");
+    let scope = oxpath!("settings", "_confirm_delete");
     bind_target(
         reg,
         Some(scope.clone()),
@@ -1173,7 +1175,7 @@ mod tests {
     //     compound-widget cursors. Concretely:
     //       _compose_form, _compose_form/{name,protocol,endpoint,auth,key},
     //       _manual_model, _manual_model/{id,ctx,out},
-    //       _pending_delete, _edit_mode.
+    //       _confirm_delete, _edit_mode.
     //
     //   Container scope (has a separate leaf scope below it):
     //     _compose_form, _manual_model.
@@ -1182,7 +1184,7 @@ mod tests {
     //     _compose_form/{name,protocol,endpoint,auth,key} — per-field
     //       children of the compose form.
     //     _manual_model/{id,ctx,out} — per-stage children.
-    //     _pending_delete, _edit_mode — single-scope widgets: the scope
+    //     _confirm_delete, _edit_mode — single-scope widgets: the scope
     //     IS the leaf when active (no separate form+leaf split). For
     //     these, lifecycle keys (Esc/Enter/Tab/BackTab/Up/Down) are still
     //     hosted on the same scope but at Capture/Bubble, so the
@@ -1201,7 +1203,7 @@ mod tests {
     /// separate leaf scope below it (compose form / manual-model form).
     fn is_container_scope(p: &Path) -> bool {
         // Both containers have exactly two components: settings/_name.
-        // The single-scope widgets (_pending_delete, _edit_mode) also
+        // The single-scope widgets (_confirm_delete, _edit_mode) also
         // have shape settings/_name but no leaf below — they're handled
         // by the leaf classifier and explicitly excluded here.
         if p.components.len() != 2 || p.components[0] != "settings" {
@@ -1216,7 +1218,7 @@ mod tests {
     /// - children of a form-and-leaf widget (`_compose_form/<field>`,
     ///   `_manual_model/id|ctx|out`);
     /// - single-scope widgets where the same scope hosts both lifecycle
-    ///   and leaf bindings (`_pending_delete`, `_edit_mode`).
+    ///   and leaf bindings (`_confirm_delete`, `_edit_mode`).
     fn is_leaf_scope(p: &Path) -> bool {
         if p.components.len() < 2 || p.components[0] != "settings" {
             return false;
@@ -1234,7 +1236,7 @@ mod tests {
         }
         // Single-scope widgets: scope IS the leaf.
         if p.components.len() == 2 {
-            return matches!(head, "_pending_delete" | "_edit_mode");
+            return matches!(head, "_confirm_delete" | "_edit_mode");
         }
         false
     }
@@ -1320,7 +1322,7 @@ mod tests {
         // The leaf scope is where the focused inner widget claims keys
         // — Target phase by definition. Lifecycle keys (Esc/Enter/Tab/
         // BackTab/Up/Down) are excluded: on single-scope widgets like
-        // _pending_delete / _edit_mode the same scope hosts both
+        // _confirm_delete / _edit_mode the same scope hosts both
         // lifecycle (Capture/Bubble) and leaf (Target) bindings, and
         // the lifecycle ones are pinned by the Esc-Capture and
         // container-Enter-Bubble invariants above.

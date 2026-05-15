@@ -615,18 +615,20 @@ async fn delete_account_flow() {
     )
     .await;
 
-    // `d` — arm the inline delete-confirmation banner. Cursor stays
-    // at settings/accounts; ui/settings/pending_delete becomes
-    // Some(<name>) and the dispatcher routes y/n/Esc through the
-    // synthetic `_pending_delete` scope.
+    // `d` — open the confirm-delete dialog. Under cursor-as-focus the
+    // page cursor stays at settings/accounts; the focused-row cursor
+    // moves to `settings/_confirm_delete`, and the target account
+    // lives at `ui/settings/pending_delete/target_account`. The
+    // dispatcher routes y/n/Esc through the synthetic
+    // `_confirm_delete` scope.
     assert!(matches!(h.dispatch("d").await, KeyDispatchOutcome::Handled));
-    let pending: Option<String> = h
+    let target: Option<String> = h
         .client
-        .read_typed(&oxpath!("ui", "settings", "pending_delete"))
+        .read_typed(&oxpath!("ui", "settings", "pending_delete", "target_account"))
         .await
         .ok()
         .flatten();
-    assert_eq!(pending.as_deref(), Some("anthropic"));
+    assert_eq!(target.as_deref(), Some("anthropic"));
     assert_eq!(
         h.current_cursor().await.expect("cursor"),
         oxpath!("settings", "accounts"),
@@ -675,20 +677,20 @@ async fn delete_account_flow() {
         "selection should be cleared after delete"
     );
 
-    // Cursor stays at settings/accounts throughout — the inline
-    // banner never moved it. pending_delete is cleared by
-    // accounts.confirm.delete.
+    // Page cursor stays at settings/accounts throughout — the inline
+    // banner never moved it. The confirm-delete subtree (target_account
+    // + cursor_saved) is cleared by accounts.confirm.delete.
     let cursor = h.current_cursor().await.expect("cursor");
     assert_eq!(cursor, oxpath!("settings", "accounts"));
-    let pending_after: Option<String> = h
+    let target_after: Option<String> = h
         .client
-        .read_typed(&oxpath!("ui", "settings", "pending_delete"))
+        .read_typed(&oxpath!("ui", "settings", "pending_delete", "target_account"))
         .await
         .ok()
         .flatten();
     assert!(
-        pending_after.is_none(),
-        "pending_delete should be cleared after confirm; got {pending_after:?}"
+        target_after.is_none(),
+        "pending_delete/target_account should be cleared after confirm; got {target_after:?}"
     );
 }
 
@@ -1541,18 +1543,20 @@ async fn delete_account_removes_connection_from_rendered_frame() {
         "pre-delete frame must show the account row; got:\n{frame_before}",
     );
 
-    // `d` — arms the inline delete-confirmation banner.
+    // `d` — opens the confirm-delete dialog. Under cursor-as-focus the
+    // target account lives at the dedicated data path
+    // `ui/settings/pending_delete/target_account`.
     assert!(matches!(h.dispatch("d").await, KeyDispatchOutcome::Handled));
-    let pending: Option<String> = h
+    let target: Option<String> = h
         .client
-        .read_typed(&oxpath!("ui", "settings", "pending_delete"))
+        .read_typed(&oxpath!("ui", "settings", "pending_delete", "target_account"))
         .await
         .ok()
         .flatten();
     assert_eq!(
-        pending.as_deref(),
+        target.as_deref(),
         Some("anthropic"),
-        "pressing `d` must arm pending_delete with the focused account name",
+        "pressing `d` must record the target account at pending_delete/target_account",
     );
 
     let frame_after_d = render_settings_to_string(&h, 80, 24).await;

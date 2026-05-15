@@ -39,7 +39,8 @@ use ox_types::{BindingScope, KeyChord, Mode, Phase, Screen};
 use super::binding_registry::BindingRegistry;
 use super::command_registry::{CommandCtx, CommandRegistry};
 use super::commands::account_model::{
-    cursor_is_in_compose_form, cursor_is_in_manual_model, path_ancestors,
+    cursor_is_in_compose_form, cursor_is_in_confirm_delete, cursor_is_in_manual_model,
+    path_ancestors,
 };
 use super::registry::RendererRegistry;
 
@@ -146,13 +147,15 @@ pub(crate) fn compute_scope_path(snapshot: &mut dyn Reader, cursor: &Path) -> Ve
         }
     }
 
-    let pending_delete = read_pending_delete(snapshot).is_some();
     let compose_focused = focused_for_compose
         .as_ref()
         .is_some_and(cursor_is_in_compose_form);
     let manual_model_focused = focused_for_compose
         .as_ref()
         .is_some_and(cursor_is_in_manual_model);
+    let confirm_delete_focused = focused_for_compose
+        .as_ref()
+        .is_some_and(cursor_is_in_confirm_delete);
     let edit_mode_active = read_edit_mode_active(snapshot);
 
     // Compound-widget modes are mutually exclusive by design. Violating
@@ -164,7 +167,7 @@ pub(crate) fn compute_scope_path(snapshot: &mut dyn Reader, cursor: &Path) -> Ve
     // widget.
     debug_assert!(
         [
-            pending_delete,
+            confirm_delete_focused,
             manual_model_focused,
             compose_focused,
             edit_mode_active,
@@ -176,12 +179,6 @@ pub(crate) fn compute_scope_path(snapshot: &mut dyn Reader, cursor: &Path) -> Ve
         "at most one compound-widget mode active at a time; violation routes keys to wrong widget",
     );
 
-    if pending_delete {
-        path.push(BindingScope::Exact(ox_path::oxpath!(
-            "settings",
-            "_pending_delete"
-        )));
-    }
     if let Some(compose_cursor) = focused_for_compose
         .clone()
         .filter(cursor_is_in_compose_form)
@@ -264,21 +261,6 @@ fn read_edit_mode_active(snapshot: &mut dyn Reader) -> bool {
             _ => None,
         })
         .unwrap_or(false)
-}
-
-/// Read `ui/settings/pending_delete`. Returns `Some(_)` when the user
-/// is being asked to confirm a delete (pending-delete mode).
-fn read_pending_delete(snapshot: &mut dyn Reader) -> Option<String> {
-    use ox_path::oxpath;
-    use structfs_core_store::Value;
-    let record = snapshot
-        .read(&oxpath!("ui", "settings", "pending_delete"))
-        .ok()
-        .flatten()?;
-    match record.as_value()? {
-        Value::String(s) => Some(s.clone()),
-        _ => None,
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -629,14 +611,17 @@ mod tests {
     }
 
     #[test]
-    fn pending_delete_routes_to_pending_delete_scope_when_set() {
+    fn pending_delete_routes_to_confirm_delete_scope_when_cursor_at_it() {
+        // Cursor-as-focus: the cursor sitting at
+        // `settings/_confirm_delete` is what activates the confirm-delete
+        // scope. A Target binding at that leaf fires.
         let mut cmds = CommandRegistry::new();
         cmds.register(Box::new(WriteSentinel::new()));
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
             screen: Screen::Settings,
-            scope: ox_types::BindingScope::Exact(oxpath!("settings", "_pending_delete")),
+            scope: ox_types::BindingScope::Exact(oxpath!("settings", "_confirm_delete")),
             mode: None,
             key: key_char('y'),
             command_id: cmd_id("test.sentinel"),
@@ -645,10 +630,11 @@ mod tests {
 
         let renderers = RendererRegistry::new();
         let mut reader = LocalConfig::default();
+        use super::super::commands::navigation::path_to_value;
         reader
             .write(
-                &oxpath!("ui", "settings", "pending_delete"),
-                Record::parsed(Value::String("alpha".into())),
+                &oxpath!("ui", "settings", "focused"),
+                Record::parsed(path_to_value(&oxpath!("settings", "_confirm_delete"))),
             )
             .unwrap();
 
@@ -669,18 +655,17 @@ mod tests {
 
     #[test]
     fn pending_delete_esc_routes_via_capture() {
-        // Esc on the pending-delete confirmation dialog is a lifecycle
-        // key — the container claims it at Capture before any leaf sees
-        // it. A binding registered at Phase::Capture on the
-        // `_pending_delete` scope must fire when Esc is pressed while
-        // pending_delete is set.
+        // Esc on the confirm-delete dialog is a lifecycle key — the
+        // scope claims it at Capture before any leaf sees it. A binding
+        // registered at Phase::Capture on `_confirm_delete` must fire
+        // when Esc is pressed while the cursor sits there.
         let mut cmds = CommandRegistry::new();
         cmds.register(Box::new(WriteSentinel::new()));
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
             screen: Screen::Settings,
-            scope: ox_types::BindingScope::Exact(oxpath!("settings", "_pending_delete")),
+            scope: ox_types::BindingScope::Exact(oxpath!("settings", "_confirm_delete")),
             mode: None,
             key: KeyChord {
                 modifiers: KeyModifierSet::default(),
@@ -692,10 +677,11 @@ mod tests {
 
         let renderers = RendererRegistry::new();
         let mut reader = LocalConfig::default();
+        use super::super::commands::navigation::path_to_value;
         reader
             .write(
-                &oxpath!("ui", "settings", "pending_delete"),
-                Record::parsed(Value::String("alpha".into())),
+                &oxpath!("ui", "settings", "focused"),
+                Record::parsed(path_to_value(&oxpath!("settings", "_confirm_delete"))),
             )
             .unwrap();
 
@@ -723,15 +709,15 @@ mod tests {
     fn pending_delete_y_routes_via_target() {
         // Symmetric to the Esc-Capture test: `y` is a semantic action on
         // the focused dialog (Target), and a Phase::Target binding on
-        // `_pending_delete` must fire when `y` is pressed while
-        // pending_delete is set.
+        // `_confirm_delete` must fire when `y` is pressed while the
+        // cursor sits there.
         let mut cmds = CommandRegistry::new();
         cmds.register(Box::new(WriteSentinel::new()));
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
             screen: Screen::Settings,
-            scope: ox_types::BindingScope::Exact(oxpath!("settings", "_pending_delete")),
+            scope: ox_types::BindingScope::Exact(oxpath!("settings", "_confirm_delete")),
             mode: None,
             key: key_char('y'),
             command_id: cmd_id("test.sentinel"),
@@ -740,10 +726,11 @@ mod tests {
 
         let renderers = RendererRegistry::new();
         let mut reader = LocalConfig::default();
+        use super::super::commands::navigation::path_to_value;
         reader
             .write(
-                &oxpath!("ui", "settings", "pending_delete"),
-                Record::parsed(Value::String("alpha".into())),
+                &oxpath!("ui", "settings", "focused"),
+                Record::parsed(path_to_value(&oxpath!("settings", "_confirm_delete"))),
             )
             .unwrap();
 
@@ -1315,13 +1302,17 @@ mod tests {
             .unwrap();
     }
 
-    /// Seed `ui/settings/pending_delete = <name>`, engaging
-    /// pending-delete mode for `compute_scope_path`.
-    fn seed_pending_delete(reader: &mut LocalConfig, name: &str) {
+    /// Seed `ui/settings/focused = settings/_confirm_delete` — under
+    /// cursor-as-focus this single write engages confirm-delete mode.
+    /// The dispatcher's `compute_scope_path` pushes the focused row
+    /// onto the scope path, which IS the leaf for this single-scope
+    /// widget.
+    fn seed_confirm_delete_cursor(reader: &mut LocalConfig) {
+        use super::super::commands::navigation::path_to_value;
         reader
             .write(
-                &oxpath!("ui", "settings", "pending_delete"),
-                Record::parsed(Value::String(name.into())),
+                &oxpath!("ui", "settings", "focused"),
+                Record::parsed(path_to_value(&oxpath!("settings", "_confirm_delete"))),
             )
             .unwrap();
     }
@@ -1521,22 +1512,39 @@ mod tests {
     }
 
     #[test]
-    fn scope_path_for_pending_delete_appends_pending_delete_scope() {
-        // Pending-delete mode pushes a single `_pending_delete` leaf
-        // after the cursor — it's a single-leaf compound widget (no
-        // sub-form). The leaf must be innermost so Target / Capture
-        // bindings on the dialog get first crack at the key.
+    fn scope_path_for_confirm_delete_appends_confirm_delete_scope() {
+        // Confirm-delete mode is a single-leaf compound widget (no
+        // sub-form). Under cursor-as-focus the cursor sitting at
+        // `settings/_confirm_delete` IS the leaf — `read_focused`
+        // pushes it onto the path. The leaf must be innermost so
+        // Target / Capture bindings on the dialog get first crack at
+        // the key.
         let mut reader = LocalConfig::default();
-        seed_pending_delete(&mut reader, "alpha");
+        seed_confirm_delete_cursor(&mut reader);
 
         let path = compute_scope_path(&mut reader, &oxpath!("settings", "accounts"));
 
         assert_eq!(
             path.last().unwrap(),
-            &BindingScope::Exact(oxpath!("settings", "_pending_delete"))
+            &BindingScope::Exact(oxpath!("settings", "_confirm_delete"))
         );
-        // No focused-row, no other compound widget → just cursor + leaf.
+        // Cursor + confirm-delete leaf — no other scopes.
         assert_eq!(path.len(), 2);
+    }
+
+    #[test]
+    fn compute_scope_path_includes_confirm_delete_when_cursor_at_it() {
+        // Regression for cursor-as-focus: the `_confirm_delete` scope
+        // must appear on the path when the cursor sits there. This is
+        // the entry into the dispatcher's hierarchical walk for the
+        // confirm-delete dialog's bindings (y/n/Esc).
+        let mut reader = LocalConfig::default();
+        seed_confirm_delete_cursor(&mut reader);
+        let path = compute_scope_path(&mut reader, &oxpath!("settings", "accounts"));
+        assert!(
+            path.contains(&BindingScope::Exact(oxpath!("settings", "_confirm_delete"))),
+            "expected confirm-delete leaf on path: {path:?}",
+        );
     }
 
     #[test]

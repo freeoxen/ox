@@ -185,6 +185,24 @@ pub(crate) fn cursor_is_in_manual_model(cursor: &Path) -> bool {
         && cursor.components[1] == "_manual_model"
 }
 
+/// Synthetic cursor path for the confirm-delete dialog. The
+/// confirm-delete widget is single-scope (no sub-form), so the cursor
+/// sits at `settings/_confirm_delete` directly — there is no per-field
+/// or per-stage leaf below it.
+pub(crate) fn confirm_delete_focus_path() -> Path {
+    oxpath!("settings", "_confirm_delete")
+}
+
+/// True iff `cursor` equals `settings/_confirm_delete`. The
+/// dispatcher uses this to engage the confirm-delete scope under
+/// cursor-as-focus; the target account being confirmed lives at the
+/// separate data path `ui/settings/pending_delete/target_account`.
+pub(crate) fn cursor_is_in_confirm_delete(cursor: &Path) -> bool {
+    cursor.components.len() == 2
+        && cursor.components[0] == "settings"
+        && cursor.components[1] == "_confirm_delete"
+}
+
 // ---------------------------------------------------------------------------
 // Per-field validators. Each is pure and total: returns `None` for a valid
 // input or `Some(message)` for the first rule that rejects it. Cross-field
@@ -367,16 +385,18 @@ command! {
     run: |snap, _ctx| accounts_compose_cancel(snap),
 }
 
-// Pending-delete confirmation commands. The dispatcher routes y / n / Esc
-// to these while `ui/settings/pending_delete` is `Some(_)`, via the
-// synthetic `settings/_pending_delete` binding scope. The pending pointer
-// is the single source of truth for which account is being confirmed.
+// Confirm-delete commands. Under cursor-as-focus the cursor at
+// `settings/_confirm_delete` IS the open state — there is no separate
+// `ui/settings/pending_delete: Option<AccountName>` flag. The target
+// account being confirmed lives at the separate data path
+// `ui/settings/pending_delete/target_account: String`; the saved
+// pre-open cursor lives at `ui/settings/pending_delete/cursor_saved`.
 
 command! {
     struct_name: AccountsConfirmDelete,
     id: "accounts.confirm.delete",
     title: "Confirm delete",
-    description: "Delete the pending account record; clear the pending-delete pointer.",
+    description: "Delete the target account record; restore the cursor.",
     screen: Screen::Settings,
     cursor: None,
     run: |snap, _ctx| accounts_confirm_delete(snap),
@@ -386,13 +406,10 @@ command! {
     struct_name: AccountsConfirmCancel,
     id: "accounts.confirm.cancel",
     title: "Cancel delete",
-    description: "Dismiss the delete-confirmation banner without deleting.",
+    description: "Dismiss the delete-confirmation banner without deleting; restore the cursor.",
     screen: Screen::Settings,
     cursor: None,
-    run: |_snap, _ctx| vec![Write {
-        path: oxpath!("ui", "settings", "pending_delete"),
-        record: Record::parsed(Value::Null),
-    }],
+    run: |snap, _ctx| accounts_confirm_cancel(snap),
 }
 
 command! {
@@ -1631,39 +1648,111 @@ fn models_manual_cancel(data: &mut dyn Reader) -> Vec<Write> {
     ]
 }
 
+/// Open the confirm-delete dialog. Resolves the focused row to its
+/// account name, saves the prior cursor for cancel-restore, moves the
+/// cursor into the synthetic `_confirm_delete` namespace, and stashes
+/// the target account at a child of `ui/settings/pending_delete` so
+/// the renderer's banner and the confirm command can read it.
+///
+/// Cursor-as-focus: the act of moving the cursor INTO
+/// `settings/_confirm_delete` IS the open. Mode is encoded in the
+/// cursor's path segments — no separate `pending_delete:
+/// Option<AccountName>` flag. The dispatcher's `compute_scope_path`
+/// engages the confirm-delete scope by virtue of the cursor sitting
+/// there.
 fn accounts_delete_confirm(data: &mut dyn Reader) -> Vec<Write> {
     let name = match read_selected_account(data) {
         Some(n) => n,
         None => return Vec::new(),
     };
-    vec![Write {
-        path: oxpath!("ui", "settings", "pending_delete"),
-        record: Record::parsed(Value::String(name.into_string())),
-    }]
+
+    // Save the prior cursor so cancel can restore it. Confirm also
+    // reads cursor_saved to land somewhere sensible after the row
+    // disappears.
+    let cursor_saved = read_focused_path(data);
+
+    vec![
+        Write {
+            path: oxpath!("ui", "settings", "pending_delete", "target_account"),
+            record: Record::parsed(Value::String(name.into_string())),
+        },
+        Write {
+            path: oxpath!("ui", "settings", "pending_delete", "cursor_saved"),
+            record: Record::parsed(match cursor_saved.as_ref() {
+                Some(p) => path_to_value(p),
+                None => Value::Null,
+            }),
+        },
+        Write {
+            path: oxpath!("ui", "settings", "focused"),
+            record: Record::parsed(path_to_value(&confirm_delete_focus_path())),
+        },
+    ]
 }
 
+/// Confirm the pending delete. Reads `target_account` from the
+/// dedicated data path (the value half of the retired value-flag),
+/// emits the canonical Null write at the account record, restores the
+/// cursor to the saved pre-open location (typically the row that just
+/// got deleted — the accordion will re-anchor naturally), and cascade-
+/// clears the entire `ui/settings/pending_delete` subtree.
 fn accounts_confirm_delete(data: &mut dyn Reader) -> Vec<Write> {
+    use crate::settings::commands::navigation::path_from_value;
     use ox_kernel::PathComponent;
 
-    // Read the pending account name. If unset, the dispatch shouldn't
-    // have routed here — defensive no-op.
-    let name: String = read_typed(data, &oxpath!("ui", "settings", "pending_delete"))
-        .unwrap_or_default();
+    // Read the target account from the dedicated data path. Defensive
+    // no-op when missing — the dispatcher shouldn't have routed here.
+    let name: String = read_typed(
+        data,
+        &oxpath!("ui", "settings", "pending_delete", "target_account"),
+    )
+    .unwrap_or_default();
     if name.is_empty() {
-        return Vec::new();
+        // No target — just clear the subtree and bail. Don't restore
+        // the cursor from an unknown saved value: fall through to a
+        // safe fallback.
+        return vec![
+            Write {
+                path: oxpath!("ui", "settings", "focused"),
+                record: Record::parsed(path_to_value(&oxpath!("settings", "accounts"))),
+            },
+            Write {
+                path: oxpath!("ui", "settings", "pending_delete"),
+                record: Record::parsed(Value::Null),
+            },
+        ];
     }
     let comp = match PathComponent::try_new(&name) {
         Ok(c) => c,
         Err(_) => {
-            // Pending pointer somehow got an invalid name. Clear it
+            // Target got an invalid name. Clear the subtree
             // defensively so we don't leave the user stuck in
-            // confirmation mode.
-            return vec![Write {
-                path: oxpath!("ui", "settings", "pending_delete"),
-                record: Record::parsed(Value::Null),
-            }];
+            // confirmation mode; restore cursor to the Accounts header.
+            return vec![
+                Write {
+                    path: oxpath!("ui", "settings", "focused"),
+                    record: Record::parsed(path_to_value(&oxpath!("settings", "accounts"))),
+                },
+                Write {
+                    path: oxpath!("ui", "settings", "pending_delete"),
+                    record: Record::parsed(Value::Null),
+                },
+            ];
         }
     };
+
+    // Restore the cursor to where it was before open. The saved cursor
+    // typically points at the row that just got deleted; the
+    // accordion's `visible_rows` enumeration will no longer surface
+    // that path and the focused-row scope falls back gracefully. Fall
+    // back to `settings/accounts` when no save is present.
+    let saved: Option<Path> = data
+        .read(&oxpath!("ui", "settings", "pending_delete", "cursor_saved"))
+        .ok()
+        .flatten()
+        .and_then(|r| r.as_value().cloned())
+        .and_then(|v| path_from_value(&v));
+    let restored = saved.unwrap_or_else(|| oxpath!("settings", "accounts"));
 
     vec![
         // The actual delete — Null write to the canonical account
@@ -1674,7 +1763,42 @@ fn accounts_confirm_delete(data: &mut dyn Reader) -> Vec<Write> {
             path: oxpath!("config", "gate", "accounts", comp),
             record: Record::parsed(Value::Null),
         },
-        // Clear the pending pointer.
+        // Restore cursor to where the user was before open.
+        Write {
+            path: oxpath!("ui", "settings", "focused"),
+            record: Record::parsed(path_to_value(&restored)),
+        },
+        // Cascade-clear the entire pending_delete subtree (target_account
+        // + cursor_saved) in a single Null write at the subtree root.
+        Write {
+            path: oxpath!("ui", "settings", "pending_delete"),
+            record: Record::parsed(Value::Null),
+        },
+    ]
+}
+
+/// Cancel the confirm-delete dialog. Reads the saved pre-open cursor,
+/// restores it, and cascade-clears the `ui/settings/pending_delete`
+/// subtree. When no save is present — pathological seed — fall back
+/// to `settings/accounts` so the user lands somewhere sensible.
+fn accounts_confirm_cancel(data: &mut dyn Reader) -> Vec<Write> {
+    use crate::settings::commands::navigation::path_from_value;
+
+    let saved: Option<Path> = data
+        .read(&oxpath!("ui", "settings", "pending_delete", "cursor_saved"))
+        .ok()
+        .flatten()
+        .and_then(|r| r.as_value().cloned())
+        .and_then(|v| path_from_value(&v));
+    let restored = saved.unwrap_or_else(|| oxpath!("settings", "accounts"));
+
+    vec![
+        Write {
+            path: oxpath!("ui", "settings", "focused"),
+            record: Record::parsed(path_to_value(&restored)),
+        },
+        // Cascade-clear every child at the pending_delete root in one
+        // write; this also clears `cursor_saved` we just read above.
         Write {
             path: oxpath!("ui", "settings", "pending_delete"),
             record: Record::parsed(Value::Null),
@@ -3112,16 +3236,62 @@ mod tests {
     }
 
     #[test]
-    fn accounts_delete_confirm_writes_pending_delete_when_selected() {
+    fn delete_confirm_open_writes_cursor_to_confirm_delete() {
+        // Cursor-as-focus: opening writes `ui/settings/focused =
+        // settings/_confirm_delete`. The cursor IS the open state.
         let mut snap = SettingsSnapshot::empty();
         select_account(&mut snap, "alpha");
         let writes = run_cmd(&AccountsDeleteConfirm::new(), &mut snap);
-        assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "settings", "pending_delete"));
-        match &writes[0].record {
+        let focused_write = writes
+            .iter()
+            .find(|w| w.path == oxpath!("ui", "settings", "focused"))
+            .expect("cursor written");
+        let cursor = super::super::navigation::path_from_value(
+            focused_write.record.as_value().unwrap(),
+        )
+        .expect("decode cursor");
+        assert_eq!(cursor, oxpath!("settings", "_confirm_delete"));
+        // The retired value-flag must not be written.
+        assert!(
+            !writes
+                .iter()
+                .any(|w| w.path == oxpath!("ui", "settings", "pending_delete")),
+            "retired value-flag must not be written at the pending_delete root: {writes:?}",
+        );
+    }
+
+    #[test]
+    fn delete_confirm_open_saves_target_account_and_cursor() {
+        // Open seeds two data paths: `target_account` (the account name
+        // being confirmed — the value half of the retired value-flag)
+        // and `cursor_saved` (the prior cursor, so cancel can restore
+        // it).
+        let mut snap = SettingsSnapshot::empty();
+        select_account(&mut snap, "alpha");
+        let prior = oxpath!("settings", "accounts");
+        snap.insert(
+            &oxpath!("ui", "settings", "focused"),
+            path_to_value(&prior),
+        );
+        let writes = run_cmd(&AccountsDeleteConfirm::new(), &mut snap);
+
+        let target_write = writes
+            .iter()
+            .find(|w| w.path == oxpath!("ui", "settings", "pending_delete", "target_account"))
+            .expect("target_account written");
+        match &target_write.record {
             Record::Parsed(Value::String(s)) => assert_eq!(s, "alpha"),
-            other => panic!("expected pending_delete = Some(\"alpha\"); got {other:?}"),
+            other => panic!("expected target_account = \"alpha\"; got {other:?}"),
         }
+
+        let saved_write = writes
+            .iter()
+            .find(|w| w.path == oxpath!("ui", "settings", "pending_delete", "cursor_saved"))
+            .expect("cursor_saved written");
+        let saved =
+            super::super::navigation::path_from_value(saved_write.record.as_value().unwrap())
+                .expect("decode saved cursor");
+        assert_eq!(saved, prior);
     }
 
     #[test]
@@ -3129,6 +3299,76 @@ mod tests {
         let mut snap = SettingsSnapshot::empty();
         let writes = run_cmd(&AccountsDeleteConfirm::new(), &mut snap);
         assert!(writes.is_empty());
+    }
+
+    #[test]
+    fn confirm_cancel_restores_saved_cursor() {
+        // Cancel reads `cursor_saved` and restores the cursor; the
+        // Null-cascade write applies after the read, so the snapshot
+        // here still holds the saved value.
+        let mut snap = SettingsSnapshot::empty();
+        let prior = oxpath!("settings", "accounts");
+        snap.insert(
+            &oxpath!("ui", "settings", "pending_delete", "cursor_saved"),
+            path_to_value(&prior),
+        );
+        let writes = run_cmd(&AccountsConfirmCancel::new(), &mut snap);
+        let cursor_val = writes
+            .iter()
+            .find(|w| w.path == oxpath!("ui", "settings", "focused"))
+            .map(|w| w.record.as_value().unwrap().clone())
+            .expect("cursor restored");
+        let cursor = super::super::navigation::path_from_value(&cursor_val).unwrap();
+        assert_eq!(cursor, prior);
+        // Cascade-clear the entire pending_delete subtree.
+        assert_null_write(&writes, oxpath!("ui", "settings", "pending_delete"));
+    }
+
+    #[test]
+    fn confirm_cancel_falls_back_to_accounts_when_no_save() {
+        // Pathological seed (no cursor_saved): cancel still restores a
+        // sensible cursor so the user doesn't get stranded.
+        let mut snap = SettingsSnapshot::empty();
+        let writes = run_cmd(&AccountsConfirmCancel::new(), &mut snap);
+        let cursor_val = writes
+            .iter()
+            .find(|w| w.path == oxpath!("ui", "settings", "focused"))
+            .map(|w| w.record.as_value().unwrap().clone())
+            .expect("cursor written");
+        let cursor = super::super::navigation::path_from_value(&cursor_val).unwrap();
+        assert_eq!(cursor, oxpath!("settings", "accounts"));
+    }
+
+    #[test]
+    fn confirm_delete_clears_pending_delete_subtree() {
+        // Confirm-delete emits three writes: the account Null at the
+        // canonical path, the cursor restore, and a Null-cascade at
+        // the pending_delete subtree root (clears target_account +
+        // cursor_saved in one entry).
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("ui", "settings", "pending_delete", "target_account"),
+            Value::String("alpha".into()),
+        );
+        let prior = oxpath!("settings", "accounts");
+        snap.insert(
+            &oxpath!("ui", "settings", "pending_delete", "cursor_saved"),
+            path_to_value(&prior),
+        );
+        let writes = run_cmd(&AccountsConfirmDelete::new(), &mut snap);
+        // Account Null write at config/gate/accounts/alpha.
+        let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
+        assert_null_write(&writes, oxpath!("config", "gate", "accounts", comp));
+        // Cursor restored to the saved pre-open path.
+        let cursor_val = writes
+            .iter()
+            .find(|w| w.path == oxpath!("ui", "settings", "focused"))
+            .map(|w| w.record.as_value().unwrap().clone())
+            .expect("cursor restored");
+        let cursor = super::super::navigation::path_from_value(&cursor_val).unwrap();
+        assert_eq!(cursor, prior);
+        // Cascade-clear at the pending_delete subtree root.
+        assert_null_write(&writes, oxpath!("ui", "settings", "pending_delete"));
     }
 
     // -- Subscription requests --------------------------------------------------
