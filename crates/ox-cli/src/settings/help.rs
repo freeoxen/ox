@@ -25,31 +25,28 @@ use crate::settings::command_registry::CommandRegistry;
 
 /// Build the hint list for the given settings dispatch context.
 ///
-/// Mirrors the dispatcher's three-pass lookup: edit-mode synthetic
-/// cursor (when active) → focused row → page cursor. A key seen at
-/// a higher-priority scope shadows the same key at a lower-priority
-/// one, so the modal shows the binding that would actually fire.
+/// Mirrors the dispatcher's three-pass lookup: focused row (when set,
+/// possibly itself `settings/_edit` for inline edit mode) → page
+/// cursor. A key seen at a higher-priority scope shadows the same key
+/// at a lower-priority one, so the modal shows the binding that would
+/// actually fire.
 ///
 /// The legacy single-cursor entrypoint was missing per-row Prefix
 /// bindings (t / r / h / l / a / d / P) and edit-mode bindings — they
 /// were never visible in the shortcuts modal because the page cursor
 /// (`settings/index`) doesn't match `Prefix(settings/accounts)` or
-/// `Exact(settings/_edit_mode)`. Threading the focused row + edit
-/// flag fixes that.
+/// `Exact(settings/_edit)`. Threading the focused row fixes both:
+/// under cursor-as-focus the focused cursor moves to `settings/_edit`
+/// when edit mode is active, so a single `focused`-handed parameter
+/// covers both row-Prefix bindings and edit-mode bindings.
 pub fn key_hints_for_context(
     bindings: &BindingRegistry,
     commands: &CommandRegistry,
     page_cursor: &Path,
     focused: Option<&Path>,
-    edit_mode: bool,
 ) -> Vec<KeyHint> {
     let mut out: Vec<KeyHint> = Vec::new();
     let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let edit_scope;
-    if edit_mode {
-        edit_scope = ox_path::oxpath!("settings", "_edit_mode");
-        emit_for_cursor(bindings, commands, &edit_scope, &mut seen_keys, &mut out);
-    }
     if let Some(focus) = focused {
         emit_for_cursor(bindings, commands, focus, &mut seen_keys, &mut out);
     }
@@ -58,14 +55,14 @@ pub fn key_hints_for_context(
 }
 
 /// Compatibility shim: hints for a page cursor only, no focused-row
-/// or edit-mode context. Kept for tests; production callers now use
+/// context. Kept for tests; production callers now use
 /// `key_hints_for_context`.
 pub fn key_hints_for_cursor(
     bindings: &BindingRegistry,
     commands: &CommandRegistry,
     cursor: &Path,
 ) -> Vec<KeyHint> {
-    key_hints_for_context(bindings, commands, cursor, None, false)
+    key_hints_for_context(bindings, commands, cursor, None)
 }
 
 fn emit_for_cursor(

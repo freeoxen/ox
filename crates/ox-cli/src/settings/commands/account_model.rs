@@ -203,6 +203,17 @@ pub(crate) fn cursor_is_in_confirm_delete(cursor: &Path) -> bool {
         && cursor.components[1] == "_confirm_delete"
 }
 
+/// True iff `cursor` equals `settings/_edit`. The dispatcher uses
+/// this to engage the inline-edit scope under cursor-as-focus; the
+/// target field path, edit buffer, and saved pre-open cursor live at
+/// the separate data subtree `ui/settings/edit/{target_path, buffer,
+/// cursor_saved}`.
+pub(crate) fn cursor_is_in_edit(cursor: &Path) -> bool {
+    cursor.components.len() == 2
+        && cursor.components[0] == "settings"
+        && cursor.components[1] == "_edit"
+}
+
 // ---------------------------------------------------------------------------
 // Per-field validators. Each is pure and total: returns `None` for a valid
 // input or `Some(message)` for the first rule that rejects it. Cross-field

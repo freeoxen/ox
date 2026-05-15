@@ -39,8 +39,8 @@ use ox_types::{BindingScope, KeyChord, Mode, Phase, Screen};
 use super::binding_registry::BindingRegistry;
 use super::command_registry::{CommandCtx, CommandRegistry};
 use super::commands::account_model::{
-    cursor_is_in_compose_form, cursor_is_in_confirm_delete, cursor_is_in_manual_model,
-    path_ancestors,
+    cursor_is_in_compose_form, cursor_is_in_confirm_delete, cursor_is_in_edit,
+    cursor_is_in_manual_model, path_ancestors,
 };
 use super::registry::RendererRegistry;
 
@@ -156,7 +156,7 @@ pub(crate) fn compute_scope_path(snapshot: &mut dyn Reader, cursor: &Path) -> Ve
     let confirm_delete_focused = focused_for_compose
         .as_ref()
         .is_some_and(cursor_is_in_confirm_delete);
-    let edit_mode_active = read_edit_mode_active(snapshot);
+    let edit_mode_active = focused_for_compose.as_ref().is_some_and(cursor_is_in_edit);
 
     // Compound-widget modes are mutually exclusive by design. Violating
     // this invariant isn't just hygiene: `compute_scope_path` would push
@@ -225,12 +225,10 @@ pub(crate) fn compute_scope_path(snapshot: &mut dyn Reader, cursor: &Path) -> Ve
             path.push(leaf);
         }
     }
-    if edit_mode_active {
-        path.push(BindingScope::Exact(ox_path::oxpath!(
-            "settings",
-            "_edit_mode"
-        )));
-    }
+    // edit_mode_active: like confirm-delete, the cursor at
+    // `settings/_edit` IS the leaf; `read_focused` already pushed it
+    // onto the path via the focused-row push. No separate container
+    // scope to inject.
 
     path
 }
@@ -246,21 +244,6 @@ fn read_focused(snapshot: &mut dyn Reader) -> Option<Path> {
         .flatten()?;
     let value = record.as_value()?;
     crate::settings::commands::navigation::path_from_value(value)
-}
-
-/// Read the inline edit-mode flag.
-fn read_edit_mode_active(snapshot: &mut dyn Reader) -> bool {
-    use ox_path::oxpath;
-    use structfs_core_store::Value;
-    snapshot
-        .read(&oxpath!("ui", "settings", "edit_mode"))
-        .ok()
-        .flatten()
-        .and_then(|r| match r.as_value() {
-            Some(Value::Bool(b)) => Some(*b),
-            _ => None,
-        })
-        .unwrap_or(false)
 }
 
 // ---------------------------------------------------------------------------
@@ -1086,20 +1069,21 @@ mod tests {
         assert_eq!(writes[0].path, oxpath!("ui", "sentinel"));
     }
 
-    /// Seed `ui/settings/edit_mode = true` (plus the field path the
-    /// edit machinery commits to) so `read_edit_mode_active` returns
-    /// true and `compute_scope_path` pushes the `_edit_mode` leaf.
+    /// Seed `ui/settings/focused = settings/_edit` (plus the target
+    /// field path the edit machinery commits to) so the dispatcher's
+    /// `compute_scope_path` pushes the `_edit` leaf via its
+    /// focused-row push. Mirrors the confirm-delete seed shape.
     fn seed_edit_mode(reader: &mut LocalConfig, field_path: Path) {
         use super::super::commands::navigation::path_to_value;
         reader
             .write(
-                &oxpath!("ui", "settings", "edit_mode"),
-                Record::parsed(Value::Bool(true)),
+                &oxpath!("ui", "settings", "focused"),
+                Record::parsed(path_to_value(&oxpath!("settings", "_edit"))),
             )
             .unwrap();
         reader
             .write(
-                &oxpath!("ui", "settings", "edit_field_path"),
+                &oxpath!("ui", "settings", "edit", "target_path"),
                 Record::parsed(path_to_value(&field_path)),
             )
             .unwrap();
@@ -1107,17 +1091,17 @@ mod tests {
 
     #[test]
     fn edit_mode_esc_routes_via_capture() {
-        // Esc on inline edit-mode is a lifecycle key — the `_edit_mode`
+        // Esc on inline edit-mode is a lifecycle key — the `_edit`
         // scope claims it at Capture before any leaf sees it. A binding
-        // registered at Phase::Capture on `_edit_mode` must fire when
-        // Esc is pressed while edit_mode is active.
+        // registered at Phase::Capture on `_edit` must fire when Esc
+        // is pressed while the cursor sits at `settings/_edit`.
         let mut cmds = CommandRegistry::new();
         cmds.register(Box::new(WriteSentinel::new()));
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
             screen: Screen::Settings,
-            scope: BindingScope::Exact(oxpath!("settings", "_edit_mode")),
+            scope: BindingScope::Exact(oxpath!("settings", "_edit")),
             mode: None,
             key: KeyChord {
                 modifiers: KeyModifierSet::default(),
@@ -1156,14 +1140,14 @@ mod tests {
     fn edit_mode_enter_routes_via_bubble() {
         // Enter commits the edit buffer at Bubble: leaves (none today,
         // but a future multi-line text editor at Target) get first crack
-        // at Enter. A Bubble binding at `_edit_mode` fires.
+        // at Enter. A Bubble binding at `_edit` fires.
         let mut cmds = CommandRegistry::new();
         cmds.register(Box::new(WriteSentinel::new()));
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
             screen: Screen::Settings,
-            scope: BindingScope::Exact(oxpath!("settings", "_edit_mode")),
+            scope: BindingScope::Exact(oxpath!("settings", "_edit")),
             mode: None,
             key: KeyChord {
                 modifiers: KeyModifierSet::default(),
@@ -1201,15 +1185,16 @@ mod tests {
     #[test]
     fn edit_mode_printable_routes_via_target() {
         // Printable ASCII on inline edit-mode mutates the buffer — the
-        // leaf claim. A Target binding at `_edit_mode` must fire when a
-        // printable char is pressed while edit_mode is active.
+        // leaf claim. A Target binding at `_edit` must fire when a
+        // printable char is pressed while the cursor sits at
+        // `settings/_edit`.
         let mut cmds = CommandRegistry::new();
         cmds.register(Box::new(WriteSentinel::new()));
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
             screen: Screen::Settings,
-            scope: BindingScope::Exact(oxpath!("settings", "_edit_mode")),
+            scope: BindingScope::Exact(oxpath!("settings", "_edit")),
             mode: None,
             key: key_char('x'),
             command_id: cmd_id("test.sentinel"),
@@ -1548,10 +1533,11 @@ mod tests {
     }
 
     #[test]
-    fn scope_path_for_edit_mode_appends_edit_mode_scope() {
-        // Inline edit-mode pushes a single `_edit_mode` leaf at the
-        // inner end. Mirrors the pending-delete shape: no separate
-        // form scope, the mode is one leaf.
+    fn scope_path_for_edit_mode_appends_edit_scope() {
+        // Inline edit-mode pushes a single `_edit` leaf at the inner
+        // end. Mirrors the confirm-delete shape: no separate form
+        // scope, the mode is one leaf — the cursor sitting at
+        // `settings/_edit` is what `read_focused` pushes onto the path.
         let mut reader = LocalConfig::default();
         seed_edit_mode(
             &mut reader,
@@ -1562,7 +1548,27 @@ mod tests {
 
         assert_eq!(
             path.last().unwrap(),
-            &BindingScope::Exact(oxpath!("settings", "_edit_mode"))
+            &BindingScope::Exact(oxpath!("settings", "_edit"))
+        );
+        // Cursor + edit leaf — no other scopes.
+        assert_eq!(path.len(), 2);
+    }
+
+    #[test]
+    fn compute_scope_path_includes_edit_when_cursor_at_it() {
+        // Regression for cursor-as-focus: the `_edit` scope must appear
+        // on the path when the cursor sits there. This is the entry
+        // into the dispatcher's hierarchical walk for the edit
+        // mode's bindings (printable chars / Backspace / Enter / Esc).
+        let mut reader = LocalConfig::default();
+        seed_edit_mode(
+            &mut reader,
+            oxpath!("settings", "accounts", "alpha", "endpoint"),
+        );
+        let path = compute_scope_path(&mut reader, &oxpath!("settings", "accounts"));
+        assert!(
+            path.contains(&BindingScope::Exact(oxpath!("settings", "_edit"))),
+            "expected edit leaf on path: {path:?}",
         );
     }
 

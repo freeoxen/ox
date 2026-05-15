@@ -374,11 +374,12 @@ fn register_row_prefixes(reg: &mut BindingRegistry) {
 }
 
 /// Inline edit-mode bindings under the synthetic cursor
-/// `settings/_edit_mode`. While `ui/settings/edit_mode = true` the
-/// dispatcher routes through this scope, shadowing tree-nav and
-/// per-row keys. Printable chars and Backspace mutate the edit
-/// buffer; Enter commits the buffer to the field's data path; Esc
-/// cancels without writing.
+/// `settings/_edit`. Under cursor-as-focus, the cursor sitting at
+/// `settings/_edit` IS the engaged state — the dispatcher routes
+/// through this scope, shadowing tree-nav and per-row keys.
+/// Printable chars and Backspace mutate the edit buffer; Enter
+/// commits the buffer to the field's data path; Esc cancels without
+/// writing.
 ///
 /// Phase classification mirrors the compose form: Esc is a lifecycle
 /// key the scope claims at `Phase::Capture` (cancel always wins over
@@ -387,7 +388,7 @@ fn register_row_prefixes(reg: &mut BindingRegistry) {
 /// newline-insert binding; printable chars and Backspace stay at
 /// `Phase::Target` (they mutate the buffer — the leaf claim).
 fn register_edit_mode(reg: &mut BindingRegistry) {
-    let scope = oxpath!("settings", "_edit_mode");
+    let scope = oxpath!("settings", "_edit");
     // Printable ASCII (0x20..=0x7E) → edit.insert_char.
     //
     // Modifier handling mirrors the encode/parse round-trip:
@@ -921,7 +922,7 @@ mod tests {
         let hit = reg
             .lookup(
                 Screen::Settings,
-                &oxpath!("settings", "_edit_mode"),
+                &oxpath!("settings", "_edit"),
                 None,
                 &key(no_mods(), KeyCodeRepr::Char('x')),
                 Phase::Target,
@@ -936,7 +937,7 @@ mod tests {
         let hit = reg
             .lookup(
                 Screen::Settings,
-                &oxpath!("settings", "_edit_mode"),
+                &oxpath!("settings", "_edit"),
                 None,
                 &key(no_mods(), KeyCodeRepr::Backspace),
                 Phase::Target,
@@ -951,7 +952,7 @@ mod tests {
         let hit = reg
             .lookup(
                 Screen::Settings,
-                &oxpath!("settings", "_edit_mode"),
+                &oxpath!("settings", "_edit"),
                 None,
                 &key(no_mods(), KeyCodeRepr::Enter),
                 Phase::Bubble,
@@ -966,7 +967,7 @@ mod tests {
         let hit = reg
             .lookup(
                 Screen::Settings,
-                &oxpath!("settings", "_edit_mode"),
+                &oxpath!("settings", "_edit"),
                 None,
                 &key(no_mods(), KeyCodeRepr::Esc),
                 Phase::Capture,
@@ -1175,7 +1176,7 @@ mod tests {
     //     compound-widget cursors. Concretely:
     //       _compose_form, _compose_form/{name,protocol,endpoint,auth,key},
     //       _manual_model, _manual_model/{id,ctx,out},
-    //       _confirm_delete, _edit_mode.
+    //       _confirm_delete, _edit.
     //
     //   Container scope (has a separate leaf scope below it):
     //     _compose_form, _manual_model.
@@ -1184,7 +1185,7 @@ mod tests {
     //     _compose_form/{name,protocol,endpoint,auth,key} — per-field
     //       children of the compose form.
     //     _manual_model/{id,ctx,out} — per-stage children.
-    //     _confirm_delete, _edit_mode — single-scope widgets: the scope
+    //     _confirm_delete, _edit — single-scope widgets: the scope
     //     IS the leaf when active (no separate form+leaf split). For
     //     these, lifecycle keys (Esc/Enter/Tab/BackTab/Up/Down) are still
     //     hosted on the same scope but at Capture/Bubble, so the
@@ -1203,7 +1204,7 @@ mod tests {
     /// separate leaf scope below it (compose form / manual-model form).
     fn is_container_scope(p: &Path) -> bool {
         // Both containers have exactly two components: settings/_name.
-        // The single-scope widgets (_confirm_delete, _edit_mode) also
+        // The single-scope widgets (_confirm_delete, _edit) also
         // have shape settings/_name but no leaf below — they're handled
         // by the leaf classifier and explicitly excluded here.
         if p.components.len() != 2 || p.components[0] != "settings" {
@@ -1218,7 +1219,7 @@ mod tests {
     /// - children of a form-and-leaf widget (`_compose_form/<field>`,
     ///   `_manual_model/id|ctx|out`);
     /// - single-scope widgets where the same scope hosts both lifecycle
-    ///   and leaf bindings (`_confirm_delete`, `_edit_mode`).
+    ///   and leaf bindings (`_confirm_delete`, `_edit`).
     fn is_leaf_scope(p: &Path) -> bool {
         if p.components.len() < 2 || p.components[0] != "settings" {
             return false;
@@ -1236,7 +1237,7 @@ mod tests {
         }
         // Single-scope widgets: scope IS the leaf.
         if p.components.len() == 2 {
-            return matches!(head, "_confirm_delete" | "_edit_mode");
+            return matches!(head, "_confirm_delete" | "_edit");
         }
         false
     }
@@ -1322,7 +1323,7 @@ mod tests {
         // The leaf scope is where the focused inner widget claims keys
         // — Target phase by definition. Lifecycle keys (Esc/Enter/Tab/
         // BackTab/Up/Down) are excluded: on single-scope widgets like
-        // _confirm_delete / _edit_mode the same scope hosts both
+        // _confirm_delete / _edit the same scope hosts both
         // lifecycle (Capture/Bubble) and leaf (Target) bindings, and
         // the lifecycle ones are pinned by the Esc-Capture and
         // container-Enter-Bubble invariants above.

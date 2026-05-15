@@ -6,19 +6,28 @@
 //!   - reads the field's current value off the data path,
 //!   - converts it to a `String` (for numeric fields, decimal
 //!     digits; empty for `None`),
-//!   - writes that string into `ui/settings/edit_buffer`,
-//!   - records the field row's path in `ui/settings/edit_field_path`,
-//!   - flips `ui/settings/edit_mode = true`.
+//!   - writes that string into `ui/settings/edit/buffer`,
+//!   - records the field row's path in `ui/settings/edit/target_path`,
+//!   - saves the prior focused-row cursor at
+//!     `ui/settings/edit/cursor_saved`,
+//!   - moves the cursor (`ui/settings/focused`) to `settings/_edit`.
 //!
-//! While `edit_mode` is true the dispatcher's edit-mode pass routes
-//! every printable char to `edit.insert_char` (append to buffer),
-//! Backspace to `edit.delete_back` (pop from buffer), Enter to
-//! `edit.commit` (parse + write to data path + clear state), and
-//! Esc to `edit.cancel` (clear state without writing).
+//! Cursor-as-focus: the cursor sitting at `settings/_edit` IS the
+//! "edit mode is active" condition — there is no separate
+//! `ui/settings/edit_mode: bool` flag. The dispatcher's
+//! `compute_scope_path` engages the `_edit` scope by virtue of the
+//! cursor being there. The dispatcher routes every printable char to
+//! `edit.insert_char` (append to buffer), Backspace to
+//! `edit.delete_back` (pop from buffer), Enter to `edit.commit`
+//! (parse + write to data path + restore cursor), and Esc to
+//! `edit.cancel` (restore cursor without writing). Both commit and
+//! cancel cascade-clear the `ui/settings/edit` subtree
+//! (target_path + buffer + cursor_saved) in a single Null write.
 //!
-//! The renderer picks up `edit_mode` + `edit_field_path` and
-//! substitutes the data value with the live buffer plus a visible
-//! cursor block, so the user sees what they're typing.
+//! The renderer picks up the cursor being at `settings/_edit` plus
+//! `ui/settings/edit/target_path` and substitutes the data value
+//! with the live buffer plus a visible cursor block, so the user
+//! sees what they're typing.
 
 use ox_path::oxpath;
 use ox_types::Screen;
@@ -69,7 +78,7 @@ command! {
 }
 
 // ---------------------------------------------------------------------------
-// Buffer mutations — bound at `Exact(settings/_edit_mode)`.
+// Buffer mutations — bound at `Exact(settings/_edit)`.
 // ---------------------------------------------------------------------------
 
 command! {
@@ -223,37 +232,38 @@ fn begin_edit_model_field_inner(data: &mut dyn Reader) -> Vec<Write> {
 }
 
 fn enter_edit_mode(field_path: Path, buffer: String) -> Vec<Write> {
+    // Cursor-as-focus: the field row IS the place the user just acted
+    // on. Save it so cancel/commit can return there. Move the cursor to
+    // `settings/_edit` to engage the dispatcher's `_edit` scope; the
+    // edit subtree (target_path + buffer + cursor_saved) holds the
+    // mode's data half.
     vec![
         Write {
-            path: oxpath!("ui", "settings", "edit_field_path"),
+            path: oxpath!("ui", "settings", "edit", "target_path"),
             record: Record::parsed(path_to_value(&field_path)),
         },
         Write {
-            path: oxpath!("ui", "settings", "edit_buffer"),
+            path: oxpath!("ui", "settings", "edit", "buffer"),
             record: Record::parsed(Value::String(buffer)),
         },
         Write {
-            path: oxpath!("ui", "settings", "edit_mode"),
-            record: Record::parsed(Value::Bool(true)),
+            path: oxpath!("ui", "settings", "edit", "cursor_saved"),
+            record: Record::parsed(path_to_value(&field_path)),
+        },
+        Write {
+            path: oxpath!("ui", "settings", "focused"),
+            record: Record::parsed(path_to_value(&oxpath!("settings", "_edit"))),
         },
     ]
 }
 
-fn clear_edit_state() -> Vec<Write> {
-    vec![
-        Write {
-            path: oxpath!("ui", "settings", "edit_mode"),
-            record: Record::parsed(Value::Bool(false)),
-        },
-        Write {
-            path: oxpath!("ui", "settings", "edit_buffer"),
-            record: Record::parsed(Value::Null),
-        },
-        Write {
-            path: oxpath!("ui", "settings", "edit_field_path"),
-            record: Record::parsed(Value::Null),
-        },
-    ]
+/// Cascade-clear the edit subtree in one Null write at the subtree
+/// root. Clears target_path + buffer + cursor_saved.
+fn clear_edit_subtree() -> Write {
+    Write {
+        path: oxpath!("ui", "settings", "edit"),
+        record: Record::parsed(Value::Null),
+    }
 }
 
 fn insert_char(
@@ -270,8 +280,9 @@ fn insert_char(
         KeyCodeRepr::Char(c) => c,
         _ => return Vec::new(),
     };
-    let current = read_string(data, &oxpath!("ui", "settings", "edit_buffer")).unwrap_or_default();
-    let field_path = match read_path(data, &oxpath!("ui", "settings", "edit_field_path")) {
+    let current =
+        read_string(data, &oxpath!("ui", "settings", "edit", "buffer")).unwrap_or_default();
+    let field_path = match read_path(data, &oxpath!("ui", "settings", "edit", "target_path")) {
         Some(p) => p,
         None => return Vec::new(),
     };
@@ -294,33 +305,51 @@ fn insert_char(
     let mut next = current;
     next.push(ch);
     vec![Write {
-        path: oxpath!("ui", "settings", "edit_buffer"),
+        path: oxpath!("ui", "settings", "edit", "buffer"),
         record: Record::parsed(Value::String(next)),
     }]
 }
 
 fn delete_back(data: &mut dyn Reader) -> Vec<Write> {
     let mut current =
-        read_string(data, &oxpath!("ui", "settings", "edit_buffer")).unwrap_or_default();
+        read_string(data, &oxpath!("ui", "settings", "edit", "buffer")).unwrap_or_default();
     if current.pop().is_none() {
         return Vec::new();
     }
     vec![Write {
-        path: oxpath!("ui", "settings", "edit_buffer"),
+        path: oxpath!("ui", "settings", "edit", "buffer"),
         record: Record::parsed(Value::String(current)),
     }]
 }
 
-fn cancel(_data: &mut dyn Reader) -> Vec<Write> {
-    clear_edit_state()
+/// Cancel restores the saved pre-open cursor and cascade-clears the
+/// edit subtree. Falls back to `settings/accounts` when no save is
+/// present (pathological seed).
+fn cancel(data: &mut dyn Reader) -> Vec<Write> {
+    let saved = read_path(data, &oxpath!("ui", "settings", "edit", "cursor_saved"))
+        .unwrap_or_else(|| oxpath!("settings", "accounts"));
+    vec![
+        Write {
+            path: oxpath!("ui", "settings", "focused"),
+            record: Record::parsed(path_to_value(&saved)),
+        },
+        clear_edit_subtree(),
+    ]
 }
 
+/// Commit writes the buffer to the target field's data path, restores
+/// the cursor to the target field row, and cascade-clears the edit
+/// subtree.
 fn commit(data: &mut dyn Reader) -> Vec<Write> {
-    let field_path = match read_path(data, &oxpath!("ui", "settings", "edit_field_path")) {
+    let field_path = match read_path(data, &oxpath!("ui", "settings", "edit", "target_path")) {
         Some(p) => p,
-        None => return clear_edit_state(),
+        None => {
+            // No target — fall back to the saved cursor, then clear.
+            return cancel(data);
+        }
     };
-    let buffer = read_string(data, &oxpath!("ui", "settings", "edit_buffer")).unwrap_or_default();
+    let buffer =
+        read_string(data, &oxpath!("ui", "settings", "edit", "buffer")).unwrap_or_default();
     let row = visible_rows::enumerate(data)
         .into_iter()
         .find(|r| r.path == field_path);
@@ -338,7 +367,12 @@ fn commit(data: &mut dyn Reader) -> Vec<Write> {
         | Some(RowKind::Model { .. })
         | None => Vec::new(),
     };
-    writes.extend(clear_edit_state());
+    // Restore cursor to the field row — the row the user just edited.
+    writes.push(Write {
+        path: oxpath!("ui", "settings", "focused"),
+        record: Record::parsed(path_to_value(&field_path)),
+    });
+    writes.push(clear_edit_subtree());
     writes
 }
 
@@ -529,6 +563,10 @@ fn commit_model_field(
 /// currently being edited and the live buffer contents. `None` when
 /// edit mode is not active. Public so the index renderer can
 /// substitute the row's stored label with the live buffer.
+///
+/// Cursor-as-focus: "active" means the cursor (`ui/settings/focused`)
+/// sits at `settings/_edit`. The target field path and buffer live at
+/// `ui/settings/edit/{target_path,buffer}`.
 #[derive(Clone, Debug)]
 pub struct EditState {
     pub field_path: Path,
@@ -536,21 +574,22 @@ pub struct EditState {
 }
 
 pub fn read_edit_state(data: &mut dyn Reader) -> Option<EditState> {
-    let active = data
-        .read(&oxpath!("ui", "settings", "edit_mode"))
-        .ok()
-        .flatten()
-        .and_then(|r| match r.as_value() {
-            Some(Value::Bool(b)) => Some(*b),
-            _ => None,
-        })
-        .unwrap_or(false);
-    if !active {
+    if !cursor_is_at_edit(data) {
         return None;
     }
-    let field_path = read_path(data, &oxpath!("ui", "settings", "edit_field_path"))?;
-    let buffer = read_string(data, &oxpath!("ui", "settings", "edit_buffer")).unwrap_or_default();
+    let field_path = read_path(data, &oxpath!("ui", "settings", "edit", "target_path"))?;
+    let buffer =
+        read_string(data, &oxpath!("ui", "settings", "edit", "buffer")).unwrap_or_default();
     Some(EditState { field_path, buffer })
+}
+
+/// True iff `ui/settings/focused` equals `settings/_edit`. The cursor
+/// being there IS the "edit mode is active" condition under
+/// cursor-as-focus.
+pub fn cursor_is_at_edit(data: &mut dyn Reader) -> bool {
+    read_focused_path(data)
+        .as_ref()
+        .is_some_and(|p| p == &oxpath!("settings", "_edit"))
 }
 
 #[allow(dead_code)] // re-exported via `read_edit_state`'s field_path; placeholder
@@ -628,6 +667,28 @@ mod tests {
         }
     }
 
+    /// Seed the new cursor-as-focus edit subtree shape:
+    /// `ui/settings/focused = settings/_edit` plus the edit data at
+    /// `ui/settings/edit/{target_path,buffer,cursor_saved}`.
+    fn seed_edit_active(snap: &mut SettingsSnapshot, target: &Path, buffer: &str) {
+        snap.insert(
+            &oxpath!("ui", "settings", "focused"),
+            path_to_value(&oxpath!("settings", "_edit")),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "edit", "target_path"),
+            path_to_value(target),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "edit", "buffer"),
+            Value::String(buffer.into()),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "edit", "cursor_saved"),
+            path_to_value(target),
+        );
+    }
+
     #[test]
     fn begin_edit_endpoint_seeds_buffer_with_current_value() {
         let mut snap = SettingsSnapshot::empty();
@@ -643,40 +704,124 @@ mod tests {
             })
             .unwrap(),
         );
+        let target = oxpath!("settings", "accounts", "alpha", "endpoint");
         snap.insert(
             &oxpath!("ui", "settings", "focused"),
-            path_to_value(&oxpath!("settings", "accounts", "alpha", "endpoint")),
+            path_to_value(&target),
         );
 
         let writes = run(&BeginEditAccountEndpoint::new(), &mut snap);
-        // edit_field_path + edit_buffer + edit_mode
-        assert_eq!(writes.len(), 3);
-        assert_eq!(writes[0].path, oxpath!("ui", "settings", "edit_field_path"));
-        assert_eq!(writes[1].path, oxpath!("ui", "settings", "edit_buffer"));
+        // target_path + buffer + cursor_saved + cursor (focused) = 4 writes
+        assert_eq!(writes.len(), 4);
+        assert_eq!(
+            writes[0].path,
+            oxpath!("ui", "settings", "edit", "target_path")
+        );
+        assert_eq!(writes[1].path, oxpath!("ui", "settings", "edit", "buffer"));
         match &writes[1].record {
             Record::Parsed(Value::String(s)) => {
                 assert_eq!(s, "https://api.anthropic.com");
             }
             other => panic!("buffer is not a String: {other:?}"),
         }
-        assert_eq!(writes[2].path, oxpath!("ui", "settings", "edit_mode"));
+        assert_eq!(
+            writes[2].path,
+            oxpath!("ui", "settings", "edit", "cursor_saved")
+        );
+        // Final write moves the cursor to `settings/_edit` — the
+        // dispatcher's "edit scope is engaged" condition.
+        assert_eq!(writes[3].path, oxpath!("ui", "settings", "focused"));
+    }
+
+    #[test]
+    fn edit_open_writes_cursor_to_edit_scope() {
+        // CF-4 invariant: opening edit mode moves the focused cursor
+        // to `settings/_edit`. The dispatcher's `compute_scope_path`
+        // engages the `_edit` scope from this cursor alone — no
+        // separate `edit_mode: bool` flag.
+        let mut snap = SettingsSnapshot::empty();
+        write_index_with_account(&mut snap, "alpha", "anthropic");
+        let provider_comp = ox_kernel::PathComponent::try_new("anthropic").unwrap();
+        snap.insert(
+            &oxpath!("config", "gate", "providers", provider_comp),
+            to_value(&ox_gate::ProviderConfig {
+                dialect: "anthropic".into(),
+                endpoint: String::new(),
+                version: String::new(),
+                auth: None,
+            })
+            .unwrap(),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "focused"),
+            path_to_value(&oxpath!("settings", "accounts", "alpha", "endpoint")),
+        );
+
+        let writes = run(&BeginEditAccountEndpoint::new(), &mut snap);
+        // Apply and verify the focused cursor is now at settings/_edit.
+        apply_writes(&mut snap, &writes);
+        let focused = read_focused_path(&mut snap).unwrap();
+        assert_eq!(focused, oxpath!("settings", "_edit"));
+    }
+
+    #[test]
+    fn edit_open_saves_target_path_buffer_and_cursor() {
+        // CF-4 invariant: opening writes target_path, buffer, and
+        // cursor_saved at `ui/settings/edit/{...}`. cursor_saved is
+        // the prior cursor — for edit-mode, the user IS on the field
+        // they're now editing, so cursor_saved == target_path.
+        let mut snap = SettingsSnapshot::empty();
+        write_index_with_account(&mut snap, "alpha", "anthropic");
+        let provider_comp = ox_kernel::PathComponent::try_new("anthropic").unwrap();
+        snap.insert(
+            &oxpath!("config", "gate", "providers", provider_comp),
+            to_value(&ox_gate::ProviderConfig {
+                dialect: "anthropic".into(),
+                endpoint: "seed".into(),
+                version: String::new(),
+                auth: None,
+            })
+            .unwrap(),
+        );
+        let target = oxpath!("settings", "accounts", "alpha", "endpoint");
+        snap.insert(
+            &oxpath!("ui", "settings", "focused"),
+            path_to_value(&target),
+        );
+
+        let writes = run(&BeginEditAccountEndpoint::new(), &mut snap);
+        apply_writes(&mut snap, &writes);
+        assert_eq!(
+            read_path(&mut snap, &oxpath!("ui", "settings", "edit", "target_path")).unwrap(),
+            target
+        );
+        assert_eq!(
+            read_string(&mut snap, &oxpath!("ui", "settings", "edit", "buffer")).unwrap(),
+            "seed",
+        );
+        assert_eq!(
+            read_path(
+                &mut snap,
+                &oxpath!("ui", "settings", "edit", "cursor_saved")
+            )
+            .unwrap(),
+            target,
+        );
     }
 
     #[test]
     fn insert_char_appends_to_buffer() {
         let mut snap = SettingsSnapshot::empty();
         write_index_with_account(&mut snap, "alpha", "anthropic");
-        snap.insert(
-            &oxpath!("ui", "settings", "edit_buffer"),
-            Value::String("hello".into()),
-        );
-        snap.insert(
-            &oxpath!("ui", "settings", "edit_field_path"),
-            path_to_value(&oxpath!("settings", "accounts", "alpha", "endpoint")),
+        seed_edit_active(
+            &mut snap,
+            &oxpath!("settings", "accounts", "alpha", "endpoint"),
+            "hello",
         );
 
         let writes = run_with_key(&InsertChar::new(), &mut snap, '!');
         assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].path, oxpath!("ui", "settings", "edit", "buffer"));
         match &writes[0].record {
             Record::Parsed(Value::String(s)) => assert_eq!(s, "hello!"),
             other => panic!("unexpected: {other:?}"),
@@ -725,14 +870,7 @@ mod tests {
             ]),
         );
         let field_path = oxpath!("settings", "models", "alpha", "m1", "max_context_size");
-        snap.insert(
-            &oxpath!("ui", "settings", "edit_buffer"),
-            Value::String("100".into()),
-        );
-        snap.insert(
-            &oxpath!("ui", "settings", "edit_field_path"),
-            path_to_value(&field_path),
-        );
+        seed_edit_active(&mut snap, &field_path, "100");
 
         let writes = run_with_key(&InsertChar::new(), &mut snap, 'x');
         assert!(
@@ -752,11 +890,12 @@ mod tests {
     fn delete_back_pops_from_buffer() {
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
-            &oxpath!("ui", "settings", "edit_buffer"),
+            &oxpath!("ui", "settings", "edit", "buffer"),
             Value::String("hello".into()),
         );
         let writes = run(&DeleteBack::new(), &mut snap);
         assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].path, oxpath!("ui", "settings", "edit", "buffer"));
         match &writes[0].record {
             Record::Parsed(Value::String(s)) => assert_eq!(s, "hell"),
             other => panic!("unexpected: {other:?}"),
@@ -767,7 +906,7 @@ mod tests {
     fn delete_back_on_empty_buffer_is_inert() {
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
-            &oxpath!("ui", "settings", "edit_buffer"),
+            &oxpath!("ui", "settings", "edit", "buffer"),
             Value::String(String::new()),
         );
         let writes = run(&DeleteBack::new(), &mut snap);
@@ -775,21 +914,37 @@ mod tests {
     }
 
     #[test]
-    fn cancel_clears_edit_state_without_writing_data() {
+    fn edit_cancel_restores_saved_cursor() {
+        // CF-4 invariant: cancel reads `cursor_saved` and writes
+        // `focused = saved`, then cascade-clears the edit subtree.
         let mut snap = SettingsSnapshot::empty();
-        snap.insert(&oxpath!("ui", "settings", "edit_mode"), Value::Bool(true));
+        let target = oxpath!("settings", "accounts", "alpha", "endpoint");
+        seed_edit_active(&mut snap, &target, "in-progress");
+
         let writes = run(&Cancel::new(), &mut snap);
-        // edit_mode=false + edit_buffer=Null + edit_field_path=Null
-        assert_eq!(writes.len(), 3);
-        assert_eq!(writes[0].path, oxpath!("ui", "settings", "edit_mode"));
+        // cursor restore + subtree cascade-null = 2 writes
+        assert_eq!(writes.len(), 2);
+        assert_eq!(writes[0].path, oxpath!("ui", "settings", "focused"));
+        // Restored cursor matches the saved value (= target for edit).
         match &writes[0].record {
-            Record::Parsed(Value::Bool(false)) => {}
+            Record::Parsed(v) => {
+                let restored = super::path_from_value(v).unwrap();
+                assert_eq!(restored, target);
+            }
             other => panic!("unexpected: {other:?}"),
+        }
+        assert_eq!(writes[1].path, oxpath!("ui", "settings", "edit"));
+        match &writes[1].record {
+            Record::Parsed(Value::Null) => {}
+            other => panic!("expected Null cascade clear, got {other:?}"),
         }
     }
 
     #[test]
-    fn commit_endpoint_writes_provider_config_and_clears_state() {
+    fn edit_commit_writes_buffer_to_target_path_and_restores_cursor() {
+        // CF-4 invariant: commit emits the value write at target_path,
+        // restores cursor to target_path, and cascade-clears the edit
+        // subtree.
         let mut snap = SettingsSnapshot::empty();
         write_index_with_account(&mut snap, "alpha", "anthropic");
         let provider_comp = ox_kernel::PathComponent::try_new("anthropic").unwrap();
@@ -803,19 +958,12 @@ mod tests {
             })
             .unwrap(),
         );
-        snap.insert(&oxpath!("ui", "settings", "edit_mode"), Value::Bool(true));
-        snap.insert(
-            &oxpath!("ui", "settings", "edit_buffer"),
-            Value::String("https://new.example".into()),
-        );
-        snap.insert(
-            &oxpath!("ui", "settings", "edit_field_path"),
-            path_to_value(&oxpath!("settings", "accounts", "alpha", "endpoint")),
-        );
+        let target = oxpath!("settings", "accounts", "alpha", "endpoint");
+        seed_edit_active(&mut snap, &target, "https://new.example");
 
         let writes = run(&Commit::new(), &mut snap);
-        // ProviderConfig write + 3 clear-state writes
-        assert_eq!(writes.len(), 4);
+        // ProviderConfig write + cursor restore + subtree cascade-null = 3 writes
+        assert_eq!(writes.len(), 3);
         assert_eq!(
             writes[0].path,
             oxpath!("config", "gate", "providers", provider_comp)
@@ -833,39 +981,48 @@ mod tests {
         )
         .unwrap();
         assert_eq!(provider.endpoint, "https://new.example");
+        // Cursor restored to the target field row.
+        assert_eq!(read_focused_path(&mut snap).unwrap(), target);
+        // Edit subtree cleared.
+        assert!(read_edit_state(&mut snap).is_none());
     }
 
     #[test]
-    fn commit_with_no_field_path_just_clears_state() {
+    fn commit_with_no_target_path_falls_back_to_cancel() {
+        // Pathological: cursor at _edit but no target_path. Commit
+        // falls back to cancel — restore from cursor_saved (or
+        // settings/accounts) and cascade-clear.
         let mut snap = SettingsSnapshot::empty();
-        snap.insert(&oxpath!("ui", "settings", "edit_mode"), Value::Bool(true));
+        snap.insert(
+            &oxpath!("ui", "settings", "focused"),
+            path_to_value(&oxpath!("settings", "_edit")),
+        );
         let writes = run(&Commit::new(), &mut snap);
-        // No data write; just the 3 clear-state entries.
-        assert_eq!(writes.len(), 3);
+        // No data write; cursor-restore + cascade-null = 2 writes
+        assert_eq!(writes.len(), 2);
+        assert_eq!(writes[0].path, oxpath!("ui", "settings", "focused"));
+        assert_eq!(writes[1].path, oxpath!("ui", "settings", "edit"));
     }
 
     #[test]
     fn read_edit_state_reflects_active_edit() {
         let mut snap = SettingsSnapshot::empty();
         let field_path = oxpath!("settings", "accounts", "alpha", "endpoint");
-        snap.insert(&oxpath!("ui", "settings", "edit_mode"), Value::Bool(true));
-        snap.insert(
-            &oxpath!("ui", "settings", "edit_field_path"),
-            path_to_value(&field_path),
-        );
-        snap.insert(
-            &oxpath!("ui", "settings", "edit_buffer"),
-            Value::String("typing".into()),
-        );
+        seed_edit_active(&mut snap, &field_path, "typing");
         let state = read_edit_state(&mut snap).unwrap();
         assert_eq!(state.field_path, field_path);
         assert_eq!(state.buffer, "typing");
     }
 
     #[test]
-    fn read_edit_state_returns_none_when_inactive() {
+    fn read_edit_state_returns_none_when_cursor_not_at_edit() {
         let mut snap = SettingsSnapshot::empty();
-        snap.insert(&oxpath!("ui", "settings", "edit_mode"), Value::Bool(false));
+        // Cursor anywhere but `settings/_edit` means edit mode is not
+        // active — the cursor IS the discriminator.
+        snap.insert(
+            &oxpath!("ui", "settings", "focused"),
+            path_to_value(&oxpath!("settings", "accounts")),
+        );
         assert!(read_edit_state(&mut snap).is_none());
     }
 

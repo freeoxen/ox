@@ -530,8 +530,10 @@ mod tests {
     #[test]
     fn activate_on_endpoint_field_enters_inline_edit_mode() {
         // Text-edit-able account fields (Endpoint, Key) switch to
-        // inline edit mode and stay on `settings/index` (no cursor
-        // write).
+        // inline edit mode: write the edit subtree
+        // (target_path/buffer/cursor_saved) and move the focused
+        // cursor to `settings/_edit`. The page-level cursor at
+        // `settings/index` is untouched.
         let mut snap = SettingsSnapshot::empty();
         write_index(&mut snap);
         write_account(&mut snap, "alpha");
@@ -544,15 +546,18 @@ mod tests {
         );
         set_focused(&mut snap, "settings/accounts/alpha/endpoint");
         let writes = run(&TreeActivate::new(), &mut snap);
-        // edit_field_path + edit_buffer + edit_mode = 3 writes
-        assert_eq!(writes.len(), 3);
-        assert_eq!(writes[0].path, oxpath!("ui", "settings", "edit_field_path"));
-        assert_eq!(writes[1].path, oxpath!("ui", "settings", "edit_buffer"));
-        assert_eq!(writes[2].path, oxpath!("ui", "settings", "edit_mode"));
-        match &writes[2].record {
-            Record::Parsed(Value::Bool(true)) => {}
-            other => panic!("expected edit_mode=true, got {other:?}"),
-        }
+        // target_path + buffer + cursor_saved + cursor (focused) = 4 writes
+        assert_eq!(writes.len(), 4);
+        assert_eq!(
+            writes[0].path,
+            oxpath!("ui", "settings", "edit", "target_path")
+        );
+        assert_eq!(writes[1].path, oxpath!("ui", "settings", "edit", "buffer"));
+        assert_eq!(
+            writes[2].path,
+            oxpath!("ui", "settings", "edit", "cursor_saved")
+        );
+        assert_eq!(writes[3].path, oxpath!("ui", "settings", "focused"));
         for w in &writes {
             assert_ne!(w.path, oxpath!("ui", "settings", "cursor"));
         }
@@ -635,7 +640,7 @@ mod tests {
     #[test]
     fn activate_on_model_field_enters_inline_edit_mode() {
         // Model numeric fields enter inline edit mode in place; the
-        // dispatcher's edit-mode pass routes digits to
+        // dispatcher's `_edit` scope routes digits to
         // `edit.insert_char`, which appends to the buffer. Commit
         // (Enter) parses the buffer and writes the override; Cancel
         // (Esc) discards.
@@ -651,15 +656,18 @@ mod tests {
         );
         set_focused(&mut snap, "settings/models/alpha/m1/max_context_size");
         let writes = run(&TreeActivate::new(), &mut snap);
-        // edit_field_path + edit_buffer + edit_mode = 3 writes
-        assert_eq!(writes.len(), 3);
-        assert_eq!(writes[0].path, oxpath!("ui", "settings", "edit_field_path"));
-        assert_eq!(writes[1].path, oxpath!("ui", "settings", "edit_buffer"));
-        assert_eq!(writes[2].path, oxpath!("ui", "settings", "edit_mode"));
-        match &writes[2].record {
-            Record::Parsed(Value::Bool(true)) => {}
-            other => panic!("expected edit_mode=true, got {other:?}"),
-        }
+        // target_path + buffer + cursor_saved + cursor (focused) = 4 writes
+        assert_eq!(writes.len(), 4);
+        assert_eq!(
+            writes[0].path,
+            oxpath!("ui", "settings", "edit", "target_path")
+        );
+        assert_eq!(writes[1].path, oxpath!("ui", "settings", "edit", "buffer"));
+        assert_eq!(
+            writes[2].path,
+            oxpath!("ui", "settings", "edit", "cursor_saved")
+        );
+        assert_eq!(writes[3].path, oxpath!("ui", "settings", "focused"));
         for w in &writes {
             assert_ne!(w.path, oxpath!("ui", "settings", "cursor"));
         }

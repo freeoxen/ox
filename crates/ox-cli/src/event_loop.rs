@@ -256,18 +256,19 @@ pub async fn run_async(
                 let cursor =
                     read_settings_cursor(&mut snap).unwrap_or_else(|| oxpath!("settings", "index"));
                 let focused = read_settings_focused(&mut snap);
-                let edit_mode = read_settings_edit_mode(&mut snap);
                 // Override `key_hints` with the projection from the new
-                // settings registries. Threading the focused row + edit
-                // flag in lets the modal surface per-row Prefix bindings
+                // settings registries. Threading the focused row in
+                // lets the modal surface per-row Prefix bindings
                 // (h/l/t/r/...) and edit-mode bindings — the legacy
-                // single-cursor lookup missed both.
+                // single-cursor lookup missed both. Edit mode no
+                // longer needs a separate flag: the focused cursor
+                // moves to `settings/_edit` and is covered by the
+                // focused-row pass.
                 vs.key_hints = crate::settings::help::key_hints_for_context(
                     &settings_bindings,
                     &settings_commands,
                     &cursor,
                     focused.as_ref(),
-                    edit_mode,
                 );
                 let area = terminal.get_frame().area();
                 let mut ctx = RenderCtx {
@@ -626,18 +627,6 @@ fn read_settings_focused(snap: &mut SettingsSnapshot) -> Option<Path> {
         .flatten()?;
     let value = record.as_value()?;
     path_from_value(value)
-}
-
-/// Read the inline-edit-mode flag.
-fn read_settings_edit_mode(snap: &mut SettingsSnapshot) -> bool {
-    snap.read(&oxpath!("ui", "settings", "edit_mode"))
-        .ok()
-        .flatten()
-        .and_then(|r| match r.as_value() {
-            Some(structfs_core_store::Value::Bool(b)) => Some(*b),
-            _ => None,
-        })
-        .unwrap_or(false)
 }
 
 // ---------------------------------------------------------------------------
