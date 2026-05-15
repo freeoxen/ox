@@ -16,12 +16,15 @@ The framework runs over three logically distinct trees, all keyed by
   `config/gate/accounts/<name>` creates an account, writing `Null`
   deletes it.
 - **Display tree** — broker mounts under `ui/`. Where the user is
-  right now and what UI mode they're in: cursor, focused row,
-  selection pointers, edit buffer, pending-delete target,
-  composing-name buffer. Modes are values at named paths
-  (`ui/settings/new_account/buffer: Option<String>` is "the user is
-  composing a name"), not cursor scopes. The display tree is data
-  too — just data about the UI rather than the world.
+  right now and what UI state they're in: cursor, focus, selection
+  pointers, edit buffer, pending-delete target, composing-name
+  buffer. The user's active widget is encoded by where
+  `ui/settings/focused` points — a cursor under
+  `settings/_compose_form` means the compose widget is engaged. Per-
+  cursor working state (the typed buffer, the saved pre-open cursor,
+  staged drafts) lives at named UI-state paths like
+  `ui/settings/new_account/buffer`. The display tree is data too —
+  just data about the UI rather than the world.
 - **View tree** — constructed each frame by renderers. A curated
   `View` enum. In-memory only; no serde, no ratatui.
 
@@ -35,12 +38,22 @@ state is never the trigger for async work).
 `ui/settings/cursor: Path` holds the path of the page the user is
 currently viewing. Default: `oxpath!("settings", "index")`.
 
+`ui/settings/focused: Path` is the **universal focus authority** —
+the single source of truth for what is currently focused. It points
+at a row, a compound widget root, or a compound widget sub-element.
+Its ancestor chain is the scope path the dispatcher walks; the
+cursor at `ui/settings/cursor` is its page-level outer scope.
+See *Cursor as universal focus* below.
+
 The cursor is a *page* pointer, not a *mode* pointer. Pages are
 distinct screens you navigate to (`settings/index`,
-`settings/accounts`, `settings/models`). Modes are states the user
-is in within a page (composing a name, confirming a delete, editing
-a field) — those live as values at named UI-state paths, not as
-cursor scopes. See *Modeling state* below.
+`settings/accounts`, `settings/models`). Compound-widget modes
+(composing, confirming, editing inline, manual model entry) are
+encoded in `focused`'s path segments: `settings/_compose_form/name`
+puts the cursor inside the compose widget on its `name` field. UI
+sub-states tied to a specific cursor position — like an inline edit
+buffer — still live as values at named UI-state paths. See
+*Modeling state* below.
 
 Cursor moves are commands like everything else:
 
@@ -147,42 +160,76 @@ here.
 
 ### Mode is state, not place
 
-Cursor scopes are pages. Modes are states within a page. They look
-similar in the namespace (both are `Path`-typed values at well-known
-paths) but they carry different semantics and follow different
-conventions.
+Two distinct kinds of "mode" appear in the UI; they belong in
+different namespaces.
+
+**Compound-widget modes** (composing a new account, confirming a
+delete, editing a field inline, manual-model entry) are encoded by
+where the cursor (`ui/settings/focused`) points. The cursor at
+`settings/_compose_form/name` *is* the "composing a new account, on
+the name field" state. There is no separate `new_account/active`
+flag, no `manual_model/stage` discriminator, no `edit_mode` bool —
+the cursor's path segments carry that information directly. See the
+*Cursor as universal focus* section for the full pattern.
+
+**UI sub-states tied to a specific cursor position** (the typed
+text buffer for the engaged edit, the saved pre-open cursor, the
+target row of a pending delete, staged draft fields for a multi-
+stage form) are values at named UI-state paths. They are working
+state read by the renderer and the dispatched commands; they are
+*not* discriminators of which widget is engaged.
 
 When the user opens settings, the cursor is at `settings/index`.
 When they descend into accounts, the cursor moves to
 `settings/accounts`. When they press `a` to add a connection, the
-cursor *does not move*. They're still on the accounts page; they've
-just entered the "composing a new account" mode. That mode is a
-value at `ui/settings/new_account/buffer: Option<String>`. Empty or
-absent means not in the mode; present means in the mode with that
-buffer content.
+cursor moves to `settings/_compose_form/name` — they're still
+"on the accounts page" semantically, but the focus authority is now
+inside the compose widget. Pressing Esc cancels the widget by
+reading the saved cursor at `ui/settings/new_account/cursor_saved`
+and writing it back to `focused`, then cascade-clearing the
+`new_account` subtree.
 
-The renderer reads `new_account/buffer` and decorates the section
-accordingly (inline prompt vs. static affordance). The dispatcher
-reads it and routes Enter to the create action when the buffer is
-present. No cursor scope, no synthetic page, no `_new` sentinel.
+The renderer reads `ui/settings/focused` together with
+`ui/settings/new_account/buffer` and decorates the accounts section
+with the inline name prompt when the cursor is under
+`settings/_compose_form`. The dispatcher reads the cursor's
+ancestor chain and routes keys through the `_compose_form` and
+`_compose_form/name` scopes.
 
-The same pattern handles every "user is in a sub-state of this
-page":
+Mapping of compound widgets to cursor paths and the per-cursor
+working state they read:
 
-| Mode | State path | Renderer behavior |
+| Mode | Cursor path | Per-cursor working state |
 |---|---|---|
-| Composing new account | `ui/settings/new_account/buffer: Option<String>` | Inline prompt |
-| Confirming a delete | `ui/settings/pending_delete: Option<AccountName>` | Inline confirmation banner |
-| Editing a field inline | `ui/settings/edit_buffer: Option<String>` + `edit_field_path: Option<Path>` | Live buffer overlaid on focused row |
-| Manual model entry | `ui/settings/manual_model: Option<ManualModelDraft>` | Inline three-stage form |
+| Composing new account | `settings/_compose_form/{name,protocol,key,...}` | `ui/settings/new_account/{buffer, key, protocol, errors, cursor_saved, ...}` |
+| Confirming a delete | `settings/_confirm_delete` | `ui/settings/pending_delete/{target_account, cursor_saved}` |
+| Editing a field inline | `settings/_edit` | `ui/settings/edit/{target_path, buffer, cursor_saved}` |
+| Manual model entry | `settings/_manual_model/{id,ctx,out}` | `ui/settings/manual_model/{buffer, account, staged_id, staged_ctx, ...}` |
 
-When you reach for a cursor scope to encode "the user is doing X,"
-ask: would they *navigate* to that scope, or *enter* a state? If the
-answer is "enter a state," it's a mode and belongs at a UI-state
-path — not at a cursor scope. The Esc key on a mode dismisses the
-mode (writes `Null` to the state path); on a cursor scope it
-ascends. They're different verbs in the user's head, and they
-should be different verbs in the framework.
+When you reach to encode "the user is doing X," ask: would they
+*navigate* to that scope, or *enter* a state? If they enter a state,
+the cursor moves into that widget's synthetic namespace
+(`settings/_<widget>`) and the renderer + dispatcher key off that.
+The Esc key on a widget cancel-restores the saved cursor; on a page
+it ascends to the parent page. They're different verbs in the
+user's head, and they remain different verbs in the framework —
+distinguished now by *which scope's binding fires* rather than by
+checking a discriminator value.
+
+Retired discriminator paths (do not reintroduce):
+
+- `ui/settings/new_account/active: bool` — replaced by the cursor
+  being under `settings/_compose_form`.
+- `ui/settings/manual_model/stage: ManualModelStage` — replaced by
+  the cursor's leaf segment under `settings/_manual_model`.
+- `ui/settings/pending_delete: Option<AccountName>` (as a value
+  flag) — replaced by the cursor at `settings/_confirm_delete`. The
+  target account moved to a child path
+  (`ui/settings/pending_delete/target_account`) where it is
+  working state, not a flag.
+- `ui/settings/edit_mode: bool` + `edit_field_path: Option<Path>` —
+  replaced by the cursor at `settings/_edit`; the edited field path
+  is now `ui/settings/edit/target_path`.
 
 ### Display tree names only real things
 
@@ -232,10 +279,11 @@ fn commit_new_account(snap: &mut dyn Reader) -> Vec<Write> {
     vec![
         // The actual create — a write to the canonical data path.
         write_typed(&account_path(&name), &AccountConfig::default()),
-        // UI cascade — focus the new row, expand it, clear the buffer.
-        write_path(&focused_row_path(), &row_path(&name)),
+        // UI cascade — focus the new row, expand it, clear the
+        // compose widget's working state subtree.
+        write_path(&focused_path(), &row_path(&name)),
         update_expanded_to_include(&row_path(&name)),
-        clear_compose_buffer(),
+        clear_compose_subtree(),
     ]
 }
 ```
@@ -265,7 +313,65 @@ sentinel; subscription does what the CLI could have done
 synchronously. That's RPC indirection through the substrate, and
 it's banned.
 
+### Cursor as universal focus
 
+`ui/settings/focused` is the single source of truth for what is
+currently focused. The cursor's path encodes the full focus state
+— row, compound widget, or compound widget sub-element.
+
+- Cursor at a row path (e.g., `settings/accounts/alpha`) → that row
+  is focused; no compound widget is active.
+- Cursor at a compound widget root (e.g.,
+  `settings/_confirm_delete`) → the widget is focused as a whole;
+  no sub-element selected.
+- Cursor at a compound widget sub-element (e.g.,
+  `settings/_compose_form/name`) → that sub-element is focused; the
+  widget is active by virtue of being on the cursor's ancestor
+  chain.
+
+`compute_scope_path` is the cursor's ancestor chain:
+
+```rust
+fn compute_scope_path(snap: &mut dyn Reader) -> Vec<BindingScope> {
+    let Some(cursor) = read_cursor(snap) else { return Vec::new(); };
+    path_ancestors(&cursor).into_iter().map(BindingScope::Exact).collect()
+}
+```
+
+Bindings registered at any scope on this chain are reachable. The
+dispatcher walks the chain in three phases: Capture outer→inner,
+Target on the leaf, Bubble inner→outer.
+
+Mode discriminator paths (`new_account/active`,
+`pending_delete: Option<_>` as a value flag, `manual_model/stage`,
+`edit_mode` + `edit_field_path`) are retired. Active mode is
+implicit in cursor's path segments.
+
+Each compound widget follows the same pattern:
+
+- **Open**: save current cursor at `ui/settings/<widget>/cursor_saved`;
+  write the new cursor to the widget's path (its root, or the first
+  sub-element); initialize the working state subtree.
+- **Sub-element navigation**: write the cursor to the next
+  sub-element's path. The dispatcher's scope path shifts; no other
+  state changes.
+- **Commit**: write the cursor to the post-commit target (typically
+  the newly-created or affected row); cascade-clear the widget's
+  working state subtree with a `Null` write at its root.
+- **Cancel**: read `cursor_saved`; cascade-clear the widget's
+  working state subtree; restore the saved cursor.
+
+#### Page-level bindings
+
+Bindings that should fire whenever a sub-cursor is active but no
+inner scope claims the key (`j`/`k` row navigation, `a` to open
+compose, `?` for help, `Ctrl+S` for save) register at
+`Exact(settings)` — the common ancestor of every cursor on the
+settings screen. At Bubble phase they propagate to whichever cursor
+is currently focused, after every inner scope has had a chance to
+claim them at Target/Bubble.
+
+## The View enum
 
 ```rust
 pub enum View {
@@ -419,17 +525,22 @@ registry's `lookup` is phase-aware; there is no per-widget pass logic
 in the dispatcher and no transitional Target-fallback shim.
 
 A user keystroke routes through a *scope path* — the ordered chain of
-nested scopes from the outermost (the screen) to the innermost (the
-focused leaf widget). Each scope on the path is either:
+nested scopes from the outermost (the page) to the innermost (the
+focused leaf widget). The scope path **is the cursor's ancestor
+chain**: every entry is the cursor (`ui/settings/focused`) walked
+toward its root, wrapped in `BindingScope::Exact`. Each entry on the
+path is either:
 
-- a **page scope**: a static cursor scope (`settings`, `settings/accounts`),
-- a **compound widget scope**: synthetic scope tied to a mode
-  (`settings/_compose_form`, `settings/_compose_field`,
-  `settings/_pending_delete`),
-- a **leaf scope**: the active child of a compound widget, picked at
-  lookup time by reading focus state (e.g.,
-  `settings/_compose_field` resolves differently when
-  `focused_field` is `Name` vs `Protocol`).
+- a **page scope**: the cursor or one of its prefixes lying inside
+  a registered page (`settings`, `settings/accounts`),
+- a **compound widget scope**: a cursor prefix at a synthetic
+  widget root (`settings/_compose_form`, `settings/_confirm_delete`,
+  `settings/_manual_model`, `settings/_edit`),
+- a **leaf scope**: the cursor's leaf segment when it points at a
+  compound widget's sub-element (`settings/_compose_form/name`,
+  `settings/_manual_model/id`). The same widget routes different
+  keys at different leaves because each leaf is its own
+  `BindingScope::Exact`.
 
 The dispatcher walks the path in three phases, in order:
 
@@ -466,22 +577,28 @@ Ties broken by registration order.
 
 ### Scopes and the focus path
 
-A scope's `cursor_path` is the focus identity at which the scope is
-active. The dispatcher reads UI-state paths to compute the current
-scope path:
+`compute_scope_path` is `ui/settings/focused`'s ancestor chain. The
+dispatcher reads the cursor once per keystroke and walks its
+ancestors outer-to-inner:
 
-- Screen: always present (`Screen::Settings`).
-- Page scope: derived from the cursor (`settings/accounts` etc.).
-- Compound widget scope: present iff its mode discriminator is set
-  (`ui/settings/new_account/active == true` →
-  `settings/_compose_form` + `settings/_compose_field` are on the
-  path).
-- Leaf scope: derived from the compound widget's focused-child path
-  (`ui/settings/new_account/focused_field`).
+```rust
+fn compute_scope_path(snap: &mut dyn Reader) -> Vec<BindingScope> {
+    let Some(cursor) = read_cursor(snap) else { return Vec::new(); };
+    path_ancestors(&cursor).into_iter().map(BindingScope::Exact).collect()
+}
+```
+
+For cursor `settings/_compose_form/name` the path is `[settings,
+settings/_compose_form, settings/_compose_form/name]`. The
+dispatcher has no per-widget logic, no discriminator reads, no
+synthetic-scope insertion. Mutual exclusion between compound
+widgets is structural: the cursor is a single path, and only one
+widget's synthetic prefix can be on its ancestry at a time.
 
 The path is reconstructed per keystroke. No mutable
 "currently-active-scope-stack" state lives anywhere; the snapshot is
-the source of truth.
+the source of truth, and `ui/settings/focused` is the field within
+the snapshot that determines it.
 
 ### `BindingScope::Anywhere` and the dispatch walk
 
@@ -529,15 +646,13 @@ Convention for which phase an Anywhere binding should declare:
 
 ### Worked example: typing `h` while composing
 
-Snapshot state: `active==true`, `focused_field == Protocol` (a
-Selector field).
+Snapshot state: cursor at `settings/_compose_form/protocol` (the
+user opened compose and Tab'd onto the Selector field).
 
-Scope path (outer → inner):
-- `Screen::Settings`
-- `settings/accounts` (page scope)
-- `settings/_compose_form` (compound widget)
-- `settings/_compose_field` resolved to its Selector binding set
-  (active leaf)
+Scope path (outer → inner) — the cursor's ancestor chain:
+- `settings`
+- `settings/_compose_form`
+- `settings/_compose_form/protocol`
 
 Dispatch:
 1. **Capture**: walk outer-to-inner. None of the scopes have `h`
@@ -546,38 +661,48 @@ Dispatch:
 2. **Target**: leaf scope's Target bindings include `h` →
    `accounts.compose.cycle_back`. Fires. Done.
 
-Same keystroke, different focus: `focused_field == Name` (Text):
+Same keystroke, different focus: cursor at `settings/_compose_form/name`
+(a Text field). The scope path's leaf swaps to the `name` scope:
 1. **Capture**: no `h` at Capture on any scope.
-2. **Target**: leaf scope (Text variant) has printable ASCII → `accounts.compose.insert_char`. Fires.
+2. **Target**: the `_compose_form/name` leaf has printable ASCII
+   → `accounts.compose.insert_char`. Fires.
 
-Same keystroke, no compose mode active:
-1. **Capture**: form scope isn't on the path (no compound widget); no
-   scope on the path has `h` at Capture.
-2. **Target**: the leaf scope is the focused-row scope (or the page
-   scope when no row is focused). Whichever scope is innermost gets
-   queried at `Phase::Target`; `h` is not registered there for the
-   accounts page.
-3. **Bubble**: page-cursor bindings (`h`/`j`/`k`/`l` for navigation,
+Same keystroke, no compose mode active: cursor at
+`settings/accounts/<some-account>`. The `_compose_form` ancestors
+are absent from the path:
+1. **Capture**: no `h` at Capture on any scope.
+2. **Target**: the leaf is the focused-row scope. `h` is not
+   registered there for an accounts row.
+3. **Bubble**: page-level bindings (`h`/`j`/`k`/`l` for navigation,
    focused-row `a`/`t`/`r`/`d`, whole-screen `?`) are registered at
-   `Phase::Bubble` on the page scope and fire here. The dispatcher
-   has no per-widget pass logic; it walks the path inner-to-outer at
-   Bubble and the first registered match wins.
+   `Phase::Bubble` on `settings` — the common ancestor — and fire
+   here. The dispatcher walks the path inner-to-outer at Bubble and
+   the first registered match wins.
 
-### When you'd add a new scope
+### When you'd add a new compound widget
 
-Adding a new compound widget (modal, wizard, inline form) means:
+Adding a modal, wizard, or inline form means:
 
-1. Define a mode discriminator at a UI-state path
-   (`ui/.../<widget>/active: bool` or similar).
-2. Register a compound widget scope under a synthetic
-   `cursor_path` (e.g., `settings/_my_widget_form`). Its bindings
-   are the lifecycle keys at Capture (Esc, Tab) and the
-   form-commit at Bubble (Enter).
-3. If the widget has multiple focusable children, register one leaf
-   scope per child kind under a sibling cursor_path
-   (`settings/_my_widget_field`), with Target-phase bindings.
-4. Extend the dispatcher to read the discriminator and place the
-   scopes on the path when active.
+1. Pick a synthetic cursor namespace for the widget
+   (`settings/_my_widget`). The widget's "open" command writes the
+   cursor there; the widget's "cancel"/"commit" commands restore
+   the saved pre-open cursor.
+2. Pick a UI-state subtree for the widget's working data
+   (`ui/settings/my_widget/{buffer, cursor_saved, ...}`). The open
+   command initializes it; the commit/cancel commands cascade-clear
+   it via a `Null` write at the subtree root.
+3. Register bindings under `Exact(settings/_my_widget)` for the
+   widget-as-a-whole — lifecycle keys at Capture (Esc cancel, Tab
+   advance) and form-commit at Bubble (Enter).
+4. If the widget has multiple focusable children, the open command
+   places the cursor on the first child's path
+   (`settings/_my_widget/first_field`) and Tab/Shift+Tab commands
+   move it among sibling paths. Register Target-phase bindings on
+   each child scope.
+
+No dispatcher changes are required. The dispatcher reads the cursor
+and walks its ancestors; the new widget's scopes appear on the path
+exactly when the cursor is inside them.
 
 Anti-pattern: a single flat scope that does everything via
 conditional logic inside command bodies. That works for a single
@@ -602,7 +727,9 @@ parse_key_str(key_str) → KeyChord
 settings::dispatch::dispatch_settings_key(snapshot, screen, cursor,
                                           mode, key, cmds, bindings,
                                           renderers):
-  scope_path = compute_scope_path(snapshot, cursor)
+  // The cursor argument is the page cursor; the focus cursor lives
+  // at `ui/settings/focused` and is read inside compute_scope_path.
+  scope_path = compute_scope_path(snapshot)   // = focus.ancestors()
   // Capture: outer → inner
   for scope in &scope_path:
       if let Some(cmd) = bindings.lookup(screen, scope, mode, key,
@@ -793,17 +920,34 @@ command later. All paths converge at the watched-pattern dispatch.
 **Bindings as data** so v2 can let users edit them on disk. v1 ships
 them hardcoded but the shape is forward-compat.
 
-**Why mode is state, not place.** A cursor scope is a place the user
-*navigates to* with deliberate intent: settings → accounts → some
-detail. Modes — composing a name, confirming a delete, editing
-inline — aren't navigations; they're transient states the user
-enters and exits without leaving the page. Modeling them as cursor
-scopes meant adding a layer of indirection (a renderer to draw the
-modal, a binding scope to capture its keys, a sentinel path that
-isn't a real place) and pretending the user "went somewhere" when
-they didn't. Modeling them as state at named UI-state paths matches
-what's actually happening: a single page whose appearance and
-behavior depend on a few extra values.
+**Why the cursor is the universal focus authority.** Earlier
+iterations split focus across discriminator paths
+(`new_account/active: bool`, `manual_model/stage: ManualModelStage`,
+`edit_mode: bool` + `edit_field_path`). Each new compound widget
+brought its own discriminator and its own scope-insertion logic in
+the dispatcher. The dispatcher held a small case analysis: "if
+new_account/active, push the compose scope; if manual_model/stage
+is set, push the manual-model scope at the right leaf; ..." Each
+case multiplied the question of mutual exclusion — what happens if
+both flags are accidentally set? — and pushed answers into the
+write-side commands ("clear the other flags when you open").
+
+Cursor-as-focus collapses all of that. The cursor is a single path;
+its ancestor chain is the scope path; only one widget's prefix can
+appear on its ancestry at a time. Mutual exclusion is structural,
+not conventional. The dispatcher has no widget-specific code —
+just `compute_scope_path` returning `cursor.ancestors()`. Adding a
+new widget means picking a synthetic cursor namespace and writing
+the open/cancel/commit handlers; no dispatcher edit, no new
+discriminator, no new "what if both are set" branch.
+
+The page-vs-widget distinction the framework still upholds is the
+one users feel: page navigation (the `cursor` path) changes the
+screen the user is reading; widget engagement (the `focused`
+cursor descending into a synthetic `_<widget>` namespace) opens an
+inline form on the same screen. Different verbs, different visual
+shapes, same underlying mechanism: write a path, and the cursor's
+new position determines the rest.
 
 **Why the display tree names only real things.** Synthetic identifier
 paths (`settings/accounts/_new`, `…/_delete`,

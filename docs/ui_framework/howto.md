@@ -41,7 +41,7 @@ boilerplate.
 | Mutating one or two paths synchronously | **Direct write from the command.** No subscription. |
 | Mutating one path, with async or cross-cutting follow-up needed | **Direct write + reactive subscription** watching the data path. Subscription does the follow-up. |
 | Async only — runs a network call, IO, or other non-instantaneous work the user requested | **Async-trigger subscription.** Command writes `Null` to a `…/<verb>_now` trigger path; subscription does the work. |
-| "Open a sub-state on this page" (composing input, confirming an action, editing a field inline) | **Mode state, not subscription.** Command writes a UI-state path (`ui/.../buffer`, `ui/.../pending_delete`). Renderer + dispatcher react to the state. |
+| "Open a sub-state on this page" (composing input, confirming an action, editing a field inline) | **Move the focus cursor.** Command writes `ui/settings/focused` into the widget's synthetic namespace (`settings/_compose_form/name`, `settings/_confirm_delete`, `settings/_edit`) and seeds the widget's working state (`ui/.../buffer`, `ui/.../cursor_saved`). Renderer + dispatcher react via cursor-ancestor walk. |
 | "Navigate to a different page" | **Cursor write.** Command writes `ui/settings/cursor` to the new page path. |
 
 ### Anti-patterns to avoid
@@ -50,10 +50,12 @@ boilerplate.
   subscription read it, validate, and write the real path. The
   command should write the real path directly. Subscriptions are
   for follow-up, not translation.
-- **Mode as cursor scope.** Don't navigate to `…/_new` to enter "the
-  user is composing" mode. Write a UI-state value
-  (`ui/.../new_account/buffer`) instead. The cursor stays on the
-  page; the mode lives in state.
+- **Mode discriminator.** Don't add a `…/active: bool` or
+  `…/stage: SomeEnum` flag at a UI-state path to tell the
+  dispatcher which compound widget is engaged. Move the focus
+  cursor (`ui/settings/focused`) into the widget's synthetic
+  namespace (`settings/_my_widget/<leaf>`) and let the
+  dispatcher's cursor-ancestor walk pick up the scope.
 - **Synthetic display rows.** Don't push a `RowKind::FooAdd` into
   the visible-rows projection to show a "+ New X" affordance. The
   renderer reads UI-mode state and emits the affordance as a
@@ -540,25 +542,27 @@ this shape — see `crates/ox-gate/src/subscriptions/`.
 
 ---
 
-## Add an inline editing flow (a mode)
+## Add an inline editing flow (a compound widget)
 
-Worked example: a "compose new connection" mode, triggered by `a`,
-where the user types a name inline and presses Enter to create.
+Worked example: a "compose new connection" widget, triggered by
+`a`, where the user types a name inline and presses Enter to
+create.
 
-The principle: a mode is state at a named UI-state path, not a
-cursor scope. The cursor stays on the current page; the mode lives
-in state.
+The principle: a compound widget has a synthetic *cursor*
+namespace (`settings/_compose_form/<leaf>`) and a sibling
+*working-state* subtree (`ui/settings/new_account/{buffer, key,
+protocol, errors, cursor_saved, ...}`). The cursor at one of the
+synthetic leaves is the discriminator the dispatcher's
+cursor-ancestor walk picks up.
 
-### 1. Pick a UI-state path
+### 1. Pick a synthetic cursor namespace and a working-state subtree
 
-```rust
-ui/settings/new_account/buffer: Option<String>
+```
+cursor (when widget engaged):  settings/_compose_form/{name,protocol,key,...}
+working state subtree:         ui/settings/new_account/{buffer, key, protocol, errors, cursor_saved}
 ```
 
-Empty/absent = not in the mode. Present = in the mode with that
-buffer content.
-
-### 2. Open-mode command
+### 2. Open-widget command
 
 ```rust
 command! {
@@ -568,21 +572,38 @@ command! {
     description: "Open the inline name prompt.",
     screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "accounts")),
-    run: |_snap, _ctx| vec![Write {
-        path: oxpath!("ui", "settings", "new_account", "buffer"),
-        record: Record::parsed(Value::String(String::new())),
-    }],
+    run: |snap, _ctx| {
+        // Save the current focus so cancel/commit can restore it.
+        let saved = read_path(snap, &oxpath!("ui", "settings", "focused"))
+            .unwrap_or_else(|| oxpath!("settings", "index"));
+        vec![
+            Write {
+                path: oxpath!("ui", "settings", "new_account", "buffer"),
+                record: Record::parsed(Value::String(String::new())),
+            },
+            Write {
+                path: oxpath!("ui", "settings", "new_account", "cursor_saved"),
+                record: Record::parsed(path_to_value(&saved)),
+            },
+            Write {
+                path: oxpath!("ui", "settings", "focused"),
+                record: Record::parsed(path_to_value(&oxpath!(
+                    "settings", "_compose_form", "name"
+                ))),
+            },
+        ]
+    },
 }
 ```
 
-Bind it: `a` → `accounts.add` at `Prefix(settings/accounts)`.
+Bind it: `a` → `accounts.add` at `Phase::Bubble` on
+`Exact(settings)` (page-level — fires whenever no inner scope
+claims `a`).
 
-### 3. Renderer reads the mode state
+### 3. Renderer reads the working state
 
-The accounts-section renderer reads `new_account/buffer`. When
-`Some(buffer)`, it renders an inline `Name▸ <buffer>▏` prompt at the
-top of the section. When `None`, it renders a static
-`+ New connection` affordance line.
+The accounts-section renderer reads `new_account/buffer` plus the
+cursor (for active-field decoration):
 
 ```rust
 let buffer: Option<String> = read_typed(
@@ -598,30 +619,26 @@ let header = match buffer {
 The visible-rows projection does not change. There is no
 `RowKind::AccountAdd`. The affordance is renderer-side only.
 
-### 4. While-in-mode bindings
+### 4. Register bindings under the widget's cursor scopes
 
-Bind printable keys, Backspace, Enter, Esc at a *mode-aware* scope.
-The dispatcher consults the UI-state path before regular row-keyed
-dispatch:
+The dispatcher's cursor-ancestor walk places these scopes on the
+dispatch path automatically while the cursor is at
+`settings/_compose_form/<leaf>`:
 
-```rust
-// Pseudocode for the dispatcher's mode-aware pass.
-if read_typed::<String>(snap, &new_account_buffer_path).is_some() {
-    match key {
-        KeyCodeRepr::Char(c) => return mode_insert_char(c),
-        KeyCodeRepr::Backspace => return mode_delete_back(),
-        KeyCodeRepr::Enter => return mode_commit_create(),
-        KeyCodeRepr::Esc => return mode_cancel(),
-        _ => {}
-    }
-}
-// Otherwise fall through to row-keyed dispatch.
-```
+- `Exact(settings/_compose_form)` — `Esc` cancel,
+  `Tab`/`Shift+Tab` advance at `Phase::Capture`; `Enter` commit at
+  `Phase::Bubble`.
+- `Exact(settings/_compose_form/name)` — printable ASCII →
+  `accounts.compose.insert_char` at `Phase::Target`; Backspace →
+  `accounts.compose.delete_back`.
+- `Exact(settings/_compose_form/protocol)` — `h`/`l` →
+  `accounts.compose.cycle_{back,fwd}` at `Phase::Target`.
 
-(In practice this lives in `dispatch_settings_key`. See
-`crates/ox-cli/src/settings/dispatch.rs` for the actual shape.)
+No dispatcher edits. No discriminator reads. The right scopes ride
+onto the dispatch path because the cursor's ancestors include
+them.
 
-### 5. Commit-mode command writes the data + clears the mode
+### 5. Commit command writes the data + restores the cursor
 
 ```rust
 fn commit_create(snap: &mut dyn Reader) -> Vec<Write> {
@@ -641,21 +658,24 @@ fn commit_create(snap: &mut dyn Reader) -> Vec<Write> {
             &oxpath!("config", "gate", "accounts", name.as_path_component()),
             &AccountConfig::default(),
         ),
-        // UI cascade — focus the new row, clear the mode buffer.
-        write_path(
-            &oxpath!("ui", "settings", "focused_row"),
-            &row_path_for(&name),
-        ),
+        // UI cascade — focus the new row, cascade-clear the compose
+        // widget's working state subtree.
         Write {
-            path: oxpath!("ui", "settings", "new_account", "buffer"),
+            path: oxpath!("ui", "settings", "focused"),
+            record: Record::parsed(path_to_value(&row_path_for(&name))),
+        },
+        Write {
+            path: oxpath!("ui", "settings", "new_account"),
             record: Record::parsed(Value::Null),
         },
     ]
 }
 ```
 
-Esc / cancel just writes `Null` to the buffer path — that exits the
-mode without doing the create.
+Esc / cancel reads `ui/settings/new_account/cursor_saved`, writes
+it back to `ui/settings/focused`, and cascade-clears the
+`ui/settings/new_account` subtree — exiting the widget without
+performing the create.
 
 ---
 
@@ -663,18 +683,20 @@ mode without doing the create.
 
 Worked example: "delete this account — y/n confirmation."
 
-Same shape as the inline editing flow above, but the mode-state
-value carries the *target* of the action rather than a typing
-buffer.
+Same cursor-as-focus pattern as compose / inline-edit: the cursor
+moves into a synthetic widget namespace; the target and the
+pre-open cursor live as working state under a sibling UI-state
+path.
 
-### 1. Pick a UI-state path
+### 1. Pick a synthetic cursor path and a working-state subtree
 
-```rust
-ui/settings/pending_delete: Option<AccountName>
+```
+cursor (when widget engaged):  settings/_confirm_delete
+working state subtree:         ui/settings/pending_delete/{target_account, cursor_saved}
 ```
 
-Absent = no confirmation showing. Present = confirmation banner
-showing for that account.
+Cursor at `settings/_confirm_delete` = confirmation banner showing.
+Cursor anywhere else = no confirmation.
 
 ### 2. Open-confirmation command
 
@@ -691,56 +713,74 @@ command! {
             snap,
             &oxpath!("ui", "settings", "accounts", "selected"),
         ) else { return vec![]; };
-        vec![Write {
-            path: oxpath!("ui", "settings", "pending_delete"),
-            record: Record::parsed(Value::String(name)),
-        }]
+        let Some(saved) = read_path(snap, &oxpath!("ui", "settings", "focused"))
+            else { return vec![]; };
+        vec![
+            Write {
+                path: oxpath!("ui", "settings", "pending_delete", "target_account"),
+                record: Record::parsed(Value::String(name)),
+            },
+            Write {
+                path: oxpath!("ui", "settings", "pending_delete", "cursor_saved"),
+                record: Record::parsed(path_to_value(&saved)),
+            },
+            Write {
+                path: oxpath!("ui", "settings", "focused"),
+                record: Record::parsed(path_to_value(&oxpath!("settings", "_confirm_delete"))),
+            },
+        ]
     },
 }
 ```
 
-### 3. Renderer reads the pending-delete state
+### 3. Renderer reads the working state
 
 ```rust
-let pending: Option<String> = read_typed(
+let target: Option<String> = read_typed(
     ctx.data,
-    &oxpath!("ui", "settings", "pending_delete"),
+    &oxpath!("ui", "settings", "pending_delete", "target_account"),
 );
-if let Some(name) = pending {
+if let Some(name) = target {
     // Render an inline confirmation banner above the accounts list:
     //   "Delete '<name>'? y / n"
 }
 ```
 
-### 4. While-pending bindings
+### 4. Bindings under `Exact(settings/_confirm_delete)`
 
-The dispatcher's mode-aware pass routes `y` and `n`/`Esc` while
-`pending_delete` is set:
+Bindings live on the widget's scope; the cursor's ancestor walk
+puts the scope on the dispatch path automatically while the cursor
+is at `settings/_confirm_delete`:
 
-```rust
-if let Some(target) = read_typed::<String>(
-    snap, &pending_delete_path,
-) {
-    match key {
-        KeyCodeRepr::Char('y') => return commit_delete(&target),
-        KeyCodeRepr::Char('n') | KeyCodeRepr::Esc => return cancel_pending(),
-        _ => {}  // ignore other keys while pending
-    }
-}
-```
+- `Esc` / `n` at `Phase::Capture` → `pending_delete.cancel`.
+- `y` at `Phase::Target` (or Bubble) → `pending_delete.commit`.
+
+No dispatcher mode-discriminator reads; no while-pending special
+case in the dispatcher's command bodies.
 
 ### 5. Commit / cancel
 
 ```rust
-fn commit_delete(name: &str) -> Vec<Write> {
-    let comp = PathComponent::try_new(name).expect("validated on entry");
+fn commit_delete(snap: &mut dyn Reader) -> Vec<Write> {
+    let target = read_typed::<String>(
+        snap, &oxpath!("ui", "settings", "pending_delete", "target_account"),
+    ).expect("widget invariant: set on open");
+    let saved = read_path(
+        snap, &oxpath!("ui", "settings", "pending_delete", "cursor_saved"),
+    ).expect("widget invariant: set on open");
+    let comp = PathComponent::try_new(&target).expect("validated on entry");
     vec![
         // The actual delete — Null write to the data path.
         Write {
             path: oxpath!("config", "gate", "accounts", comp),
             record: Record::parsed(Value::Null),
         },
-        // Clear the mode.
+        // Restore the pre-open cursor.
+        Write {
+            path: oxpath!("ui", "settings", "focused"),
+            record: Record::parsed(path_to_value(&saved)),
+        },
+        // Cascade-clear the widget's working state subtree.
         Write {
             path: oxpath!("ui", "settings", "pending_delete"),
             record: Record::parsed(Value::Null),
@@ -748,11 +788,20 @@ fn commit_delete(name: &str) -> Vec<Write> {
     ]
 }
 
-fn cancel_pending() -> Vec<Write> {
-    vec![Write {
-        path: oxpath!("ui", "settings", "pending_delete"),
-        record: Record::parsed(Value::Null),
-    }]
+fn cancel_pending(snap: &mut dyn Reader) -> Vec<Write> {
+    let saved = read_path(
+        snap, &oxpath!("ui", "settings", "pending_delete", "cursor_saved"),
+    ).expect("widget invariant: set on open");
+    vec![
+        Write {
+            path: oxpath!("ui", "settings", "focused"),
+            record: Record::parsed(path_to_value(&saved)),
+        },
+        Write {
+            path: oxpath!("ui", "settings", "pending_delete"),
+            record: Record::parsed(Value::Null),
+        },
+    ]
 }
 ```
 

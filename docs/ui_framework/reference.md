@@ -394,25 +394,41 @@ Cursors, focus, selection, and UI-mode state.
 
 | Path | Type | Meaning |
 |---|---|---|
-| `ui/settings/cursor` | `Path` | Currently-displayed *page*. Cursors are page navigation, not modes — see `architecture.md` §Modeling state. |
+| `ui/settings/cursor` | `Path` | Currently-displayed *page*. Page navigation only. |
+| `ui/settings/focused` | `Path` | Universal focus authority. Encodes the focused row, compound widget, or widget sub-element. Its ancestor chain is the dispatch scope path. See `architecture.md` §Cursor as universal focus. |
 | `ui/settings/_request_exit` | `bool` | Cross-component signal: event loop reads it to switch screens. |
-| `ui/settings/focused_row` | `Path` | Identifier path of the currently-focused row in the visible-rows projection. |
 | `ui/settings/expanded` | `Vec<String>` | Set (as list) of expanded accordion entries. |
 | `ui/settings/accounts/selected` | `Option<String>` | Currently selected account name. |
 | `ui/settings/models/selected` | `Option<ModelKey>` | Currently selected (account, model) pair. |
 | `ui/global/banner` | `GlobalBanner` | App-wide banner (errors, info). |
 | `settings/index/entries/{id}` | `SettingsIndexEntry` | Index page row metadata. |
 
-UI mode state (presence of value indicates the user is in that mode;
-`Null` clears the mode):
+Compound widget engagement — the cursor (`ui/settings/focused`)
+under one of these synthetic namespaces means the widget is active.
+Each widget has a sibling working-state subtree at
+`ui/settings/<widget>` carrying its buffer, saved pre-open cursor,
+and any staged drafts:
 
-| Path | Type | Mode |
+| Synthetic cursor namespace | Widget | Working state subtree |
 |---|---|---|
-| `ui/settings/new_account/buffer` | `Option<String>` | Composing a new account name. |
-| `ui/settings/pending_delete` | `Option<String>` | Showing a delete-confirmation for that account. |
-| `ui/settings/edit_buffer` | `Option<String>` | Inline-editing a field; carries the live typed text. |
-| `ui/settings/edit_field_path` | `Option<Path>` | Which row's field is being edited (when `edit_buffer` is set). |
-| `ui/settings/manual_model` | `Option<ManualModelDraft>` | Composing a new model entry inline. |
+| `settings/_compose_form/{name,protocol,key,...}` | Composing a new account | `ui/settings/new_account/{buffer, protocol, key, errors, cursor_saved}` |
+| `settings/_confirm_delete` | Confirming a delete | `ui/settings/pending_delete/{target_account, cursor_saved}` |
+| `settings/_edit` | Inline-editing a field | `ui/settings/edit/{target_path, buffer, cursor_saved}` |
+| `settings/_manual_model/{id,ctx,out}` | Manual model entry | `ui/settings/manual_model/{buffer, account, staged_id, staged_ctx, cursor_saved}` |
+
+Retired discriminator paths (do not reintroduce — replaced by the
+cursor sitting under the corresponding `_<widget>` namespace):
+
+- `ui/settings/new_account/active: bool` → cursor at
+  `settings/_compose_form/<leaf>`.
+- `ui/settings/manual_model/stage: ManualModelStage` → cursor's
+  leaf segment under `settings/_manual_model`.
+- `ui/settings/pending_delete: Option<AccountName>` (the
+  value-flag form) → cursor at `settings/_confirm_delete`; target
+  moved to the sibling `target_account` child.
+- `ui/settings/edit_mode: bool` + `edit_field_path: Option<Path>` →
+  cursor at `settings/_edit`; the edited field moved to
+  `ui/settings/edit/target_path`.
 
 ### Config namespace (data tree)
 
@@ -545,46 +561,52 @@ pass routes printables + Backspace + Enter + Esc through these):
 
 There is no `accounts.create` or `accounts.delete` command — those
 were modal-era RPC translation steps. In the current shape, the
-"create" action lives inside `edit.commit`'s `AccountAdd` arm and
-performs a direct write to `config/gate/accounts/<name>`. The
-"delete" action lives inside the `pending_delete` mode's
-y-key-handler and performs a direct `Null` write to the same path.
+"create" action lives inside `accounts.compose.commit`'s handler
+and performs a direct write to `config/gate/accounts/<name>`. The
+"delete" action lives inside the `pending_delete.commit` handler
+(bound to `y` at `Exact(settings/_confirm_delete)`) and performs a
+direct `Null` write to the same path.
 
 ## Day-one bindings
 
 See `crates/ox-cli/src/settings/bindings.rs::register`. Bindings are
-indexed by *page* cursor scope (real navigation targets only) and by
-mode (the dispatcher's mode-aware pass — see below).
+indexed by scope (`BindingScope::Exact(<path>)`) and phase. The
+dispatcher walks the focus cursor's ancestor chain and queries each
+scope at each phase.
 
-Per page:
+Page-level (registered at `Exact(settings)` so they ride at Bubble
+under any cursor on the settings screen):
 
-- `settings/index`: `j`/`k` highlight; `Enter` descend; `Esc` ascend.
-- `settings/accounts` (and `Prefix(settings/accounts)` for row-level
-  bindings): `j`/`k` navigate; `Enter` toggle expansion / activate;
-  `a` open compose-new mode; `d` open delete-confirm mode; `t` test
-  selected; `r` refresh; `Esc` ascend / collapse.
-- `settings/models` (and `Prefix(settings/models)`): `j`/`k`; `Enter`
-  toggle/activate; `P` set bootstrap; `Esc` ascend / collapse.
-- `settings/_edit_mode`: printable ASCII → `edit.insert_char`;
-  Backspace → `edit.delete_back`; Enter → `edit.commit`; Esc →
-  `edit.cancel`. ASCII uppercase letters bind with `shift_only()`
-  modifiers (mirroring the encode/parse round-trip).
+- `j`/`k` row highlight; `Enter` toggle expansion / activate;
+  `a` open compose-new (writes cursor to
+  `settings/_compose_form/name`); `d` open delete-confirm;
+  `t` test selected; `r` refresh; `P` set bootstrap; `Esc` ascend
+  / collapse; `?` help; `Ctrl+S` save.
 
-Mode-aware bindings (the dispatcher consults UI-state paths before
-row-keyed dispatch):
+Compound widget scopes (registered at the synthetic cursor
+namespace; appear on the dispatch path iff the cursor descends
+into the namespace):
 
-- When `ui/settings/new_account/buffer` is set: the inline-edit-mode
-  scope above is active; Enter routes to "commit create."
-- When `ui/settings/pending_delete` is set: `y` confirms (Null-write
-  to the canonical account path); `n` / `Esc` cancels (Null-write to
-  the pending-delete path).
-- When `ui/settings/edit_buffer` + `edit_field_path` are set: the
-  inline-edit-mode scope is active; Enter routes to "commit field
-  edit."
+- `Exact(settings/_compose_form)` — lifecycle keys (`Esc` cancel,
+  `Tab`/`Shift+Tab` advance) at Capture; `Enter` commit at Bubble.
+- `Exact(settings/_compose_form/<leaf>)` (`name`, `protocol`,
+  `key`, ...) — per-leaf Target bindings (printable ASCII for Text
+  leaves, `h`/`l` for Selector leaves).
+- `Exact(settings/_confirm_delete)` — `Esc`/`n` cancel at Capture;
+  `y` commit at Target/Bubble.
+- `Exact(settings/_edit)` — printable ASCII → `edit.insert_char`
+  at Target; Backspace → `edit.delete_back`; Enter → `edit.commit`
+  at Bubble; Esc → `edit.cancel` at Capture. ASCII uppercase
+  letters bind with `shift_only()` modifiers.
+- `Exact(settings/_manual_model)` — lifecycle keys at Capture;
+  `Enter` advance / commit at Bubble.
+- `Exact(settings/_manual_model/<leaf>)` (`id`, `ctx`, `out`) —
+  per-leaf Target bindings.
 
-There are no bindings at `settings/accounts/_new` or
-`settings/accounts/_delete`. Those cursor scopes do not exist —
-they were modes masquerading as places.
+The dispatcher reads `ui/settings/focused`, walks its ancestor
+chain, and queries each scope at each phase. There are no
+discriminator reads anywhere in dispatch — engagement is encoded
+structurally by the cursor's position.
 
 ## File map
 

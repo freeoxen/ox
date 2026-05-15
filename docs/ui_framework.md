@@ -68,28 +68,36 @@ asynchronously (running a network test). The shape is: synchronous
 writers produce data; subscriptions watch data and produce side
 effects. RPC indirection through sentinel paths is the anti-pattern.
 
-### 2. Mode is state, not place
+### 2. The cursor is the universal focus authority
 
-A *cursor scope* is a page you navigate to. A *mode* is a state the
-user is in within a page. They are different things.
+`ui/settings/focused: Path` is the single source of truth for what
+is currently focused. Its ancestor chain is the scope path the
+dispatcher walks. Three distinct cases share one mechanism:
 
-Modes live at named UI-state paths as ordinary values:
-- `ui/settings/new_account/buffer: Option<String>` — when present,
-  the user is composing a new account name.
-- `ui/settings/pending_delete: Option<AccountName>` — when present,
-  the user is being asked to confirm a delete.
-- `ui/settings/edit_buffer: Option<String>` + `edit_field_path:
-  Option<Path>` — when both present, an existing field is being
-  edited inline.
+- Cursor at a row path (`settings/accounts/alpha`) → that row is
+  focused; no compound widget is engaged.
+- Cursor at a compound widget root (`settings/_confirm_delete`) →
+  the widget is engaged as a whole.
+- Cursor at a compound widget sub-element
+  (`settings/_compose_form/name`) → that sub-element is focused;
+  the widget is active by virtue of being on the cursor's
+  ancestors.
 
-The renderer reads these values and decorates the page accordingly.
-The dispatcher reads them and routes keys accordingly. Neither
-requires navigating to a special cursor scope.
+Compound widgets (composing a new account, confirming a delete,
+manual-model entry, inline field edit) live under synthetic cursor
+namespaces (`settings/_compose_form`, `settings/_confirm_delete`,
+`settings/_manual_model`, `settings/_edit`). The widget's working
+state — the typed buffer, the saved pre-open cursor, staged drafts
+— lives at sibling UI-state paths (e.g.
+`ui/settings/new_account/buffer`,
+`ui/settings/pending_delete/cursor_saved`). The cursor's position
+is the *discriminator*; the UI-state subtree is the *data*.
 
-Cursor scopes are reserved for true page navigation: `settings/index`,
-`settings/accounts`, `settings/models`. There are no `…/_new`,
-`…/_delete`, `…/_edit` cursor scopes — those would be modes
-masquerading as places.
+Page navigation (`ui/settings/cursor`) and widget engagement
+(`ui/settings/focused`) are distinct verbs in the user's head. Page
+navigation changes which screen the user is reading; widget
+engagement opens an inline form on the same page. Esc on a widget
+restores the saved cursor; Esc on a page ascends to the parent.
 
 ### 3. The display tree names only real things
 
@@ -160,11 +168,15 @@ binds `h` at neither phase.
    write to `…/test_now`; the subscription does the network call.
 5. **All paths are constructed via `oxpath!` or
    `PathComponent::try_new`.** Never hand-format path strings.
-6. **No synthetic display paths.** Every path in the display tree
-   names a real thing in the data tree or a UI-state value with
-   semantic meaning. If you find yourself reaching for `…/_foo` as
-   "the place where the user is doing X," X is a *mode* — model it
-   as state at a named path instead.
+6. **No synthetic identifier paths in the visible-rows
+   projection.** Real data rows (`settings/accounts/<name>`,
+   `settings/models/<account>/<id>`) and UI affordances ("+ New
+   connection", "no models — refresh") live in different
+   namespaces. Compound widgets have synthetic *cursor* namespaces
+   (`settings/_compose_form`, `settings/_edit`, ...) — those are
+   where the focus cursor lands when the widget is engaged, not
+   identifiers for projected rows. Never put a `…/_foo` path
+   into the visible-rows projection.
 7. **Bindings declare their phase, not their disambiguation.** A
    binding fires at capture, target, or bubble — chosen by *which
    scope owns it*, not by what key it is. If you find yourself adding
@@ -178,7 +190,12 @@ subscription. If you find yourself writing a subscription that
 *translates* a sentinel write into a data write, stop — the CLI
 should make that data write directly. If you find yourself adding a
 synthetic row to the projection to drive a UI affordance, stop —
-that's a mode, not a row.
+the renderer should read UI-state and decorate the section
+directly. If you find yourself adding a new `…/active: bool` flag
+or `…/stage: SomeEnum` discriminator to tell the dispatcher which
+compound widget is engaged, stop — move the cursor into the
+widget's synthetic namespace and let the dispatcher's cursor-
+ancestor walk pick up the scope automatically.
 
 ## Branch / SHA
 
