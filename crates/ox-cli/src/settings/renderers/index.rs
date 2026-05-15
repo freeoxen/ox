@@ -130,25 +130,6 @@ impl Renderer for IndexRenderer {
         )
         .unwrap_or(false);
 
-        // Emit the inline "+ New connection" affordance directly after the
-        // expanded Accounts header — but only when compose mode is NOT
-        // active. When active the compose form is projected above the
-        // list, so the inline affordance would be redundant. `focus: None`
-        // keeps j/k from landing on it.
-        if !compose_active {
-            if let Some(insert_idx) = find_accounts_header_followup_idx(&rows) {
-                let affordance = ListItem {
-                    primary: "    + New connection".to_string(),
-                    primary_spans: None,
-                    secondary: None,
-                    badge: None,
-                    focus: None,
-                };
-                items.insert(insert_idx, affordance);
-                selected = selected.map(|s| if s >= insert_idx { s + 1 } else { s });
-            }
-        }
-
         // Empty-catalog connections contribute zero rows to the
         // visible-rows projection — the renderer reads the data tree
         // directly, identifies them, and inserts two decoration
@@ -162,6 +143,15 @@ impl Renderer for IndexRenderer {
         // Prefix(settings/models)) keeps refresh reachable; the
         // dispatcher's manual-model scope routes input when the form
         // is active.
+        //
+        // This block runs BEFORE the "+ New connection" affordance
+        // insert below: while `items` still matches `rows` 1:1, the
+        // `models_idx` derived from `rows.iter().position(...)` IS the
+        // correct items-index of the Models header, so `models_idx + 1`
+        // lands after Models. Reordering this with the affordance
+        // insert would break that invariant — the affordance shifts
+        // everything at/after the Accounts header by +1 in items, so a
+        // rows-derived index no longer maps to the same items position.
         let manual_account: Option<String> = crate::settings::renderers::util::read_typed(
             ctx.data,
             &ox_path::oxpath!("ui", "settings", "manual_model", "account"),
@@ -295,6 +285,32 @@ impl Renderer for IndexRenderer {
 
                     selected = selected.map(|s| if s >= insert_idx { s + 2 } else { s });
                 }
+            }
+        }
+
+        // Emit the inline "+ New connection" affordance directly after the
+        // expanded Accounts header — but only when compose mode is NOT
+        // active. When active the compose form is projected above the
+        // list, so the inline affordance would be redundant. `focus: None`
+        // keeps j/k from landing on it.
+        //
+        // This runs AFTER the empty-catalog decorations above: those
+        // decorations land in the Models section at a HIGHER items-index
+        // than the Accounts header, so inserting the affordance here
+        // shifts them by +1 along with the rest of the rows after the
+        // Accounts header — preserving their position relative to the
+        // Models header (which also shifts by +1).
+        if !compose_active {
+            if let Some(insert_idx) = find_accounts_header_followup_idx(&rows) {
+                let affordance = ListItem {
+                    primary: "    + New connection".to_string(),
+                    primary_spans: None,
+                    secondary: None,
+                    badge: None,
+                    focus: None,
+                };
+                items.insert(insert_idx, affordance);
+                selected = selected.map(|s| if s >= insert_idx { s + 1 } else { s });
             }
         }
 
@@ -934,6 +950,48 @@ mod tests {
         assert!(items[3].primary.contains("beta"));
         assert!(items[3].primary.contains("no models"));
         assert!(items[4].primary.contains("+ add model manually"));
+    }
+
+    #[test]
+    fn models_decorations_appear_after_models_header_when_new_connection_affordance_also_present()
+    {
+        // Two accounts, both Accounts and Models expanded, compose-mode
+        // inactive. The alphabetically-first account is empty (aaa);
+        // the second has models (bbb). The "+ New connection"
+        // affordance is inserted in the Accounts section; the empty-
+        // catalog decorations for aaa get scheduled in the Models
+        // section. With aaa first, the decoration's prev_model_idx is
+        // None and falls through to `models_idx + 1` — which after the
+        // affordance insert is the items-index of Models itself, so the
+        // decorations land BEFORE the Models header instead of after.
+        let mut snap = SettingsSnapshot::empty();
+        write_index(&mut snap);
+        write_account(&mut snap, "aaa");
+        write_account_with_models(&mut snap, "bbb", &["m1"]);
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&[
+                "settings/accounts".to_string(),
+                "settings/models".to_string(),
+            ]),
+        );
+
+        let (_title, items, _selected) = assert_list(render(&mut snap));
+
+        let models_header_idx = items
+            .iter()
+            .position(|it| it.primary.trim_start().starts_with("▾ Models"))
+            .expect("Models header present");
+        let empty_state_idx = items
+            .iter()
+            .position(|it| it.primary.contains("no models"))
+            .expect("empty-state decoration present for aaa's empty catalog");
+
+        assert!(
+            empty_state_idx > models_header_idx,
+            "empty-state decoration should be AFTER the Models header, not before. \
+             Got empty_state at {empty_state_idx}, Models header at {models_header_idx}",
+        );
     }
 
     #[test]
