@@ -189,7 +189,14 @@ fn register_index(reg: &mut BindingRegistry) {
     // *default* row-navigation handlers, fired only when no inner
     // compound widget (compose / manual-model / edit-mode /
     // pending-delete) claimed the key at Target.
-    let cursor = oxpath!("settings", "index");
+    //
+    // Scope is `Exact(settings)` — the common ancestor of every cursor
+    // on the settings screen. Under cursor-as-focus the dispatcher's
+    // `compute_scope_path` is the cursor's ancestor chain, so the
+    // `settings` scope sits at the outer end of every focused cursor's
+    // path. Compound widgets register their own Target/Capture
+    // bindings on inner scopes, which the Bubble walk reaches first.
+    let cursor = oxpath!("settings");
     bind_bubble(
         reg,
         Some(cursor.clone()),
@@ -805,11 +812,14 @@ mod tests {
     fn index_j_resolves_to_tree_next() {
         // Page-cursor `j` declares `Phase::Bubble` — it's an outer-scope
         // default that fires only when no inner widget claims the key.
+        // Scope is `Exact(settings)` — the common ancestor of every
+        // cursor on the settings screen — so the dispatcher's Bubble
+        // walk reaches it from any focused-row cursor.
         let reg = populated();
         let hit = reg
             .lookup(
                 Screen::Settings,
-                &oxpath!("settings", "index"),
+                &oxpath!("settings"),
                 None,
                 &key(no_mods(), KeyCodeRepr::Char('j')),
                 Phase::Bubble,
@@ -824,7 +834,7 @@ mod tests {
         let hit = reg
             .lookup(
                 Screen::Settings,
-                &oxpath!("settings", "index"),
+                &oxpath!("settings"),
                 None,
                 &key(no_mods(), KeyCodeRepr::Enter),
                 Phase::Bubble,
@@ -839,7 +849,7 @@ mod tests {
         let hit = reg
             .lookup(
                 Screen::Settings,
-                &oxpath!("settings", "index"),
+                &oxpath!("settings"),
                 None,
                 &key(no_mods(), KeyCodeRepr::Esc),
                 Phase::Bubble,

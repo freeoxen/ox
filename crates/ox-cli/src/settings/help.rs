@@ -72,6 +72,29 @@ fn emit_for_cursor(
     seen_keys: &mut std::collections::HashSet<String>,
     out: &mut Vec<KeyHint>,
 ) {
+    // Walk the cursor's ancestor chain so a binding registered at an
+    // outer scope (e.g. `Exact(settings)` j/k row-nav) shows up in
+    // hints even when the focused cursor sits at a deeper row path
+    // (e.g. `settings/accounts`). Mirrors `compute_scope_path` in
+    // the dispatcher — what dispatch can reach, hints should expose.
+    //
+    // Walk inner → outer so a more-specific binding (deeper scope)
+    // claims the key's hint row before an outer-scope binding for the
+    // same key gets a chance. Mirrors the dispatcher's resolution
+    // order for the Target / Capture phases.
+    let ancestors = crate::settings::commands::account_model::path_ancestors(cursor);
+    for scope_path_entry in ancestors.iter().rev() {
+        emit_for_scope_path_entry(bindings, commands, scope_path_entry, seen_keys, out);
+    }
+}
+
+fn emit_for_scope_path_entry(
+    bindings: &BindingRegistry,
+    commands: &CommandRegistry,
+    cursor: &Path,
+    seen_keys: &mut std::collections::HashSet<String>,
+    out: &mut Vec<KeyHint>,
+) {
     for entry in bindings.entries() {
         if !entry.scope.matches(cursor) {
             continue;

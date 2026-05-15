@@ -603,9 +603,17 @@ async fn delete_account_flow() {
     populate_index(&h).await;
     populate_account(&h, "anthropic", "sk-test").await;
 
-    // Cursor at accounts list, selection points at the account.
+    // Cursor at accounts list, selection points at the account. Under
+    // cursor-as-focus the dispatcher's scope path is the focused
+    // cursor's ancestor chain, so `ui/settings/focused` must match the
+    // page cursor for `Prefix(settings/accounts)` bindings to fire.
     h.write_path(
         &oxpath!("ui", "settings", "cursor"),
+        &oxpath!("settings", "accounts"),
+    )
+    .await;
+    h.write_path(
+        &oxpath!("ui", "settings", "focused"),
         &oxpath!("settings", "accounts"),
     )
     .await;
@@ -706,9 +714,16 @@ async fn test_account_progresses_status() {
     populate_index(&h).await;
     populate_account(&h, "anthropic", "sk-test").await;
 
-    // Cursor at the detail page; selection on the account.
+    // Cursor at the detail page; selection on the account. Seed the
+    // focused-row cursor to match so `Prefix(settings/accounts)`
+    // bindings are on the dispatcher's scope path.
     h.write_path(
         &oxpath!("ui", "settings", "cursor"),
+        &oxpath!("settings", "accounts", "_detail"),
+    )
+    .await;
+    h.write_path(
+        &oxpath!("ui", "settings", "focused"),
         &oxpath!("settings", "accounts", "_detail"),
     )
     .await;
@@ -792,10 +807,17 @@ async fn refresh_writes_catalog() {
     populate_account(&h, "anthropic", "sk-test").await;
 
     // Cursor at the models list; selection points at a model belonging
-    // to the account whose catalog we'll refresh. The refresh command
-    // reads `selected: Option<ModelKey>` and pulls `account` off it.
+    // to the account whose catalog we'll refresh. Seed the focused-row
+    // cursor to match so `Prefix(settings/models)` bindings are on the
+    // dispatcher's scope path. The refresh command reads
+    // `selected: Option<ModelKey>` and pulls `account` off it.
     h.write_path(
         &oxpath!("ui", "settings", "cursor"),
+        &oxpath!("settings", "models"),
+    )
+    .await;
+    h.write_path(
+        &oxpath!("ui", "settings", "focused"),
         &oxpath!("settings", "models"),
     )
     .await;

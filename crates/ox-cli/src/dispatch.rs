@@ -563,6 +563,14 @@ mod tests {
 
         let cursor = oxpath!("settings", "models");
         let mut snap = snap_with_selected_model();
+        // Cursor-as-focus: the dispatcher's `compute_scope_path` reads
+        // `ui/settings/focused` to build the scope_path. Seed it at the
+        // page cursor so the Bubble walk finds the `Prefix(settings/models)`
+        // binding for `P` on `settings/models`'s ancestor chain.
+        snap.insert(
+            &oxpath!("ui", "settings", "focused"),
+            crate::settings::commands::navigation::path_to_value(&cursor),
+        );
 
         // The encoded form of Shift+P is just "P" (the encoder writes
         // the char as-is for letter keys without Ctrl). `parse_key_str`
@@ -622,6 +630,14 @@ mod tests {
         let cursor = oxpath!("settings", "index");
         let mut snap = SettingsSnapshot::empty();
         snap.insert(&oxpath!("ui", "settings", "cursor"), path_to_value(&cursor));
+        // Cursor-as-focus: the dispatcher's `compute_scope_path` reads
+        // `ui/settings/focused` to build the scope_path. Seed it at the
+        // page cursor so the `Exact(settings/index)` Esc binding is on
+        // the ancestor chain.
+        snap.insert(
+            &oxpath!("ui", "settings", "focused"),
+            path_to_value(&cursor),
+        );
 
         let outcome = send_key(
             &client,
