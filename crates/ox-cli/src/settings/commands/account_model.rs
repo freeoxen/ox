@@ -85,6 +85,59 @@ pub(crate) fn focus_prev(field: AccountField) -> AccountField {
     FIELD_ORDER[(idx + FIELD_ORDER.len() - 1) % FIELD_ORDER.len()]
 }
 
+/// Synthetic cursor path for the compose-form's focused field.
+/// `field_focus_path(Name) = settings/_compose_form/name`. Total: every
+/// `field_state_subpath` value is a valid XID identifier by construction.
+pub(crate) fn field_focus_path(f: AccountField) -> Path {
+    let comp = PathComponent::try_new(field_state_subpath(f))
+        .expect("field_state_subpath returns valid identifiers");
+    oxpath!("settings", "_compose_form", comp)
+}
+
+/// Inverse of `field_focus_path`: map a cursor path back to the
+/// compose field it points at. Returns `None` when the cursor is not
+/// inside `settings/_compose_form/<field>`.
+///
+/// The cursor's role under cursor-as-focus is to encode the focused
+/// sub-element by virtue of its leaf component. The dispatcher uses
+/// this same mapping to decide whether the compose form is "active".
+pub(crate) fn cursor_to_field(cursor: &Path) -> Option<AccountField> {
+    if cursor.components.len() != 3 {
+        return None;
+    }
+    if cursor.components[0] != "settings" || cursor.components[1] != "_compose_form" {
+        return None;
+    }
+    match cursor.components[2].as_str() {
+        "name" => Some(AccountField::Name),
+        "protocol" => Some(AccountField::Protocol),
+        "endpoint" => Some(AccountField::Endpoint),
+        "auth" => Some(AccountField::Auth),
+        "key" => Some(AccountField::Key),
+        _ => None,
+    }
+}
+
+/// True iff `cursor`'s prefix is `settings/_compose_form` (either the
+/// container itself or any descendant). The dispatcher uses this to
+/// decide whether to push the compose-form scope onto the binding
+/// scope path under cursor-as-focus.
+pub(crate) fn cursor_is_in_compose_form(cursor: &Path) -> bool {
+    cursor.components.len() >= 2
+        && cursor.components[0] == "settings"
+        && cursor.components[1] == "_compose_form"
+}
+
+/// Build the progressively-longer prefixes of `path`, ending at
+/// `path` itself. `path_ancestors(settings/_compose_form/name) =
+/// [settings, settings/_compose_form, settings/_compose_form/name]`.
+/// Empty paths yield an empty vec.
+pub(crate) fn path_ancestors(path: &Path) -> Vec<Path> {
+    (1..=path.components.len())
+        .map(|end| path.slice(0, end))
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Per-field validators. Each is pure and total: returns `None` for a valid
 // input or `Some(message)` for the first rule that rejects it. Cross-field
@@ -179,13 +232,13 @@ command! {
     run: |snap, _ctx| accounts_compose_open(snap),
 }
 
-// Compose-mode commands. While `ui/settings/new_account/active` is
-// `true` the dispatcher walks the synthetic compose scopes in three
-// phases (capture/target/bubble): the form scope
-// `settings/_compose_form` owns lifecycle keys (Esc/Tab/.../Enter) and
-// the per-kind field scopes (`_compose_field_text`,
-// `_compose_field_selector`) own the leaf bindings the focused field
-// type cares about.
+// Compose-mode commands. The cursor at `settings/_compose_form/<field>`
+// IS the open state — no separate `new_account/active` flag exists.
+// The dispatcher walks cursor ancestors so the form scope
+// `settings/_compose_form` and the per-field leaf scope
+// `settings/_compose_form/<field>` both sit on the binding scope path.
+// Lifecycle keys (Esc/Tab/.../Enter) live on the form scope; text-input
+// or selector-cycling keys live on the per-field leaf scopes.
 
 command! {
     struct_name: AccountsComposeInsertChar,
@@ -264,12 +317,7 @@ command! {
     description: "Discard the new-account draft; exit compose mode.",
     screen: Screen::Settings,
     cursor: None,
-    // One write at the subtree root; the store-layer Null-cascade clears
-    // every child field atomically — no per-field enumeration here.
-    run: |_snap, _ctx| vec![Write {
-        path: oxpath!("ui", "settings", "new_account"),
-        record: Record::parsed(Value::Null),
-    }],
+    run: |snap, _ctx| accounts_compose_cancel(snap),
 }
 
 // Pending-delete confirmation commands. The dispatcher routes y / n / Esc
@@ -617,24 +665,30 @@ fn null_write(path: Path) -> Write {
 fn accounts_compose_open(data: &mut dyn Reader) -> Vec<Write> {
     use crate::settings::renderers::util::child_names_under;
 
-    // Initialize the multi-field draft. The dispatcher reads
-    // `ui/settings/new_account/active = true` as the compose-mode
-    // discriminator (T6 wires that). Text fields get empty buffers;
-    // selector fields (protocol, auth) start unset (Null). The errors
-    // record is pre-computed from the empty draft so the renderer can
-    // surface per-field validity from the first frame — no on-demand
-    // recomputation, no race with focus.
+    // Cursor-as-focus: the act of moving the cursor INTO the compose
+    // form's namespace IS the open. Mode is encoded in cursor's path
+    // segments — no separate `new_account/active` discriminator. The
+    // dispatcher's `compute_scope_path` walks cursor ancestors so a
+    // cursor at `settings/_compose_form/name` naturally activates the
+    // form scope plus the name field's leaf scope.
     let existing_accounts = child_names_under(data, "config/gate/accounts");
     let errors = validate_compose_draft("", None, "", None, "", &existing_accounts);
 
+    // Save the prior cursor so cancel can restore it; on commit the
+    // target write (new account row) supersedes this save naturally.
+    let cursor_saved = read_focused_path(data);
+
     vec![
         Write {
-            path: oxpath!("ui", "settings", "new_account", "active"),
-            record: Record::parsed(Value::Bool(true)),
+            path: oxpath!("ui", "settings", "new_account", "cursor_saved"),
+            record: Record::parsed(match cursor_saved.as_ref() {
+                Some(p) => path_to_value(p),
+                None => Value::Null,
+            }),
         },
         Write {
-            path: oxpath!("ui", "settings", "new_account", "focused_field"),
-            record: Record::parsed(Value::String("name".into())),
+            path: oxpath!("ui", "settings", "focused"),
+            record: Record::parsed(path_to_value(&field_focus_path(AccountField::Name))),
         },
         Write {
             path: oxpath!("ui", "settings", "new_account", "name"),
@@ -663,6 +717,52 @@ fn accounts_compose_open(data: &mut dyn Reader) -> Vec<Write> {
     ]
 }
 
+/// Discard the compose draft and restore the cursor to where it was
+/// before `open`. Reads `cursor_saved` BEFORE the Null-cascade write
+/// (both writes apply later, in batch order; the snapshot read happens
+/// here against the pre-batch state). When no save is present —
+/// pathological seed — fall back to `settings/accounts` so the user
+/// lands somewhere sensible.
+fn accounts_compose_cancel(data: &mut dyn Reader) -> Vec<Write> {
+    use crate::settings::commands::navigation::path_from_value;
+
+    let saved: Option<Path> = data
+        .read(&oxpath!("ui", "settings", "new_account", "cursor_saved"))
+        .ok()
+        .flatten()
+        .and_then(|r| r.as_value().cloned())
+        .and_then(|v| path_from_value(&v));
+
+    let restored = saved.unwrap_or_else(|| oxpath!("settings", "accounts"));
+
+    vec![
+        Write {
+            path: oxpath!("ui", "settings", "focused"),
+            record: Record::parsed(path_to_value(&restored)),
+        },
+        // Cascade-clear every child field at the subtree root in one
+        // write; this also clears `cursor_saved` we just read above.
+        Write {
+            path: oxpath!("ui", "settings", "new_account"),
+            record: Record::parsed(Value::Null),
+        },
+    ]
+}
+
+/// Read the typed-Path value at `ui/settings/focused`. Returns `None`
+/// when missing or shape-mismatched. Mirrors `read_cursor` in the
+/// renderer; lives here so command bodies can save/restore the cursor
+/// without reaching across modules.
+fn read_focused_path(data: &mut dyn Reader) -> Option<Path> {
+    use crate::settings::commands::navigation::path_from_value;
+    let record = data
+        .read(&oxpath!("ui", "settings", "focused"))
+        .ok()
+        .flatten()?;
+    let value = record.as_value()?;
+    path_from_value(value)
+}
+
 fn accounts_compose_insert_char(
     data: &mut dyn Reader,
     ctx: &super::super::command_registry::CommandCtx<'_>,
@@ -677,7 +777,7 @@ fn accounts_compose_insert_char(
         KeyCodeRepr::Char(c) => c,
         _ => return Vec::new(),
     };
-    let focused = read_focused_field(data);
+    let focused = focused_compose_field(data);
     if field_kind(focused) != FieldKind::Text {
         return Vec::new();
     }
@@ -702,17 +802,18 @@ fn field_state_path(f: AccountField) -> Path {
     oxpath!("ui", "settings", "new_account", comp)
 }
 
-/// Read the currently focused compose field from the snapshot. Defaults
-/// to `Name` if the path is missing or unparseable — totality matters
-/// more than ceremony at this read site because the dispatcher only
-/// routes here while compose mode is active, and `open` always seeds
-/// `focused_field`.
-fn read_focused_field(data: &mut dyn Reader) -> AccountField {
-    read_typed::<AccountField>(
-        data,
-        &oxpath!("ui", "settings", "new_account", "focused_field"),
-    )
-    .unwrap_or(AccountField::Name)
+/// Read the currently focused compose field from the cursor. Under
+/// cursor-as-focus, the cursor's leaf segment IS the focused field;
+/// no separate `focused_field` discriminator exists. Defaults to
+/// `Name` when the cursor isn't at a form-field path — command bodies
+/// only run while the dispatcher has routed via the compose scope, so
+/// this only ever falls through during tests that seed an incomplete
+/// snapshot.
+fn focused_compose_field(data: &mut dyn Reader) -> AccountField {
+    read_focused_path(data)
+        .as_ref()
+        .and_then(cursor_to_field)
+        .unwrap_or(AccountField::Name)
 }
 
 /// Recompute the validation-errors record from the current draft, append
@@ -790,7 +891,7 @@ fn recompute_errors_writes(data: &mut dyn Reader, mut writes: Vec<Write>) -> Vec
 }
 
 fn accounts_compose_delete_back(data: &mut dyn Reader) -> Vec<Write> {
-    let focused = read_focused_field(data);
+    let focused = focused_compose_field(data);
     if field_kind(focused) != FieldKind::Text {
         return Vec::new();
     }
@@ -822,12 +923,15 @@ pub(crate) const PROTOCOL_OPTIONS: &[&str] = &["anthropic", "openai"];
 /// (or a `(not selected)` placeholder when the user hasn't picked yet);
 /// every row threads through the matching slot from the `errors` record.
 ///
-/// The renderer composes this into a `View::Stack { [Form, List] }` only
-/// when `ui/settings/new_account/active` is true; outside compose mode
-/// the form has nothing to project and the caller emits the bare list.
+/// The renderer composes this into a `View::Stack { [Form, List] }`
+/// only while the cursor sits under `settings/_compose_form/...`;
+/// outside compose the form has nothing to project and the caller
+/// emits the bare list. `View::Form.focused` is derived from cursor:
+/// when the cursor's leaf isn't a known field id the form renders
+/// with no row highlighted (defensive — the dispatcher only routes
+/// here while cursor is at a field path).
 pub(crate) fn compose_form_view(data: &mut dyn Reader) -> ox_view::View {
     use ox_view::{FormRow, View};
-    let focused_field = read_focused_field(data);
     let errors: ValidationErrors =
         read_typed(data, &oxpath!("ui", "settings", "new_account", "errors"))
             .unwrap_or_default();
@@ -837,7 +941,10 @@ pub(crate) fn compose_form_view(data: &mut dyn Reader) -> ox_view::View {
         .map(|f| project_compose_field(data, *f, errors.for_field(*f)))
         .collect();
 
-    let focused = FIELD_ORDER.iter().position(|f| *f == focused_field);
+    let focused = read_focused_path(data)
+        .as_ref()
+        .and_then(cursor_to_field)
+        .and_then(|f| FIELD_ORDER.iter().position(|x| *x == f));
     View::Form { rows, focused }
 }
 
@@ -913,21 +1020,16 @@ fn selector_form_value(current: Option<&str>, options: &[&str]) -> ox_view::Form
     }
 }
 
-/// Snapshot path of the compose-mode focused-field discriminator.
-fn field_focus_path() -> Path {
-    oxpath!("ui", "settings", "new_account", "focused_field")
-}
-
 /// Advance compose-mode focus to the next field in `FIELD_ORDER`,
-/// wrapping past the last entry. Pure: one write to `focused_field`;
-/// no validation recompute (focus changes don't change buffer
-/// contents, so the errors record is unaffected).
+/// wrapping past the last entry. Pure: one write to the cursor; no
+/// validation recompute (focus changes don't change buffer contents,
+/// so the errors record is unaffected).
 fn accounts_compose_focus_next(data: &mut dyn Reader) -> Vec<Write> {
-    let current = read_focused_field(data);
+    let current = focused_compose_field(data);
     let next = focus_next(current);
     vec![Write {
-        path: field_focus_path(),
-        record: Record::parsed(to_value(&next).unwrap()),
+        path: oxpath!("ui", "settings", "focused"),
+        record: Record::parsed(path_to_value(&field_focus_path(next))),
     }]
 }
 
@@ -935,16 +1037,16 @@ fn accounts_compose_focus_next(data: &mut dyn Reader) -> Vec<Write> {
 /// wrapping past the first entry. See `accounts_compose_focus_next`
 /// for the no-recompute rationale.
 fn accounts_compose_focus_prev(data: &mut dyn Reader) -> Vec<Write> {
-    let current = read_focused_field(data);
+    let current = focused_compose_field(data);
     let prev = focus_prev(current);
     vec![Write {
-        path: field_focus_path(),
-        record: Record::parsed(to_value(&prev).unwrap()),
+        path: oxpath!("ui", "settings", "focused"),
+        record: Record::parsed(path_to_value(&field_focus_path(prev))),
     }]
 }
 
 fn accounts_compose_cycle(data: &mut dyn Reader, dir: CycleDir) -> Vec<Write> {
-    let focused = read_focused_field(data);
+    let focused = focused_compose_field(data);
     if field_kind(focused) != FieldKind::Selector {
         return Vec::new();
     }
@@ -2186,16 +2288,27 @@ mod tests {
         let mut snap = test_snapshot_with_no_accounts();
         let writes = run_cmd(&AccountsComposeOpen::new(), &mut snap);
 
-        // Discriminator: compose mode armed.
+        // Cursor moves to the form's Name field. The cursor's path
+        // segments encode the mode (compose-form) and the focused
+        // sub-element (name) — no separate `active` discriminator.
+        let focused_val = writes_value(&writes, "ui/settings/focused")
+            .expect("cursor written");
+        let focused_path = super::super::navigation::path_from_value(&focused_val)
+            .expect("cursor value decodes as Path");
         assert_eq!(
-            writes_value(&writes, "ui/settings/new_account/active"),
-            Some(Value::Bool(true)),
+            focused_path,
+            oxpath!("settings", "_compose_form", "name"),
+            "open writes cursor to compose form's Name field",
         );
 
-        // Focus lands on the first field.
-        assert_eq!(
-            writes_value(&writes, "ui/settings/new_account/focused_field"),
-            Some(Value::String("name".into())),
+        // Retired paths must NOT be touched.
+        assert!(
+            writes_value(&writes, "ui/settings/new_account/active").is_none(),
+            "retired discriminator must not be written",
+        );
+        assert!(
+            writes_value(&writes, "ui/settings/new_account/focused_field").is_none(),
+            "retired focused_field must not be written",
         );
 
         // Empty buffers for the three text fields.
@@ -2234,6 +2347,43 @@ mod tests {
             writes_value(&writes, "ui/settings/new_account/buffer").is_none(),
             "legacy buffer must not be written",
         );
+    }
+
+    #[test]
+    fn compose_open_saves_prior_cursor() {
+        // Before open, the user's cursor sits at an account row. After
+        // open, the prior cursor lives at
+        // `ui/settings/new_account/cursor_saved` so cancel can restore
+        // it. (Commit doesn't restore — it writes cursor to the new
+        // account row directly.)
+        let mut snap = test_snapshot_with_no_accounts();
+        snap.insert(
+            &oxpath!("ui", "settings", "focused"),
+            super::super::navigation::path_to_value(&oxpath!(
+                "settings",
+                "accounts",
+                "alpha"
+            )),
+        );
+        let writes = run_cmd(&AccountsComposeOpen::new(), &mut snap);
+        let saved_val = writes_value(&writes, "ui/settings/new_account/cursor_saved")
+            .expect("cursor_saved written");
+        let saved =
+            super::super::navigation::path_from_value(&saved_val).expect("decode saved cursor");
+        assert_eq!(saved, oxpath!("settings", "accounts", "alpha"));
+    }
+
+    #[test]
+    fn compose_open_writes_cursor_to_name_field() {
+        // Pin the cursor-as-focus invariant: open writes
+        // `ui/settings/focused = settings/_compose_form/name`.
+        let mut snap = test_snapshot_with_no_accounts();
+        let writes = run_cmd(&AccountsComposeOpen::new(), &mut snap);
+        let focused_val = writes_value(&writes, "ui/settings/focused")
+            .expect("focused written");
+        let focused = super::super::navigation::path_from_value(&focused_val)
+            .expect("decode focused path");
+        assert_eq!(focused, oxpath!("settings", "_compose_form", "name"));
     }
 
     #[test]
@@ -2426,22 +2576,23 @@ mod tests {
     }
 
     /// Build a snapshot in compose mode with the focused text field
-    /// pre-populated with `name_value`, and the focus set to
-    /// `focused_field_name` (the snake_case `AccountField` discriminator).
-    /// All other compose-mode fields are initialized to their
-    /// open-state defaults (empty for text, Null for selectors).
+    /// pre-populated with `name_value`, and the cursor at the form
+    /// field named by `focused_field_name` (the snake_case wire name
+    /// for an `AccountField`). All other compose-mode fields are
+    /// initialized to their open-state defaults (empty for text, Null
+    /// for selectors). The cursor's path encodes which field is
+    /// focused; no separate `focused_field` discriminator exists.
     fn test_snapshot_with_compose_state(
         name_value: &str,
         focused_field_name: &str,
     ) -> SettingsSnapshot {
         let mut snap = SettingsSnapshot::empty();
+        let comp = ox_kernel::PathComponent::try_new(focused_field_name)
+            .expect("focused_field_name must be a valid identifier");
+        let focused_path = oxpath!("settings", "_compose_form", comp);
         snap.insert(
-            &oxpath!("ui", "settings", "new_account", "active"),
-            Value::Bool(true),
-        );
-        snap.insert(
-            &oxpath!("ui", "settings", "new_account", "focused_field"),
-            Value::String(focused_field_name.into()),
+            &oxpath!("ui", "settings", "focused"),
+            super::super::navigation::path_to_value(&focused_path),
         );
         snap.insert(
             &oxpath!("ui", "settings", "new_account", "name"),
@@ -2466,8 +2617,9 @@ mod tests {
         snap
     }
 
-    /// Build a snapshot in compose mode with focus set to `focused_field_name`
-    /// and all field buffers at their open-state defaults.
+    /// Build a snapshot in compose mode with cursor at the form field
+    /// named by `focused_field_name` and all field buffers at their
+    /// open-state defaults.
     fn test_snapshot_with_compose_state_focus(focused_field_name: &str) -> SettingsSnapshot {
         test_snapshot_with_compose_state("", focused_field_name)
     }
@@ -2580,10 +2732,51 @@ mod tests {
         let mut snap = test_snapshot_with_compose_state("partial", "name");
         let writes = run_cmd(&AccountsComposeCancel::new(), &mut snap);
 
-        // Single Null write to the subtree root; the StructFS Null-delete cascade clears children.
-        assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "settings", "new_account"));
-        assert!(matches!(&writes[0].record, Record::Parsed(Value::Null)));
+        // Two writes now: restore cursor + Null at the subtree root.
+        // The Null write cascades to clear every child (including
+        // `cursor_saved`) in one entry.
+        assert_eq!(writes.len(), 2);
+        assert!(writes.iter().any(|w| {
+            w.path == oxpath!("ui", "settings", "new_account")
+                && matches!(&w.record, Record::Parsed(Value::Null))
+        }));
+        assert!(writes.iter().any(|w| {
+            w.path == oxpath!("ui", "settings", "focused")
+        }));
+    }
+
+    #[test]
+    fn compose_cancel_restores_saved_cursor() {
+        // After open writes `cursor_saved`, cancel reads it and writes
+        // it back at `ui/settings/focused`. The save survives the
+        // pre-cancel snapshot (the Null write applies later in the
+        // batch, after the read here).
+        let mut snap = test_snapshot_with_compose_state("partial", "name");
+        snap.insert(
+            &oxpath!("ui", "settings", "new_account", "cursor_saved"),
+            super::super::navigation::path_to_value(&oxpath!(
+                "settings",
+                "accounts",
+                "alpha"
+            )),
+        );
+        let writes = run_cmd(&AccountsComposeCancel::new(), &mut snap);
+        let focused_val = writes_value(&writes, "ui/settings/focused")
+            .expect("cursor restored");
+        let focused = super::super::navigation::path_from_value(&focused_val).unwrap();
+        assert_eq!(focused, oxpath!("settings", "accounts", "alpha"));
+    }
+
+    #[test]
+    fn compose_cancel_falls_back_to_accounts_when_no_save() {
+        // Pathological seed (no `cursor_saved`): cancel still restores
+        // a sensible cursor so the user doesn't get stranded.
+        let mut snap = test_snapshot_with_compose_state("partial", "name");
+        let writes = run_cmd(&AccountsComposeCancel::new(), &mut snap);
+        let focused_val = writes_value(&writes, "ui/settings/focused")
+            .expect("cursor written");
+        let focused = super::super::navigation::path_from_value(&focused_val).unwrap();
+        assert_eq!(focused, oxpath!("settings", "accounts"));
     }
 
     // -- compose.cycle_forward / cycle_back --------------------------------------
@@ -2705,37 +2898,34 @@ mod tests {
     // -- compose.focus_next / focus_prev ----------------------------------------
 
     #[test]
-    fn focus_next_command_advances_focused_field() {
+    fn focus_next_command_advances_cursor() {
         let mut snap = test_snapshot_with_compose_state_focus("name");
         let writes = accounts_compose_focus_next(&mut snap);
-        assert_eq!(
-            writes_value(&writes, "ui/settings/new_account/focused_field"),
-            Some(Value::String("protocol".into())),
-        );
+        let focused_val = writes_value(&writes, "ui/settings/focused")
+            .expect("cursor written");
+        let focused = super::super::navigation::path_from_value(&focused_val).unwrap();
+        assert_eq!(focused, oxpath!("settings", "_compose_form", "protocol"));
     }
 
     #[test]
-    fn focus_prev_command_retreats_focused_field() {
+    fn focus_prev_command_retreats_cursor() {
         let mut snap = test_snapshot_with_compose_state_focus("name");
         let writes = accounts_compose_focus_prev(&mut snap);
         // Wraps to Key (FIELD_ORDER is Name → Protocol → Endpoint → Auth → Key → Name).
-        assert_eq!(
-            writes_value(&writes, "ui/settings/new_account/focused_field"),
-            Some(Value::String("key".into())),
-        );
+        let focused_val = writes_value(&writes, "ui/settings/focused")
+            .expect("cursor written");
+        let focused = super::super::navigation::path_from_value(&focused_val).unwrap();
+        assert_eq!(focused, oxpath!("settings", "_compose_form", "key"));
     }
 
     #[test]
-    fn focus_change_only_writes_focused_field() {
+    fn focus_change_only_writes_cursor() {
         let mut snap = test_snapshot_with_compose_state("abc", "name");
         let writes = accounts_compose_focus_next(&mut snap);
-        // Only focused_field should change; no other state touched
+        // Only the cursor should change; no other state touched
         // (no error recompute either).
         assert_eq!(writes.len(), 1);
-        assert_eq!(
-            writes[0].path,
-            oxpath!("ui", "settings", "new_account", "focused_field"),
-        );
+        assert_eq!(writes[0].path, oxpath!("ui", "settings", "focused"));
     }
 
     // -- compose hierarchical dispatch (capture / target / bubble) --------------
@@ -2829,14 +3019,20 @@ mod tests {
         for field in ["name", "protocol", "endpoint", "auth", "key"] {
             let mut snap = test_snapshot_with_compose_state_focus(field);
             let writes = simulate_compose_keystroke(&mut snap, KeyCodeRepr::Esc);
-            // Single Null write at the new_account root (cancel command).
+            // Cancel emits two writes: restore cursor + Null at the
+            // new_account root.
             assert_eq!(
                 writes.len(),
-                1,
-                "field {field}: expected one write, got {writes:?}",
+                2,
+                "field {field}: expected two writes, got {writes:?}",
             );
-            assert_eq!(writes[0].path, oxpath!("ui", "settings", "new_account"));
-            assert!(matches!(&writes[0].record, Record::Parsed(Value::Null)));
+            assert!(
+                writes.iter().any(|w| {
+                    w.path == oxpath!("ui", "settings", "new_account")
+                        && matches!(&w.record, Record::Parsed(Value::Null))
+                }),
+                "field {field}: expected Null at new_account root",
+            );
         }
     }
 

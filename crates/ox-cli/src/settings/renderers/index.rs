@@ -17,7 +17,9 @@ use ox_view::{Direction, FocusId, ListItem, ModifierSet, Padding, Sizing, Span, 
 
 use ox_gate::AuthScheme;
 
-use crate::settings::commands::account_model::{compose_form_view, resolve_protocol_options};
+use crate::settings::commands::account_model::{
+    compose_form_view, cursor_is_in_compose_form, resolve_protocol_options,
+};
 use crate::settings::commands::edit::read_edit_state;
 use crate::settings::registry::{AscendRule, RenderCtx, Renderer, RendererRegistry};
 use crate::settings::visible_rows::{self, RowKind};
@@ -31,13 +33,14 @@ impl Renderer for IndexRenderer {
         let cursor = read_cursor(ctx.data);
 
         // Compose mode discriminates the Accounts section's middle slot
-        // (Form vs affordance). Reading it once up here keeps the two
-        // section renderers in sync.
-        let compose_active: bool = crate::settings::renderers::util::read_typed(
-            ctx.data,
-            &ox_path::oxpath!("ui", "settings", "new_account", "active"),
-        )
-        .unwrap_or(false);
+        // (Form vs affordance). Under cursor-as-focus, the cursor being
+        // inside `settings/_compose_form/...` IS the discriminator —
+        // no separate `new_account/active` flag exists. The Form's own
+        // `focused: Option<usize>` derives from the cursor, and the
+        // cursor naturally doesn't match any account row while sitting
+        // under the synthetic form namespace, so no `cursor_for_lists`
+        // workaround is needed to suppress page-cursor highlighting.
+        let compose_active = cursor.as_ref().is_some_and(cursor_is_in_compose_form);
 
         // Resolve selector option lists once for the focused row, then
         // pass them through to the row→ListItem helpers. The carousel
@@ -1359,18 +1362,15 @@ mod tests {
         snap
     }
 
-    /// Compose-mode snapshot: accordion expanded + compose active +
-    /// every field at its open-state default. Mirrors the shape
-    /// `accounts.compose.open` writes (T5).
+    /// Compose-mode snapshot: accordion expanded + cursor at the
+    /// compose form's Name field + every draft field at its open-state
+    /// default. Mirrors the shape `accounts.compose.open` writes under
+    /// cursor-as-focus.
     fn snap_with_compose_active() -> SettingsSnapshot {
         let mut snap = snap_at_accounts_page();
         snap.insert(
-            &oxpath!("ui", "settings", "new_account", "active"),
-            Value::Bool(true),
-        );
-        snap.insert(
-            &oxpath!("ui", "settings", "new_account", "focused_field"),
-            Value::String("name".into()),
+            &oxpath!("ui", "settings", "focused"),
+            path_to_value(&oxpath!("settings", "_compose_form", "name")),
         );
         for sub in ["name", "endpoint", "key"] {
             let comp = ox_kernel::PathComponent::try_new(sub).unwrap();
@@ -1691,11 +1691,13 @@ mod tests {
     }
 
     #[test]
-    fn compose_form_focused_index_tracks_focused_field() {
+    fn compose_form_focused_index_tracks_cursor() {
         use crate::settings::commands::account_model::FIELD_ORDER;
         for field in FIELD_ORDER {
             let mut snap = snap_with_compose_active();
-            // Override the focused-field discriminator.
+            // Override the cursor to point at the named field. Under
+            // cursor-as-focus this IS the focus assignment — no
+            // separate `focused_field` discriminator exists.
             let subpath = match field {
                 ox_types::AccountField::Name => "name",
                 ox_types::AccountField::Protocol => "protocol",
@@ -1703,9 +1705,10 @@ mod tests {
                 ox_types::AccountField::Auth => "auth",
                 ox_types::AccountField::Key => "key",
             };
+            let comp = ox_kernel::PathComponent::try_new(subpath).unwrap();
             snap.insert(
-                &oxpath!("ui", "settings", "new_account", "focused_field"),
-                Value::String(subpath.into()),
+                &oxpath!("ui", "settings", "focused"),
+                path_to_value(&oxpath!("settings", "_compose_form", comp)),
             );
             let view = render(&mut snap);
             let (_rows, focused) = extract_form(view).expect("Form present");

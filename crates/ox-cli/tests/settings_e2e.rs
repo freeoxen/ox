@@ -572,18 +572,24 @@ async fn add_account_create_flow() {
         "expanded set must contain settings/accounts/anthropic_personal; got {expanded:?}"
     );
 
-    // Compose draft state must be fully cleared after commit. The cancel/
-    // commit paths null-cascade the whole `new_account` subtree, so the
-    // `active` discriminator must read as None (not Some(true)).
-    let active: Option<bool> = h
+    // Compose draft state must be fully cleared after commit. Commit
+    // null-cascades the whole `new_account` subtree, AND cursor moves
+    // out of `settings/_compose_form/...` onto the new account row.
+    // Under cursor-as-focus, that cursor location IS the compose-mode
+    // signal — so a cursor not in the form means compose is inactive.
+    let focused: Option<Vec<String>> = h
         .client
-        .read_typed(&oxpath!("ui", "settings", "new_account", "active"))
+        .read_typed(&oxpath!("ui", "settings", "focused"))
         .await
-        .expect("read new_account/active")
+        .expect("read focused")
         .flatten();
+    let in_form = focused
+        .as_ref()
+        .map(|p| p.len() >= 2 && p[0] == "settings" && p[1] == "_compose_form")
+        .unwrap_or(false);
     assert!(
-        active != Some(true),
-        "compose `active` discriminator must be cleared after commit; got {active:?}"
+        !in_form,
+        "after commit, cursor must not be inside _compose_form; got {focused:?}"
     );
 }
 
@@ -1449,16 +1455,23 @@ async fn add_connection_form_accepts_field_by_field_input() {
         .expect("secret key present for XApiKey auth");
     assert_eq!(key.expose(), "sk-test");
 
-    // Compose draft state cleared.
-    let active: Option<bool> = h
+    // Compose draft state cleared. Under cursor-as-focus, the cursor
+    // moving out of `settings/_compose_form/...` is the signal that
+    // compose has exited; the null-cascade at `new_account` root
+    // clears the data, but the focus state is encoded in the cursor.
+    let focused: Option<Vec<String>> = h
         .client
-        .read_typed(&oxpath!("ui", "settings", "new_account", "active"))
+        .read_typed(&oxpath!("ui", "settings", "focused"))
         .await
-        .expect("read new_account/active")
+        .expect("read focused")
         .flatten();
+    let in_form = focused
+        .as_ref()
+        .map(|p| p.len() >= 2 && p[0] == "settings" && p[1] == "_compose_form")
+        .unwrap_or(false);
     assert!(
-        active != Some(true),
-        "compose `active` discriminator must be cleared after commit; got {active:?}"
+        !in_form,
+        "after commit, cursor must not be inside _compose_form; got {focused:?}"
     );
 
     let frame_after = render_settings_to_string(&h, 80, 24).await;

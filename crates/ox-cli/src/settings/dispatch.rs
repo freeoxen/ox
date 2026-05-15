@@ -33,13 +33,12 @@
 
 use structfs_core_store::{Path, Reader};
 
-use ox_types::settings::AccountField;
 use ox_types::subscription::Write;
 use ox_types::{BindingScope, KeyChord, Mode, Phase, Screen};
 
 use super::binding_registry::BindingRegistry;
 use super::command_registry::{CommandCtx, CommandRegistry};
-use super::commands::account_model::{FieldKind, field_kind};
+use super::commands::account_model::{cursor_is_in_compose_form, path_ancestors};
 use super::registry::RendererRegistry;
 
 /// Resolve `(screen, cursor, mode, key)` to a sequence of writes by
@@ -130,15 +129,26 @@ pub(crate) fn compute_scope_path(snapshot: &mut dyn Reader, cursor: &Path) -> Ve
     // Focused row is the widget the user has navigated to inside the
     // page. When set and different from the cursor, it sits between
     // the cursor (outer container) and any compound widget (innermost).
-    if let Some(focused) = read_focused(snapshot) {
-        if &focused != cursor {
-            path.push(BindingScope::Exact(focused));
+    //
+    // Under cursor-as-focus, the compose form's focused row IS at
+    // `settings/_compose_form/<field>`, so this push naturally produces
+    // the per-field leaf scope on the path — no separate discriminator
+    // branch needed. The intermediate container scope
+    // (`settings/_compose_form`) is added by the cursor-ancestor walk
+    // below.
+    let focused = read_focused(snapshot);
+    let focused_for_compose = focused.clone();
+    if let Some(f) = focused {
+        if &f != cursor {
+            path.push(BindingScope::Exact(f));
         }
     }
 
     let pending_delete = read_pending_delete(snapshot).is_some();
     let manual_model_stage = read_manual_model_stage(snapshot);
-    let compose_active = read_compose_active(snapshot);
+    let compose_focused = focused_for_compose
+        .as_ref()
+        .is_some_and(cursor_is_in_compose_form);
     let edit_mode_active = read_edit_mode_active(snapshot);
 
     // Compound-widget modes are mutually exclusive by design. Violating
@@ -152,7 +162,7 @@ pub(crate) fn compute_scope_path(snapshot: &mut dyn Reader, cursor: &Path) -> Ve
         [
             pending_delete,
             manual_model_stage.is_some(),
-            compose_active,
+            compose_focused,
             edit_mode_active,
         ]
         .iter()
@@ -173,11 +183,11 @@ pub(crate) fn compute_scope_path(snapshot: &mut dyn Reader, cursor: &Path) -> Ve
             "settings",
             "_manual_model"
         )));
-        // Per-stage leaf scope. S4 migrates per-stage bindings here;
-        // for now `_manual_model/<stage>` has no entries but
-        // pre-allocating it in the path keeps S4 a pure bindings.rs
-        // change. The path component is a string literal per stage so
-        // the `oxpath!` macro can validate at compile time.
+        // Per-stage leaf scope. CF-2 will migrate per-stage routing to
+        // cursor-as-focus; for now `_manual_model/<stage>` continues
+        // to be pushed from the stage discriminator. The path
+        // component is a string literal per stage so the `oxpath!`
+        // macro can validate at compile time.
         use ox_types::settings::ManualModelStage;
         let stage_scope = match stage {
             ManualModelStage::Id => ox_path::oxpath!("settings", "_manual_model", "Id"),
@@ -186,16 +196,31 @@ pub(crate) fn compute_scope_path(snapshot: &mut dyn Reader, cursor: &Path) -> Ve
         };
         path.push(BindingScope::Exact(stage_scope));
     }
-    if compose_active {
-        path.push(BindingScope::Exact(ox_path::oxpath!(
-            "settings",
-            "_compose_form"
-        )));
-        let leaf = match field_kind(read_focused_compose_field(snapshot)) {
-            FieldKind::Text => ox_path::oxpath!("settings", "_compose_field_text"),
-            FieldKind::Selector => ox_path::oxpath!("settings", "_compose_field_selector"),
-        };
-        path.push(BindingScope::Exact(leaf));
+    if let Some(compose_cursor) = focused_for_compose.filter(cursor_is_in_compose_form) {
+        // Cursor-as-focus: derive the compose-form scope chain from the
+        // cursor's ancestors. The per-field leaf scope is already on
+        // the path (pushed via `read_focused` above). What's missing
+        // is the intermediate container scope `settings/_compose_form`
+        // — inject it between the existing focused-row leaf and the
+        // outer page cursor.
+        let ancestors = path_ancestors(&compose_cursor);
+        // Inject every ancestor that isn't already in the path. In
+        // practice this is just the form scope (cursor itself is at
+        // depth 3; depth-1 `settings` is too generic to want pushed).
+        // Insert before the focused-row leaf so the ordering stays
+        // outer → inner.
+        let mut to_insert: Vec<BindingScope> = ancestors
+            .into_iter()
+            .filter(|a| a.components.len() == 2) // settings/_compose_form
+            .map(BindingScope::Exact)
+            .collect();
+        // Insert just before the last element (the per-field leaf).
+        // If the path's tail is the per-field leaf (always true here),
+        // pop it, append intermediates, then push the leaf back.
+        if let Some(leaf) = path.pop() {
+            path.append(&mut to_insert);
+            path.push(leaf);
+        }
     }
     if edit_mode_active {
         path.push(BindingScope::Exact(ox_path::oxpath!(
@@ -226,47 +251,6 @@ fn read_edit_mode_active(snapshot: &mut dyn Reader) -> bool {
     use structfs_core_store::Value;
     snapshot
         .read(&oxpath!("ui", "settings", "edit_mode"))
-        .ok()
-        .flatten()
-        .and_then(|r| match r.as_value() {
-            Some(Value::Bool(b)) => Some(*b),
-            _ => None,
-        })
-        .unwrap_or(false)
-}
-
-/// Read `ui/settings/new_account/focused_field` as an `AccountField`,
-/// defaulting to `Name` when missing or untyped. Mirrors the helper of
-/// the same purpose in `commands/account_model.rs` but inlined here so
-/// the dispatcher doesn't have to import a private snapshot reader.
-fn read_focused_compose_field(snapshot: &mut dyn Reader) -> AccountField {
-    use ox_path::oxpath;
-    let record = match snapshot
-        .read(&oxpath!("ui", "settings", "new_account", "focused_field"))
-        .ok()
-        .flatten()
-    {
-        Some(r) => r,
-        None => return AccountField::Name,
-    };
-    let value = match record.as_value() {
-        Some(v) => v.clone(),
-        None => return AccountField::Name,
-    };
-    structfs_serde_store::from_value::<AccountField>(value).unwrap_or(AccountField::Name)
-}
-
-/// Read the compose-mode discriminator at
-/// `ui/settings/new_account/active`. Returns `true` only when the
-/// stored value is `Bool(true)`; any other shape (missing, wrong type,
-/// `false`) reads as inactive. Compose state lives in the
-/// `new_account/*` subtree as a whole form; this flag is the single
-/// signal the dispatcher keys on.
-fn read_compose_active(snapshot: &mut dyn Reader) -> bool {
-    use ox_path::oxpath;
-    use structfs_core_store::Value;
-    snapshot
-        .read(&oxpath!("ui", "settings", "new_account", "active"))
         .ok()
         .flatten()
         .and_then(|r| match r.as_value() {
@@ -526,17 +510,22 @@ mod tests {
     }
 
     #[test]
-    fn dispatcher_enters_compose_scope_when_active_is_true() {
+    fn dispatcher_enters_compose_scope_when_cursor_at_field() {
+        // Cursor-as-focus: the cursor sitting at
+        // `settings/_compose_form/name` is what activates the compose
+        // scope. The dispatcher's three-phase walk picks up an
+        // 'a' binding at the per-field leaf at Target.
         let mut cmds = CommandRegistry::new();
         cmds.register(Box::new(WriteSentinel::new()));
 
         let mut bindings = BindingRegistry::new();
-        // `'a'` is a target-phase key on a text field; bind it under the
-        // text-field leaf scope so the dispatcher's three-phase walk
-        // picks it up at target.
         bindings.register(BindingEntry {
             screen: Screen::Settings,
-            scope: ox_types::BindingScope::Exact(oxpath!("settings", "_compose_field_text")),
+            scope: ox_types::BindingScope::Exact(oxpath!(
+                "settings",
+                "_compose_form",
+                "name"
+            )),
             mode: None,
             key: key_char('a'),
             command_id: cmd_id("test.sentinel"),
@@ -545,25 +534,15 @@ mod tests {
 
         let renderers = RendererRegistry::new();
         let mut reader = LocalConfig::default();
-        // Seed the form snapshot the compose flow writes on open: an
-        // explicit `active = true` discriminator plus the focused-field
-        // and name fields the View::Form renders from.
+        use super::super::commands::navigation::path_to_value;
         reader
             .write(
-                &oxpath!("ui", "settings", "new_account", "active"),
-                Record::parsed(Value::Bool(true)),
-            )
-            .unwrap();
-        reader
-            .write(
-                &oxpath!("ui", "settings", "new_account", "focused_field"),
-                Record::parsed(Value::String("name".into())),
-            )
-            .unwrap();
-        reader
-            .write(
-                &oxpath!("ui", "settings", "new_account", "name"),
-                Record::parsed(Value::String(String::new())),
+                &oxpath!("ui", "settings", "focused"),
+                Record::parsed(path_to_value(&oxpath!(
+                    "settings",
+                    "_compose_form",
+                    "name"
+                ))),
             )
             .unwrap();
 
@@ -583,16 +562,21 @@ mod tests {
     }
 
     #[test]
-    fn dispatcher_skips_compose_scope_when_active_absent() {
+    fn dispatcher_skips_compose_scope_when_cursor_not_in_compose_form() {
+        // No cursor under `settings/_compose_form/...` → the
+        // per-field scope is never on the path. A binding registered
+        // there alone is unreachable.
         let mut cmds = CommandRegistry::new();
         cmds.register(Box::new(WriteSentinel::new()));
 
         let mut bindings = BindingRegistry::new();
-        // Bind ONLY at the compose-field scope — should not match
-        // because `active` is unset (no fallthrough scope picks 'a' up).
         bindings.register(BindingEntry {
             screen: Screen::Settings,
-            scope: ox_types::BindingScope::Exact(oxpath!("settings", "_compose_field_text")),
+            scope: ox_types::BindingScope::Exact(oxpath!(
+                "settings",
+                "_compose_form",
+                "name"
+            )),
             mode: None,
             key: key_char('a'),
             command_id: cmd_id("test.sentinel"),
@@ -619,15 +603,19 @@ mod tests {
     #[test]
     fn dispatcher_skips_compose_scope_when_legacy_buffer_alone() {
         // Legacy stale state at `new_account/buffer` must not engage
-        // compose mode under the new discriminator — only an explicit
-        // `active == true` opens the synthetic scope.
+        // compose mode under cursor-as-focus — only the cursor sitting
+        // under `settings/_compose_form/...` opens the scope.
         let mut cmds = CommandRegistry::new();
         cmds.register(Box::new(WriteSentinel::new()));
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
             screen: Screen::Settings,
-            scope: ox_types::BindingScope::Exact(oxpath!("settings", "_compose_field_text")),
+            scope: ox_types::BindingScope::Exact(oxpath!(
+                "settings",
+                "_compose_form",
+                "name"
+            )),
             mode: None,
             key: key_char('a'),
             command_id: cmd_id("test.sentinel"),
@@ -1304,26 +1292,19 @@ mod tests {
             .unwrap();
     }
 
-    /// Seed `ui/settings/new_account/active = true` so
-    /// `compute_scope_path` enters compose mode.
-    fn seed_compose_active(reader: &mut LocalConfig) {
+    /// Seed `ui/settings/focused = settings/_compose_form/<field>` —
+    /// under cursor-as-focus this single write puts the user inside
+    /// the compose form on the named field. The dispatcher's
+    /// `compute_scope_path` walks the cursor's ancestors to derive
+    /// both the form scope and the per-field leaf scope.
+    fn seed_compose_cursor(reader: &mut LocalConfig, field: &str) {
+        use super::super::commands::navigation::path_to_value;
+        let comp = ox_kernel::PathComponent::try_new(field).unwrap();
+        let path = oxpath!("settings", "_compose_form", comp);
         reader
             .write(
-                &oxpath!("ui", "settings", "new_account", "active"),
-                Record::parsed(Value::Bool(true)),
-            )
-            .unwrap();
-    }
-
-    /// Seed `ui/settings/new_account/focused_field` to the wire form of
-    /// the given `AccountField`. The dispatcher's compose-leaf branch
-    /// reads this to pick between the text and selector leaves.
-    fn seed_focused_compose_field(reader: &mut LocalConfig, field: AccountField) {
-        let value = structfs_serde_store::to_value(&field).unwrap();
-        reader
-            .write(
-                &oxpath!("ui", "settings", "new_account", "focused_field"),
-                Record::parsed(value),
+                &oxpath!("ui", "settings", "focused"),
+                Record::parsed(path_to_value(&path)),
             )
             .unwrap();
     }
@@ -1401,14 +1382,13 @@ mod tests {
     }
 
     #[test]
-    fn scope_path_for_compose_is_cursor_then_form_then_text_leaf() {
-        // Compose mode with a text-kind field focused (Name): the path
-        // is cursor → _compose_form → _compose_field_text. The leaf
-        // sits at the inner end so the Target phase fires on the leaf.
+    fn scope_path_for_compose_is_cursor_then_form_then_field_leaf() {
+        // Compose mode with the Name field focused: the path is
+        // cursor → _compose_form → _compose_form/name. The per-field
+        // leaf sits at the inner end so Target fires on it.
         let mut reader = LocalConfig::default();
         let cursor = oxpath!("settings", "accounts");
-        seed_compose_active(&mut reader);
-        seed_focused_compose_field(&mut reader, AccountField::Name);
+        seed_compose_cursor(&mut reader, "name");
 
         let path = compute_scope_path(&mut reader, &cursor);
 
@@ -1420,20 +1400,17 @@ mod tests {
         );
         assert_eq!(
             path[2],
-            BindingScope::Exact(oxpath!("settings", "_compose_field_text"))
+            BindingScope::Exact(oxpath!("settings", "_compose_form", "name"))
         );
     }
 
     #[test]
-    fn scope_path_for_compose_selector_focus_uses_selector_leaf() {
-        // Compose mode with a selector-kind field focused (Protocol):
-        // same outer shape but the leaf flips to _compose_field_selector.
-        // The form scope is unchanged — only the leaf depends on field
-        // kind.
+    fn scope_path_for_compose_selector_focus_uses_per_field_leaf() {
+        // Same shape with the Protocol field focused — leaf flips to
+        // the protocol-field scope. The container scope is unchanged.
         let mut reader = LocalConfig::default();
         let cursor = oxpath!("settings", "accounts");
-        seed_compose_active(&mut reader);
-        seed_focused_compose_field(&mut reader, AccountField::Protocol);
+        seed_compose_cursor(&mut reader, "protocol");
 
         let path = compute_scope_path(&mut reader, &cursor);
 
@@ -1445,7 +1422,45 @@ mod tests {
         );
         assert_eq!(
             path[2],
-            BindingScope::Exact(oxpath!("settings", "_compose_field_selector"))
+            BindingScope::Exact(oxpath!("settings", "_compose_form", "protocol"))
+        );
+    }
+
+    #[test]
+    fn compute_scope_path_includes_compose_form_when_cursor_at_field() {
+        // Regression for the cursor-as-focus invariant: ALL of cursor,
+        // form scope, and per-field leaf must appear on the path when
+        // the cursor sits at a compose field path.
+        let mut reader = LocalConfig::default();
+        seed_compose_cursor(&mut reader, "name");
+        let path = compute_scope_path(&mut reader, &oxpath!("settings", "accounts"));
+        assert!(
+            path.contains(&BindingScope::Exact(oxpath!(
+                "settings",
+                "_compose_form"
+            )))
+        );
+        assert!(
+            path.contains(&BindingScope::Exact(oxpath!(
+                "settings",
+                "_compose_form",
+                "name"
+            )))
+        );
+    }
+
+    #[test]
+    fn cursor_at_account_row_does_not_include_compose_form_scope() {
+        // No compose engaged when cursor sits at a regular account row.
+        let mut reader = LocalConfig::default();
+        seed_focused_row(&mut reader, oxpath!("settings", "accounts", "alpha"));
+        let path = compute_scope_path(&mut reader, &oxpath!("settings", "accounts"));
+        assert!(
+            !path.contains(&BindingScope::Exact(oxpath!(
+                "settings",
+                "_compose_form"
+            ))),
+            "no compose form scope when cursor is on an account row: {path:?}",
         );
     }
 
@@ -1528,33 +1543,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn scope_path_with_focused_row_and_compose_keeps_order() {
-        // When a focused row AND a compound widget are both engaged,
-        // the focused row sits between the cursor and the widget:
-        //   cursor → focused-row → _compose_form → _compose_field_*.
-        // Pins the four-level ordering against accidental reshuffling.
-        let mut reader = LocalConfig::default();
-        let cursor = oxpath!("settings", "accounts");
-        seed_focused_row(&mut reader, oxpath!("settings", "accounts", "alpha"));
-        seed_compose_active(&mut reader);
-        seed_focused_compose_field(&mut reader, AccountField::Name);
-
-        let path = compute_scope_path(&mut reader, &cursor);
-
-        assert_eq!(path.len(), 4);
-        assert_eq!(path[0], BindingScope::Exact(cursor));
-        assert_eq!(
-            path[1],
-            BindingScope::Exact(oxpath!("settings", "accounts", "alpha"))
-        );
-        assert_eq!(
-            path[2],
-            BindingScope::Exact(oxpath!("settings", "_compose_form"))
-        );
-        assert_eq!(
-            path[3],
-            BindingScope::Exact(oxpath!("settings", "_compose_field_text"))
-        );
-    }
+    // Note: the legacy "focused row + compose both engaged" test was
+    // retired with cursor-as-focus — the focused row IS the compose
+    // field under the new model, so the four-level ordering no longer
+    // applies.
 }

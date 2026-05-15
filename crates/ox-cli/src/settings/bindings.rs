@@ -449,21 +449,26 @@ fn register_edit_mode(reg: &mut BindingRegistry) {
     });
 }
 
-/// Register the compose-new-account mode's bindings across two
-/// synthetic scopes: the outer **form** scope and the inner **field**
-/// scopes (one per field kind). The dispatcher walks them in three
-/// phases (capture → target → bubble) when
-/// `ui/settings/new_account/active` is `true`. See
-/// `docs/ui_framework/architecture.md` "Hierarchical dispatch" for the
-/// model.
+/// Register the compose-new-account mode's bindings across the form
+/// scope and one scope per field. Under cursor-as-focus, the cursor's
+/// path encodes both the mode (cursor under `settings/_compose_form`)
+/// and the focused sub-element (`settings/_compose_form/<field>`); the
+/// dispatcher's scope path walks cursor ancestors so both scopes sit
+/// on the active path with the field scope as the leaf.
 ///
 /// Phase classification is carried by each `BindingEntry`'s `phase`
 /// field; the dispatcher's generic walk picks bindings up at the phase
 /// they declare.
 fn register_compose_new_account(reg: &mut BindingRegistry) {
     register_compose_form(reg);
-    register_compose_field_text(reg);
-    register_compose_field_selector(reg);
+    // Text fields: printable ASCII insert + Backspace delete at Target.
+    for field in ["name", "endpoint", "key"] {
+        register_compose_text_field(reg, field);
+    }
+    // Selector fields: h/l/Left/Right cycle at Target.
+    for field in ["protocol", "auth"] {
+        register_compose_selector_field(reg, field);
+    }
 }
 
 /// Outer/container scope for the compose form: lifecycle keys owned by
@@ -544,13 +549,16 @@ fn register_compose_form(reg: &mut BindingRegistry) {
     });
 }
 
-/// Inner/leaf scope for compose form fields of kind `Text` (Name /
-/// Endpoint / Key). Target-phase only: printable ASCII goes to
-/// insert_char, Backspace pops the focused field's buffer. Uppercase
-/// letters bind with `shift_only()` so the encode/parse round-trip
-/// lines up with the input store (mirrors `register_edit_mode`).
-fn register_compose_field_text(reg: &mut BindingRegistry) {
-    let scope = oxpath!("settings", "_compose_field_text");
+/// Per-text-field leaf scope under cursor-as-focus. The cursor sits at
+/// `settings/_compose_form/<field>` while typing into a text field, so
+/// every text field gets its own leaf scope hosting the same printable
+/// ASCII insert + Backspace delete bindings. Uppercase letters bind
+/// with `shift_only()` so the encode/parse round-trip lines up with
+/// the input store (mirrors `register_edit_mode`).
+fn register_compose_text_field(reg: &mut BindingRegistry, field: &str) {
+    let comp = ox_kernel::PathComponent::try_new(field)
+        .expect("compose text field id must be a valid identifier");
+    let scope = oxpath!("settings", "_compose_form", comp);
 
     for byte in 0x20u8..=0x7E {
         let ch = byte as char;
@@ -580,15 +588,16 @@ fn register_compose_field_text(reg: &mut BindingRegistry) {
     );
 }
 
-/// Inner/leaf scope for compose form fields of kind `Selector`
-/// (Protocol / Auth). Target-phase only: h / Left cycle back, l /
-/// Right cycle forward. Selector fields don't consume typed chars, so
-/// no printable-ASCII bindings live here — when the user types `h`
-/// while focused on a selector, the dispatcher routes the keystroke
-/// through this scope's `Char('h')` binding rather than the text
-/// scope's insert_char.
-fn register_compose_field_selector(reg: &mut BindingRegistry) {
-    let scope = oxpath!("settings", "_compose_field_selector");
+/// Per-selector-field leaf scope under cursor-as-focus. Target-phase
+/// only: h / Left cycle back, l / Right cycle forward. Selector fields
+/// don't consume typed chars, so no printable-ASCII bindings live here
+/// — when the user types `h` while focused on a selector, the
+/// dispatcher routes the keystroke through this scope's `Char('h')`
+/// binding rather than a text scope's insert_char.
+fn register_compose_selector_field(reg: &mut BindingRegistry, field: &str) {
+    let comp = ox_kernel::PathComponent::try_new(field)
+        .expect("compose selector field id must be a valid identifier");
+    let scope = oxpath!("settings", "_compose_form", comp);
 
     for (key, id) in [
         (KeyCodeRepr::Char('h'), "accounts.compose.cycle_back"),
@@ -1118,9 +1127,11 @@ mod tests {
         //     are registered earlier under the same scope to override.
         //
         // Compose-mode no longer shadows within a single scope: the
-        // h / l selector bindings live in `_compose_field_selector`
-        // while the printable-ASCII insert_char bindings live in
-        // `_compose_field_text`, so they never share a key+scope.
+        // h / l selector bindings live on each selector field's scope
+        // (`_compose_form/{protocol,auth}`) while the printable-ASCII
+        // insert_char bindings live on each text field's scope
+        // (`_compose_form/{name,endpoint,key}`), so they never share a
+        // key+scope.
         for (entry, winner) in &shadowed {
             let id = &entry.command_id.0;
             let is_known_text_helper = id == "field.insert";
@@ -1156,7 +1167,7 @@ mod tests {
     //     `BindingScope::Exact(p)` where `p` begins
     //     `settings/_…` — the convention for synthetic
     //     compound-widget cursors. Concretely:
-    //       _compose_form, _compose_field_text, _compose_field_selector,
+    //       _compose_form, _compose_form/{name,protocol,endpoint,auth,key},
     //       _manual_model, _manual_model/{Id,Ctx,Out},
     //       _pending_delete, _edit_mode.
     //
@@ -1164,7 +1175,8 @@ mod tests {
     //     _compose_form, _manual_model.
     //
     //   Leaf scope (the focused inner target):
-    //     _compose_field_*  — children of the compose form.
+    //     _compose_form/{name,protocol,endpoint,auth,key} — per-field
+    //       children of the compose form.
     //     _manual_model/{Id,Ctx,Out} — per-stage children.
     //     _pending_delete, _edit_mode — single-scope widgets: the scope
     //     IS the leaf when active (no separate form+leaf split). For
@@ -1197,7 +1209,7 @@ mod tests {
     /// True iff `p` is a leaf scope of a compound widget.
     ///
     /// Two shapes:
-    /// - children of a form-and-leaf widget (`_compose_field_*`,
+    /// - children of a form-and-leaf widget (`_compose_form/<field>`,
     ///   `_manual_model/Id|Ctx|Out`);
     /// - single-scope widgets where the same scope hosts both lifecycle
     ///   and leaf bindings (`_pending_delete`, `_edit_mode`).
@@ -1207,8 +1219,11 @@ mod tests {
         }
         let head = p.components[1].as_str();
         // Split-widget leaves.
-        if head.starts_with("_compose_field_") && p.components.len() == 2 {
-            return true;
+        if head == "_compose_form" && p.components.len() == 3 {
+            return matches!(
+                p.components[2].as_str(),
+                "name" | "protocol" | "endpoint" | "auth" | "key"
+            );
         }
         if head == "_manual_model" && p.components.len() == 3 {
             return matches!(p.components[2].as_str(), "Id" | "Ctx" | "Out");
