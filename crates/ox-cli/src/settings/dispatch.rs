@@ -123,13 +123,20 @@ pub fn dispatch_settings_key(
 /// `pub(crate)` so the dispatcher's tests can assert the returned
 /// ordering directly.
 pub(crate) fn compute_scope_path(snapshot: &mut dyn Reader) -> Vec<BindingScope> {
-    let Some(cursor) = read_cursor(snapshot) else {
-        return Vec::new();
-    };
-    path_ancestors(&cursor)
-        .into_iter()
-        .map(BindingScope::Exact)
-        .collect()
+    use ox_path::oxpath;
+    match read_cursor(snapshot) {
+        Some(cursor) => path_ancestors(&cursor)
+            .into_iter()
+            .map(BindingScope::Exact)
+            .collect(),
+        // No cursor set (e.g., first entry into the settings screen before
+        // any row has been focused). Fall back to the screen-root scope so
+        // page-level Bubble bindings (j/k navigation, etc.) remain
+        // reachable. Pressing j once writes `focused` to the first
+        // navigable row; from then on the cursor's ancestor chain
+        // supplies the scope path naturally.
+        None => vec![BindingScope::Exact(oxpath!("settings"))],
+    }
 }
 
 /// Read `ui/settings/focused` from the dispatch snapshot — the cursor
@@ -1223,15 +1230,21 @@ mod tests {
     }
 
     #[test]
-    fn scope_path_is_empty_when_no_cursor_seeded() {
+    fn scope_path_falls_back_to_screen_root_when_no_cursor_seeded() {
         // With no `ui/settings/focused` written, `read_cursor` returns
-        // None and the scope path is empty. The dispatcher's three-
-        // phase walk no-ops in this state.
+        // None. The scope path falls back to the screen-root scope
+        // (`settings`) so page-level Bubble bindings remain reachable —
+        // critical for j/k navigation to work on first entry, before any
+        // row has been focused.
         let mut reader = LocalConfig::default();
 
         let path = compute_scope_path(&mut reader);
 
-        assert!(path.is_empty(), "expected empty scope path: {path:?}");
+        assert_eq!(
+            path,
+            vec![BindingScope::Exact(oxpath!("settings"))],
+            "no-cursor fallback should be the screen-root scope",
+        );
     }
 
     #[test]

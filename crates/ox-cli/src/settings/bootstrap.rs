@@ -77,6 +77,18 @@ pub async fn maybe_first_run_cursor(client: &ClientHandle) -> Result<bool, Store
             Record::parsed(path_to_value(&oxpath!("settings", "index"))),
         )
         .await?;
+    // Seed the focused row so the first frame of the settings screen
+    // shows a selection. Without this, `ui/settings/focused` is unset
+    // until the user presses j once, and the dispatcher's
+    // `compute_scope_path` would otherwise have to fall back to the
+    // screen-root scope (which it does — but seeding focused gives a
+    // proper initial highlight without requiring a keystroke).
+    client
+        .write(
+            &oxpath!("ui", "settings", "focused"),
+            Record::parsed(path_to_value(&oxpath!("settings", "accounts"))),
+        )
+        .await?;
     client
         .write(
             &oxpath!("ui", "settings", "expanded"),
