@@ -4,12 +4,12 @@ assertion_line: 1336
 expression: "&frame_open"
 ---
 ┌Settings──────────────────────────────────────────────────────────────────────┐
+│▸ Connections [0]                                                             │
 │Name:   required                                                              │
 │Protocol: (not selected)  select a protocol                                   │
 │Endpoint:   required                                                          │
 │Auth: (not selected)  select an auth scheme                                   │
 │Key:   required for x-api-key / bearer-token                                  │
-│▸ Connections [0]                                                             │
 │▸ Models                                                                      │
 │                                                                              │
 │                                                                              │

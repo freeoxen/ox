@@ -28,348 +28,489 @@ impl Renderer for IndexRenderer {
     fn render(&self, ctx: &mut RenderCtx<'_>) -> View {
         let rows = visible_rows::enumerate(ctx.data);
         let edit_state = read_edit_state(ctx.data);
-
         let cursor = read_cursor(ctx.data);
-        let selected = cursor
-            .as_ref()
-            .and_then(|c| visible_rows::position_of(&rows, c));
 
-        // Resolve the Protocol carousel's option list once per frame, only
-        // when the focused row actually is a Protocol field. Doing this
-        // here (rather than inside the per-row closure) keeps the broker
-        // read out of the iteration's borrow scope and avoids paying the
-        // resolution cost for every visible row.
-        let protocol_options: Vec<String> = selected
-            .and_then(|i| rows.get(i))
-            .filter(|r| {
-                matches!(
-                    &r.kind,
-                    RowKind::AccountField {
-                        field: ox_types::AccountField::Protocol,
-                        ..
-                    }
-                )
-            })
-            .map(|r| {
-                let current = r.label.split(": ").nth(1).unwrap_or("");
-                resolve_protocol_options(ctx.data, current)
-            })
-            .unwrap_or_default();
-
-        // Resolve the Auth carousel's current scheme directly from the
-        // typed `ProviderConfig` (via `resolved_auth()` so legacy configs
-        // without an `auth` field still resolve to the dialect default).
-        // Reading the enum here — instead of round-tripping the row label
-        // through a string lookup — keeps the carousel locked to the
-        // same source of truth that `selector_cycle_auth_dir` mutates.
-        let auth_current: Option<AuthScheme> = selected
-            .and_then(|i| rows.get(i))
-            .and_then(|r| match &r.kind {
-                RowKind::AccountField {
-                    account,
-                    field: ox_types::AccountField::Auth,
-                } => Some(account.clone()),
-                _ => None,
-            })
-            .and_then(|account| resolve_account_auth(ctx.data, &account));
-
-        let mut items: Vec<ListItem> = rows
-            .iter()
-            .enumerate()
-            .map(|(i, row)| {
-                let indent = "  ".repeat(row.depth);
-                let glyph = if row.expandable {
-                    if row.expanded { "▾ " } else { "▸ " }
-                } else {
-                    "  "
-                };
-                // Selector rows render a flanked carousel only when
-                // they're the focused row — that's the visual cue
-                // that h/l will cycle. Other rows fall through to
-                // the plain label.
-                let is_focused = selected.is_some_and(|sel| sel == i);
-                if is_focused {
-                    if let Some(spans) = selector_carousel_spans(
-                        row,
-                        &indent,
-                        glyph,
-                        &protocol_options,
-                        auth_current.as_ref(),
-                    ) {
-                        return ListItem {
-                            primary: format!("{indent}{glyph}{}", row.label),
-                            primary_spans: Some(spans),
-                            secondary: row.secondary.clone(),
-                            badge: row.badge.clone(),
-                            focus: Some(FocusId(row.path.clone())),
-                        };
-                    }
-                }
-                let label = decorate_row_label(row, edit_state.as_ref());
-                ListItem {
-                    primary: format!("{indent}{glyph}{label}"),
-                    primary_spans: None,
-                    secondary: row.secondary.clone(),
-                    badge: row.badge.clone(),
-                    focus: Some(FocusId(row.path.clone())),
-                }
-            })
-            .collect();
-
-        let mut selected = selected;
-
-        // Compose mode is the discriminator that drives both the inline
-        // "+ New connection" affordance (inactive) AND the
-        // `View::Stack { [Form, List] }` projection (active). Reading it
-        // once up here keeps the two decisions in lockstep — if active
-        // is false the inline affordance shows; if true the form takes
-        // over and the inline affordance is suppressed.
+        // Compose mode discriminates the Accounts section's middle slot
+        // (Form vs affordance). Reading it once up here keeps the two
+        // section renderers in sync.
         let compose_active: bool = crate::settings::renderers::util::read_typed(
             ctx.data,
             &ox_path::oxpath!("ui", "settings", "new_account", "active"),
         )
         .unwrap_or(false);
 
-        // Empty-catalog connections contribute zero rows to the
-        // visible-rows projection — the renderer reads the data tree
-        // directly, identifies them, and inserts two decoration
-        // ListItems per account at the alphabetically-correct position
-        // in the Models section: an empty-state line ("…(no models —
-        // press r to refresh)") and either a static "+ add model
-        // manually (m)" affordance or — when `manual_model/account`
-        // names this account — the per-stage inline form prompt
-        // ("Model id▸ <buf>▏"). Both lines are `focus: None`; j/k
-        // skips them. `r` (bound at Prefix(settings/accounts) AND
-        // Prefix(settings/models)) keeps refresh reachable; the
-        // dispatcher's manual-model scope routes input when the form
-        // is active.
-        //
-        // This block runs BEFORE the "+ New connection" affordance
-        // insert below: while `items` still matches `rows` 1:1, the
-        // `models_idx` derived from `rows.iter().position(...)` IS the
-        // correct items-index of the Models header, so `models_idx + 1`
-        // lands after Models. Reordering this with the affordance
-        // insert would break that invariant — the affordance shifts
-        // everything at/after the Accounts header by +1 in items, so a
-        // rows-derived index no longer maps to the same items position.
-        let manual_account: Option<String> = crate::settings::renderers::util::read_typed(
-            ctx.data,
-            &ox_path::oxpath!("ui", "settings", "manual_model", "account"),
-        );
+        // Resolve selector option lists once for the focused row, then
+        // pass them through to the row→ListItem helpers. The carousel
+        // only renders when the focused row IS a selector field, so a
+        // single resolved pair per frame is enough.
+        let (protocol_options, auth_current) =
+            resolve_focused_selector_state(ctx.data, &rows, &cursor);
 
-        let models_header_idx: Option<usize> = rows
-            .iter()
-            .position(|r| matches!(&r.kind, RowKind::Entry { entry_id } if entry_id == "models"));
-        if let Some(models_idx) = models_header_idx {
-            // Decorations only emit while the Models section is
-            // expanded. A collapsed Models entry shows only its
-            // header; inserting decorations past the header would
-            // leak rows the user explicitly hid.
-            let expanded = rows.get(models_idx).map(|r| r.expanded).unwrap_or(false);
-            if expanded {
-                // Map each non-empty account to its last Model-row
-                // index in the items vector — the natural insertion
-                // point for an alphabetically-later empty account is
-                // "after the last Model row of the previous account".
-                let mut last_model_idx_per_account: std::collections::BTreeMap<String, usize> =
-                    std::collections::BTreeMap::new();
-                for (i, row) in rows.iter().enumerate() {
-                    if let RowKind::Model { account, .. } = &row.kind {
-                        last_model_idx_per_account.insert(account.clone(), i);
-                    }
-                }
+        // Partition the flat row enumeration into per-section slices at
+        // the Models Entry boundary. The Accounts slice owns rows
+        // [Accounts header, accounts, account fields…]; the Models
+        // slice owns [Models header, models, model fields…].
+        let (accounts_rows, models_rows) = partition_rows_by_section(&rows);
 
-                // Sorted account names from the data tree drive the
-                // alphabetical placement; the same sort that
-                // append_model_rows uses on its iteration is what
-                // makes "alphabetically-previous account" well-defined.
-                let mut sorted_accounts: Vec<String> =
-                    crate::settings::renderers::util::child_names_under(
-                        ctx.data,
-                        "config/gate/accounts",
-                    )
-                    .into_iter()
-                    .filter(|n| ox_kernel::PathComponent::try_new(n.as_str()).is_ok())
-                    .collect();
-                sorted_accounts.sort();
+        let ctx_state = SectionCtx {
+            cursor: cursor.as_ref(),
+            edit_state: edit_state.as_ref(),
+            protocol_options: &protocol_options,
+            auth_current: auth_current.as_ref(),
+        };
 
-                // Filter the sorted list to just the empty-catalog
-                // accounts. Iterate in REVERSE so each insertion
-                // doesn't invalidate the indices we computed for
-                // alphabetically-earlier accounts still to process.
-                let mut empty_accounts: Vec<String> = sorted_accounts
-                    .iter()
-                    .filter(|name| {
-                        let comp = match ox_kernel::PathComponent::try_new(name.as_str()) {
-                            Ok(c) => c,
-                            Err(_) => return false,
-                        };
-                        let models: Vec<ox_gate::ModelInfo> =
-                            crate::settings::renderers::util::read_typed(
-                                ctx.data,
-                                &ox_path::oxpath!(
-                                    "config",
-                                    "gate",
-                                    "accounts",
-                                    comp,
-                                    "models"
-                                ),
-                            )
-                            .unwrap_or_default();
-                        models.is_empty()
-                    })
-                    .cloned()
-                    .collect();
-                empty_accounts.reverse();
+        let accounts_section =
+            render_accounts_section(ctx.data, accounts_rows, &ctx_state, compose_active);
+        let models_section = render_models_section(ctx.data, models_rows, &ctx_state);
 
-                for name in empty_accounts {
-                    // Insertion point: after the last Model row of the
-                    // alphabetically-previous account, or right after
-                    // the Models header if no earlier account has
-                    // model rows.
-                    let prev_model_idx = sorted_accounts
-                        .iter()
-                        .filter(|n| n.as_str() < name.as_str())
-                        .filter_map(|n| last_model_idx_per_account.get(n))
-                        .max()
-                        .copied();
-                    let insert_idx = match prev_model_idx {
-                        Some(idx) => idx + 1,
-                        None => models_idx + 1,
-                    };
-
-                    let empty_state = ListItem {
-                        primary: format!("  {} / (no models — press r to refresh)", name),
-                        primary_spans: None,
-                        secondary: None,
-                        badge: None,
-                        focus: None,
-                    };
-
-                    let in_mode_for_this_account =
-                        manual_account.as_deref() == Some(name.as_str());
-                    let manual_primary = if in_mode_for_this_account {
-                        let stage = crate::settings::renderers::util::read_typed::<
-                            ox_types::settings::ManualModelStage,
-                        >(
-                            ctx.data,
-                            &ox_path::oxpath!("ui", "settings", "manual_model", "stage"),
-                        );
-                        let buffer: String = crate::settings::renderers::util::read_typed(
-                            ctx.data,
-                            &ox_path::oxpath!("ui", "settings", "manual_model", "buffer"),
-                        )
-                        .unwrap_or_default();
-                        let prompt = match stage {
-                            Some(ox_types::settings::ManualModelStage::Id) => "Model id",
-                            Some(ox_types::settings::ManualModelStage::Ctx) => "Max context",
-                            Some(ox_types::settings::ManualModelStage::Out) => "Max output",
-                            None => "Model id",
-                        };
-                        format!("    {prompt}▸ {buffer}\u{258F}")
-                    } else {
-                        "    + add model manually (m)".to_string()
-                    };
-                    let manual = ListItem {
-                        primary: manual_primary,
-                        primary_spans: None,
-                        secondary: None,
-                        badge: None,
-                        focus: None,
-                    };
-
-                    // Insert manual first then empty_state at the same
-                    // index so they end up [empty_state, manual].
-                    items.insert(insert_idx, manual);
-                    items.insert(insert_idx, empty_state);
-
-                    selected = selected.map(|s| if s >= insert_idx { s + 2 } else { s });
-                }
-            }
-        }
-
-        // Emit the inline "+ New connection" affordance directly after the
-        // expanded Accounts header — but only when compose mode is NOT
-        // active. When active the compose form is projected above the
-        // list, so the inline affordance would be redundant. `focus: None`
-        // keeps j/k from landing on it.
-        //
-        // This runs AFTER the empty-catalog decorations above: those
-        // decorations land in the Models section at a HIGHER items-index
-        // than the Accounts header, so inserting the affordance here
-        // shifts them by +1 along with the rest of the rows after the
-        // Accounts header — preserving their position relative to the
-        // Models header (which also shifts by +1).
-        if !compose_active {
-            if let Some(insert_idx) = find_accounts_header_followup_idx(&rows) {
-                let affordance = ListItem {
-                    primary: "    + New connection".to_string(),
-                    primary_spans: None,
-                    secondary: None,
-                    badge: None,
-                    focus: None,
-                };
-                items.insert(insert_idx, affordance);
-                selected = selected.map(|s| if s >= insert_idx { s + 1 } else { s });
-            }
-        }
-
-        // Pending-delete confirmation banner. Emitted as a ListItem
-        // prepended to the items vector when ui/settings/pending_delete
-        // is Some(name). Decoration only — focus: None; j/k skips it.
+        // Pending-delete confirmation banner. Emitted as a top-level
+        // ListItem prepended above the section stack when
+        // ui/settings/pending_delete is Some(name). Decoration only —
+        // focus: None; j/k skips it.
         let pending: Option<String> = crate::settings::renderers::util::read_typed(
             ctx.data,
             &ox_path::oxpath!("ui", "settings", "pending_delete"),
         );
-        if let Some(name) = pending {
-            let banner = ListItem {
-                primary: format!("Delete '{}'? y / n", name),
-                primary_spans: None,
-                secondary: None,
-                badge: None,
-                focus: None,
-            };
-            items.insert(0, banner);
-            selected = selected.map(|s| s + 1);
-        }
 
-        let selected = selected.filter(|i| !items.is_empty() && *i < items.len());
-
-        // Right-aligned dirty indicator on the title bar. Reads
-        // `config/_dirty` (a sentinel ConfigStore exposes that returns
-        // true when its runtime layer differs from the last persisted
-        // state). Renders nothing when clean — the title bar shows
-        // just "Settings" — so users get an at-a-glance signal that
-        // edits exist but haven't been saved yet.
         let title_right = read_dirty_indicator(ctx.data);
 
-        let list = View::List { items, selected };
-        let inner = if compose_active {
-            // Project the compose draft as a typed `View::Form` above
-            // the accounts/models list. `Sizing::Fixed(form_height)`
-            // pins the form to exactly its line count; the list takes
-            // the remaining vertical space. The form is rendered by
-            // the existing `render_form` translator — no new translator
-            // code needed.
-            let form = compose_form_view(ctx.data);
-            let h = form_height(&form);
-            View::Stack {
-                dir: Direction::Vertical,
-                children: vec![(form, Sizing::Fixed(h)), (list, Sizing::Fill)],
-            }
-        } else {
-            list
-        };
+        let mut stack_children: Vec<(View, Sizing)> = Vec::new();
+        if let Some(name) = pending {
+            stack_children.push((
+                View::List {
+                    items: vec![ListItem {
+                        primary: format!("Delete '{}'? y / n", name),
+                        primary_spans: None,
+                        secondary: None,
+                        badge: None,
+                        focus: None,
+                    }],
+                    selected: None,
+                },
+                Sizing::Fixed(1),
+            ));
+        }
+        // Size each section to its measured row count. Two `Min(0)`
+        // children would share leftover terminal rows and visibly drift
+        // apart; pinning each section to its content height keeps them
+        // rendered back-to-back, matching the old flat-list layout. A
+        // trailing `Fill` filler absorbs the remaining space at the
+        // bottom of the page (the same role the bare list had before).
+        let accounts_h = section_height(&accounts_section);
+        let models_h = section_height(&models_section);
+        stack_children.push((accounts_section, Sizing::Fixed(accounts_h)));
+        stack_children.push((models_section, Sizing::Fixed(models_h)));
+        stack_children.push((View::Empty, Sizing::Fill));
 
         View::Frame {
             title: Some("Settings".into()),
             title_right,
-            content: Box::new(inner),
+            content: Box::new(View::Stack {
+                dir: Direction::Vertical,
+                children: stack_children,
+            }),
         }
     }
 
     fn ascend_to(&self) -> AscendRule {
         AscendRule::ExitScreen
+    }
+}
+
+/// Per-frame context bundle used to build sub-Lists from row slices.
+/// Bundling these into a struct keeps each section renderer's signature
+/// short and makes it obvious that every sub-List sees the same focus /
+/// edit / carousel inputs.
+struct SectionCtx<'a> {
+    cursor: Option<&'a structfs_core_store::Path>,
+    edit_state: Option<&'a crate::settings::commands::edit::EditState>,
+    protocol_options: &'a [String],
+    auth_current: Option<&'a AuthScheme>,
+}
+
+/// Split the visible-rows enumeration at the Models Entry boundary.
+/// Returns `(accounts_rows, models_rows)`. The Accounts slice always
+/// starts at index 0 (which may be empty in degenerate test configs);
+/// the Models slice starts at the Models Entry row (or is empty if
+/// no Models entry exists).
+fn partition_rows_by_section(
+    rows: &[visible_rows::VisibleRow],
+) -> (&[visible_rows::VisibleRow], &[visible_rows::VisibleRow]) {
+    let models_pos = rows
+        .iter()
+        .position(|r| matches!(&r.kind, RowKind::Entry { entry_id } if entry_id == "models"));
+    match models_pos {
+        Some(m) => (&rows[..m], &rows[m..]),
+        None => (rows, &[]),
+    }
+}
+
+/// Resolve the (protocol_options, auth_current) pair the row→ListItem
+/// helpers need to render the carousel on the currently focused
+/// selector row. Returns empties when the focused row isn't a selector;
+/// the helpers skip carousel decoration in that case.
+fn resolve_focused_selector_state(
+    data: &mut dyn structfs_core_store::Reader,
+    rows: &[visible_rows::VisibleRow],
+    cursor: &Option<structfs_core_store::Path>,
+) -> (Vec<String>, Option<AuthScheme>) {
+    let selected = cursor
+        .as_ref()
+        .and_then(|c| visible_rows::position_of(rows, c));
+
+    let protocol_options: Vec<String> = selected
+        .and_then(|i| rows.get(i))
+        .filter(|r| {
+            matches!(
+                &r.kind,
+                RowKind::AccountField {
+                    field: ox_types::AccountField::Protocol,
+                    ..
+                }
+            )
+        })
+        .map(|r| {
+            let current = r.label.split(": ").nth(1).unwrap_or("");
+            resolve_protocol_options(data, current)
+        })
+        .unwrap_or_default();
+
+    let auth_current: Option<AuthScheme> = selected
+        .and_then(|i| rows.get(i))
+        .and_then(|r| match &r.kind {
+            RowKind::AccountField {
+                account,
+                field: ox_types::AccountField::Auth,
+            } => Some(account.clone()),
+            _ => None,
+        })
+        .and_then(|account| resolve_account_auth(data, &account));
+
+    (protocol_options, auth_current)
+}
+
+/// Build the Accounts section as `Stack[ header_list, optional_middle,
+/// optional_content_list ]`. The middle slot is the compose Form when
+/// active, the "+ New connection" affordance when not active and the
+/// Accounts header is expanded, or absent otherwise. The content list
+/// holds the account rows (and their expanded field rows).
+fn render_accounts_section(
+    data: &mut dyn structfs_core_store::Reader,
+    rows: &[visible_rows::VisibleRow],
+    ctx: &SectionCtx<'_>,
+    compose_active: bool,
+) -> View {
+    if rows.is_empty() {
+        // Degenerate config (no Accounts entry in settings/index/entries)
+        // — emit an empty Stack so the page-level Stack still sees a
+        // valid child. Matches the old "empty list" behavior.
+        return View::Stack {
+            dir: Direction::Vertical,
+            children: Vec::new(),
+        };
+    }
+    let (header_row, content_rows) = rows
+        .split_first()
+        .expect("Accounts rows non-empty checked above");
+    let header_expanded = header_row.expanded;
+
+    let mut children: Vec<(View, Sizing)> = Vec::new();
+
+    // Header is always present (Accounts entry row).
+    let header_list = build_list_from_rows(std::slice::from_ref(header_row), ctx);
+    children.push((header_list, Sizing::Fixed(1)));
+
+    // Middle slot: Form > affordance > nothing.
+    if compose_active {
+        let form = compose_form_view(data);
+        let h = form_height(&form);
+        // Use Min(h) so the form occupies exactly its row count when
+        // there's vertical room and clips gracefully when there isn't.
+        children.push((form, Sizing::Min(h)));
+    } else if header_expanded {
+        let affordance = ListItem {
+            primary: "    + New connection".to_string(),
+            primary_spans: None,
+            secondary: None,
+            badge: None,
+            focus: None,
+        };
+        children.push((
+            View::List {
+                items: vec![affordance],
+                selected: None,
+            },
+            Sizing::Fixed(1),
+        ));
+    }
+
+    // Content sub-List — account rows + expanded field rows. Only
+    // appears when the Accounts entry is in the expanded set AND
+    // there are actual content rows to show.
+    if header_expanded && !content_rows.is_empty() {
+        children.push((build_list_from_rows(content_rows, ctx), Sizing::Min(0)));
+    }
+
+    View::Stack {
+        dir: Direction::Vertical,
+        children,
+    }
+}
+
+/// Build the Models section as `Stack[ header_list, optional_content_list ]`.
+/// The content list holds Model rows + empty-catalog decorations
+/// interleaved alphabetically. With both pieces living in the same
+/// sub-List, the decoration indices are local — no rows-into-items
+/// offset math.
+fn render_models_section(
+    data: &mut dyn structfs_core_store::Reader,
+    rows: &[visible_rows::VisibleRow],
+    ctx: &SectionCtx<'_>,
+) -> View {
+    if rows.is_empty() {
+        return View::Stack {
+            dir: Direction::Vertical,
+            children: Vec::new(),
+        };
+    }
+    let (header_row, content_rows) = rows
+        .split_first()
+        .expect("Models rows non-empty checked above");
+    let header_expanded = header_row.expanded;
+
+    let mut children: Vec<(View, Sizing)> = Vec::new();
+    let header_list = build_list_from_rows(std::slice::from_ref(header_row), ctx);
+    children.push((header_list, Sizing::Fixed(1)));
+
+    if header_expanded {
+        // Start with the real Model rows projected from visible_rows.
+        let mut content_items = rows_to_list_items(content_rows, ctx);
+        // Then interleave empty-catalog decorations for accounts that
+        // contribute zero Model rows. Both indices are local to the
+        // Models content list — no offset gymnastics.
+        interleave_empty_catalog_decorations(data, &mut content_items, content_rows);
+
+        // Each sub-List recomputes its own `selected` from its items'
+        // focus IDs. At most one sub-List will return Some.
+        let selected = content_items.iter().position(|it| {
+            it.focus
+                .as_ref()
+                .map(|f| Some(&f.0) == ctx.cursor)
+                .unwrap_or(false)
+        });
+
+        children.push((
+            View::List {
+                items: content_items,
+                selected,
+            },
+            Sizing::Min(0),
+        ));
+    }
+
+    View::Stack {
+        dir: Direction::Vertical,
+        children,
+    }
+}
+
+/// Convert a slice of `VisibleRow`s into `ListItem`s using the per-frame
+/// SectionCtx for focus / edit / selector decoration. The helper is the
+/// extracted row → ListItem map block; it's shared across sub-Lists so
+/// every section renders rows the same way.
+fn rows_to_list_items(rows: &[visible_rows::VisibleRow], ctx: &SectionCtx<'_>) -> Vec<ListItem> {
+    rows.iter()
+        .map(|row| {
+            let indent = "  ".repeat(row.depth);
+            let glyph = if row.expandable {
+                if row.expanded { "▾ " } else { "▸ " }
+            } else {
+                "  "
+            };
+            // The carousel only renders on the focused selector row —
+            // that's the visual cue h/l will cycle. The match against
+            // `cursor` happens once per row, locally; no global "selected
+            // index" needs to be threaded.
+            let is_focused = ctx
+                .cursor
+                .map(|c| c == &row.path)
+                .unwrap_or(false);
+            if is_focused {
+                if let Some(spans) = selector_carousel_spans(
+                    row,
+                    &indent,
+                    glyph,
+                    ctx.protocol_options,
+                    ctx.auth_current,
+                ) {
+                    return ListItem {
+                        primary: format!("{indent}{glyph}{}", row.label),
+                        primary_spans: Some(spans),
+                        secondary: row.secondary.clone(),
+                        badge: row.badge.clone(),
+                        focus: Some(FocusId(row.path.clone())),
+                    };
+                }
+            }
+            let label = decorate_row_label(row, ctx.edit_state);
+            ListItem {
+                primary: format!("{indent}{glyph}{label}"),
+                primary_spans: None,
+                secondary: row.secondary.clone(),
+                badge: row.badge.clone(),
+                focus: Some(FocusId(row.path.clone())),
+            }
+        })
+        .collect()
+}
+
+/// Build a `View::List` from a slice of rows, computing its `selected`
+/// locally from the cursor. Used by sections that don't need to
+/// interleave decorations between rows — just a straight rows→items
+/// map plus a single `selected` pass.
+fn build_list_from_rows(rows: &[visible_rows::VisibleRow], ctx: &SectionCtx<'_>) -> View {
+    let items = rows_to_list_items(rows, ctx);
+    let selected = items.iter().position(|it| {
+        it.focus
+            .as_ref()
+            .map(|f| Some(&f.0) == ctx.cursor)
+            .unwrap_or(false)
+    });
+    View::List { items, selected }
+}
+
+/// Interleave empty-catalog decorations into the Models content list.
+/// For each account that contributes zero Model rows to `content_rows`,
+/// insert two decoration items — an empty-state line and either a
+/// static "+ add model manually (m)" affordance or — when
+/// `manual_model/account` matches — a per-stage inline form prompt.
+/// All insertion indices are local to the Models content list, so
+/// there's no rows-into-items offset divergence.
+fn interleave_empty_catalog_decorations(
+    data: &mut dyn structfs_core_store::Reader,
+    items: &mut Vec<ListItem>,
+    content_rows: &[visible_rows::VisibleRow],
+) {
+    let manual_account: Option<String> = crate::settings::renderers::util::read_typed(
+        data,
+        &ox_path::oxpath!("ui", "settings", "manual_model", "account"),
+    );
+
+    // Map each non-empty account to its last Model-row index in the
+    // content_rows slice. Decorations for empty-catalog accounts land
+    // after the alphabetically-previous account's last Model row.
+    let mut last_model_idx_per_account: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
+    for (i, row) in content_rows.iter().enumerate() {
+        if let RowKind::Model { account, .. } = &row.kind {
+            last_model_idx_per_account.insert(account.clone(), i);
+        }
+    }
+
+    let mut sorted_accounts: Vec<String> =
+        crate::settings::renderers::util::child_names_under(data, "config/gate/accounts")
+            .into_iter()
+            .filter(|n| ox_kernel::PathComponent::try_new(n.as_str()).is_ok())
+            .collect();
+    sorted_accounts.sort();
+
+    let mut empty_accounts: Vec<String> = sorted_accounts
+        .iter()
+        .filter(|name| {
+            let comp = match ox_kernel::PathComponent::try_new(name.as_str()) {
+                Ok(c) => c,
+                Err(_) => return false,
+            };
+            let models: Vec<ox_gate::ModelInfo> = crate::settings::renderers::util::read_typed(
+                data,
+                &ox_path::oxpath!("config", "gate", "accounts", comp, "models"),
+            )
+            .unwrap_or_default();
+            models.is_empty()
+        })
+        .cloned()
+        .collect();
+    // Reverse so earlier insertions don't invalidate later indices.
+    empty_accounts.reverse();
+
+    for name in empty_accounts {
+        // Insert index is into `items` (the local Models content list).
+        // For an empty account, the insertion point is "right after the
+        // last Model row of the alphabetically-previous account" — or
+        // at the top of the content list when no earlier account has
+        // any models.
+        let prev_model_idx = sorted_accounts
+            .iter()
+            .filter(|n| n.as_str() < name.as_str())
+            .filter_map(|n| last_model_idx_per_account.get(n))
+            .max()
+            .copied();
+        let insert_idx = match prev_model_idx {
+            Some(idx) => idx + 1,
+            None => 0,
+        };
+
+        let empty_state = ListItem {
+            primary: format!("  {} / (no models — press r to refresh)", name),
+            primary_spans: None,
+            secondary: None,
+            badge: None,
+            focus: None,
+        };
+
+        let in_mode_for_this_account = manual_account.as_deref() == Some(name.as_str());
+        let manual_primary = if in_mode_for_this_account {
+            let stage = crate::settings::renderers::util::read_typed::<
+                ox_types::settings::ManualModelStage,
+            >(
+                data,
+                &ox_path::oxpath!("ui", "settings", "manual_model", "stage"),
+            );
+            let buffer: String = crate::settings::renderers::util::read_typed(
+                data,
+                &ox_path::oxpath!("ui", "settings", "manual_model", "buffer"),
+            )
+            .unwrap_or_default();
+            let prompt = match stage {
+                Some(ox_types::settings::ManualModelStage::Id) => "Model id",
+                Some(ox_types::settings::ManualModelStage::Ctx) => "Max context",
+                Some(ox_types::settings::ManualModelStage::Out) => "Max output",
+                None => "Model id",
+            };
+            format!("    {prompt}▸ {buffer}\u{258F}")
+        } else {
+            "    + add model manually (m)".to_string()
+        };
+        let manual = ListItem {
+            primary: manual_primary,
+            primary_spans: None,
+            secondary: None,
+            badge: None,
+            focus: None,
+        };
+
+        // Insert manual first, then empty_state at the same index, so
+        // they end up [empty_state, manual] in display order.
+        items.insert(insert_idx, manual);
+        items.insert(insert_idx, empty_state);
+    }
+}
+
+/// Measured row count of a section (a Stack-of-Lists with an optional
+/// Form middle slot). Lists contribute one row per item plus one extra
+/// per item with a `secondary` line (the translator stacks them); a
+/// Form contributes one row per FormRow. Nested Stacks recurse. Anything
+/// else contributes zero (defensive — sections only ever contain the
+/// shapes named above).
+fn section_height(view: &View) -> u16 {
+    match view {
+        View::List { items, .. } => items
+            .iter()
+            .map(|it| 1 + if it.secondary.is_some() { 1 } else { 0 })
+            .sum::<usize>() as u16,
+        View::Form { rows, .. } => rows.len() as u16,
+        View::Stack { children, .. } => children.iter().map(|(c, _)| section_height(c)).sum(),
+        _ => 0,
     }
 }
 
@@ -385,19 +526,6 @@ fn form_height(view: &View) -> u16 {
         View::Form { rows, .. } => rows.len() as u16,
         _ => 0,
     }
-}
-
-/// Find the index right AFTER the Accounts entry header in the
-/// visible-rows enumeration. Returns `None` when the Accounts entry
-/// isn't expanded (or doesn't exist). The returned index is the
-/// position in the `items` vector where the compose-mode affordance
-/// should be inserted.
-fn find_accounts_header_followup_idx(rows: &[visible_rows::VisibleRow]) -> Option<usize> {
-    rows.iter()
-        .position(|r| {
-            matches!(&r.kind, RowKind::Entry { entry_id } if entry_id == "accounts") && r.expanded
-        })
-        .map(|i| i + 1)
 }
 
 /// For a focused selector row, build the flanked carousel as styled
@@ -688,20 +816,113 @@ mod tests {
         );
     }
 
+    /// Walk the View tree and produce a flat (items, selected) projection
+    /// across every sub-List, in render order. The new section-stack
+    /// structure has multiple sub-Lists (header + content per section);
+    /// pre-existing tests assert against a flat items vector, so this
+    /// adapter preserves their semantics. `selected` is the absolute
+    /// position of whichever sub-List has a selection set, mapped into
+    /// the flattened vector.
     fn assert_list(view: View) -> (Option<String>, Vec<ListItem>, Option<usize>) {
-        // The IndexRenderer wraps its View::List in a View::Frame; pull
-        // the title from the frame and the items/selected from the
-        // inner list.
         match view {
             View::Frame {
                 title,
                 title_right: _,
                 content,
-            } => match *content {
-                View::List { items, selected } => (title, items, selected),
-                other => panic!("expected View::List inside Frame, got {other:?}"),
-            },
+            } => {
+                let mut out: Vec<ListItem> = Vec::new();
+                let mut selected: Option<usize> = None;
+                collect_lists(&content, &mut out, &mut selected);
+                (title, out, selected)
+            }
             other => panic!("expected View::Frame, got {other:?}"),
+        }
+    }
+
+    /// Recursive walker for `assert_list`. Inlines every sub-List's
+    /// items into `out`; if any sub-List carries a `selected: Some`,
+    /// records its absolute offset in `selected` (asserts at most one
+    /// sub-List has a selection set — the per-section invariant).
+    fn collect_lists(view: &View, out: &mut Vec<ListItem>, selected: &mut Option<usize>) {
+        match view {
+            View::List { items, selected: s } => {
+                if let Some(local) = s {
+                    assert!(
+                        selected.is_none(),
+                        "at most one sub-List should carry a selection per frame"
+                    );
+                    *selected = Some(out.len() + local);
+                }
+                out.extend(items.iter().cloned());
+            }
+            View::Stack { children, .. } => {
+                for (child, _) in children {
+                    collect_lists(child, out, selected);
+                }
+            }
+            View::Frame { content, .. } => collect_lists(content, out, selected),
+            _ => {}
+        }
+    }
+
+    /// Walk Frame → Stack → first child (the Accounts section).
+    fn extract_accounts_section(view: View) -> View {
+        match view {
+            View::Frame { content, .. } => match *content {
+                View::Stack { children, .. } => {
+                    assert!(!children.is_empty(), "page must have at least one section");
+                    children.into_iter().next().unwrap().0
+                }
+                other => panic!("expected Stack inside Frame, got {other:?}"),
+            },
+            other => panic!("expected Frame, got {other:?}"),
+        }
+    }
+
+    /// Walk Frame → Stack → second child (the Models section).
+    fn extract_models_section(view: View) -> View {
+        match view {
+            View::Frame { content, .. } => match *content {
+                View::Stack { mut children, .. } => {
+                    assert!(children.len() >= 2, "page must have Accounts + Models sections");
+                    children.remove(1).0
+                }
+                other => panic!("expected Stack inside Frame, got {other:?}"),
+            },
+            other => panic!("expected Frame, got {other:?}"),
+        }
+    }
+
+    /// Flatten a View into a single sequence of display strings in
+    /// render order. Used by positioning-regression tests to assert
+    /// "header X appears before decoration Y". Walks Lists (primary
+    /// strings) and Forms (row labels).
+    fn flatten_to_strings(view: &View) -> Vec<String> {
+        let mut out = Vec::new();
+        flatten_inner(view, &mut out);
+        out
+    }
+
+    fn flatten_inner(view: &View, out: &mut Vec<String>) {
+        match view {
+            View::List { items, .. } => {
+                for it in items {
+                    out.push(it.primary.clone());
+                }
+            }
+            View::Form { rows, .. } => {
+                for r in rows {
+                    out.push(r.label.clone());
+                }
+            }
+            View::Stack { children, .. } => {
+                for (c, _) in children {
+                    flatten_inner(c, out);
+                }
+            }
+            View::Frame { content, .. } => flatten_inner(content, out),
+            View::Pad { child, .. } => flatten_inner(child, out),
+            _ => {}
         }
     }
 
@@ -851,13 +1072,11 @@ mod tests {
             theme: &theme,
         };
         let view = reg.render(&oxpath!("settings", "index"), &mut ctx);
-        match view {
-            View::Frame { content, .. } => match *content {
-                View::List { items, .. } => assert_eq!(items.len(), 2),
-                other => panic!("expected List inside Frame, got {other:?}"),
-            },
-            other => panic!("expected Frame, got {other:?}"),
-        }
+        // Registry dispatches to IndexRenderer which now emits a
+        // section-stack. Flatten to count the rendered rows the way
+        // the old assertion did.
+        let (_title, items, _selected) = assert_list(view);
+        assert_eq!(items.len(), 2);
     }
 
     /// Helper: write an account along with a non-empty models catalog
@@ -1128,66 +1347,260 @@ mod tests {
         snap
     }
 
-    /// Walk `Frame -> (Stack | Form)` and return the `View::Form` payload.
-    /// Returns `None` when the view isn't a compose-active form layout.
+    /// Walk the View tree and return the first `View::Form` payload.
+    /// After the section-stack refactor the form is nested as
+    /// `Frame → Stack → Stack (AccountsSection) → Form`, so a recursive
+    /// walk is the simplest way to find it. Returns `None` when no Form
+    /// is present (compose inactive).
     fn extract_form(view: View) -> Option<(Vec<ox_view::FormRow>, Option<usize>)> {
         use ox_view::View as V;
         match view {
-            V::Frame { content, .. } => match *content {
-                V::Stack { children, .. } => {
-                    for (child, _) in children {
-                        if let V::Form { rows, focused } = child {
-                            return Some((rows, focused));
-                        }
+            V::Form { rows, focused } => Some((rows, focused)),
+            V::Frame { content, .. } => extract_form(*content),
+            V::Stack { children, .. } => {
+                for (child, _) in children {
+                    if let Some(found) = extract_form(child) {
+                        return Some(found);
                     }
-                    None
                 }
-                V::Form { rows, focused } => Some((rows, focused)),
-                _ => None,
-            },
+                None
+            }
+            V::Pad { child, .. } => extract_form(*child),
             _ => None,
         }
     }
 
+    // -- Section-stack structural tests ------------------------------------------
+    //
+    // The page is `Frame → Stack[ AccountsSection, ModelsSection ]`. Each
+    // section is its own Stack of sub-Lists (and an optional middle slot).
+    // Tests here pin that shape; the positioning-regression tests below
+    // pin the bug fixes that motivated the structure.
+
     #[test]
-    fn index_renderer_emits_frame_list_when_compose_inactive() {
-        let mut snap = snap_at_accounts_page();
+    fn page_emits_frame_stack_of_two_sections() {
+        let mut snap = SettingsSnapshot::empty();
+        write_index(&mut snap);
         let view = render(&mut snap);
-        match view {
+
+        let stack_children = match view {
             View::Frame { content, .. } => match *content {
-                View::List { .. } => {}
-                other => panic!("expected View::List inside Frame when compose inactive, got {other:?}"),
+                View::Stack {
+                    dir: Direction::Vertical,
+                    children,
+                } => children,
+                other => panic!("expected Stack inside Frame, got {other:?}"),
             },
-            other => panic!("expected View::Frame, got {other:?}"),
+            other => panic!("expected Frame, got {other:?}"),
+        };
+        // Two sections (Accounts, Models) + a trailing Empty filler that
+        // absorbs leftover vertical space at the bottom of the page.
+        assert_eq!(
+            stack_children.len(),
+            3,
+            "page is two sections + a trailing Fill filler"
+        );
+        assert!(matches!(stack_children[0].0, View::Stack { .. }));
+        assert!(matches!(stack_children[1].0, View::Stack { .. }));
+        assert!(matches!(stack_children[2].0, View::Empty));
+    }
+
+    #[test]
+    fn accounts_section_has_header_only_when_collapsed_and_compose_inactive() {
+        let mut snap = SettingsSnapshot::empty();
+        write_index(&mut snap);
+        let view = render(&mut snap);
+        let accounts_section = extract_accounts_section(view);
+
+        match accounts_section {
+            View::Stack { children, .. } => {
+                assert_eq!(
+                    children.len(),
+                    1,
+                    "collapsed compose-inactive Accounts is just the header"
+                );
+                assert!(matches!(children[0].0, View::List { .. }));
+            }
+            _ => panic!("AccountsSection should be a Stack"),
         }
     }
 
     #[test]
-    fn index_renderer_emits_frame_stack_form_list_when_compose_active() {
-        use ox_view::{Direction, Sizing};
+    fn accounts_section_adds_affordance_when_expanded_and_compose_inactive() {
+        let mut snap = SettingsSnapshot::empty();
+        write_index(&mut snap);
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&["settings/accounts".to_string()]),
+        );
+        write_account(&mut snap, "alpha");
+
+        let view = render(&mut snap);
+        let accounts_section = extract_accounts_section(view);
+
+        let children = match accounts_section {
+            View::Stack { children, .. } => children,
+            _ => panic!("AccountsSection should be a Stack"),
+        };
+        // Header + affordance + content list.
+        assert_eq!(children.len(), 3);
+        let middle_items = match &children[1].0 {
+            View::List { items, .. } => items,
+            _ => panic!("middle slot should be a List of affordance"),
+        };
+        assert_eq!(middle_items.len(), 1);
+        assert!(middle_items[0].primary.contains("+ New connection"));
+    }
+
+    #[test]
+    fn accounts_section_shows_compose_form_in_middle_when_active() {
         let mut snap = snap_with_compose_active();
         let view = render(&mut snap);
-        match view {
-            View::Frame { content, .. } => match *content {
-                View::Stack { dir, children } => {
-                    assert_eq!(dir, Direction::Vertical);
-                    assert_eq!(children.len(), 2, "expected Form + List children");
-                    let (form, _) = &children[0];
-                    let (list, list_sizing) = &children[1];
-                    assert!(
-                        matches!(form, View::Form { .. }),
-                        "first child must be the compose Form; got {form:?}"
-                    );
-                    assert!(
-                        matches!(list, View::List { .. }),
-                        "second child must be the accounts/models List; got {list:?}"
-                    );
-                    assert_eq!(*list_sizing, Sizing::Fill);
-                }
-                other => panic!("expected Stack inside Frame, got {other:?}"),
-            },
-            other => panic!("expected Frame, got {other:?}"),
+        let accounts_section = extract_accounts_section(view);
+
+        let children = match accounts_section {
+            View::Stack { children, .. } => children,
+            _ => panic!("AccountsSection should be a Stack"),
+        };
+        // Header + Form. (Content list also present when Accounts is
+        // expanded; snap_with_compose_active expands Accounts.)
+        assert!(children.len() >= 2);
+        let form_child_present = children
+            .iter()
+            .any(|(v, _)| matches!(v, View::Form { .. }));
+        assert!(form_child_present, "compose Form must be inside Accounts section");
+        // Header must be the first child (sets the ordering invariant
+        // that the positioning regression test covers visually).
+        assert!(matches!(children[0].0, View::List { .. }));
+    }
+
+    #[test]
+    fn models_section_holds_empty_catalog_decorations_inside_its_content() {
+        let mut snap = SettingsSnapshot::empty();
+        write_index(&mut snap);
+        write_account(&mut snap, "alpha"); // empty catalog
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&["settings/models".to_string()]),
+        );
+
+        let view = render(&mut snap);
+        let models_section = extract_models_section(view);
+        let children = match models_section {
+            View::Stack { children, .. } => children,
+            _ => panic!("ModelsSection should be a Stack"),
+        };
+        assert!(children.len() >= 2);
+        let content_items = match &children[1].0 {
+            View::List { items, .. } => items,
+            _ => panic!("Models content should be a List"),
+        };
+        assert!(
+            content_items.iter().any(|it| it.primary.contains("no models")),
+            "empty-state line must live inside the Models content sub-List"
+        );
+        assert!(
+            content_items
+                .iter()
+                .any(|it| it.primary.contains("add model manually")),
+            "manual-add affordance must live inside the Models content sub-List"
+        );
+    }
+
+    #[test]
+    fn focused_path_selects_in_matching_sub_list_only() {
+        let mut snap = SettingsSnapshot::empty();
+        write_index(&mut snap);
+        write_account(&mut snap, "alpha");
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&["settings/accounts".to_string()]),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "focused"),
+            path_to_value(&oxpath!("settings", "accounts", "alpha")),
+        );
+
+        let view = render(&mut snap);
+        let accounts_section = extract_accounts_section(view);
+        let children = match accounts_section {
+            View::Stack { children, .. } => children,
+            _ => panic!("AccountsSection should be a Stack"),
+        };
+
+        // The header sub-List has selected: None (cursor isn't on the header).
+        if let View::List { selected, .. } = &children[0].0 {
+            assert!(selected.is_none(), "header should not be selected");
+        } else {
+            panic!("first child should be the header List");
         }
+        // The last sub-List is the content (header + affordance + content
+        // when expanded compose-inactive). The alpha row sits at index 0
+        // of the content list.
+        let content_idx = children.len() - 1;
+        if let View::List { selected, .. } = &children[content_idx].0 {
+            assert_eq!(*selected, Some(0), "content list selects alpha row");
+        } else {
+            panic!("last child should be the content List");
+        }
+    }
+
+    // -- Positioning-regression tests --------------------------------------------
+    //
+    // These pin the two bugs the section-stack refactor structurally fixes:
+    // the compose form rendering ABOVE the Connections header, and the
+    // Models empty-catalog decoration rendering BEFORE the Models header.
+
+    #[test]
+    fn compose_form_renders_below_accounts_header_in_section() {
+        let mut snap = snap_with_compose_active();
+        let view = render(&mut snap);
+
+        let flat = flatten_to_strings(&view);
+        let header_pos = flat
+            .iter()
+            .position(|s| s.contains("Accounts"))
+            .expect("Accounts header present");
+        let form_first_field = flat
+            .iter()
+            .position(|s| s == "Name")
+            .expect("compose form Name field present");
+        assert!(
+            header_pos < form_first_field,
+            "Accounts header must render BEFORE compose form fields (got header at {header_pos}, Name at {form_first_field}); \
+             flat = {flat:?}"
+        );
+    }
+
+    #[test]
+    fn empty_catalog_decoration_renders_inside_models_section_after_header() {
+        let mut snap = SettingsSnapshot::empty();
+        write_index(&mut snap);
+        write_account(&mut snap, "aaa");
+        write_account_with_models(&mut snap, "bbb", &["m1"]);
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&[
+                "settings/accounts".to_string(),
+                "settings/models".to_string(),
+            ]),
+        );
+
+        let view = render(&mut snap);
+        let flat = flatten_to_strings(&view);
+        let header_pos = flat
+            .iter()
+            .position(|s| s.contains("Models"))
+            .expect("Models header present");
+        let decoration_pos = flat
+            .iter()
+            .position(|s| s.contains("no models"))
+            .expect("decoration present for aaa");
+        assert!(
+            header_pos < decoration_pos,
+            "Models header must render BEFORE empty-catalog decoration (got header at {header_pos}, decoration at {decoration_pos}); \
+             flat = {flat:?}"
+        );
     }
 
     #[test]

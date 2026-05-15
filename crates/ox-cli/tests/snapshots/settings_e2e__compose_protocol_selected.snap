@@ -4,12 +4,12 @@ assertion_line: 1359
 expression: "&frame_protocol"
 ---
 ┌Settings──────────────────────────────────────────────────────────────────────┐
+│▸ Connections [0]                                                             │
 │Name: my-personal                                                             │
 │Protocol: < anthropic >                                                       │
 │Endpoint:   required                                                          │
 │Auth: (not selected)  select an auth scheme                                   │
 │Key:   required for x-api-key / bearer-token                                  │
-│▸ Connections [0]                                                             │
 │▸ Models                                                                      │
 │                                                                              │
 │                                                                              │
