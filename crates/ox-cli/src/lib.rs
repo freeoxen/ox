@@ -78,7 +78,7 @@ pub mod test_render_exports {
     /// dedicated test entry point without widening the production
     /// visibility.
     pub fn render_to_frame(
-        view: &ox_view::View,
+        view: &horns_core::view::View,
         frame: &mut ratatui::Frame,
         area: ratatui::layout::Rect,
         theme: &Theme,

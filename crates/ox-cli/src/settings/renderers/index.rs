@@ -13,7 +13,7 @@
 //! glyph on the primary text; the legacy badge slot still carries
 //! the entry's badge string.
 
-use ox_view::{Direction, FocusId, ListItem, ModifierSet, Padding, Sizing, Span, Style, View};
+use horns_core::view::{Direction, FocusId, ListItem, ModifierSet, Padding, Sizing, Span, Style, View};
 
 use ox_gate::AuthScheme;
 
@@ -1407,8 +1407,8 @@ mod tests {
     /// `Frame → Stack → Stack (AccountsSection) → Form`, so a recursive
     /// walk is the simplest way to find it. Returns `None` when no Form
     /// is present (compose inactive).
-    fn extract_form(view: View) -> Option<(Vec<ox_view::FormRow>, Option<usize>)> {
-        use ox_view::View as V;
+    fn extract_form(view: View) -> Option<(Vec<horns_core::view::FormRow>, Option<usize>)> {
+        use horns_core::view::View as V;
         match view {
             V::Form { rows, focused } => Some((rows, focused)),
             V::Frame { content, .. } => extract_form(*content),
@@ -1688,7 +1688,7 @@ mod tests {
         // placeholder. The kind alignment pins that the projection picks
         // the correct variant per field.
         use crate::settings::commands::account_model::{FIELD_ORDER, FieldKind, field_kind};
-        use ox_view::FormValue;
+        use horns_core::view::FormValue;
         let mut snap = snap_with_compose_active();
         let view = render(&mut snap);
         let (rows, _) = extract_form(view).expect("Form present");
@@ -1769,7 +1769,7 @@ mod tests {
     #[test]
     fn key_field_renders_masked_text_value() {
         use crate::settings::commands::account_model::FIELD_ORDER;
-        use ox_view::FormValue;
+        use horns_core::view::FormValue;
         let mut snap = snap_with_compose_active();
         snap.insert(
             &oxpath!("ui", "settings", "new_account", "key"),
@@ -1874,7 +1874,7 @@ mod tests {
         // Once the user has picked a protocol, the row switches from
         // the placeholder `ReadOnly` to a `Selector { options, current }`.
         use crate::settings::commands::account_model::FIELD_ORDER;
-        use ox_view::FormValue;
+        use horns_core::view::FormValue;
         let mut snap = snap_with_compose_active();
         snap.insert(
             &oxpath!("ui", "settings", "new_account", "protocol"),

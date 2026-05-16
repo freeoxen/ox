@@ -16,7 +16,7 @@
 //!   adding a `Color` (or modifier, etc.) to `ox-view` forces a corresponding
 //!   match-arm here at compile time.
 
-use ox_view::{
+use horns_core::view::{
     Align, BannerKind, Color, Direction, FormRow, FormValue, ListItem, ModifierSet, Padding,
     Sizing, Span, Style, StyledLine, View,
 };
@@ -416,7 +416,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ox_view::{
+    use horns_core::view::{
         Align, BannerKind, FormRow, FormValue, ListItem, Padding, Sizing, Span, StyledLine, View,
     };
     use ratatui::Terminal;

@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use ratatui::layout::Rect;
 use structfs_core_store::{Path, Reader};
 
-use ox_view::View;
+use horns_core::view::View;
 
 use crate::theme::Theme;
 

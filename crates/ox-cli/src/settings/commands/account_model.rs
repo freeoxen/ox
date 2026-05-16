@@ -1006,8 +1006,8 @@ pub(crate) const PROTOCOL_OPTIONS: &[&str] = &["anthropic", "openai"];
 /// when the cursor's leaf isn't a known field id the form renders
 /// with no row highlighted (defensive — the dispatcher only routes
 /// here while cursor is at a field path).
-pub(crate) fn compose_form_view(data: &mut dyn Reader) -> ox_view::View {
-    use ox_view::{FormRow, View};
+pub(crate) fn compose_form_view(data: &mut dyn Reader) -> horns_core::view::View {
+    use horns_core::view::{FormRow, View};
     let errors: ValidationErrors =
         read_typed(data, &oxpath!("ui", "settings", "new_account", "errors"))
             .unwrap_or_default();
@@ -1028,8 +1028,8 @@ fn project_compose_field(
     data: &mut dyn Reader,
     field: AccountField,
     error: Option<&str>,
-) -> ox_view::FormRow {
-    use ox_view::FormRow;
+) -> horns_core::view::FormRow {
+    use horns_core::view::FormRow;
 
     let label = field_label(field).to_string();
     let error = error.map(String::from);
@@ -1072,24 +1072,24 @@ fn project_compose_field(
     }
 }
 
-fn text_form_value(value: String, masked: bool) -> ox_view::FormValue {
+fn text_form_value(value: String, masked: bool) -> horns_core::view::FormValue {
     let cursor = value.chars().count() as u32;
-    ox_view::FormValue::Text {
+    horns_core::view::FormValue::Text {
         value,
         cursor,
         masked,
     }
 }
 
-fn selector_form_value(current: Option<&str>, options: &[&str]) -> ox_view::FormValue {
+fn selector_form_value(current: Option<&str>, options: &[&str]) -> horns_core::view::FormValue {
     match current.and_then(|c| options.iter().position(|o| *o == c)) {
         // `(not selected)` is the read-only placeholder the form shows
         // for a selector the user hasn't pressed h/l on yet. The
         // ReadOnly variant keeps it visually distinct from a chosen
         // option and means no carousel decoration shows when the row
         // takes focus before a pick.
-        None => ox_view::FormValue::ReadOnly("(not selected)".into()),
-        Some(idx) => ox_view::FormValue::Selector {
+        None => horns_core::view::FormValue::ReadOnly("(not selected)".into()),
+        Some(idx) => horns_core::view::FormValue::Selector {
             options: options.iter().map(|s| s.to_string()).collect(),
             current: idx,
         },

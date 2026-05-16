@@ -17,7 +17,7 @@ use ox_types::{
     ThreadCommand, UiCommand, UiSnapshot,
 };
 use ox_ui::text_input_store::EditSource;
-use ox_view::View;
+use horns_core::view::View;
 use std::time::Duration;
 use structfs_core_store::{Path, Reader};
 

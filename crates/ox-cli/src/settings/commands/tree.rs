@@ -122,7 +122,7 @@ fn jump(data: &mut dyn Reader, to: JumpTo) -> Vec<Write> {
 /// (the binding lookup uses cursor as its scope key).
 ///
 /// Returns the focused widget's underlying `Path` (the inner value
-/// of the conceptual `FocusId` — see `ox_view::FocusId`).
+/// of the conceptual `FocusId` — see `horns_core::view::FocusId`).
 fn read_focused(data: &mut dyn Reader) -> Option<structfs_core_store::Path> {
     let record = data
         .read(&oxpath!("ui", "settings", "focused"))

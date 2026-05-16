@@ -118,8 +118,8 @@ mod tests {
     /// Stub renderer used purely to seed the registry with an `AscendRule`.
     struct FakeRenderer(AscendRule);
     impl Renderer for FakeRenderer {
-        fn render(&self, _ctx: &mut RenderCtx<'_>) -> ox_view::View {
-            ox_view::View::Empty
+        fn render(&self, _ctx: &mut RenderCtx<'_>) -> horns_core::view::View {
+            horns_core::view::View::Empty
         }
         fn ascend_to(&self) -> AscendRule {
             self.0.clone()

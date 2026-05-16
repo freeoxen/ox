@@ -6,13 +6,16 @@
 //! coherent.
 //!
 //! Hygiene:
-//! - No `serde`, no `ratatui`. `View` is in-memory only in v1; the renderer
-//!   produces it and the translator consumes it on the same machine.
+//! - No `ratatui`. The translator lives in a separate crate so the View tree
+//!   stays renderer-agnostic.
+//! - `serde` derives so a View can ride a broker path (the render-output
+//!   subscription serializes the tree to JSON).
 //! - Every type derives `Debug, Clone, PartialEq` so renderer tests can
 //!   compare with `assert_eq!` (struct equality is the assertion primitive).
 //! - `Default` is added only where it directly aids ergonomic construction
 //!   (`Style`, `Padding`, `ModifierSet`).
 
+use serde::{Deserialize, Serialize};
 use structfs_core_store::Path;
 
 // ---------------------------------------------------------------------------
@@ -20,7 +23,7 @@ use structfs_core_store::Path;
 // ---------------------------------------------------------------------------
 
 /// The curated widget set.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum View {
     Empty,
     Text {
@@ -78,7 +81,7 @@ pub enum View {
 // Sub-types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ListItem {
     pub primary: String,
     /// When present, the translator renders this styled-span sequence
@@ -105,10 +108,10 @@ pub struct ListItem {
 /// data-tree path." On the wire (in the broker) the value is just
 /// the inner `Path`; the wrapping is for type safety at the CLI
 /// dispatch boundary.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct FocusId(pub structfs_core_store::Path);
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct FocusId(#[serde(with = "crate::path_serde")] pub structfs_core_store::Path);
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FormRow {
     pub label: String,
     pub value: FormValue,
@@ -116,7 +119,7 @@ pub struct FormRow {
     pub hint: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum FormValue {
     Text {
         value: String,
@@ -130,13 +133,13 @@ pub enum FormValue {
     ReadOnly(String),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum BannerKind {
     Info,
     Error,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Span {
     pub text: String,
     pub style: Style,
@@ -152,23 +155,23 @@ impl Span {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StyledLine(pub Vec<Span>);
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Direction {
     Horizontal,
     Vertical,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Sizing {
     Fill,
     Fixed(u16),
     Min(u16),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct Padding {
     pub top: u16,
     pub right: u16,
@@ -176,14 +179,14 @@ pub struct Padding {
     pub left: u16,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Align {
     Left,
     Center,
     Right,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct Style {
     pub fg: Option<Color>,
     pub bg: Option<Color>,
@@ -194,7 +197,7 @@ pub struct Style {
 /// independent of any renderer crate. The translator maps these into ratatui
 /// `Color` values; other renderers (e.g. a future Rio target) map them into
 /// their own equivalents.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Color {
     Reset,
     Black,
@@ -218,7 +221,7 @@ pub enum Color {
 }
 
 /// Text modifier flags. `Default` is "no modifiers".
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct ModifierSet {
     pub bold: bool,
     pub italic: bool,
@@ -813,5 +816,38 @@ mod tests {
             }
             other => panic!("expected Stack, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod serde_smoke {
+    use super::*;
+
+    #[test]
+    fn view_round_trips_through_json() {
+        let v = View::Text {
+            spans: vec![Span::plain("hello")],
+            align: Align::Left,
+        };
+        let s = serde_json::to_string(&v).unwrap();
+        let back: View = serde_json::from_str(&s).unwrap();
+        assert_eq!(v, back);
+    }
+
+    #[test]
+    fn list_view_with_nested_items_round_trips() {
+        let v = View::List {
+            items: vec![ListItem {
+                primary: "one".into(),
+                primary_spans: None,
+                secondary: None,
+                badge: None,
+                focus: None,
+            }],
+            selected: Some(0),
+        };
+        let s = serde_json::to_string(&v).unwrap();
+        let back: View = serde_json::from_str(&s).unwrap();
+        assert_eq!(v, back);
     }
 }

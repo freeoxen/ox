@@ -633,10 +633,10 @@ pub fn position_of(rows: &[VisibleRow], cursor: &Path) -> Option<usize> {
 /// (renderer-emitted items not in `enumerate`) leave this helper
 /// unchanged — decorations have `focus: None` in the renderer's
 /// output and don't appear in this enumeration either.
-pub fn focus_enumeration(data: &mut dyn Reader) -> Vec<ox_view::FocusId> {
+pub fn focus_enumeration(data: &mut dyn Reader) -> Vec<horns_core::view::FocusId> {
     enumerate(data)
         .into_iter()
-        .map(|row| ox_view::FocusId(row.path))
+        .map(|row| horns_core::view::FocusId(row.path))
         .collect()
 }
 
