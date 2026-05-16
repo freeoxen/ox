@@ -1,0 +1,21 @@
+[package]
+name = "horns-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Path-MVU UI framework primitives — View enum, dispatcher, registries, broker-mount install API"
+publish = false
+
+[dependencies]
+structfs-core-store = { workspace = true }
+ox-broker = { path = "../ox-broker" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["sync", "time", "rt", "rt-multi-thread", "macros"] }

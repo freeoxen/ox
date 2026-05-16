@@ -1,0 +1,23 @@
+[package]
+name = "horns-ratatui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Ratatui backend mount for horns — translates the View tree to terminal frames"
+publish = false
+
+[dependencies]
+horns-core = { path = "../horns-core" }
+ox-broker = { path = "../ox-broker" }
+ratatui = "0.29"
+unicode-width = "0.2"
+structfs-core-store = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+insta = "1"
+tokio = { version = "1", features = ["sync", "time", "rt", "rt-multi-thread", "macros"] }

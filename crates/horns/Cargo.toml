@@ -1,0 +1,19 @@
+[package]
+name = "horns"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Path-MVU UI toolkit — umbrella crate"
+publish = false
+
+[features]
+default = ["ratatui"]
+ratatui = ["dep:horns-ratatui"]
+
+[dependencies]
+horns-core = { path = "../horns-core" }
+horns-ratatui = { path = "../horns-ratatui", optional = true }
