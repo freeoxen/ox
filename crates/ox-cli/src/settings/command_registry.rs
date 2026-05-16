@@ -90,7 +90,6 @@ mod tests {
 
     use ox_path::oxpath;
     use ox_store_util::local_config::LocalConfig;
-    use ox_types::Screen;
     use ox_types::key_chord::{KeyCodeRepr, KeyModifierSet};
     use structfs_core_store::{Record, Value};
 
