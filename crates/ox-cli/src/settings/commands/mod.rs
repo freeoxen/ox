@@ -23,7 +23,6 @@ macro_rules! command {
         id: $id:literal,
         title: $title:literal,
         description: $desc:literal,
-        screen: $screen:expr,
         cursor: $cursor:expr,
         run: |$snap:ident, $ctx:ident| $body:expr $(,)?
     ) => {
@@ -41,7 +40,6 @@ macro_rules! command {
                         description: String::from($desc),
                     },
                     scope: ox_types::CommandScope {
-                        screen: $screen,
                         cursor_path: $cursor,
                     },
                 }

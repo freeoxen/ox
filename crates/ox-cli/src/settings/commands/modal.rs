@@ -9,7 +9,6 @@
 //! modal then renders itself from the key-hint stream.
 
 use ox_path::oxpath;
-use ox_types::Screen;
 use ox_types::subscription::Write;
 use structfs_core_store::{Record, Value};
 
@@ -23,7 +22,6 @@ command! {
     id: "modal.toggle_shortcuts",
     title: "Show shortcuts",
     description: "Toggle the shortcuts modal.",
-    screen: Screen::Settings,
     cursor: None,
     run: |_snap, _ctx| vec![Write {
         path: oxpath!("ui", "toggle_shortcuts"),

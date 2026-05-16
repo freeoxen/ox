@@ -19,7 +19,6 @@
 //! Per spec §6 binding tables.
 
 use ox_path::oxpath;
-use ox_types::Screen;
 use ox_types::subscription::Write;
 use structfs_core_store::{Path, Reader, Record, Value};
 
@@ -74,7 +73,6 @@ command! {
     id: "nav.ascend",
     title: "Go Back",
     description: "Ascend to the parent page; exit the screen at the root.",
-    screen: Screen::Settings,
     cursor: None,
     run: |snap, ctx| ascend(snap, ctx),
 }

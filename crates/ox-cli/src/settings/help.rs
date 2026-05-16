@@ -124,7 +124,7 @@ mod tests {
 
     use ox_path::oxpath;
     use ox_types::key_chord::{KeyCodeRepr, KeyModifierSet};
-    use ox_types::{BindingEntry, BindingScope, CommandId, KeyChord, Phase, Screen};
+    use ox_types::{BindingEntry, BindingScope, CommandId, KeyChord, Phase};
 
     use crate::settings::commands::register_all as register_all_commands;
 
@@ -179,17 +179,13 @@ mod tests {
         // specificity and registration order.
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            screen: Screen::Settings,
             scope: BindingScope::Exact(oxpath!("settings", "index")),
-            mode: None,
             key: key('?'),
             command_id: CommandId(String::from("highlight.index.next")),
             phase: Phase::Target,
         });
         bindings.register(BindingEntry {
-            screen: Screen::Settings,
             scope: BindingScope::Anywhere,
-            mode: None,
             key: key('?'),
             command_id: CommandId(String::from("modal.toggle_shortcuts")),
             phase: Phase::Target,

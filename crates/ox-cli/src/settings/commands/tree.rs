@@ -14,7 +14,6 @@
 
 use ox_path::oxpath;
 use ox_types::AccountField;
-use ox_types::Screen;
 use ox_types::subscription::Write;
 use structfs_core_store::{Reader, Record, Value};
 
@@ -32,7 +31,6 @@ command! {
     id: "tree.next",
     title: "Next Row",
     description: "Move the focus to the next visible row in the settings tree.",
-    screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "index")),
     run: |snap, _ctx| step(snap, Direction::Next),
 }
@@ -42,7 +40,6 @@ command! {
     id: "tree.prev",
     title: "Previous Row",
     description: "Move the focus to the previous visible row in the settings tree.",
-    screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "index")),
     run: |snap, _ctx| step(snap, Direction::Prev),
 }
@@ -52,7 +49,6 @@ command! {
     id: "tree.activate",
     title: "Open / Toggle Row",
     description: "Toggle expansion on a category row; descend into a leaf row.",
-    screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "index")),
     run: |snap, _ctx| activate(snap),
 }
@@ -62,7 +58,6 @@ command! {
     id: "tree.first",
     title: "First Row",
     description: "Move focus to the first visible row.",
-    screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "index")),
     run: |snap, _ctx| jump(snap, JumpTo::First),
 }
@@ -72,7 +67,6 @@ command! {
     id: "tree.last",
     title: "Last Row",
     description: "Move focus to the last visible row.",
-    screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "index")),
     run: |snap, _ctx| jump(snap, JumpTo::Last),
 }
@@ -82,7 +76,6 @@ command! {
     id: "tree.collapse_or_ascend",
     title: "Collapse / Back",
     description: "Collapse the focused row if expanded; otherwise exit the screen.",
-    screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "index")),
     run: |snap, _ctx| collapse_or_ascend(snap),
 }

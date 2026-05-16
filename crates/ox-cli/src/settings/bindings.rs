@@ -14,7 +14,7 @@ use ox_path::oxpath;
 use structfs_core_store::Path;
 
 use ox_types::key_chord::{KeyCodeRepr, KeyModifierSet};
-use ox_types::{BindingEntry, BindingScope, CommandId, KeyChord, Phase, Screen};
+use ox_types::{BindingEntry, BindingScope, CommandId, KeyChord, Phase};
 
 use crate::settings::binding_registry::BindingRegistry;
 
@@ -61,9 +61,7 @@ fn bind_capture(
         None => BindingScope::Anywhere,
     };
     reg.register(BindingEntry {
-        screen: Screen::Settings,
         scope,
-        mode: None,
         key: KeyChord { modifiers, code },
         command_id: cmd(command_id),
         phase: Phase::Capture,
@@ -87,9 +85,7 @@ fn bind_target(
         None => BindingScope::Anywhere,
     };
     reg.register(BindingEntry {
-        screen: Screen::Settings,
         scope,
-        mode: None,
         key: KeyChord { modifiers, code },
         command_id: cmd(command_id),
         phase: Phase::Target,
@@ -113,9 +109,7 @@ fn bind_bubble(
         None => BindingScope::Anywhere,
     };
     reg.register(BindingEntry {
-        screen: Screen::Settings,
         scope,
-        mode: None,
         key: KeyChord { modifiers, code },
         command_id: cmd(command_id),
         phase: Phase::Bubble,
@@ -134,9 +128,7 @@ fn bind_prefix_bubble(
     command_id: &str,
 ) {
     reg.register(BindingEntry {
-        screen: Screen::Settings,
         scope: BindingScope::Prefix(prefix),
-        mode: None,
         key: KeyChord { modifiers, code },
         command_id: cmd(command_id),
         phase: Phase::Bubble,
@@ -155,9 +147,7 @@ fn register_text_editing(reg: &mut BindingRegistry, cursor: Path) {
     for byte in 0x20u8..=0x7E {
         let ch = byte as char;
         reg.register(BindingEntry {
-            screen: Screen::Settings,
             scope: BindingScope::Exact(cursor.clone()),
-            mode: None,
             key: KeyChord {
                 modifiers: no_mods(),
                 code: KeyCodeRepr::Char(ch),
@@ -168,9 +158,7 @@ fn register_text_editing(reg: &mut BindingRegistry, cursor: Path) {
     }
     // Backspace.
     reg.register(BindingEntry {
-        screen: Screen::Settings,
         scope: BindingScope::Exact(cursor),
-        mode: None,
         key: KeyChord {
             modifiers: no_mods(),
             code: KeyCodeRepr::Backspace,
@@ -412,9 +400,7 @@ fn register_edit_mode(reg: &mut BindingRegistry) {
             no_mods()
         };
         reg.register(BindingEntry {
-            screen: Screen::Settings,
             scope: BindingScope::Exact(scope.clone()),
-            mode: None,
             key: KeyChord {
                 modifiers,
                 code: KeyCodeRepr::Char(ch),
@@ -433,9 +419,7 @@ fn register_edit_mode(reg: &mut BindingRegistry) {
     // Enter commits at Bubble: leaves (none today, but a future
     // multi-line text editor at Target) get first crack at Enter.
     reg.register(BindingEntry {
-        screen: Screen::Settings,
         scope: BindingScope::Exact(scope.clone()),
-        mode: None,
         key: KeyChord {
             modifiers: no_mods(),
             code: KeyCodeRepr::Enter,
@@ -445,9 +429,7 @@ fn register_edit_mode(reg: &mut BindingRegistry) {
     });
     // Esc cancels at Capture: lifecycle key claimed before any leaf.
     reg.register(BindingEntry {
-        screen: Screen::Settings,
         scope: BindingScope::Exact(scope),
-        mode: None,
         key: KeyChord {
             modifiers: no_mods(),
             code: KeyCodeRepr::Esc,
@@ -490,9 +472,7 @@ fn register_compose_form(reg: &mut BindingRegistry) {
     // Capture phase: lifecycle keys the form claims before the leaf is
     // consulted.
     reg.register(BindingEntry {
-        screen: Screen::Settings,
         scope: BindingScope::Exact(scope.clone()),
-        mode: None,
         key: KeyChord {
             modifiers: no_mods(),
             code: KeyCodeRepr::Esc,
@@ -503,9 +483,7 @@ fn register_compose_form(reg: &mut BindingRegistry) {
     // focus_next: Tab / Down.
     for key in [KeyCodeRepr::Tab, KeyCodeRepr::Down] {
         reg.register(BindingEntry {
-            screen: Screen::Settings,
             scope: BindingScope::Exact(scope.clone()),
-            mode: None,
             key: KeyChord {
                 modifiers: no_mods(),
                 code: key,
@@ -519,9 +497,7 @@ fn register_compose_form(reg: &mut BindingRegistry) {
     // `parse_key_str` which encode BackTab as the wire string
     // "Shift+Tab" with `shift: true`) / Up.
     reg.register(BindingEntry {
-        screen: Screen::Settings,
         scope: BindingScope::Exact(scope.clone()),
-        mode: None,
         key: KeyChord {
             modifiers: shift_only(),
             code: KeyCodeRepr::BackTab,
@@ -530,9 +506,7 @@ fn register_compose_form(reg: &mut BindingRegistry) {
         phase: Phase::Capture,
     });
     reg.register(BindingEntry {
-        screen: Screen::Settings,
         scope: BindingScope::Exact(scope.clone()),
-        mode: None,
         key: KeyChord {
             modifiers: no_mods(),
             code: KeyCodeRepr::Up,
@@ -545,9 +519,7 @@ fn register_compose_form(reg: &mut BindingRegistry) {
     // target. (No leaf does today; a future multiline text field
     // could.)
     reg.register(BindingEntry {
-        screen: Screen::Settings,
         scope: BindingScope::Exact(scope),
-        mode: None,
         key: KeyChord {
             modifiers: no_mods(),
             code: KeyCodeRepr::Enter,
@@ -576,9 +548,7 @@ fn register_compose_text_field(reg: &mut BindingRegistry, field: &str) {
             no_mods()
         };
         reg.register(BindingEntry {
-            screen: Screen::Settings,
             scope: BindingScope::Exact(scope.clone()),
-            mode: None,
             key: KeyChord {
                 modifiers,
                 code: KeyCodeRepr::Char(ch),
@@ -642,9 +612,7 @@ fn register_manual_model(reg: &mut BindingRegistry) {
     // Esc — Capture phase: the wizard claims Esc before any leaf, so
     // a future per-stage Esc handler can't shadow lifecycle cancel.
     reg.register(BindingEntry {
-        screen: Screen::Settings,
         scope: BindingScope::Exact(form_scope.clone()),
-        mode: None,
         key: KeyChord {
             modifiers: no_mods(),
             code: KeyCodeRepr::Esc,
@@ -657,9 +625,7 @@ fn register_manual_model(reg: &mut BindingRegistry) {
     // (Target) so a future multi-line stage can insert a newline; if
     // nothing claims it there, the form advances on Bubble.
     reg.register(BindingEntry {
-        screen: Screen::Settings,
         scope: BindingScope::Exact(form_scope),
-        mode: None,
         key: KeyChord {
             modifiers: no_mods(),
             code: KeyCodeRepr::Enter,
@@ -684,9 +650,7 @@ fn register_manual_model(reg: &mut BindingRegistry) {
                 no_mods()
             };
             reg.register(BindingEntry {
-                screen: Screen::Settings,
                 scope: BindingScope::Exact(stage_scope.clone()),
-                mode: None,
                 key: KeyChord {
                     modifiers,
                     code: KeyCodeRepr::Char(ch),
@@ -731,9 +695,7 @@ fn register_pending_delete(reg: &mut BindingRegistry) {
         "accounts.confirm.cancel",
     );
     reg.register(BindingEntry {
-        screen: Screen::Settings,
         scope: BindingScope::Exact(scope),
-        mode: None,
         key: KeyChord {
             modifiers: no_mods(),
             code: KeyCodeRepr::Esc,
@@ -750,9 +712,7 @@ fn register_pending_delete(reg: &mut BindingRegistry) {
 /// (no such leaf today; future help-context leaves could).
 fn register_global(reg: &mut BindingRegistry) {
     reg.register(BindingEntry {
-        screen: Screen::Settings,
         scope: BindingScope::Anywhere,
-        mode: None,
         key: KeyChord {
             modifiers: no_mods(),
             code: KeyCodeRepr::Char('?'),
@@ -767,9 +727,7 @@ fn register_global(reg: &mut BindingRegistry) {
     // Bubble-phase: a future text-leaf that wants to capture Ctrl+S for
     // some leaf-local semantic could shadow at Target.
     reg.register(BindingEntry {
-        screen: Screen::Settings,
         scope: BindingScope::Anywhere,
-        mode: None,
         key: KeyChord {
             modifiers: ctrl_only(),
             code: KeyCodeRepr::Char('s'),
@@ -818,9 +776,7 @@ mod tests {
         let reg = populated();
         let hit = reg
             .lookup(
-                Screen::Settings,
                 &oxpath!("settings"),
-                None,
                 &key(no_mods(), KeyCodeRepr::Char('j')),
                 Phase::Bubble,
             )
@@ -833,9 +789,7 @@ mod tests {
         let reg = populated();
         let hit = reg
             .lookup(
-                Screen::Settings,
                 &oxpath!("settings"),
-                None,
                 &key(no_mods(), KeyCodeRepr::Enter),
                 Phase::Bubble,
             )
@@ -848,9 +802,7 @@ mod tests {
         let reg = populated();
         let hit = reg
             .lookup(
-                Screen::Settings,
                 &oxpath!("settings"),
-                None,
                 &key(no_mods(), KeyCodeRepr::Esc),
                 Phase::Bubble,
             )
@@ -864,9 +816,7 @@ mod tests {
         let reg = populated();
         let hit = reg
             .lookup(
-                Screen::Settings,
                 &oxpath!("settings", "accounts"),
-                None,
                 &key(no_mods(), KeyCodeRepr::Char('a')),
                 Phase::Bubble,
             )
@@ -883,9 +833,7 @@ mod tests {
         let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
         let hit = reg
             .lookup(
-                Screen::Settings,
                 &oxpath!("settings", "accounts", comp),
-                None,
                 &key(no_mods(), KeyCodeRepr::Char('t')),
                 Phase::Bubble,
             )
@@ -899,9 +847,7 @@ mod tests {
         let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
         let hit = reg
             .lookup(
-                Screen::Settings,
                 &oxpath!("settings", "accounts", comp),
-                None,
                 &key(no_mods(), KeyCodeRepr::Char('r')),
                 Phase::Bubble,
             )
@@ -916,9 +862,7 @@ mod tests {
         let model = ox_kernel::PathComponent::try_new("claude_haiku").unwrap();
         let hit = reg
             .lookup(
-                Screen::Settings,
                 &oxpath!("settings", "models", acct, model),
-                None,
                 &key(shift_only(), KeyCodeRepr::Char('P')),
                 Phase::Bubble,
             )
@@ -931,9 +875,7 @@ mod tests {
         let reg = populated();
         let hit = reg
             .lookup(
-                Screen::Settings,
                 &oxpath!("settings", "_edit"),
-                None,
                 &key(no_mods(), KeyCodeRepr::Char('x')),
                 Phase::Target,
             )
@@ -946,9 +888,7 @@ mod tests {
         let reg = populated();
         let hit = reg
             .lookup(
-                Screen::Settings,
                 &oxpath!("settings", "_edit"),
-                None,
                 &key(no_mods(), KeyCodeRepr::Backspace),
                 Phase::Target,
             )
@@ -961,9 +901,7 @@ mod tests {
         let reg = populated();
         let hit = reg
             .lookup(
-                Screen::Settings,
                 &oxpath!("settings", "_edit"),
-                None,
                 &key(no_mods(), KeyCodeRepr::Enter),
                 Phase::Bubble,
             )
@@ -976,9 +914,7 @@ mod tests {
         let reg = populated();
         let hit = reg
             .lookup(
-                Screen::Settings,
                 &oxpath!("settings", "_edit"),
-                None,
                 &key(no_mods(), KeyCodeRepr::Esc),
                 Phase::Capture,
             )
@@ -991,9 +927,7 @@ mod tests {
         let reg = populated();
         let hit = reg
             .lookup(
-                Screen::Settings,
                 &oxpath!("settings", "models"),
-                None,
                 &key(shift_only(), KeyCodeRepr::Char('P')),
                 Phase::Bubble,
             )
@@ -1010,9 +944,7 @@ mod tests {
         let reg = populated();
         let hit = reg
             .lookup(
-                Screen::Settings,
                 &oxpath!("settings", "models"),
-                None,
                 &key(no_mods(), KeyCodeRepr::Char('d')),
                 Phase::Bubble,
             )
@@ -1028,9 +960,7 @@ mod tests {
         let reg = populated();
         let hit = reg
             .lookup(
-                Screen::Settings,
                 &oxpath!("settings", "_manual_model"),
-                None,
                 &key(no_mods(), KeyCodeRepr::Esc),
                 Phase::Capture,
             )
@@ -1046,9 +976,7 @@ mod tests {
         let reg = populated();
         let hit = reg
             .lookup(
-                Screen::Settings,
                 &oxpath!("settings", "_manual_model"),
-                None,
                 &key(no_mods(), KeyCodeRepr::Enter),
                 Phase::Bubble,
             )
@@ -1064,9 +992,7 @@ mod tests {
         let reg = populated();
         let hit = reg
             .lookup(
-                Screen::Settings,
                 &oxpath!("settings", "_manual_model", "id"),
-                None,
                 &key(no_mods(), KeyCodeRepr::Char('x')),
                 Phase::Target,
             )
@@ -1079,9 +1005,7 @@ mod tests {
         let reg = populated();
         let hit = reg
             .lookup(
-                Screen::Settings,
                 &oxpath!("settings", "_manual_model", "ctx"),
-                None,
                 &key(no_mods(), KeyCodeRepr::Backspace),
                 Phase::Target,
             )
@@ -1094,9 +1018,7 @@ mod tests {
         let reg = populated();
         let hit = reg
             .lookup(
-                Screen::Settings,
                 &oxpath!("settings", "_manual_model", "out"),
-                None,
                 &key(no_mods(), KeyCodeRepr::Char('7')),
                 Phase::Target,
             )
@@ -1124,7 +1046,7 @@ mod tests {
         for entry in entries {
             let cursor = entry.scope.keyed_path().unwrap_or(&empty_path);
             let resolved = reg
-                .lookup(entry.screen, cursor, entry.mode, &entry.key, entry.phase)
+                .lookup(cursor, &entry.key, entry.phase)
                 .unwrap_or_else(|| {
                     panic!("binding {entry:?} resolved to None — structurally unreachable")
                 });
@@ -1205,9 +1127,7 @@ mod tests {
     /// True iff the path's first two components are `settings/_*` —
     /// the synthetic compound-widget cursor convention.
     fn is_compound_widget_scope(p: &Path) -> bool {
-        p.components.len() >= 2
-            && p.components[0] == "settings"
-            && p.components[1].starts_with('_')
+        p.components.len() >= 2 && p.components[0] == "settings" && p.components[1].starts_with('_')
     }
 
     /// True iff `p` is the container scope for a widget that has a
@@ -1292,9 +1212,7 @@ mod tests {
         let offenders: Vec<&BindingEntry> = reg
             .entries()
             .iter()
-            .filter(|e| {
-                matches!(&e.scope, BindingScope::Exact(p) if is_compound_widget_scope(p))
-            })
+            .filter(|e| matches!(&e.scope, BindingScope::Exact(p) if is_compound_widget_scope(p)))
             .filter(|e| e.key.code == KeyCodeRepr::Esc)
             .filter(|e| e.phase != Phase::Capture)
             .collect();

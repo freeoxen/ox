@@ -14,7 +14,6 @@
 
 use ox_path::oxpath;
 use ox_types::ModelKey;
-use ox_types::Screen;
 use ox_types::subscription::Write;
 use structfs_core_store::{Reader, Record};
 use structfs_serde_store::to_value;
@@ -32,7 +31,6 @@ command! {
     id: "highlight.index.next",
     title: "Highlight Next (Index)",
     description: "Move the index selection to the next entry (wrap).",
-    screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "index")),
     run: |snap, _ctx| index_step(snap, Direction::Next),
 }
@@ -42,7 +40,6 @@ command! {
     id: "highlight.index.prev",
     title: "Highlight Prev (Index)",
     description: "Move the index selection to the previous entry (wrap).",
-    screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "index")),
     run: |snap, _ctx| index_step(snap, Direction::Prev),
 }
@@ -54,7 +51,6 @@ command! {
     id: "highlight.accounts.next",
     title: "Highlight Next (Connections)",
     description: "Move the Connections selection to the next Connection (wrap).",
-    screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "accounts")),
     run: |snap, _ctx| accounts_step(snap, Direction::Next),
 }
@@ -64,7 +60,6 @@ command! {
     id: "highlight.accounts.prev",
     title: "Highlight Prev (Connections)",
     description: "Move the Connections selection to the previous Connection (wrap).",
-    screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "accounts")),
     run: |snap, _ctx| accounts_step(snap, Direction::Prev),
 }
@@ -76,7 +71,6 @@ command! {
     id: "highlight.models.next",
     title: "Highlight Next (Models)",
     description: "Move the models selection to the next (account, model) pair (wrap).",
-    screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "models")),
     run: |snap, _ctx| models_step(snap, Direction::Next),
 }
@@ -86,7 +80,6 @@ command! {
     id: "highlight.models.prev",
     title: "Highlight Prev (Models)",
     description: "Move the models selection to the previous (account, model) pair (wrap).",
-    screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "models")),
     run: |snap, _ctx| models_step(snap, Direction::Prev),
 }

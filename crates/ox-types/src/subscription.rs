@@ -5,7 +5,8 @@
 //! `SpawnHandle`, `AsyncWriter`, `SubscriptionRegistry`, `DispatchingStore`)
 //! live in `ox-broker` because they reference `Reader` / `Store`. The
 //! data shapes that cross subscription handlers — `SubscriptionId`,
-//! `PathPattern`, `PathChange`, `Write` — live here in `ox-types`.
+//! `PathPattern`, `PathChange` — live here in `ox-types`. `Write` lives
+//! in `horns-core` and is re-exported here for caller compatibility.
 //!
 //! `PathChange` and `Write` carry a `Record`, which has no serde impl.
 //! These two records are intentionally **in-process only** — they are
@@ -15,6 +16,7 @@
 //!
 //! Per spec §5.8 of the settings-screen redesign.
 
+pub use horns_core::write::Write;
 use serde::{Deserialize, Serialize};
 use structfs_core_store::{Path, Record};
 
@@ -100,14 +102,6 @@ pub struct PathChange {
     pub path: Path,
     pub before: Option<Record>,
     pub after: Option<Record>,
-}
-
-/// A single write to be dispatched. Carries `Record`, so this is
-/// **in-process only**.
-#[derive(Clone, Debug)]
-pub struct Write {
-    pub path: Path,
-    pub record: Record,
 }
 
 #[cfg(test)]

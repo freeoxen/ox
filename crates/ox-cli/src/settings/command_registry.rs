@@ -110,10 +110,7 @@ mod tests {
                     name: "Write One".to_string(),
                     description: "writes 'hello' to ui/x".to_string(),
                 },
-                scope: CommandScope {
-                    screen: Screen::Settings,
-                    cursor_path: None,
-                },
+                scope: CommandScope { cursor_path: None },
             }
         }
     }
@@ -153,10 +150,7 @@ mod tests {
                     name: "Registry Probe".to_string(),
                     description: "writes ctx.registry.lookup result".to_string(),
                 },
-                scope: CommandScope {
-                    screen: Screen::Settings,
-                    cursor_path: None,
-                },
+                scope: CommandScope { cursor_path: None },
             }
         }
     }
@@ -199,10 +193,7 @@ mod tests {
                     name: "Write If Keystroke".to_string(),
                     description: "writes whether ctx.last_keystroke was set".to_string(),
                 },
-                scope: CommandScope {
-                    screen: Screen::Settings,
-                    cursor_path: None,
-                },
+                scope: CommandScope { cursor_path: None },
             }
         }
     }

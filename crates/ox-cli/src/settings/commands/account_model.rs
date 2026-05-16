@@ -13,7 +13,6 @@
 
 use ox_kernel::{AccountName, PathComponent};
 use ox_path::oxpath;
-use ox_types::Screen;
 use ox_types::settings::{AccountField, ModelField, ModelKey, ValidationErrors};
 use ox_types::subscription::Write;
 use structfs_core_store::{Path, Reader, Record, Value};
@@ -76,12 +75,18 @@ pub(crate) const FIELD_ORDER: [AccountField; 5] = [
 ];
 
 pub(crate) fn focus_next(field: AccountField) -> AccountField {
-    let idx = FIELD_ORDER.iter().position(|f| *f == field).expect("variant in FIELD_ORDER");
+    let idx = FIELD_ORDER
+        .iter()
+        .position(|f| *f == field)
+        .expect("variant in FIELD_ORDER");
     FIELD_ORDER[(idx + 1) % FIELD_ORDER.len()]
 }
 
 pub(crate) fn focus_prev(field: AccountField) -> AccountField {
-    let idx = FIELD_ORDER.iter().position(|f| *f == field).expect("variant in FIELD_ORDER");
+    let idx = FIELD_ORDER
+        .iter()
+        .position(|f| *f == field)
+        .expect("variant in FIELD_ORDER");
     FIELD_ORDER[(idx + FIELD_ORDER.len() - 1) % FIELD_ORDER.len()]
 }
 
@@ -303,7 +308,6 @@ command! {
     id: "accounts.compose.open",
     title: "New connection",
     description: "Initialize the multi-field new-connection draft and enter compose mode.",
-    screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "accounts")),
     run: |snap, _ctx| accounts_compose_open(snap),
 }
@@ -321,7 +325,6 @@ command! {
     id: "accounts.compose.insert_char",
     title: "Insert character",
     description: "Append the just-pressed printable char to the new-account name buffer.",
-    screen: Screen::Settings,
     cursor: None,
     run: |snap, ctx| accounts_compose_insert_char(snap, ctx),
 }
@@ -331,7 +334,6 @@ command! {
     id: "accounts.compose.delete_back",
     title: "Backspace",
     description: "Pop the last character from the new-account name buffer.",
-    screen: Screen::Settings,
     cursor: None,
     run: |snap, _ctx| accounts_compose_delete_back(snap),
 }
@@ -341,7 +343,6 @@ command! {
     id: "accounts.compose.cycle_forward",
     title: "Next option",
     description: "Cycle the focused selector to the next option.",
-    screen: Screen::Settings,
     cursor: None,
     run: |snap, _ctx| accounts_compose_cycle(snap, CycleDir::Forward),
 }
@@ -351,7 +352,6 @@ command! {
     id: "accounts.compose.cycle_back",
     title: "Previous option",
     description: "Cycle the focused selector to the previous option.",
-    screen: Screen::Settings,
     cursor: None,
     run: |snap, _ctx| accounts_compose_cycle(snap, CycleDir::Back),
 }
@@ -361,7 +361,6 @@ command! {
     id: "accounts.compose.focus_next",
     title: "Next field",
     description: "Advance compose-mode focus to the next field.",
-    screen: Screen::Settings,
     cursor: None,
     run: |snap, _ctx| accounts_compose_focus_next(snap),
 }
@@ -371,7 +370,6 @@ command! {
     id: "accounts.compose.focus_prev",
     title: "Previous field",
     description: "Retreat compose-mode focus to the previous field.",
-    screen: Screen::Settings,
     cursor: None,
     run: |snap, _ctx| accounts_compose_focus_prev(snap),
 }
@@ -381,7 +379,6 @@ command! {
     id: "accounts.compose.commit",
     title: "Create connection",
     description: "Validate the compose-mode draft and materialize the new connection.",
-    screen: Screen::Settings,
     cursor: None,
     run: |snap, _ctx| accounts_compose_commit(snap),
 }
@@ -391,7 +388,6 @@ command! {
     id: "accounts.compose.cancel",
     title: "Cancel new connection",
     description: "Discard the new-account draft; exit compose mode.",
-    screen: Screen::Settings,
     cursor: None,
     run: |snap, _ctx| accounts_compose_cancel(snap),
 }
@@ -408,7 +404,6 @@ command! {
     id: "accounts.confirm.delete",
     title: "Confirm delete",
     description: "Delete the target account record; restore the cursor.",
-    screen: Screen::Settings,
     cursor: None,
     run: |snap, _ctx| accounts_confirm_delete(snap),
 }
@@ -418,7 +413,6 @@ command! {
     id: "accounts.confirm.cancel",
     title: "Cancel delete",
     description: "Dismiss the delete-confirmation banner without deleting; restore the cursor.",
-    screen: Screen::Settings,
     cursor: None,
     run: |snap, _ctx| accounts_confirm_cancel(snap),
 }
@@ -428,7 +422,6 @@ command! {
     id: "accounts.delete_confirm",
     title: "Delete Connection…",
     description: "Open the delete-confirmation banner for the selected Connection.",
-    screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "accounts")),
     run: |snap, _ctx| accounts_delete_confirm(snap),
 }
@@ -442,7 +435,6 @@ command! {
     id: "account.test",
     title: "Test Connection",
     description: "Trigger a connection test for the selected Connection.",
-    screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "accounts", "_detail")),
     run: |snap, _ctx| account_test(snap),
 }
@@ -452,7 +444,6 @@ command! {
     id: "account.refresh",
     title: "Refresh Catalog",
     description: "Re-fetch the model catalog for the selected model's Connection.",
-    screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "models")),
     run: |snap, _ctx| account_refresh(snap),
 }
@@ -462,7 +453,6 @@ command! {
     id: "models.set_bootstrap",
     title: "Set as Bootstrap",
     description: "Bind config/gate/completions/bootstrap to the selected (account, model). Also writes the legacy config/gate/completions/primary path during the migration window.",
-    screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "models")),
     run: |snap, _ctx| models_set_bootstrap(snap),
 }
@@ -472,7 +462,6 @@ command! {
     id: "models.toggle_default",
     title: "Toggle Default-Available",
     description: "Add or remove the focused (account, model) from the default-available set.",
-    screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "models")),
     run: |snap, _ctx| models_toggle_default(snap),
 }
@@ -482,7 +471,6 @@ command! {
     id: "app.save",
     title: "Save",
     description: "Persist edits to disk via the save subscription.",
-    screen: Screen::Settings,
     cursor: None,
     run: |_snap, _ctx| vec![Write {
         path: oxpath!("config", "save"),
@@ -499,7 +487,6 @@ command! {
     id: "field.account.next",
     title: "Next Field",
     description: "Cycle the focused Connection-detail field forward.",
-    screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "accounts", "_detail")),
     run: |snap, _ctx| field_account_step(snap, 1),
 }
@@ -509,7 +496,6 @@ command! {
     id: "field.account.prev",
     title: "Previous Field",
     description: "Cycle the focused Connection-detail field backward.",
-    screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "accounts", "_detail")),
     run: |snap, _ctx| field_account_step(snap, -1),
 }
@@ -519,7 +505,6 @@ command! {
     id: "field.model.next",
     title: "Next Field",
     description: "Cycle the focused model-detail field forward.",
-    screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "models", "_detail")),
     run: |snap, _ctx| field_model_step(snap, 1),
 }
@@ -529,7 +514,6 @@ command! {
     id: "field.model.prev",
     title: "Previous Field",
     description: "Cycle the focused model-detail field backward.",
-    screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "models", "_detail")),
     run: |snap, _ctx| field_model_step(snap, -1),
 }
@@ -543,7 +527,6 @@ command! {
     id: "selector.cycle.protocol",
     title: "Cycle Protocol",
     description: "Advance the Connection's protocol/dialect selector.",
-    screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "accounts", "_detail")),
     run: |snap, _ctx| selector_cycle_protocol(snap),
 }
@@ -553,7 +536,6 @@ command! {
     id: "selector.cycle.auth",
     title: "Cycle Auth",
     description: "Advance the provider's auth-scheme selector.",
-    screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "accounts", "_detail")),
     run: |snap, _ctx| selector_cycle_auth(snap),
 }
@@ -563,7 +545,6 @@ command! {
     id: "accounts.fork_provider",
     title: "Fork Provider",
     description: "Clone the bound provider so this Connection no longer shares it with others. Edits to endpoint/auth/version then affect only this Connection.",
-    screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "accounts")),
     run: |snap, _ctx| accounts_fork_provider(snap),
 }
@@ -581,7 +562,6 @@ command! {
     id: "models.add_manual",
     title: "Add Model Manually",
     description: "Open the inline three-stage manual-model entry form for the focused account.",
-    screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "models")),
     run: |snap, _ctx| models_add_manual(snap),
 }
@@ -591,7 +571,6 @@ command! {
     id: "models.compose_manual.insert_char",
     title: "Insert character (manual model)",
     description: "Append the just-pressed char to the manual-model buffer (per-stage rules).",
-    screen: Screen::Settings,
     cursor: None,
     run: |snap, ctx| models_manual_insert_char(snap, ctx),
 }
@@ -601,7 +580,6 @@ command! {
     id: "models.compose_manual.delete_back",
     title: "Backspace (manual model)",
     description: "Pop the last character from the manual-model buffer.",
-    screen: Screen::Settings,
     cursor: None,
     run: |snap, _ctx| models_manual_delete_back(snap),
 }
@@ -611,7 +589,6 @@ command! {
     id: "models.compose_manual.commit",
     title: "Commit stage (manual model)",
     description: "Advance the form's stage; the final stage finalizes the new ModelInfo into the catalog.",
-    screen: Screen::Settings,
     cursor: None,
     run: |snap, _ctx| models_manual_commit(snap),
 }
@@ -621,7 +598,6 @@ command! {
     id: "models.compose_manual.cancel",
     title: "Cancel manual model",
     description: "Discard the manual-model buffer and exit compose mode.",
-    screen: Screen::Settings,
     cursor: None,
     run: |snap, _ctx| models_manual_cancel(snap),
 }
@@ -1009,8 +985,7 @@ pub(crate) const PROTOCOL_OPTIONS: &[&str] = &["anthropic", "openai"];
 pub(crate) fn compose_form_view(data: &mut dyn Reader) -> horns_core::view::View {
     use horns_core::view::{FormRow, View};
     let errors: ValidationErrors =
-        read_typed(data, &oxpath!("ui", "settings", "new_account", "errors"))
-            .unwrap_or_default();
+        read_typed(data, &oxpath!("ui", "settings", "new_account", "errors")).unwrap_or_default();
 
     let rows: Vec<FormRow> = FIELD_ORDER
         .iter()
@@ -1050,7 +1025,10 @@ fn project_compose_field(
         }
         AccountField::Protocol => {
             let current: Option<String> = read_typed(data, &field_state_path(field));
-            (selector_form_value(current.as_deref(), PROTOCOL_OPTIONS), None)
+            (
+                selector_form_value(current.as_deref(), PROTOCOL_OPTIONS),
+                None,
+            )
         }
         AccountField::Auth => {
             let current: Option<AuthScheme> = read_typed(data, &field_state_path(field));
@@ -1139,8 +1117,7 @@ fn accounts_compose_cycle(data: &mut dyn Reader, dir: CycleDir) -> Vec<Write> {
 }
 
 fn cycle_compose_protocol(data: &mut dyn Reader, dir: CycleDir) -> Vec<Write> {
-    let current: Option<String> =
-        read_typed(data, &field_state_path(AccountField::Protocol));
+    let current: Option<String> = read_typed(data, &field_state_path(AccountField::Protocol));
     let next = cycle_str_options(PROTOCOL_OPTIONS, current.as_deref(), dir);
     vec![Write {
         path: field_state_path(AccountField::Protocol),
@@ -1149,8 +1126,7 @@ fn cycle_compose_protocol(data: &mut dyn Reader, dir: CycleDir) -> Vec<Write> {
 }
 
 fn cycle_compose_auth(data: &mut dyn Reader, dir: CycleDir) -> Vec<Write> {
-    let current: Option<AuthScheme> =
-        read_typed(data, &field_state_path(AccountField::Auth));
+    let current: Option<AuthScheme> = read_typed(data, &field_state_path(AccountField::Auth));
     let next = cycle_enum_options(&AuthScheme::ALL, current.as_ref(), dir);
     let value = match to_value(&next) {
         Ok(v) => v,
@@ -1166,11 +1142,7 @@ fn cycle_compose_auth(data: &mut dyn Reader, dir: CycleDir) -> Vec<Write> {
 /// wrapping at the ends. When `current` isn't in `options` — including
 /// `None` (first press) — forward picks `options[0]`, back picks the
 /// last entry. Caller must ensure `options` is non-empty.
-fn cycle_str_options<'a>(
-    options: &'a [&'a str],
-    current: Option<&str>,
-    dir: CycleDir,
-) -> &'a str {
+fn cycle_str_options<'a>(options: &'a [&'a str], current: Option<&str>, dir: CycleDir) -> &'a str {
     match current.and_then(|c| options.iter().position(|o| *o == c)) {
         None => match dir {
             CycleDir::Forward => options[0],
@@ -1246,15 +1218,13 @@ fn accounts_compose_commit(data: &mut dyn Reader) -> Vec<Write> {
         .unwrap_or_default()
         .trim()
         .to_string();
-    let protocol: Option<String> =
-        read_typed(data, &field_state_path(AccountField::Protocol));
+    let protocol: Option<String> = read_typed(data, &field_state_path(AccountField::Protocol));
     let endpoint = read_typed::<String>(data, &field_state_path(AccountField::Endpoint))
         .unwrap_or_default()
         .trim()
         .to_string();
     let auth: Option<AuthScheme> = read_typed(data, &field_state_path(AccountField::Auth));
-    let key = read_typed::<String>(data, &field_state_path(AccountField::Key))
-        .unwrap_or_default();
+    let key = read_typed::<String>(data, &field_state_path(AccountField::Key)).unwrap_or_default();
 
     let existing = child_names_under(data, "config/gate/accounts");
     let errors = validate_compose_draft(
@@ -1382,19 +1352,22 @@ fn protocol_default_version(protocol: &str) -> String {
 /// ancestors so the form scope plus per-stage leaf scope sit on the
 /// binding scope path naturally.
 fn models_add_manual(data: &mut dyn Reader) -> Vec<Write> {
+    use crate::settings::visible_rows::{RowKind, enumerate};
     use ox_types::settings::ManualModelStage;
-    use crate::settings::visible_rows::{enumerate, RowKind};
 
     let focused = match focused_path(data) {
         Some(p) => p,
         None => return Vec::new(),
     };
     let rows = enumerate(data);
-    let account = rows.iter().find(|r| r.path == focused).and_then(|r| match &r.kind {
-        RowKind::Model { account, .. } => Some(account.clone()),
-        RowKind::ModelField { account, .. } => Some(account.clone()),
-        RowKind::Entry { .. } | RowKind::Account { .. } | RowKind::AccountField { .. } => None,
-    });
+    let account = rows
+        .iter()
+        .find(|r| r.path == focused)
+        .and_then(|r| match &r.kind {
+            RowKind::Model { account, .. } => Some(account.clone()),
+            RowKind::ModelField { account, .. } => Some(account.clone()),
+            RowKind::Entry { .. } | RowKind::Account { .. } | RowKind::AccountField { .. } => None,
+        });
     let Some(account) = account else {
         return Vec::new();
     };
@@ -1435,7 +1408,9 @@ fn models_add_manual(data: &mut dyn Reader) -> Vec<Write> {
 /// the dispatcher has routed via the manual-model scope, so this only
 /// ever returns `None` for stale snapshots that the dispatcher's gate
 /// has already excluded.
-fn models_manual_active_stage(data: &mut dyn Reader) -> Option<ox_types::settings::ManualModelStage> {
+fn models_manual_active_stage(
+    data: &mut dyn Reader,
+) -> Option<ox_types::settings::ManualModelStage> {
     read_focused_path(data)
         .as_ref()
         .and_then(cursor_to_manual_model_stage)
@@ -1566,11 +1541,9 @@ fn models_manual_commit(data: &mut dyn Reader) -> Vec<Write> {
             )
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
-            let account_raw: String = read_typed(
-                data,
-                &oxpath!("ui", "settings", "manual_model", "account"),
-            )
-            .unwrap_or_default();
+            let account_raw: String =
+                read_typed(data, &oxpath!("ui", "settings", "manual_model", "account"))
+                    .unwrap_or_default();
             // Broker-read boundary: lift the raw String into AccountName.
             let account = match AccountName::try_new(account_raw) {
                 Ok(n) => n,
@@ -2125,7 +2098,6 @@ command! {
     id: "cycle.field.next",
     title: "Cycle field next",
     description: "Advance the focused selector field to its next option.",
-    screen: Screen::Settings,
     cursor: None,
     run: |snap, _ctx| cycle_field(snap, CycleDir::Forward),
 }
@@ -2135,7 +2107,6 @@ command! {
     id: "cycle.field.prev",
     title: "Cycle field prev",
     description: "Advance the focused selector field to its previous option.",
-    screen: Screen::Settings,
     cursor: None,
     run: |snap, _ctx| cycle_field(snap, CycleDir::Back),
 }
@@ -2501,8 +2472,7 @@ mod tests {
         // Cursor moves to the form's Name field. The cursor's path
         // segments encode the mode (compose-form) and the focused
         // sub-element (name) — no separate `active` discriminator.
-        let focused_val = writes_value(&writes, "ui/settings/focused")
-            .expect("cursor written");
+        let focused_val = writes_value(&writes, "ui/settings/focused").expect("cursor written");
         let focused_path = super::super::navigation::path_from_value(&focused_val)
             .expect("cursor value decodes as Path");
         assert_eq!(
@@ -2540,10 +2510,9 @@ mod tests {
         }
 
         // Errors record present, all required fields flagged.
-        let errors_val = writes_value(&writes, "ui/settings/new_account/errors")
-            .expect("errors written");
-        let errors: ValidationErrors =
-            structfs_serde_store::from_value(errors_val).unwrap();
+        let errors_val =
+            writes_value(&writes, "ui/settings/new_account/errors").expect("errors written");
+        let errors: ValidationErrors = structfs_serde_store::from_value(errors_val).unwrap();
         assert!(errors.name.is_some());
         assert!(errors.protocol.is_some());
         assert!(errors.endpoint.is_some());
@@ -2569,11 +2538,7 @@ mod tests {
         let mut snap = test_snapshot_with_no_accounts();
         snap.insert(
             &oxpath!("ui", "settings", "focused"),
-            super::super::navigation::path_to_value(&oxpath!(
-                "settings",
-                "accounts",
-                "alpha"
-            )),
+            super::super::navigation::path_to_value(&oxpath!("settings", "accounts", "alpha")),
         );
         let writes = run_cmd(&AccountsComposeOpen::new(), &mut snap);
         let saved_val = writes_value(&writes, "ui/settings/new_account/cursor_saved")
@@ -2589,10 +2554,9 @@ mod tests {
         // `ui/settings/focused = settings/_compose_form/name`.
         let mut snap = test_snapshot_with_no_accounts();
         let writes = run_cmd(&AccountsComposeOpen::new(), &mut snap);
-        let focused_val = writes_value(&writes, "ui/settings/focused")
-            .expect("focused written");
-        let focused = super::super::navigation::path_from_value(&focused_val)
-            .expect("decode focused path");
+        let focused_val = writes_value(&writes, "ui/settings/focused").expect("focused written");
+        let focused =
+            super::super::navigation::path_from_value(&focused_val).expect("decode focused path");
         assert_eq!(focused, oxpath!("settings", "_compose_form", "name"));
     }
 
@@ -2606,10 +2570,9 @@ mod tests {
         write_account(&mut snap, "alpha", "anthropic");
 
         let writes = run_cmd(&AccountsComposeOpen::new(), &mut snap);
-        let errors_val = writes_value(&writes, "ui/settings/new_account/errors")
-            .expect("errors written");
-        let errors: ValidationErrors =
-            structfs_serde_store::from_value(errors_val).unwrap();
+        let errors_val =
+            writes_value(&writes, "ui/settings/new_account/errors").expect("errors written");
+        let errors: ValidationErrors = structfs_serde_store::from_value(errors_val).unwrap();
         // Empty name still trips the `required` rule; the duplicate-check
         // is exercised once the user has typed a name. We just check that
         // the existing accounts read succeeded by confirming no panic.
@@ -2690,8 +2653,8 @@ mod tests {
         let writes = run_cmd(&AccountsComposeCommit::new(), &mut snap);
 
         // Account record at the per-account path.
-        let acct_val = writes_value(&writes, "config/gate/accounts/personal")
-            .expect("account record written");
+        let acct_val =
+            writes_value(&writes, "config/gate/accounts/personal").expect("account record written");
         let acct: AccountConfig =
             structfs_serde_store::from_value(acct_val).expect("decode AccountConfig");
         assert_eq!(acct.provider, "personal");
@@ -2728,8 +2691,8 @@ mod tests {
         );
 
         // Focus moves to the new account row (path-array form).
-        let focused_val = writes_value(&writes, "ui/settings/focused")
-            .expect("focused path written");
+        let focused_val =
+            writes_value(&writes, "ui/settings/focused").expect("focused path written");
         let focused_path = super::super::navigation::path_from_value(&focused_val)
             .expect("focused value decodes as Path");
         assert_eq!(
@@ -2762,8 +2725,7 @@ mod tests {
         );
 
         let acct_path = format!("config/gate/accounts/{path_id}");
-        let acct_val = writes_value(&writes, &acct_path)
-            .expect("account record at encoded path");
+        let acct_val = writes_value(&writes, &acct_path).expect("account record at encoded path");
         let acct: AccountConfig =
             structfs_serde_store::from_value(acct_val).expect("decode AccountConfig");
         // provider points at the encoded path_id (so the provider
@@ -2894,10 +2856,9 @@ mod tests {
         };
         let writes = AccountsComposeInsertChar::new().run(&mut snap, &ctx);
 
-        let errors_val = writes_value(&writes, "ui/settings/new_account/errors")
-            .expect("errors written");
-        let errors: ValidationErrors =
-            structfs_serde_store::from_value(errors_val).unwrap();
+        let errors_val =
+            writes_value(&writes, "ui/settings/new_account/errors").expect("errors written");
+        let errors: ValidationErrors = structfs_serde_store::from_value(errors_val).unwrap();
         // After typing one valid char, name is no longer "required".
         assert_eq!(errors.name, None);
     }
@@ -2950,9 +2911,11 @@ mod tests {
             w.path == oxpath!("ui", "settings", "new_account")
                 && matches!(&w.record, Record::Parsed(Value::Null))
         }));
-        assert!(writes.iter().any(|w| {
-            w.path == oxpath!("ui", "settings", "focused")
-        }));
+        assert!(
+            writes
+                .iter()
+                .any(|w| { w.path == oxpath!("ui", "settings", "focused") })
+        );
     }
 
     #[test]
@@ -2964,15 +2927,10 @@ mod tests {
         let mut snap = test_snapshot_with_compose_state("partial", "name");
         snap.insert(
             &oxpath!("ui", "settings", "new_account", "cursor_saved"),
-            super::super::navigation::path_to_value(&oxpath!(
-                "settings",
-                "accounts",
-                "alpha"
-            )),
+            super::super::navigation::path_to_value(&oxpath!("settings", "accounts", "alpha")),
         );
         let writes = run_cmd(&AccountsComposeCancel::new(), &mut snap);
-        let focused_val = writes_value(&writes, "ui/settings/focused")
-            .expect("cursor restored");
+        let focused_val = writes_value(&writes, "ui/settings/focused").expect("cursor restored");
         let focused = super::super::navigation::path_from_value(&focused_val).unwrap();
         assert_eq!(focused, oxpath!("settings", "accounts", "alpha"));
     }
@@ -2983,8 +2941,7 @@ mod tests {
         // a sensible cursor so the user doesn't get stranded.
         let mut snap = test_snapshot_with_compose_state("partial", "name");
         let writes = run_cmd(&AccountsComposeCancel::new(), &mut snap);
-        let focused_val = writes_value(&writes, "ui/settings/focused")
-            .expect("cursor written");
+        let focused_val = writes_value(&writes, "ui/settings/focused").expect("cursor written");
         let focused = super::super::navigation::path_from_value(&focused_val).unwrap();
         assert_eq!(focused, oxpath!("settings", "accounts"));
     }
@@ -3078,8 +3035,7 @@ mod tests {
         // pre-cycle snapshot (which had protocol = Null).
         let errors_val = writes_value(&writes, "ui/settings/new_account/errors")
             .expect("errors recomputed after cycle");
-        let errors: ValidationErrors =
-            structfs_serde_store::from_value(errors_val).unwrap();
+        let errors: ValidationErrors = structfs_serde_store::from_value(errors_val).unwrap();
         assert_eq!(
             errors.protocol, None,
             "after cycling protocol, the stale 'select a protocol' error must clear",
@@ -3097,8 +3053,7 @@ mod tests {
 
         let errors_val = writes_value(&writes, "ui/settings/new_account/errors")
             .expect("errors recomputed after cycle");
-        let errors: ValidationErrors =
-            structfs_serde_store::from_value(errors_val).unwrap();
+        let errors: ValidationErrors = structfs_serde_store::from_value(errors_val).unwrap();
         assert_eq!(
             errors.auth, None,
             "after cycling auth, the stale 'select an auth scheme' error must clear",
@@ -3111,8 +3066,7 @@ mod tests {
     fn focus_next_command_advances_cursor() {
         let mut snap = test_snapshot_with_compose_state_focus("name");
         let writes = accounts_compose_focus_next(&mut snap);
-        let focused_val = writes_value(&writes, "ui/settings/focused")
-            .expect("cursor written");
+        let focused_val = writes_value(&writes, "ui/settings/focused").expect("cursor written");
         let focused = super::super::navigation::path_from_value(&focused_val).unwrap();
         assert_eq!(focused, oxpath!("settings", "_compose_form", "protocol"));
     }
@@ -3122,8 +3076,7 @@ mod tests {
         let mut snap = test_snapshot_with_compose_state_focus("name");
         let writes = accounts_compose_focus_prev(&mut snap);
         // Wraps to Key (FIELD_ORDER is Name → Protocol → Endpoint → Auth → Key → Name).
-        let focused_val = writes_value(&writes, "ui/settings/focused")
-            .expect("cursor written");
+        let focused_val = writes_value(&writes, "ui/settings/focused").expect("cursor written");
         let focused = super::super::navigation::path_from_value(&focused_val).unwrap();
         assert_eq!(focused, oxpath!("settings", "_compose_form", "key"));
     }
@@ -3169,9 +3122,7 @@ mod tests {
         let chord = KeyChord { modifiers, code };
         crate::settings::dispatch::dispatch_settings_key(
             snap,
-            Screen::Settings,
             &oxpath!("settings", "accounts"),
-            None,
             &chord,
             &cmds,
             &bindings,
@@ -3257,10 +3208,9 @@ mod tests {
             .iter()
             .find(|w| w.path == oxpath!("ui", "settings", "focused"))
             .expect("cursor written");
-        let cursor = super::super::navigation::path_from_value(
-            focused_write.record.as_value().unwrap(),
-        )
-        .expect("decode cursor");
+        let cursor =
+            super::super::navigation::path_from_value(focused_write.record.as_value().unwrap())
+                .expect("decode cursor");
         assert_eq!(cursor, oxpath!("settings", "_confirm_delete"));
         // The retired value-flag must not be written.
         assert!(
@@ -3280,10 +3230,7 @@ mod tests {
         let mut snap = SettingsSnapshot::empty();
         select_account(&mut snap, "alpha");
         let prior = oxpath!("settings", "accounts");
-        snap.insert(
-            &oxpath!("ui", "settings", "focused"),
-            path_to_value(&prior),
-        );
+        snap.insert(&oxpath!("ui", "settings", "focused"), path_to_value(&prior));
         let writes = run_cmd(&AccountsDeleteConfirm::new(), &mut snap);
 
         let target_write = writes
@@ -3468,9 +3415,10 @@ mod tests {
         let mut snap = SettingsSnapshot::empty();
         write_index_entries_for_manual(&mut snap);
         write_account(&mut snap, "alpha", "openai");
-        let expanded = crate::settings::visible_rows::expanded_set_to_value(&[
-            "settings/accounts".to_string(),
-        ]);
+        let expanded =
+            crate::settings::visible_rows::expanded_set_to_value(
+                &["settings/accounts".to_string()],
+            );
         snap.insert(&oxpath!("ui", "settings", "expanded"), expanded);
         let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
         snap.insert(
@@ -4075,11 +4023,7 @@ mod tests {
         );
     }
 
-    fn run_with_chord<C: Command>(
-        cmd: &C,
-        snap: &mut SettingsSnapshot,
-        ch: char,
-    ) -> Vec<Write> {
+    fn run_with_chord<C: Command>(cmd: &C, snap: &mut SettingsSnapshot, ch: char) -> Vec<Write> {
         let registry = RendererRegistry::new();
         let ctx = CommandCtx {
             registry: &registry,
@@ -4122,9 +4066,8 @@ mod tests {
             }])
             .unwrap(),
         );
-        let expanded = crate::settings::visible_rows::expanded_set_to_value(&[
-            "settings/models".to_string(),
-        ]);
+        let expanded =
+            crate::settings::visible_rows::expanded_set_to_value(&["settings/models".to_string()]);
         snap.insert(&oxpath!("ui", "settings", "expanded"), expanded);
         let m_comp = ox_kernel::PathComponent::try_new("m1").unwrap();
         snap.insert(
@@ -4143,9 +4086,7 @@ mod tests {
         );
         // Cursor-as-focus: opening writes cursor to the Id-stage path.
         // No `manual_model/stage` write — the cursor IS the stage.
-        let focused_val = by_path
-            .get("ui/settings/focused")
-            .expect("cursor written");
+        let focused_val = by_path.get("ui/settings/focused").expect("cursor written");
         let focused = super::super::navigation::path_from_value(focused_val)
             .expect("cursor value decodes as Path");
         assert_eq!(
@@ -4194,9 +4135,8 @@ mod tests {
             }])
             .unwrap(),
         );
-        let expanded = crate::settings::visible_rows::expanded_set_to_value(&[
-            "settings/models".to_string(),
-        ]);
+        let expanded =
+            crate::settings::visible_rows::expanded_set_to_value(&["settings/models".to_string()]);
         snap.insert(&oxpath!("ui", "settings", "expanded"), expanded);
         let m_comp = ox_kernel::PathComponent::try_new("m1").unwrap();
         let prior_cursor = oxpath!("settings", "models", comp, m_comp);
@@ -4242,9 +4182,7 @@ mod tests {
             .map(|w| (w.path.to_string(), w.record.as_value().unwrap().clone()))
             .collect();
         // Cursor advances to the Ctx-stage path.
-        let focused_val = by_path
-            .get("ui/settings/focused")
-            .expect("cursor advanced");
+        let focused_val = by_path.get("ui/settings/focused").expect("cursor advanced");
         let focused = super::super::navigation::path_from_value(focused_val).unwrap();
         assert_eq!(focused, oxpath!("settings", "_manual_model", "ctx"));
         assert!(
@@ -4287,9 +4225,7 @@ mod tests {
             .map(|w| (w.path.to_string(), w.record.as_value().unwrap().clone()))
             .collect();
         // Cursor advances to the Out-stage path.
-        let focused_val = by_path
-            .get("ui/settings/focused")
-            .expect("cursor advanced");
+        let focused_val = by_path.get("ui/settings/focused").expect("cursor advanced");
         let focused = super::super::navigation::path_from_value(focused_val).unwrap();
         assert_eq!(focused, oxpath!("settings", "_manual_model", "out"));
         assert!(
@@ -4358,10 +4294,9 @@ mod tests {
             .iter()
             .find(|w| w.path == oxpath!("ui", "settings", "focused"))
             .expect("cursor write to new model row");
-        let cursor = super::super::navigation::path_from_value(
-            cursor_write.record.as_value().unwrap(),
-        )
-        .unwrap();
+        let cursor =
+            super::super::navigation::path_from_value(cursor_write.record.as_value().unwrap())
+                .unwrap();
         assert_eq!(
             cursor,
             oxpath!("settings", "models", "alpha", "custom_model"),
@@ -4457,9 +4392,8 @@ mod tests {
             }])
             .unwrap(),
         );
-        let expanded = crate::settings::visible_rows::expanded_set_to_value(&[
-            "settings/models".to_string(),
-        ]);
+        let expanded =
+            crate::settings::visible_rows::expanded_set_to_value(&["settings/models".to_string()]);
         snap.insert(&oxpath!("ui", "settings", "expanded"), expanded);
         let m_comp = ox_kernel::PathComponent::try_new("m1").unwrap();
         snap.insert(
@@ -4617,8 +4551,8 @@ mod tests {
 
     #[test]
     fn field_order_lists_every_variant_exactly_once() {
-        use std::collections::HashSet;
         use ox_types::settings::AccountField;
+        use std::collections::HashSet;
         let seen: HashSet<_> = FIELD_ORDER.iter().copied().collect();
         assert_eq!(seen.len(), FIELD_ORDER.len(), "FIELD_ORDER has duplicates");
         for v in [
@@ -4635,12 +4569,10 @@ mod tests {
     #[test]
     fn focus_next_walks_field_order() {
         use ox_types::settings::AccountField;
-        let walk: Vec<_> = std::iter::successors(
-            Some(AccountField::Name),
-            |f| Some(focus_next(*f)),
-        )
-        .take(6)
-        .collect();
+        let walk: Vec<_> =
+            std::iter::successors(Some(AccountField::Name), |f| Some(focus_next(*f)))
+                .take(6)
+                .collect();
         assert_eq!(
             walk,
             vec![
@@ -4657,12 +4589,10 @@ mod tests {
     #[test]
     fn focus_prev_walks_field_order_reversed() {
         use ox_types::settings::AccountField;
-        let walk: Vec<_> = std::iter::successors(
-            Some(AccountField::Name),
-            |f| Some(focus_prev(*f)),
-        )
-        .take(6)
-        .collect();
+        let walk: Vec<_> =
+            std::iter::successors(Some(AccountField::Name), |f| Some(focus_prev(*f)))
+                .take(6)
+                .collect();
         assert_eq!(
             walk,
             vec![
@@ -4688,20 +4618,28 @@ mod tests {
 
         // Length cap.
         let long = "a".repeat(257);
-        assert!(validate_compose_name(&long, &[]).unwrap().contains("too long"));
+        assert!(
+            validate_compose_name(&long, &[])
+                .unwrap()
+                .contains("too long")
+        );
 
         // Duplicate check: `existing` holds path components (namecoded form).
         // "anthropic" encodes to "anthropic" (already valid XID).
-        assert!(validate_compose_name("anthropic", &["anthropic".into()])
-            .unwrap()
-            .contains("already exists"));
+        assert!(
+            validate_compose_name("anthropic", &["anthropic".into()])
+                .unwrap()
+                .contains("already exists")
+        );
 
         // Duplicate check via encoding: "my-personal" namecodes to some encoded form.
         // If we already have that encoded form on disk, the proposal collides.
         let encoded = namecode::encode("my-personal");
-        assert!(validate_compose_name("my-personal", &[encoded])
-            .unwrap()
-            .contains("already exists"));
+        assert!(
+            validate_compose_name("my-personal", &[encoded])
+                .unwrap()
+                .contains("already exists")
+        );
 
         // Trim whitespace.
         assert_eq!(validate_compose_name("  foo  ", &[]), None);
@@ -4737,19 +4675,22 @@ mod tests {
         // Auth requires key, empty
         assert!(validate_compose_key("", Some(&AuthScheme::XApiKey)).is_some());
         // Auth requires key, non-empty
-        assert_eq!(validate_compose_key("sk-...", Some(&AuthScheme::XApiKey)), None);
+        assert_eq!(
+            validate_compose_key("sk-...", Some(&AuthScheme::XApiKey)),
+            None
+        );
     }
 
     #[test]
     fn validate_compose_draft_collects_all_errors() {
         use ox_gate::provider::AuthScheme;
         let errors = validate_compose_draft(
-            "",         // name
-            None,       // protocol
-            "",         // endpoint
-            None,       // auth
-            "",         // key
-            &[],        // existing accounts
+            "",   // name
+            None, // protocol
+            "",   // endpoint
+            None, // auth
+            "",   // key
+            &[],  // existing accounts
         );
         assert!(errors.name.is_some());
         assert!(errors.protocol.is_some());
@@ -4759,7 +4700,7 @@ mod tests {
         assert!(errors.key.is_none());
 
         let clean = validate_compose_draft(
-            "my-account",          // hyphen is now fine
+            "my-account", // hyphen is now fine
             Some("anthropic"),
             "https://api.example.com",
             Some(&AuthScheme::XApiKey),

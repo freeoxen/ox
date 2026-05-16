@@ -30,7 +30,6 @@
 //! sees what they're typing.
 
 use ox_path::oxpath;
-use ox_types::Screen;
 use ox_types::settings::{AccountField, ModelField, ModelKey};
 use ox_types::subscription::Write;
 use structfs_core_store::{Path, Reader, Record, Value};
@@ -52,7 +51,6 @@ command! {
     id: "edit.begin.account_endpoint",
     title: "Edit Endpoint",
     description: "Enter inline edit mode for the focused Connection's endpoint.",
-    screen: Screen::Settings,
     cursor: None,
     run: |snap, _ctx| begin_edit_account_text(snap, AccountField::Endpoint),
 }
@@ -62,7 +60,6 @@ command! {
     id: "edit.begin.account_key",
     title: "Edit API Key",
     description: "Enter inline edit mode for the focused Connection's API key.",
-    screen: Screen::Settings,
     cursor: None,
     run: |snap, _ctx| begin_edit_account_text(snap, AccountField::Key),
 }
@@ -72,7 +69,6 @@ command! {
     id: "edit.begin.model_field",
     title: "Edit Model Override",
     description: "Enter inline edit mode for the focused model's numeric override.",
-    screen: Screen::Settings,
     cursor: None,
     run: |snap, _ctx| begin_edit_model_field_inner(snap),
 }
@@ -86,7 +82,6 @@ command! {
     id: "edit.insert_char",
     title: "Insert character",
     description: "Append the just-pressed printable char to the edit buffer.",
-    screen: Screen::Settings,
     cursor: None,
     run: |snap, ctx| insert_char(snap, ctx),
 }
@@ -96,7 +91,6 @@ command! {
     id: "edit.delete_back",
     title: "Backspace",
     description: "Remove the last character from the edit buffer.",
-    screen: Screen::Settings,
     cursor: None,
     run: |snap, _ctx| delete_back(snap),
 }
@@ -106,7 +100,6 @@ command! {
     id: "edit.commit",
     title: "Commit",
     description: "Persist the edit buffer to the field's data path and exit edit mode.",
-    screen: Screen::Settings,
     cursor: None,
     run: |snap, _ctx| commit(snap),
 }
@@ -116,7 +109,6 @@ command! {
     id: "edit.cancel",
     title: "Cancel",
     description: "Discard the edit buffer and exit edit mode.",
-    screen: Screen::Settings,
     cursor: None,
     run: |snap, _ctx| cancel(snap),
 }
@@ -464,11 +456,10 @@ fn commit_account_field(
                 &oxpath!("config", "gate", "accounts", acct_comp.clone()),
             )
             .or_else(|| {
-                read_child_string(data, account, "provider")
-                    .map(|p| ox_gate::AccountConfig {
-                        provider: p,
-                        ..Default::default()
-                    })
+                read_child_string(data, account, "provider").map(|p| ox_gate::AccountConfig {
+                    provider: p,
+                    ..Default::default()
+                })
             })
             .unwrap_or(ox_gate::AccountConfig {
                 provider: "anthropic".to_string(),
@@ -1025,5 +1016,4 @@ mod tests {
         );
         assert!(read_edit_state(&mut snap).is_none());
     }
-
 }

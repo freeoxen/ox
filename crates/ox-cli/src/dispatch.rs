@@ -123,7 +123,7 @@ pub async fn send_key(
                 return send_via_input_store(client, key, screen, flags).await;
             };
             let writes = crate::settings::dispatch::dispatch_settings_key(
-                snapshot, screen, cursor, None, &chord, commands, bindings, renderers,
+                snapshot, cursor, &chord, commands, bindings, renderers,
             );
             if writes.is_empty() {
                 // No binding matched in the settings registry — fall
@@ -452,9 +452,7 @@ mod tests {
             let mut reader_orig = LocalConfig::default();
             let writes_orig = dispatch_settings_key(
                 &mut reader_orig,
-                entry.screen,
                 cursor,
-                entry.mode,
                 &entry.key,
                 &cmds,
                 &bindings,
@@ -464,9 +462,7 @@ mod tests {
             let mut reader_parsed = LocalConfig::default();
             let writes_parsed = dispatch_settings_key(
                 &mut reader_parsed,
-                entry.screen,
                 cursor,
-                entry.mode,
                 &parsed,
                 &cmds,
                 &bindings,

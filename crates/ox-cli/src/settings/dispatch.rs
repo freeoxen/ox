@@ -34,27 +34,19 @@
 use structfs_core_store::{Path, Reader};
 
 use ox_types::subscription::Write;
-use ox_types::{BindingScope, KeyChord, Mode, Phase, Screen};
+use ox_types::{BindingScope, KeyChord, Phase};
 
 use super::binding_registry::BindingRegistry;
 use super::command_registry::{CommandCtx, CommandRegistry};
 use super::commands::account_model::path_ancestors;
 use super::registry::RendererRegistry;
 
-/// Resolve `(screen, cursor, mode, key)` to a sequence of writes by
-/// looking up the binding, then the command, then running it. Returns
-/// `vec![]` (inert) on any miss.
-//
-// 8-parameter signature is spec-prescribed (settings-screen-redesign
-// plan, Phase H Task H3). Each argument is independently varied by
-// callers, so packing them into a struct would be ceremony without
-// information gain.
-#[allow(clippy::too_many_arguments)]
+/// Resolve `(cursor, key)` to a sequence of writes by looking up the
+/// binding, then the command, then running it. Returns `vec![]` (inert)
+/// on any miss.
 pub fn dispatch_settings_key(
     snapshot: &mut dyn Reader,
-    screen: Screen,
     _cursor: &Path,
-    mode: Option<Mode>,
     key: &KeyChord,
     cmds: &CommandRegistry,
     bindings: &BindingRegistry,
@@ -67,7 +59,7 @@ pub fn dispatch_settings_key(
     let mut cmd_id_opt = None;
     for scope_path_entry in &scope_path {
         if let Some(p) = scope_path_entry.keyed_path() {
-            if let Some(hit) = bindings.lookup(screen, p, mode, key, Phase::Capture) {
+            if let Some(hit) = bindings.lookup(p, key, Phase::Capture) {
                 cmd_id_opt = Some(hit);
                 break;
             }
@@ -77,7 +69,7 @@ pub fn dispatch_settings_key(
     // Target (leaf only): the innermost scope claims the key.
     if cmd_id_opt.is_none() {
         if let Some(leaf) = scope_path.last().and_then(BindingScope::keyed_path) {
-            cmd_id_opt = bindings.lookup(screen, leaf, mode, key, Phase::Target);
+            cmd_id_opt = bindings.lookup(leaf, key, Phase::Target);
         }
     }
 
@@ -90,7 +82,7 @@ pub fn dispatch_settings_key(
             let Some(p) = scope_path_entry.keyed_path() else {
                 continue;
             };
-            if let Some(hit) = bindings.lookup(screen, p, mode, key, Phase::Bubble) {
+            if let Some(hit) = bindings.lookup(p, key, Phase::Bubble) {
                 cmd_id_opt = Some(hit);
                 break;
             }
@@ -196,10 +188,7 @@ mod tests {
                     name: "Sentinel".to_string(),
                     description: "writes sentinel".to_string(),
                 },
-                scope: CommandScope {
-                    screen: Screen::Settings,
-                    cursor_path: None,
-                },
+                scope: CommandScope { cursor_path: None },
             }
         }
     }
@@ -238,10 +227,7 @@ mod tests {
                     name: "Report Keystroke".to_string(),
                     description: "writes ctx.last_keystroke char".to_string(),
                 },
-                scope: CommandScope {
-                    screen: Screen::Settings,
-                    cursor_path: None,
-                },
+                scope: CommandScope { cursor_path: None },
             }
         }
     }
@@ -282,9 +268,7 @@ mod tests {
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            screen: Screen::Settings,
             scope: ox_types::BindingScope::Anywhere,
-            mode: None,
             key: key_char('a'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Target,
@@ -305,9 +289,7 @@ mod tests {
 
         let writes = dispatch_settings_key(
             &mut reader,
-            Screen::Settings,
             &oxpath!(),
-            None,
             &key_char('a'),
             &cmds,
             &bindings,
@@ -331,9 +313,7 @@ mod tests {
 
         let writes = dispatch_settings_key(
             &mut reader,
-            Screen::Settings,
             &oxpath!(),
-            None,
             &key_char('a'),
             &cmds,
             &bindings,
@@ -350,9 +330,7 @@ mod tests {
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            screen: Screen::Settings,
             scope: ox_types::BindingScope::Anywhere,
-            mode: None,
             key: key_char('a'),
             command_id: cmd_id("not.registered"),
             phase: Phase::Target,
@@ -363,9 +341,7 @@ mod tests {
 
         let writes = dispatch_settings_key(
             &mut reader,
-            Screen::Settings,
             &oxpath!(),
-            None,
             &key_char('a'),
             &cmds,
             &bindings,
@@ -385,13 +361,7 @@ mod tests {
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            screen: Screen::Settings,
-            scope: ox_types::BindingScope::Exact(oxpath!(
-                "settings",
-                "_compose_form",
-                "name"
-            )),
-            mode: None,
+            scope: ox_types::BindingScope::Exact(oxpath!("settings", "_compose_form", "name")),
             key: key_char('a'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Target,
@@ -403,19 +373,13 @@ mod tests {
         reader
             .write(
                 &oxpath!("ui", "settings", "focused"),
-                Record::parsed(path_to_value(&oxpath!(
-                    "settings",
-                    "_compose_form",
-                    "name"
-                ))),
+                Record::parsed(path_to_value(&oxpath!("settings", "_compose_form", "name"))),
             )
             .unwrap();
 
         let writes = dispatch_settings_key(
             &mut reader,
-            Screen::Settings,
             &oxpath!("settings", "index"),
-            None,
             &key_char('a'),
             &cmds,
             &bindings,
@@ -436,13 +400,7 @@ mod tests {
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            screen: Screen::Settings,
-            scope: ox_types::BindingScope::Exact(oxpath!(
-                "settings",
-                "_compose_form",
-                "name"
-            )),
-            mode: None,
+            scope: ox_types::BindingScope::Exact(oxpath!("settings", "_compose_form", "name")),
             key: key_char('a'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Target,
@@ -453,9 +411,7 @@ mod tests {
 
         let writes = dispatch_settings_key(
             &mut reader,
-            Screen::Settings,
             &oxpath!("settings", "index"),
-            None,
             &key_char('a'),
             &cmds,
             &bindings,
@@ -475,13 +431,7 @@ mod tests {
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            screen: Screen::Settings,
-            scope: ox_types::BindingScope::Exact(oxpath!(
-                "settings",
-                "_compose_form",
-                "name"
-            )),
-            mode: None,
+            scope: ox_types::BindingScope::Exact(oxpath!("settings", "_compose_form", "name")),
             key: key_char('a'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Target,
@@ -498,9 +448,7 @@ mod tests {
 
         let writes = dispatch_settings_key(
             &mut reader,
-            Screen::Settings,
             &oxpath!("settings", "index"),
-            None,
             &key_char('a'),
             &cmds,
             &bindings,
@@ -520,9 +468,7 @@ mod tests {
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            screen: Screen::Settings,
             scope: ox_types::BindingScope::Exact(oxpath!("settings", "_confirm_delete")),
-            mode: None,
             key: key_char('y'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Target,
@@ -540,9 +486,7 @@ mod tests {
 
         let writes = dispatch_settings_key(
             &mut reader,
-            Screen::Settings,
             &oxpath!("settings", "index"),
-            None,
             &key_char('y'),
             &cmds,
             &bindings,
@@ -564,9 +508,7 @@ mod tests {
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            screen: Screen::Settings,
             scope: ox_types::BindingScope::Exact(oxpath!("settings", "_confirm_delete")),
-            mode: None,
             key: KeyChord {
                 modifiers: KeyModifierSet::default(),
                 code: KeyCodeRepr::Esc,
@@ -587,9 +529,7 @@ mod tests {
 
         let writes = dispatch_settings_key(
             &mut reader,
-            Screen::Settings,
             &oxpath!("settings", "accounts"),
-            None,
             &KeyChord {
                 modifiers: KeyModifierSet::default(),
                 code: KeyCodeRepr::Esc,
@@ -616,9 +556,7 @@ mod tests {
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            screen: Screen::Settings,
             scope: ox_types::BindingScope::Exact(oxpath!("settings", "_confirm_delete")),
-            mode: None,
             key: key_char('y'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Target,
@@ -636,9 +574,7 @@ mod tests {
 
         let writes = dispatch_settings_key(
             &mut reader,
-            Screen::Settings,
             &oxpath!("settings", "accounts"),
-            None,
             &key_char('y'),
             &cmds,
             &bindings,
@@ -656,9 +592,7 @@ mod tests {
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            screen: Screen::Settings,
             scope: ox_types::BindingScope::Anywhere,
-            mode: None,
             key: key_char('z'),
             command_id: cmd_id("test.report_keystroke"),
             phase: Phase::Target,
@@ -679,9 +613,7 @@ mod tests {
 
         let writes = dispatch_settings_key(
             &mut reader,
-            Screen::Settings,
             &oxpath!(),
-            None,
             &key_char('z'),
             &cmds,
             &bindings,
@@ -709,9 +641,7 @@ mod tests {
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            screen: Screen::Settings,
             scope: ox_types::BindingScope::Exact(oxpath!("settings", "_manual_model")),
-            mode: None,
             key: key_char('a'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Bubble,
@@ -723,19 +653,13 @@ mod tests {
         reader
             .write(
                 &oxpath!("ui", "settings", "focused"),
-                Record::parsed(path_to_value(&oxpath!(
-                    "settings",
-                    "_manual_model",
-                    "id"
-                ))),
+                Record::parsed(path_to_value(&oxpath!("settings", "_manual_model", "id"))),
             )
             .unwrap();
 
         let writes = dispatch_settings_key(
             &mut reader,
-            Screen::Settings,
             &oxpath!("settings", "index"),
-            None,
             &key_char('a'),
             &cmds,
             &bindings,
@@ -756,9 +680,7 @@ mod tests {
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            screen: Screen::Settings,
             scope: ox_types::BindingScope::Exact(oxpath!("settings", "_manual_model")),
-            mode: None,
             key: KeyChord {
                 modifiers: KeyModifierSet::default(),
                 code: KeyCodeRepr::Esc,
@@ -773,19 +695,13 @@ mod tests {
         reader
             .write(
                 &oxpath!("ui", "settings", "focused"),
-                Record::parsed(path_to_value(&oxpath!(
-                    "settings",
-                    "_manual_model",
-                    "id"
-                ))),
+                Record::parsed(path_to_value(&oxpath!("settings", "_manual_model", "id"))),
             )
             .unwrap();
 
         let writes = dispatch_settings_key(
             &mut reader,
-            Screen::Settings,
             &oxpath!("settings", "models"),
-            None,
             &KeyChord {
                 modifiers: KeyModifierSet::default(),
                 code: KeyCodeRepr::Esc,
@@ -810,9 +726,7 @@ mod tests {
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            screen: Screen::Settings,
             scope: ox_types::BindingScope::Exact(oxpath!("settings", "_manual_model")),
-            mode: None,
             key: KeyChord {
                 modifiers: KeyModifierSet::default(),
                 code: KeyCodeRepr::Enter,
@@ -827,19 +741,13 @@ mod tests {
         reader
             .write(
                 &oxpath!("ui", "settings", "focused"),
-                Record::parsed(path_to_value(&oxpath!(
-                    "settings",
-                    "_manual_model",
-                    "id"
-                ))),
+                Record::parsed(path_to_value(&oxpath!("settings", "_manual_model", "id"))),
             )
             .unwrap();
 
         let writes = dispatch_settings_key(
             &mut reader,
-            Screen::Settings,
             &oxpath!("settings", "models"),
-            None,
             &KeyChord {
                 modifiers: KeyModifierSet::default(),
                 code: KeyCodeRepr::Enter,
@@ -864,9 +772,7 @@ mod tests {
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            screen: Screen::Settings,
             scope: ox_types::BindingScope::Exact(oxpath!("settings", "_manual_model", "id")),
-            mode: None,
             key: key_char('x'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Target,
@@ -878,19 +784,13 @@ mod tests {
         reader
             .write(
                 &oxpath!("ui", "settings", "focused"),
-                Record::parsed(path_to_value(&oxpath!(
-                    "settings",
-                    "_manual_model",
-                    "id"
-                ))),
+                Record::parsed(path_to_value(&oxpath!("settings", "_manual_model", "id"))),
             )
             .unwrap();
 
         let writes = dispatch_settings_key(
             &mut reader,
-            Screen::Settings,
             &oxpath!("settings", "models"),
-            None,
             &key_char('x'),
             &cmds,
             &bindings,
@@ -911,9 +811,7 @@ mod tests {
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            screen: Screen::Settings,
             scope: ox_types::BindingScope::Exact(oxpath!("settings", "_manual_model", "id")),
-            mode: None,
             key: key_char('a'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Target,
@@ -924,9 +822,7 @@ mod tests {
 
         let writes = dispatch_settings_key(
             &mut reader,
-            Screen::Settings,
             &oxpath!("settings", "index"),
-            None,
             &key_char('a'),
             &cmds,
             &bindings,
@@ -958,9 +854,7 @@ mod tests {
         // dispatcher's Bubble pass walks inner → outer and finds it
         // without any per-scope Target fallback.
         bindings.register(BindingEntry {
-            screen: Screen::Settings,
             scope: ox_types::BindingScope::Exact(oxpath!("settings")),
-            mode: None,
             key: key_char('j'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Bubble,
@@ -981,9 +875,7 @@ mod tests {
 
         let writes = dispatch_settings_key(
             &mut reader,
-            Screen::Settings,
             &oxpath!("settings", "index"),
-            None,
             &key_char('j'),
             &cmds,
             &bindings,
@@ -1027,9 +919,7 @@ mod tests {
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            screen: Screen::Settings,
             scope: BindingScope::Exact(oxpath!("settings", "_edit")),
-            mode: None,
             key: KeyChord {
                 modifiers: KeyModifierSet::default(),
                 code: KeyCodeRepr::Esc,
@@ -1047,9 +937,7 @@ mod tests {
 
         let writes = dispatch_settings_key(
             &mut reader,
-            Screen::Settings,
             &oxpath!("settings", "accounts"),
-            None,
             &KeyChord {
                 modifiers: KeyModifierSet::default(),
                 code: KeyCodeRepr::Esc,
@@ -1073,9 +961,7 @@ mod tests {
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            screen: Screen::Settings,
             scope: BindingScope::Exact(oxpath!("settings", "_edit")),
-            mode: None,
             key: KeyChord {
                 modifiers: KeyModifierSet::default(),
                 code: KeyCodeRepr::Enter,
@@ -1093,9 +979,7 @@ mod tests {
 
         let writes = dispatch_settings_key(
             &mut reader,
-            Screen::Settings,
             &oxpath!("settings", "accounts"),
-            None,
             &KeyChord {
                 modifiers: KeyModifierSet::default(),
                 code: KeyCodeRepr::Enter,
@@ -1120,9 +1004,7 @@ mod tests {
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            screen: Screen::Settings,
             scope: BindingScope::Exact(oxpath!("settings", "_edit")),
-            mode: None,
             key: key_char('x'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Target,
@@ -1137,9 +1019,7 @@ mod tests {
 
         let writes = dispatch_settings_key(
             &mut reader,
-            Screen::Settings,
             &oxpath!("settings", "accounts"),
-            None,
             &key_char('x'),
             &cmds,
             &bindings,
@@ -1258,7 +1138,10 @@ mod tests {
 
         assert_eq!(path.len(), 3);
         assert_eq!(path[0], BindingScope::Exact(oxpath!("settings")));
-        assert_eq!(path[1], BindingScope::Exact(oxpath!("settings", "accounts")));
+        assert_eq!(
+            path[1],
+            BindingScope::Exact(oxpath!("settings", "accounts"))
+        );
         assert_eq!(
             path[2],
             BindingScope::Exact(oxpath!("settings", "accounts", "alpha"))
@@ -1276,7 +1159,10 @@ mod tests {
 
         assert_eq!(path.len(), 2);
         assert_eq!(path[0], BindingScope::Exact(oxpath!("settings")));
-        assert_eq!(path[1], BindingScope::Exact(oxpath!("settings", "accounts")));
+        assert_eq!(
+            path[1],
+            BindingScope::Exact(oxpath!("settings", "accounts"))
+        );
     }
 
     #[test]
@@ -1331,19 +1217,12 @@ mod tests {
         let mut reader = LocalConfig::default();
         seed_compose_cursor(&mut reader, "name");
         let path = compute_scope_path(&mut reader);
-        assert!(
-            path.contains(&BindingScope::Exact(oxpath!(
-                "settings",
-                "_compose_form"
-            )))
-        );
-        assert!(
-            path.contains(&BindingScope::Exact(oxpath!(
-                "settings",
-                "_compose_form",
-                "name"
-            )))
-        );
+        assert!(path.contains(&BindingScope::Exact(oxpath!("settings", "_compose_form"))));
+        assert!(path.contains(&BindingScope::Exact(oxpath!(
+            "settings",
+            "_compose_form",
+            "name"
+        ))));
     }
 
     #[test]
@@ -1353,10 +1232,7 @@ mod tests {
         seed_focused_row(&mut reader, oxpath!("settings", "accounts", "alpha"));
         let path = compute_scope_path(&mut reader);
         assert!(
-            !path.contains(&BindingScope::Exact(oxpath!(
-                "settings",
-                "_compose_form"
-            ))),
+            !path.contains(&BindingScope::Exact(oxpath!("settings", "_compose_form"))),
             "no compose form scope when cursor is on an account row: {path:?}",
         );
     }
@@ -1472,10 +1348,7 @@ mod tests {
 
         assert_eq!(path.len(), 2);
         assert_eq!(path[0], BindingScope::Exact(oxpath!("settings")));
-        assert_eq!(
-            path[1],
-            BindingScope::Exact(oxpath!("settings", "_edit"))
-        );
+        assert_eq!(path[1], BindingScope::Exact(oxpath!("settings", "_edit")));
     }
 
     #[test]
