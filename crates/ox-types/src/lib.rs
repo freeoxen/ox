@@ -1,6 +1,5 @@
 pub mod approval;
 pub mod command;
-pub mod command_binding;
 pub mod command_name;
 pub mod completion_role;
 pub mod editor;
@@ -18,10 +17,12 @@ pub mod ui;
 
 pub use approval::*;
 pub use command::*;
-pub use command_binding::*;
 pub use command_name::*;
 pub use completion_role::CompletionRole;
 pub use editor::*;
+pub use horns_core::{
+    BindingEntry, BindingId, BindingScope, CommandDisplay, CommandId, CommandScope, Phase,
+};
 pub use inbox::*;
 pub use input::*;
 pub use key_chord::*;

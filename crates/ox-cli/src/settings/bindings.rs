@@ -16,7 +16,7 @@ use structfs_core_store::Path;
 use ox_types::key_chord::{KeyCodeRepr, KeyModifierSet};
 use ox_types::{BindingEntry, BindingScope, CommandId, KeyChord, Phase};
 
-use crate::settings::binding_registry::BindingRegistry;
+use crate::settings::BindingRegistry;
 
 // ---------------------------------------------------------------------------
 // Helpers

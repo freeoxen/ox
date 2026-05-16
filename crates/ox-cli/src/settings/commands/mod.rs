@@ -50,7 +50,7 @@ macro_rules! command {
                 Self::new()
             }
         }
-        impl crate::settings::command_registry::Command for $name {
+        impl crate::settings::Command for $name {
             fn id(&self) -> &ox_types::CommandId {
                 &self.id
             }
@@ -63,7 +63,7 @@ macro_rules! command {
             fn run(
                 &self,
                 $snap: &mut dyn structfs_core_store::Reader,
-                $ctx: &crate::settings::command_registry::CommandCtx<'_>,
+                $ctx: &crate::settings::CommandCtx<'_>,
             ) -> Vec<ox_types::subscription::Write> {
                 let _ = $ctx; // some commands ignore ctx
                 $body
@@ -81,7 +81,7 @@ pub mod modal;
 pub mod navigation;
 pub mod tree;
 
-use super::command_registry::CommandRegistry;
+use crate::settings::CommandRegistry;
 
 /// Register every day-one command into `reg`.
 ///

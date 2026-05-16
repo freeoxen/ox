@@ -18,7 +18,7 @@ use ox_types::subscription::Write;
 use structfs_core_store::{Reader, Record};
 use structfs_serde_store::to_value;
 
-use crate::settings::command_registry::CommandRegistry;
+use crate::settings::CommandRegistry;
 use crate::settings::renderers::util::{child_names_under, read_typed};
 
 #[allow(unused_imports)]
@@ -239,8 +239,8 @@ mod tests {
     use ox_gate::{ModelInfo, ModelInfoSource};
     use ox_types::SettingsIndexEntry;
 
-    use crate::settings::command_registry::{Command, CommandCtx};
-    use crate::settings::registry::RendererRegistry;
+    use crate::settings::{Command, CommandCtx};
+    use crate::settings::RendererRegistry;
     use crate::settings::snapshot::SettingsSnapshot;
 
     fn empty_ctx<'a>(registry: &'a RendererRegistry) -> CommandCtx<'a> {

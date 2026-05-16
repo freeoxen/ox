@@ -35,7 +35,7 @@ use ox_types::subscription::Write;
 use structfs_core_store::{Path, Reader, Record, Value};
 use structfs_serde_store::to_value;
 
-use super::super::command_registry::CommandRegistry;
+use crate::settings::CommandRegistry;
 use super::super::visible_rows::{self, RowKind};
 use super::navigation::{path_from_value, path_to_value};
 
@@ -260,7 +260,7 @@ fn clear_edit_subtree() -> Write {
 
 fn insert_char(
     data: &mut dyn Reader,
-    ctx: &super::super::command_registry::CommandCtx<'_>,
+    ctx: &crate::settings::CommandCtx<'_>,
 ) -> Vec<Write> {
     use ox_types::key_chord::KeyCodeRepr;
 
@@ -593,9 +593,9 @@ mod tests {
     use ox_gate::{AccountConfig, ModelInfo, ModelInfoSource};
     use ox_types::{BadgeSource, SettingsIndexEntry};
 
-    use crate::settings::command_registry::{Command, CommandCtx};
+    use crate::settings::{Command, CommandCtx};
     use crate::settings::commands::navigation::path_to_value;
-    use crate::settings::registry::RendererRegistry;
+    use crate::settings::RendererRegistry;
     use crate::settings::snapshot::SettingsSnapshot;
     use crate::settings::visible_rows::expanded_set_to_value;
 

@@ -20,7 +20,7 @@ use structfs_serde_store::to_value;
 
 use ox_gate::{AccountConfig, AuthScheme, CompletionRole, ProviderConfig};
 
-use crate::settings::command_registry::CommandRegistry;
+use crate::settings::CommandRegistry;
 use crate::settings::renderers::util::read_typed;
 
 #[allow(unused_imports)]
@@ -817,7 +817,7 @@ fn read_focused_path(data: &mut dyn Reader) -> Option<Path> {
 
 fn accounts_compose_insert_char(
     data: &mut dyn Reader,
-    ctx: &super::super::command_registry::CommandCtx<'_>,
+    ctx: &crate::settings::CommandCtx<'_>,
 ) -> Vec<Write> {
     use ox_types::key_chord::KeyCodeRepr;
 
@@ -1418,7 +1418,7 @@ fn models_manual_active_stage(
 
 fn models_manual_insert_char(
     data: &mut dyn Reader,
-    ctx: &super::super::command_registry::CommandCtx<'_>,
+    ctx: &crate::settings::CommandCtx<'_>,
 ) -> Vec<Write> {
     use ox_types::key_chord::KeyCodeRepr;
     use ox_types::settings::ManualModelStage;
@@ -2364,8 +2364,8 @@ mod tests {
 
     use ox_types::key_chord::{KeyChord, KeyCodeRepr, KeyModifierSet};
 
-    use crate::settings::command_registry::{Command, CommandCtx};
-    use crate::settings::registry::RendererRegistry;
+    use crate::settings::{Command, CommandCtx};
+    use crate::settings::RendererRegistry;
     use crate::settings::snapshot::SettingsSnapshot;
 
     fn run_cmd<C: Command>(cmd: &C, snap: &mut SettingsSnapshot) -> Vec<Write> {
@@ -3107,7 +3107,7 @@ mod tests {
     fn simulate_compose_keystroke(snap: &mut SettingsSnapshot, code: KeyCodeRepr) -> Vec<Write> {
         let mut cmds = CommandRegistry::new();
         crate::settings::commands::register_all(&mut cmds);
-        let mut bindings = crate::settings::binding_registry::BindingRegistry::new();
+        let mut bindings = crate::settings::BindingRegistry::new();
         crate::settings::bindings::register(&mut bindings);
         let renderers = RendererRegistry::new();
         // Match terminal behavior: uppercase ASCII letters arrive with

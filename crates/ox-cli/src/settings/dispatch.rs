@@ -36,10 +36,10 @@ use structfs_core_store::{Path, Reader};
 use ox_types::subscription::Write;
 use ox_types::{BindingScope, KeyChord, Phase};
 
-use super::binding_registry::BindingRegistry;
-use super::command_registry::{CommandCtx, CommandRegistry};
+use crate::settings::BindingRegistry;
+use crate::settings::{CommandCtx, CommandRegistry};
 use super::commands::account_model::path_ancestors;
-use super::registry::RendererRegistry;
+use crate::settings::RendererRegistry;
 
 /// Resolve `(cursor, key)` to a sequence of writes by looking up the
 /// binding, then the command, then running it. Returns `vec![]` (inert)
@@ -160,7 +160,7 @@ mod tests {
     // Phase is already in scope via the parent use at the top of the file.
     use structfs_core_store::{Record, Value, Writer};
 
-    use super::super::command_registry::Command;
+    use crate::settings::Command;
 
     fn key_char(c: char) -> KeyChord {
         KeyChord {

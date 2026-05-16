@@ -11,6 +11,6 @@ pub mod index;
 pub(crate) mod util;
 
 /// Register every settings renderer at its prescribed cursor path.
-pub fn register_all(reg: &mut crate::settings::registry::RendererRegistry) {
+pub fn register_all(reg: &mut crate::settings::RendererRegistry) {
     index::register(reg);
 }

@@ -12,7 +12,7 @@ use ox_path::oxpath;
 use ox_types::subscription::Write;
 use structfs_core_store::{Record, Value};
 
-use crate::settings::command_registry::CommandRegistry;
+use crate::settings::CommandRegistry;
 
 #[allow(unused_imports)]
 use super::command;
@@ -36,8 +36,8 @@ pub fn register(reg: &mut CommandRegistry) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::command_registry::{Command, CommandCtx};
-    use crate::settings::registry::RendererRegistry;
+    use crate::settings::{Command, CommandCtx};
+    use crate::settings::RendererRegistry;
     use ox_store_util::local_config::LocalConfig;
     use ox_types::CommandId;
 

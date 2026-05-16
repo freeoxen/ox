@@ -1,9 +1,9 @@
 use crate::app::App;
 use crate::editor::flush_pending_edits;
-use crate::settings::binding_registry::BindingRegistry;
-use crate::settings::command_registry::CommandRegistry;
+use crate::settings::BindingRegistry;
+use crate::settings::CommandRegistry;
 use crate::settings::commands::navigation::path_from_value;
-use crate::settings::registry::{RenderCtx, RendererRegistry};
+use crate::settings::{RenderCtx, RendererRegistry};
 use crate::settings::snapshot::{SettingsSnapshot, fetch_settings_view_state};
 use crate::theme::Theme;
 use crate::thread_shell::{ThreadShell, dispatch_global_mouse};
@@ -271,11 +271,12 @@ pub async fn run_async(
                     focused.as_ref(),
                 );
                 let area = terminal.get_frame().area();
+                let area = horns_core::Rect::new(area.x, area.y, area.width, area.height);
                 let mut ctx = RenderCtx {
                     area,
                     data: &mut snap,
                     registry: &settings_renderers,
-                    theme,
+                    theme: theme as &dyn std::any::Any,
                 };
                 settings_view = Some(settings_renderers.render(&cursor, &mut ctx));
             }

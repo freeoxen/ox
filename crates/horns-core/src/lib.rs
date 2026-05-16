@@ -6,11 +6,15 @@ pub mod binding;
 pub mod command;
 pub mod key;
 pub(crate) mod path_serde;
+pub mod render;
 pub mod view;
 pub mod write;
 
-pub use binding::{BindingId, BindingScope, Phase};
-pub use command::{CommandDisplay, CommandId, CommandScope};
+pub use binding::{BindingEntry, BindingId, BindingRegistry, BindingScope, Phase};
+pub use command::{
+    Command, CommandCtx, CommandDisplay, CommandId, CommandMetadata, CommandRegistry, CommandScope,
+};
 pub use key::{KeyChord, KeyCodeRepr, KeyModifierSet};
+pub use render::{AscendRule, Rect, RenderCtx, Renderer, RendererMetadata, RendererRegistry};
 pub use view::View;
 pub use write::Write;

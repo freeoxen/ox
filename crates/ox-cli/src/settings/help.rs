@@ -20,8 +20,8 @@ use ox_types::KeyHint;
 use structfs_core_store::Path;
 
 use crate::key_chord_canonical::encode_keychord_to_str;
-use crate::settings::binding_registry::BindingRegistry;
-use crate::settings::command_registry::CommandRegistry;
+use crate::settings::BindingRegistry;
+use crate::settings::CommandRegistry;
 
 /// Build the hint list for the given settings dispatch context.
 ///

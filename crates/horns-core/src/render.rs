@@ -1,9 +1,5 @@
-//! Renderer registry — dispatches the current cursor to a `Renderer`,
-//! returning a `View`. The translator (`crate::view_render`) draws the
-//! View. The registry is `ox-cli`-local — it doesn't cross the broker
-//! boundary.
+//! Renderer registry: cursor path -> `Box<dyn Renderer>`.
 //!
-//! Design (per spec §4.3):
 //! - A renderer is a *pure function* from a Reader to a View. It cannot
 //!   draw, await, or mutate observable state.
 //! - The registry indexes renderers by exact cursor `Path`. On a miss,
@@ -16,49 +12,65 @@
 
 use std::collections::HashMap;
 
-use ratatui::layout::Rect;
+use serde::{Deserialize, Serialize};
 use structfs_core_store::{Path, Reader};
 
-use horns_core::view::View;
+use crate::path_serde;
+use crate::view::View;
 
-use crate::theme::Theme;
+/// Drawable region inside which a renderer produces its View. Mirrors
+/// ratatui's `Rect` shape so backends with that abstraction can convert
+/// at the boundary; horns-core stays backend-agnostic.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Rect {
+    pub x: u16,
+    pub y: u16,
+    pub width: u16,
+    pub height: u16,
+}
+
+impl Rect {
+    pub const fn new(x: u16, y: u16, width: u16, height: u16) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+}
 
 /// What happens when a renderer is asked to ascend (Esc).
 ///
-/// Three variants because top-level pages within a screen don't fit either of
-/// the two alternatives cleanly: their parent in the *display* tree (the
-/// screen's index) is a sibling under the screen root, not a strict ancestor.
-/// `Fallback(Path)` lets the renderer name its ascent target explicitly.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Three variants because top-level pages within a screen don't fit
+/// either of the two alternatives cleanly: their parent in the *display*
+/// tree (the screen's index) is a sibling under the screen root, not a
+/// strict ancestor. `Fallback(Path)` lets the renderer name its ascent
+/// target explicitly.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AscendRule {
-    /// Walk the display-tree parent chain until a registered renderer matches.
-    /// Used by all detail/list pages: Esc returns to the nearest registered
-    /// ancestor.
+    /// Walk the display-tree parent chain until a registered renderer
+    /// matches. Used by all detail/list pages: Esc returns to the
+    /// nearest registered ancestor.
     NearestRegistered,
-    /// Top-level page within a screen: ascend to the named cursor (typically
-    /// the screen's index page). The named target must be a registered
-    /// cursor; if it isn't, the registry falls through to `None` and the
-    /// dispatcher signals `_request_exit` (same as `ExitScreen`).
-    Fallback(Path),
+    /// Top-level page within a screen: ascend to the named cursor
+    /// (typically the screen's index page). The named target must be a
+    /// registered cursor; if it isn't, the registry falls through to
+    /// `None` and the dispatcher signals `_request_exit` (same as
+    /// `ExitScreen`).
+    Fallback(#[serde(with = "path_serde")] Path),
     /// Top-level page; ascending exits the settings screen entirely.
     /// Used by `settings/index`.
     ExitScreen,
 }
 
-/// A renderer is a pure function from a `Reader` to a `View`. It cannot
-/// draw, await, or mutate. The output `View` is later turned into draw
-/// calls by `crate::view_render::render_to_frame`.
-///
-/// The `'static` bound is implicit on `Box<dyn Renderer>`; renderers are
-/// owned by the registry and live as long as the screen does.
-pub trait Renderer: Send + Sync {
-    fn render(&self, ctx: &mut RenderCtx<'_>) -> View;
-    fn ascend_to(&self) -> AscendRule;
-}
-
 /// Context passed to `Renderer::render`. Provides the current draw area,
 /// a Reader for snapshot reads, the registry itself for recursive
-/// composition (modal-over-page renderers), and the theme.
+/// composition (modal-over-page renderers), and a host-defined theme.
+///
+/// **Theme is `&dyn Any`:** horns-core has no concrete Theme type.
+/// Backends downcast at use site, or read theme bits from the broker
+/// via the snapshot. Revisit if downcasting proves painful.
 ///
 /// **Mutability deviation from spec:** the spec quoted
 /// `data: &'a dyn Reader` (immutable), but `Reader::read(&mut self, ...)`
@@ -70,7 +82,26 @@ pub struct RenderCtx<'a> {
     pub area: Rect,
     pub data: &'a mut dyn Reader,
     pub registry: &'a RendererRegistry,
-    pub theme: &'a Theme,
+    pub theme: &'a dyn std::any::Any,
+}
+
+/// A renderer is a pure function from a `Reader` to a `View`. It cannot
+/// draw, await, or mutate. The output `View` is later turned into draw
+/// calls by a backend (`horns-ratatui`, etc.).
+///
+/// The `'static` bound is implicit on `Box<dyn Renderer>`; renderers are
+/// owned by the registry and live as long as the screen does.
+pub trait Renderer: Send + Sync {
+    fn render(&self, ctx: &mut RenderCtx<'_>) -> View;
+    fn ascend_to(&self) -> AscendRule;
+}
+
+/// Metadata stored at broker paths for a registered renderer. The
+/// authoring view of a renderer — its ascend behavior — without the
+/// Rust trait object.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RendererMetadata {
+    pub ascend_rule: AscendRule,
 }
 
 /// Indexes registered renderers by cursor `Path`.
@@ -81,7 +112,8 @@ pub struct RenderCtx<'a> {
 /// - `ascend(cursor)` walks the display-tree parent chain per the
 ///   matched renderer's `AscendRule`. Returns `None` to signal
 ///   "exit the settings screen" (either `ExitScreen` rule, or no
-///   registered ancestor exists for `NearestRegistered`).
+///   registered ancestor exists for `NearestRegistered`, or a
+///   `Fallback` whose target is unregistered).
 pub struct RendererRegistry {
     specs: HashMap<Path, Box<dyn Renderer>>,
 }
@@ -154,16 +186,23 @@ impl Default for RendererRegistry {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
+    use ox_path::oxpath;
+    use structfs_core_store::{Error, Record};
+
     use super::*;
 
-    use ox_path::oxpath;
-    use ox_store_util::local_config::LocalConfig;
+    /// Minimal in-process Reader stub used by tests. Pulling
+    /// `LocalConfig` from `ox-store-util` would create a dep cycle, so
+    /// the registry tests bring their own.
+    struct EmptyReader;
+
+    impl Reader for EmptyReader {
+        fn read(&mut self, _from: &Path) -> Result<Option<Record>, Error> {
+            Ok(None)
+        }
+    }
 
     /// Minimal `Renderer` stub used by registry tests. Records nothing
     /// beyond the configured `AscendRule`; `render` always returns
@@ -300,15 +339,16 @@ mod tests {
     #[test]
     fn render_unknown_cursor_returns_fallback_view() {
         let reg = RendererRegistry::new();
-        let theme = Theme::default();
-        let mut reader = LocalConfig::default();
+        // horns-core has no concrete Theme type; tests use `()` as a stub.
+        let theme: () = ();
+        let mut reader = EmptyReader;
 
         let cursor = oxpath!("settings", "accounts");
         let mut ctx = RenderCtx {
             area: Rect::new(0, 0, 80, 24),
             data: &mut reader,
             registry: &reg,
-            theme: &theme,
+            theme: &theme as &dyn std::any::Any,
         };
 
         let view = reg.render(&cursor, &mut ctx);
@@ -322,14 +362,14 @@ mod tests {
             oxpath!("settings", "accounts"),
             fake(AscendRule::NearestRegistered),
         );
-        let theme = Theme::default();
-        let mut reader = LocalConfig::default();
+        let theme: () = ();
+        let mut reader = EmptyReader;
 
         let mut ctx = RenderCtx {
             area: Rect::new(0, 0, 80, 24),
             data: &mut reader,
             registry: &reg,
-            theme: &theme,
+            theme: &theme as &dyn std::any::Any,
         };
 
         let view = reg.render(&oxpath!("settings", "accounts"), &mut ctx);

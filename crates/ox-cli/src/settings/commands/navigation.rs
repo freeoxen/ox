@@ -22,7 +22,7 @@ use ox_path::oxpath;
 use ox_types::subscription::Write;
 use structfs_core_store::{Path, Reader, Record, Value};
 
-use crate::settings::command_registry::CommandRegistry;
+use crate::settings::CommandRegistry;
 
 /// Encode a `Path` as a `Value` matching the wire shape used by
 /// `ox_types::path_serde` (a `Value::Array` of `Value::String` segments).
@@ -79,7 +79,7 @@ command! {
 
 fn ascend(
     data: &mut dyn Reader,
-    ctx: &crate::settings::command_registry::CommandCtx<'_>,
+    ctx: &crate::settings::CommandCtx<'_>,
 ) -> Vec<Write> {
     let cursor = match read_path(data, &oxpath!("ui", "settings", "cursor")) {
         Some(c) => c,
@@ -109,8 +109,8 @@ pub fn register(reg: &mut CommandRegistry) {
 mod tests {
     use super::*;
 
-    use crate::settings::command_registry::{Command, CommandCtx};
-    use crate::settings::registry::{AscendRule, RenderCtx, Renderer, RendererRegistry};
+    use crate::settings::{Command, CommandCtx};
+    use crate::settings::{AscendRule, RenderCtx, Renderer, RendererRegistry};
     use crate::settings::snapshot::SettingsSnapshot;
 
     /// Stub renderer used purely to seed the registry with an `AscendRule`.

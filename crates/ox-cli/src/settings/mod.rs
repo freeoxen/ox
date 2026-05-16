@@ -1,27 +1,29 @@
 //! Settings-screen renderers, commands, bindings, and registry.
 //!
 //! Tree shape:
-//! - `registry`             — Renderer trait + RendererRegistry + AscendRule (Phase G).
-//! - `renderers`            — concrete Renderer impls per page (Phases J/K).
-//! - `commands`             — Command impls (Phase L).
-//! - `bindings`             — BindingRegistry registration (Phase M).
-//! - `subscription_install` — wire ox-gate subscriptions at startup (Phase N).
-//! - `snapshot`             — pre-render snapshot builder (Phase I).
+//! - `renderers`            — concrete Renderer impls per page.
+//! - `commands`             — Command impls.
+//! - `bindings`             — BindingRegistry registration.
+//! - `bootstrap`            — boot-time registration entry point.
+//! - `dispatch`             — settings-screen dispatcher wiring.
+//! - `help`                 — key-hint projection.
+//! - `snapshot`             — pre-render snapshot builder.
+//! - `visible_rows`         — visible-row projection.
 //!
-//! Future modules below are commented out until their phase lands; uncomment
-//! the line when wiring up that phase's first task. The doc list above is
-//! the source of truth for the eventual layout — keep it in sync with the
-//! actual `mod` declarations as work progresses.
+//! The framework registries themselves (`BindingRegistry`,
+//! `CommandRegistry`, `RendererRegistry`) live in `horns_core` and are
+//! re-exported below for backwards-compatible call sites.
 
-pub mod binding_registry;
 pub mod bindings;
 pub mod bootstrap;
-pub mod command_registry;
 pub mod commands;
 pub mod dispatch;
 pub mod help;
-pub mod registry;
 pub mod renderers;
 pub mod snapshot;
 pub mod visible_rows;
-// pub(crate) mod subscription_install; // Phase N
+
+pub use horns_core::{
+    AscendRule, BindingRegistry, Command, CommandCtx, CommandRegistry, RenderCtx, Renderer,
+    RendererRegistry,
+};

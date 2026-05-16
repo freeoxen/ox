@@ -22,7 +22,7 @@ use crate::settings::commands::account_model::{
     cursor_to_manual_model_stage, resolve_protocol_options,
 };
 use crate::settings::commands::edit::read_edit_state;
-use crate::settings::registry::{AscendRule, RenderCtx, Renderer, RendererRegistry};
+use crate::settings::{AscendRule, RenderCtx, Renderer, RendererRegistry};
 use crate::settings::visible_rows::{self, RowKind};
 
 pub struct IndexRenderer;
@@ -803,10 +803,10 @@ pub fn register(reg: &mut RendererRegistry) {
 mod tests {
     use super::*;
 
+    use horns_core::Rect;
     use ox_gate::AccountConfig;
     use ox_path::oxpath;
     use ox_types::{BadgeSource, SettingsIndexEntry};
-    use ratatui::layout::Rect;
     use structfs_core_store::{Path, Value};
     use structfs_serde_store::to_value;
 
@@ -832,7 +832,7 @@ mod tests {
             area: Rect::new(0, 0, 80, 24),
             data: snap,
             registry: &registry,
-            theme: &theme,
+            theme: &theme as &dyn std::any::Any,
         };
         IndexRenderer.render(&mut ctx)
     }
@@ -1125,7 +1125,7 @@ mod tests {
             area: Rect::new(0, 0, 80, 24),
             data: &mut snap,
             registry: &reg,
-            theme: &theme,
+            theme: &theme as &dyn std::any::Any,
         };
         let view = reg.render(&oxpath!("settings", "index"), &mut ctx);
         // Registry dispatches to IndexRenderer which now emits a

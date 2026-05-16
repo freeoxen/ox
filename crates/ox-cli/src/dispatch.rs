@@ -71,9 +71,9 @@ use ox_types::key_chord::{KeyCodeRepr, KeyModifierSet};
 use ox_types::{ClientModalFlags, InputKeyEvent, KeyChord, Mode, Screen};
 use structfs_core_store::{Path, Reader};
 
-use crate::settings::binding_registry::BindingRegistry;
-use crate::settings::command_registry::CommandRegistry;
-use crate::settings::registry::RendererRegistry;
+use crate::settings::BindingRegistry;
+use crate::settings::CommandRegistry;
+use crate::settings::RendererRegistry;
 
 /// Outcome of a key-dispatch attempt. The `Unbound` arm carries the
 /// mode the broker resolved against — clients use it to route the key
@@ -310,7 +310,7 @@ mod tests {
     use structfs_serde_store::to_value;
 
     use crate::settings::commands::navigation::path_to_value;
-    use crate::settings::registry::{AscendRule, RenderCtx, Renderer};
+    use crate::settings::{AscendRule, RenderCtx, Renderer};
     use crate::settings::snapshot::SettingsSnapshot;
 
     // -------- parse_key_str unit tests ------------------------------------
@@ -420,12 +420,12 @@ mod tests {
     #[test]
     fn day_one_bindings_round_trip_through_full_dispatch() {
         use crate::key_chord_canonical::encode_keychord_to_str;
-        use crate::settings::binding_registry::BindingRegistry;
+        use crate::settings::BindingRegistry;
         use crate::settings::bindings::register as register_all_bindings;
-        use crate::settings::command_registry::CommandRegistry;
+        use crate::settings::CommandRegistry;
         use crate::settings::commands::register_all as register_all_commands;
         use crate::settings::dispatch::dispatch_settings_key;
-        use crate::settings::registry::RendererRegistry;
+        use crate::settings::RendererRegistry;
 
         let mut bindings = BindingRegistry::new();
         register_all_bindings(&mut bindings);

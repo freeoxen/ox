@@ -37,10 +37,10 @@ use ox_ui::UiStore;
 use structfs_core_store::{Path, Record, Value};
 
 use ox_cli::dispatch::{KeyDispatchOutcome, send_key};
-use ox_cli::settings::binding_registry::BindingRegistry;
-use ox_cli::settings::command_registry::CommandRegistry;
+use ox_cli::settings::BindingRegistry;
+use ox_cli::settings::CommandRegistry;
 use ox_cli::settings::commands::navigation::path_to_value;
-use ox_cli::settings::registry::RendererRegistry;
+use ox_cli::settings::RendererRegistry;
 use ox_cli::settings::snapshot::{SettingsSnapshot, fetch_settings_view_state};
 
 // ---------------------------------------------------------------------------
@@ -1203,12 +1203,12 @@ async fn render_settings_to_string(h: &E2eHarness, width: u16, height: u16) -> S
 
     let theme = Theme::default();
     let view = {
-        use ox_cli::settings::registry::RenderCtx;
+        use ox_cli::settings::RenderCtx;
         let mut ctx = RenderCtx {
-            area: Rect::new(0, 0, width, height),
+            area: horns_core::Rect::new(0, 0, width, height),
             data: &mut snap as &mut dyn structfs_core_store::Reader,
             registry: &h.renderers,
-            theme: &theme,
+            theme: &theme as &dyn std::any::Any,
         };
         h.renderers.render(&cursor, &mut ctx)
     };
