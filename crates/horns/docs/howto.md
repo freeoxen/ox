@@ -1,7 +1,10 @@
-# UI framework — how-to
+# horns — how-to
 
 Task-oriented recipes. Each one is self-contained: read just the
-section you need.
+section you need. Most code examples are drawn from the settings
+screen worked example — the patterns generalize, but the concrete
+paths (`config/gate/accounts/...`, `ui/settings/...`) are settings-
+specific.
 
 If you've never read `architecture.md`, skim its 60-second pitch
 first; otherwise come straight here.
@@ -12,7 +15,7 @@ first; otherwise come straight here.
 - [Add a new screen / page](#add-a-new-screen--page)
 - [Add a command](#add-a-command)
 - [Add a binding](#add-a-binding)
-- [Add an inline editing flow (a mode)](#add-an-inline-editing-flow-a-mode)
+- [Add an inline editing flow (a compound widget)](#add-an-inline-editing-flow-a-compound-widget)
 - [Add a confirmation flow](#add-a-confirmation-flow)
 - [Add a subscription](#add-a-subscription)
 - [Read a typed value from the snapshot](#read-a-typed-value-from-the-snapshot)
@@ -24,6 +27,8 @@ first; otherwise come straight here.
 - [Test a command](#test-a-command)
 - [Test a subscription](#test-a-subscription)
 - [Run a settings E2E test](#run-a-settings-e2e-test)
+- [Ship a reusable widget](#shipping-a-reusable-widget)
+- [Worked example: how settings wires up `horns::install`](#worked-example-how-settings-wires-up-hornsinstall)
 
 ---
 
@@ -41,8 +46,8 @@ boilerplate.
 | Mutating one or two paths synchronously | **Direct write from the command.** No subscription. |
 | Mutating one path, with async or cross-cutting follow-up needed | **Direct write + reactive subscription** watching the data path. Subscription does the follow-up. |
 | Async only — runs a network call, IO, or other non-instantaneous work the user requested | **Async-trigger subscription.** Command writes `Null` to a `…/<verb>_now` trigger path; subscription does the work. |
-| "Open a sub-state on this page" (composing input, confirming an action, editing a field inline) | **Move the focus cursor.** Command writes `ui/settings/focused` into the widget's synthetic namespace (`settings/_compose_form/name`, `settings/_confirm_delete`, `settings/_edit`) and seeds the widget's working state (`ui/.../buffer`, `ui/.../cursor_saved`). Renderer + dispatcher react via cursor-ancestor walk. |
-| "Navigate to a different page" | **Cursor write.** Command writes `ui/settings/cursor` to the new page path. |
+| "Open a sub-state on this page" (composing input, confirming an action, editing a field inline) | **Move the focus cursor.** Command writes `<cursor_path>` into the widget's synthetic namespace (`<page>/_<widget>/<leaf>`) and seeds the widget's working state (`<ui-state-prefix>/<widget>/buffer`, `<ui-state-prefix>/<widget>/cursor_saved`). Renderer + dispatcher react via cursor-ancestor walk. |
+| "Navigate to a different page" | **Cursor write.** Command writes the page cursor to the new page path. (If the host uses a separate page cursor distinct from focus, as in the settings worked example via `ui/settings/cursor`.) |
 
 ### Anti-patterns to avoid
 
@@ -53,12 +58,12 @@ boilerplate.
 - **Mode discriminator.** Don't add a `…/active: bool` or
   `…/stage: SomeEnum` flag at a UI-state path to tell the
   dispatcher which compound widget is engaged. Move the focus
-  cursor (`ui/settings/focused`) into the widget's synthetic
-  namespace (`settings/_my_widget/<leaf>`) and let the
-  dispatcher's cursor-ancestor walk pick up the scope.
+  cursor (`<cursor_path>`) into the widget's synthetic namespace
+  (`<page>/_<widget>/<leaf>`) and let the dispatcher's cursor-
+  ancestor walk pick up the scope.
 - **Synthetic display rows.** Don't push a `RowKind::FooAdd` into
   the visible-rows projection to show a "+ New X" affordance. The
-  renderer reads UI-mode state and emits the affordance as a
+  renderer reads UI-state and emits the affordance as a
   decoration. The projection contains only real things.
 
 ---
@@ -214,7 +219,6 @@ command! {
     id: "appearance.toggle_something",
     title: "Toggle Something",
     description: "Flip the something flag.",
-    screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "appearance")),
     run: |snap, _ctx| {
         let current: bool = read_typed(
@@ -276,19 +280,19 @@ run: |snap, ctx| {
 
 ## Add a binding
 
+The settings worked example registers bindings in
 `crates/ox-cli/src/settings/bindings.rs::register`. Each entry is a
 literal `BindingEntry { ... }`:
 
 ```rust
 reg.register(BindingEntry {
-    screen:      Screen::Settings,
-    cursor_path: Some(oxpath!("settings", "appearance")),
-    mode:        None,
-    key:         KeyChord {
+    scope:      BindingScope::Exact(oxpath!("settings", "appearance")),
+    phase:      Phase::Bubble,
+    key:        KeyChord {
         modifiers: KeyModifierSet::default(),
         code:      KeyCodeRepr::Char('j'),
     },
-    command_id:  CommandId(String::from("highlight.appearance.next")),
+    command_id: CommandId(String::from("highlight.appearance.next")),
 });
 ```
 
@@ -319,27 +323,35 @@ For Shift+Tab, use `BackTab` with `shift: true` (not `Tab` with
 The registry sorts bindings by specificity at insertion. Most-specific
 to least:
 
-1. `cursor_path: Some + mode: Some`
-2. `cursor_path: Some + mode: None`
-3. `cursor_path: None + mode: Some`
-4. `cursor_path: None + mode: None`
+1. `scope: Exact(p)`
+2. `scope: Prefix(p)`, deeper `p` ahead of shallower
+3. `scope: Anywhere`
 
 Within a class, registration order breaks ties.
 
 ### Text-editing scopes
 
-If your screen has editable text fields, register the printable-char
-helper:
+For editable text fields, register a `KeyHandler` instead of dozens
+of `BindingEntry` rows for printable ASCII. The settings worked
+example uses `TextInputHandler` at the `_edit` scope:
 
 ```rust
-register_text_editing(reg, oxpath!("settings", "appearance", "_edit"));
+let handler_id = HandlerId("settings.edit.text_input".into());
+handlers.insert(handler_id.clone(), Arc::new(TextInputHandler::new(
+    oxpath!("ui", "settings", "edit", "buffer"),
+)));
+handler_metadata.push((handler_id, HandlerMetadata {
+    scope: BindingScope::Exact(oxpath!("settings", "_edit")),
+    phase: Phase::Target,
+    class: "printable_ascii".into(),
+}));
 ```
 
-That registers ~96 entries — printable ASCII + Backspace — at the
-given cursor scope, all routed to `field.insert` /
-`field.delete_back`. Specific bindings (e.g. `t` → `account.test`)
-should be registered *before* the helper so registration order
-breaks ties in favour of the specific binding.
+A `KeyHandler` is one opaque registration that inspects the chord
+and returns `Some(writes)` to claim or `None` to pass. Discrete
+bindings at the same scope+phase still win on tie, so specific
+keys (Esc, Enter, etc.) registered as `BindingEntry` continue to
+out-rank a handler claiming "every printable char."
 
 ---
 
@@ -441,7 +453,6 @@ command! {
     id: "account.test",
     title: "Test Connection",
     description: "Test the account's API connectivity.",
-    screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "accounts")),
     run: |snap, _ctx| {
         let Some(name) = read_typed::<String>(
@@ -570,7 +581,6 @@ command! {
     id: "accounts.add",
     title: "Add Connection",
     description: "Open the inline name prompt.",
-    screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "accounts")),
     run: |snap, _ctx| {
         // Save the current focus so cancel/commit can restore it.
@@ -706,7 +716,6 @@ command! {
     id: "accounts.delete_confirm",
     title: "Delete Connection",
     description: "Show the delete confirmation banner.",
-    screen: Screen::Settings,
     cursor: Some(oxpath!("settings", "accounts")),
     run: |snap, _ctx| {
         let Some(name) = read_typed::<String>(
@@ -1117,3 +1126,124 @@ Run with:
 ```
 cargo test -p ox-cli --test settings_e2e
 ```
+
+---
+
+## Shipping a reusable widget
+
+A reusable horns widget (date picker, file picker, command palette,
+text field) ships as a crate that exports an `install` function. The
+host calls it per widget at construction, passing the namespace and
+UI-state prefix the widget should own.
+
+```rust
+// in my-cool-datepicker crate:
+pub struct DatePickerOptions { /* ... */ }
+
+pub fn install(
+    namespace: structfs_core_store::Path,
+    ui_prefix: structfs_core_store::Path,
+    options:   DatePickerOptions,
+    bundle:    &mut HornsInstallBundle,
+) {
+    // Register lifecycle bindings (introspectable):
+    bundle.bindings.push((
+        BindingId(format!("{}.cancel", ui_prefix.last_component())),
+        BindingEntry {
+            scope: BindingScope::Exact(namespace.clone()),
+            key: /* Esc */,
+            phase: Phase::Capture,
+            command_id: CommandId(format!("{}.cancel", ui_prefix.last_component())),
+        },
+    ));
+
+    // Register bulk-input handlers (opaque):
+    let handler_id = HandlerId(format!("{}.keys", ui_prefix.last_component()));
+    bundle.handlers.insert(handler_id.clone(), Arc::new(DatePickerKeyHandler { ui_prefix: ui_prefix.clone() }));
+    bundle.handler_metadata.push((handler_id, HandlerMetadata {
+        scope: BindingScope::Exact(namespace.join("field")),
+        phase: Phase::Target,
+        class: "datepicker_field".into(),
+    }));
+
+    // Register commands and renderers under the namespace too.
+    bundle.commands.insert(/* ... */);
+    bundle.renderers.insert(namespace.join("field"), Box::new(DatePickerRenderer { ui_prefix }));
+}
+```
+
+The widget's bindings live in the parent's binding subtree but are
+scoped to paths the parent doesn't use. Multi-instance support is
+free — `install` twice with different namespaces.
+
+---
+
+## Worked example: how settings wires up `horns::install`
+
+The settings screen is the framework's canonical first user. Its
+install code lives at `crates/ox-cli/src/settings/mod.rs::install`
+and is short — most of the work is registering bindings, commands,
+and renderers into three registries that are handed to horns.
+
+Outline:
+
+```rust
+pub async fn install(broker: &BrokerStore) -> Result<SettingsHandle, StoreError> {
+    // 1. Build the three registries from settings' own modules.
+    let mut bindings = BindingRegistry::new();
+    let mut commands = CommandRegistry::new();
+    let mut renderers = RendererRegistry::new();
+    crate::settings::bindings::register(&mut bindings);
+    crate::settings::commands::register_all(&mut commands);
+    crate::settings::renderers::register_all(&mut renderers);
+
+    // 2. Theme: opaque JSON; horns-core has no concrete theme type.
+    let theme_json = serde_json::json!({});
+
+    // 3. Build the install bundle from pre-populated registries.
+    let paths = InstallPaths {
+        cursor_path:        cursor_path(),         // ui/settings/focused
+        input_path:         input_path(),          // ui/settings/input
+        render_tick_path:   render_tick_path(),    // ui/settings/render_tick
+        render_output_path: render_output_path(),  // ui/settings/view
+        theme_path:         theme_path(),          // ui/settings/theme
+    };
+    let bundle = build_install_bundle_from_registries(
+        bindings, commands, renderers, paths, theme_json,
+    );
+
+    // 4. Apply metadata writes and register subscriptions on the broker.
+    let client = broker.client();
+    for (path, record) in &bundle.metadata_writes {
+        client.write(path, record.clone()).await?;
+    }
+    let ids = bundle.subscriptions.iter().map(|s| s.id().clone()).collect();
+    for sub in bundle.subscriptions {
+        broker.register_subscription(sub);
+    }
+
+    // 5. Seed the render tick so RenderSubscription fires once and
+    //    produces an initial View before the first keystroke.
+    client.write(&render_tick_path(),
+                 Record::parsed(Value::Integer(0))).await?;
+
+    Ok(SettingsHandle { subscription_ids: ids })
+}
+```
+
+The host event loop then:
+
+1. Reads a crossterm key event.
+2. Encodes it as a `KeyChord` and writes to `<input_path>/key`.
+3. horns' `KeyDispatchSubscription` runs the dispatcher; matched
+   commands or handlers produce writes; the broker cascades them.
+4. `RenderSubscription` fires on the tick bump; renders to
+   `<render_output_path>`.
+5. The host's ratatui driver reads the View from
+   `<render_output_path>` and paints. (In the settings example, a
+   `tui::draw` helper composes it into the overall ratatui frame.)
+
+A second screen would call `horns::install` again at a disjoint
+prefix (e.g. with `cursor_path: ui/inbox/focused`), producing an
+independent horns instance. No shared state; no per-screen wiring
+beyond the call site.

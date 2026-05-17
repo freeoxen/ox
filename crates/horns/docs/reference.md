@@ -1,12 +1,38 @@
-# UI framework — reference
+# horns — reference
 
 Lookup-only. Type signatures, paths, the file map, and a glossary.
+Code paths and module names refer to the current horns crate layout
+(`crates/horns-core`, `crates/horns-ratatui`); the settings worked
+example lives in `crates/ox-cli/src/settings/`.
+
+## Public API surface
+
+```rust
+// horns-core:
+pub use install::{install, build_install_bundle, build_install_bundle_from_registries,
+                  HornsHandle, InstallOptions, InstallPaths, InstallBundle};
+pub use binding::{BindingEntry, BindingId, BindingRegistry, BindingScope,
+                  HandlerEntry, HandlerId, HandlerMetadata, KeyHandler, Phase};
+pub use command::{Command, CommandCtx, CommandDisplay, CommandId, CommandMetadata,
+                  CommandRegistry, CommandScope};
+pub use key::{KeyChord, KeyCodeRepr, KeyModifierSet};
+pub use render::{AscendRule, Renderer, RenderCtx, RendererMetadata, RendererRegistry, Rect};
+pub use subscription::{PathChange, PathPattern, SubscriptionId,
+                       Subscription, SubCtx, SpawnHandle, AsyncWriter, SubscriptionRegistry};
+pub use view::View;
+pub use write::Write;
+
+// horns-ratatui:
+pub use render::render_to_frame;
+pub use theme::Theme;
+```
 
 ## Types
 
 ### View
 
-`crates/ox-view/src/lib.rs`. No serde, no ratatui.
+`crates/horns-core/src/view.rs`. No backend types; opt-in `serde`
+support behind the `serde` feature.
 
 ```rust
 pub enum View {
@@ -104,7 +130,7 @@ Span::plain(s: impl Into<String>) -> Span
 
 ### Renderer
 
-`crates/ox-cli/src/settings/registry.rs`.
+`crates/horns-core/src/render.rs`.
 
 ```rust
 pub trait Renderer: Send + Sync {
@@ -116,12 +142,23 @@ pub struct RenderCtx<'a> {
     pub area:     Rect,
     pub data:     &'a mut dyn Reader,
     pub registry: &'a RendererRegistry,
-    pub theme:    &'a Theme,
+    pub theme:    &'a dyn std::any::Any,  // backend downcasts
 }
 
 pub enum AscendRule {
+    /// Walk the display-tree parent chain until a registered
+    /// renderer matches.
     NearestRegistered,
+    /// Ascend to the named cursor (typically the screen's index).
+    /// Falls through to `_request_exit` if the target isn't
+    /// registered.
+    Fallback(Path),
+    /// Top-level page; ascending exits the screen entirely.
     ExitScreen,
+}
+
+pub struct RendererMetadata {
+    pub ascend_rule: AscendRule,
 }
 
 pub struct RendererRegistry { /* HashMap<Path, Box<dyn Renderer>> */ }
@@ -141,7 +178,7 @@ impl RendererRegistry {
 
 ### Command
 
-`crates/ox-cli/src/settings/command_registry.rs`.
+`crates/horns-core/src/command.rs`.
 
 ```rust
 pub trait Command: Send + Sync {
@@ -172,49 +209,83 @@ impl CommandRegistry {
 
 ### Binding
 
-`crates/ox-cli/src/settings/binding_registry.rs` (the registry itself)
-and `crates/ox-types/src/command_binding.rs` (the data shape).
+`crates/horns-core/src/binding.rs`.
 
 ```rust
 pub struct BindingEntry {
-    pub screen:      Screen,
-    pub cursor_path: Option<Path>,
-    pub mode:        Option<Mode>,
-    pub key:         KeyChord,
-    pub command_id:  CommandId,
+    pub scope:      BindingScope,
+    pub key:        KeyChord,
+    pub phase:      Phase,
+    pub command_id: CommandId,
+}
+
+pub enum BindingScope {
+    Anywhere,
+    Exact(Path),
+    Prefix(Path),
+}
+
+pub enum Phase {
+    Capture,
+    Target,
+    Bubble,
 }
 
 pub struct CommandId(pub String);                // #[serde(transparent)]
 pub struct CommandDisplay { pub name: String, pub description: String }
-pub struct CommandScope {
-    pub screen:      Screen,
-    pub cursor_path: Option<Path>,
+pub struct CommandScope { pub cursor_path: Option<Path> }
+
+pub struct BindingId(pub String);
+pub struct HandlerId(pub String);
+
+pub trait KeyHandler: Send + Sync {
+    fn handle(
+        &self,
+        snapshot: &mut dyn Reader,
+        key: &KeyChord,
+        ctx: &CommandCtx<'_>,
+    ) -> Option<Vec<Write>>;
 }
 
-pub struct BindingRegistry { /* Vec<BindingEntry> */ }
+pub struct HandlerEntry {
+    pub scope: BindingScope,
+    pub phase: Phase,
+    pub handler: Arc<dyn KeyHandler>,
+}
+
+pub struct HandlerMetadata {
+    pub scope: BindingScope,
+    pub phase: Phase,
+    pub class: String,  // free-form label for introspection
+}
+
+pub struct BindingRegistry { /* Vec<BindingEntry>, Vec<HandlerEntry> */ }
 
 impl BindingRegistry {
     pub fn new() -> Self;
     pub fn register(&mut self, entry: BindingEntry);
+    pub fn register_handler(&mut self, entry: HandlerEntry);
     pub fn lookup(
         &self,
-        screen: Screen,
         cursor: &Path,
-        mode:   Option<Mode>,
         key:    &KeyChord,
+        phase:  Phase,
     ) -> Option<&CommandId>;
 }
 ```
 
 Specificity (most → least):
-1. cursor: Some + mode: Some
-2. cursor: Some + mode: None
-3. cursor: None + mode: Some
-4. cursor: None + mode: None
+1. `scope: Exact(p)`
+2. `scope: Prefix(p)`, deeper `p` ahead of shallower
+3. `scope: Anywhere`
+
+Discrete bindings win on tie at the same scope+phase against
+handlers; handlers fire in registration order after the discrete
+tier misses.
 
 ### KeyChord
 
-`crates/ox-types/src/key_chord.rs`.
+`crates/horns-core/src/key.rs`.
 
 ```rust
 pub struct KeyChord {
@@ -242,7 +313,9 @@ pub enum KeyCodeRepr {
 
 ### Subscription
 
-`crates/ox-broker/src/subscription.rs`.
+`crates/horns-core/src/subscription.rs` (re-exports the broker-side
+traits; see also `crates/ox-broker/src/subscription.rs` for the
+underlying broker implementation).
 
 ```rust
 pub trait Subscription: Send + Sync {
@@ -280,7 +353,7 @@ handle) are different traits; they coexist.
 
 ### PathPattern
 
-`crates/ox-types/src/subscription.rs`.
+`crates/horns-core/src/subscription.rs`.
 
 ```rust
 pub enum PathPattern {
@@ -553,10 +626,10 @@ In `crates/ox-cli/src/settings/commands/`:
 - `field.account.{next,prev}`, `field.model.{next,prev}`
 - `selector.cycle.protocol`, `selector.cycle.auth`
 
-`edit.rs` (mode-state buffer commands; the dispatcher's mode-aware
-pass routes printables + Backspace + Enter + Esc through these):
+`edit.rs` (inline-edit buffer commands; printable input is claimed
+by a `TextInputHandler` at the same `_edit` scope, Backspace + Enter
++ Esc by discrete bindings routed to these commands):
 
-- `edit.insert_char`, `edit.delete_back`
 - `edit.commit`, `edit.cancel`
 
 There is no `accounts.create` or `accounts.delete` command — those
@@ -610,54 +683,88 @@ structurally by the cursor's position.
 
 ## File map
 
-```
-crates/ox-view/                        # the View enum
-  src/lib.rs                           # all View types + constructors
+### horns crates (the framework itself)
 
-crates/ox-types/src/                   # shared typed records
-  command_binding.rs                   # CommandId, BindingEntry, etc.
-  key_chord.rs                         # KeyChord, KeyCodeRepr
-  settings.rs                          # SettingsIndexEntry, AccountField,
-                                       # ModelField, ModelKey, banners
-  subscription.rs                      # PathPattern, PathChange, Write,
-                                       # SubscriptionId
-  completion_role.rs                   # CompletionRole
-  model_info.rs                        # ModelInfo, ModelInfoSource
+```
+crates/horns/                          # umbrella crate: re-exports
+  src/lib.rs                           # horns-core; exposes
+                                       # horns::ratatui under the
+                                       # `ratatui` feature.
+  docs/                                # framework documentation
+    ui_framework.md                    # 60-second pitch + index
+    architecture.md                    # mental model
+    howto.md                           # task-oriented recipes
+    reference.md                       # this file
+
+crates/horns-core/src/
+  lib.rs                               # public re-exports
+  view.rs                              # the View enum + supporting types
+  key.rs                               # KeyChord, KeyCodeRepr,
+                                       # KeyModifierSet
+  binding.rs                           # BindingEntry, BindingScope,
+                                       # Phase, BindingRegistry,
+                                       # KeyHandler, HandlerEntry,
+                                       # HandlerMetadata
+  command.rs                           # Command trait, CommandRegistry,
+                                       # CommandCtx, CommandMetadata
+  render.rs                            # Renderer trait,
+                                       # RendererRegistry, RenderCtx,
+                                       # AscendRule, RendererMetadata,
+                                       # Rect
+  dispatch.rs                          # Dispatcher: three-phase walk
+                                       # of the cursor's ancestor chain
+  install.rs                           # install / build_install_bundle /
+                                       # build_install_bundle_from_registries;
+                                       # KeyDispatch / Render /
+                                       # ThemeChange subscriptions
+  subscription.rs                      # Subscription trait, SubCtx,
+                                       # PathPattern, PathChange,
+                                       # SubscriptionRegistry,
+                                       # SpawnHandle, AsyncWriter
+  write.rs                             # Write { path, record }
   path_serde.rs                        # serde adapter for structfs Path
 
+crates/horns-ratatui/src/
+  lib.rs                               # re-exports
+  render.rs                            # render_to_frame: the View →
+                                       # ratatui translator
+                                       # (the only ratatui-touching
+                                       # point in the framework)
+  theme.rs                             # Theme type used by render.rs
+```
+
+### Settings worked-example crates (the framework's first user)
+
+```
 crates/ox-broker/src/
-  subscription.rs                      # Subscription trait, SubCtx,
-                                       # SpawnHandle, AsyncWriter,
-                                       # SubscriptionRegistry
-  dispatching_store.rs                 # DispatchingStore: cascade-bounded
+  subscription.rs                      # DispatchingStore wiring;
+                                       # horns re-exports the traits
+  dispatching_store.rs                 # cascade-bounded
                                        # write-and-dispatch
   client.rs                            # ClientHandle::read_subtree
 
 crates/ox-cli/src/
-  view_render.rs                       # View → ratatui translator
-                                       # (the only ratatui-touching point
-                                       # at the renderer boundary)
-  dispatch.rs                          # send_key with optional cursor
-                                       # + registries
+  dispatch.rs                          # send_key helper for the host's
+                                       # event loop (encodes crossterm
+                                       # keys, writes to <input_path>/key)
   settings/
-    mod.rs                             # submodule layout
-    registry.rs                        # Renderer trait, RendererRegistry,
-                                       # RenderCtx, AscendRule
-    command_registry.rs                # Command trait, CommandRegistry,
-                                       # CommandCtx
-    binding_registry.rs                # BindingRegistry with specificity
-    dispatch.rs                        # dispatch_settings_key
-    snapshot.rs                        # SettingsSnapshot
-                                       # + fetch_settings_view_state
+    mod.rs                             # settings::install — calls
+                                       # horns::build_install_bundle_from_registries
+                                       # against bindings/commands/renderers
+                                       # registered below
+    snapshot.rs                        # SettingsSnapshot +
+                                       # fetch_settings_view_state
+                                       # (pre-broker-mount Reader)
     bootstrap.rs                       # populate_index_entries,
                                        # maybe_first_run_cursor,
                                        # detect_legacy_settings
-    bindings.rs                        # day-one binding table
+    bindings.rs                        # day-one binding table for
+                                       # the settings screen
     renderers/
       mod.rs                           # register_all
       util.rs                          # read_typed, child_names_under,
                                        # subtree_count
-      index.rs                         # accordion (reads UI-mode state +
+      index.rs                         # accordion (reads UI-state +
                                        # data tree, composes affordances)
     commands/
       mod.rs                           # command! macro + register_all
@@ -665,9 +772,10 @@ crates/ox-cli/src/
       navigation.rs                    # cursor moves + path_to_value /
                                        # path_from_value helpers
       account_model.rs                 # account / model actions
-      edit.rs                          # mode-state buffer commands
-                                       # (insert_char, delete_back,
-                                       # commit, cancel)
+      edit.rs                          # inline-edit buffer commands
+                                       # (commit, cancel; printable
+                                       # input claimed by a
+                                       # TextInputHandler)
       tree.rs                          # tree.activate (Enter dispatch)
 
 crates/ox-gate/src/
@@ -681,7 +789,9 @@ crates/ox-gate/src/
   transport.rs                         # Transport trait + HttpTransport
   validation.rs                        # validate_account
   subscriptions/
-    mod.rs                             # register_all
+    mod.rs                             # register_all (settings-screen
+                                       # subscriptions; separate from
+                                       # the horns runtime subscriptions)
     util.rs                            # path helpers,
                                        # read_typed_via_reader,
                                        # MockTransport (cfg(test))
@@ -690,54 +800,77 @@ crates/ox-gate/src/
     account_delete.rs
     account_create.rs
     config_save.rs
+
+crates/ox-types/src/                   # shared typed records used by
+                                       # the settings worked example
+  settings.rs                          # SettingsIndexEntry, AccountField,
+                                       # ModelField, ModelKey, banners
+  completion_role.rs                   # CompletionRole
+  model_info.rs                        # ModelInfo, ModelInfoSource
 ```
 
 ## Glossary
 
-- **Cursor** — Path at `ui/settings/cursor` naming the
-  currently-displayed *page*. Pages are real navigation targets;
-  cursor moves are explicit nav actions. Modes (composing,
-  confirming, editing) are NOT cursor scopes — see *UI mode*.
-- **UI mode** — A state the user is in within a page (composing a
-  name, confirming a delete, editing a field). Lives as a value at a
-  named UI-state path (e.g. `ui/settings/new_account/buffer`). The
-  dispatcher consults mode paths before row-keyed dispatch; the
-  renderer reads them to decorate the page. Modes are dismissed by
-  writing `Null` to the mode path, not by navigating.
+- **Focus cursor** — Path at `<cursor_path>` (configured per
+  `horns::install`) naming what is currently focused. Its ancestor
+  chain is the dispatch scope path. The cursor can sit at a row, a
+  compound widget root, or a widget sub-element.
+- **Page cursor** — Optional secondary cursor a host can use to
+  distinguish "the page the user is reading" from focus. The
+  settings worked example uses `ui/settings/cursor` for page
+  navigation; the framework only requires the focus cursor.
+- **Compound widget mode** — A state the user has entered within a
+  page (composing a name, confirming a delete, editing a field
+  inline). Encoded by where the focus cursor sits — under
+  `<page>/_<widget>/<leaf>` — not by a separate discriminator flag.
+  Working state for the engaged widget (typed buffer, saved
+  pre-open cursor, staged drafts) lives at named UI-state paths.
+  Widgets are dismissed by restoring the saved cursor and cascade-
+  clearing the working-state subtree.
 - **Renderer** — Pure `&mut dyn Reader → View` function, registered
   against a cursor path. Reads both data-tree and display-tree
-  (UI-mode) state.
+  (UI-state) state.
 - **Command** — Pure `&mut dyn Reader, &CommandCtx → Vec<Write>`
   function, registered by `CommandId`. Performs data-tree writes
   directly when the work is synchronous; writes a trigger path only
   when the work is fundamentally async.
-- **Binding** — `BindingEntry` mapping
-  `(screen, cursor, mode, key) → CommandId`.
+- **Binding** — `BindingEntry` mapping `(scope, key, phase) →
+  CommandId`. Introspectable.
+- **Handler** — `KeyHandler` (opaque) registered at a (scope, phase)
+  to claim bulk input (e.g. every printable ASCII char). Asked
+  after the discrete-binding tier misses at the same scope+phase.
 - **Subscription** — Broker-side handler that fires on writes
   matching its `PathPattern`. Either a *reactive observer* (watches
   a real data path and does async/cross-cutting follow-up) or an
   *async action trigger* (watches a `…/<verb>_now` path and performs
   the requested async work). Never an RPC translator.
+- **Mount** — A horns instance installed on the broker via
+  `horns::install`. Each call registers three subscriptions
+  (KeyDispatch, Render, ThemeChange) plus metadata writes; a host
+  may install multiple horns mounts at disjoint prefixes for
+  multi-screen UIs.
 - **Snapshot** — In-memory Reader populated by walking the broker's
-  data; consumed by renderers and commands.
+  data; consumed by renderers and commands. (The horns
+  subscriptions' `SubCtx` provides a live Reader over the broker;
+  the settings worked example also uses a prefetched
+  `SettingsSnapshot` for its pre-broker-mount render path.)
 - **Ascend rule** — A renderer's `NearestRegistered` or `ExitScreen`
   policy for Esc.
 - **Cascade bound** — Maximum recursion depth of
   subscription-triggered writes (default 64).
-- **`_request_exit`** — Cross-component signal at
-  `ui/settings/_request_exit` written by `NavAscend` at `ExitScreen`;
-  the event loop reads it next iteration and switches screens. One
-  of the framework's few legitimate sentinel paths — there is no
-  data-tree home for "please exit."
+- **`_request_exit`** — Cross-component signal (settings worked
+  example: `ui/settings/_request_exit`) written by `NavAscend` at
+  `ExitScreen`; the host's event loop reads it next iteration and
+  switches screens. One of the framework's few legitimate sentinel
+  paths — there is no data-tree home for "please exit."
 - **Action trigger path** — A path like `…/test_now` or
   `…/refresh_now` whose Null-write means "please perform this
   async-only action on this instance." Subscription does the work.
   Used only when the action has no synchronous form.
-- **Display tree** — The portion of the namespace under `ui/`
-  carrying UI state (cursors, selection, mode buffers). Distinct
-  from the data tree (`config/`, `secret/`) which carries facts
-  about the world. Both share the namespace; subscriptions watch
-  data-tree paths only.
-- **Data tree** — The portion of the namespace under `config/` and
-  `secret/` carrying facts about the world. A write here changes
-  the world; a `Null` write deletes the named record.
+- **Display tree** — The portion of the namespace carrying UI state
+  (cursors, selection, edit buffers). Distinct from the data tree
+  which carries facts about the world. Both share the broker
+  namespace; subscriptions watch data-tree paths only.
+- **Data tree** — The portion of the namespace carrying facts about
+  the world. A write here changes the world; a `Null` write deletes
+  the named record.

@@ -8,59 +8,157 @@ after that, work from `howto.md`.
 The framework runs over three logically distinct trees, all keyed by
 `Path`:
 
-- **Data tree** — broker mounts under `config/`, `secret/`, and the
-  data side of `settings/index/entries`. Persistent or
-  ephemeral *facts about the world*: AccountConfig, ApiKey,
-  ProviderConfig, model catalogs, validation status. A write to a
-  data-tree path is the act of changing the world: writing
-  `config/gate/accounts/<name>` creates an account, writing `Null`
+- **Data tree** — broker mounts under host-chosen prefixes
+  (e.g. `config/`, `secret/`). Persistent or ephemeral *facts about
+  the world*. A write to a data-tree path is the act of changing
+  the world. In the settings worked example, writing to
+  `config/gate/accounts/<name>` creates an account; writing `Null`
   deletes it.
-- **Display tree** — broker mounts under `ui/`. Where the user is
-  right now and what UI state they're in: cursor, focus, selection
-  pointers, edit buffer, pending-delete target, composing-name
-  buffer. The user's active widget is encoded by where
-  `ui/settings/focused` points — a cursor under
-  `settings/_compose_form` means the compose widget is engaged. Per-
-  cursor working state (the typed buffer, the saved pre-open cursor,
+- **Display tree** — broker mounts under a UI-state prefix (e.g.
+  `ui/`). Where the user is right now and what UI state they're in:
+  the focus cursor, selection pointers, edit buffers, pending
+  confirmations, draft fields. The user's active widget is encoded
+  by where the focus cursor (`<cursor_path>`) points — a cursor
+  under `<page>/_<widget>` means that widget is engaged. Per-widget
+  working state (the typed buffer, the saved pre-open cursor,
   staged drafts) lives at named UI-state paths like
-  `ui/settings/new_account/buffer`. The display tree is data too —
-  just data about the UI rather than the world.
+  `<ui-state-prefix>/<widget>/buffer`. The display tree is data too
+  — just data about the UI rather than the world.
 - **View tree** — constructed each frame by renderers. A curated
-  `View` enum. In-memory only; no serde, no ratatui.
+  `View` enum. In-memory only; no serde, no backend types.
 
 The data tree and the display tree share one substrate (the
 namespace) but partition cleanly by prefix. Renderers read both;
 commands write both; subscriptions watch only data-tree paths (UI
 state is never the trigger for async work).
 
+## Mount, not library
+
+horns is a *mount* on the broker, not a library you call. The host
+calls `horns::install(broker, options)` exactly once per logical
+screen at startup. After install, the host's only horns interface
+is broker writes — write a `KeyChord` to the configured input path
+and the rest of the framework runs reactively through subscriptions.
+
+Three subscriptions own the runtime:
+
+- `KeyDispatchSubscription` watches the input path. On every write,
+  it computes the scope path from the cursor's ancestor chain and
+  runs the matched command or handler.
+- `RenderSubscription` watches a render-tick path that the dispatch
+  subscription bumps after each cascade. On every write, it walks
+  the renderer registry and writes the resulting View to the
+  configured view-output path.
+- `ThemeChangeSubscription` watches the theme path. On every write,
+  it bumps the render tick so the screen re-renders with the new
+  palette.
+
+A backend (horns-ratatui) is also a mount: it registers its own
+subscription watching the view-output path and draws each new View
+to a terminal. horns and the backend communicate by the View schema
+written to a broker path, not by Rust types — swap horns-ratatui for
+horns-web (DOM patches) or horns-iced (native) without touching
+horns-core.
+
+### Multi-mount
+
+`horns::install` can be called more than once at disjoint broker
+prefixes. Each call produces an independent horns instance — its own
+cursor path, its own input path, its own render output. A host with
+multiple screens runs one install per screen and routes input by
+writing to the corresponding input path.
+
+## Recursive composability
+
+The cursor is one path. The scope path is `cursor.ancestors()`.
+Bindings and handlers are keyed by exact paths. None of these scale
+with nesting depth, so horns is recursively composable structurally,
+without any framework-level "widget hierarchy" type.
+
+A reusable sub-widget (date picker, file picker, command palette)
+exports an install function:
+
+```rust
+pub fn install(
+    namespace:  Path,                       // cursor namespace the widget owns
+    ui_prefix:  Path,                       // working state subtree
+    options:    /* widget-specific options */,
+    bundle:     &mut HornsInstallBundle,    // mutable accumulator
+);
+```
+
+The host calls `install` once per sub-widget at construction. The
+widget adds its bindings, handlers, commands, renderers to the
+bundle under paths it owns. The bundle is then passed to
+`horns::install`. Multi-instance support is free — install the
+same widget twice at different namespaces.
+
+A sub-widget's bindings live in the parent's binding subtree but
+are scoped to paths the parent doesn't otherwise use:
+
+- **Not hidden:** the parent can enumerate every binding for
+  help/audit/override.
+- **Isolated:** sibling instances don't conflict because the cursor
+  is one path; only one widget's namespace can be on its ancestry
+  at a time.
+
+### Phase semantics
+
+Capture is outer→inner; Bubble is inner→outer. A parent that wants
+to claim a key absolutely (regardless of nested widgets) registers
+at Capture on its own scope. A parent that wants to claim a key
+conditionally (only if no nested widget claimed it) registers at
+Bubble. Each level chooses.
+
+## Opaque handlers vs introspectable bindings
+
+The framework has two dispatch tiers at every scope+phase:
+
+1. **Discrete bindings** (`BindingEntry`): introspectable. Lifecycle
+   keys like Esc, Tab, Enter, Backspace, and named command keys go
+   here. The help screen lists them; disk overrides edit them;
+   accessibility audits enumerate them.
+2. **Handlers** (`KeyHandler`): opaque. A handler is a closure that
+   inspects the key and returns `Some(writes)` to claim or `None` to
+   pass. Use for bulk consumption — a text field claiming any
+   printable ASCII registers one handler, not 96 BindingEntries.
+
+The dispatcher's per-phase walk asks discrete first (specificity-
+ranked), then handlers (registration order). Discrete wins on tie at
+the same scope+phase. The two tiers are deliberately separate; don't
+unify them into a single `Matcher = Exact | Predicate` entry — the
+introspection contract is the difference between "named, audible"
+and "opaque, consumed."
+
 ## The cursor
 
-`ui/settings/cursor: Path` holds the path of the page the user is
-currently viewing. Default: `oxpath!("settings", "index")`.
+The focus cursor (a path stored at `<cursor_path>`, configured at
+install time) is the **universal focus authority** — the single
+source of truth for what is currently focused. It points at a row,
+a compound widget root, or a compound widget sub-element. Its
+ancestor chain is the scope path the dispatcher walks. See *Cursor
+as universal focus* below.
 
-`ui/settings/focused: Path` is the **universal focus authority** —
-the single source of truth for what is currently focused. It points
-at a row, a compound widget root, or a compound widget sub-element.
-Its ancestor chain is the scope path the dispatcher walks; the
-cursor at `ui/settings/cursor` is its page-level outer scope.
-See *Cursor as universal focus* below.
+A host that distinguishes "the page the user is reading" from
+"what's focused within that page" can layer a second cursor on top
+— the settings worked example uses `ui/settings/cursor` for page
+navigation and `ui/settings/focused` for focus authority. The
+framework only requires the focus cursor.
 
-The cursor is a *page* pointer, not a *mode* pointer. Pages are
-distinct screens you navigate to (`settings/index`,
-`settings/accounts`, `settings/models`). Compound-widget modes
-(composing, confirming, editing inline, manual model entry) are
-encoded in `focused`'s path segments: `settings/_compose_form/name`
-puts the cursor inside the compose widget on its `name` field. UI
-sub-states tied to a specific cursor position — like an inline edit
-buffer — still live as values at named UI-state paths. See
-*Modeling state* below.
+Compound-widget engagement (composing, confirming, editing inline,
+multi-stage entry) is encoded in the cursor's path segments:
+`<page>/_<widget>/<leaf>` puts the cursor inside the widget on its
+`<leaf>` field. UI sub-states tied to a specific cursor position —
+like an inline edit buffer — live as values at named UI-state
+paths. See *Modeling state* below.
 
-Cursor moves are commands like everything else:
+Cursor moves are commands like everything else. The settings worked
+example shows the typical shapes:
 
 - `nav.descend.<area>` — writes the highlighted entry's
   `target_cursor` to the cursor path.
 - `nav.ascend` — consults the renderer's `AscendRule` and writes the
-  parent (or `_request_exit: true` for top-level pages).
+  parent (or a `_request_exit: true` sentinel for top-level pages).
 - `highlight.<area>.{next,prev}` — write to per-area selection
   pointers; cursor unchanged.
 
@@ -78,19 +176,20 @@ pub enum AscendRule {
 }
 ```
 
-`NavAscend` resolves in three steps:
+`NavAscend` resolves in three steps (settings worked example):
 
 1. Registry-defined parent (`AscendRule::NearestRegistered`).
-2. Top-level fallback to `settings/index` (so Esc on
-   `settings/accounts` lands there, not at `_request_exit`).
-3. From the index itself, write `ui/settings/_request_exit: true`.
+2. Top-level fallback to the screen's root page (so Esc on
+   `settings/accounts` lands at `settings/index`, not at
+   `_request_exit`).
+3. From the root itself, write `ui/settings/_request_exit: true`.
    The event loop reads that next frame and switches screens.
 
 `_request_exit` is one of a small handful of legitimate sentinel
-paths: it carries a cross-component signal (the event loop reads it
-to know when to switch screens) that genuinely has no other home. It
-is not a mode — there is no "exiting" state the user occupies. The
-write is the signal.
+paths: it carries a cross-component signal (the host's event loop
+reads it to know when to switch screens) that genuinely has no
+other home. It is not a mode — there is no "exiting" state the
+user occupies. The write is the signal.
 
 ## Renderers
 
@@ -121,10 +220,10 @@ never panics.
 
 **Composition is value-shaped, not call-shaped.** A renderer reads
 both data-tree and display-tree state and emits a View that reflects
-both. The accordion's accounts section, for example, reads the list
-of real accounts from the data tree AND the inline-create buffer
-from the display tree, then composes them into a single rendered
-section:
+both. In the settings worked example, the accordion's accounts
+section reads the list of real accounts from the data tree AND the
+inline-create buffer from the display tree, then composes them into
+a single rendered section:
 
 ```rust
 fn render(&self, ctx: &mut RenderCtx<'_>) -> View {
@@ -145,7 +244,7 @@ fn render(&self, ctx: &mut RenderCtx<'_>) -> View {
 ```
 
 The `+ New connection` affordance is *always* visible in some form,
-but it's a renderer-side decoration reading UI-mode state — never a
+but it's a renderer-side decoration reading UI-state — never a
 synthetic row in the visible-rows projection, never a navigable
 cursor scope. Renderers that compose multi-page state (e.g. an index
 page that summarizes selection counts from sub-areas) can recurse
@@ -163,14 +262,13 @@ here.
 Two distinct kinds of "mode" appear in the UI; they belong in
 different namespaces.
 
-**Compound-widget modes** (composing a new account, confirming a
-delete, editing a field inline, manual-model entry) are encoded by
-where the cursor (`ui/settings/focused`) points. The cursor at
-`settings/_compose_form/name` *is* the "composing a new account, on
-the name field" state. There is no separate `new_account/active`
-flag, no `manual_model/stage` discriminator, no `edit_mode` bool —
-the cursor's path segments carry that information directly. See the
-*Cursor as universal focus* section for the full pattern.
+**Compound-widget modes** (composing a record, confirming a delete,
+editing a field inline, multi-stage entry) are encoded by where the
+focus cursor points. The cursor at `<page>/_<widget>/<leaf>` *is*
+the "engaged in widget on leaf" state. There is no separate
+`active` bool, no `stage` discriminator — the cursor's path
+segments carry that information directly. See the *Cursor as
+universal focus* section for the full pattern.
 
 **UI sub-states tied to a specific cursor position** (the typed
 text buffer for the engaged edit, the saved pre-open cursor, the
@@ -179,27 +277,26 @@ stage form) are values at named UI-state paths. They are working
 state read by the renderer and the dispatched commands; they are
 *not* discriminators of which widget is engaged.
 
-When the user opens settings, the cursor is at `settings/index`.
-When they descend into accounts, the cursor moves to
-`settings/accounts`. When they press `a` to add a connection, the
-cursor moves to `settings/_compose_form/name` — they're still
-"on the accounts page" semantically, but the focus authority is now
-inside the compose widget. Pressing Esc cancels the widget by
-reading the saved cursor at `ui/settings/new_account/cursor_saved`
-and writing it back to `focused`, then cascade-clearing the
-`new_account` subtree.
+Worked example (settings): when the user opens settings, the cursor
+is at `settings/index`. When they descend into accounts, the cursor
+moves to `settings/accounts`. When they press `a` to add a
+connection, the cursor moves to `settings/_compose_form/name` —
+they're still "on the accounts page" semantically, but the focus
+authority is now inside the compose widget. Pressing Esc cancels
+the widget by reading the saved cursor at
+`ui/settings/new_account/cursor_saved` and writing it back to
+`focused`, then cascade-clearing the `new_account` subtree.
 
-The renderer reads `ui/settings/focused` together with
-`ui/settings/new_account/buffer` and decorates the accounts section
-with the inline name prompt when the cursor is under
-`settings/_compose_form`. The dispatcher reads the cursor's
-ancestor chain and routes keys through the `_compose_form` and
-`_compose_form/name` scopes.
+The renderer reads the focus cursor together with the working-state
+buffer and decorates the accounts section with the inline name
+prompt when the cursor is under `_compose_form`. The dispatcher
+reads the cursor's ancestor chain and routes keys through the
+`_compose_form` and `_compose_form/name` scopes.
 
-Mapping of compound widgets to cursor paths and the per-cursor
-working state they read:
+Settings worked example — mapping of compound widgets to cursor
+paths and the per-cursor working state they read:
 
-| Mode | Cursor path | Per-cursor working state |
+| Widget | Cursor path | Per-cursor working state |
 |---|---|---|
 | Composing new account | `settings/_compose_form/{name,protocol,key,...}` | `ui/settings/new_account/{buffer, key, protocol, errors, cursor_saved, ...}` |
 | Confirming a delete | `settings/_confirm_delete` | `ui/settings/pending_delete/{target_account, cursor_saved}` |
@@ -209,14 +306,16 @@ working state they read:
 When you reach to encode "the user is doing X," ask: would they
 *navigate* to that scope, or *enter* a state? If they enter a state,
 the cursor moves into that widget's synthetic namespace
-(`settings/_<widget>`) and the renderer + dispatcher key off that.
+(`<page>/_<widget>`) and the renderer + dispatcher key off that.
 The Esc key on a widget cancel-restores the saved cursor; on a page
 it ascends to the parent page. They're different verbs in the
 user's head, and they remain different verbs in the framework —
 distinguished now by *which scope's binding fires* rather than by
 checking a discriminator value.
 
-Retired discriminator paths (do not reintroduce):
+Retired discriminator paths from the settings worked example (do
+not reintroduce — these are the anti-patterns the cursor-as-focus
+commitment exists to rule out):
 
 - `ui/settings/new_account/active: bool` — replaced by the cursor
   being under `settings/_compose_form`.
@@ -233,34 +332,32 @@ Retired discriminator paths (do not reintroduce):
 
 ### Display tree names only real things
 
-Every path in the display tree (`settings/…`, `ui/…`) names either:
-- a real thing in the data tree (e.g. `settings/accounts/<name>` is
-  the display identifier for the real account at
-  `config/gate/accounts/<name>`), OR
-- a UI-state value with semantic meaning (e.g.
-  `ui/settings/edit_buffer` carries the user's live typed input).
+Every path in the display tree names either:
+- a real thing in the data tree (e.g. `<page>/<row>` is the display
+  identifier for a real record in the data tree), OR
+- a UI-state value with semantic meaning (e.g. a buffer carrying
+  the user's live typed input).
 
 There is no third category. There are no synthetic identifier paths
-(`settings/accounts/_new`, `settings/accounts/_delete`,
-`settings/models/<account>/_empty`). Synthetic UI affordances —
-"+ New connection", "no models — refresh", "+ add model manually" —
-are renderer-side decorations reading UI-mode state, not rows in the
-visible-rows projection.
+like `<page>/_new` or `<page>/_delete`. Synthetic UI affordances —
+"+ New X", "no items — refresh", "+ add manually" — are renderer-
+side decorations reading UI-state, not rows in the visible-rows
+projection.
 
-This is what makes path-equality dispatch safe. When `tree.activate`
-or `edit.commit` does `rows.iter().find(|r| r.path == field_path)`,
-every row in the projection names a real thing. There's no
-synthetic competing for the same namespace; no `_`-prefix reservation
-rule to maintain; no risk that a hand-edited TOML config could plant
-a real account at a path that the framework was using for a UI
-affordance.
+This is what makes path-equality dispatch safe. When a command does
+`rows.iter().find(|r| r.path == field_path)`, every row in the
+projection names a real thing. There's no synthetic competing for
+the same namespace; no `_`-prefix reservation rule to maintain; no
+risk that a hand-edited config could plant a real record at a path
+that the framework was using for a UI affordance.
 
-The visible-rows projection is the cleanest expression of this:
+The visible-rows projection is the cleanest expression of this
+(settings worked example):
 
 ```rust
 pub fn enumerate(data: &mut dyn Reader) -> Vec<VisibleRow> {
     // Only data-tree-derived rows. The renderer composes synthetic
-    // affordances on top by reading UI-mode state separately.
+    // affordances on top by reading UI-state separately.
     self.real_account_rows(data)
         .chain(self.real_model_rows(data))
         .collect()
@@ -269,11 +366,11 @@ pub fn enumerate(data: &mut dyn Reader) -> Vec<VisibleRow> {
 
 ### A write IS the action
 
-Subscriptions are reactive observers, not RPC handlers. The CLI's
-command handlers perform data writes directly:
+Subscriptions are reactive observers, not RPC handlers. The host's
+command handlers perform data writes directly. Settings worked
+example — committing a new account:
 
 ```rust
-// commands/account_model.rs — the CLI commits an account creation.
 fn commit_new_account(snap: &mut dyn Reader) -> Vec<Write> {
     let name = read_buffer(snap);
     vec![
@@ -292,40 +389,38 @@ A subscription watching `Prefix(config/gate/accounts)` may then react
 to the new entry by spawning a catalog fetch. That's
 async/cross-cutting work — exactly what subscriptions are for. The
 subscription does *not* "create the account in response to a
-sentinel write"; the CLI created the account directly, and the
+sentinel write"; the host created the account directly, and the
 subscription is doing follow-up work that requires HTTP.
 
 The decision rule:
 
-- Can the work be done with a single synchronous write? → CLI writes
-  the data path directly. No subscription.
+- Can the work be done with a single synchronous write? → Host
+  writes the data path directly. No subscription.
 - Does the work require async (HTTP, file IO) or touch many paths
-  with cross-cutting consistency? → CLI writes a data path; a
+  with cross-cutting consistency? → Host writes a data path; a
   subscription watches that path and does the side effects.
 - Does the trigger represent "the user requested action X that can
   *only* happen asynchronously" (connectivity test, catalog
-  refresh)? → A `…/test_now` or `…/refresh_now` Null-write trigger
-  is legitimate — there's no other shape for "please do this async
-  thing."
+  refresh)? → A `…/<verb>_now` Null-write trigger is legitimate —
+  there's no other shape for "please do this async thing."
 
-The anti-pattern is: CLI writes a sentinel; subscription reads the
-sentinel; subscription does what the CLI could have done
+The anti-pattern is: host writes a sentinel; subscription reads the
+sentinel; subscription does what the host could have done
 synchronously. That's RPC indirection through the substrate, and
 it's banned.
 
 ### Cursor as universal focus
 
-`ui/settings/focused` is the single source of truth for what is
-currently focused. The cursor's path encodes the full focus state
-— row, compound widget, or compound widget sub-element.
+The focus cursor (at `<cursor_path>`) is the single source of truth
+for what is currently focused. The cursor's path encodes the full
+focus state — row, compound widget, or compound widget sub-element.
 
-- Cursor at a row path (e.g., `settings/accounts/alpha`) → that row
-  is focused; no compound widget is active.
-- Cursor at a compound widget root (e.g.,
-  `settings/_confirm_delete`) → the widget is focused as a whole;
-  no sub-element selected.
-- Cursor at a compound widget sub-element (e.g.,
-  `settings/_compose_form/name`) → that sub-element is focused; the
+- Cursor at a row path (`<page>/<row>`) → that row is focused; no
+  compound widget is active.
+- Cursor at a compound widget root (`<page>/_<widget>`) → the
+  widget is focused as a whole; no sub-element selected.
+- Cursor at a compound widget sub-element
+  (`<page>/_<widget>/<leaf>`) → that sub-element is focused; the
   widget is active by virtue of being on the cursor's ancestor
   chain.
 
@@ -342,16 +437,16 @@ Bindings registered at any scope on this chain are reachable. The
 dispatcher walks the chain in three phases: Capture outer→inner,
 Target on the leaf, Bubble inner→outer.
 
-Mode discriminator paths (`new_account/active`,
-`pending_delete: Option<_>` as a value flag, `manual_model/stage`,
-`edit_mode` + `edit_field_path`) are retired. Active mode is
-implicit in cursor's path segments.
+Mode discriminator paths (active bools, stage enums, value-flag
+Options) are retired by this commitment. Active mode is implicit in
+the cursor's path segments.
 
 Each compound widget follows the same pattern:
 
-- **Open**: save current cursor at `ui/settings/<widget>/cursor_saved`;
-  write the new cursor to the widget's path (its root, or the first
-  sub-element); initialize the working state subtree.
+- **Open**: save current cursor at
+  `<ui-state-prefix>/<widget>/cursor_saved`; write the new cursor
+  to the widget's path (its root, or the first sub-element);
+  initialize the working state subtree.
 - **Sub-element navigation**: write the cursor to the next
   sub-element's path. The dispatcher's scope path shifts; no other
   state changes.
@@ -361,15 +456,18 @@ Each compound widget follows the same pattern:
 - **Cancel**: read `cursor_saved`; cascade-clear the widget's
   working state subtree; restore the saved cursor.
 
-#### Page-level bindings
+#### Screen-level bindings
 
-Bindings that should fire whenever a sub-cursor is active but no
-inner scope claims the key (`j`/`k` row navigation, `a` to open
-compose, `?` for help, `Ctrl+S` for save) register at
-`Exact(settings)` — the common ancestor of every cursor on the
-settings screen. At Bubble phase they propagate to whichever cursor
-is currently focused, after every inner scope has had a chance to
-claim them at Target/Bubble.
+Bindings that should fire whenever an inner cursor is active but no
+inner scope claims the key (row navigation keys, command-palette
+shortcuts, help, save) register at `Exact(<screen-root>)` — the
+common ancestor of every cursor on the screen. At Bubble phase they
+propagate to whichever cursor is currently focused, after every
+inner scope has had a chance to claim them at Target/Bubble.
+
+In the settings worked example, `j`/`k` row navigation, `a` to open
+compose, `?` for help, and `Ctrl+S` for save register at
+`Exact(settings)` at `Phase::Bubble`.
 
 ## The View enum
 
@@ -419,13 +517,14 @@ Span::plain(s);  // unstyled span
 `Color` mirrors ratatui's vocabulary (Reset, 16 named colors,
 `Indexed(u8)`, `Rgb(u8,u8,u8)`) but is type-decoupled.
 
-## The translator
+## The backend (translator)
 
-`crates/ox-cli/src/view_render.rs` is the **only** place ratatui is
-touched.
+The backend is the only place a concrete UI toolkit is touched.
+horns ships `horns-ratatui` (`crates/horns-ratatui/src/render.rs`)
+as the reference backend:
 
 ```rust
-pub(crate) fn render_to_frame(
+pub fn render_to_frame(
     view: &View,
     frame: &mut Frame,
     area: Rect,
@@ -436,14 +535,14 @@ pub(crate) fn render_to_frame(
 Total over the View enum (no catch-all). Per-variant private fns.
 Mapping helpers (`map_color`, `map_style`, `map_modifiers`,
 `map_direction`, `map_align`, `map_sizing`) are 1:1 with ratatui's
-vocabulary; adding a `Color` to ox-view forces a compile-time
-match-arm here.
+vocabulary; adding a `Color` variant to horns-core's View forces a
+compile-time match-arm here.
 
 Snapshot tests use `ratatui::backend::TestBackend` +
 `insta::assert_snapshot!` of the formatted buffer.
 
-The translator is **dumb**. No conditional logic about *which*
-variant to render based on data values; that's a renderer concern.
+The backend is **dumb**. No conditional logic about *which* variant
+to render based on data values; that's a renderer concern.
 
 ## Commands
 
@@ -486,12 +585,10 @@ There is **no on-the-wire effect DSL.** No `PathTemplate`, no
 
 ```rust
 pub struct BindingEntry {
-    pub screen:     Screen,
     pub scope:      BindingScope,  // Anywhere | Exact(Path) | Prefix(Path)
-    pub mode:       Option<Mode>,
     pub key:        KeyChord,
-    pub command_id: CommandId,
     pub phase:      Phase,
+    pub command_id: CommandId,
 }
 
 pub enum Phase {
@@ -512,10 +609,14 @@ KeyCodeRepr }`. `KeyCodeRepr` covers `Char(char)`, `Enter`, `Esc`,
 `Tab`, `BackTab`, `Backspace`, `Delete`, `Up`, `Down`, `Left`,
 `Right`, `PageUp`, `PageDown`, `Home`, `End`, `Insert`, `F(u8)`.
 
-The text-editing scope (`settings/accounts/_detail`) gets ~96 bindings
-from a helper that registers one `BindingEntry` per printable ASCII
-char → `field.insert` at `Phase::Target`, plus one for `Backspace` →
-`field.delete_back` at `Phase::Target`.
+For bulk consumption (e.g. a text field claiming every printable
+ASCII character), use a `KeyHandler` instead of dozens of
+`BindingEntry` rows. A handler is one registration that inspects the
+chord and returns `Some(writes)` to claim or `None` to pass — see
+*Opaque handlers vs introspectable bindings* above for the trade-
+off. The settings worked example uses a `TextInputHandler` for the
+inline-edit scope, replacing what would otherwise be ~96 individual
+printable-ASCII bindings.
 
 ## Hierarchical dispatch
 
@@ -527,20 +628,17 @@ in the dispatcher and no transitional Target-fallback shim.
 A user keystroke routes through a *scope path* — the ordered chain of
 nested scopes from the outermost (the page) to the innermost (the
 focused leaf widget). The scope path **is the cursor's ancestor
-chain**: every entry is the cursor (`ui/settings/focused`) walked
-toward its root, wrapped in `BindingScope::Exact`. Each entry on the
-path is either:
+chain**: every entry is the focus cursor walked toward its root,
+wrapped in `BindingScope::Exact`. Each entry on the path is either:
 
 - a **page scope**: the cursor or one of its prefixes lying inside
-  a registered page (`settings`, `settings/accounts`),
+  a registered page (`<screen-root>`, `<screen-root>/<page>`),
 - a **compound widget scope**: a cursor prefix at a synthetic
-  widget root (`settings/_compose_form`, `settings/_confirm_delete`,
-  `settings/_manual_model`, `settings/_edit`),
+  widget root (`<page>/_<widget>`),
 - a **leaf scope**: the cursor's leaf segment when it points at a
-  compound widget's sub-element (`settings/_compose_form/name`,
-  `settings/_manual_model/id`). The same widget routes different
-  keys at different leaves because each leaf is its own
-  `BindingScope::Exact`.
+  compound widget's sub-element (`<page>/_<widget>/<leaf>`). The
+  same widget routes different keys at different leaves because
+  each leaf is its own `BindingScope::Exact`.
 
 The dispatcher walks the path in three phases, in order:
 
@@ -566,18 +664,15 @@ The dispatcher walks the path in three phases, in order:
 
 Lookup specificity within a single phase (most → least):
 
-1. `scope: Exact + mode: Some`
-2. `scope: Exact + mode: None`
-3. `scope: Prefix(deeper) + mode: ...`
-4. `scope: Prefix(shallower) + mode: ...`
-5. `scope: Anywhere + mode: Some`
-6. `scope: Anywhere + mode: None`
+1. `scope: Exact(p)`
+2. `scope: Prefix(p)`, deeper `p` ahead of shallower
+3. `scope: Anywhere`
 
 Ties broken by registration order.
 
 ### Scopes and the focus path
 
-`compute_scope_path` is `ui/settings/focused`'s ancestor chain. The
+`compute_scope_path` is the focus cursor's ancestor chain. The
 dispatcher reads the cursor once per keystroke and walks its
 ancestors outer-to-inner:
 
@@ -588,8 +683,8 @@ fn compute_scope_path(snap: &mut dyn Reader) -> Vec<BindingScope> {
 }
 ```
 
-For cursor `settings/_compose_form/name` the path is `[settings,
-settings/_compose_form, settings/_compose_form/name]`. The
+For cursor `<page>/_<widget>/<leaf>` the path is `[<screen-root>,
+<page>, <page>/_<widget>, <page>/_<widget>/<leaf>]`. The
 dispatcher has no per-widget logic, no discriminator reads, no
 synthetic-scope insertion. Mutual exclusion between compound
 widgets is structural: the cursor is a single path, and only one
@@ -597,8 +692,8 @@ widget's synthetic prefix can be on its ancestry at a time.
 
 The path is reconstructed per keystroke. No mutable
 "currently-active-scope-stack" state lives anywhere; the snapshot is
-the source of truth, and `ui/settings/focused` is the field within
-the snapshot that determines it.
+the source of truth, and the focus cursor is the field within the
+snapshot that determines it.
 
 ### `BindingScope::Anywhere` and the dispatch walk
 
@@ -684,19 +779,19 @@ are absent from the path:
 Adding a modal, wizard, or inline form means:
 
 1. Pick a synthetic cursor namespace for the widget
-   (`settings/_my_widget`). The widget's "open" command writes the
+   (`<page>/_<widget>`). The widget's "open" command writes the
    cursor there; the widget's "cancel"/"commit" commands restore
    the saved pre-open cursor.
 2. Pick a UI-state subtree for the widget's working data
-   (`ui/settings/my_widget/{buffer, cursor_saved, ...}`). The open
-   command initializes it; the commit/cancel commands cascade-clear
-   it via a `Null` write at the subtree root.
-3. Register bindings under `Exact(settings/_my_widget)` for the
+   (`<ui-state-prefix>/<widget>/{buffer, cursor_saved, ...}`). The
+   open command initializes it; the commit/cancel commands
+   cascade-clear it via a `Null` write at the subtree root.
+3. Register bindings under `Exact(<page>/_<widget>)` for the
    widget-as-a-whole — lifecycle keys at Capture (Esc cancel, Tab
    advance) and form-commit at Bubble (Enter).
 4. If the widget has multiple focusable children, the open command
    places the cursor on the first child's path
-   (`settings/_my_widget/first_field`) and Tab/Shift+Tab commands
+   (`<page>/_<widget>/<first_leaf>`) and Tab/Shift+Tab commands
    move it among sibling paths. Register Target-phase bindings on
    each child scope.
 
@@ -710,58 +805,57 @@ widget; it doesn't compose with siblings.
 
 ## Dispatch flow
 
-A user keypress on the settings screen flows through:
+A user keypress flows through the broker like this:
 
 ```
-crossterm event
+host event source (e.g. crossterm event)
   ↓
-event_loop drains keypress
+host encodes the key as `KeyChord`
   ↓
-dispatch::send_key(client, key_str, Screen::Settings, flags,
-                   Some(&cursor), Some(&mut snap),
-                   Some(&bindings), Some(&commands),
-                   Some(&renderers))
+host writes the KeyChord to <input_path>/key
   ↓
-parse_key_str(key_str) → KeyChord
-  ↓
-settings::dispatch::dispatch_settings_key(snapshot, screen, cursor,
-                                          mode, key, cmds, bindings,
-                                          renderers):
-  // The cursor argument is the page cursor; the focus cursor lives
-  // at `ui/settings/focused` and is read inside compute_scope_path.
-  scope_path = compute_scope_path(snapshot)   // = focus.ancestors()
+broker fires KeyDispatchSubscription, which runs Dispatcher:
+  scope_path = compute_scope_path(snapshot)   // = cursor.ancestors()
   // Capture: outer → inner
   for scope in &scope_path:
-      if let Some(cmd) = bindings.lookup(screen, scope, mode, key,
-                                         Phase::Capture):
+      if let Some(cmd) = bindings.lookup(scope, key, Phase::Capture):
           return commands.lookup(cmd).run(snapshot, &ctx)
+      if let Some(writes) = handlers.try_handle(scope,
+                                                key, Phase::Capture):
+          return writes
   // Target: leaf only
   if let Some(leaf) = scope_path.last():
-      if let Some(cmd) = bindings.lookup(screen, leaf, mode, key,
-                                         Phase::Target):
+      if let Some(cmd) = bindings.lookup(leaf, key, Phase::Target):
           return commands.lookup(cmd).run(snapshot, &ctx)
+      if let Some(writes) = handlers.try_handle(leaf,
+                                                key, Phase::Target):
+          return writes
   // Bubble: inner → outer
   for scope in scope_path.iter().rev():
-      if let Some(cmd) = bindings.lookup(screen, scope, mode, key,
-                                         Phase::Bubble):
+      if let Some(cmd) = bindings.lookup(scope, key, Phase::Bubble):
           return commands.lookup(cmd).run(snapshot, &ctx)
-  return vec![]  // inert; caller falls through to input-store path
+      if let Some(writes) = handlers.try_handle(scope,
+                                                key, Phase::Bubble):
+          return writes
+  return vec![]  // inert
   ↓
-for write in writes: client.write(&write.path, write.record).await
+KeyDispatchSubscription appends a +1 bump to <render_tick_path>
   ↓
-broker dispatches subscription handlers
+broker cascades the returned writes through DispatchingStore
   ↓
 subscription handlers may write more (cascade-bounded, default 64)
   ↓
-event loop reads ui/settings/_request_exit on next iteration
+RenderSubscription fires on the tick bump:
+  reads cursor, renders, writes View to <render_output_path>
   ↓
-next frame: snapshot fetch → cursor read → registry.render
-            → view_render::render_to_frame
+backend mount (horns-ratatui) fires on the view-output write
+  and paints the View to the terminal
 ```
 
-When the binding misses, dispatch falls through to the legacy
-input-store path so global handlers (modal overlays, etc.) still get
-a shot.
+A binding miss combined with a handler miss returns `vec![]`. The
+host is free to layer its own fallback (e.g. an input store consulted
+when horns produces no writes), but horns itself dispatches purely
+along the cursor's ancestor chain.
 
 ## Subscriptions
 
@@ -770,27 +864,30 @@ happens. They are reactive observers of data-tree changes — not RPC
 handlers. They watch path patterns; when a watched path changes,
 they respond with side effects (HTTP fetches, multi-path cleanup,
 file IO). They do not translate "please do X" sentinel writes into
-"do X" data writes — that's the CLI's job, and it does the data
+"do X" data writes — that's the host's job, and it does the data
 write directly.
 
 Two shapes earn a subscription:
 
 1. **Reactive observers**: watch a data-tree change and do follow-up.
-   "When a new entry appears under `config/gate/accounts/`, fetch
-   its catalog." `Prefix(config/gate/accounts)` watching new entries
-   is the natural shape.
+   "When a new entry appears under a collection prefix, fetch its
+   catalog." `Prefix(<collection>)` watching new entries is the
+   natural shape — in the settings worked example, `Prefix(config/
+   gate/accounts)` watches for new account records.
 2. **Async action triggers**: the user requested work that can only
-   happen asynchronously. `config/gate/accounts/<name>/test_now`
-   carrying a `Null` write means "please run a connectivity test
-   for this account." The trigger is legitimate because the action
-   has no synchronous form.
+   happen asynchronously. A `<record>/<verb>_now` path carrying a
+   `Null` write means "please perform this async action on this
+   instance." In the settings worked example,
+   `config/gate/accounts/<name>/test_now` runs a connectivity test.
+   The trigger is legitimate because the action has no synchronous
+   form.
 
-Anti-pattern: the CLI writes a sentinel like
-`config/gate/accounts/_create_now`, the subscription reads it,
-validates, and writes the AccountConfig that the CLI could have
-written directly. That's RPC indirection. The CLI should write the
-AccountConfig itself; the subscription, if any, should react to the
-new entry with whatever async follow-up is appropriate.
+Anti-pattern: the host writes a sentinel like
+`<collection>/_create_now`, the subscription reads it, validates,
+and writes the record that the host could have written directly.
+That's RPC indirection. The host should write the record itself;
+the subscription, if any, should react to the new entry with
+whatever async follow-up is appropriate.
 
 The protocol shape itself:
 
@@ -841,36 +938,36 @@ Runtime contract:
    writes. Most handlers read one path; handlers that read several
    and reason about cross-path consistency must coordinate.
 
-Day-one subscriptions live in `crates/ox-gate/src/subscriptions/`.
-See `reference.md` §Subscriptions for the full table.
+Settings worked-example subscriptions live in
+`crates/ox-gate/src/subscriptions/`. See `reference.md`
+§Subscriptions for the full table.
 
 **Action-trigger path convention**: per-instance async actions live
 at `<collection>/{id}/<verb>_now` (e.g.
-`config/gate/accounts/<name>/test_now`). Writing `Null` to such a
-path means "please perform this async action on this instance"; the
-subscription handles it.
+`config/gate/accounts/<name>/test_now` in the settings worked
+example). Writing `Null` to such a path means "please perform this
+async action on this instance"; the subscription handles it.
 
 There are no *collection-level* trigger paths — a request to act on
-the collection itself (e.g. "create a new account") is a write
-*to the collection*, not a write to a sentinel sibling. The CLI
-writes `config/gate/accounts/<name>` to create; a subscription
-watching `Prefix(config/gate/accounts)` reacts if any async
-follow-up is needed.
+the collection itself (e.g. "create a new record") is a write
+*to the collection*, not a write to a sentinel sibling. The host
+writes `<collection>/<id>` to create; a subscription watching
+`Prefix(<collection>)` reacts if any async follow-up is needed.
 
 ## The snapshot
 
-Renderers run synchronously. Reading the broker is async. Bridging
-that gap is the **snapshot**: an in-memory `LocalConfig`-backed
-Reader populated each frame by walking the prefixes the settings UI
-cares about.
+Renderers and commands run synchronously and take a
+`&mut dyn Reader`. The horns subscriptions are themselves
+synchronous handlers that the broker invokes with a `SubCtx`
+carrying a live `Reader` over the broker store — so renderers and
+commands read the broker directly through the subscription's
+snapshot.
 
-```rust
-pub async fn fetch_settings_view_state(
-    client: &ClientHandle,
-) -> SettingsSnapshot
-```
-
-Walks 7 prefixes via `client.read_subtree`:
+A host that needs to prefetch some subset of broker state into an
+in-memory Reader (e.g. for a separate render path outside the horns
+subscription) can do so; the settings worked example pre-dates the
+broker-mount model and uses a `SettingsSnapshot` that walks
+seven prefixes via `client.read_subtree`:
 
 - `config/gate/accounts`
 - `config/gate/providers`
@@ -880,15 +977,11 @@ Walks 7 prefixes via `client.read_subtree`:
 - `settings/index/entries`
 - `secret/keys`
 
-Each `(path, value)` is inserted into the snapshot's inner store.
-`SettingsSnapshot` impls `Reader` by forwarding to the inner.
-
-The snapshot is built once per frame for rendering, and once per
-keypress for dispatch (the dispatch snapshot sees post-write state
-from the prior keystroke). Independent snapshots — sharing one
-across the two phases would require restructuring async lifetimes
-through the `terminal.draw(...)` callback. Acceptable cost; one
-fewer broker round-trip on settings keys.
+Each `(path, value)` is inserted into the snapshot's inner store;
+`SettingsSnapshot` impls `Reader` by forwarding. New screens built
+on top of `horns::install` typically don't need this — the
+RenderSubscription's `SubCtx` already gives renderers a Reader
+covering the full broker.
 
 ## Why this shape
 
@@ -913,24 +1006,26 @@ spawned async work would be untestable.
 
 **Subscriptions on the broker** rather than the renderer side because
 they need to react to writes from anywhere — not just the user's
-keypresses. A network test fires from the `t` key today, from an
-auto-validation hook on save tomorrow, from a future `ox cli admin`
-command later. All paths converge at the watched-pattern dispatch.
+keypresses. A network test (in the settings worked example) fires
+from the `t` key today, from an auto-validation hook on save
+tomorrow, from a future admin command later. All paths converge at
+the watched-pattern dispatch.
 
 **Bindings as data** so v2 can let users edit them on disk. v1 ships
 them hardcoded but the shape is forward-compat.
 
 **Why the cursor is the universal focus authority.** Earlier
-iterations split focus across discriminator paths
-(`new_account/active: bool`, `manual_model/stage: ManualModelStage`,
-`edit_mode: bool` + `edit_field_path`). Each new compound widget
-brought its own discriminator and its own scope-insertion logic in
-the dispatcher. The dispatcher held a small case analysis: "if
-new_account/active, push the compose scope; if manual_model/stage
-is set, push the manual-model scope at the right leaf; ..." Each
-case multiplied the question of mutual exclusion — what happens if
-both flags are accidentally set? — and pushed answers into the
-write-side commands ("clear the other flags when you open").
+iterations of the settings worked example split focus across
+discriminator paths (`new_account/active: bool`,
+`manual_model/stage: ManualModelStage`, `edit_mode: bool` +
+`edit_field_path`). Each new compound widget brought its own
+discriminator and its own scope-insertion logic in the dispatcher.
+The dispatcher held a small case analysis: "if new_account/active,
+push the compose scope; if manual_model/stage is set, push the
+manual-model scope at the right leaf; ..." Each case multiplied the
+question of mutual exclusion — what happens if both flags are
+accidentally set? — and pushed answers into the write-side commands
+("clear the other flags when you open").
 
 Cursor-as-focus collapses all of that. The cursor is a single path;
 its ancestor chain is the scope path; only one widget's prefix can
@@ -942,22 +1037,21 @@ the open/cancel/commit handlers; no dispatcher edit, no new
 discriminator, no new "what if both are set" branch.
 
 The page-vs-widget distinction the framework still upholds is the
-one users feel: page navigation (the `cursor` path) changes the
-screen the user is reading; widget engagement (the `focused`
-cursor descending into a synthetic `_<widget>` namespace) opens an
-inline form on the same screen. Different verbs, different visual
-shapes, same underlying mechanism: write a path, and the cursor's
-new position determines the rest.
+one users feel: page navigation (a secondary page cursor, optional)
+changes the screen the user is reading; widget engagement (the
+focus cursor descending into a synthetic `_<widget>` namespace)
+opens an inline form on the same screen. Different verbs, different
+visual shapes, same underlying mechanism: write a path, and the
+cursor's new position determines the rest.
 
 **Why the display tree names only real things.** Synthetic identifier
-paths (`settings/accounts/_new`, `…/_delete`,
-`settings/models/<account>/_empty`) put UI affordances and real
-domain identifiers in the same namespace, dispatched by string
+paths like `<page>/_new` or `<page>/_delete` put UI affordances and
+real domain identifiers in the same namespace, dispatched by string
 equality. That mostly works as long as no real domain identifier
 ever collides with a synthetic — but the convention has to be
 maintained at every write boundary in perpetuity, and a single
-hand-edited TOML config can pierce it. Pulling synthetic affordances
-out of the projection entirely (rendered by reading UI-mode state,
+hand-edited config can pierce it. Pulling synthetic affordances
+out of the projection entirely (rendered by reading UI-state,
 never as rows) makes the namespace invariant structural rather than
 conventional. Path-equality dispatch becomes safe by construction.
 
@@ -969,3 +1063,14 @@ the subscription is doing real work (HTTP, multi-path cleanup), the
 indirection is justified by the work. When the subscription is
 *just translating*, it's pure overhead. The path-MVU model works
 because writes mean what they say; sentinel-as-RPC undermines that.
+
+**Why a mount, not a library.** A library API forces the host to
+plumb framework calls through every event handler ("on key, ask
+horns to dispatch, then write the resulting changes"). A mount-on-
+broker design instead makes the broker itself the API: the host
+writes a `KeyChord` to a path, and the framework reacts. Tests
+exercise the framework by writing to the broker directly, no harness
+needed. Backends are independent mounts watching the View output —
+swap horns-ratatui for horns-web without touching renderers or
+commands. Multi-screen hosts call `install` once per screen at
+disjoint prefixes; no per-screen wiring code repeats.
