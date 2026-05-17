@@ -239,6 +239,20 @@ impl SubscriptionRegistry {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+
+    /// Remove every entry whose subscription has the given id.
+    /// Returns the number of `(pattern, sub)` rows removed.
+    ///
+    /// Used by hosts to take a subscription back out of the registry
+    /// when its lifecycle ends — e.g. the ratatui
+    /// `ViewRenderSubscription` only lives for the duration of a
+    /// horns settings session and unregisters on exit so the terminal
+    /// it holds becomes uniquely owned again.
+    pub fn unregister(&mut self, id: &SubscriptionId) -> usize {
+        let before = self.entries.len();
+        self.entries.retain(|(_, sub)| sub.id() != id);
+        before - self.entries.len()
+    }
 }
 
 #[cfg(test)]

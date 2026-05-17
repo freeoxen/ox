@@ -16,6 +16,8 @@ ox-broker = { path = "../ox-broker" }
 ratatui = "0.29"
 unicode-width = "0.2"
 structfs-core-store = { workspace = true }
+structfs-serde-store = { workspace = true }
+parking_lot = "0.12"
 tracing = { workspace = true }
 
 [dev-dependencies]

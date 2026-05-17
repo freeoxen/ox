@@ -1,7 +1,5 @@
 use crate::app::App;
 use crate::editor::flush_pending_edits;
-use crate::settings::BindingRegistry;
-use crate::settings::CommandRegistry;
 use crate::settings::commands::navigation::path_from_value;
 use crate::settings::snapshot::{SettingsSnapshot, fetch_settings_view_state};
 use horns_ratatui::Theme;
@@ -104,6 +102,16 @@ pub(crate) struct HistorySearchState {
     pub selected: usize,
 }
 
+/// Outcome of the legacy event loop, telling the top-level state
+/// machine which way to pivot.
+pub enum LegacyExit {
+    /// User navigated to a horns-owned screen (today: settings).
+    /// The caller transitions into `horns_loop::run_horns_settings_loop`.
+    ToHorns,
+    /// User asked to quit the program.
+    Quit,
+}
+
 /// Async event loop that dispatches through the BrokerStore.
 ///
 /// ALL state mutations go through UiStore via the broker. Text editing
@@ -111,13 +119,17 @@ pub(crate) struct HistorySearchState {
 /// when no InputStore binding matches. Application-level commands
 /// (send, open, archive, quit) are signaled via UiStore's pending_action
 /// field and handled by App methods.
+///
+/// Returns when the user transitions to a horns-owned screen (the
+/// top-level state machine pivots to `horns_loop::run_horns_settings_loop`)
+/// or asks to quit.
 pub async fn run_async(
     app: &mut App,
     client: &ox_broker::ClientHandle,
     theme: &Theme,
     terminal: &mut ratatui::DefaultTerminal,
     needs_setup: bool,
-) -> std::io::Result<()> {
+) -> std::io::Result<LegacyExit> {
     use crate::key_encode::encode_key;
 
     let mut dialog = DialogState {
@@ -147,19 +159,11 @@ pub async fn run_async(
             .ok();
     }
 
-    // Settings bindings + commands: built once at startup and used by
-    // `settings::help::key_hints_for_context` to compute the help row
-    // for the settings screen. The renderer registry lives inside the
-    // horns side-tables (registered by `settings::install`); the View
-    // it emits is read from the broker per-frame below — no local
-    // RendererRegistry construction. Phase B retires the duplicate
-    // bindings + commands construction once `key_hints_for_context`
-    // can read the same data from the broker's `<bindings_prefix>` /
-    // `<commands_prefix>` subtrees.
-    let mut settings_commands = CommandRegistry::new();
-    let mut settings_bindings = BindingRegistry::new();
-    crate::settings::commands::register_all(&mut settings_commands);
-    crate::settings::bindings::register(&mut settings_bindings);
+    // No local settings registries: bindings + commands + renderers
+    // all live inside horns' side-tables, registered once by
+    // `settings::install`. The event loop reads the View from the
+    // broker each frame; help hints are projected from the broker's
+    // `<bindings_prefix>` + `<commands_prefix>` subtrees.
 
     loop {
         // -----------------------------------------------------------------
@@ -178,6 +182,15 @@ pub async fn run_async(
 
             let mut vs =
                 fetch_view_state(client, app, &dialog, thread.input_session.editor_mode).await;
+
+            // State-machine pivot: when the user transitions to the
+            // settings screen, the legacy loop yields. The top-level
+            // state machine in `main.rs` re-enters
+            // `horns_loop::run_horns_settings_loop` which owns the
+            // terminal for the duration of the session.
+            if matches!(&vs.ui.screen, ScreenSnapshot::Settings(_)) {
+                return Ok(LegacyExit::ToHorns);
+            }
 
             // Editor sync (detects editor appeared/disappeared, flushes edits)
             let had_editor = thread.had_editor;
@@ -244,69 +257,38 @@ pub async fn run_async(
             // Prepare TextInputView from InputSession
             thread.prepare_view();
 
-            // Settings: the View comes from the broker. The
-            // `RenderSubscription` installed by `settings::install`
-            // walks the renderer at the focused cursor on every
-            // render-tick / area / cursor change and writes the
-            // serialized View to `<render_output_path>`. The event
-            // loop's job is to (a) keep the broker's area record in
-            // sync with the terminal size and (b) pull the latest View
-            // out for `tui::draw` to compose.
-            let mut settings_view: Option<View> = None;
-            if matches!(&vs.ui.screen, ScreenSnapshot::Settings(_)) {
-                let area = terminal.get_frame().area();
-                let area_rect = horns_core::Rect::new(area.x, area.y, area.width, area.height);
-                // Writing area kicks `RenderSubscription` if it's stale;
-                // ignore failure (subscription will catch up on the
-                // next render-tick).
-                let _ = client
-                    .write_typed(&crate::settings::input_area_path(), &area_rect)
-                    .await;
+            // Settings: when the UiSnapshot reports Screen::Settings,
+            // the legacy event loop returns and the top-level state
+            // machine pivots to `run_horns_settings_loop`. Until then
+            // — or transiently between transition writes — the legacy
+            // frame logic below tolerates a Settings screen by simply
+            // skipping the `terminal.draw` call. No inline settings
+            // rendering happens here; the horns loop owns it.
+            let on_settings_screen = matches!(&vs.ui.screen, ScreenSnapshot::Settings(_));
 
-                // key_hints — temporary: still computed locally from
-                // the duplicate registries. Phase B retires this in
-                // favor of a broker-side projection.
-                let mut snap = fetch_settings_view_state(client).await;
-                let cursor =
-                    read_settings_cursor(&mut snap).unwrap_or_else(|| oxpath!("settings", "index"));
-                let focused = read_settings_focused(&mut snap);
-                vs.key_hints = crate::settings::help::key_hints_for_context(
-                    &settings_bindings,
-                    &settings_commands,
-                    &cursor,
-                    focused.as_ref(),
-                );
-
-                // Read the View the RenderSubscription wrote. Decode
-                // it from the path-stored JSON. On any failure (no
-                // record yet, decode error) we hand `None` to
-                // `tui::draw`, which falls back to a "registry not
-                // populated" placeholder.
-                settings_view = client
-                    .read(&crate::settings::render_output_path())
-                    .await
-                    .ok()
-                    .flatten()
-                    .and_then(|r| r.as_value().cloned())
-                    .and_then(|v| structfs_serde_store::from_value::<View>(v).ok());
-            }
-
-            // Draw
+            // Draw. Settings is special: horns_ratatui's
+            // `ViewRenderSubscription` holds the terminal mutex and
+            // redraws on every render-tick from the broker, so the
+            // event loop must NOT call `terminal.draw` here — they'd
+            // race on the lock. For every other screen the event loop
+            // owns the draw call as before.
             let mut pending_hyperlink: Option<crate::tui::PendingHyperlink> = None;
-            terminal.draw(|frame| {
-                let (ch, vh, hm, hl) = crate::tui::draw(
-                    frame,
-                    &vs,
-                    settings_view.as_ref(),
-                    theme,
-                    &mut thread.text_input_view,
-                    &mut history_explorer,
-                );
-                content_height = ch;
-                viewport_height = vh;
-                history_hit_map = hm;
-                pending_hyperlink = hl;
-            })?;
+            if !on_settings_screen {
+                terminal.draw(|frame| {
+                    let (ch, vh, hm, hl) = crate::tui::draw(
+                        frame,
+                        &vs,
+                        None,
+                        theme,
+                        &mut thread.text_input_view,
+                        &mut history_explorer,
+                    );
+                    content_height = ch;
+                    viewport_height = vh;
+                    history_hit_map = hm;
+                    pending_hyperlink = hl;
+                })?;
+            }
 
             // Post-draw: write OSC 8 hyperlink if the usage dialog is showing a URL.
             // Ratatui doesn't support hyperlinks natively, so we write raw escapes
@@ -382,7 +364,7 @@ pub async fn run_async(
             );
 
             if effects.quit {
-                return Ok(());
+                return Ok(LegacyExit::Quit);
             }
             if effects.send_input {
                 thread.handle_send_input(&ui, app, client).await;

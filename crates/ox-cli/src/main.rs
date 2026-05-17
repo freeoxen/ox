@@ -13,6 +13,7 @@ mod editor_snapshots;
 mod event_loop;
 mod focus;
 mod history_state;
+mod horns_loop;
 mod history_view;
 mod inbox_shell;
 mod inbox_view;
@@ -45,6 +46,16 @@ pub(crate) mod view_state;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+
+/// Top-level application state. Each state owns its event loop; the
+/// `main` function transitions between them by handing the terminal
+/// from one to the next. See `event_loop::LegacyExit` and
+/// `horns_loop::HornsExit` for the inter-state signals.
+enum AppState {
+    Legacy,
+    Horns,
+    Quit,
+}
 
 #[derive(Parser)]
 #[command(name = "ox", about = "Agentic coding CLI")]
@@ -190,15 +201,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ox_gate::subscriptions::register_all(&broker_handle.broker, transport);
     }
 
-    // Install the settings screen as a horns instance: registers the
-    // KeyDispatch / Render / ThemeChange subscriptions on the broker
-    // and writes the initial theme record. The event loop drives
-    // settings-screen input by writing a `KeyChord` to the install's
-    // `input_path` rather than calling a transitional `send_key`
-    // wrapper directly. Held in a binding so the subscription ids stay
-    // alive for the program lifetime (today this is informational —
-    // `BrokerStore` owns the subscriptions in an `Arc`; the handle is
-    // the shape future supersession code will read from).
+    // Install the settings screen's framework-side subscriptions
+    // (KeyDispatch / Render / ThemeChange + metadata writes). The
+    // ratatui backend that actually owns the terminal is installed
+    // by `run_horns_settings_loop` when the state machine transitions
+    // into the Horns state — that way the terminal stays owned by
+    // whichever state is currently driving the screen, with no
+    // shared `Arc<Mutex<...>>` at the top level.
     let _settings_handle = match settings::install(&broker_handle.broker).await {
         Ok(h) => h,
         Err(e) => {
@@ -219,7 +228,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
-    let mut terminal = ratatui::init();
+    // Terminal is held in `Option<DefaultTerminal>` so the state
+    // machine below can `.take()` it on entry to a state and put it
+    // back when that state returns. Each state owns the terminal
+    // exclusively for its event loop.
+    let mut terminal: Option<ratatui::DefaultTerminal> = Some(ratatui::init());
     crossterm::execute!(
         std::io::stdout(),
         crossterm::event::EnableMouseCapture,
@@ -256,7 +269,67 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // questions of the form "where did my config go?".
     settings::bootstrap::log_legacy_settings_if_present(&inbox_root);
 
-    let result = event_loop::run_async(&mut app, &client, &theme, &mut terminal, needs_setup).await;
+    // Top-level state machine. Each state owns the terminal for the
+    // duration of its event loop and hands it back on exit. The legacy
+    // event loop returns when the user navigates to a horns-owned
+    // screen (settings) or quits; the horns event loop returns when
+    // the user exits settings. Re-entry alternates between them
+    // until quit.
+    let result: std::io::Result<()> = {
+        let mut state = AppState::Legacy;
+        let mut needs_setup_arg = needs_setup;
+        loop {
+            match state {
+                AppState::Legacy => {
+                    // The legacy loop takes `&mut DefaultTerminal`,
+                    // not by value, because the legacy frame logic
+                    // calls `terminal.draw` repeatedly. Take the
+                    // terminal out, hand a mut ref, then put it back.
+                    let mut t = terminal.take().expect("terminal owned by main");
+                    let outcome = event_loop::run_async(
+                        &mut app,
+                        &client,
+                        &theme,
+                        &mut t,
+                        needs_setup_arg,
+                    )
+                    .await;
+                    terminal = Some(t);
+                    match outcome {
+                        Ok(event_loop::LegacyExit::ToHorns) => {
+                            needs_setup_arg = false;
+                            state = AppState::Horns;
+                        }
+                        Ok(event_loop::LegacyExit::Quit) => state = AppState::Quit,
+                        Err(e) => break Err(e),
+                    }
+                }
+                AppState::Horns => {
+                    // Hand the terminal in by value; the horns loop
+                    // returns it when its session ends.
+                    let t = terminal.take().expect("terminal owned by main");
+                    match horns_loop::run_horns_settings_loop(
+                        &broker_handle.broker,
+                        &client,
+                        t,
+                    )
+                    .await
+                    {
+                        Ok((horns_loop::HornsExit::ToLegacy, t)) => {
+                            terminal = Some(t);
+                            state = AppState::Legacy;
+                        }
+                        Ok((horns_loop::HornsExit::Quit, t)) => {
+                            terminal = Some(t);
+                            state = AppState::Quit;
+                        }
+                        Err(e) => break Err(e),
+                    }
+                }
+                AppState::Quit => break Ok(()),
+            }
+        }
+    };
 
     crossterm::execute!(
         std::io::stdout(),

@@ -39,6 +39,7 @@ pub(crate) mod editor;
 pub(crate) mod event_loop;
 pub(crate) mod focus;
 pub(crate) mod history_state;
+pub(crate) mod horns_loop;
 pub(crate) mod history_view;
 pub(crate) mod inbox_shell;
 pub(crate) mod inbox_view;

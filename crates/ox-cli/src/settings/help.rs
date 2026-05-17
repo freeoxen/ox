@@ -22,6 +22,8 @@ use structfs_core_store::Path;
 use crate::key_chord_canonical::encode_keychord_to_str;
 use crate::settings::BindingRegistry;
 use crate::settings::CommandRegistry;
+use horns_core::{BindingEntry, CommandMetadata};
+use ox_broker::ClientHandle;
 
 /// Build the hint list for the given settings dispatch context.
 ///
@@ -116,6 +118,88 @@ fn emit_for_scope_path_entry(
             status_hint: false,
         });
     }
+}
+
+// ---------------------------------------------------------------------------
+// Broker-driven hints — reads BindingEntry + CommandMetadata from the
+// broker subtrees populated at install time. Eliminates the need for the
+// event loop to construct duplicate registries every frame.
+// ---------------------------------------------------------------------------
+
+/// Build the hint list by reading `<bindings_prefix>` + `<commands_prefix>`
+/// from the broker, matching the in-process projection above. Used by the
+/// event loop after the registries moved entirely into horns' side-tables.
+pub async fn key_hints_for_context_from_broker(
+    client: &ClientHandle,
+    bindings_prefix: &Path,
+    commands_prefix: &Path,
+    page_cursor: &Path,
+    focused: Option<&Path>,
+) -> Vec<KeyHint> {
+    // Read both subtrees up-front. Bindings + commands are small (tens
+    // of entries) so the cost is negligible per frame.
+    let binding_rows: Vec<BindingEntry> = match client.read_subtree(bindings_prefix).await {
+        Ok(map) => map
+            .into_values()
+            .filter_map(|rec| {
+                rec.as_value()
+                    .cloned()
+                    .and_then(|v| structfs_serde_store::from_value::<BindingEntry>(v).ok())
+            })
+            .collect(),
+        Err(_) => return Vec::new(),
+    };
+    let mut commands_by_id: std::collections::HashMap<String, CommandMetadata> =
+        std::collections::HashMap::new();
+    if let Ok(map) = client.read_subtree(commands_prefix).await {
+        for (path, rec) in map.into_iter() {
+            let Some(id_component) = path.components.last() else {
+                continue;
+            };
+            let id = id_component.as_str().to_string();
+            let Some(value) = rec.as_value().cloned() else {
+                continue;
+            };
+            if let Ok(meta) = structfs_serde_store::from_value::<CommandMetadata>(value) {
+                commands_by_id.insert(id, meta);
+            }
+        }
+    }
+
+    let mut out: Vec<KeyHint> = Vec::new();
+    let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let scope_walk = |target: &Path,
+                      seen_keys: &mut std::collections::HashSet<String>,
+                      out: &mut Vec<KeyHint>| {
+        let ancestors = crate::settings::commands::account_model::path_ancestors(target);
+        for scope_path_entry in ancestors.iter().rev() {
+            for entry in &binding_rows {
+                if !entry.scope.matches(scope_path_entry) {
+                    continue;
+                }
+                let Some(wire) = encode_keychord_to_str(&entry.key) else {
+                    continue;
+                };
+                if !seen_keys.insert(wire.clone()) {
+                    continue;
+                }
+                let Some(meta) = commands_by_id.get(&entry.command_id.0) else {
+                    continue;
+                };
+                out.push(KeyHint {
+                    key: wire,
+                    description: meta.display.name.clone(),
+                    command: entry.command_id.0.clone(),
+                    status_hint: false,
+                });
+            }
+        }
+    };
+    if let Some(focus) = focused {
+        scope_walk(focus, &mut seen_keys, &mut out);
+    }
+    scope_walk(page_cursor, &mut seen_keys, &mut out);
+    out
 }
 
 #[cfg(test)]

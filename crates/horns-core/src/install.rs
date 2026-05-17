@@ -130,6 +130,15 @@ pub struct InstallPaths {
     pub render_tick_path: Path,
     pub render_output_path: Path,
     pub theme_path: Path,
+    /// Broker prefix the install writes each `BindingEntry` row under.
+    /// Lets hosts read the binding table back at runtime — e.g. for
+    /// help-screen projection without holding a duplicate
+    /// `BindingRegistry`.
+    pub bindings_prefix: Path,
+    /// Broker prefix the install writes each `CommandMetadata` row
+    /// under. Hosts read these to recover the human-facing
+    /// `display.name` for hint projection.
+    pub commands_prefix: Path,
 }
 
 /// Build the install bundle from options. Pure (no broker interaction);
@@ -229,6 +238,8 @@ pub fn build_install_bundle(opts: InstallOptions) -> InstallBundle {
             render_tick_path: opts.render_tick_path,
             render_output_path: opts.render_output_path,
             theme_path: opts.theme_path,
+            bindings_prefix: opts.bindings_prefix,
+            commands_prefix: opts.commands_prefix,
         },
     );
 
@@ -253,16 +264,41 @@ pub fn build_install_bundle_from_registries(
     paths: InstallPaths,
     theme: serde_json::Value,
 ) -> InstallBundle {
+    // Materialize bindings + command metadata to the broker so hosts
+    // can read them back without holding duplicate registries. Bindings
+    // are keyed by their index in `entries()` (the registries don't
+    // carry per-entry ids); commands are keyed by their stable
+    // `CommandId`.
+    let mut metadata_writes: Vec<(Path, Record)> = Vec::new();
+    for (idx, entry) in bindings.entries().iter().enumerate() {
+        let id = format!("b_{idx}");
+        let path = path_join(&paths.bindings_prefix, &id);
+        match structfs_serde_store::to_value(entry) {
+            Ok(v) => metadata_writes.push((path, Record::parsed(v))),
+            Err(_) => continue,
+        }
+    }
+    for cmd in commands.iter() {
+        let meta = CommandMetadata {
+            display: cmd.display().clone(),
+            scope: cmd.scope().clone(),
+        };
+        let path = path_join(&paths.commands_prefix, &cmd.id().0);
+        match structfs_serde_store::to_value(&meta) {
+            Ok(v) => metadata_writes.push((path, Record::parsed(v))),
+            Err(_) => continue,
+        }
+    }
+    metadata_writes.push((
+        paths.theme_path.clone(),
+        Record::parsed(json_to_value(theme)),
+    ));
+
     let side_tables = Arc::new(RwLock::new(SideTables {
         bindings,
         commands,
         renderers,
     }));
-
-    let metadata_writes = vec![(
-        paths.theme_path.clone(),
-        Record::parsed(json_to_value(theme)),
-    )];
 
     let subscriptions = build_subscriptions(side_tables, paths);
 

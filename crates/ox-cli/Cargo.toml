@@ -19,6 +19,7 @@ name = "ox"
 path = "src/main.rs"
 
 [dependencies]
+parking_lot = "0.12"
 ox-path = { path = "../ox-path" }
 ox-kernel = { path = "../ox-kernel" }
 ox-context = { path = "../ox-context" }

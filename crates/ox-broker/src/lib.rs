@@ -65,7 +65,7 @@ use structfs_core_store::{Error as StoreError, Path, Reader, Record, Writer};
 use crate::async_store::BoxFuture;
 use crate::dispatching_store::{DispatchingStore, SnapshotReader, TokioSpawnHandle};
 use crate::subscription::{
-    AsyncWriter as SubAsyncWriter, SpawnHandle, Subscription, SubscriptionRegistry,
+    AsyncWriter as SubAsyncWriter, SpawnHandle, Subscription, SubscriptionId, SubscriptionRegistry,
 };
 
 /// Default cascade bound — the maximum depth of subscription-triggered
@@ -269,6 +269,18 @@ impl BrokerStore {
             .write()
             .expect("registry lock poisoned")
             .register(sub);
+    }
+
+    /// Remove every entry registered under `id`. Returns the number of
+    /// `(pattern, sub)` rows removed. Hosts use this to tear down a
+    /// subscription whose lifecycle ends (e.g. the ratatui view-render
+    /// subscription, which only lives for the duration of a horns
+    /// settings session — see `ox_cli::horns_loop`).
+    pub fn unregister_subscription(&self, id: &SubscriptionId) -> usize {
+        self.subs
+            .write()
+            .expect("registry lock poisoned")
+            .unregister(id)
     }
 
     /// Convenience: register multiple subscriptions in one call. Order

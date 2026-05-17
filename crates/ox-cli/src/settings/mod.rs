@@ -90,6 +90,18 @@ pub fn theme_path() -> Path {
     oxpath!("ui", "_horns", "theme")
 }
 
+/// Broker prefix the install writes `BindingEntry` rows to. The event
+/// loop's hint projection reads from this subtree per frame.
+pub fn bindings_prefix() -> Path {
+    oxpath!("horns", "settings", "bindings")
+}
+
+/// Broker prefix the install writes `CommandMetadata` rows to. The
+/// event loop's hint projection reads from this subtree per frame.
+pub fn commands_prefix() -> Path {
+    oxpath!("horns", "settings", "commands")
+}
+
 /// Handle returned from [`install`]. Holds the subscription ids the
 /// broker registered — useful for future tear-down / re-install
 /// semantics. Keeping the handle alive isn't strictly necessary on
@@ -157,6 +169,8 @@ pub async fn install(broker: &BrokerStore) -> Result<SettingsHandle, StoreError>
         render_tick_path: render_tick_path(),
         render_output_path: render_output_path(),
         theme_path: theme_path(),
+        bindings_prefix: bindings_prefix(),
+        commands_prefix: commands_prefix(),
     };
     let bundle =
         build_install_bundle_from_registries(bindings, commands, renderers, paths, theme_json);
@@ -186,6 +200,13 @@ pub async fn install(broker: &BrokerStore) -> Result<SettingsHandle, StoreError>
     client
         .write(&render_tick_path(), Record::parsed(Value::Integer(0)))
         .await?;
+
+    // Note: the ratatui ViewRenderSubscription that actually paints
+    // the terminal is installed by `run_horns_settings_loop` in the
+    // event loop — that's the state that owns the terminal during
+    // a horns session. Keeping the install here would force a shared
+    // `Arc<Mutex<Terminal>>` at the top level, which fights the
+    // state-machine ownership model.
 
     Ok(SettingsHandle { subscription_ids })
 }
