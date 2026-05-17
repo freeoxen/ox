@@ -52,19 +52,20 @@
 //!
 //! When the dispatch is for the settings screen *and* the caller
 //! supplies the settings registries + a snapshot Reader + the current
-//! cursor, [`send_key`] routes through
-//! [`crate::settings::dispatch::dispatch_settings_key`]: it looks up
-//! the binding under `(screen, cursor, mode, key)`, looks up the
-//! command, runs it, and applies each emitted Write via the broker
-//! client. On a binding miss (or a key string the parser cannot
-//! convert into a `KeyChord`) it falls back to the input-store path so
-//! the existing global-key dispatch (modal handlers, etc.) still gets
-//! a shot.
+//! cursor, [`send_key`] constructs a [`horns_core::Dispatcher`] for the
+//! settings focus cursor and routes the keystroke through it: the
+//! dispatcher looks up the binding under `(cursor, key, phase)`, looks
+//! up the command, runs it, and the wrapper applies each emitted Write
+//! via the broker client. On a binding miss (or a key string the parser
+//! cannot convert into a `KeyChord`) it falls back to the input-store
+//! path so the existing global-key dispatch (modal handlers, etc.)
+//! still gets a shot.
 //!
 //! Non-settings callers pass `None` for the new parameters and the
 //! function falls through to the legacy input-store dispatch path
 //! unchanged.
 
+use horns_core::Dispatcher;
 use ox_broker::ClientHandle;
 use ox_path::oxpath;
 use ox_types::key_chord::{KeyCodeRepr, KeyModifierSet};
@@ -111,7 +112,7 @@ pub async fn send_key(
     renderers: Option<&RendererRegistry>,
 ) -> KeyDispatchOutcome {
     if screen == Screen::Settings {
-        if let (Some(cursor), Some(snapshot), Some(bindings), Some(commands), Some(renderers)) =
+        if let (Some(_cursor), Some(snapshot), Some(bindings), Some(commands), Some(renderers)) =
             (cursor, snapshot, bindings, commands, renderers)
         {
             // Settings path: parse the encoded key string into a chord,
@@ -122,9 +123,12 @@ pub async fn send_key(
                 // input-store path have a try.
                 return send_via_input_store(client, key, screen, flags).await;
             };
-            let writes = crate::settings::dispatch::dispatch_settings_key(
-                snapshot, cursor, &chord, commands, bindings, renderers,
-            );
+            // Build a settings-screen Dispatcher pointing at the
+            // settings focus cursor. Task 10 hoists this construction
+            // to install time and retires the send_key wrapper
+            // entirely.
+            let dispatcher = Dispatcher::new(oxpath!("ui", "settings", "focused"));
+            let writes = dispatcher.dispatch(snapshot, &chord, bindings, commands, renderers);
             if writes.is_empty() {
                 // No binding matched in the settings registry — fall
                 // through to the input-store path so the existing
@@ -413,7 +417,7 @@ mod tests {
 
     /// End-to-end pipeline test: for every day-one binding, dispatch the
     /// original chord *and* the encode→parse round-tripped chord through
-    /// `dispatch_settings_key`, then assert the resulting writes match.
+    /// `horns_core::Dispatcher`, then assert the resulting writes match.
     /// If encode/parse drops chord information that bindings depend on,
     /// the two dispatches diverge and this test fails — closing the loop
     /// the unit tests above can't (they only cover one stage at a time).
@@ -424,8 +428,8 @@ mod tests {
         use crate::settings::bindings::register as register_all_bindings;
         use crate::settings::CommandRegistry;
         use crate::settings::commands::register_all as register_all_commands;
-        use crate::settings::dispatch::dispatch_settings_key;
         use crate::settings::RendererRegistry;
+        use horns_core::Dispatcher;
 
         let mut bindings = BindingRegistry::new();
         register_all_bindings(&mut bindings);
@@ -433,7 +437,7 @@ mod tests {
         register_all_commands(&mut cmds);
         let renderers = RendererRegistry::new();
 
-        let empty_path = oxpath!();
+        let dispatcher = Dispatcher::new(oxpath!("ui", "settings", "focused"));
         let entries: Vec<_> = bindings.entries().to_vec();
         let mut tested = 0usize;
         let mut encoder_gaps = 0usize;
@@ -447,27 +451,13 @@ mod tests {
                 panic!("binding {entry:?} encoded to {wire:?}, parser returned None")
             });
 
-            let cursor = entry.scope.keyed_path().unwrap_or(&empty_path);
-
             let mut reader_orig = LocalConfig::default();
-            let writes_orig = dispatch_settings_key(
-                &mut reader_orig,
-                cursor,
-                &entry.key,
-                &cmds,
-                &bindings,
-                &renderers,
-            );
+            let writes_orig =
+                dispatcher.dispatch(&mut reader_orig, &entry.key, &bindings, &cmds, &renderers);
 
             let mut reader_parsed = LocalConfig::default();
-            let writes_parsed = dispatch_settings_key(
-                &mut reader_parsed,
-                cursor,
-                &parsed,
-                &cmds,
-                &bindings,
-                &renderers,
-            );
+            let writes_parsed =
+                dispatcher.dispatch(&mut reader_parsed, &parsed, &bindings, &cmds, &renderers);
 
             assert_eq!(
                 writes_orig.len(),

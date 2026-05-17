@@ -3102,7 +3102,7 @@ mod tests {
     //
     // `simulate_compose_keystroke` wires the production binding +
     // command registries (`bindings::register` / `commands::register_all`)
-    // against `dispatch_settings_key`, so any binding-side regression
+    // against `horns_core::Dispatcher`, so any binding-side regression
     // shows up directly.
     fn simulate_compose_keystroke(snap: &mut SettingsSnapshot, code: KeyCodeRepr) -> Vec<Write> {
         let mut cmds = CommandRegistry::new();
@@ -3120,14 +3120,8 @@ mod tests {
             _ => KeyModifierSet::default(),
         };
         let chord = KeyChord { modifiers, code };
-        crate::settings::dispatch::dispatch_settings_key(
-            snap,
-            &oxpath!("settings", "accounts"),
-            &chord,
-            &cmds,
-            &bindings,
-            &renderers,
-        )
+        let dispatcher = horns_core::Dispatcher::new(oxpath!("ui", "settings", "focused"));
+        dispatcher.dispatch(snap, &chord, &bindings, &cmds, &renderers)
     }
 
     #[test]

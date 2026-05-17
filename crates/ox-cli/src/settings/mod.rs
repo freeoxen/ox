@@ -17,7 +17,6 @@
 pub mod bindings;
 pub mod bootstrap;
 pub mod commands;
-pub mod dispatch;
 pub mod help;
 pub mod renderers;
 pub mod snapshot;
