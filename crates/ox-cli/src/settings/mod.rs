@@ -72,8 +72,14 @@ pub fn render_tick_path() -> Path {
 
 /// Path the install writes the (JSON-encoded) theme to. Writes here
 /// trigger `ThemeChangeSubscription`, which bumps render-tick.
+///
+/// Under `ui/_horns/` (the generic substore mounted at install time)
+/// rather than `ui/theme` directly — the outer `ui/` mount is a
+/// `UiStore` that only accepts known UI-command paths, and `theme`
+/// isn't one. Putting theme inside the horns subtree keeps the install
+/// writes routable without inventing a new top-level mount.
 pub fn theme_path() -> Path {
-    oxpath!("ui", "theme")
+    oxpath!("ui", "_horns", "theme")
 }
 
 /// Handle returned from [`install`]. Holds the subscription ids the
