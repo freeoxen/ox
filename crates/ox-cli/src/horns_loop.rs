@@ -68,7 +68,33 @@ pub async fn run_horns_settings_loop(
     );
     let ratatui_sub_id = ratatui_handle.subscription_id.clone();
 
-    // ---- 3. Seed the area + render-tick so the first frame renders
+    // ---- 3. Seed the focus cursor if it's not already set. The
+    //         RenderSubscription reads `ui/settings/focused` and
+    //         no-ops when the path is empty — without seeding, the
+    //         first frame after entering settings would be blank
+    //         until the user moved focus. Default to
+    //         `settings/index` (the accordion page); j/k will move
+    //         focus to the first row immediately.
+    use structfs_core_store::{Record, Value};
+    let focused_path = crate::settings::cursor_path();
+    let focused_is_set = client
+        .read(&focused_path)
+        .await
+        .ok()
+        .flatten()
+        .is_some();
+    if !focused_is_set {
+        let _ = client
+            .write(
+                &focused_path,
+                Record::parsed(crate::settings::commands::navigation::path_to_value(
+                    &oxpath!("settings", "index"),
+                )),
+            )
+            .await;
+    }
+
+    // ---- 4. Seed the area + render-tick so the first frame renders
     //         immediately (the RenderSubscription needs an area to
     //         render against, and a tick to fire on).
     {
@@ -78,7 +104,6 @@ pub async fn run_horns_settings_loop(
             .write_typed(&crate::settings::input_area_path(), &area_rect)
             .await;
     }
-    use structfs_core_store::{Record, Value};
     let _ = client
         .write(
             &crate::settings::render_tick_path(),
