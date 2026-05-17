@@ -946,11 +946,7 @@ async fn dispatch_key(
     // (Insert / Command / Search) below.
     let outcome = if input_screen == Screen::Settings {
         if let Some(chord) = crate::key_chord_canonical::parse_key_str(key_str) {
-            let key_path = {
-                let mut p = crate::settings::input_path().components.clone();
-                p.push("key".to_string());
-                structfs_core_store::Path::try_from_components(p).expect("static path")
-            };
+            let key_path = crate::settings::input_key_path();
             if let Err(e) = client.write_typed(&key_path, &chord).await {
                 tracing::warn!(error = %e, key = %key_str, "settings key dispatch broker write failed");
             }

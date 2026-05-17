@@ -49,6 +49,13 @@ pub fn input_path() -> Path {
     oxpath!("ui", "_horns", "settings", "input")
 }
 
+/// The exact broker path the event loop writes a `KeyChord` to.
+/// Centralizes the `key` suffix so the producer (event loop) and the
+/// consumer (KeyDispatchSubscription) cannot silently desync.
+pub fn input_key_path() -> Path {
+    oxpath!("ui", "_horns", "settings", "input", "key")
+}
+
 /// Broker path the horns render pipeline writes its serialized
 /// `View` to. The event loop reads this on every frame and composes
 /// it into the overall TUI frame in `tui::draw`.
