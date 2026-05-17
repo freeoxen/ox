@@ -14,8 +14,8 @@ categories = ["data-structures", "asynchronous"]
 
 [dependencies]
 tracing = { workspace = true }
+horns-core = { path = "../horns-core" }
 ox-path = { path = "../ox-path" }
-ox-types = { path = "../ox-types" }
 serde = { version = "1", features = ["derive"] }
 structfs-core-store = { workspace = true }
 structfs-serde-store = { workspace = true }
