@@ -372,43 +372,26 @@ fn register_row_prefixes(reg: &mut BindingRegistry) {
 /// `settings/_edit`. Under cursor-as-focus, the cursor sitting at
 /// `settings/_edit` IS the engaged state — the dispatcher routes
 /// through this scope, shadowing tree-nav and per-row keys.
-/// Printable chars and Backspace mutate the edit buffer; Enter
-/// commits the buffer to the field's data path; Esc cancels without
-/// writing.
 ///
-/// Phase classification mirrors the compose form: Esc is a lifecycle
-/// key the scope claims at `Phase::Capture` (cancel always wins over
-/// any leaf claim); Enter commits at `Phase::Bubble` so a future
-/// multi-line text leaf could shadow it with a `Phase::Target`
-/// newline-insert binding; printable chars and Backspace stay at
-/// `Phase::Target` (they mutate the buffer — the leaf claim).
+/// Lifecycle keys (Backspace/Enter/Esc) stay as discrete bindings so
+/// the help screen can enumerate them. Printable input — the bulk of
+/// the table — moves to a single opaque `TextInputHandler` registered
+/// at the same scope+phase, replacing ~96 discrete `BindingEntry`s
+/// (one per printable ASCII char). The discrete tier always beats
+/// handlers at the same (scope, phase), so the four lifecycle keys
+/// keep their lookup paths unchanged.
+///
+/// Phase classification mirrors the compose form: Esc is claimed at
+/// `Phase::Capture` (cancel wins over any leaf); Enter commits at
+/// `Phase::Bubble` so a future multi-line text leaf could shadow with
+/// a `Phase::Target` newline-insert binding; Backspace and the
+/// text-input handler stay at `Phase::Target` (the leaf claim).
 fn register_edit_mode(reg: &mut BindingRegistry) {
+    use std::sync::Arc;
+
+    use horns_core::HandlerEntry;
+
     let scope = oxpath!("settings", "_edit");
-    // Printable ASCII (0x20..=0x7E) → edit.insert_char.
-    //
-    // Modifier handling mirrors the encode/parse round-trip:
-    // terminals report uppercase letters as (Char('A'), shift), and
-    // parse_key_str sets `shift: true` for any uppercase ASCII letter.
-    // Bind ASCII uppercase letters with shift_only() and everything
-    // else with no_mods(), so a typed capital reaches edit.insert_char
-    // instead of falling through to the input-store path.
-    for byte in 0x20u8..=0x7E {
-        let ch = byte as char;
-        let modifiers = if ch.is_ascii_uppercase() {
-            shift_only()
-        } else {
-            no_mods()
-        };
-        reg.register(BindingEntry {
-            scope: BindingScope::Exact(scope.clone()),
-            key: KeyChord {
-                modifiers,
-                code: KeyCodeRepr::Char(ch),
-            },
-            command_id: cmd("edit.insert_char"),
-            phase: Phase::Target,
-        });
-    }
     bind_target(
         reg,
         Some(scope.clone()),
@@ -429,13 +412,25 @@ fn register_edit_mode(reg: &mut BindingRegistry) {
     });
     // Esc cancels at Capture: lifecycle key claimed before any leaf.
     reg.register(BindingEntry {
-        scope: BindingScope::Exact(scope),
+        scope: BindingScope::Exact(scope.clone()),
         key: KeyChord {
             modifiers: no_mods(),
             code: KeyCodeRepr::Esc,
         },
         command_id: cmd("edit.cancel"),
         phase: Phase::Capture,
+    });
+    // Opaque text-input handler: claims any un-modified or shift-only
+    // printable char and produces the same buffer write the discrete
+    // `edit.insert_char` command used to. Replaces ~96 `BindingEntry`s.
+    let text_input = Arc::new(crate::settings::commands::edit::TextInputHandler::new(
+        oxpath!("ui", "settings", "edit", "buffer"),
+        oxpath!("ui", "settings", "edit", "target_path"),
+    ));
+    reg.register_handler(HandlerEntry {
+        scope: BindingScope::Exact(scope),
+        phase: Phase::Target,
+        handler: text_input,
     });
 }
 
@@ -871,16 +866,23 @@ mod tests {
     }
 
     #[test]
-    fn edit_mode_printable_char_resolves_to_edit_insert_char() {
+    fn edit_mode_printable_char_is_handled_by_text_input_handler() {
+        // Printable input under `_edit` no longer routes through the
+        // discrete tier — the 96 per-char BindingEntries have been
+        // replaced by a single `TextInputHandler` at Target. The
+        // discrete lookup must miss, and the handler lookup must hit.
         let reg = populated();
-        let hit = reg
-            .lookup(
-                &oxpath!("settings", "_edit"),
-                &key(no_mods(), KeyCodeRepr::Char('x')),
-                Phase::Target,
-            )
-            .expect("should match");
-        assert_eq!(hit, &cmd("edit.insert_char"));
+        let cursor = oxpath!("settings", "_edit");
+        let chord = key(no_mods(), KeyCodeRepr::Char('x'));
+
+        assert!(
+            reg.lookup(&cursor, &chord, Phase::Target).is_none(),
+            "discrete tier must not claim printable chars under _edit anymore",
+        );
+        assert!(
+            reg.lookup_handler(&cursor, &chord, Phase::Target).is_some(),
+            "the opaque TextInputHandler should be registered at (_edit, Target)",
+        );
     }
 
     #[test]
@@ -1290,6 +1292,47 @@ mod tests {
             offenders.is_empty(),
             "Bindings at BindingScope::Anywhere must be Phase::Bubble but these aren't:\n{}",
             format_offenders(&offenders),
+        );
+    }
+
+    #[test]
+    fn settings_edit_scope_has_no_more_than_lifecycle_discrete_bindings() {
+        // The migration to `TextInputHandler` replaced ~96 per-char
+        // `BindingEntry`s under `Exact(settings/_edit)` with a single
+        // opaque handler. Only the lifecycle keys (Backspace, Enter,
+        // Esc) remain as discrete bindings so the help screen can
+        // enumerate them. If a future change re-adds printable-char
+        // bindings under this scope, that's almost certainly a
+        // regression — the opaque tier exists exactly so the discrete
+        // tier stays small.
+        let reg = populated();
+        let edit_scope = oxpath!("settings", "_edit");
+        let edit_count = reg
+            .entries()
+            .iter()
+            .filter(|e| matches!(&e.scope, BindingScope::Exact(p) if p == &edit_scope))
+            .count();
+        assert!(
+            edit_count <= 6,
+            "expected ≤6 discrete bindings under settings/_edit (lifecycle keys only), got {edit_count}",
+        );
+    }
+
+    #[test]
+    fn settings_edit_scope_registers_text_input_handler() {
+        // The opaque half of the migration: a single handler at
+        // (Exact(_edit), Target) replaces the printable-ASCII bindings.
+        let reg = populated();
+        let edit_scope = oxpath!("settings", "_edit");
+        let handler_count = reg
+            .handlers()
+            .iter()
+            .filter(|h| matches!(&h.scope, BindingScope::Exact(p) if p == &edit_scope))
+            .filter(|h| h.phase == Phase::Target)
+            .count();
+        assert_eq!(
+            handler_count, 1,
+            "expected exactly one handler at (Exact(settings/_edit), Target)",
         );
     }
 }

@@ -272,9 +272,29 @@ fn insert_char(
         KeyCodeRepr::Char(c) => c,
         _ => return Vec::new(),
     };
-    let current =
-        read_string(data, &oxpath!("ui", "settings", "edit", "buffer")).unwrap_or_default();
-    let field_path = match read_path(data, &oxpath!("ui", "settings", "edit", "target_path")) {
+    insert_char_into_edit_buffer(
+        data,
+        &oxpath!("ui", "settings", "edit", "buffer"),
+        &oxpath!("ui", "settings", "edit", "target_path"),
+        ch,
+    )
+}
+
+/// Read the current buffer + target field path, validate the char
+/// against the focused row's RowKind (digits-only for ModelField,
+/// anything printable for AccountField), and emit a single write that
+/// appends `ch`. The single source of truth shared by `EditInsertChar`
+/// (discrete-tier) and `TextInputHandler` (opaque-tier); each tier
+/// supplies the char via its own route — `ctx.last_keystroke` for the
+/// command, the dispatched `KeyChord` for the handler.
+fn insert_char_into_edit_buffer(
+    data: &mut dyn Reader,
+    buffer_path: &Path,
+    target_path: &Path,
+    ch: char,
+) -> Vec<Write> {
+    let current = read_string(data, buffer_path).unwrap_or_default();
+    let field_path = match read_path(data, target_path) {
         Some(p) => p,
         None => return Vec::new(),
     };
@@ -297,9 +317,63 @@ fn insert_char(
     let mut next = current;
     next.push(ch);
     vec![Write {
-        path: oxpath!("ui", "settings", "edit", "buffer"),
+        path: buffer_path.clone(),
         record: Record::parsed(Value::String(next)),
     }]
+}
+
+/// Opaque key handler that claims printable chords on the edit scope.
+/// Replaces the ~96 discrete `BindingEntry` registrations (one per
+/// printable ASCII char) that used to route to `edit.insert_char`.
+/// The lifecycle keys (Backspace/Enter/Esc) remain as discrete bindings
+/// on the same scope so the help screen can still enumerate them.
+///
+/// Construction takes the buffer and target-path locations so the
+/// handler stays a pure function of its install-time configuration —
+/// no hidden coupling to hardcoded edit-subtree paths beyond what the
+/// installer provides.
+pub struct TextInputHandler {
+    buffer_path: Path,
+    target_path: Path,
+}
+
+impl TextInputHandler {
+    pub fn new(buffer_path: Path, target_path: Path) -> Self {
+        Self {
+            buffer_path,
+            target_path,
+        }
+    }
+}
+
+impl horns_core::KeyHandler for TextInputHandler {
+    fn handle(
+        &self,
+        snapshot: &mut dyn Reader,
+        key: &horns_core::KeyChord,
+        _ctx: &horns_core::CommandCtx<'_>,
+    ) -> Option<Vec<Write>> {
+        use ox_types::key_chord::KeyCodeRepr;
+
+        // Claim only un-modified printable chars. Shift-only is allowed
+        // because terminals report uppercase letters as shift+lowercase
+        // char; the dispatcher's discrete tier handles the same shift
+        // convention for the four lifecycle keys this handler doesn't
+        // claim.
+        if key.modifiers.ctrl || key.modifiers.alt || key.modifiers.super_ {
+            return None;
+        }
+        let ch = match key.code {
+            KeyCodeRepr::Char(c) if !c.is_control() => c,
+            _ => return None,
+        };
+        Some(insert_char_into_edit_buffer(
+            snapshot,
+            &self.buffer_path,
+            &self.target_path,
+            ch,
+        ))
+    }
 }
 
 fn delete_back(data: &mut dyn Reader) -> Vec<Write> {
@@ -1015,5 +1089,133 @@ mod tests {
             path_to_value(&oxpath!("settings", "accounts")),
         );
         assert!(read_edit_state(&mut snap).is_none());
+    }
+
+    // -----------------------------------------------------------------
+    // TextInputHandler — opaque-tier replacement for the 96 discrete
+    // printable-ASCII bindings under `settings/_edit`.
+    // -----------------------------------------------------------------
+
+    fn handler() -> TextInputHandler {
+        TextInputHandler::new(
+            oxpath!("ui", "settings", "edit", "buffer"),
+            oxpath!("ui", "settings", "edit", "target_path"),
+        )
+    }
+
+    fn handler_ctx<'a>(registry: &'a RendererRegistry) -> horns_core::CommandCtx<'a> {
+        horns_core::CommandCtx {
+            registry,
+            last_keystroke: None,
+        }
+    }
+
+    fn chord(modifiers: ox_types::key_chord::KeyModifierSet, code: ox_types::key_chord::KeyCodeRepr) -> ox_types::KeyChord {
+        ox_types::KeyChord { modifiers, code }
+    }
+
+    #[test]
+    fn text_input_handler_claims_printable_and_appends_to_buffer() {
+        use horns_core::KeyHandler;
+        use ox_types::key_chord::{KeyCodeRepr, KeyModifierSet};
+
+        // Same seeding shape as `insert_char_appends_to_buffer`: an
+        // account text field is the target, so the handler accepts any
+        // printable char (no digit-only restriction).
+        let mut snap = SettingsSnapshot::empty();
+        write_index_with_account(&mut snap, "alpha", "anthropic");
+        seed_edit_active(
+            &mut snap,
+            &oxpath!("settings", "accounts", "alpha", "endpoint"),
+            "hello",
+        );
+
+        let registry = RendererRegistry::new();
+        let ctx = handler_ctx(&registry);
+        let key = chord(KeyModifierSet::default(), KeyCodeRepr::Char('!'));
+        let writes = handler()
+            .handle(&mut snap, &key, &ctx)
+            .expect("printable chord must be claimed");
+
+        // Exactly the same write shape as EditInsertChar emits today —
+        // one buffer write with the appended char.
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].path, oxpath!("ui", "settings", "edit", "buffer"));
+        match &writes[0].record {
+            Record::Parsed(Value::String(s)) => assert_eq!(s, "hello!"),
+            other => panic!("unexpected record: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn text_input_handler_passes_on_non_printable() {
+        use horns_core::KeyHandler;
+        use ox_types::key_chord::{KeyCodeRepr, KeyModifierSet};
+
+        let mut snap = SettingsSnapshot::empty();
+        let registry = RendererRegistry::new();
+        let ctx = handler_ctx(&registry);
+        let key = chord(KeyModifierSet::default(), KeyCodeRepr::Enter);
+
+        let result = handler().handle(&mut snap, &key, &ctx);
+        assert!(
+            result.is_none(),
+            "Enter is a lifecycle key — handler must pass so the discrete `edit.commit` binding fires"
+        );
+    }
+
+    #[test]
+    fn text_input_handler_passes_on_ctrl_modifier() {
+        use horns_core::KeyHandler;
+        use ox_types::key_chord::{KeyCodeRepr, KeyModifierSet};
+
+        let mut snap = SettingsSnapshot::empty();
+        let registry = RendererRegistry::new();
+        let ctx = handler_ctx(&registry);
+        let mods = KeyModifierSet {
+            ctrl: true,
+            ..KeyModifierSet::default()
+        };
+        let key = chord(mods, KeyCodeRepr::Char('a'));
+
+        let result = handler().handle(&mut snap, &key, &ctx);
+        assert!(
+            result.is_none(),
+            "Ctrl+letter is reserved for chord commands — must not be claimed as text input"
+        );
+    }
+
+    #[test]
+    fn text_input_handler_claims_shift_only_uppercase_letter() {
+        // Terminals report uppercase letters as shift+lowercase char.
+        // The handler must claim these so capital letters reach the
+        // buffer instead of falling through to outer-scope bindings.
+        use horns_core::KeyHandler;
+        use ox_types::key_chord::{KeyCodeRepr, KeyModifierSet};
+
+        let mut snap = SettingsSnapshot::empty();
+        write_index_with_account(&mut snap, "alpha", "anthropic");
+        seed_edit_active(
+            &mut snap,
+            &oxpath!("settings", "accounts", "alpha", "endpoint"),
+            "ab",
+        );
+
+        let registry = RendererRegistry::new();
+        let ctx = handler_ctx(&registry);
+        let mods = KeyModifierSet {
+            shift: true,
+            ..KeyModifierSet::default()
+        };
+        let key = chord(mods, KeyCodeRepr::Char('Z'));
+
+        let writes = handler()
+            .handle(&mut snap, &key, &ctx)
+            .expect("shift+letter must be claimed");
+        assert_eq!(writes.len(), 1);
+        match &writes[0].record {
+            Record::Parsed(Value::String(s)) => assert_eq!(s, "abZ"),
+            other => panic!("unexpected record: {other:?}"),
+        }
     }
 }
