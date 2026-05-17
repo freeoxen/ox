@@ -11,7 +11,10 @@ pub mod render;
 pub mod view;
 pub mod write;
 
-pub use binding::{BindingEntry, BindingId, BindingRegistry, BindingScope, Phase};
+pub use binding::{
+    BindingEntry, BindingId, BindingRegistry, BindingScope, HandlerEntry, HandlerId,
+    HandlerMetadata, KeyHandler, Phase,
+};
 pub use command::{
     Command, CommandCtx, CommandDisplay, CommandId, CommandMetadata, CommandRegistry, CommandScope,
 };

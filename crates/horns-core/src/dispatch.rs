@@ -69,7 +69,9 @@ impl Dispatcher {
         let scope_path = self.compute_scope_path(snapshot);
 
         // Capture (outer → inner): containers claim lifecycle keys
-        // before the leaf sees them.
+        // before the leaf sees them. At each scope, the discrete tier
+        // is asked first; on miss, the handler tier is asked at the
+        // same scope+phase.
         let mut cmd_id_opt = None;
         for scope in &scope_path {
             if let Some(p) = scope.keyed_path() {
@@ -77,13 +79,34 @@ impl Dispatcher {
                     cmd_id_opt = Some(hit);
                     break;
                 }
+                if let Some(h) = bindings.lookup_handler(p, key, Phase::Capture) {
+                    let ctx = CommandCtx {
+                        registry: renderers,
+                        last_keystroke: Some(key.clone()),
+                    };
+                    if let Some(writes) = h.handle(snapshot, key, &ctx) {
+                        return writes;
+                    }
+                }
             }
         }
 
         // Target (leaf only): the innermost scope claims the key.
+        // Discrete first, then handler.
         if cmd_id_opt.is_none() {
             if let Some(leaf) = scope_path.last().and_then(BindingScope::keyed_path) {
                 cmd_id_opt = bindings.lookup(leaf, key, Phase::Target);
+                if cmd_id_opt.is_none() {
+                    if let Some(h) = bindings.lookup_handler(leaf, key, Phase::Target) {
+                        let ctx = CommandCtx {
+                            registry: renderers,
+                            last_keystroke: Some(key.clone()),
+                        };
+                        if let Some(writes) = h.handle(snapshot, key, &ctx) {
+                            return writes;
+                        }
+                    }
+                }
             }
         }
 
@@ -99,6 +122,15 @@ impl Dispatcher {
                 if let Some(hit) = bindings.lookup(p, key, Phase::Bubble) {
                     cmd_id_opt = Some(hit);
                     break;
+                }
+                if let Some(h) = bindings.lookup_handler(p, key, Phase::Bubble) {
+                    let ctx = CommandCtx {
+                        registry: renderers,
+                        last_keystroke: Some(key.clone()),
+                    };
+                    if let Some(writes) = h.handle(snapshot, key, &ctx) {
+                        return writes;
+                    }
                 }
             }
         }
@@ -794,6 +826,210 @@ mod tests {
             dispatcher().dispatch(&mut reader, &key_char('a'), &bindings, &cmds, &renderers);
 
         assert!(writes.is_empty());
+    }
+
+    #[test]
+    fn dispatcher_routes_to_handler_when_discrete_misses() {
+        // No discrete binding for 'x' at the Target leaf; a handler at
+        // the same scope+phase claims char keys.
+        use std::sync::Arc;
+
+        use crate::binding::{HandlerEntry, KeyHandler};
+
+        struct EatChar;
+        impl KeyHandler for EatChar {
+            fn handle(
+                &self,
+                _: &mut dyn Reader,
+                k: &KeyChord,
+                _: &CommandCtx<'_>,
+            ) -> Option<Vec<Write>> {
+                match k.code {
+                    KeyCodeRepr::Char(c) => Some(vec![Write {
+                        path: oxpath!("ui", "handler_seen"),
+                        record: Record::parsed(Value::String(c.to_string())),
+                    }]),
+                    _ => None,
+                }
+            }
+        }
+
+        let cmds = CommandRegistry::new();
+        let mut bindings = BindingRegistry::new();
+        bindings.register_handler(HandlerEntry {
+            scope: BindingScope::Exact(oxpath!("settings", "_edit")),
+            phase: Phase::Target,
+            handler: Arc::new(EatChar),
+        });
+
+        let renderers = RendererRegistry::new();
+        let mut reader = MapReader::default();
+        seed_focused(&mut reader, &oxpath!("settings", "_edit"));
+
+        let writes =
+            dispatcher().dispatch(&mut reader, &key_char('x'), &bindings, &cmds, &renderers);
+
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].path, oxpath!("ui", "handler_seen"));
+        match &writes[0].record {
+            Record::Parsed(Value::String(s)) => assert_eq!(s, "x"),
+            other => panic!("unexpected record: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatcher_handler_returns_empty_writes_is_distinct_claim() {
+        // `Some(vec![])` is a legitimate claim — distinct from `None`
+        // (pass). The dispatcher must return the empty writes rather
+        // than falling through to other tiers/phases.
+        use std::sync::Arc;
+
+        use crate::binding::{HandlerEntry, KeyHandler};
+
+        struct SwallowAll;
+        impl KeyHandler for SwallowAll {
+            fn handle(
+                &self,
+                _: &mut dyn Reader,
+                _: &KeyChord,
+                _: &CommandCtx<'_>,
+            ) -> Option<Vec<Write>> {
+                Some(vec![])
+            }
+        }
+
+        let mut cmds = CommandRegistry::new();
+        cmds.register(Box::new(WriteSentinel::new()));
+
+        let mut bindings = BindingRegistry::new();
+        // A Bubble binding at the outer scope that would fire if the
+        // Target handler didn't claim.
+        bindings.register(BindingEntry {
+            scope: BindingScope::Exact(oxpath!("settings")),
+            key: key_char('x'),
+            command_id: cmd_id("test.sentinel"),
+            phase: Phase::Bubble,
+        });
+        bindings.register_handler(HandlerEntry {
+            scope: BindingScope::Exact(oxpath!("settings", "_edit")),
+            phase: Phase::Target,
+            handler: Arc::new(SwallowAll),
+        });
+
+        let renderers = RendererRegistry::new();
+        let mut reader = MapReader::default();
+        seed_focused(&mut reader, &oxpath!("settings", "_edit"));
+
+        let writes =
+            dispatcher().dispatch(&mut reader, &key_char('x'), &bindings, &cmds, &renderers);
+
+        // Handler claimed with empty writes — bubble fallback must not
+        // have fired.
+        assert!(writes.is_empty());
+    }
+
+    #[test]
+    fn dispatcher_handler_returns_none_passes_to_next_tier() {
+        // A handler that returns `None` means "didn't claim"; the
+        // dispatcher must continue walking and let a later phase/scope
+        // claim the key.
+        use std::sync::Arc;
+
+        use crate::binding::{HandlerEntry, KeyHandler};
+
+        struct PassAll;
+        impl KeyHandler for PassAll {
+            fn handle(
+                &self,
+                _: &mut dyn Reader,
+                _: &KeyChord,
+                _: &CommandCtx<'_>,
+            ) -> Option<Vec<Write>> {
+                None
+            }
+        }
+
+        let mut cmds = CommandRegistry::new();
+        cmds.register(Box::new(WriteSentinel::new()));
+
+        let mut bindings = BindingRegistry::new();
+        bindings.register(BindingEntry {
+            scope: BindingScope::Exact(oxpath!("settings")),
+            key: key_char('x'),
+            command_id: cmd_id("test.sentinel"),
+            phase: Phase::Bubble,
+        });
+        bindings.register_handler(HandlerEntry {
+            scope: BindingScope::Exact(oxpath!("settings", "_edit")),
+            phase: Phase::Target,
+            handler: Arc::new(PassAll),
+        });
+
+        let renderers = RendererRegistry::new();
+        let mut reader = MapReader::default();
+        seed_focused(&mut reader, &oxpath!("settings", "_edit"));
+
+        let writes =
+            dispatcher().dispatch(&mut reader, &key_char('x'), &bindings, &cmds, &renderers);
+
+        // Handler passed; bubble binding at `settings` fired the sentinel.
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].path, oxpath!("ui", "sentinel"));
+    }
+
+    #[test]
+    fn dispatcher_prefers_discrete_over_handler_at_same_scope_and_phase() {
+        // Discrete tier wins over handler tier at the same (scope, phase).
+        // A discrete binding for 'x' at Target on `settings/_edit` and
+        // a Target handler at the same scope that would also claim — the
+        // discrete binding fires the sentinel, the handler is never asked.
+        use std::sync::Arc;
+
+        use crate::binding::{HandlerEntry, KeyHandler};
+
+        struct ShouldNotFire;
+        impl KeyHandler for ShouldNotFire {
+            fn handle(
+                &self,
+                _: &mut dyn Reader,
+                _: &KeyChord,
+                _: &CommandCtx<'_>,
+            ) -> Option<Vec<Write>> {
+                // Returning a distinguishable sentinel write so a test
+                // failure would surface here rather than silently agree.
+                Some(vec![Write {
+                    path: oxpath!("ui", "handler_should_not_have_fired"),
+                    record: Record::parsed(Value::Bool(true)),
+                }])
+            }
+        }
+
+        let mut cmds = CommandRegistry::new();
+        cmds.register(Box::new(WriteSentinel::new()));
+
+        let mut bindings = BindingRegistry::new();
+        bindings.register(BindingEntry {
+            scope: BindingScope::Exact(oxpath!("settings", "_edit")),
+            key: key_char('x'),
+            command_id: cmd_id("test.sentinel"),
+            phase: Phase::Target,
+        });
+        bindings.register_handler(HandlerEntry {
+            scope: BindingScope::Exact(oxpath!("settings", "_edit")),
+            phase: Phase::Target,
+            handler: Arc::new(ShouldNotFire),
+        });
+
+        let renderers = RendererRegistry::new();
+        let mut reader = MapReader::default();
+        seed_focused(&mut reader, &oxpath!("settings", "_edit"));
+
+        let writes =
+            dispatcher().dispatch(&mut reader, &key_char('x'), &bindings, &cmds, &renderers);
+
+        // Discrete tier fired — sentinel write, not the handler's marker.
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].path, oxpath!("ui", "sentinel"));
     }
 
     #[test]

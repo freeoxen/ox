@@ -12,12 +12,15 @@
 //! descending, registration order preserved within a class) by stable-
 //! sorting after each insertion.
 
-use serde::{Deserialize, Serialize};
-use structfs_core_store::Path;
+use std::sync::Arc;
 
-use crate::command::CommandId;
+use serde::{Deserialize, Serialize};
+use structfs_core_store::{Path, Reader};
+
+use crate::command::{CommandCtx, CommandId};
 use crate::key::KeyChord;
 use crate::path_serde;
+use crate::write::Write;
 
 /// Where a binding fires. Three shapes:
 ///
@@ -101,18 +104,70 @@ pub struct BindingEntry {
     pub command_id: CommandId,
 }
 
-/// Indexes bindings for `(cursor, key, phase)` → `CommandId`.
+/// Stable identifier for a registered handler. Used as the path
+/// component under `<handlers_prefix>/<handler-id>`.
+#[derive(Hash, Eq, PartialEq, Clone, Debug, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct HandlerId(pub String);
+
+/// Opaque event consumer. The dispatcher asks the handler whether
+/// it claims the key; the handler inspects the chord and returns
+/// `Some(writes)` to claim (with the writes that should be applied)
+/// or `None` to pass.
+///
+/// `Some(vec![])` is a legitimate claim: "consumed, no writes." Distinct
+/// from `None` (didn't claim), so a handler can swallow a key without
+/// state change.
+pub trait KeyHandler: Send + Sync {
+    fn handle(
+        &self,
+        snapshot: &mut dyn Reader,
+        key: &KeyChord,
+        ctx: &CommandCtx<'_>,
+    ) -> Option<Vec<Write>>;
+}
+
+/// One row in the handler tier: under (scope, phase), the opaque
+/// `handler` may claim a keystroke. Registration-order, first match
+/// wins within (scope, phase); discrete bindings always beat handlers
+/// at the same (scope, phase).
+pub struct HandlerEntry {
+    pub scope: BindingScope,
+    pub phase: Phase,
+    pub handler: Arc<dyn KeyHandler>,
+}
+
+/// The data-half of a handler registration. The path-stored metadata
+/// lives at `<handlers_prefix>/<handler-id>` so authors can introspect
+/// which handlers are installed and which class of input each claims.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandlerMetadata {
+    pub scope: BindingScope,
+    pub phase: Phase,
+    /// Free-form label naming what the handler claims, for introspection.
+    /// Not interpreted by the framework. Examples: "printable_ascii",
+    /// "arrow_navigation", "function_keys".
+    pub class: String,
+}
+
+/// Indexes bindings for `(cursor, key, phase)` → `CommandId`, plus an
+/// opaque `KeyHandler` tier asked after every discrete-tier miss.
 pub struct BindingRegistry {
     /// Entries in *resolution order*: the first matching entry wins.
     /// `register` keeps this list ordered by specificity-then-registration
     /// via a stable sort.
     entries: Vec<BindingEntry>,
+    /// Handlers in *registration order*. The dispatcher asks handlers
+    /// at each (scope, phase) only after the discrete tier misses at
+    /// that same (scope, phase).
+    handlers: Vec<HandlerEntry>,
 }
 
 impl BindingRegistry {
     pub fn new() -> Self {
         Self {
             entries: Vec::new(),
+            handlers: Vec::new(),
         }
     }
 
@@ -124,11 +179,24 @@ impl BindingRegistry {
         self.entries.sort_by_key(specificity_class);
     }
 
+    /// Register a handler. Handlers are queried in registration order;
+    /// the first whose scope admits the cursor and whose phase matches
+    /// gets asked to claim the chord.
+    pub fn register_handler(&mut self, entry: HandlerEntry) {
+        self.handlers.push(entry);
+    }
+
     /// All registered entries in resolution order (most-specific first;
     /// registration order preserved within a specificity class). Exposed
     /// for property tests that exercise every binding via `lookup`.
     pub fn entries(&self) -> &[BindingEntry] {
         &self.entries
+    }
+
+    /// All registered handlers in registration order. Exposed for
+    /// introspection (help-hint projection, debug surfaces).
+    pub fn handlers(&self) -> &[HandlerEntry] {
+        &self.handlers
     }
 
     /// Find the binding matching `(cursor, key, phase)`, in scope-
@@ -146,6 +214,32 @@ impl BindingRegistry {
                 continue;
             }
             return Some(&e.command_id);
+        }
+        None
+    }
+
+    /// First handler whose scope admits the cursor and whose phase matches.
+    /// Registration order, first scope/phase match wins. Returns the handler
+    /// reference; the caller invokes `.handle(snapshot, key, ctx)` to ask
+    /// if it claims this specific key.
+    ///
+    /// The `_key` parameter is reserved for future use (e.g. cheap
+    /// pre-filter by key class). Today the handler itself inspects the
+    /// key.
+    pub fn lookup_handler(
+        &self,
+        cursor: &Path,
+        _key: &KeyChord,
+        phase: Phase,
+    ) -> Option<&dyn KeyHandler> {
+        for entry in &self.handlers {
+            if entry.phase != phase {
+                continue;
+            }
+            if !entry.scope.matches(cursor) {
+                continue;
+            }
+            return Some(&*entry.handler);
         }
         None
     }
@@ -412,5 +506,107 @@ mod tests {
             .lookup(&p, &key_char('x'), Phase::Target)
             .expect("target should match");
         assert_eq!(target_hit, &cmd("on_target"));
+    }
+
+    #[test]
+    fn lookup_handler_finds_handler_at_matching_scope_and_phase() {
+        use std::sync::Arc;
+        use structfs_core_store::{Path, Reader};
+
+        use crate::write::Write;
+
+        struct AcceptAny;
+        impl super::KeyHandler for AcceptAny {
+            fn handle(
+                &self,
+                _: &mut dyn Reader,
+                _: &crate::key::KeyChord,
+                _: &crate::command::CommandCtx<'_>,
+            ) -> Option<Vec<Write>> {
+                Some(vec![])
+            }
+        }
+
+        let mut reg = BindingRegistry::new();
+        reg.register_handler(super::HandlerEntry {
+            scope: BindingScope::Exact(Path::parse("a/b").unwrap()),
+            phase: Phase::Target,
+            handler: Arc::new(AcceptAny),
+        });
+
+        let cursor = Path::parse("a/b").unwrap();
+        let chord = crate::key::KeyChord {
+            modifiers: Default::default(),
+            code: crate::key::KeyCodeRepr::Char('x'),
+        };
+        assert!(reg.lookup_handler(&cursor, &chord, Phase::Target).is_some());
+    }
+
+    #[test]
+    fn lookup_handler_misses_when_phase_differs() {
+        use std::sync::Arc;
+        use structfs_core_store::{Path, Reader};
+
+        use crate::write::Write;
+
+        struct NoOp;
+        impl super::KeyHandler for NoOp {
+            fn handle(
+                &self,
+                _: &mut dyn Reader,
+                _: &crate::key::KeyChord,
+                _: &crate::command::CommandCtx<'_>,
+            ) -> Option<Vec<Write>> {
+                Some(vec![])
+            }
+        }
+
+        let mut reg = BindingRegistry::new();
+        reg.register_handler(super::HandlerEntry {
+            scope: BindingScope::Exact(Path::parse("a").unwrap()),
+            phase: Phase::Capture,
+            handler: Arc::new(NoOp),
+        });
+
+        let cursor = Path::parse("a").unwrap();
+        let chord = crate::key::KeyChord {
+            modifiers: Default::default(),
+            code: crate::key::KeyCodeRepr::Esc,
+        };
+        assert!(reg.lookup_handler(&cursor, &chord, Phase::Bubble).is_none());
+    }
+
+    #[test]
+    fn lookup_handler_misses_when_scope_does_not_match() {
+        use std::sync::Arc;
+        use structfs_core_store::{Path, Reader};
+
+        use crate::write::Write;
+
+        struct NoOp;
+        impl super::KeyHandler for NoOp {
+            fn handle(
+                &self,
+                _: &mut dyn Reader,
+                _: &crate::key::KeyChord,
+                _: &crate::command::CommandCtx<'_>,
+            ) -> Option<Vec<Write>> {
+                Some(vec![])
+            }
+        }
+
+        let mut reg = BindingRegistry::new();
+        reg.register_handler(super::HandlerEntry {
+            scope: BindingScope::Exact(Path::parse("a/b").unwrap()),
+            phase: Phase::Target,
+            handler: Arc::new(NoOp),
+        });
+
+        let cursor = Path::parse("c").unwrap();
+        let chord = crate::key::KeyChord {
+            modifiers: Default::default(),
+            code: crate::key::KeyCodeRepr::Char('x'),
+        };
+        assert!(reg.lookup_handler(&cursor, &chord, Phase::Target).is_none());
     }
 }
