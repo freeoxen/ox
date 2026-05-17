@@ -378,8 +378,8 @@ fn register_row_prefixes(reg: &mut BindingRegistry) {
 /// the table — moves to a single opaque `TextInputHandler` registered
 /// at the same scope+phase, replacing ~96 discrete `BindingEntry`s
 /// (one per printable ASCII char). The discrete tier always beats
-/// handlers at the same (scope, phase), so the four lifecycle keys
-/// keep their lookup paths unchanged.
+/// handlers at the same (scope, phase), so the three lifecycle keys
+/// (Backspace, Enter, Esc) keep their lookup paths unchanged.
 ///
 /// Phase classification mirrors the compose form: Esc is claimed at
 /// `Phase::Capture` (cancel wins over any leaf); Enter commits at
@@ -1312,9 +1312,9 @@ mod tests {
             .iter()
             .filter(|e| matches!(&e.scope, BindingScope::Exact(p) if p == &edit_scope))
             .count();
-        assert!(
-            edit_count <= 6,
-            "expected ≤6 discrete bindings under settings/_edit (lifecycle keys only), got {edit_count}",
+        assert_eq!(
+            edit_count, 3,
+            "expected exactly 3 discrete bindings under settings/_edit (Backspace, Enter, Esc); got {edit_count}",
         );
     }
 

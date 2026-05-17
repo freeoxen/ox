@@ -357,9 +357,10 @@ impl horns_core::KeyHandler for TextInputHandler {
 
         // Claim only un-modified printable chars. Shift-only is allowed
         // because terminals report uppercase letters as shift+lowercase
-        // char; the dispatcher's discrete tier handles the same shift
-        // convention for the four lifecycle keys this handler doesn't
-        // claim.
+        // char. Lifecycle keys (Backspace, Enter, Esc) are discrete
+        // bindings at the same scope+phase and win on tie, so the handler
+        // doesn't need to special-case them — non-`Char` codes pass through
+        // here naturally.
         if key.modifiers.ctrl || key.modifiers.alt || key.modifiers.super_ {
             return None;
         }
