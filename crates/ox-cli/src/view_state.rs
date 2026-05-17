@@ -290,7 +290,7 @@ async fn read_ledger_banner(
 ) -> Option<&'static str> {
     let path = ox_path::oxpath!("threads", tid.clone(), "shell", "ledger_health");
     let wire = client.read_typed::<String>(&path).await.ok().flatten()?;
-    crate::theme::ledger_health_banner(&wire)
+    crate::shell_copy::ledger_health_banner(&wire)
 }
 
 /// Read pricing overrides from config/pricing.

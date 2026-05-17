@@ -16,7 +16,7 @@ use ox_ui::ApprovalStore;
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Store, Value, Writer};
 
 use crate::agents::SYSTEM_PROMPT;
-use crate::theme;
+use crate::shell_copy;
 
 // ---------------------------------------------------------------------------
 // ShellConfigStore — shell→kernel config seam
@@ -85,7 +85,7 @@ impl Writer for ShellConfigStore {
 ///
 /// The view layer reads these by string comparison so it does not have
 /// to depend on `ox_inbox` types directly. They are also the keys the
-/// banner-copy lookup in `theme::ledger_health_banner` matches on.
+/// banner-copy lookup in `shell_copy::ledger_health_banner` matches on.
 pub const LEDGER_HEALTH_OK: &str = "ok";
 pub const LEDGER_HEALTH_MISSING: &str = "missing";
 pub const LEDGER_HEALTH_REPAIR_FAILED: &str = "repair_failed";
@@ -147,7 +147,7 @@ impl ThreadNamespace {
         // dependency edge from `ox-kernel` back to `ox-cli`.
         shell.set(
             "post_crash_skip_content",
-            Value::String(theme::POST_CRASH_SKIP_CONTENT.to_string()),
+            Value::String(shell_copy::POST_CRASH_SKIP_CONTENT.to_string()),
         );
         Self {
             system: SystemProvider::new(SYSTEM_PROMPT.to_string()),
@@ -375,7 +375,7 @@ impl ThreadNamespace {
         // robust to any future replay-path change.
         ns.shell.set(
             "post_crash_skip_content",
-            Value::String(theme::POST_CRASH_SKIP_CONTENT.to_string()),
+            Value::String(shell_copy::POST_CRASH_SKIP_CONTENT.to_string()),
         );
 
         // Install the durable ledger writer AFTER replay — but only when

@@ -35,14 +35,13 @@ mod tab_bar;
 #[allow(dead_code)]
 mod test_support;
 mod text_input_view;
-mod theme;
+mod shell_copy;
 pub(crate) mod thread_registry;
 mod thread_shell;
 mod thread_view;
 mod toml_backing;
 mod tui;
 mod types;
-pub(crate) mod view_render;
 pub(crate) mod view_state;
 
 use clap::{Parser, Subcommand};
@@ -162,7 +161,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // files (see `migrate_legacy_keys` below).
     let flat_config = resolved.to_flat_map();
 
-    let theme = theme::Theme::default();
+    let theme = horns_ratatui::Theme::default();
 
     // Setup broker with stores mounted
     let broker_inbox = ox_inbox::InboxStore::open(&inbox_root)

@@ -5,7 +5,7 @@
 
 use crate::history_state::HistoryExplorer;
 use crate::parse::{HistoryBlock, LogDisplayEntry};
-use crate::theme::Theme;
+use horns_ratatui::Theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span, Text};

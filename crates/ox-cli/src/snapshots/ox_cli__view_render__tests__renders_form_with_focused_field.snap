@@ -1,9 +1,0 @@
----
-source: crates/ox-cli/src/view_render.rs
-expression: out
----
-┌provider──────────────────────────────────────────────────┐
-│endpoint: https://api.example.com  HTTPS URL              │
-│api_key: ••••••  required                                 │
-│                                                          │
-└──────────────────────────────────────────────────────────┘

@@ -1,8 +1,7 @@
 ---
-source: crates/ox-cli/src/view_render.rs
-assertion_line: 580
+source: crates/horns-ratatui/src/render.rs
 expression: out
 ---
 ┌────────────────────────────┐
-│saved                       │
+│something failed            │
 └────────────────────────────┘

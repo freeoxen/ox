@@ -1,6 +1,5 @@
 ---
-source: crates/ox-cli/src/view_render.rs
-assertion_line: 558
+source: crates/horns-ratatui/src/render.rs
 expression: out
 ---
 status

@@ -32,6 +32,7 @@ ox-store-util = { path = "../ox-store-util" }
 ox-tools = { path = "../ox-tools" }
 ox-types = { path = "../ox-types" }
 horns-core = { path = "../horns-core" }
+horns-ratatui = { path = "../horns-ratatui" }
 tokio = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.28"

@@ -1,7 +1,7 @@
 ---
-source: crates/ox-cli/src/view_render.rs
+source: crates/horns-ratatui/src/render.rs
 expression: out
 ---
 ┌────────────────────────────┐
-│something failed            │
+│saved                       │
 └────────────────────────────┘

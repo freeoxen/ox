@@ -49,18 +49,18 @@ pub(crate) mod session;
 pub mod settings;
 pub(crate) mod shell;
 pub(crate) mod simple_input;
+pub(crate) mod shell_copy;
 pub(crate) mod tab_bar;
 pub(crate) mod text_input_view;
-pub(crate) mod theme;
 
 /// Re-export of the post-crash Skip synthetic-`ToolResult` content string
 /// used by Task 3d Step 6b's E2E test. The integration test lives outside
-/// the crate and cannot reach `pub(crate) mod theme` directly; this
+/// the crate and cannot reach `pub(crate) mod shell_copy` directly; this
 /// re-export keeps the module's own visibility narrow while exposing the
 /// one symbol the test contract pins. See
 /// `crates/ox-cli/tests/crash_harness_post_crash_reconfirm.rs`.
 pub mod test_theme_exports {
-    pub use crate::theme::POST_CRASH_SKIP_CONTENT;
+    pub use crate::shell_copy::POST_CRASH_SKIP_CONTENT;
 }
 
 /// Re-exports of the rendering primitives integration tests need to
@@ -70,26 +70,12 @@ pub mod test_theme_exports {
 /// broker writes. Read-path regressions don't surface in broker-only
 /// e2e tests; this surface lets render-path tests catch them.
 pub mod test_render_exports {
-    pub use crate::theme::Theme;
-
-    /// Test-only wrapper around the in-crate `view_render::render_to_frame`.
-    /// The wrapper exists because the underlying function is `pub(crate)`
-    /// (its surface is internal-only); this re-exposes it through a
-    /// dedicated test entry point without widening the production
-    /// visibility.
-    pub fn render_to_frame(
-        view: &horns_core::view::View,
-        frame: &mut ratatui::Frame,
-        area: ratatui::layout::Rect,
-        theme: &Theme,
-    ) {
-        crate::view_render::render_to_frame(view, frame, area, theme);
-    }
+    pub use horns_ratatui::Theme;
+    pub use horns_ratatui::render_to_frame;
 }
 pub(crate) mod thread_shell;
 pub(crate) mod thread_view;
 pub(crate) mod toml_backing;
 pub(crate) mod tui;
 pub(crate) mod types;
-pub(crate) mod view_render;
 pub(crate) mod view_state;

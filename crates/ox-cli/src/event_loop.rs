@@ -5,7 +5,7 @@ use crate::settings::CommandRegistry;
 use crate::settings::commands::navigation::path_from_value;
 use crate::settings::{RenderCtx, RendererRegistry};
 use crate::settings::snapshot::{SettingsSnapshot, fetch_settings_view_state};
-use crate::theme::Theme;
+use horns_ratatui::Theme;
 use crate::thread_shell::{ThreadShell, dispatch_global_mouse};
 use crate::types::CustomizeState;
 use crate::view_state::fetch_view_state;

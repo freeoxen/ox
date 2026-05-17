@@ -813,7 +813,7 @@ mod tests {
     use crate::settings::commands::navigation::path_to_value;
     use crate::settings::snapshot::SettingsSnapshot;
     use crate::settings::visible_rows::expanded_set_to_value;
-    use crate::theme::Theme;
+    use horns_ratatui::Theme;
 
     fn entry(id: &str, label: &str, target: &str, badge: BadgeSource) -> SettingsIndexEntry {
         SettingsIndexEntry {

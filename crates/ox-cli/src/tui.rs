@@ -1,6 +1,6 @@
 use crate::text_input_view::desired_input_height;
-use crate::theme::Theme;
 use crate::view_state::ViewState;
+use horns_ratatui::Theme;
 use ox_types::{InsertContext, ScreenSnapshot};
 use horns_core::view::View;
 use ratatui::Frame;
@@ -98,7 +98,7 @@ pub(crate) fn draw(
             // the caller forgot to pass the View, which we treat as an
             // empty draw.
             if let Some(view) = settings_view {
-                crate::view_render::render_to_frame(view, frame, content_area, theme);
+                horns_ratatui::render_to_frame(view, frame, content_area, theme);
             }
         }
         ScreenSnapshot::Thread(snap) => {

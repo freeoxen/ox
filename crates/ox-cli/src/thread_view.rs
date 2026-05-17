@@ -1,4 +1,4 @@
-use crate::theme::Theme;
+use horns_ratatui::Theme;
 use crate::types::{ChatMessage, ThreadView};
 use ratatui::Frame;
 use ratatui::layout::Rect;

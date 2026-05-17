@@ -950,7 +950,7 @@ mod tests {
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        let theme = crate::theme::Theme::default_theme();
+        let theme = horns_ratatui::Theme::default_theme();
         terminal
             .draw(|frame| {
                 crate::dialogs::draw_thread_info_modal(
@@ -988,7 +988,7 @@ mod tests {
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        let theme = crate::theme::Theme::default_theme();
+        let theme = horns_ratatui::Theme::default_theme();
         let info = crate::types::ThreadInfo {
             meta: crate::types::ThreadMetadata {
                 id: "t_1".into(),

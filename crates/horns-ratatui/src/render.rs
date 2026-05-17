@@ -1,9 +1,8 @@
 //! View → ratatui translator.
 //!
-//! The translator is the single point in `ox-cli` that touches `ratatui`.
 //! Renderers produce a [`View`] (curated, ratatui-agnostic widget set in
-//! `ox-view`); this module turns that tree into ratatui draw calls against a
-//! [`Frame`].
+//! `horns_core::view`); this module turns that tree into ratatui draw calls
+//! against a [`Frame`].
 //!
 //! Hygiene rules (enforced by review, not code):
 //! - The translator is **dumb**. It does not inspect data values to decide
@@ -13,8 +12,8 @@
 //!   an explicit arm, with no `_ => ...` catch-all.
 //! - Mapping helpers (`map_color`, `map_style`, `map_modifiers`,
 //!   `map_direction`, `map_align`) are 1:1 with ratatui's vocabulary, so
-//!   adding a `Color` (or modifier, etc.) to `ox-view` forces a corresponding
-//!   match-arm here at compile time.
+//!   adding a `Color` (or modifier, etc.) to `horns_core::view` forces a
+//!   corresponding match-arm here at compile time.
 
 use horns_core::view::{
     Align, BannerKind, Color, Direction, FormRow, FormValue, ListItem, ModifierSet, Padding,
@@ -38,7 +37,7 @@ use crate::theme::Theme;
 /// Render `view` into `area` of `frame`.
 ///
 /// Total over the `View` enum.
-pub(crate) fn render_to_frame(view: &View, frame: &mut Frame, area: Rect, theme: &Theme) {
+pub fn render_to_frame(view: &View, frame: &mut Frame, area: Rect, theme: &Theme) {
     match view {
         View::Empty => {}
         View::Text { spans, align } => render_text(spans, *align, frame, area),
