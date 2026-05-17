@@ -118,6 +118,26 @@ pub async fn setup(
         servers.push(broker.mount(path!("settings"), settings_store).await);
     }
 
+    // Horns runtime scratch: input KeyChords, render-tick counters,
+    // rendered View output, theme JSON, and the bindings/commands/
+    // renderers/handlers metadata side-tables. A generic K/V mount so
+    // the install API can write whatever record shapes it builds
+    // without UiStore's verb-resolution rejecting them. Sits on its
+    // own `ui/_horns` mount (longest-prefix match supersedes the
+    // outer `ui/` UiStore mount for these paths).
+    {
+        let horns_store = ox_store_util::local_config::LocalConfig::new();
+        servers.push(broker.mount(path!("ui/_horns"), horns_store).await);
+    }
+    // Bindings/commands/renderers/handlers metadata lives under
+    // `horns/<instance>/...` — also a generic K/V mount so install can
+    // persist the introspection records authors browse via help and
+    // palette tools.
+    {
+        let horns_meta_store = ox_store_util::local_config::LocalConfig::new();
+        servers.push(broker.mount(path!("horns"), horns_meta_store).await);
+    }
+
     // Mount ThreadRegistry at threads/ — lazy-mounts per-thread stores from disk
     let mut registry = crate::thread_registry::ThreadRegistry::new(inbox_root);
     registry.set_broker_client(broker.client());

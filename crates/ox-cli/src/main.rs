@@ -7,7 +7,6 @@ mod clash_sandbox;
 mod commit_drain;
 mod config;
 mod dialogs;
-mod dispatch;
 mod editor;
 #[cfg(test)]
 mod editor_snapshots;
@@ -190,6 +189,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Arc::new(ox_gate::transport::HttpTransport);
         ox_gate::subscriptions::register_all(&broker_handle.broker, transport);
     }
+
+    // Install the settings screen as a horns instance: registers the
+    // KeyDispatch / Render / ThemeChange subscriptions on the broker
+    // and writes the initial theme record. The event loop drives
+    // settings-screen input by writing a `KeyChord` to the install's
+    // `input_path` rather than calling a transitional `send_key`
+    // wrapper directly. Held in a binding so the subscription ids stay
+    // alive for the program lifetime (today this is informational —
+    // `BrokerStore` owns the subscriptions in an `Arc`; the handle is
+    // the shape future supersession code will read from).
+    let _settings_handle = match settings::install(&broker_handle.broker).await {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::error!(error = %e, "settings::install failed");
+            return Err(format!("settings::install failed: {e}").into());
+        }
+    };
 
     // Create App with broker. `Handle::current()` captures this
     // runtime so AgentPool workers (which run on their own OS threads

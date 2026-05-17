@@ -148,12 +148,16 @@ pub async fn run_async(
             .ok();
     }
 
-    // Settings registries: built once at startup, reused every frame.
-    // The renderer registry indexes pure `&mut dyn Reader -> View` impls
-    // by cursor `Path`; the command registry indexes `Command` impls by
-    // `CommandId`; the binding registry maps `(screen, cursor, mode, key)`
-    // tuples to `CommandId`. Together with `dispatch::send_key`, these
-    // three replace the bespoke `settings_shell::handle_key` bypass.
+    // Settings registries: built once at startup, reused every frame
+    // for the inline render path in `tui::draw`. A second copy lives
+    // inside the horns side-tables that `settings::install` registers
+    // on the broker — that copy services key dispatch and the
+    // subscription-driven render-output write. Holding a duplicate
+    // here is acceptable: registry construction is cheap and the
+    // inline render is the source of truth for the visible frame.
+    // (The broker render output is written but not yet read by
+    // `tui::draw` — a follow-up will swap the inline render for a
+    // read from `render_output_path()`, retiring this duplicate.)
     let mut settings_renderers = RendererRegistry::new();
     let mut settings_commands = CommandRegistry::new();
     let mut settings_bindings = BindingRegistry::new();
@@ -487,9 +491,6 @@ pub async fn run_async(
                             has_approval_pending,
                             &mut dialog,
                             &mut thread,
-                            &settings_renderers,
-                            &settings_commands,
-                            &settings_bindings,
                             app,
                             client,
                             terminal,
@@ -599,6 +600,63 @@ pub async fn run_async(
 
             // Batch flush pending edits after processing this event
             flush_pending_edits(&mut thread.input_session, client).await;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Input-store dispatch (non-settings screens)
+// ---------------------------------------------------------------------------
+
+/// Outcome of a key-dispatch attempt. The `Unbound` arm carries the
+/// mode the broker's input-store resolver concluded — non-settings
+/// clients use it to route the key through the appropriate text-input
+/// fallback (`Insert`, `Command`, `Search`) without recomputing mode
+/// locally.
+///
+/// Settings dispatches always return `Handled`: the settings install's
+/// `KeyDispatchSubscription` runs in-broker and emits writes
+/// asynchronously; the event loop does not observe a "miss" the way
+/// the input-store path does.
+enum KeyDispatchOutcome {
+    Handled,
+    Unbound { mode: Mode },
+}
+
+/// Non-settings dispatch path: encode the key as an `InputKeyEvent`,
+/// write to `input/key`, and translate the substrate's reply path into
+/// a `KeyDispatchOutcome`. The broker's `InputStore` mount runs the
+/// mode resolver against live state and either invokes a matched
+/// command or reports `unbound/<mode>` for the text-input fallback.
+async fn send_via_input_store(
+    client: &ox_broker::ClientHandle,
+    key: &str,
+    screen: Screen,
+    flags: ox_types::ClientModalFlags,
+) -> KeyDispatchOutcome {
+    let event = ox_types::InputKeyEvent {
+        mode: None,
+        key: key.to_string(),
+        screen,
+        flags,
+    };
+    let result = client.write_typed(&oxpath!("input", "key"), &event).await;
+    match result {
+        Ok(p) if p.components.first().map(|c| c.as_str()) == Some("unbound") => {
+            let mode = p
+                .components
+                .get(1)
+                .and_then(|c| Mode::parse(c.as_str()))
+                .unwrap_or(Mode::Normal);
+            KeyDispatchOutcome::Unbound { mode }
+        }
+        Ok(_) => KeyDispatchOutcome::Handled,
+        Err(e) => {
+            tracing::warn!(error = %e, key = %key, "input key dispatch failed");
+            // Treat genuine errors as handled to avoid the fallback
+            // re-routing the key into a text-input handler in an
+            // unexpected state.
+            KeyDispatchOutcome::Handled
         }
     }
 }
@@ -814,13 +872,19 @@ pub(crate) async fn refresh_thread_info_cache(
 /// Called for all key events that aren't consumed by modal overlays (shortcuts,
 /// customize dialog, approval dialog).
 ///
-/// On the settings screen, `dispatch_key` builds a fresh per-keystroke
-/// snapshot, reads the cursor from it, and threads
-/// `(cursor, snapshot, bindings, commands, renderers)` through to
-/// `dispatch::send_key`. The bespoke `settings_shell::handle_key` bypass
-/// has been retired (Phase P2). After dispatch, an `_request_exit` flag
-/// at `ui/settings/_request_exit` signals "leave the settings screen";
-/// we consume it here and route to the inbox.
+/// On the settings screen, `dispatch_key` encodes the chord and writes
+/// it to the horns settings install's input path. The
+/// `KeyDispatchSubscription` registered by `settings::install` handles
+/// the rest in-broker: matches the binding (or `TextInputHandler`),
+/// runs the command, emits writes, bumps the render tick. After the
+/// async write returns, we also check for the `_request_exit` flag
+/// (`nav.ascend` writes it at the top-level cursor) and route to the
+/// inbox if set.
+///
+/// Non-settings screens (inbox, thread, history) still go through the
+/// legacy input-store dispatch path (`send_via_input_store`) which
+/// returns either `Handled` or `Unbound { mode }` — the latter routes
+/// the keystroke through a text-input fallback below.
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_key(
     ui: &UiSnapshot,
@@ -830,19 +894,16 @@ async fn dispatch_key(
     has_approval_pending: bool,
     dialog: &mut DialogState,
     thread: &mut ThreadShell,
-    settings_renderers: &RendererRegistry,
-    settings_commands: &CommandRegistry,
-    settings_bindings: &BindingRegistry,
     app: &mut App,
     client: &ox_broker::ClientHandle,
     terminal: &mut ratatui::DefaultTerminal,
 ) {
-    // The binding-lookup path is delegated to `crate::dispatch::send_key`,
-    // a function whose signature deliberately excludes `&UiSnapshot`
-    // and `&ViewState`. This is the structural enforcement of the
-    // "snapshots are render-only across the dispatch boundary" rule —
-    // see `crate::dispatch` module doc and
-    // `local/plans/focus-resolution.md`.
+    // Settings dispatch crosses the broker — we write a `KeyChord`
+    // record to the install's `input_path/key` and the
+    // `KeyDispatchSubscription` registered by `settings::install`
+    // reads the live cursor and runs the matched command from there.
+    // No `&UiSnapshot` or `&ViewState` reaches the binding lookup;
+    // the subscription's `snapshot` is a fresh broker reader.
     //
     // `has_approval_pending` and `ui` are still inspected *here* for
     // legitimate non-binding reasons: the screen tag (informational,
@@ -868,43 +929,43 @@ async fn dispatch_key(
         ScreenSnapshot::History(_) => Screen::History,
     };
 
-    // Settings: build a per-keystroke snapshot + read the cursor so
-    // `send_key` can look up bindings under `(screen, cursor, mode, key)`
-    // and run the matched command against a fresh Reader. The snapshot
-    // built for rendering above is one frame stale by the time keys
-    // arrive — re-fetching here keeps reads consistent with writes that
-    // landed during the same iteration.
-    let mut settings_snap_holder: Option<SettingsSnapshot> = None;
-    let mut settings_cursor_holder: Option<Path> = None;
-    if input_screen == Screen::Settings {
-        let mut snap = fetch_settings_view_state(client).await;
-        let cursor =
-            read_settings_cursor(&mut snap).unwrap_or_else(|| oxpath!("settings", "index"));
-        settings_snap_holder = Some(snap);
-        settings_cursor_holder = Some(cursor);
-    }
-
-    let outcome = {
-        // The borrow of `settings_snap_holder` lives only for this call.
-        let cursor_ref = settings_cursor_holder.as_ref();
-        let snap_ref: Option<&mut dyn Reader> =
-            settings_snap_holder.as_mut().map(|s| s as &mut dyn Reader);
-        let bindings_ref = if input_screen == Screen::Settings {
-            Some(settings_bindings)
+    // Settings: dispatch through the horns broker pipeline. We encode
+    // the crossterm key as a `KeyChord` via the existing
+    // `encode_key` → `parse_key_str` round-trip and write it to the
+    // settings install's `input_path/key`. The horns
+    // `KeyDispatchSubscription` registered by `settings::install`
+    // watches that path, runs the matched command (or
+    // `TextInputHandler`), applies the emitted writes through the
+    // broker dispatcher, and bumps the render tick so the
+    // `RenderSubscription` produces a fresh View.
+    //
+    // Non-settings screens continue through the legacy input-store
+    // dispatch path: encode the key, write to `input/key`, the
+    // InputStore-mounted resolver decides handled-or-unbound. The
+    // `Unbound` outcome routes the key into a text-input fallback
+    // (Insert / Command / Search) below.
+    let outcome = if input_screen == Screen::Settings {
+        if let Some(chord) = crate::key_chord_canonical::parse_key_str(key_str) {
+            let key_path = {
+                let mut p = crate::settings::input_path().components.clone();
+                p.push("key".to_string());
+                structfs_core_store::Path::try_from_components(p).expect("static path")
+            };
+            if let Err(e) = client.write_typed(&key_path, &chord).await {
+                tracing::warn!(error = %e, key = %key_str, "settings key dispatch broker write failed");
+            }
+            KeyDispatchOutcome::Handled
         } else {
-            None
-        };
-        let commands_ref = if input_screen == Screen::Settings {
-            Some(settings_commands)
-        } else {
-            None
-        };
-        let renderers_ref = if input_screen == Screen::Settings {
-            Some(settings_renderers)
-        } else {
-            None
-        };
-        crate::dispatch::send_key(
+            // Function keys etc. don't round-trip through the
+            // encoder; nothing in the settings binding table claims
+            // them today, so silently swallow them rather than
+            // routing through the legacy input store (which would
+            // misclassify the key for a screen that's no longer
+            // wired through it).
+            KeyDispatchOutcome::Handled
+        }
+    } else {
+        send_via_input_store(
             client,
             key_str,
             input_screen,
@@ -914,11 +975,6 @@ async fn dispatch_key(
                 show_usage: dialog.show_usage,
                 show_thread_info: dialog.show_thread_info,
             },
-            cursor_ref,
-            snap_ref,
-            bindings_ref,
-            commands_ref,
-            renderers_ref,
         )
         .await
     };
@@ -945,7 +1001,7 @@ async fn dispatch_key(
         }
     }
 
-    if let crate::dispatch::KeyDispatchOutcome::Unbound { mode } = outcome {
+    if let KeyDispatchOutcome::Unbound { mode } = outcome {
         match mode {
             Mode::Command => handle_unbound_command_line_key(client, ui, code).await,
             Mode::Search => handle_unbound_search_key(client, code).await,

@@ -21,7 +21,10 @@ pub use command::{
     Command, CommandCtx, CommandDisplay, CommandId, CommandMetadata, CommandRegistry, CommandScope,
 };
 pub use dispatch::Dispatcher;
-pub use install::{build_install_bundle, HornsHandle, InstallBundle, InstallOptions};
+pub use install::{
+    build_install_bundle, build_install_bundle_from_registries, HornsHandle, InstallBundle,
+    InstallOptions, InstallPaths,
+};
 pub use key::{KeyChord, KeyCodeRepr, KeyModifierSet};
 pub use render::{AscendRule, Rect, RenderCtx, Renderer, RendererMetadata, RendererRegistry};
 pub use subscription::{

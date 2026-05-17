@@ -25,3 +25,146 @@ pub use horns_core::{
     AscendRule, BindingRegistry, Command, CommandCtx, CommandRegistry, RenderCtx, Renderer,
     RendererRegistry,
 };
+
+use horns_core::install::{build_install_bundle_from_registries, InstallPaths};
+use horns_core::SubscriptionId;
+use ox_broker::BrokerStore;
+use ox_path::oxpath;
+use structfs_core_store::{Error as StoreError, Path};
+
+/// Path the settings install reads the focus cursor from.
+///
+/// The cursor is *also* the data path the existing settings commands
+/// have always written to (`accordion.focus` etc.), so the broker
+/// write that fires the focus-change re-render is the same write
+/// existing code emits — no new authoring convention needed.
+pub fn cursor_path() -> Path {
+    oxpath!("ui", "settings", "focused")
+}
+
+/// Broker path the event loop writes a `KeyChord` to to drive
+/// settings-screen dispatch. The horns `KeyDispatchSubscription`
+/// installed by [`install`] watches `<input_path>/key` and reacts.
+pub fn input_path() -> Path {
+    oxpath!("ui", "_horns", "settings", "input")
+}
+
+/// Broker path the horns render pipeline writes its serialized
+/// `View` to. The event loop reads this on every frame and composes
+/// it into the overall TUI frame in `tui::draw`.
+pub fn render_output_path() -> Path {
+    oxpath!("ui", "_horns", "settings", "render", "output")
+}
+
+/// Broker path the dispatcher bumps to wake the render subscription.
+/// Also bumped on initial install so the subscription fires at least
+/// once and produces a View for the first frame.
+pub fn render_tick_path() -> Path {
+    oxpath!("ui", "_horns", "settings", "render", "tick")
+}
+
+/// Path the install writes the (JSON-encoded) theme to. Writes here
+/// trigger `ThemeChangeSubscription`, which bumps render-tick.
+pub fn theme_path() -> Path {
+    oxpath!("ui", "theme")
+}
+
+/// Handle returned from [`install`]. Holds the subscription ids the
+/// broker registered — useful for future tear-down / re-install
+/// semantics. Keeping the handle alive isn't strictly necessary on
+/// `BrokerStore` (subscriptions live in an `Arc<RwLock<...>>` inside
+/// the broker), but binding it to a variable in main makes the
+/// "settings is mounted" lifecycle explicit at the call site.
+pub struct SettingsHandle {
+    pub subscription_ids: Vec<SubscriptionId>,
+}
+
+/// Install the settings screen as a horns instance on `broker`.
+///
+/// Builds the three framework registries (commands, renderers,
+/// bindings + handlers) from the existing `register_*` entry points,
+/// wraps them in the install side-tables, and registers
+/// `KeyDispatchSubscription`, `RenderSubscription`, and
+/// `ThemeChangeSubscription` on the broker. The metadata writes
+/// (today: just the initial theme record) are applied before the
+/// subscriptions register.
+///
+/// After install, the event loop's settings-screen path becomes:
+///   1. Encode the crossterm key as a `KeyChord`.
+///   2. Write it to `input_path()/key`.
+///   3. `KeyDispatchSubscription` runs the matched command, emits its
+///      writes through the broker dispatcher, bumps `render_tick_path()`.
+///   4. `RenderSubscription` wakes on render-tick (or cursor) change,
+///      runs the matched renderer at the focused cursor, writes the
+///      serialized `View` to `render_output_path()`.
+///   5. The event loop reads the View from there and composes it into
+///      the overall ratatui frame in `tui::draw`.
+///
+/// `tui::draw` still owns the *physical* terminal — the subscription
+/// produces the View into the broker, the event loop pulls it out, no
+/// terminal-mutex contention. Theme changes funnel through the same
+/// tick-bump path so a future settings-driven theme switch
+/// automatically re-renders without bespoke wiring.
+pub async fn install(broker: &BrokerStore) -> Result<SettingsHandle, StoreError> {
+    // ---- 1. Build the three registries. ----
+    let mut bindings = BindingRegistry::new();
+    let mut commands = CommandRegistry::new();
+    let mut renderers = RendererRegistry::new();
+    crate::settings::bindings::register(&mut bindings);
+    crate::settings::commands::register_all(&mut commands);
+    crate::settings::renderers::register_all(&mut renderers);
+
+    // ---- 2. Theme: a placeholder record. ----
+    //
+    // `horns_ratatui::Theme` does not (yet) implement `Serialize`, and
+    // the framework's `RenderSubscription` passes `&()` to renderers
+    // anyway (Task 8 architectural deviation: theme is structurally
+    // wired through `RenderCtx::theme: &dyn Any` but the host can't
+    // get a typed handle out of the JSON value). The settings screen
+    // therefore still renders with `horns_ratatui::Theme::default()`
+    // applied by `tui::draw` against the View we read from the broker
+    // — the broker theme record exists only so
+    // `ThemeChangeSubscription` has a path to watch, and so a future
+    // typed-theme install option can drop in without re-wiring the
+    // call site. Until then: any non-null JSON record will do.
+    let theme_json = serde_json::json!({});
+
+    // ---- 3. Build the install bundle. ----
+    let paths = InstallPaths {
+        cursor_path: cursor_path(),
+        input_path: input_path(),
+        render_tick_path: render_tick_path(),
+        render_output_path: render_output_path(),
+        theme_path: theme_path(),
+    };
+    let bundle =
+        build_install_bundle_from_registries(bindings, commands, renderers, paths, theme_json);
+
+    // ---- 4. Apply metadata writes through the broker client. ----
+    let client = broker.client();
+    for (path, record) in &bundle.metadata_writes {
+        client.write(path, record.clone()).await?;
+    }
+
+    // ---- 5. Register subscriptions and collect their ids. ----
+    let subscription_ids: Vec<SubscriptionId> =
+        bundle.subscriptions.iter().map(|s| s.id().clone()).collect();
+    for sub in bundle.subscriptions {
+        broker.register_subscription(sub);
+    }
+
+    // ---- 6. Seed the render tick so the RenderSubscription fires
+    //         once with the current cursor and emits an initial View.
+    //         Without this, the very first frame the user opens
+    //         settings would have to wait on the first keystroke
+    //         before any View existed on the broker. We write `0` —
+    //         the dispatcher's tick-bump path uses `wrapping_add(1)`
+    //         and treats a missing-or-non-Integer record as `0`, so
+    //         this also seeds the type the dispatcher expects.
+    use structfs_core_store::{Record, Value};
+    client
+        .write(&render_tick_path(), Record::parsed(Value::Integer(0)))
+        .await?;
+
+    Ok(SettingsHandle { subscription_ids })
+}

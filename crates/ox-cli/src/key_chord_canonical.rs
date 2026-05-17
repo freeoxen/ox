@@ -2,8 +2,8 @@
 //!
 //! [`canonical_chords`] returns a hand-curated set of `KeyChord` values
 //! that the encoder/parser pipeline (`key_encode::encode_key` →
-//! `dispatch::parse_key_str`) and the binding-registry lookup are
-//! expected to handle. The set covers every `KeyCodeRepr` variant under
+//! `parse_key_str`) and the binding-registry lookup are expected to
+//! handle. The set covers every `KeyCodeRepr` variant under
 //! representative modifier subsets, plus a sample of common symbol/digit
 //! chars for breadth.
 //!
@@ -16,7 +16,6 @@
 //! set, add it here so the round-trip tests cover it.
 
 use ox_types::key_chord::KeyChord;
-#[cfg(test)]
 use ox_types::key_chord::KeyModifierSet;
 // `KeyCodeRepr` is referenced both by the always-compiled
 // `encode_keychord_to_str` (variant matching) and by the test-only
@@ -36,7 +35,7 @@ pub fn canonical_chords() -> Vec<KeyChord> {
 
     // ---- Capital letters A-Z: shift implied, plus ctrl+shift ----
     // Bindings register capital letters with `shift: true` (mirrors what
-    // the encoder/parser produces — see `dispatch::parse_key_str`).
+    // the encoder/parser produces — see `parse_key_str`).
     for c in 'A'..='Z' {
         out.push(with_mods(KeyCodeRepr::Char(c), shift()));
         out.push(with_mods(KeyCodeRepr::Char(c), ctrl_shift()));
@@ -173,6 +172,94 @@ pub fn encode_keychord_to_str(chord: &KeyChord) -> Option<String> {
     crate::key_encode::encode_key(mods, code)
 }
 
+/// Parse a wire-form key string back into a `KeyChord`.
+///
+/// Inverse of `crate::key_encode::encode_key`. The encoder is the
+/// source of truth for the wire shape; this parser tracks it.
+/// Returns `None` for any string the encoder would never produce
+/// (e.g. function keys F1..F12, which the encoder drops to `None`).
+///
+/// Conventions handled:
+/// - `"j"`, `"q"`, `"P"`, `"/"` etc. → bare `Char(c)` (uppercase
+///   ASCII letters also imply `shift: true`, mirroring the encoder).
+/// - `"Esc"`, `"Enter"`, `"Backspace"`, `"Tab"`, `"Up"`, `"Down"`,
+///   `"Left"`, `"Right"`, `"Delete"`, `"PageUp"`, `"PageDown"`,
+///   `"Home"`, `"End"`, `"Insert"`.
+/// - `"Shift+Tab"` → `BackTab` with `shift: true` (mirrors the encoder).
+/// - `"Ctrl+x"` → `Char('x')` with `ctrl: true`.
+/// - `"Ctrl+Enter"` → `Enter` with `ctrl: true`.
+pub fn parse_key_str(s: &str) -> Option<KeyChord> {
+    // Encoder convention: KeyCode::BackTab → "Shift+Tab" wire string.
+    // Bindings register KeyChord { shift: true, code: BackTab }, so we
+    // must produce that exact chord rather than Tab+shift.
+    if s == "Shift+Tab" {
+        return Some(KeyChord {
+            modifiers: KeyModifierSet {
+                shift: true,
+                ..KeyModifierSet::default()
+            },
+            code: KeyCodeRepr::BackTab,
+        });
+    }
+    if let Some(rest) = s.strip_prefix("Ctrl+") {
+        let mut chord = parse_key_str(rest)?;
+        chord.modifiers.ctrl = true;
+        return Some(chord);
+    }
+    if let Some(rest) = s.strip_prefix("Shift+") {
+        let mut chord = parse_key_str(rest)?;
+        chord.modifiers.shift = true;
+        return Some(chord);
+    }
+    if let Some(rest) = s.strip_prefix("Alt+") {
+        let mut chord = parse_key_str(rest)?;
+        chord.modifiers.alt = true;
+        return Some(chord);
+    }
+
+    let code = match s {
+        "Esc" => KeyCodeRepr::Esc,
+        "Enter" => KeyCodeRepr::Enter,
+        "Backspace" => KeyCodeRepr::Backspace,
+        "Tab" => KeyCodeRepr::Tab,
+        "Up" => KeyCodeRepr::Up,
+        "Down" => KeyCodeRepr::Down,
+        "Left" => KeyCodeRepr::Left,
+        "Right" => KeyCodeRepr::Right,
+        "Delete" => KeyCodeRepr::Delete,
+        "PageUp" => KeyCodeRepr::PageUp,
+        "PageDown" => KeyCodeRepr::PageDown,
+        "Home" => KeyCodeRepr::Home,
+        "End" => KeyCodeRepr::End,
+        "Insert" => KeyCodeRepr::Insert,
+        _ => {
+            let mut chars = s.chars();
+            let c = chars.next()?;
+            if chars.next().is_some() {
+                // Multi-char token we don't recognize.
+                return None;
+            }
+            // Uppercase ASCII letter on the wire reflects a Shift+letter
+            // chord (the encoder writes "P" for crossterm
+            // `Shift+KeyCode::Char('P')`). The settings bindings table
+            // registers capital letters with `shift: true`, so set the
+            // flag here.
+            let mut modifiers = KeyModifierSet::default();
+            if c.is_ascii_uppercase() {
+                modifiers.shift = true;
+            }
+            return Some(KeyChord {
+                modifiers,
+                code: KeyCodeRepr::Char(c),
+            });
+        }
+    };
+    Some(KeyChord {
+        modifiers: KeyModifierSet::default(),
+        code,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,5 +289,84 @@ mod tests {
                 "canonical set missing anchor {name} ({chord:?})"
             );
         }
+    }
+
+    // -------- parse_key_str unit tests ------------------------------------
+
+    #[test]
+    fn parse_bare_lowercase() {
+        let chord = parse_key_str("j").expect("parsed");
+        assert_eq!(chord.modifiers, KeyModifierSet::default());
+        assert!(matches!(chord.code, KeyCodeRepr::Char('j')));
+    }
+
+    #[test]
+    fn parse_bare_uppercase_implies_shift() {
+        let chord = parse_key_str("P").expect("parsed");
+        assert!(chord.modifiers.shift);
+        assert!(!chord.modifiers.ctrl);
+        assert!(matches!(chord.code, KeyCodeRepr::Char('P')));
+    }
+
+    #[test]
+    fn parse_esc() {
+        let chord = parse_key_str("Esc").expect("parsed");
+        assert!(matches!(chord.code, KeyCodeRepr::Esc));
+    }
+
+    #[test]
+    fn parse_ctrl_char() {
+        let chord = parse_key_str("Ctrl+s").expect("parsed");
+        assert!(chord.modifiers.ctrl);
+        assert!(matches!(chord.code, KeyCodeRepr::Char('s')));
+    }
+
+    #[test]
+    fn parse_unknown_returns_none() {
+        assert!(parse_key_str("F1").is_none());
+        assert!(parse_key_str("absolutelyNotAKey").is_none());
+    }
+
+    #[test]
+    fn parse_shift_tab_yields_back_tab() {
+        let chord = parse_key_str("Shift+Tab").expect("parsed");
+        assert!(chord.modifiers.shift);
+        assert!(!chord.modifiers.ctrl);
+        assert!(!chord.modifiers.alt);
+        assert!(matches!(chord.code, KeyCodeRepr::BackTab));
+    }
+
+    /// Property test: every `KeyChord` in the canonical set must round-trip
+    /// through `encode_keychord_to_str` → `parse_key_str`.
+    #[test]
+    fn keychord_encode_parse_roundtrip() {
+        let mut failures: Vec<String> = Vec::new();
+        let mut roundtripped = 0usize;
+        let mut encoder_skipped = 0usize;
+        for chord in canonical_chords() {
+            let Some(wire) = encode_keychord_to_str(&chord) else {
+                encoder_skipped += 1;
+                continue;
+            };
+            match parse_key_str(&wire) {
+                Some(parsed) if parsed == chord => roundtripped += 1,
+                Some(parsed) => failures.push(format!(
+                    "{chord:?} encoded to {wire:?}, parsed back as {parsed:?} (mismatch)"
+                )),
+                None => failures.push(format!(
+                    "{chord:?} encoded to {wire:?}, parser returned None"
+                )),
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "round-trip failures ({} encoder gaps tolerated):\n{}",
+            encoder_skipped,
+            failures.join("\n"),
+        );
+        assert!(
+            roundtripped >= 100,
+            "expected ≥100 round-trip-clean chords; got {roundtripped} (encoder skipped {encoder_skipped})"
+        );
     }
 }

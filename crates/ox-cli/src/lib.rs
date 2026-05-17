@@ -28,6 +28,12 @@ pub(crate) mod clash_sandbox;
 pub(crate) mod commit_drain;
 pub(crate) mod config;
 pub(crate) mod dialogs;
+/// Test-only key-dispatch shim. Kept on the library surface so the
+/// settings_e2e integration test (which runs against `ox_cli::…`) can
+/// drive bindings synchronously without standing up the broker
+/// `KeyDispatchSubscription` pipeline. Production callers (in
+/// `event_loop.rs`) talk to the broker directly; nothing in `main.rs`
+/// reaches into this module.
 pub mod dispatch;
 pub(crate) mod editor;
 pub(crate) mod event_loop;

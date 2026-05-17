@@ -119,6 +119,19 @@ pub(crate) struct SideTables {
     pub renderers: RendererRegistry,
 }
 
+/// Paths the install pipeline threads through into the three
+/// subscriptions. Separated from `InstallOptions` so the
+/// "pre-built registries" path can share it without dragging in
+/// the by-id maps `InstallOptions` collects for introspection.
+#[derive(Clone)]
+pub struct InstallPaths {
+    pub cursor_path: Path,
+    pub input_path: Path,
+    pub render_tick_path: Path,
+    pub render_output_path: Path,
+    pub theme_path: Path,
+}
+
 /// Build the install bundle from options. Pure (no broker interaction);
 /// the host applies the returned writes and registers the returned
 /// subscriptions.
@@ -208,43 +221,96 @@ pub fn build_install_bundle(opts: InstallOptions) -> InstallBundle {
     ));
 
     // ---- 3. Build the three subscriptions. ----
-    let key_path = path_join(&opts.input_path, "key");
-
-    let key_dispatch = Arc::new(KeyDispatchSubscription {
-        id: SubscriptionId("horns.key_dispatch".to_string()),
-        watches: vec![PathPattern::Exact(key_path.clone())],
-        side_tables: side_tables.clone(),
-        dispatcher: Dispatcher::new(opts.cursor_path.clone()),
-        render_tick_path: opts.render_tick_path.clone(),
-    });
-
-    let render_sub = Arc::new(RenderSubscription {
-        id: SubscriptionId("horns.render".to_string()),
-        watches: vec![
-            PathPattern::Exact(opts.render_tick_path.clone()),
-            PathPattern::Exact(opts.cursor_path.clone()),
-        ],
-        side_tables: side_tables.clone(),
-        cursor_path: opts.cursor_path.clone(),
-        render_output_path: opts.render_output_path.clone(),
-    });
-
-    let theme_sub = Arc::new(ThemeChangeSubscription {
-        id: SubscriptionId("horns.theme_change".to_string()),
-        watches: vec![PathPattern::Exact(opts.theme_path.clone())],
-        render_tick_path: opts.render_tick_path.clone(),
-    });
-
-    let subscriptions: Vec<Arc<dyn Subscription>> = vec![
-        key_dispatch as Arc<dyn Subscription>,
-        render_sub as Arc<dyn Subscription>,
-        theme_sub as Arc<dyn Subscription>,
-    ];
+    let subscriptions = build_subscriptions(
+        side_tables,
+        InstallPaths {
+            cursor_path: opts.cursor_path,
+            input_path: opts.input_path,
+            render_tick_path: opts.render_tick_path,
+            render_output_path: opts.render_output_path,
+            theme_path: opts.theme_path,
+        },
+    );
 
     InstallBundle {
         subscriptions,
         metadata_writes,
     }
+}
+
+/// Build the install bundle from pre-populated registries. The legacy
+/// `build_install_bundle` rebuilds registries from the by-id maps in
+/// `InstallOptions` to also emit `<bindings_prefix>/<id>` introspection
+/// writes; hosts whose registration helpers don't carry per-entry ids
+/// can construct the registries directly and skip the binding /
+/// command / renderer metadata writes. The theme record is still
+/// written so `ThemeChangeSubscription` has something to read on its
+/// first fire.
+pub fn build_install_bundle_from_registries(
+    bindings: BindingRegistry,
+    commands: CommandRegistry,
+    renderers: RendererRegistry,
+    paths: InstallPaths,
+    theme: serde_json::Value,
+) -> InstallBundle {
+    let side_tables = Arc::new(RwLock::new(SideTables {
+        bindings,
+        commands,
+        renderers,
+    }));
+
+    let metadata_writes = vec![(
+        paths.theme_path.clone(),
+        Record::parsed(json_to_value(theme)),
+    )];
+
+    let subscriptions = build_subscriptions(side_tables, paths);
+
+    InstallBundle {
+        subscriptions,
+        metadata_writes,
+    }
+}
+
+/// Construct the three runtime subscriptions (KeyDispatch + Render +
+/// ThemeChange) over a populated `SideTables`. Shared by both
+/// `build_install_bundle` and `build_install_bundle_from_registries`.
+fn build_subscriptions(
+    side_tables: Arc<RwLock<SideTables>>,
+    paths: InstallPaths,
+) -> Vec<Arc<dyn Subscription>> {
+    let key_path = path_join(&paths.input_path, "key");
+
+    let key_dispatch = Arc::new(KeyDispatchSubscription {
+        id: SubscriptionId("horns.key_dispatch".to_string()),
+        watches: vec![PathPattern::Exact(key_path.clone())],
+        side_tables: side_tables.clone(),
+        dispatcher: Dispatcher::new(paths.cursor_path.clone()),
+        render_tick_path: paths.render_tick_path.clone(),
+    });
+
+    let render_sub = Arc::new(RenderSubscription {
+        id: SubscriptionId("horns.render".to_string()),
+        watches: vec![
+            PathPattern::Exact(paths.render_tick_path.clone()),
+            PathPattern::Exact(paths.cursor_path.clone()),
+        ],
+        side_tables: side_tables.clone(),
+        cursor_path: paths.cursor_path.clone(),
+        render_output_path: paths.render_output_path.clone(),
+    });
+
+    let theme_sub = Arc::new(ThemeChangeSubscription {
+        id: SubscriptionId("horns.theme_change".to_string()),
+        watches: vec![PathPattern::Exact(paths.theme_path.clone())],
+        render_tick_path: paths.render_tick_path.clone(),
+    });
+
+    vec![
+        key_dispatch as Arc<dyn Subscription>,
+        render_sub as Arc<dyn Subscription>,
+        theme_sub as Arc<dyn Subscription>,
+    ]
 }
 
 // ---------------------------------------------------------------------------
