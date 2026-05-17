@@ -5,7 +5,6 @@
 //! - `commands`             — Command impls.
 //! - `bindings`             — BindingRegistry registration.
 //! - `bootstrap`            — boot-time registration entry point.
-//! - `dispatch`             — settings-screen dispatcher wiring.
 //! - `help`                 — key-hint projection.
 //! - `snapshot`             — pre-render snapshot builder.
 //! - `visible_rows`         — visible-row projection.
