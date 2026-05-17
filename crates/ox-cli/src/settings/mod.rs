@@ -56,6 +56,14 @@ pub fn input_key_path() -> Path {
     oxpath!("ui", "_horns", "settings", "input", "key")
 }
 
+/// The exact broker path the event loop writes the terminal `Rect` to.
+/// Writes here trigger `RenderSubscription` to re-render with the new
+/// size, so the host writes this on startup and on every terminal
+/// resize.
+pub fn input_area_path() -> Path {
+    oxpath!("ui", "_horns", "settings", "input", "area")
+}
+
 /// Broker path the horns render pipeline writes its serialized
 /// `View` to. The event loop reads this on every frame and composes
 /// it into the overall TUI frame in `tui::draw`.

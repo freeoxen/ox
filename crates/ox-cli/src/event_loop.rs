@@ -3,7 +3,6 @@ use crate::editor::flush_pending_edits;
 use crate::settings::BindingRegistry;
 use crate::settings::CommandRegistry;
 use crate::settings::commands::navigation::path_from_value;
-use crate::settings::{RenderCtx, RendererRegistry};
 use crate::settings::snapshot::{SettingsSnapshot, fetch_settings_view_state};
 use horns_ratatui::Theme;
 use crate::thread_shell::{ThreadShell, dispatch_global_mouse};
@@ -148,20 +147,17 @@ pub async fn run_async(
             .ok();
     }
 
-    // Settings registries: built once at startup, reused every frame
-    // for the inline render path in `tui::draw`. A second copy lives
-    // inside the horns side-tables that `settings::install` registers
-    // on the broker — that copy services key dispatch and the
-    // subscription-driven render-output write. Holding a duplicate
-    // here is acceptable: registry construction is cheap and the
-    // inline render is the source of truth for the visible frame.
-    // (The broker render output is written but not yet read by
-    // `tui::draw` — a follow-up will swap the inline render for a
-    // read from `render_output_path()`, retiring this duplicate.)
-    let mut settings_renderers = RendererRegistry::new();
+    // Settings bindings + commands: built once at startup and used by
+    // `settings::help::key_hints_for_context` to compute the help row
+    // for the settings screen. The renderer registry lives inside the
+    // horns side-tables (registered by `settings::install`); the View
+    // it emits is read from the broker per-frame below — no local
+    // RendererRegistry construction. Phase B retires the duplicate
+    // bindings + commands construction once `key_hints_for_context`
+    // can read the same data from the broker's `<bindings_prefix>` /
+    // `<commands_prefix>` subtrees.
     let mut settings_commands = CommandRegistry::new();
     let mut settings_bindings = BindingRegistry::new();
-    crate::settings::renderers::register_all(&mut settings_renderers);
     crate::settings::commands::register_all(&mut settings_commands);
     crate::settings::bindings::register(&mut settings_bindings);
 
@@ -248,41 +244,51 @@ pub async fn run_async(
             // Prepare TextInputView from InputSession
             thread.prepare_view();
 
-            // Settings: pre-build the View from a fresh snapshot. The
-            // snapshot is consumed once for rendering here. The dispatch
-            // path below builds its own snapshot per keypress so reads
-            // there see writes that landed since the frame began. This
-            // is the heart of the registry pipeline (snapshot fetch →
-            // cursor read → renderer render → translator draw).
+            // Settings: the View comes from the broker. The
+            // `RenderSubscription` installed by `settings::install`
+            // walks the renderer at the focused cursor on every
+            // render-tick / area / cursor change and writes the
+            // serialized View to `<render_output_path>`. The event
+            // loop's job is to (a) keep the broker's area record in
+            // sync with the terminal size and (b) pull the latest View
+            // out for `tui::draw` to compose.
             let mut settings_view: Option<View> = None;
             if matches!(&vs.ui.screen, ScreenSnapshot::Settings(_)) {
+                let area = terminal.get_frame().area();
+                let area_rect = horns_core::Rect::new(area.x, area.y, area.width, area.height);
+                // Writing area kicks `RenderSubscription` if it's stale;
+                // ignore failure (subscription will catch up on the
+                // next render-tick).
+                let _ = client
+                    .write_typed(&crate::settings::input_area_path(), &area_rect)
+                    .await;
+
+                // key_hints — temporary: still computed locally from
+                // the duplicate registries. Phase B retires this in
+                // favor of a broker-side projection.
                 let mut snap = fetch_settings_view_state(client).await;
                 let cursor =
                     read_settings_cursor(&mut snap).unwrap_or_else(|| oxpath!("settings", "index"));
                 let focused = read_settings_focused(&mut snap);
-                // Override `key_hints` with the projection from the new
-                // settings registries. Threading the focused row in
-                // lets the modal surface per-row Prefix bindings
-                // (h/l/t/r/...) and edit-mode bindings — the legacy
-                // single-cursor lookup missed both. Edit mode no
-                // longer needs a separate flag: the focused cursor
-                // moves to `settings/_edit` and is covered by the
-                // focused-row pass.
                 vs.key_hints = crate::settings::help::key_hints_for_context(
                     &settings_bindings,
                     &settings_commands,
                     &cursor,
                     focused.as_ref(),
                 );
-                let area = terminal.get_frame().area();
-                let area = horns_core::Rect::new(area.x, area.y, area.width, area.height);
-                let mut ctx = RenderCtx {
-                    area,
-                    data: &mut snap,
-                    registry: &settings_renderers,
-                    theme: theme as &dyn std::any::Any,
-                };
-                settings_view = Some(settings_renderers.render(&cursor, &mut ctx));
+
+                // Read the View the RenderSubscription wrote. Decode
+                // it from the path-stored JSON. On any failure (no
+                // record yet, decode error) we hand `None` to
+                // `tui::draw`, which falls back to a "registry not
+                // populated" placeholder.
+                settings_view = client
+                    .read(&crate::settings::render_output_path())
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|r| r.as_value().cloned())
+                    .and_then(|v| structfs_serde_store::from_value::<View>(v).ok());
             }
 
             // Draw

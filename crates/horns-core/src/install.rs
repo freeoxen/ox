@@ -280,6 +280,7 @@ fn build_subscriptions(
     paths: InstallPaths,
 ) -> Vec<Arc<dyn Subscription>> {
     let key_path = path_join(&paths.input_path, "key");
+    let area_path = path_join(&paths.input_path, "area");
 
     let key_dispatch = Arc::new(KeyDispatchSubscription {
         id: SubscriptionId("horns.key_dispatch".to_string()),
@@ -294,9 +295,11 @@ fn build_subscriptions(
         watches: vec![
             PathPattern::Exact(paths.render_tick_path.clone()),
             PathPattern::Exact(paths.cursor_path.clone()),
+            PathPattern::Exact(area_path.clone()),
         ],
         side_tables: side_tables.clone(),
         cursor_path: paths.cursor_path.clone(),
+        area_path,
         render_output_path: paths.render_output_path.clone(),
     });
 
@@ -394,6 +397,7 @@ struct RenderSubscription {
     watches: Vec<PathPattern>,
     side_tables: Arc<RwLock<SideTables>>,
     cursor_path: Path,
+    area_path: Path,
     render_output_path: Path,
 }
 
@@ -413,10 +417,23 @@ impl Subscription for RenderSubscription {
             None => return Vec::new(),
         };
 
+        // Read the current area. Default to a sensible 80x24 if the host
+        // hasn't written one yet — the first render fires at install time
+        // before the event loop has had a chance to seed the terminal
+        // size, and the first frame after that gets the real size.
+        let area = ctx
+            .snapshot
+            .read(&self.area_path)
+            .ok()
+            .flatten()
+            .and_then(|r| r.as_value().cloned())
+            .and_then(|v| structfs_serde_store::from_value::<crate::render::Rect>(v).ok())
+            .unwrap_or_else(|| crate::render::Rect::new(0, 0, 80, 24));
+
         let tables = self.side_tables.read().expect("side tables poisoned");
         let theme: () = ();
         let mut ctx_render = crate::render::RenderCtx {
-            area: crate::render::Rect::new(0, 0, 80, 24),
+            area,
             data: ctx.snapshot,
             registry: &tables.renderers,
             theme: &theme as &dyn std::any::Any,
