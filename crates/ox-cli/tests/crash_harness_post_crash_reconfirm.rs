@@ -387,7 +387,7 @@ async fn reconfirm_skip_writes_synthetic_tool_result_counter_stays_one() {
     };
     assert_eq!(
         tr_str,
-        ox_cli::test_theme_exports::POST_CRASH_SKIP_CONTENT,
+        ox_cli::test_shell_copy_exports::POST_CRASH_SKIP_CONTENT,
         "Skip-path ToolResult content must match `POST_CRASH_SKIP_CONTENT` \
          verbatim — changing this is a plan amendment",
     );

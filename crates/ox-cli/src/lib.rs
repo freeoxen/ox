@@ -48,18 +48,18 @@ pub(crate) mod policy_check;
 pub(crate) mod session;
 pub mod settings;
 pub(crate) mod shell;
-pub(crate) mod simple_input;
 pub(crate) mod shell_copy;
+pub(crate) mod simple_input;
 pub(crate) mod tab_bar;
 pub(crate) mod text_input_view;
 
 /// Re-export of the post-crash Skip synthetic-`ToolResult` content string
-/// used by Task 3d Step 6b's E2E test. The integration test lives outside
+/// used by the crash-harness E2E test. The integration test lives outside
 /// the crate and cannot reach `pub(crate) mod shell_copy` directly; this
 /// re-export keeps the module's own visibility narrow while exposing the
 /// one symbol the test contract pins. See
 /// `crates/ox-cli/tests/crash_harness_post_crash_reconfirm.rs`.
-pub mod test_theme_exports {
+pub mod test_shell_copy_exports {
     pub use crate::shell_copy::POST_CRASH_SKIP_CONTENT;
 }
 

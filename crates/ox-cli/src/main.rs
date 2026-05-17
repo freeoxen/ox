@@ -30,12 +30,12 @@ mod session;
 #[allow(dead_code)]
 mod settings;
 mod shell;
+mod shell_copy;
 mod simple_input;
 mod tab_bar;
 #[allow(dead_code)]
 mod test_support;
 mod text_input_view;
-mod shell_copy;
 pub(crate) mod thread_registry;
 mod thread_shell;
 mod thread_view;
