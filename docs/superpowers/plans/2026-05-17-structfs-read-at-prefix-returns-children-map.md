@@ -8,7 +8,44 @@
 
 **Tech Stack:** Rust 2024, structfs (unchanged), `ox-store-util::LocalConfig`, `ox-ui::ConfigStore`, `ox-ui::UiStore`, `ox-broker`, `horns-core`, `horns-ratatui`, `ox-cli`.
 
-**Reference design:** Discussion captured in this session under `/jevan` — substrate enumeration via path convention (no method/trait additions).
+**Reference design documents:**
+- Original extraction spec: `docs/superpowers/specs/2026-05-15-horns-ui-toolkit-extraction-design.md` — the S-tier vision (horns as broker mount; subscriptions own the runtime; path-MVU substrate; everything is a write or a read).
+- Original implementation plan: `docs/superpowers/plans/2026-05-15-horns-ui-toolkit-extraction.md` — the 13-task extraction whose phases 1–12 already landed.
+- Framework docs: `crates/horns/docs/{ui_framework.md, architecture.md, howto.md, reference.md}` — the framework's own README + architecture sections including "Mount, not library", "Recursive composability", "Opaque handlers vs introspectable bindings".
+
+---
+
+## Where we are (context for cold-start executors)
+
+This plan is a follow-up to the horns extraction. The extraction's tasks 1–12 already landed (commits `fc895ab` through ≈`1418e7d`). At this point:
+
+**What exists in the codebase:**
+- Three horns crates: `horns-core`, `horns-ratatui`, `horns` (umbrella).
+- `settings::install(&broker)` at `crates/ox-cli/src/settings/mod.rs` registers `KeyDispatchSubscription`, `RenderSubscription`, `ThemeChangeSubscription` on the broker. Writes binding/command/handler metadata to broker paths under `horns/settings/...`. Seeds the render-tick.
+- `horns_ratatui::install(&broker, RatatuiOptions)` at `crates/horns-ratatui/src/install.rs` registers a `ViewRenderSubscription` that locks an `Arc<Mutex<DefaultTerminal>>` and draws whenever a serialized `View` is written to `<view_input_path>`.
+- A top-level state machine in `crates/ox-cli/src/main.rs` with `AppState::{Legacy, Horns, Quit}`. The terminal moves between states via `Option<DefaultTerminal>::take()`.
+- `crates/ox-cli/src/event_loop.rs::run_async` is the legacy loop. It returns `LegacyExit::ToHorns` when it sees `Screen::Settings`. The caller (main) then enters the horns loop.
+- `crates/ox-cli/src/horns_loop.rs::run_horns_settings_loop` is the horns-side loop. **Currently it does inline `Dispatcher::dispatch` and inline `renderers.render` against a freshly-fetched `SettingsSnapshot` every iteration.** This is the workaround this plan removes.
+
+**What the substrate problem is:**
+The framework's `KeyDispatchSubscription` and `RenderSubscription` receive a broker `Reader` (the `SubCtx::snapshot`). Settings renderers and commands use helpers like `child_names_under(reader, prefix)` and `visible_rows::focus_enumeration(reader)` that need to enumerate children at a path. The broker reader doesn't support that today — `read(empty)` doesn't return a flat `Value::Map` of all keys. So when the broker calls into the subscription, the renderer/command sees zero rows.
+
+`SettingsSnapshot` (the legacy snapshot, a `LocalConfig` populated via async `read_subtree`) DOES present a flat Map because `LocalConfig::read(empty)` returns the inner Map verbatim. That's why `horns_loop` falls back to inline + `SettingsSnapshot`. The S-tier fix is to generalize *that same convention* — read-at-non-leaf-returns-immediate-children — to every store horns reads through.
+
+**Tests that should keep passing throughout:**
+- `crates/ox-cli/tests/settings_e2e.rs` — legacy dispatch path tests. They drive via `ox_cli::dispatch::send_key` (the test shim). These don't go through the broker subscriptions; they exercise the dispatcher directly. Should remain green.
+- `crates/ox-cli/tests/horns_settings_render.rs` — single test verifying the broker render pipeline produces a non-empty `View`. Should remain green.
+- `crates/ox-cli/tests/horns_settings_ui.rs` — 10 UI behavior tests (j/k navigation, accordion open/close, compose form, typing, Esc cancel, Esc on index). Currently driven via inline `Dispatcher::dispatch` in the test helper `press_chord`. Task 6 of this plan swaps that to broker writes; assertions stay the same.
+
+**Architectural principles to preserve (don't "fix" these — they're load-bearing):**
+
+1. **Structfs is a tree of nested Maps with typed leaves.** A path's value is *either* a leaf or a `Value::Map` of immediate children — never both. There is no "leaf vs prefix tie-breaker"; the conflict can't exist in well-formed data. The plan's read-implementation surfaces malformed states as errors, but does not paper over them.
+
+2. **Cursor-as-focus is one cursor, not two.** `ui/settings/focused` is the single source of truth for what's focused. The dispatcher reads it; the renderer derives the "page" from its ancestor chain. Don't reintroduce a separate `ui/settings/cursor` page cursor — the legacy two-cursor design was retired by the extraction.
+
+3. **Horns is a broker mount.** After this plan lands, the host loop has no `Dispatcher::dispatch` call, no `renderer.render` call, no inline snapshot read. Inputs are writes; dispatch + render happen in subscriptions. The horns loop is a state-machine input poller.
+
+4. **No structfs trait changes.** The Reader trait stays as it is. Enumeration is achieved by the convention on `read(path)` — the Path *is* the API.
 
 ---
 
