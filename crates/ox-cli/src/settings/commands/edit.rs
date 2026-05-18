@@ -907,12 +907,8 @@ mod tests {
         );
         let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
         snap.insert(
-            &oxpath!("config", "gate", "accounts", comp.clone()),
-            to_value(&AccountConfig {
-                provider: "alpha".into(),
-                ..Default::default()
-            })
-            .unwrap(),
+            &oxpath!("config", "gate", "accounts", comp.clone(), "provider"),
+            Value::String("alpha".into()),
         );
         snap.insert(
             &oxpath!("config", "gate", "accounts", comp, "models"),

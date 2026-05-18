@@ -279,14 +279,17 @@ async fn populate_index(h: &E2eHarness) {
 /// Pre-populate `config/gate/accounts/{name}`, `config/gate/providers/{name}`,
 /// and `secret/keys/{name}` so the subscriptions see a complete account
 /// when handling test/refresh/delete triggers.
+///
+/// Convention requires every path be either a leaf or a children-Map,
+/// never both. Account fields are written as separate leaves under the
+/// account-name path so the parent resolves to a children-Map; that lets
+/// `write_models_for_account` later add a sibling `models` child without
+/// colliding with a parent-Map leaf at the same path.
 async fn populate_account(h: &E2eHarness, name: &str, key: &str) {
     let comp = ox_kernel::PathComponent::try_new(name).unwrap();
     h.write_typed(
-        &oxpath!("config", "gate", "accounts", comp.clone()),
-        &AccountConfig {
-            provider: name.to_string(),
-            ..Default::default()
-        },
+        &oxpath!("config", "gate", "accounts", comp.clone(), "provider"),
+        &name.to_string(),
     )
     .await;
     h.write_typed(

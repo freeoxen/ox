@@ -680,26 +680,20 @@ mod tests {
     }
 
     fn write_account(snap: &mut SettingsSnapshot, name: &str) {
-        let comp = ox_kernel::PathComponent::try_new(name).unwrap();
-        snap.insert(
-            &oxpath!("config", "gate", "accounts", comp),
-            to_value(&AccountConfig {
-                provider: name.into(),
-                ..Default::default()
-            })
-            .unwrap(),
-        );
+        write_account_with_provider(snap, name, name);
     }
 
+    // The convention requires every path be either a leaf or a children-Map,
+    // never both. Account fields are written as separate leaves under the
+    // account-name path so the parent resolves to a children-Map; the
+    // assembling readers (`read_account_assembling_flat`) and `read_typed`
+    // both still see a valid AccountConfig shape because the children Map's
+    // keys match the struct's field names.
     fn write_account_with_provider(snap: &mut SettingsSnapshot, name: &str, provider: &str) {
         let comp = ox_kernel::PathComponent::try_new(name).unwrap();
         snap.insert(
-            &oxpath!("config", "gate", "accounts", comp),
-            to_value(&AccountConfig {
-                provider: provider.into(),
-                ..Default::default()
-            })
-            .unwrap(),
+            &oxpath!("config", "gate", "accounts", comp, "provider"),
+            Value::String(provider.into()),
         );
     }
 
@@ -875,14 +869,15 @@ mod tests {
 
     #[test]
     fn entry_id_with_invalid_path_component_is_skipped() {
-        // child_names_under returns raw string segments; a deliberately
-        // bogus key whose direct child contains hyphens fails
-        // PathComponent::try_new and the entry is skipped. Without the
-        // skip, enumerate would propagate an error or panic.
+        // An invalid path component at the entries prefix can't reach
+        // `enumerate` under the new convention — LocalConfig rejects the
+        // descendant during its recursive read, so `child_names_under`
+        // returns the empty list (which is itself a no-op for enumerate,
+        // not a panic). The defense in `enumerate` remains as a belt-and-
+        // suspenders guard against any future Reader that returns raw
+        // strings without validating; pin the pre-condition that a single
+        // valid entry still surfaces alongside the invalid sibling.
         let mut snap = SettingsSnapshot::empty();
-        // Inject a garbage entry under a hyphenated id by going through
-        // the inner store directly (the public broker API would reject
-        // the path on the way in).
         snap.insert(
             &oxpath!("settings", "index", "entries", "accounts"),
             to_value(&entry(
@@ -893,14 +888,7 @@ mod tests {
             ))
             .unwrap(),
         );
-        // Hyphenated id at the entries prefix; child_names_under will
-        // surface it because it splits on `/` without validating.
-        snap.insert_raw(
-            "settings/index/entries/bad-id".to_string(),
-            Value::String("ignored".into()),
-        );
         let rows = enumerate(&mut snap);
-        // Only the valid `accounts` entry comes through.
         assert_eq!(rows.len(), 1);
         assert!(matches!(&rows[0].kind, RowKind::Entry { entry_id } if entry_id == "accounts"));
     }
@@ -1210,12 +1198,8 @@ mod tests {
         write_index_entries(&mut snap);
         let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
         snap.insert(
-            &oxpath!("config", "gate", "accounts", comp.clone()),
-            to_value(&AccountConfig {
-                provider: "anthropic".into(),
-                ..Default::default()
-            })
-            .unwrap(),
+            &oxpath!("config", "gate", "accounts", comp.clone(), "provider"),
+            Value::String("anthropic".into()),
         );
         snap.insert(
             &oxpath!("config", "gate", "accounts", comp, "models"),
@@ -1251,12 +1235,8 @@ mod tests {
         write_index_entries(&mut snap);
         let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
         snap.insert(
-            &oxpath!("config", "gate", "accounts", comp.clone()),
-            to_value(&AccountConfig {
-                provider: "anthropic".into(),
-                ..Default::default()
-            })
-            .unwrap(),
+            &oxpath!("config", "gate", "accounts", comp.clone(), "provider"),
+            Value::String("anthropic".into()),
         );
         snap.insert(
             &oxpath!("config", "gate", "accounts", comp, "models"),

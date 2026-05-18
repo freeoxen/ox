@@ -294,7 +294,7 @@ pub fn register(reg: &mut CommandRegistry) {
 mod tests {
     use super::*;
 
-    use ox_gate::{AccountConfig, ModelInfo, ModelInfoSource};
+    use ox_gate::{ModelInfo, ModelInfoSource};
     use ox_types::{BadgeSource, SettingsIndexEntry};
     use structfs_serde_store::to_value;
 
@@ -332,15 +332,15 @@ mod tests {
         );
     }
 
+    // Convention requires every path be either a leaf or a children-Map,
+    // never both. Account fields are written as separate leaves under the
+    // account-name path so the parent resolves to a children-Map; reading
+    // the parent still yields a Map deserializable as AccountConfig.
     fn write_account(snap: &mut SettingsSnapshot, name: &str) {
         let comp = ox_kernel::PathComponent::try_new(name).unwrap();
         snap.insert(
-            &oxpath!("config", "gate", "accounts", comp),
-            to_value(&AccountConfig {
-                provider: name.into(),
-                ..Default::default()
-            })
-            .unwrap(),
+            &oxpath!("config", "gate", "accounts", comp, "provider"),
+            Value::String(name.into()),
         );
     }
 

@@ -37,14 +37,6 @@ impl SettingsSnapshot {
         self.inner.set(&path.to_string(), value);
     }
 
-    /// Insert at an unvalidated raw key. Lets tests reproduce the
-    /// "snapshot has a key whose path component fails UAX#31" defensive
-    /// branch that the public `insert` (which routes through `Path`)
-    /// can't construct.
-    #[cfg(test)]
-    pub(crate) fn insert_raw(&mut self, key: String, value: Value) {
-        self.inner.set(&key, value);
-    }
 }
 
 impl Default for SettingsSnapshot {

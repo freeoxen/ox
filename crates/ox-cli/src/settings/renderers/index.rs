@@ -860,15 +860,15 @@ mod tests {
         );
     }
 
+    // Convention requires every path be either a leaf or a children-Map,
+    // never both. Account fields are written as separate leaves under the
+    // account-name path so the parent resolves to a children-Map; reading
+    // the parent still yields a Map deserializable as AccountConfig.
     fn write_account(snap: &mut SettingsSnapshot, name: &str) {
         let comp = ox_kernel::PathComponent::try_new(name).unwrap();
         snap.insert(
-            &oxpath!("config", "gate", "accounts", comp),
-            to_value(&AccountConfig {
-                provider: name.into(),
-                ..Default::default()
-            })
-            .unwrap(),
+            &oxpath!("config", "gate", "accounts", comp, "provider"),
+            Value::String(name.into()),
         );
     }
 
@@ -1147,12 +1147,8 @@ mod tests {
         use ox_types::ModelInfoSource;
         let comp = ox_kernel::PathComponent::try_new(name).unwrap();
         snap.insert(
-            &oxpath!("config", "gate", "accounts", comp.clone()),
-            to_value(&AccountConfig {
-                provider: name.into(),
-                ..Default::default()
-            })
-            .unwrap(),
+            &oxpath!("config", "gate", "accounts", comp.clone(), "provider"),
+            Value::String(name.into()),
         );
         let models: Vec<ModelInfo> = ids
             .iter()

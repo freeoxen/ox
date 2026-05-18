@@ -31,41 +31,24 @@ pub(crate) fn read_typed<T: DeserializeOwned>(data: &mut dyn Reader, path: &Path
     }
 }
 
-/// Enumerate immediate children under `prefix` in the snapshot's flat-keyed
-/// store. Returns the *full* path of each direct child.
-///
-/// Implementation detail: the snapshot's underlying `LocalConfig` answers a
-/// read at the empty path with `Value::Map(...)` whose keys are flat
-/// path-strings. We filter by prefix and split off only the next path
-/// component to identify direct children.
-///
-/// Returns child names as `String`s in lexicographic order (BTreeMap iterates
-/// in key order; subsequent dedup preserves first-seen).
+/// Enumerate immediate children at `prefix` by reading the convention's
+/// children-Map directly. Returns names in lexicographic order (BTreeMap
+/// iteration). Returns `Vec::new()` for any non-Map read — missing path,
+/// leaf value, error.
 pub(crate) fn child_names_under(data: &mut dyn Reader, prefix_str: &str) -> Vec<String> {
-    let empty = Path::from_components(Vec::new());
-    let root = match data.read(&empty) {
+    let path = match Path::parse(prefix_str) {
+        Ok(p) => p,
+        Err(_) => return Vec::new(),
+    };
+    let record = match data.read(&path) {
         Ok(Some(rec)) => rec,
         _ => return Vec::new(),
     };
-    let map = match root.as_value() {
+    let map = match record.as_value() {
         Some(Value::Map(m)) => m,
         _ => return Vec::new(),
     };
-    let prefix = format!("{}/", prefix_str);
-    let mut seen: Vec<String> = Vec::new();
-    for key in map.keys() {
-        if let Some(rest) = key.strip_prefix(&prefix) {
-            // Take only the next segment.
-            let segment = match rest.split('/').next() {
-                Some(s) if !s.is_empty() => s.to_string(),
-                _ => continue,
-            };
-            if !seen.contains(&segment) {
-                seen.push(segment);
-            }
-        }
-    }
-    seen
+    map.keys().cloned().collect()
 }
 
 /// Count immediate children under `prefix`. Convenience over

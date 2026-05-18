@@ -3834,12 +3834,23 @@ mod tests {
             "first cycle must advance dialect from synthesized 'LMStudio' to 'anthropic'"
         );
 
-        // Apply the write into the snapshot the same way the broker would,
-        // then cycle again.
-        snap.insert(
-            &oxpath!("config", "gate", "providers", prov_comp.clone()),
-            writes_1[0].record.as_value().unwrap().clone(),
-        );
+        // Apply the write into the snapshot. Under the new convention a
+        // path is either a leaf OR a children-Map (never both), so the
+        // fixture mirrors what the broker's effective layer produces:
+        // expand the written Map into its flat sub-keys, replacing the
+        // prior values component-aligned. Without this expansion the
+        // existing flat sub-key leaves would coexist with a parent Map
+        // and read_in_effective would return the malformed-store error.
+        let pc_value = writes_1[0].record.as_value().unwrap().clone();
+        if let Value::Map(fields) = pc_value {
+            for (field, v) in fields {
+                let field_comp = ox_kernel::PathComponent::try_new(&field).unwrap();
+                snap.insert(
+                    &oxpath!("config", "gate", "providers", prov_comp.clone(), field_comp),
+                    v,
+                );
+            }
+        }
 
         // Second cycle — now read_typed::<ProviderConfig> finds the parent
         // Map (from the inserted runtime override). dialect is "anthropic".
@@ -4042,12 +4053,8 @@ mod tests {
         write_index_entries_for_manual(&mut snap);
         let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
         snap.insert(
-            &oxpath!("config", "gate", "accounts", comp.clone()),
-            to_value(&AccountConfig {
-                provider: "openai".into(),
-                ..Default::default()
-            })
-            .unwrap(),
+            &oxpath!("config", "gate", "accounts", comp.clone(), "provider"),
+            Value::String("openai".into()),
         );
         snap.insert(
             &oxpath!("config", "gate", "accounts", comp.clone(), "models"),
@@ -4111,12 +4118,8 @@ mod tests {
         write_index_entries_for_manual(&mut snap);
         let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
         snap.insert(
-            &oxpath!("config", "gate", "accounts", comp.clone()),
-            to_value(&AccountConfig {
-                provider: "openai".into(),
-                ..Default::default()
-            })
-            .unwrap(),
+            &oxpath!("config", "gate", "accounts", comp.clone(), "provider"),
+            Value::String("openai".into()),
         );
         snap.insert(
             &oxpath!("config", "gate", "accounts", comp.clone(), "models"),
@@ -4368,12 +4371,8 @@ mod tests {
         write_index_entries_for_manual(&mut snap);
         let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
         snap.insert(
-            &oxpath!("config", "gate", "accounts", comp.clone()),
-            to_value(&AccountConfig {
-                provider: "openai".into(),
-                ..Default::default()
-            })
-            .unwrap(),
+            &oxpath!("config", "gate", "accounts", comp.clone(), "provider"),
+            Value::String("openai".into()),
         );
         snap.insert(
             &oxpath!("config", "gate", "accounts", comp.clone(), "models"),
