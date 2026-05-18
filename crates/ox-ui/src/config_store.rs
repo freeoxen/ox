@@ -327,6 +327,46 @@ impl Writer for ConfigStore {
             return Ok(to.clone());
         }
 
+        // StructFS convention: a path is either a leaf or a Map of
+        // children — never both. A Map written at a parent path means
+        // "this is the full state under here". Flattening into leaves
+        // keeps the runtime in the same shape `save_runtime` produces
+        // on disk, so reads stay consistent: no parent-Map leaf
+        // coexisting with base flat sub-keys (which would trip the
+        // read-side malformed-store check). Sweeps stale runtime
+        // entries under the prefix (the new Map supersedes them) and
+        // tombstones base sub-keys absent from the new Map (the Map's
+        // intent is authoritative). The flatten then overwrites
+        // tombstones at keys the Map declares.
+        if matches!(value, Value::Map(_)) {
+            let descendant_prefix = format!("{}/", key);
+            let stale_runtime: Vec<String> = self
+                .runtime
+                .keys()
+                .filter(|k| **k == key || k.starts_with(&descendant_prefix))
+                .cloned()
+                .collect();
+            for k in stale_runtime {
+                self.runtime.remove(&k);
+            }
+            // Tombstone every base entry the new Map supersedes — both
+            // descendants (base sub-keys absent from the new Map stay
+            // hidden) and a base leaf at the exact path (a prior
+            // Map-shaped leaf is now superseded by the flattened
+            // sub-keys, otherwise it would coexist with them and trip
+            // the malformed-store read check).
+            if self.base.contains_key(&key) {
+                self.runtime.insert(key.clone(), Value::Null);
+            }
+            for base_key in self.base.keys() {
+                if base_key.starts_with(&descendant_prefix) {
+                    self.runtime.insert(base_key.clone(), Value::Null);
+                }
+            }
+            flatten_value_into(&key, &value, &mut self.runtime);
+            return Ok(to.clone());
+        }
+
         self.runtime.insert(key, value);
         Ok(to.clone())
     }
@@ -797,6 +837,127 @@ mod tests {
             record.as_value().unwrap(),
             &Value::String("from-disk".into())
         );
+    }
+
+    #[test]
+    fn write_map_at_parent_clears_base_sub_keys_not_in_map() {
+        // Writing a Value::Map at a parent path declares "this is the
+        // full picture under here" — base sub-keys absent from the new
+        // Map must be tombstoned, so reads don't see stale base leaves
+        // mixed in with the new Map's intent. And the parent itself
+        // must read as the Map view without colliding with surviving
+        // base sub-keys (no malformed leaf+children error).
+        let mut base = BTreeMap::new();
+        base.insert(
+            "gate/providers/lm/dialect".to_string(),
+            Value::String("openai".into()),
+        );
+        base.insert(
+            "gate/providers/lm/endpoint".to_string(),
+            Value::String("http://old".into()),
+        );
+        base.insert(
+            "gate/providers/lm/auth".to_string(),
+            Value::String("none".into()),
+        );
+        let mut store = ConfigStore::new(base);
+
+        let mut new_map = BTreeMap::new();
+        new_map.insert("dialect".to_string(), Value::String("x".into()));
+        new_map.insert("endpoint".to_string(), Value::String("y".into()));
+        store
+            .write(
+                &Path::parse("gate/providers/lm").unwrap(),
+                Record::parsed(Value::Map(new_map)),
+            )
+            .unwrap();
+
+        assert_eq!(read_val(&mut store, "gate/providers/lm/auth"), None);
+        assert_eq!(
+            read_val(&mut store, "gate/providers/lm/dialect"),
+            Some(Value::String("x".into()))
+        );
+        assert_eq!(
+            read_val(&mut store, "gate/providers/lm/endpoint"),
+            Some(Value::String("y".into()))
+        );
+        let parent = read_val(&mut store, "gate/providers/lm").expect("parent reads cleanly");
+        match parent {
+            Value::Map(m) => {
+                assert_eq!(m.get("dialect"), Some(&Value::String("x".into())));
+                assert_eq!(m.get("endpoint"), Some(&Value::String("y".into())));
+                assert!(!m.contains_key("auth"));
+            }
+            other => panic!("expected Map at parent; got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn write_map_at_parent_drops_stale_runtime_sub_keys() {
+        // A prior write left flat sub-keys in runtime. A subsequent
+        // Map write at the parent declares the new full state — stale
+        // runtime sub-keys must be cleared so the new Map fully
+        // describes what reads see.
+        let mut store = ConfigStore::new(BTreeMap::new());
+        store
+            .write(
+                &Path::parse("gate/providers/lm/dialect").unwrap(),
+                Record::parsed(Value::String("stale".into())),
+            )
+            .unwrap();
+        store
+            .write(
+                &Path::parse("gate/providers/lm/endpoint").unwrap(),
+                Record::parsed(Value::String("stale".into())),
+            )
+            .unwrap();
+
+        let mut new_map = BTreeMap::new();
+        new_map.insert("dialect".to_string(), Value::String("new".into()));
+        store
+            .write(
+                &Path::parse("gate/providers/lm").unwrap(),
+                Record::parsed(Value::Map(new_map)),
+            )
+            .unwrap();
+
+        assert_eq!(read_val(&mut store, "gate/providers/lm/endpoint"), None);
+        assert_eq!(
+            read_val(&mut store, "gate/providers/lm/dialect"),
+            Some(Value::String("new".into()))
+        );
+    }
+
+    #[test]
+    fn write_map_at_parent_supersedes_prior_leaf_at_same_path() {
+        // An earlier write put a leaf at the same path. The Map write
+        // supersedes it — the leaf must not coexist with the Map's
+        // children, or reads at the path return the malformed error.
+        let mut store = ConfigStore::new(BTreeMap::new());
+        store
+            .write(
+                &Path::parse("gate/providers/lm").unwrap(),
+                Record::parsed(Value::String("legacy-leaf".into())),
+            )
+            .unwrap();
+
+        let mut new_map = BTreeMap::new();
+        new_map.insert("dialect".to_string(), Value::String("x".into()));
+        store
+            .write(
+                &Path::parse("gate/providers/lm").unwrap(),
+                Record::parsed(Value::Map(new_map)),
+            )
+            .unwrap();
+
+        let parent = read_val(&mut store, "gate/providers/lm").expect("parent reads cleanly");
+        match parent {
+            Value::Map(m) => {
+                assert_eq!(m.get("dialect"), Some(&Value::String("x".into())));
+                assert_eq!(m.len(), 1);
+            }
+            other => panic!("expected Map view; got {other:?}"),
+        }
     }
 
     #[test]

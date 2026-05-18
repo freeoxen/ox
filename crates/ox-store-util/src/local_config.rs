@@ -135,8 +135,45 @@ impl Writer for LocalConfig {
             return Ok(to.clone());
         }
 
+        // StructFS convention: a path is either a leaf or a Map of
+        // children — never both. A Map at a parent path means "this is
+        // the full state under here", so existing entries under the
+        // prefix (including a prior leaf at the same key) are stale
+        // and must be cleared before the Map's leaves go in. Flatten
+        // the Map into flat sub-keys to preserve the leaf-only shape
+        // the read side enforces.
+        if matches!(value, Value::Map(_)) {
+            let descendant_prefix = format!("{}/", key);
+            self.values
+                .retain(|k, _| k != &key && !k.starts_with(&descendant_prefix));
+            flatten_value_into(&key, &value, &mut self.values);
+            return Ok(to.clone());
+        }
+
         self.values.insert(key, value);
         Ok(to.clone())
+    }
+}
+
+/// Recursively expand a value into flat-keyed leaves under `prefix`.
+/// `Value::Map` recurses into its fields; non-Map values are leaves
+/// inserted at `prefix`. Used by writes that receive a parent Map to
+/// keep storage in the leaf-only shape reads expect.
+fn flatten_value_into(prefix: &str, value: &Value, out: &mut BTreeMap<String, Value>) {
+    match value {
+        Value::Map(m) => {
+            for (k, v) in m {
+                let path = if prefix.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{}/{}", prefix, k)
+                };
+                flatten_value_into(&path, v, out);
+            }
+        }
+        _ => {
+            out.insert(prefix.to_string(), value.clone());
+        }
     }
 }
 
