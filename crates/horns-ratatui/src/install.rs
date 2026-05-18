@@ -53,10 +53,7 @@ pub struct RatatuiHandle {
 }
 
 /// Register the ratatui view-render subscription on `broker`.
-pub fn install(
-    broker: &ox_broker::BrokerStore,
-    opts: RatatuiOptions,
-) -> RatatuiHandle {
+pub fn install(broker: &ox_broker::BrokerStore, opts: RatatuiOptions) -> RatatuiHandle {
     let sub = ViewRenderSubscription {
         id: SubscriptionId("horns_ratatui.view_render".to_string()),
         watches: vec![PathPattern::Exact(opts.view_input_path.clone())],

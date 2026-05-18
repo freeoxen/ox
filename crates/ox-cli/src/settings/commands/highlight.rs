@@ -239,9 +239,9 @@ mod tests {
     use ox_gate::{ModelInfo, ModelInfoSource};
     use ox_types::SettingsIndexEntry;
 
-    use crate::settings::{Command, CommandCtx};
     use crate::settings::RendererRegistry;
     use crate::settings::snapshot::SettingsSnapshot;
+    use crate::settings::{Command, CommandCtx};
 
     fn empty_ctx<'a>(registry: &'a RendererRegistry) -> CommandCtx<'a> {
         CommandCtx {

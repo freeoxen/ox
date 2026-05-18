@@ -122,4 +122,3 @@ async fn send_via_input_store(
         }
     }
 }
-

@@ -255,10 +255,7 @@ impl Writer for ConfigStore {
             // remove from runtime — `Ok(None)` is the natural read
             // result when no layer holds the path.
             let base_shadows = self.base.contains_key(&key)
-                || self
-                    .base
-                    .keys()
-                    .any(|k| k.starts_with(&descendant_prefix));
+                || self.base.keys().any(|k| k.starts_with(&descendant_prefix));
             if base_shadows {
                 self.runtime.insert(key, Value::Null);
             } else {
@@ -608,10 +605,7 @@ mod tests {
         // runtime are dropped outright. The root-read Map (the shape
         // `child_names_under` walks) must reflect the post-delete world.
         let mut base = BTreeMap::new();
-        base.insert(
-            "gate/k1".to_string(),
-            Value::String("base-k1".into()),
-        );
+        base.insert("gate/k1".to_string(), Value::String("base-k1".into()));
         base.insert(
             "gate/k1/sub1".to_string(),
             Value::String("base-sub1".into()),
@@ -622,10 +616,7 @@ mod tests {
         );
         // Sibling that shares the string prefix `gate/k1` up to a
         // non-separator character — guards the component-aware match.
-        base.insert(
-            "gate/k1_other".to_string(),
-            Value::String("sibling".into()),
-        );
+        base.insert("gate/k1_other".to_string(), Value::String("sibling".into()));
         let mut config = ConfigStore::new(base);
 
         // Add a runtime entry under the doomed subtree to confirm both

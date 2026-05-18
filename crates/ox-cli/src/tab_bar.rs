@@ -1,5 +1,5 @@
-use horns_ratatui::Theme;
 use crate::view_state::ViewState;
+use horns_ratatui::Theme;
 use ox_types::ScreenSnapshot;
 use ratatui::Frame;
 use ratatui::layout::Rect;

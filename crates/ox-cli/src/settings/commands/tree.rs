@@ -17,11 +17,11 @@ use ox_types::AccountField;
 use ox_types::subscription::Write;
 use structfs_core_store::{Reader, Record, Value};
 
-use crate::settings::CommandRegistry;
 use super::super::visible_rows::{
     self, RowKind, expanded_set_to_value, path_to_string, read_expanded_set,
 };
 use super::navigation::{path_from_value, path_to_value};
+use crate::settings::CommandRegistry;
 
 #[allow(unused_imports)]
 use super::command;
@@ -298,9 +298,9 @@ mod tests {
     use ox_types::{BadgeSource, SettingsIndexEntry};
     use structfs_serde_store::to_value;
 
-    use crate::settings::{Command, CommandCtx};
     use crate::settings::RendererRegistry;
     use crate::settings::snapshot::SettingsSnapshot;
+    use crate::settings::{Command, CommandCtx};
 
     fn run<C: Command>(cmd: &C, snap: &mut SettingsSnapshot) -> Vec<Write> {
         let registry = RendererRegistry::new();

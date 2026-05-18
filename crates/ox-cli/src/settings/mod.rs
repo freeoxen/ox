@@ -26,8 +26,8 @@ pub use horns_core::{
     RendererRegistry,
 };
 
-use horns_core::install::{build_install_bundle_from_registries, InstallPaths};
 use horns_core::SubscriptionId;
+use horns_core::install::{InstallPaths, build_install_bundle_from_registries};
 use ox_broker::BrokerStore;
 use ox_path::oxpath;
 use structfs_core_store::{Error as StoreError, Path};
@@ -182,8 +182,11 @@ pub async fn install(broker: &BrokerStore) -> Result<SettingsHandle, StoreError>
     }
 
     // ---- 5. Register subscriptions and collect their ids. ----
-    let subscription_ids: Vec<SubscriptionId> =
-        bundle.subscriptions.iter().map(|s| s.id().clone()).collect();
+    let subscription_ids: Vec<SubscriptionId> = bundle
+        .subscriptions
+        .iter()
+        .map(|s| s.id().clone())
+        .collect();
     for sub in bundle.subscriptions {
         broker.register_subscription(sub);
     }

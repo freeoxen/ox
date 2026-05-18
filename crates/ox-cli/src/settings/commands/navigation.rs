@@ -77,10 +77,7 @@ command! {
     run: |snap, ctx| ascend(snap, ctx),
 }
 
-fn ascend(
-    data: &mut dyn Reader,
-    ctx: &crate::settings::CommandCtx<'_>,
-) -> Vec<Write> {
+fn ascend(data: &mut dyn Reader, ctx: &crate::settings::CommandCtx<'_>) -> Vec<Write> {
     let cursor = match read_path(data, &oxpath!("ui", "settings", "cursor")) {
         Some(c) => c,
         None => return Vec::new(),
@@ -109,9 +106,9 @@ pub fn register(reg: &mut CommandRegistry) {
 mod tests {
     use super::*;
 
-    use crate::settings::{Command, CommandCtx};
-    use crate::settings::{AscendRule, RenderCtx, Renderer, RendererRegistry};
     use crate::settings::snapshot::SettingsSnapshot;
+    use crate::settings::{AscendRule, RenderCtx, Renderer, RendererRegistry};
+    use crate::settings::{Command, CommandCtx};
 
     /// Stub renderer used purely to seed the registry with an `AscendRule`.
     struct FakeRenderer(AscendRule);

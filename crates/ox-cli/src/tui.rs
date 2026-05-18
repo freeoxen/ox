@@ -1,8 +1,8 @@
 use crate::text_input_view::desired_input_height;
 use crate::view_state::ViewState;
+use horns_core::view::View;
 use horns_ratatui::Theme;
 use ox_types::{InsertContext, ScreenSnapshot};
-use horns_core::view::View;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span};

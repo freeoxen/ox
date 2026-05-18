@@ -13,8 +13,8 @@ mod editor_snapshots;
 mod event_loop;
 mod focus;
 mod history_state;
-mod horns_loop;
 mod history_view;
+mod horns_loop;
 mod inbox_shell;
 mod inbox_view;
 mod json_backing;
@@ -286,14 +286,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // calls `terminal.draw` repeatedly. Take the
                     // terminal out, hand a mut ref, then put it back.
                     let mut t = terminal.take().expect("terminal owned by main");
-                    let outcome = event_loop::run_async(
-                        &mut app,
-                        &client,
-                        &theme,
-                        &mut t,
-                        needs_setup_arg,
-                    )
-                    .await;
+                    let outcome =
+                        event_loop::run_async(&mut app, &client, &theme, &mut t, needs_setup_arg)
+                            .await;
                     terminal = Some(t);
                     match outcome {
                         Ok(event_loop::LegacyExit::ToHorns) => {
@@ -308,12 +303,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // Hand the terminal in by value; the horns loop
                     // returns it when its session ends.
                     let t = terminal.take().expect("terminal owned by main");
-                    match horns_loop::run_horns_settings_loop(
-                        &broker_handle.broker,
-                        &client,
-                        t,
-                    )
-                    .await
+                    match horns_loop::run_horns_settings_loop(&broker_handle.broker, &client, t)
+                        .await
                     {
                         Ok((horns_loop::HornsExit::ToLegacy, t)) => {
                             terminal = Some(t);

@@ -39,8 +39,8 @@ use structfs_core_store::{Path, Record, Value};
 use ox_cli::dispatch::{KeyDispatchOutcome, send_key};
 use ox_cli::settings::BindingRegistry;
 use ox_cli::settings::CommandRegistry;
-use ox_cli::settings::commands::navigation::path_to_value;
 use ox_cli::settings::RendererRegistry;
+use ox_cli::settings::commands::navigation::path_to_value;
 use ox_cli::settings::snapshot::{SettingsSnapshot, fetch_settings_view_state};
 
 // ---------------------------------------------------------------------------
@@ -415,12 +415,7 @@ async fn navigate_index_to_models_set_bootstrap() {
 /// Assumes the harness is positioned at `settings/index` with focused on
 /// `settings/accounts` (or any other position that lets `a` reach
 /// `accounts.compose.open`).
-async fn drive_compose_full_flow(
-    h: &E2eHarness,
-    name: &str,
-    endpoint: &str,
-    api_key: &str,
-) {
+async fn drive_compose_full_flow(h: &E2eHarness, name: &str, endpoint: &str, api_key: &str) {
     // Re-focus the Accounts header before pressing `a`. After a prior
     // commit, `focused` points at the newly-created account row, where
     // the `Prefix(settings/accounts/<name>)` binding doesn't carry
@@ -509,7 +504,10 @@ async fn add_account_create_flow() {
     .await;
 
     let path_id = namecode::encode("anthropic_personal");
-    assert_eq!(path_id, "anthropic_personal", "valid XID must be idempotent");
+    assert_eq!(
+        path_id, "anthropic_personal",
+        "valid XID must be idempotent"
+    );
     let comp = ox_kernel::PathComponent::try_new(&path_id).unwrap();
     let account: AccountConfig = h
         .client
@@ -632,7 +630,12 @@ async fn delete_account_flow() {
     assert!(matches!(h.dispatch("d").await, KeyDispatchOutcome::Handled));
     let target: Option<String> = h
         .client
-        .read_typed(&oxpath!("ui", "settings", "pending_delete", "target_account"))
+        .read_typed(&oxpath!(
+            "ui",
+            "settings",
+            "pending_delete",
+            "target_account"
+        ))
         .await
         .ok()
         .flatten();
@@ -692,7 +695,12 @@ async fn delete_account_flow() {
     assert_eq!(cursor, oxpath!("settings", "accounts"));
     let target_after: Option<String> = h
         .client
-        .read_typed(&oxpath!("ui", "settings", "pending_delete", "target_account"))
+        .read_typed(&oxpath!(
+            "ui",
+            "settings",
+            "pending_delete",
+            "target_account"
+        ))
         .await
         .ok()
         .flatten();
@@ -1442,8 +1450,8 @@ async fn add_connection_form_accepts_field_by_field_input() {
         path_id, "my-personal",
         "hyphen must force a non-identity encoding"
     );
-    let comp = ox_kernel::PathComponent::try_new(&path_id)
-        .expect("namecode::encode produces a valid XID");
+    let comp =
+        ox_kernel::PathComponent::try_new(&path_id).expect("namecode::encode produces a valid XID");
 
     let account: AccountConfig = h
         .client
@@ -1571,7 +1579,12 @@ async fn delete_account_removes_connection_from_rendered_frame() {
     assert!(matches!(h.dispatch("d").await, KeyDispatchOutcome::Handled));
     let target: Option<String> = h
         .client
-        .read_typed(&oxpath!("ui", "settings", "pending_delete", "target_account"))
+        .read_typed(&oxpath!(
+            "ui",
+            "settings",
+            "pending_delete",
+            "target_account"
+        ))
         .await
         .ok()
         .flatten();
@@ -1676,7 +1689,10 @@ async fn delete_account_removes_connection_from_rendered_frame() {
         None => true,
         Some(rec) => matches!(rec.as_value(), Some(Value::Null)),
     };
-    assert!(key_gone, "secret/keys/anthropic should be gone after delete");
+    assert!(
+        key_gone,
+        "secret/keys/anthropic should be gone after delete"
+    );
     let prov_after = h
         .client
         .read(&oxpath!("config", "gate", "providers", acct_comp))

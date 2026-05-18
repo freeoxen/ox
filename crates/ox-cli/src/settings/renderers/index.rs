@@ -13,7 +13,9 @@
 //! glyph on the primary text; the legacy badge slot still carries
 //! the entry's badge string.
 
-use horns_core::view::{Direction, FocusId, ListItem, ModifierSet, Padding, Sizing, Span, Style, View};
+use horns_core::view::{
+    Direction, FocusId, ListItem, ModifierSet, Padding, Sizing, Span, Style, View,
+};
 
 use ox_gate::AuthScheme;
 
@@ -22,8 +24,8 @@ use crate::settings::commands::account_model::{
     cursor_to_manual_model_stage, resolve_protocol_options,
 };
 use crate::settings::commands::edit::read_edit_state;
-use crate::settings::{AscendRule, RenderCtx, Renderer, RendererRegistry};
 use crate::settings::visible_rows::{self, RowKind};
+use crate::settings::{AscendRule, RenderCtx, Renderer, RendererRegistry};
 
 pub struct IndexRenderer;
 
@@ -376,10 +378,7 @@ fn rows_to_list_items(rows: &[visible_rows::VisibleRow], ctx: &SectionCtx<'_>) -
             // that's the visual cue h/l will cycle. The match against
             // `cursor` happens once per row, locally; no global "selected
             // index" needs to be threaded.
-            let is_focused = ctx
-                .cursor
-                .map(|c| c == &row.path)
-                .unwrap_or(false);
+            let is_focused = ctx.cursor.map(|c| c == &row.path).unwrap_or(false);
             if is_focused {
                 if let Some(spans) = selector_carousel_spans(
                     row,
@@ -563,9 +562,7 @@ fn section_height(view: &View) -> u16 {
         // we emit has zero top/bottom padding, so the inner child's
         // measured rows pass through unchanged. If the renderer ever
         // grows top/bottom padding we'll need to add it here.
-        View::Pad { child, padding } => {
-            section_height(child) + padding.top + padding.bottom
-        }
+        View::Pad { child, padding } => section_height(child) + padding.top + padding.bottom,
         _ => 0,
     }
 }
@@ -626,7 +623,10 @@ fn selector_carousel_spans(
             // enum as authoritative is what keeps the carousel and the
             // cycle command in lockstep.
             let current = auth_current.cloned().unwrap_or(AuthScheme::XApiKey);
-            let idx = AuthScheme::ALL.iter().position(|a| a == &current).unwrap_or(0);
+            let idx = AuthScheme::ALL
+                .iter()
+                .position(|a| a == &current)
+                .unwrap_or(0);
             (
                 "Auth",
                 AuthScheme::ALL.iter().map(|a| a.to_string()).collect(),
@@ -940,7 +940,10 @@ mod tests {
         match view {
             View::Frame { content, .. } => match *content {
                 View::Stack { mut children, .. } => {
-                    assert!(children.len() >= 2, "page must have Accounts + Models sections");
+                    assert!(
+                        children.len() >= 2,
+                        "page must have Accounts + Models sections"
+                    );
                     children.remove(1).0
                 }
                 other => panic!("expected Stack inside Frame, got {other:?}"),
@@ -1139,11 +1142,7 @@ mod tests {
     /// so the Models section shows a real Model row for it. Used by
     /// the empty-state decoration tests below to verify the
     /// alphabetical-position contract against a non-empty neighbor.
-    fn write_account_with_models(
-        snap: &mut SettingsSnapshot,
-        name: &str,
-        ids: &[&str],
-    ) {
+    fn write_account_with_models(snap: &mut SettingsSnapshot, name: &str, ids: &[&str]) {
         use ox_gate::ModelInfo;
         use ox_types::ModelInfoSource;
         let comp = ox_kernel::PathComponent::try_new(name).unwrap();
@@ -1228,8 +1227,7 @@ mod tests {
     }
 
     #[test]
-    fn models_decorations_appear_after_models_header_when_new_connection_affordance_also_present()
-    {
+    fn models_decorations_appear_after_models_header_when_new_connection_affordance_also_present() {
         // Two accounts, both Accounts and Models expanded, compose-mode
         // inactive. The alphabetically-first account is empty (aaa);
         // the second has models (bbb). The "+ New connection"
@@ -1394,10 +1392,7 @@ mod tests {
         }
         for sub in ["protocol", "auth"] {
             let comp = ox_kernel::PathComponent::try_new(sub).unwrap();
-            snap.insert(
-                &oxpath!("ui", "settings", "new_account", comp),
-                Value::Null,
-            );
+            snap.insert(&oxpath!("ui", "settings", "new_account", comp), Value::Null);
         }
         snap
     }
@@ -1562,7 +1557,9 @@ mod tests {
             _ => panic!("Models content should be a List"),
         };
         assert!(
-            content_items.iter().any(|it| it.primary.contains("no models")),
+            content_items
+                .iter()
+                .any(|it| it.primary.contains("no models")),
             "empty-state line must live inside the Models content sub-List"
         );
         assert!(
@@ -1806,9 +1803,9 @@ mod tests {
         }
         match view {
             View::Pad { child, .. } if contains_form(child) => true,
-            View::Stack { children, .. } => {
-                children.iter().any(|(c, _)| view_contains_pad_wrapping_form(c))
-            }
+            View::Stack { children, .. } => children
+                .iter()
+                .any(|(c, _)| view_contains_pad_wrapping_form(c)),
             View::Frame { content, .. } => view_contains_pad_wrapping_form(content),
             View::Pad { child, .. } => view_contains_pad_wrapping_form(child),
             _ => false,

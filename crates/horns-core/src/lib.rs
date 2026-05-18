@@ -22,8 +22,8 @@ pub use command::{
 };
 pub use dispatch::Dispatcher;
 pub use install::{
-    build_install_bundle, build_install_bundle_from_registries, HornsHandle, InstallBundle,
-    InstallOptions, InstallPaths,
+    HornsHandle, InstallBundle, InstallOptions, InstallPaths, build_install_bundle,
+    build_install_bundle_from_registries,
 };
 pub use key::{KeyChord, KeyCodeRepr, KeyModifierSet};
 pub use render::{AscendRule, Rect, RenderCtx, Renderer, RendererMetadata, RendererRegistry};

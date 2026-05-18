@@ -35,9 +35,9 @@ use ox_types::subscription::Write;
 use structfs_core_store::{Path, Reader, Record, Value};
 use structfs_serde_store::to_value;
 
-use crate::settings::CommandRegistry;
 use super::super::visible_rows::{self, RowKind};
 use super::navigation::{path_from_value, path_to_value};
+use crate::settings::CommandRegistry;
 
 #[allow(unused_imports)]
 use super::command;
@@ -258,10 +258,7 @@ fn clear_edit_subtree() -> Write {
     }
 }
 
-fn insert_char(
-    data: &mut dyn Reader,
-    ctx: &crate::settings::CommandCtx<'_>,
-) -> Vec<Write> {
+fn insert_char(data: &mut dyn Reader, ctx: &crate::settings::CommandCtx<'_>) -> Vec<Write> {
     use ox_types::key_chord::KeyCodeRepr;
 
     let chord = match ctx.last_keystroke.as_ref() {
@@ -668,11 +665,11 @@ mod tests {
     use ox_gate::{AccountConfig, ModelInfo, ModelInfoSource};
     use ox_types::{BadgeSource, SettingsIndexEntry};
 
-    use crate::settings::{Command, CommandCtx};
-    use crate::settings::commands::navigation::path_to_value;
     use crate::settings::RendererRegistry;
+    use crate::settings::commands::navigation::path_to_value;
     use crate::settings::snapshot::SettingsSnapshot;
     use crate::settings::visible_rows::expanded_set_to_value;
+    use crate::settings::{Command, CommandCtx};
 
     fn run<C: Command>(cmd: &C, snap: &mut SettingsSnapshot) -> Vec<Write> {
         let registry = RendererRegistry::new();
@@ -1111,7 +1108,10 @@ mod tests {
         }
     }
 
-    fn chord(modifiers: ox_types::key_chord::KeyModifierSet, code: ox_types::key_chord::KeyCodeRepr) -> ox_types::KeyChord {
+    fn chord(
+        modifiers: ox_types::key_chord::KeyModifierSet,
+        code: ox_types::key_chord::KeyCodeRepr,
+    ) -> ox_types::KeyChord {
         ox_types::KeyChord { modifiers, code }
     }
 

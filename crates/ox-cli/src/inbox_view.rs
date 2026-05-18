@@ -1,5 +1,5 @@
-use horns_ratatui::Theme;
 use crate::view_state::ViewState;
+use horns_ratatui::Theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};

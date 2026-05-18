@@ -339,12 +339,7 @@ fn append_model_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, expanded
         }
 
         for m in models {
-            let path = row_path(&[
-                "settings",
-                "models",
-                account_name,
-                &safe_component(&m.id),
-            ]);
+            let path = row_path(&["settings", "models", account_name, &safe_component(&m.id)]);
             let path_str = path_to_string(&path);
             let is_expanded = expanded.iter().any(|s| s == &path_str);
             let is_bootstrap = bootstrap
@@ -449,12 +444,7 @@ fn append_account_field_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, 
             AccountField::Auth => "Auth",
             AccountField::Key => "Key",
         };
-        let path = row_path(&[
-            "settings",
-            "accounts",
-            name,
-            field_segment_account(field),
-        ]);
+        let path = row_path(&["settings", "accounts", name, field_segment_account(field)]);
         rows.push(VisibleRow {
             path,
             depth: 2,

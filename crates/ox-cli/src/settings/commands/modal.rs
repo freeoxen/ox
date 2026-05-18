@@ -36,8 +36,8 @@ pub fn register(reg: &mut CommandRegistry) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::{Command, CommandCtx};
     use crate::settings::RendererRegistry;
+    use crate::settings::{Command, CommandCtx};
     use ox_store_util::local_config::LocalConfig;
     use ox_types::CommandId;
 

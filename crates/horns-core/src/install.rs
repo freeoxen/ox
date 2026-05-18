@@ -385,8 +385,7 @@ impl Subscription for KeyDispatchSubscription {
         let Some(value) = after.as_value() else {
             return Vec::new();
         };
-        let Ok(key) =
-            structfs_serde_store::from_value::<crate::key::KeyChord>(value.clone())
+        let Ok(key) = structfs_serde_store::from_value::<crate::key::KeyChord>(value.clone())
         else {
             return Vec::new();
         };

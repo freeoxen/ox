@@ -24,7 +24,9 @@ use ox_broker::subscription::{SubCtx, Subscription};
 use ox_path::oxpath;
 use ox_types::subscription::{PathPattern, SubscriptionId, Write};
 
-use crate::subscriptions::util::{null_write, provider_path, read_typed_via_reader, secret_key_path};
+use crate::subscriptions::util::{
+    null_write, provider_path, read_typed_via_reader, secret_key_path,
+};
 
 pub const ID: &str = "gate.account_delete_cleanup";
 
@@ -302,7 +304,9 @@ mod tests {
         let change = PathChange {
             path,
             before: None,
-            after: Some(Record::parsed(structfs_serde_store::to_value(&cfg).unwrap())),
+            after: Some(Record::parsed(
+                structfs_serde_store::to_value(&cfg).unwrap(),
+            )),
         };
         let spawn = TestSpawn::new();
         let writer = Arc::new(CapturingWriter::new()) as Arc<dyn AsyncWriter>;

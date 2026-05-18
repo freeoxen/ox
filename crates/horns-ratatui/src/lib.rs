@@ -16,6 +16,6 @@ pub mod install;
 pub mod render;
 pub mod theme;
 
-pub use install::{install, RatatuiHandle, RatatuiOptions};
+pub use install::{RatatuiHandle, RatatuiOptions, install};
 pub use render::render_to_frame;
 pub use theme::Theme;

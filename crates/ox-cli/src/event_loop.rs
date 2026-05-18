@@ -2,11 +2,12 @@ use crate::app::App;
 use crate::editor::flush_pending_edits;
 use crate::settings::commands::navigation::path_from_value;
 use crate::settings::snapshot::{SettingsSnapshot, fetch_settings_view_state};
-use horns_ratatui::Theme;
 use crate::thread_shell::{ThreadShell, dispatch_global_mouse};
 use crate::types::CustomizeState;
 use crate::view_state::fetch_view_state;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
+use horns_core::view::View;
+use horns_ratatui::Theme;
 use ox_kernel::PathComponent;
 use ox_path::oxpath;
 use ox_types::{
@@ -14,7 +15,6 @@ use ox_types::{
     ThreadCommand, UiCommand, UiSnapshot,
 };
 use ox_ui::text_input_store::EditSource;
-use horns_core::view::View;
 use std::time::Duration;
 use structfs_core_store::{Path, Reader};
 

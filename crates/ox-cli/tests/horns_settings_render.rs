@@ -70,9 +70,7 @@ async fn render_subscription_writes_non_empty_view_for_settings_index() {
 
     // Install the horns settings instance — registers KeyDispatch +
     // Render + ThemeChange subscriptions on the broker.
-    let _handle = settings::install(&broker)
-        .await
-        .expect("settings::install");
+    let _handle = settings::install(&broker).await.expect("settings::install");
 
     // Seed the focus cursor at the index page.
     use ox_cli::settings::commands::navigation::path_to_value;

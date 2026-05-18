@@ -1,5 +1,5 @@
-use horns_ratatui::Theme;
 use crate::types::APPROVAL_OPTIONS;
+use horns_ratatui::Theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};

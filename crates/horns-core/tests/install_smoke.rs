@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use horns_core::install::{build_install_bundle, InstallOptions};
+use horns_core::install::{InstallOptions, build_install_bundle};
 use horns_core::{
     BindingEntry, BindingId, BindingScope, CommandId, KeyChord, KeyCodeRepr, KeyModifierSet, Phase,
 };

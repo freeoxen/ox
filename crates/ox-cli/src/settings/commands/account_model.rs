@@ -2364,9 +2364,9 @@ mod tests {
 
     use ox_types::key_chord::{KeyChord, KeyCodeRepr, KeyModifierSet};
 
-    use crate::settings::{Command, CommandCtx};
     use crate::settings::RendererRegistry;
     use crate::settings::snapshot::SettingsSnapshot;
+    use crate::settings::{Command, CommandCtx};
 
     fn run_cmd<C: Command>(cmd: &C, snap: &mut SettingsSnapshot) -> Vec<Write> {
         let registry = RendererRegistry::new();

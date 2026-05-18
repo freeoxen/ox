@@ -109,11 +109,11 @@ pub struct ValidationDiagnostics {
 /// `for_field`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ValidationErrors {
-    pub name:     Option<String>,
+    pub name: Option<String>,
     pub protocol: Option<String>,
     pub endpoint: Option<String>,
-    pub auth:     Option<String>,
-    pub key:      Option<String>,
+    pub auth: Option<String>,
+    pub key: Option<String>,
 }
 
 impl ValidationErrors {
@@ -127,11 +127,11 @@ impl ValidationErrors {
 
     pub fn for_field(&self, field: AccountField) -> Option<&str> {
         match field {
-            AccountField::Name     => self.name.as_deref(),
+            AccountField::Name => self.name.as_deref(),
             AccountField::Protocol => self.protocol.as_deref(),
             AccountField::Endpoint => self.endpoint.as_deref(),
-            AccountField::Auth     => self.auth.as_deref(),
-            AccountField::Key      => self.key.as_deref(),
+            AccountField::Auth => self.auth.as_deref(),
+            AccountField::Key => self.key.as_deref(),
         }
     }
 }
@@ -232,9 +232,18 @@ mod tests {
         // values that older write sites still produce. The dispatcher
         // discriminates on shape; if these collided, the gating that
         // keeps Commit A dormant would fire prematurely.
-        assert_eq!(serde_json::to_string(&ManualModelStage::Id).unwrap(), r#""Id""#);
-        assert_eq!(serde_json::to_string(&ManualModelStage::Ctx).unwrap(), r#""Ctx""#);
-        assert_eq!(serde_json::to_string(&ManualModelStage::Out).unwrap(), r#""Out""#);
+        assert_eq!(
+            serde_json::to_string(&ManualModelStage::Id).unwrap(),
+            r#""Id""#
+        );
+        assert_eq!(
+            serde_json::to_string(&ManualModelStage::Ctx).unwrap(),
+            r#""Ctx""#
+        );
+        assert_eq!(
+            serde_json::to_string(&ManualModelStage::Out).unwrap(),
+            r#""Out""#
+        );
     }
 
     #[test]
@@ -368,5 +377,4 @@ mod tests {
         e.key = Some("required".into());
         assert!(!e.is_clean());
     }
-
 }

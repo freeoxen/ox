@@ -1,5 +1,5 @@
-use horns_ratatui::Theme;
 use crate::types::{ChatMessage, ThreadView};
+use horns_ratatui::Theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span, Text};

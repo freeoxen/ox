@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use horns_core::install::{build_install_bundle, InstallOptions};
+use horns_core::install::{InstallOptions, build_install_bundle};
 use horns_core::{
     BindingEntry, BindingId, BindingScope, Command, CommandCtx, CommandDisplay, CommandId,
     CommandScope, KeyChord, KeyCodeRepr, KeyModifierSet, Phase, Write,
@@ -170,10 +170,7 @@ async fn key_write_triggers_command_dispatch_through_broker() {
 
     // The dispatcher returned its write through the subscription mechanism;
     // the broker's dispatcher should have applied it. Read the witness.
-    let witness = client
-        .read(&witness_path)
-        .await
-        .expect("read witness");
+    let witness = client.read(&witness_path).await.expect("read witness");
     assert!(
         witness.is_some(),
         "witness path should have been written by the dispatched command",
