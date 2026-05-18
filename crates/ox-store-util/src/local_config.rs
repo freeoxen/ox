@@ -372,4 +372,44 @@ mod tests {
         assert_eq!(map.len(), 1);
         assert!(map.contains_key("b"));
     }
+
+    #[test]
+    fn write_map_at_parent_replaces_stale_sub_keys_with_flat_leaves() {
+        let mut cfg = LocalConfig::new();
+        cfg.set("gate/lm/dialect", Value::String("stale".into()));
+        cfg.set("gate/lm/endpoint", Value::String("stale".into()));
+        cfg.set("gate/lm/auth", Value::String("stale".into()));
+
+        let mut new_map = BTreeMap::new();
+        new_map.insert("dialect".to_string(), Value::String("openai".into()));
+        new_map.insert("endpoint".to_string(), Value::String("http://x".into()));
+        cfg.write(&path!("gate/lm"), Record::parsed(Value::Map(new_map)))
+            .unwrap();
+
+        // Sub-keys present in the new Map carry its values, as flat leaves.
+        assert_eq!(
+            cfg.read(&path!("gate/lm/dialect")).unwrap().unwrap().as_value(),
+            Some(&Value::String("openai".into())),
+        );
+        assert_eq!(
+            cfg.read(&path!("gate/lm/endpoint")).unwrap().unwrap().as_value(),
+            Some(&Value::String("http://x".into())),
+        );
+        // Sub-keys absent from the new Map are gone — the Map's intent is
+        // "this is the full state under here", not a partial overlay.
+        assert!(cfg.read(&path!("gate/lm/auth")).unwrap().is_none());
+        // Reading the parent returns the children-Map view, not a leaf:
+        // the write normalized storage to the flat-leaf shape.
+        let rec = cfg
+            .read(&path!("gate/lm"))
+            .unwrap()
+            .expect("parent has children");
+        let map = match rec.as_value().unwrap() {
+            Value::Map(m) => m.clone(),
+            other => panic!("expected Map; got {other:?}"),
+        };
+        assert_eq!(map.len(), 2);
+        assert!(map.contains_key("dialect"));
+        assert!(map.contains_key("endpoint"));
+    }
 }
