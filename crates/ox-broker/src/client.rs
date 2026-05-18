@@ -301,9 +301,49 @@ where
         } else {
             base.join(&rel_path)
         };
-        out.insert(full_path, Record::parsed(val.clone()));
+        // Nested Map values represent immediate-children projections
+        // under the StructFS read-at-prefix convention. The `read_subtree`
+        // contract is "all leaf entries under prefix, full paths" — so
+        // recurse into Maps to flatten them out. Without this, a store
+        // that returns nested Maps at non-leaf paths leaves its leaves
+        // unreachable to consumers that only know `read_subtree`.
+        if let Value::Map(_) = val {
+            for (leaf_path, leaf_val) in flatten_value(&full_path, val) {
+                out.insert(leaf_path, Record::parsed(leaf_val));
+            }
+        } else {
+            out.insert(full_path, Record::parsed(val.clone()));
+        }
     }
     out
+}
+
+/// Walk a `Value`, yielding `(path, leaf_value)` for every non-Map leaf
+/// reachable from `base`. A bare leaf at `base` yields a single entry.
+fn flatten_value(base: &Path, value: &Value) -> Vec<(Path, Value)> {
+    let mut out = Vec::new();
+    flatten_into(base, value, &mut out);
+    out
+}
+
+fn flatten_into(base: &Path, value: &Value, out: &mut Vec<(Path, Value)>) {
+    match value {
+        Value::Map(m) => {
+            for (k, v) in m {
+                let Ok(seg) = Path::parse(k) else {
+                    tracing::warn!(key = %k, "read_subtree: skipping malformed sub-key");
+                    continue;
+                };
+                let child_path = if base.is_empty() {
+                    seg
+                } else {
+                    base.join(&seg)
+                };
+                flatten_into(&child_path, v, out);
+            }
+        }
+        _ => out.push((base.clone(), value.clone())),
+    }
 }
 
 #[cfg(test)]

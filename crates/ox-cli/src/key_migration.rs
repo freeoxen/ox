@@ -87,19 +87,21 @@ pub async fn migrate_legacy_keys(
 }
 
 /// `true` when the secrets store already has anything under `keys/`. Used
-/// to make the migration idempotent.
+/// to make the migration idempotent. A read at `secret/keys` returns a
+/// `Value::Map` of immediate child names (per the StructFS read-at-prefix
+/// convention) — a non-empty Map means at least one key is present.
 async fn secrets_keys_already_populated(client: &ox_broker::ClientHandle) -> bool {
-    let Ok(secret_path) = StorePath::parse("secret") else {
+    let Ok(keys_path) = StorePath::parse("secret/keys") else {
         return false;
     };
-    let record = match client.read(&secret_path).await {
+    let record = match client.read(&keys_path).await {
         Ok(Some(r)) => r,
         _ => return false,
     };
-    let Some(Value::Map(m)) = record.as_value().cloned() else {
-        return false;
-    };
-    m.keys().any(|k| k.starts_with("keys/"))
+    match record.as_value() {
+        Some(Value::Map(m)) => !m.is_empty(),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
