@@ -167,75 +167,78 @@ impl Reader for ConfigStore {
         // runtime, with runtime `Null` entries treated as tombstones
         // that hide the corresponding base keys. Downstream leaf /
         // children-walk logic operates on this post-tombstone snapshot
-        // — the single source of truth at read time.
+        // — recursion threads the same view through every level so the
+        // O(N·D) clone per recursive call stays a single O(N) clone.
         let effective = self.effective_map();
-
-        // StructFS convention: a path is either a leaf value OR a Map
-        // of immediate children. Same shape as LocalConfig — the
-        // ConfigStore happens to track its values in flat-keyed form
-        // internally, but the read projects the tree-of-Maps shape.
-        let has_leaf = !key.is_empty() && effective.contains_key(&key);
-        let child_prefix = if key.is_empty() {
-            String::new()
-        } else {
-            format!("{key}/")
-        };
-        let has_children = effective
-            .keys()
-            .any(|k| k.starts_with(&child_prefix) && *k != key);
-
-        if has_leaf && has_children {
-            return Err(StoreError::store(
-                "config",
-                "read",
-                format!("malformed store: path {key:?} has both a leaf value and child entries"),
-            ));
-        }
-        if has_leaf {
-            return Ok(Some(Record::parsed(effective[&key].clone())));
-        }
-        if !has_children {
-            return Ok(None);
-        }
-
-        // Assemble the immediate-children Map by bucketing every
-        // effective key whose path extends `from`. The recursion walks
-        // through nested levels by extracting heads, then projects each
-        // head's sub-tree via a fresh read.
-        let mut heads: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        for full_key in effective.keys() {
-            let Some(rest) = full_key.strip_prefix(&child_prefix) else {
-                continue;
-            };
-            if rest.is_empty() {
-                continue;
-            }
-            let head = match rest.split_once('/') {
-                Some((h, _)) => h.to_string(),
-                None => rest.to_string(),
-            };
-            heads.insert(head);
-        }
-
-        let mut children: BTreeMap<String, Value> = BTreeMap::new();
-        for head in heads {
-            let sub_path_str = if child_prefix.is_empty() {
-                head.clone()
-            } else {
-                format!("{child_prefix}{head}")
-            };
-            let sub_path = Path::parse(&sub_path_str)?;
-            let Some(rec) = self.read(&sub_path)? else {
-                continue;
-            };
-            let child_value = rec.as_value().cloned().ok_or_else(|| {
-                StoreError::store("config", "read", "child record had no value")
-            })?;
-            children.insert(head, child_value);
-        }
-
-        Ok(Some(Record::parsed(Value::Map(children))))
+        read_in_effective(&effective, &key)
     }
+}
+
+/// Project a flat-keyed effective map into the tree-of-Maps shape the
+/// StructFS read contract expects, rooted at `key` (empty = root).
+/// Recurses into nested levels by calling itself on the same `&effective`
+/// view, so each top-level read pays the merge/clone cost exactly once.
+fn read_in_effective(
+    effective: &BTreeMap<String, Value>,
+    key: &str,
+) -> Result<Option<Record>, StoreError> {
+    let has_leaf = !key.is_empty() && effective.contains_key(key);
+    let child_prefix = if key.is_empty() {
+        String::new()
+    } else {
+        format!("{key}/")
+    };
+    let has_children = effective
+        .keys()
+        .any(|k| k.starts_with(&child_prefix) && k != key);
+
+    if has_leaf && has_children {
+        return Err(StoreError::store(
+            "config",
+            "read",
+            format!("malformed store: path {key:?} has both a leaf value and child entries"),
+        ));
+    }
+    if has_leaf {
+        return Ok(Some(Record::parsed(effective[key].clone())));
+    }
+    if !has_children {
+        return Ok(None);
+    }
+
+    let mut heads: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for full_key in effective.keys() {
+        let Some(rest) = full_key.strip_prefix(&child_prefix) else {
+            continue;
+        };
+        if rest.is_empty() {
+            continue;
+        }
+        let head = match rest.split_once('/') {
+            Some((h, _)) => h.to_string(),
+            None => rest.to_string(),
+        };
+        heads.insert(head);
+    }
+
+    let mut children: BTreeMap<String, Value> = BTreeMap::new();
+    for head in heads {
+        let sub_key = if child_prefix.is_empty() {
+            head.clone()
+        } else {
+            format!("{child_prefix}{head}")
+        };
+        let Some(rec) = read_in_effective(effective, &sub_key)? else {
+            continue;
+        };
+        let child_value = rec
+            .as_value()
+            .cloned()
+            .ok_or_else(|| StoreError::store("config", "read", "child record had no value"))?;
+        children.insert(head, child_value);
+    }
+
+    Ok(Some(Record::parsed(Value::Map(children))))
 }
 
 impl ConfigStore {
@@ -496,6 +499,55 @@ mod tests {
             "tombstoned alpha must not appear; map={map:?}"
         );
         assert!(map.contains_key("beta"));
+    }
+
+    #[test]
+    fn runtime_null_tombstone_on_single_leaf_preserves_sibling_leaves() {
+        // Tombstoning one leaf inside a multi-leaf child must not evict
+        // the child from the parent's children-Map — the surviving
+        // siblings keep the child alive — and the child's own
+        // children-Map must omit just the tombstoned leaf.
+        let mut base = BTreeMap::new();
+        base.insert(
+            "gate/accounts/alpha/endpoint".to_string(),
+            Value::String("https://alpha".into()),
+        );
+        base.insert(
+            "gate/accounts/alpha/token".to_string(),
+            Value::String("tok".into()),
+        );
+        base.insert(
+            "gate/accounts/beta/endpoint".to_string(),
+            Value::String("https://beta".into()),
+        );
+        let mut store = ConfigStore::new(base);
+        store
+            .write(
+                &Path::parse("gate/accounts/alpha/endpoint").unwrap(),
+                Record::parsed(Value::Null),
+            )
+            .unwrap();
+
+        // Parent of the tombstoned leaf still lists `alpha`, because
+        // `alpha/token` survives.
+        let accounts = match read_val(&mut store, "gate/accounts").unwrap() {
+            Value::Map(m) => m,
+            other => panic!("expected Map; got {other:?}"),
+        };
+        assert!(accounts.contains_key("alpha"));
+        assert!(accounts.contains_key("beta"));
+
+        // `alpha`'s own children-Map drops the tombstoned `endpoint`
+        // but keeps `token`.
+        let alpha = match read_val(&mut store, "gate/accounts/alpha").unwrap() {
+            Value::Map(m) => m,
+            other => panic!("expected Map; got {other:?}"),
+        };
+        assert!(!alpha.contains_key("endpoint"));
+        assert_eq!(
+            alpha.get("token"),
+            Some(&Value::String("tok".into()))
+        );
     }
 
     #[test]

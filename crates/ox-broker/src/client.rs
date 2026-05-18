@@ -320,6 +320,9 @@ where
 
 /// Walk a `Value`, yielding `(path, leaf_value)` for every non-Map leaf
 /// reachable from `base`. A bare leaf at `base` yields a single entry.
+/// Arrays are leaves: structfs addresses through Maps only, so an
+/// `Value::Array` here belongs in the flat output as-is rather than
+/// being indexed into.
 fn flatten_value(base: &Path, value: &Value) -> Vec<(Path, Value)> {
     let mut out = Vec::new();
     flatten_into(base, value, &mut out);
