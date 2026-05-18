@@ -1818,6 +1818,38 @@ mod tests {
         assert!(store.read(&p).unwrap().is_none());
     }
 
+    #[test]
+    fn read_at_settings_non_leaf_returns_children_map_via_local_config() {
+        // `ui/settings/*` is backed by an embedded LocalConfig, so the
+        // read-at-prefix-returns-children-Map convention propagates
+        // through the existing delegation without UiStore having to
+        // know about it. Pins that propagation.
+        let mut store = UiStore::new();
+        store
+            .write(
+                &Path::parse("settings/index/entries/accounts").unwrap(),
+                Record::parsed(Value::String("acc".into())),
+            )
+            .unwrap();
+        store
+            .write(
+                &Path::parse("settings/index/entries/models").unwrap(),
+                Record::parsed(Value::String("mod".into())),
+            )
+            .unwrap();
+
+        let rec = store
+            .read(&Path::parse("settings/index/entries").unwrap())
+            .unwrap()
+            .expect("non-leaf returns Some");
+        let map = match rec.as_value().unwrap() {
+            Value::Map(m) => m.clone(),
+            other => panic!("expected Map; got {other:?}"),
+        };
+        assert!(map.contains_key("accounts"), "map={map:?}");
+        assert!(map.contains_key("models"), "map={map:?}");
+    }
+
     // -- Global commands --
 
     #[test]

@@ -163,38 +163,98 @@ impl Reader for ConfigStore {
             return Ok(Some(Record::parsed(Value::Bool(self.is_dirty()))));
         }
 
-        // Root read: return all effective values as a map. Runtime Null
-        // entries are tombstones — base values masked, or fresh deletes
-        // — and must be filtered out so consumers that walk this Map
-        // (e.g. the renderer's `child_names_under`) don't observe a
-        // path the convention says is gone.
-        if key.is_empty() {
-            tracing::debug!("config root read");
-            let mut map = BTreeMap::new();
-            for (k, v) in &self.base {
-                map.insert(k.clone(), v.clone());
-            }
-            for (k, v) in &self.runtime {
-                if *v == Value::Null {
-                    map.remove(k);
-                } else {
-                    map.insert(k.clone(), v.clone());
-                }
-            }
-            return Ok(Some(Record::parsed(Value::Map(map))));
+        // Compute the effective flat-keyed view once: base shadowed by
+        // runtime, with runtime `Null` entries treated as tombstones
+        // that hide the corresponding base keys. Downstream leaf /
+        // children-walk logic operates on this post-tombstone snapshot
+        // — the single source of truth at read time.
+        let effective = self.effective_map();
+
+        // StructFS convention: a path is either a leaf value OR a Map
+        // of immediate children. Same shape as LocalConfig — the
+        // ConfigStore happens to track its values in flat-keyed form
+        // internally, but the read projects the tree-of-Maps shape.
+        let has_leaf = !key.is_empty() && effective.contains_key(&key);
+        let child_prefix = if key.is_empty() {
+            String::new()
+        } else {
+            format!("{key}/")
+        };
+        let has_children = effective
+            .keys()
+            .any(|k| k.starts_with(&child_prefix) && *k != key);
+
+        if has_leaf && has_children {
+            return Err(StoreError::store(
+                "config",
+                "read",
+                format!("malformed store: path {key:?} has both a leaf value and child entries"),
+            ));
+        }
+        if has_leaf {
+            return Ok(Some(Record::parsed(effective[&key].clone())));
+        }
+        if !has_children {
+            return Ok(None);
         }
 
-        // Cascade: runtime → base (Null in runtime = deleted)
-        if let Some(v) = self.runtime.get(&key) {
-            if *v == Value::Null {
-                return Ok(None);
+        // Assemble the immediate-children Map by bucketing every
+        // effective key whose path extends `from`. The recursion walks
+        // through nested levels by extracting heads, then projects each
+        // head's sub-tree via a fresh read.
+        let mut heads: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for full_key in effective.keys() {
+            let Some(rest) = full_key.strip_prefix(&child_prefix) else {
+                continue;
+            };
+            if rest.is_empty() {
+                continue;
             }
-            return Ok(Some(Record::parsed(v.clone())));
+            let head = match rest.split_once('/') {
+                Some((h, _)) => h.to_string(),
+                None => rest.to_string(),
+            };
+            heads.insert(head);
         }
-        if let Some(v) = self.base.get(&key) {
-            return Ok(Some(Record::parsed(v.clone())));
+
+        let mut children: BTreeMap<String, Value> = BTreeMap::new();
+        for head in heads {
+            let sub_path_str = if child_prefix.is_empty() {
+                head.clone()
+            } else {
+                format!("{child_prefix}{head}")
+            };
+            let sub_path = Path::parse(&sub_path_str)?;
+            let Some(rec) = self.read(&sub_path)? else {
+                continue;
+            };
+            let child_value = rec.as_value().cloned().ok_or_else(|| {
+                StoreError::store("config", "read", "child record had no value")
+            })?;
+            children.insert(head, child_value);
         }
-        Ok(None)
+
+        Ok(Some(Record::parsed(Value::Map(children))))
+    }
+}
+
+impl ConfigStore {
+    /// Project base ∪ runtime into a single flat-keyed effective map.
+    /// Runtime `Null` entries are tombstones — they delete the
+    /// corresponding base key and don't appear in the result. This is
+    /// the post-tombstone view that all reads (leaf, children, root)
+    /// operate against, so callers never observe a stale base value
+    /// behind a fresh delete.
+    fn effective_map(&self) -> BTreeMap<String, Value> {
+        let mut out = self.base.clone();
+        for (k, v) in &self.runtime {
+            if *v == Value::Null {
+                out.remove(k);
+            } else {
+                out.insert(k.clone(), v.clone());
+            }
+        }
+        out
     }
 }
 
@@ -336,15 +396,106 @@ mod tests {
 
     #[test]
     fn read_root_returns_effective_map() {
+        // Root read projects the effective tree-of-Maps: top-level
+        // components are the only direct keys, and sub-paths nest under
+        // their head. Same convention as LocalConfig.
         let mut store = store_with_defaults();
         let val = read_val(&mut store, "").unwrap();
         match val {
             Value::Map(m) => {
-                assert!(m.contains_key("gate/model"));
-                assert!(m.contains_key("gate/provider"));
+                assert_eq!(m.len(), 1, "root has one immediate child: {m:?}");
+                let gate = match m.get("gate").expect("gate present") {
+                    Value::Map(g) => g,
+                    other => panic!("expected gate to be a Map; got {other:?}"),
+                };
+                assert!(gate.contains_key("model"));
+                assert!(gate.contains_key("provider"));
             }
             _ => panic!("expected Map"),
         }
+    }
+
+    #[test]
+    fn read_at_non_leaf_returns_immediate_children_map() {
+        let mut base = BTreeMap::new();
+        base.insert(
+            "gate/accounts/alpha/endpoint".to_string(),
+            Value::String("https://alpha".into()),
+        );
+        base.insert(
+            "gate/accounts/beta/endpoint".to_string(),
+            Value::String("https://beta".into()),
+        );
+        base.insert("gate/other".to_string(), Value::String("other".into()));
+        let mut store = ConfigStore::new(base);
+
+        let rec = store
+            .read(&Path::parse("gate/accounts").unwrap())
+            .expect("ok")
+            .expect("non-leaf returns Some");
+        let map = match rec.as_value().expect("value") {
+            Value::Map(m) => m.clone(),
+            other => panic!("expected Map; got {other:?}"),
+        };
+        assert!(map.contains_key("alpha"));
+        assert!(map.contains_key("beta"));
+        assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn read_at_leaf_still_returns_leaf_value() {
+        let mut store = store_with_defaults();
+        let p = Path::parse("gate/model").unwrap();
+        let rec = store.read(&p).unwrap().expect("leaf");
+        assert_eq!(
+            rec.as_value().unwrap(),
+            &Value::String("claude-sonnet-4-20250514".into())
+        );
+    }
+
+    #[test]
+    fn read_at_missing_path_returns_none() {
+        let mut store = store_with_defaults();
+        let p = Path::parse("not/a/real/prefix").unwrap();
+        assert!(store.read(&p).unwrap().is_none());
+    }
+
+    #[test]
+    fn runtime_null_tombstones_filter_from_children_map() {
+        // Runtime Null entries are tombstones — base values masked, fresh
+        // deletes — and must not appear in the children-Map at a non-leaf
+        // read. The walk operates on the post-tombstone effective map.
+        let mut base = BTreeMap::new();
+        base.insert(
+            "gate/accounts/alpha/endpoint".to_string(),
+            Value::String("a".into()),
+        );
+        base.insert(
+            "gate/accounts/beta/endpoint".to_string(),
+            Value::String("b".into()),
+        );
+        let mut store = ConfigStore::new(base);
+        // Tombstone the whole `alpha` subtree via Writer::write with Null.
+        store
+            .write(
+                &Path::parse("gate/accounts/alpha").unwrap(),
+                Record::parsed(Value::Null),
+            )
+            .unwrap();
+
+        let rec = store
+            .read(&Path::parse("gate/accounts").unwrap())
+            .unwrap()
+            .expect("non-leaf");
+        let map = match rec.as_value().unwrap() {
+            Value::Map(m) => m.clone(),
+            other => panic!("expected Map; got {other:?}"),
+        };
+        assert!(
+            !map.contains_key("alpha"),
+            "tombstoned alpha must not appear; map={map:?}"
+        );
+        assert!(map.contains_key("beta"));
     }
 
     #[test]
@@ -644,17 +795,19 @@ mod tests {
             Some(Value::String("sibling".into()))
         );
 
-        // Root-read Map drops every key under the deleted subtree but
-        // retains the sibling.
+        // Root-read Map (now a tree-of-Maps) drops every key under the
+        // deleted subtree but retains the sibling. `gate/k1*` keys nest
+        // under `gate`, and the deleted `k1` subtree is absent there.
         let root = read_val(&mut config, "").unwrap();
         match root {
             Value::Map(m) => {
-                assert!(!m.contains_key("gate/k1"));
-                assert!(!m.contains_key("gate/k1/sub1"));
-                assert!(!m.contains_key("gate/k1/sub2"));
-                assert!(!m.contains_key("gate/k1/sub2/deep"));
+                let gate = match m.get("gate").expect("gate present") {
+                    Value::Map(g) => g,
+                    other => panic!("expected gate to be a Map; got {other:?}"),
+                };
+                assert!(!gate.contains_key("k1"));
                 assert_eq!(
-                    m.get("gate/k1_other"),
+                    gate.get("k1_other"),
                     Some(&Value::String("sibling".into()))
                 );
             }
