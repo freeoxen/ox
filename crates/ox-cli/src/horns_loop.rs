@@ -2,33 +2,40 @@
 //!
 //! While the user is on a horns-owned screen (today: settings) the
 //! application state machine sits in `run_horns_settings_loop`. It
-//! owns the terminal by value, installs the ratatui
-//! `ViewRenderSubscription` against that terminal under a scoped
-//! `Arc<parking_lot::Mutex<...>>` (bounded to this function), polls
-//! crossterm input, writes `KeyChord`s to the broker, and watches
-//! for the user-driven exit signal. On exit it unwraps the Mutex,
-//! recovers the terminal, and returns it to the caller (the
-//! application state machine) which transitions back into the legacy
-//! loop.
+//! owns the terminal by value, drives input through the broker (so
+//! `KeyDispatchSubscription` handles dispatch with all its cascade
+//! semantics), and renders inline by fetching a `SettingsSnapshot`
+//! and calling the renderer directly.
 //!
-//! The `Arc<Mutex<...>>` is internal — main.rs and `settings::install`
-//! never see it. Ownership of the terminal transfers cleanly between
-//! states.
+//! Why inline render rather than going through horns-core's
+//! `RenderSubscription`: the settings renderers use a flat-keyspace
+//! `Reader` (`SettingsSnapshot`, a `LocalConfig` populated from the
+//! broker by walking known prefixes). The broker's `SubCtx::snapshot`
+//! is a different shape — it reads individual paths fine but
+//! `data.read(empty)` doesn't return a flat `Value::Map` of all keys,
+//! which is what helpers like `child_names_under` rely on. Building
+//! the snapshot per frame here keeps the renderer working without
+//! restructuring the snapshot interface.
+//!
+//! Dispatch IS still broker-mediated: keystrokes flow into
+//! `ui/_horns/settings/input/key`, the `KeyDispatchSubscription`
+//! resolves them through the registered Commands, the resulting
+//! cascade writes back to the broker. The next frame fetches a fresh
+//! snapshot that reflects those writes.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use crossterm::event::{self, Event};
-use horns_core::subscription::SubscriptionId;
-use horns_ratatui::{RatatuiOptions, Theme};
+use horns_ratatui::{Theme, render_to_frame};
 use ox_broker::{BrokerStore, ClientHandle};
 use ox_path::oxpath;
-use parking_lot::Mutex;
 use ratatui::DefaultTerminal;
 use structfs_core_store::Path;
 
 use crate::key_chord_canonical::parse_key_str;
 use crate::key_encode::encode_key;
+use crate::settings::commands::navigation::path_from_value;
+use crate::settings::snapshot::fetch_settings_view_state;
 
 /// Outcome of the horns session, communicating back to the top-level
 /// state machine which way to pivot.
@@ -40,53 +47,34 @@ pub enum HornsExit {
 }
 
 /// Run the horns settings loop. Takes the terminal by value; returns
-/// it by value when the session ends. The internal subscription
-/// machinery is bounded to this function.
+/// it by value when the session ends.
 pub async fn run_horns_settings_loop(
-    broker: &BrokerStore,
+    _broker: &BrokerStore,
     client: &ClientHandle,
-    terminal: DefaultTerminal,
+    mut terminal: DefaultTerminal,
 ) -> std::io::Result<(HornsExit, DefaultTerminal)> {
-    // ---- 1. Wrap the terminal in an Arc<Mutex<>> for the duration
-    //         of this session. The subscription's `handle` method is
-    //         `&self`, so the terminal needs interior mutability. The
-    //         Mutex is scoped to this function — nothing outside
-    //         touches it.
-    let terminal_arc = Arc::new(Mutex::new(terminal));
+    // Renderers + theme live for the duration of the session. The
+    // RendererRegistry is reused every frame; constructing it once
+    // is cheap and avoids re-registering closures on each draw.
+    let mut renderers = crate::settings::RendererRegistry::new();
+    crate::settings::renderers::register_all(&mut renderers);
+    let theme = Theme::default();
 
-    // ---- 2. Install the ratatui ViewRenderSubscription. It watches
-    //         `<render_output_path>` and locks the terminal to draw
-    //         on every new View. horns-core's RenderSubscription is
-    //         the producer; this is the consumer.
-    let ratatui_handle = horns_ratatui::install(
-        broker,
-        RatatuiOptions {
-            view_input_path: crate::settings::render_output_path(),
-            terminal: terminal_arc.clone(),
-            theme: Theme::default(),
-        },
-    );
-    let ratatui_sub_id = ratatui_handle.subscription_id.clone();
-
-    // ---- 3. Seed the focus cursor if it's not already set. The
-    //         RenderSubscription reads `ui/settings/focused` and
-    //         no-ops when the path is empty — without seeding, the
-    //         first frame after entering settings would be blank
-    //         until the user moved focus. Default to
-    //         `settings/index` (the accordion page); j/k will move
-    //         focus to the first row immediately.
-    use structfs_core_store::{Record, Value};
-    let focused_path = crate::settings::cursor_path();
-    let focused_is_set = client
-        .read(&focused_path)
+    // Seed the focus cursor if it's not already set. Renderers key
+    // off the cursor path; an unset cursor defaults to
+    // `settings/index` so the first frame shows the accordion.
+    use structfs_core_store::Record;
+    let cursor_path = crate::settings::cursor_path();
+    let cursor_is_set = client
+        .read(&cursor_path)
         .await
         .ok()
         .flatten()
         .is_some();
-    if !focused_is_set {
+    if !cursor_is_set {
         let _ = client
             .write(
-                &focused_path,
+                &cursor_path,
                 Record::parsed(crate::settings::commands::navigation::path_to_value(
                     &oxpath!("settings", "index"),
                 )),
@@ -94,33 +82,36 @@ pub async fn run_horns_settings_loop(
             .await;
     }
 
-    // ---- 4. Seed the area + render-tick so the first frame renders
-    //         immediately (the RenderSubscription needs an area to
-    //         render against, and a tick to fire on).
-    {
-        let area = terminal_arc.lock().size()?;
-        let area_rect = horns_core::Rect::new(0, 0, area.width, area.height);
-        let _ = client
-            .write_typed(&crate::settings::input_area_path(), &area_rect)
-            .await;
-    }
-    let _ = client
-        .write(
-            &crate::settings::render_tick_path(),
-            Record::parsed(Value::Integer(1)),
-        )
-        .await;
-
-    // ---- 4. Input loop. Poll crossterm, encode to KeyChord, write
-    //         to the broker's input path. The broker dispatches the
-    //         KeyDispatchSubscription which runs the matched command;
-    //         the resulting cascade bumps render-tick which wakes the
-    //         RenderSubscription; the new View is written to the
-    //         render-output path; this loop's ViewRenderSubscription
-    //         picks it up and draws.
     let exit = loop {
-        // Block briefly for an event; tick periodically to check the
-        // exit signal even if no input arrives.
+        // ---- Render: fetch a snapshot, resolve the focus cursor,
+        //      run the renderer, draw. The snapshot is built once
+        //      per frame so reads see writes that landed since the
+        //      last frame (in particular, the cursor / focus updates
+        //      the KeyDispatchSubscription emitted).
+        let mut snap = fetch_settings_view_state(client).await;
+        let cursor = read_focus_cursor(&mut snap)
+            .unwrap_or_else(|| oxpath!("settings", "index"));
+        let area_ratatui = terminal.size()?;
+        let area = horns_core::Rect::new(0, 0, area_ratatui.width, area_ratatui.height);
+        let view = {
+            let mut ctx = crate::settings::RenderCtx {
+                area,
+                data: &mut snap,
+                registry: &renderers,
+                theme: &theme as &dyn std::any::Any,
+            };
+            renderers.render(&cursor, &mut ctx)
+        };
+        terminal.draw(|frame| {
+            let area = frame.area();
+            render_to_frame(&view, frame, area, &theme);
+        })?;
+
+        // ---- Input: poll briefly for a crossterm event; if one
+        //      arrives, write it through the broker so
+        //      KeyDispatchSubscription handles dispatch (cascade
+        //      semantics, command resolution, etc.). Resizes update
+        //      the area record for any host that watches it.
         if event::poll(Duration::from_millis(50))? {
             match event::read()? {
                 Event::Key(key) => {
@@ -132,20 +123,18 @@ pub async fn run_horns_settings_loop(
                         }
                     }
                 }
-                Event::Resize(w, h) => {
-                    let area_rect = horns_core::Rect::new(0, 0, w, h);
-                    let _ = client
-                        .write_typed(&crate::settings::input_area_path(), &area_rect)
-                        .await;
+                Event::Resize(_, _) => {
+                    // No-op: the next frame's `terminal.size()` will
+                    // pick up the new dimensions automatically.
                 }
                 _ => {}
             }
         }
 
-        // Exit signal: when the user presses Esc on the settings
-        // index, the `nav.ascend` command writes
-        // `ui/settings/_request_exit = true`. Clear it and break out
-        // to the legacy loop.
+        // ---- Exit signal: `_request_exit = true` is written by the
+        //      `nav.ascend` command when the user Escapes from the
+        //      top-level settings page. Clear it and pivot back to
+        //      the legacy loop.
         let exit_path: Path = oxpath!("ui", "settings", "_request_exit");
         let want_exit = client
             .read_typed::<bool>(&exit_path)
@@ -167,38 +156,18 @@ pub async fn run_horns_settings_loop(
         }
     };
 
-    // ---- 5. Tear down: unregister the ratatui subscription and
-    //         recover the terminal. The Arc has exactly two strong
-    //         references at this point — the local `terminal_arc`
-    //         and the subscription's clone. Unregistering drops the
-    //         subscription's clone, leaving us as the unique owner.
-    broker
-        .unregister_subscription(&ratatui_sub_id);
-    let terminal = match Arc::try_unwrap(terminal_arc) {
-        Ok(mutex) => mutex.into_inner(),
-        Err(arc) => {
-            // The subscription failed to drop its Arc — should not
-            // happen unless ox-broker leaks references somewhere.
-            // Fall back to leaking the inner terminal by cloning the
-            // mutex's contents is impossible (DefaultTerminal isn't
-            // Clone). The only recovery is to return an error.
-            tracing::error!(
-                strong_count = Arc::strong_count(&arc),
-                "horns session: failed to recover Terminal (subscription left dangling refs)"
-            );
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "horns session: terminal not uniquely owned at exit",
-            ));
-        }
-    };
-
     Ok((exit, terminal))
 }
 
-/// Identifier of the ratatui subscription registered by
-/// `run_horns_settings_loop`. Exposed for tests / introspection.
-#[allow(dead_code)]
-pub fn ratatui_subscription_id() -> SubscriptionId {
-    SubscriptionId("horns_ratatui.view_render".to_string())
+/// Read the focus cursor (`ui/settings/focused`) from a fetched
+/// `SettingsSnapshot`. Returns `None` if the path is empty or
+/// missing; the renderer then falls back to a default cursor.
+fn read_focus_cursor(snap: &mut crate::settings::snapshot::SettingsSnapshot) -> Option<Path> {
+    use structfs_core_store::Reader;
+    let rec = snap
+        .read(&oxpath!("ui", "settings", "focused"))
+        .ok()
+        .flatten()?;
+    let value = rec.as_value()?;
+    path_from_value(value)
 }
