@@ -6,6 +6,8 @@
 use std::collections::BTreeMap;
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer};
 
+use crate::flatten_value_into;
+
 /// In-memory config store implementing Reader and Writer.
 pub struct LocalConfig {
     values: BTreeMap<String, Value>,
@@ -146,34 +148,14 @@ impl Writer for LocalConfig {
             let descendant_prefix = format!("{}/", key);
             self.values
                 .retain(|k, _| k != &key && !k.starts_with(&descendant_prefix));
+            // Flatten after the retain: the inserts must follow the sweep
+            // so the new Map's leaves aren't swept away with the stale ones.
             flatten_value_into(&key, &value, &mut self.values);
             return Ok(to.clone());
         }
 
         self.values.insert(key, value);
         Ok(to.clone())
-    }
-}
-
-/// Recursively expand a value into flat-keyed leaves under `prefix`.
-/// `Value::Map` recurses into its fields; non-Map values are leaves
-/// inserted at `prefix`. Used by writes that receive a parent Map to
-/// keep storage in the leaf-only shape reads expect.
-fn flatten_value_into(prefix: &str, value: &Value, out: &mut BTreeMap<String, Value>) {
-    match value {
-        Value::Map(m) => {
-            for (k, v) in m {
-                let path = if prefix.is_empty() {
-                    k.clone()
-                } else {
-                    format!("{}/{}", prefix, k)
-                };
-                flatten_value_into(&path, v, out);
-            }
-        }
-        _ => {
-            out.insert(prefix.to_string(), value.clone());
-        }
     }
 }
 

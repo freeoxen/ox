@@ -11,6 +11,8 @@
 use std::collections::BTreeMap;
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer};
 
+use ox_store_util::flatten_value_into;
+
 pub struct ConfigStore {
     /// Immutable startup values (figment-resolved or defaults).
     base: BTreeMap<String, Value>,
@@ -123,29 +125,6 @@ impl ConfigStore {
         // doesn't get a false "saved" indicator.
         self.runtime_at_last_save = self.runtime.clone();
         Ok(())
-    }
-}
-
-/// Recursively expand a value into flat-keyed leaves under `prefix`.
-/// `Value::Map` recurses into its fields; everything else is treated as
-/// a leaf and inserted at `prefix`. Used in save to decompose runtime
-/// parent Maps into the flat sub-keys the TOML backing serializes
-/// natively.
-fn flatten_value_into(prefix: &str, value: &Value, out: &mut BTreeMap<String, Value>) {
-    match value {
-        Value::Map(m) => {
-            for (k, v) in m {
-                let path = if prefix.is_empty() {
-                    k.clone()
-                } else {
-                    format!("{}/{}", prefix, k)
-                };
-                flatten_value_into(&path, v, out);
-            }
-        }
-        _ => {
-            out.insert(prefix.to_string(), value.clone());
-        }
     }
 }
 
@@ -363,6 +342,9 @@ impl Writer for ConfigStore {
                     self.runtime.insert(base_key.clone(), Value::Null);
                 }
             }
+            // Flatten directly into `self.runtime`: the inserts must run
+            // AFTER the tombstones in the same map so present-key
+            // tombstones are overwritten with the new Map's values.
             flatten_value_into(&key, &value, &mut self.runtime);
             return Ok(to.clone());
         }
