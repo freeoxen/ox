@@ -36,7 +36,6 @@ impl SettingsSnapshot {
     pub(crate) fn insert(&mut self, path: &Path, value: Value) {
         self.inner.set(&path.to_string(), value);
     }
-
 }
 
 impl Default for SettingsSnapshot {

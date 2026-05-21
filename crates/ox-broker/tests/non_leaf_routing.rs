@@ -43,7 +43,14 @@ async fn broker_read_at_non_leaf_returns_children_map_from_mount() {
         Value::Map(m) => m.clone(),
         other => panic!("expected Value::Map; got {other:?}"),
     };
-    assert!(map.contains_key("accounts"), "accounts missing; map={map:?}");
+    assert!(
+        map.contains_key("accounts"),
+        "accounts missing; map={map:?}"
+    );
     assert!(map.contains_key("models"), "models missing; map={map:?}");
-    assert_eq!(map.len(), 2, "expected exactly two immediate children; map={map:?}");
+    assert_eq!(
+        map.len(),
+        2,
+        "expected exactly two immediate children; map={map:?}"
+    );
 }

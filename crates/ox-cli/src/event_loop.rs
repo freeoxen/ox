@@ -1,12 +1,9 @@
 use crate::app::App;
 use crate::editor::flush_pending_edits;
-use crate::settings::commands::navigation::path_from_value;
-use crate::settings::snapshot::{SettingsSnapshot, fetch_settings_view_state};
 use crate::thread_shell::{ThreadShell, dispatch_global_mouse};
 use crate::types::CustomizeState;
 use crate::view_state::fetch_view_state;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
-use horns_core::view::View;
 use horns_ratatui::Theme;
 use ox_kernel::PathComponent;
 use ox_path::oxpath;
@@ -16,7 +13,6 @@ use ox_types::{
 };
 use ox_ui::text_input_store::EditSource;
 use std::time::Duration;
-use structfs_core_store::{Path, Reader};
 
 // ---------------------------------------------------------------------------
 // Scroll momentum — exponential boost for fast scrolling, decay for slow
@@ -180,8 +176,7 @@ pub async fn run_async(
             // view state — fetch_view_state remains a pure reader.
             refresh_thread_info_cache(client, &mut dialog).await;
 
-            let mut vs =
-                fetch_view_state(client, app, &dialog, thread.input_session.editor_mode).await;
+            let vs = fetch_view_state(client, app, &dialog, thread.input_session.editor_mode).await;
 
             // State-machine pivot: when the user transitions to the
             // settings screen, the legacy loop yields. The top-level
@@ -647,33 +642,6 @@ async fn send_via_input_store(
             KeyDispatchOutcome::Handled
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Settings cursor helper
-// ---------------------------------------------------------------------------
-
-/// Read `ui/settings/cursor` from a settings snapshot. The cursor is
-/// stored as a `Value::Array` of `Value::String` segments by
-/// `path_to_value` in the navigation commands; we hand-decode the same
-/// shape because `Path` does not implement `Deserialize`.
-fn read_settings_cursor(snap: &mut SettingsSnapshot) -> Option<Path> {
-    let record = snap
-        .read(&oxpath!("ui", "settings", "cursor"))
-        .ok()
-        .flatten()?;
-    let value = record.as_value()?;
-    path_from_value(value)
-}
-
-/// Read the focused-widget pointer the accordion writes.
-fn read_settings_focused(snap: &mut SettingsSnapshot) -> Option<Path> {
-    let record = snap
-        .read(&oxpath!("ui", "settings", "focused"))
-        .ok()
-        .flatten()?;
-    let value = record.as_value()?;
-    path_from_value(value)
 }
 
 // ---------------------------------------------------------------------------

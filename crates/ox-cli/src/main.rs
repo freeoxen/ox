@@ -310,10 +310,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             terminal = Some(t);
                             state = AppState::Legacy;
                         }
-                        Ok((horns_loop::HornsExit::Quit, t)) => {
-                            terminal = Some(t);
-                            state = AppState::Quit;
-                        }
                         Err(e) => break Err(e),
                     }
                 }

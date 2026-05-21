@@ -566,10 +566,7 @@ mod tests {
             other => panic!("expected Map; got {other:?}"),
         };
         assert!(!alpha.contains_key("endpoint"));
-        assert_eq!(
-            alpha.get("token"),
-            Some(&Value::String("tok".into()))
-        );
+        assert_eq!(alpha.get("token"), Some(&Value::String("tok".into())));
     }
 
     #[test]
@@ -1001,10 +998,7 @@ mod tests {
                     other => panic!("expected gate to be a Map; got {other:?}"),
                 };
                 assert!(!gate.contains_key("k1"));
-                assert_eq!(
-                    gate.get("k1_other"),
-                    Some(&Value::String("sibling".into()))
-                );
+                assert_eq!(gate.get("k1_other"), Some(&Value::String("sibling".into())));
             }
             _ => panic!("expected Map"),
         }

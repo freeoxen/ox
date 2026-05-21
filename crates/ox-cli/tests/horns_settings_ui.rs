@@ -35,7 +35,7 @@ use structfs_core_store::{Path, Reader, Record, Value};
 
 use ox_cli::settings;
 use ox_cli::settings::commands::navigation::{path_from_value, path_to_value};
-use ox_cli::settings::snapshot::{SettingsSnapshot, fetch_settings_view_state};
+use ox_cli::settings::snapshot::fetch_settings_view_state;
 use ox_cli::settings::visible_rows::expanded_set_to_value;
 
 // ---------------------------------------------------------------------------
@@ -99,10 +99,16 @@ async fn seed_account(client: &ClientHandle, name: &str) {
 /// Seed the expanded set at `ui/settings/expanded`.
 async fn seed_expanded(client: &ClientHandle, expanded: &[&str]) {
     let value = expanded_set_to_value(
-        &expanded.iter().map(|s| (*s).to_string()).collect::<Vec<_>>(),
+        &expanded
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect::<Vec<_>>(),
     );
     client
-        .write(&oxpath!("ui", "settings", "expanded"), Record::parsed(value))
+        .write(
+            &oxpath!("ui", "settings", "expanded"),
+            Record::parsed(value),
+        )
         .await
         .unwrap();
 }
@@ -110,7 +116,10 @@ async fn seed_expanded(client: &ClientHandle, expanded: &[&str]) {
 /// Set the focus cursor to `path`.
 async fn set_cursor(client: &ClientHandle, path: &Path) {
     client
-        .write(&settings::cursor_path(), Record::parsed(path_to_value(path)))
+        .write(
+            &settings::cursor_path(),
+            Record::parsed(path_to_value(path)),
+        )
         .await
         .unwrap();
 }
@@ -209,27 +218,6 @@ fn collect_list_primaries(view: &View) -> Vec<String> {
         }
     });
     out
-}
-
-/// Find the first `ListItem` with a primary string matching
-/// `predicate`. Returns the item plus the `selected` index of the
-/// list that contained it (the index used to drive cursor highlight).
-fn find_list_item<F: Fn(&str) -> bool>(view: &View, predicate: F) -> Option<&ListItem> {
-    let mut found: Option<&ListItem> = None;
-    walk_view(view, &mut |v| {
-        if found.is_some() {
-            return;
-        }
-        if let View::List { items, .. } = v {
-            for item in items {
-                if predicate(&item.primary) {
-                    found = Some(item);
-                    break;
-                }
-            }
-        }
-    });
-    found
 }
 
 /// Generic in-order walk over the View tree.
@@ -454,7 +442,10 @@ async fn typing_in_compose_form_appends_to_name_buffer() {
         Value::String(s) => s.clone(),
         other => panic!("name should be a string; got {other:?}"),
     };
-    assert_eq!(s, "beta", "compose name field should reflect typed characters");
+    assert_eq!(
+        s, "beta",
+        "compose name field should reflect typed characters"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -48,8 +48,6 @@ use crate::settings::snapshot::fetch_settings_view_state;
 pub enum HornsExit {
     /// User left settings — back to the legacy loop.
     ToLegacy,
-    /// User asked to quit the program from inside settings.
-    Quit,
 }
 
 /// Run the horns settings loop. Takes the terminal by value; returns
@@ -130,13 +128,8 @@ pub async fn run_horns_settings_loop(
                     if let Some(key_str) = encode_key(key.modifiers, key.code) {
                         if let Some(chord) = parse_key_str(&key_str) {
                             let mut snap = fetch_settings_view_state(client).await;
-                            let writes = dispatcher.dispatch(
-                                &mut snap,
-                                &chord,
-                                &bindings,
-                                &commands,
-                                &renderers,
-                            );
+                            let writes = dispatcher
+                                .dispatch(&mut snap, &chord, &bindings, &commands, &renderers);
                             for write in writes {
                                 let _ = client.write(&write.path, write.record).await;
                             }

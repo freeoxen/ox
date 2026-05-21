@@ -55,9 +55,7 @@ impl Reader for LocalConfig {
             return Err(StoreError::store(
                 "LocalConfig",
                 "read",
-                format!(
-                    "malformed store: path {key:?} has both a leaf value and child entries"
-                ),
+                format!("malformed store: path {key:?} has both a leaf value and child entries"),
             ));
         }
         if has_leaf {
@@ -299,7 +297,10 @@ mod tests {
     #[test]
     fn read_at_non_leaf_returns_value_map_of_immediate_children() {
         let mut cfg = LocalConfig::new();
-        cfg.set("settings/index/entries/accounts", Value::String("acc".into()));
+        cfg.set(
+            "settings/index/entries/accounts",
+            Value::String("acc".into()),
+        );
         cfg.set("settings/index/entries/models", Value::String("mod".into()));
         cfg.set("settings/other", Value::String("other".into()));
 
@@ -310,15 +311,24 @@ mod tests {
             Value::Map(m) => m.clone(),
             other => panic!("expected Map at non-leaf path; got {other:?}"),
         };
-        assert!(map.contains_key("accounts"), "accounts child missing; map={map:?}");
-        assert!(map.contains_key("models"), "models child missing; map={map:?}");
+        assert!(
+            map.contains_key("accounts"),
+            "accounts child missing; map={map:?}"
+        );
+        assert!(
+            map.contains_key("models"),
+            "models child missing; map={map:?}"
+        );
         assert_eq!(map.len(), 2, "more than immediate children; map={map:?}");
     }
 
     #[test]
     fn read_at_leaf_still_returns_the_leaf_value() {
         let mut cfg = LocalConfig::new();
-        cfg.set("settings/index/entries/accounts", Value::String("acc".into()));
+        cfg.set(
+            "settings/index/entries/accounts",
+            Value::String("acc".into()),
+        );
 
         let path = Path::parse("settings/index/entries/accounts").unwrap();
         let rec = cfg.read(&path).unwrap().expect("leaf returns Some");
@@ -329,7 +339,10 @@ mod tests {
     #[test]
     fn read_at_missing_path_returns_none() {
         let mut cfg = LocalConfig::new();
-        cfg.set("settings/index/entries/accounts", Value::String("acc".into()));
+        cfg.set(
+            "settings/index/entries/accounts",
+            Value::String("acc".into()),
+        );
 
         let path = Path::parse("not/a/real/prefix").unwrap();
         let rec = cfg.read(&path).unwrap();
@@ -370,11 +383,17 @@ mod tests {
 
         // Sub-keys present in the new Map carry its values, as flat leaves.
         assert_eq!(
-            cfg.read(&path!("gate/lm/dialect")).unwrap().unwrap().as_value(),
+            cfg.read(&path!("gate/lm/dialect"))
+                .unwrap()
+                .unwrap()
+                .as_value(),
             Some(&Value::String("openai".into())),
         );
         assert_eq!(
-            cfg.read(&path!("gate/lm/endpoint")).unwrap().unwrap().as_value(),
+            cfg.read(&path!("gate/lm/endpoint"))
+                .unwrap()
+                .unwrap()
+                .as_value(),
             Some(&Value::String("http://x".into())),
         );
         // Sub-keys absent from the new Map are gone — the Map's intent is
