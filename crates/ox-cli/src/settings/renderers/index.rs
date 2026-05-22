@@ -758,10 +758,9 @@ fn read_cursor(data: &mut dyn structfs_core_store::Reader) -> Option<structfs_co
     use crate::settings::commands::navigation::path_from_value;
     use ox_path::oxpath;
 
-    // Reads the focused-widget pointer, NOT `ui/settings/cursor`. The
-    // page-level cursor (binding scope) stays at `settings/index`
-    // while the accordion screen is active; the focused widget inside
-    // the tree lives at its own path.
+    // Reads the focus cursor — the single cursor source of truth. The
+    // renderer registry walks the focus cursor's ancestor chain to
+    // find the page renderer (settings/index for the accordion).
     let r = data
         .read(&oxpath!("ui", "settings", "focused"))
         .ok()

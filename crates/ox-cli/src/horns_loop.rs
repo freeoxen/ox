@@ -90,16 +90,11 @@ pub async fn run_horns_settings_loop(
     }
 
     let exit = loop {
-        // ---- Render: fetch a snapshot, resolve the page cursor,
-        //      run the renderer, draw. The PAGE cursor
-        //      (`ui/settings/cursor`) selects which renderer fires;
-        //      the FOCUS cursor (`ui/settings/focused`) drives the
-        //      dispatcher and the renderer's selection state. They're
-        //      distinct concepts — focus can sit on a compound-widget
-        //      leaf like `settings/_compose_form/name` while the page
-        //      is still `settings/index`.
+        // ---- Render: fetch a snapshot, run the renderer, draw. The
+        //      registry walks the focus cursor's ancestor chain to find
+        //      the registered page — one cursor, no second state path.
         let mut snap = fetch_settings_view_state(client).await;
-        let cursor = read_page_cursor(&mut snap).unwrap_or_else(|| oxpath!("settings", "index"));
+        let cursor = read_focus_cursor(&mut snap).unwrap_or_else(|| oxpath!("settings", "index"));
         let area_ratatui = terminal.size()?;
         let area = horns_core::Rect::new(0, 0, area_ratatui.width, area_ratatui.height);
         let view = {
@@ -172,13 +167,14 @@ pub async fn run_horns_settings_loop(
     Ok((exit, terminal))
 }
 
-/// Read the page cursor (`ui/settings/cursor`) — selects which
-/// renderer the registry runs. Distinct from the focus cursor at
-/// `ui/settings/focused` which selects highlight + dispatch scope.
-fn read_page_cursor(snap: &mut crate::settings::snapshot::SettingsSnapshot) -> Option<Path> {
+/// Read the focus cursor (`ui/settings/focused`). The renderer walks
+/// the focus cursor's ancestor chain to find the registered page, so
+/// passing the focus cursor straight through is equivalent to picking
+/// the page from a separate state path — without the second path.
+fn read_focus_cursor(snap: &mut crate::settings::snapshot::SettingsSnapshot) -> Option<Path> {
     use structfs_core_store::Reader;
     let rec = snap
-        .read(&oxpath!("ui", "settings", "cursor"))
+        .read(&oxpath!("ui", "settings", "focused"))
         .ok()
         .flatten()?;
     let value = rec.as_value()?;

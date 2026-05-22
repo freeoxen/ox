@@ -183,34 +183,17 @@ impl E2eHarness {
         }
     }
 
-    /// Read the current settings cursor as an oxpath. Returns `None`
-    /// when no cursor has been written yet.
+    /// Read the current settings focus cursor as an oxpath. There is a
+    /// single cursor at `ui/settings/focused`; the renderer walks its
+    /// ancestor chain to find the registered page.
     async fn current_cursor(&self) -> Option<Path> {
-        let rec = self
-            .client
-            .read(&oxpath!("ui", "settings", "cursor"))
-            .await
-            .expect("read cursor")?;
-        let value = rec.as_value()?.clone();
-        match value {
-            Value::Array(items) => {
-                let mut comps: Vec<String> = Vec::with_capacity(items.len());
-                for item in items {
-                    match item {
-                        Value::String(s) => comps.push(s),
-                        _ => return None,
-                    }
-                }
-                Path::try_from_components(comps).ok()
-            }
-            _ => None,
-        }
+        self.focused().await
     }
 
     /// Drive a single key through `send_key`, scoped to the settings
-    /// screen and the broker's current cursor. The snapshot used for
-    /// binding dispatch is freshly fetched so post-write reads inside
-    /// the same key see consistent state.
+    /// screen and the focus cursor. The snapshot used for binding
+    /// dispatch is freshly fetched so post-write reads inside the same
+    /// key see consistent state.
     async fn dispatch(&self, key: &str) -> KeyDispatchOutcome {
         let mut snap = self.snapshot().await;
         let cursor = self.current_cursor().await.unwrap_or_else(|| oxpath!());
@@ -332,13 +315,8 @@ async fn navigate_index_to_models_set_bootstrap() {
     populate_account(&h, "anthropic", "sk-test").await;
     write_models_for_account(&h, "anthropic", &["claude-haiku-4-5-20251001"]).await;
 
-    // The page-level cursor (binding scope) sits at the index. The
-    // focused-widget state lives at `ui/settings/focused`.
-    h.write_path(
-        &oxpath!("ui", "settings", "cursor"),
-        &oxpath!("settings", "index"),
-    )
-    .await;
+    // Single cursor: focused row inside settings/index. The renderer
+    // walks the ancestor chain to find the page renderer.
     h.write_path(
         &oxpath!("ui", "settings", "focused"),
         &oxpath!("settings", "accounts"),
@@ -483,13 +461,8 @@ async fn add_account_create_flow() {
     let h = E2eHarness::new().await;
     populate_index(&h).await;
 
-    // Cursor at the accordion, focused on the Accounts header so
-    // `a` resolves to accounts.compose.open via Prefix(settings/accounts).
-    h.write_path(
-        &oxpath!("ui", "settings", "cursor"),
-        &oxpath!("settings", "index"),
-    )
-    .await;
+    // Focus on the Accounts header so `a` resolves to
+    // accounts.compose.open via Prefix(settings/accounts).
     h.write_path(
         &oxpath!("ui", "settings", "focused"),
         &oxpath!("settings", "accounts"),
@@ -547,9 +520,9 @@ async fn add_account_create_flow() {
         .expect("secret key present after commit with XApiKey auth");
     assert_eq!(key.expose(), "sk-test");
 
-    // Cursor settled at settings/index and focused points at the new account row.
-    let cursor = h.current_cursor().await.expect("cursor present");
-    assert_eq!(cursor, oxpath!("settings", "index"));
+    // Focus points at the new account row; the renderer walks its
+    // ancestor chain back to settings/index where the page renderer
+    // lives.
     let focused = h.focused().await.expect("focused present");
     assert_eq!(focused, oxpath!("settings", "accounts", comp.clone()));
 
@@ -604,15 +577,9 @@ async fn delete_account_flow() {
     populate_index(&h).await;
     populate_account(&h, "anthropic", "sk-test").await;
 
-    // Cursor at accounts list, selection points at the account. Under
-    // cursor-as-focus the dispatcher's scope path is the focused
-    // cursor's ancestor chain, so `ui/settings/focused` must match the
-    // page cursor for `Prefix(settings/accounts)` bindings to fire.
-    h.write_path(
-        &oxpath!("ui", "settings", "cursor"),
-        &oxpath!("settings", "accounts"),
-    )
-    .await;
+    // Focus at the accounts list. The dispatcher's scope path is the
+    // focus cursor's ancestor chain, so `Prefix(settings/accounts)`
+    // bindings fire here.
     h.write_path(
         &oxpath!("ui", "settings", "focused"),
         &oxpath!("settings", "accounts"),
@@ -691,10 +658,10 @@ async fn delete_account_flow() {
         "selection should be cleared after delete"
     );
 
-    // Page cursor stays at settings/accounts throughout — the inline
-    // banner never moved it. The confirm-delete subtree (target_account
-    // + cursor_saved) is cleared by accounts.confirm.delete.
-    let cursor = h.current_cursor().await.expect("cursor");
+    // Focus stays at settings/accounts throughout — the inline banner
+    // never moved it. The confirm-delete subtree (target_account +
+    // cursor_saved) is cleared by accounts.confirm.delete.
+    let cursor = h.current_cursor().await.expect("focus");
     assert_eq!(cursor, oxpath!("settings", "accounts"));
     let target_after: Option<String> = h
         .client
@@ -725,14 +692,8 @@ async fn test_account_progresses_status() {
     populate_index(&h).await;
     populate_account(&h, "anthropic", "sk-test").await;
 
-    // Cursor at the detail page; selection on the account. Seed the
-    // focused-row cursor to match so `Prefix(settings/accounts)`
-    // bindings are on the dispatcher's scope path.
-    h.write_path(
-        &oxpath!("ui", "settings", "cursor"),
-        &oxpath!("settings", "accounts", "_detail"),
-    )
-    .await;
+    // Focus at the detail page so `Prefix(settings/accounts)` bindings
+    // are on the dispatcher's scope path.
     h.write_path(
         &oxpath!("ui", "settings", "focused"),
         &oxpath!("settings", "accounts", "_detail"),
@@ -817,16 +778,11 @@ async fn refresh_writes_catalog() {
     populate_index(&h).await;
     populate_account(&h, "anthropic", "sk-test").await;
 
-    // Cursor at the models list; selection points at a model belonging
-    // to the account whose catalog we'll refresh. Seed the focused-row
-    // cursor to match so `Prefix(settings/models)` bindings are on the
-    // dispatcher's scope path. The refresh command reads
-    // `selected: Option<ModelKey>` and pulls `account` off it.
-    h.write_path(
-        &oxpath!("ui", "settings", "cursor"),
-        &oxpath!("settings", "models"),
-    )
-    .await;
+    // Focus at the models list; selection points at a model belonging
+    // to the account whose catalog we'll refresh. `Prefix(settings/models)`
+    // bindings fire on the focus cursor's ancestor chain. The refresh
+    // command reads `selected: Option<ModelKey>` and pulls `account`
+    // off it.
     h.write_path(
         &oxpath!("ui", "settings", "focused"),
         &oxpath!("settings", "models"),
@@ -924,32 +880,19 @@ async fn production_ui_store_routes_settings_writes() {
         .await
         .expect("populate index");
 
-    client
-        .write(
-            &oxpath!("ui", "settings", "cursor"),
-            Record::parsed(path_to_value(&oxpath!("settings", "index"))),
-        )
-        .await
-        .expect(
-            "cursor write must reach UiStore's settings sub-store — if this \
-             errors, the `settings/*` arm has been removed from UiStore::write",
-        );
-
-    // Seed page cursor (binding scope) and the focused row.
-    client
-        .write(
-            &oxpath!("ui", "settings", "cursor"),
-            Record::parsed(path_to_value(&oxpath!("settings", "index"))),
-        )
-        .await
-        .expect("seed page cursor");
+    // Seed the focus cursor — the single cursor in the new world. The
+    // renderer walks its ancestor chain to find the registered page;
+    // the dispatcher's scope path is the focus cursor.
     client
         .write(
             &oxpath!("ui", "settings", "focused"),
             Record::parsed(path_to_value(&oxpath!("settings", "accounts"))),
         )
         .await
-        .expect("seed focused");
+        .expect(
+            "focus write must reach UiStore's settings sub-store — if this \
+             errors, the `settings/*` arm has been removed from UiStore::write",
+        );
 
     let mut snap = fetch_settings_view_state(&client).await;
     let cursor = oxpath!("settings", "index");
@@ -1056,11 +999,6 @@ async fn cycling_protocol_with_toml_loaded_flat_keys_advances_through_broker() {
         .expect("write expanded set");
 
     h.write_path(
-        &oxpath!("ui", "settings", "cursor"),
-        &oxpath!("settings", "accounts", comp.clone()),
-    )
-    .await;
-    h.write_path(
         &oxpath!("ui", "settings", "focused"),
         &oxpath!("settings", "accounts", comp.clone(), "protocol"),
     )
@@ -1146,11 +1084,6 @@ async fn cycling_protocol_mutates_bound_provider_dialect_not_account() {
         .await
         .expect("write expanded set");
 
-    h.write_path(
-        &oxpath!("ui", "settings", "cursor"),
-        &oxpath!("settings", "accounts", acct_comp.clone()),
-    )
-    .await;
     h.write_path(
         &oxpath!("ui", "settings", "focused"),
         &oxpath!("settings", "accounts", acct_comp.clone(), "protocol"),
@@ -1304,15 +1237,9 @@ async fn protocol_cycle_visibly_toggles_in_rendered_carousel() {
         )
         .await
         .expect("write expanded set");
-    // Page cursor stays at settings/index for the accordion design — the
-    // index renderer is what renders the whole tree. focused is what
-    // identifies the Protocol field row inside that tree (used for both
-    // the renderer's `selected` highlight and binding-scope dispatch).
-    h.write_path(
-        &oxpath!("ui", "settings", "cursor"),
-        &oxpath!("settings", "index"),
-    )
-    .await;
+    // focused identifies the Protocol field row inside the accordion;
+    // the renderer walks its ancestor chain to find the settings/index
+    // page renderer.
     h.write_path(
         &oxpath!("ui", "settings", "focused"),
         &oxpath!("settings", "accounts", acct_comp.clone(), "protocol"),
@@ -1356,14 +1283,8 @@ async fn add_connection_form_accepts_field_by_field_input() {
     let h = E2eHarness::new().await;
     populate_index(&h).await;
 
-    // Cursor sits at the accordion (settings/index, where the renderer
-    // lives); focused sits on settings/accounts so the `a` binding
+    // Focus on settings/accounts so the `a` binding
     // (Prefix(settings/accounts)) resolves to accounts.compose.open.
-    h.write_path(
-        &oxpath!("ui", "settings", "cursor"),
-        &oxpath!("settings", "index"),
-    )
-    .await;
     h.write_path(
         &oxpath!("ui", "settings", "focused"),
         &oxpath!("settings", "accounts"),
@@ -1546,17 +1467,12 @@ async fn delete_account_removes_connection_from_rendered_frame() {
         .await
         .expect("write expanded set");
 
-    // Page cursor at the index renderer, focused on the account row so
-    // `d` resolves via the `Prefix(settings/accounts)` binding to
-    // `accounts.delete_confirm`. `accounts_delete_confirm` reads the
-    // focused row first, falling back to `accounts/selected`; we set
-    // both so the resolution path is unambiguous.
+    // Focus on the account row so `d` resolves via the
+    // `Prefix(settings/accounts)` binding to `accounts.delete_confirm`.
+    // `accounts_delete_confirm` reads the focused row first, falling
+    // back to `accounts/selected`; we set both so the resolution path
+    // is unambiguous.
     let acct_comp = ox_kernel::PathComponent::try_new("anthropic").unwrap();
-    h.write_path(
-        &oxpath!("ui", "settings", "cursor"),
-        &oxpath!("settings", "index"),
-    )
-    .await;
     h.write_path(
         &oxpath!("ui", "settings", "focused"),
         &oxpath!("settings", "accounts", acct_comp.clone()),
@@ -1751,13 +1667,8 @@ async fn auth_cycle_renders_bearer_token_after_one_cycle() {
         .await
         .expect("write expanded set");
 
-    // Cursor at the index renderer; focused on the Auth field row so
-    // `cycle.field.next` (bound to `l`) routes to `selector_cycle_auth_dir`.
-    h.write_path(
-        &oxpath!("ui", "settings", "cursor"),
-        &oxpath!("settings", "index"),
-    )
-    .await;
+    // Focus on the Auth field row so `cycle.field.next` (bound to `l`)
+    // routes to `selector_cycle_auth_dir`.
     h.write_path(
         &oxpath!("ui", "settings", "focused"),
         &oxpath!("settings", "accounts", acct_comp.clone(), "auth"),
@@ -1841,13 +1752,8 @@ async fn add_connections_have_independent_providers() {
     let h = E2eHarness::new().await;
     populate_index(&h).await;
 
-    // Cursor at the accordion, focused on the Accounts header so the `a`
-    // binding (Prefix(settings/accounts)) resolves to accounts.compose.open.
-    h.write_path(
-        &oxpath!("ui", "settings", "cursor"),
-        &oxpath!("settings", "index"),
-    )
-    .await;
+    // Focus on the Accounts header so the `a` binding
+    // (Prefix(settings/accounts)) resolves to accounts.compose.open.
     h.write_path(
         &oxpath!("ui", "settings", "focused"),
         &oxpath!("settings", "accounts"),

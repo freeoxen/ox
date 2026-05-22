@@ -7,10 +7,12 @@
 //! display can never disagree about which rows are visible or what
 //! order they're in.
 //!
-//! Cursor convention: `ui/settings/cursor` holds the path of the
-//! currently-focused row. When the row collapses out from under the
-//! cursor, the next read of the visible list won't find it; the
-//! navigation commands clamp to the first visible row.
+//! Cursor convention: `ui/settings/focused` holds the path of the
+//! currently-focused row. There is one cursor — the renderer walks
+//! its ancestor chain to find the page renderer. When the row
+//! collapses out from under the cursor, the next read of the visible
+//! list won't find it; the navigation commands clamp to the first
+//! visible row.
 
 use ox_path::oxpath;
 use ox_types::AccountField;
@@ -107,12 +109,11 @@ fn jump(data: &mut dyn Reader, to: JumpTo) -> Vec<Write> {
     }]
 }
 
-/// Read the focused-widget identity. This is intentionally NOT
-/// `ui/settings/cursor`: cursor identifies the active page (the
-/// renderer + binding-scope), which on the accordion screen is always
-/// `settings/index`. The focused widget inside that page lives at
-/// `ui/settings/focused`. Conflating the two breaks binding dispatch
-/// (the binding lookup uses cursor as its scope key).
+/// Read the focused-widget identity at `ui/settings/focused`. With
+/// cursor-as-focus this is the single cursor — the dispatcher reads
+/// it for scope, the renderer walks its ancestor chain to find the
+/// page renderer, and these tree commands key off it for visible-row
+/// position.
 ///
 /// Returns the focused widget's underlying `Path` (the inner value
 /// of the conceptual `FocusId` — see `horns_core::view::FocusId`).
@@ -524,9 +525,9 @@ mod tests {
     fn activate_on_endpoint_field_enters_inline_edit_mode() {
         // Text-edit-able account fields (Endpoint, Key) switch to
         // inline edit mode: write the edit subtree
-        // (target_path/buffer/cursor_saved) and move the focused
-        // cursor to `settings/_edit`. The page-level cursor at
-        // `settings/index` is untouched.
+        // (target_path/buffer/cursor_saved) and move focus to
+        // `settings/_edit`. The renderer walks the focus chain back
+        // to settings/index where the page renderer lives.
         let mut snap = SettingsSnapshot::empty();
         write_index(&mut snap);
         write_account(&mut snap, "alpha");
@@ -551,9 +552,6 @@ mod tests {
             oxpath!("ui", "settings", "edit", "cursor_saved")
         );
         assert_eq!(writes[3].path, oxpath!("ui", "settings", "focused"));
-        for w in &writes {
-            assert_ne!(w.path, oxpath!("ui", "settings", "cursor"));
-        }
     }
 
     #[test]
@@ -575,9 +573,6 @@ mod tests {
         set_focused(&mut snap, "settings/accounts/alpha/protocol");
         let writes = run(&TreeActivate::new(), &mut snap);
         assert!(!writes.is_empty());
-        for w in &writes {
-            assert_ne!(w.path, oxpath!("ui", "settings", "cursor"));
-        }
         // The cycle helper writes to the *provider* path (record name
         // matches the account's provider field). The account record
         // itself is untouched.
@@ -661,9 +656,6 @@ mod tests {
             oxpath!("ui", "settings", "edit", "cursor_saved")
         );
         assert_eq!(writes[3].path, oxpath!("ui", "settings", "focused"));
-        for w in &writes {
-            assert_ne!(w.path, oxpath!("ui", "settings", "cursor"));
-        }
     }
 
     #[test]

@@ -878,7 +878,7 @@ For `Path` values (which don't implement `Serialize`), use the
 use crate::settings::commands::navigation::path_to_value;
 
 client.write(
-    &oxpath!("ui", "settings", "cursor"),
+    &oxpath!("ui", "settings", "focused"),
     Record::parsed(path_to_value(&oxpath!("settings", "appearance"))),
 ).await?;
 ```

@@ -1311,11 +1311,8 @@ fn accounts_compose_commit(data: &mut dyn Reader) -> Vec<Write> {
     // Clear draft state via subtree Null-cascade — one write at the
     // subtree root rather than per-field cleanup.
     //
-    // Intentionally do NOT write `ui/settings/cursor` or
-    // `ui/settings/accounts/selected`. Both downstream readers
-    // (`read_selected_account`, `accounts_step`) prefer `focused`, which
-    // is set above; the legacy commit's writes to those paths were
-    // redundant under the new convention.
+    // The single cursor is `focused`, set above. Downstream readers
+    // (`read_selected_account`, `accounts_step`) key off `focused`.
     writes.push(Write {
         path: oxpath!("ui", "settings", "new_account"),
         record: Record::parsed(Value::Null),
@@ -2419,19 +2416,6 @@ mod tests {
             }))
             .unwrap(),
         );
-    }
-
-    fn assert_cursor_write(writes: &[Write], expected_target: structfs_core_store::Path) {
-        assert!(writes.iter().any(|w| {
-            w.path == oxpath!("ui", "settings", "cursor")
-                && match &w.record {
-                    Record::Parsed(v) => {
-                        super::super::navigation::path_from_value(v)
-                            == Some(expected_target.clone())
-                    }
-                    _ => false,
-                }
-        }));
     }
 
     fn assert_null_write(writes: &[Write], expected_path: structfs_core_store::Path) {

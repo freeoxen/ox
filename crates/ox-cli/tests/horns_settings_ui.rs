@@ -176,15 +176,16 @@ fn key_named(code: KeyCodeRepr) -> KeyChord {
 /// Run the renderer against a freshly-fetched `SettingsSnapshot` —
 /// the exact rendering path `run_horns_settings_loop` follows each
 /// frame, minus the ratatui draw call. Returns the `View` the
-/// translator would consume. Reads the PAGE cursor
-/// (`ui/settings/cursor`) to pick a renderer, defaulting to
-/// `settings/index` when unset.
+/// translator would consume. Reads the focus cursor
+/// (`ui/settings/focused`) and lets the registry walk its ancestor
+/// chain to find the page renderer, defaulting to `settings/index`
+/// when unset.
 async fn render_settings(client: &ClientHandle) -> View {
     let mut renderers = settings::RendererRegistry::new();
     settings::renderers::register_all(&mut renderers);
     let mut snap = fetch_settings_view_state(client).await;
     let cursor = snap
-        .read(&oxpath!("ui", "settings", "cursor"))
+        .read(&oxpath!("ui", "settings", "focused"))
         .ok()
         .flatten()
         .and_then(|r| r.as_value().cloned())

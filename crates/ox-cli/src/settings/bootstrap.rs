@@ -47,17 +47,18 @@ pub async fn populate_index_entries(client: &ClientHandle) -> Result<(), StoreEr
     Ok(())
 }
 
-/// First-run hook: when no accounts exist and no settings cursor is set,
-/// land the user mid-compose so they have a clear next step. Sets the
-/// page-level cursor to `settings/index` (the accordion's binding scope),
-/// expands the Accounts section, and arms the new-account compose buffer
-/// — the dispatcher's compose-mode pass takes over from there. Returns
-/// `true` when the hook fired, `false` otherwise.
+/// First-run hook: when no accounts exist and no settings focus is set,
+/// land the user mid-compose so they have a clear next step. Seeds
+/// `ui/settings/focused` at the Accounts row (the dispatcher's scope
+/// derives from focus ancestry; the renderer walks the ancestry to find
+/// the index page), expands the Accounts section, and arms the
+/// new-account compose buffer — the dispatcher's compose-mode pass
+/// takes over from there. Returns `true` when the hook fired.
 pub async fn maybe_first_run_cursor(client: &ClientHandle) -> Result<bool, StoreError> {
     use structfs_core_store::Value;
 
-    let cursor_path = oxpath!("ui", "settings", "cursor");
-    if client.read(&cursor_path).await?.is_some() {
+    let focus_path = oxpath!("ui", "settings", "focused");
+    if client.read(&focus_path).await?.is_some() {
         return Ok(false);
     }
     // The accounts subtree is keyed by name (`accounts/{name}/...`); a
@@ -71,21 +72,13 @@ pub async fn maybe_first_run_cursor(client: &ClientHandle) -> Result<bool, Store
     if !subtree.is_empty() {
         return Ok(false);
     }
-    client
-        .write(
-            &cursor_path,
-            Record::parsed(path_to_value(&oxpath!("settings", "index"))),
-        )
-        .await?;
     // Seed the focused row so the first frame of the settings screen
-    // shows a selection. Without this, `ui/settings/focused` is unset
-    // until the user presses j once, and the dispatcher's
-    // `compute_scope_path` would otherwise have to fall back to the
-    // screen-root scope (which it does — but seeding focused gives a
-    // proper initial highlight without requiring a keystroke).
+    // shows a selection. The renderer walks the focus cursor's ancestor
+    // chain to find the registered page (settings/index), so a single
+    // write here drives both highlight and renderer selection.
     client
         .write(
-            &oxpath!("ui", "settings", "focused"),
+            &focus_path,
             Record::parsed(path_to_value(&oxpath!("settings", "accounts"))),
         )
         .await?;
@@ -212,15 +205,16 @@ mod tests {
         let fired = maybe_first_run_cursor(&client).await.unwrap();
         assert!(fired);
 
-        // Page-level cursor lands at settings/index — the accordion's
-        // binding scope. Compose mode is signalled by the buffer write,
-        // not a synthetic cursor identifier.
-        let cursor = client
-            .read(&oxpath!("ui", "settings", "cursor"))
+        // Focused lands at the Accounts row inside settings/index.
+        // Renderer derives the page (settings/index) by walking the
+        // ancestor chain. Compose mode is signalled by the buffer
+        // write, not a synthetic cursor identifier.
+        let focused = client
+            .read(&oxpath!("ui", "settings", "focused"))
             .await
             .unwrap()
-            .expect("cursor written");
-        match cursor.as_value().unwrap() {
+            .expect("focused written");
+        match focused.as_value().unwrap() {
             Value::Array(items) => {
                 let comps: Vec<&str> = items
                     .iter()
@@ -229,9 +223,9 @@ mod tests {
                         _ => None,
                     })
                     .collect();
-                assert_eq!(comps, vec!["settings", "index"]);
+                assert_eq!(comps, vec!["settings", "accounts"]);
             }
-            other => panic!("unexpected cursor shape: {:?}", other),
+            other => panic!("unexpected focused shape: {:?}", other),
         }
 
         // The Accounts section is expanded so the inline name prompt
@@ -272,11 +266,11 @@ mod tests {
     async fn first_run_no_op_when_cursor_already_set() {
         let broker = fresh_broker().await;
         let client = broker.client();
-        // Pre-write a cursor to settings/index.
+        // Pre-write the focus cursor.
         let preset = oxpath!("settings", "index");
         client
             .write(
-                &oxpath!("ui", "settings", "cursor"),
+                &oxpath!("ui", "settings", "focused"),
                 Record::parsed(path_to_value(&preset)),
             )
             .await
@@ -300,11 +294,11 @@ mod tests {
             .unwrap();
         let fired = maybe_first_run_cursor(&client).await.unwrap();
         assert!(!fired);
-        let cursor = client
-            .read(&oxpath!("ui", "settings", "cursor"))
+        let focused = client
+            .read(&oxpath!("ui", "settings", "focused"))
             .await
             .unwrap();
-        assert!(cursor.is_none());
+        assert!(focused.is_none());
     }
 
     #[test]

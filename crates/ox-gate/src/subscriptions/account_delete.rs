@@ -253,8 +253,8 @@ mod tests {
         assert!(
             !writes
                 .iter()
-                .any(|w| w.path == oxpath!("ui", "settings", "cursor")),
-            "cleanup must not touch the cursor; got {writes:?}"
+                .any(|w| w.path == oxpath!("ui", "settings", "focused")),
+            "cleanup must not touch the focus cursor; got {writes:?}"
         );
     }
 

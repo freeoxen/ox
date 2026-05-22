@@ -1,22 +1,22 @@
-//! Navigation commands — descend into a sub-page; ascend back via the
-//! renderer registry's `AscendRule`.
+//! Navigation commands — ascend back via the renderer registry's
+//! `AscendRule`.
 //!
-//! - `NavDescendIndex` — read highlighted entry's `target_cursor`,
-//!   write to `ui/settings/cursor`.
-//! - `NavDescendAccounts` — write `ui/settings/cursor ←
-//!   settings/accounts/_detail`.
-//! - `NavDescendModels` — write `ui/settings/cursor ←
-//!   settings/models/_detail`.
-//! - `NavAscend` — consult `ctx.registry.ascend(&cursor)`. On
-//!   `Some(parent)` write parent to cursor; on `None` (any rule that
-//!   resolves to no parent — `ExitScreen`, an unregistered `Fallback`
-//!   target, or `NearestRegistered` at the root), write `true` to
-//!   `ui/settings/_request_exit` so the dispatch loop can react in the
-//!   next tick (per plan §L2). The "top-level page → settings/index"
-//!   behavior lives in the renderer's `AscendRule::Fallback(target)`,
-//!   not in this command's body.
+//! Cursor model: there is one cursor, `ui/settings/focused`. It's the
+//! single source of truth for both dispatch scope and renderer
+//! ancestry. When the user focuses a sub-widget (e.g.
+//! `settings/_compose_form/name`), `NavAscend` walks the registry to
+//! find the innermost registered ancestor (the "page") and then asks
+//! the registry to ascend from that page. The "page cursor" is implicit
+//! in the focus cursor's ancestry; there is no separate page-cursor
+//! state path.
 //!
-//! Per spec §6 binding tables.
+//! - `NavAscend` — read `focused`, resolve its innermost registered
+//!   ancestor via `registry.registered_ancestor_or_self`, then consult
+//!   `registry.ascend(<that page>)`. On `Some(parent)` write the parent
+//!   back to `focused`. On `None` (any rule that resolves to no parent
+//!   — `ExitScreen`, an unregistered `Fallback` target, or
+//!   `NearestRegistered` at the root) write `true` to
+//!   `ui/settings/_request_exit`.
 
 use ox_path::oxpath;
 use ox_types::subscription::Write;
@@ -78,13 +78,21 @@ command! {
 }
 
 fn ascend(data: &mut dyn Reader, ctx: &crate::settings::CommandCtx<'_>) -> Vec<Write> {
-    let cursor = match read_path(data, &oxpath!("ui", "settings", "cursor")) {
+    let focused = match read_path(data, &oxpath!("ui", "settings", "focused")) {
         Some(c) => c,
         None => return Vec::new(),
     };
-    match ctx.registry.ascend(&cursor) {
+    // The focus cursor may sit on a sub-widget below a registered page
+    // (e.g. settings/_compose_form/name beneath settings/index). Ask
+    // the registry which page owns this focus before applying the
+    // page's AscendRule.
+    let page = match ctx.registry.registered_ancestor_or_self(&focused) {
+        Some(p) => p,
+        None => return Vec::new(),
+    };
+    match ctx.registry.ascend(&page) {
         Some(parent) => vec![Write {
-            path: oxpath!("ui", "settings", "cursor"),
+            path: oxpath!("ui", "settings", "focused"),
             record: Record::parsed(path_to_value(&parent)),
         }],
         None => vec![Write {
@@ -153,7 +161,7 @@ mod tests {
     fn ascend_at_nearest_registered_writes_parent() {
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
-            &oxpath!("ui", "settings", "cursor"),
+            &oxpath!("ui", "settings", "focused"),
             super::path_to_value(&oxpath!("settings", "accounts", "_detail")),
         );
 
@@ -170,19 +178,41 @@ mod tests {
         let writes = run_with_registry(&NavAscend::new(), &mut snap, &registry);
         assert_path_write(
             &writes,
-            oxpath!("ui", "settings", "cursor"),
+            oxpath!("ui", "settings", "focused"),
             oxpath!("settings", "accounts"),
         );
     }
 
     #[test]
-    fn ascend_top_level_page_falls_back_to_settings_index() {
-        // Cursor at `settings/accounts` (a top-level page) whose renderer
-        // declares `Fallback(settings/index)`. Per spec §4.1 + §6.2, Esc here
-        // should land on `settings/index`, not exit the screen.
+    fn ascend_from_subwidget_uses_pages_ascend_rule() {
+        // Focus on a sub-widget below settings/index (no renderer
+        // registered at the sub-widget path). Esc must consult the
+        // page's AscendRule, not the sub-widget's missing one.
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
-            &oxpath!("ui", "settings", "cursor"),
+            &oxpath!("ui", "settings", "focused"),
+            super::path_to_value(&oxpath!("settings", "index", "_compose_form", "name")),
+        );
+
+        let mut registry = RendererRegistry::new();
+        registry.register(
+            oxpath!("settings", "index"),
+            Box::new(FakeRenderer(AscendRule::ExitScreen)),
+        );
+
+        let writes = run_with_registry(&NavAscend::new(), &mut snap, &registry);
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].path, oxpath!("ui", "settings", "_request_exit"));
+    }
+
+    #[test]
+    fn ascend_top_level_page_falls_back_to_settings_index() {
+        // Cursor at `settings/accounts` (a top-level page) whose renderer
+        // declares `Fallback(settings/index)`. Esc here should land on
+        // `settings/index`, not exit the screen.
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("ui", "settings", "focused"),
             super::path_to_value(&oxpath!("settings", "accounts")),
         );
 
@@ -201,7 +231,7 @@ mod tests {
         let writes = run_with_registry(&NavAscend::new(), &mut snap, &registry);
         assert_path_write(
             &writes,
-            oxpath!("ui", "settings", "cursor"),
+            oxpath!("ui", "settings", "focused"),
             oxpath!("settings", "index"),
         );
     }
@@ -210,7 +240,7 @@ mod tests {
     fn ascend_at_exit_screen_writes_request_exit() {
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
-            &oxpath!("ui", "settings", "cursor"),
+            &oxpath!("ui", "settings", "focused"),
             super::path_to_value(&oxpath!("settings", "index")),
         );
 
