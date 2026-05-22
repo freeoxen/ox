@@ -135,12 +135,31 @@ impl RendererRegistry {
         self.specs.get(cursor).map(|b| b.as_ref())
     }
 
-    /// Render the page at `cursor`. On miss, returns the fallback View.
+    /// Render the page at `cursor`. Walks the cursor's ancestors outer-
+    /// to-inner to find the innermost registered renderer — the "page"
+    /// the user is on is implicit in the cursor's ancestry, with no
+    /// second cursor state path. Returns the fallback View only if
+    /// neither the cursor nor any ancestor is registered.
     pub fn render(&self, cursor: &Path, ctx: &mut RenderCtx<'_>) -> View {
-        match self.specs.get(cursor) {
-            Some(r) => r.render(ctx),
-            None => View::unknown_cursor_fallback(cursor),
+        if let Some(r) = self.specs.get(cursor) {
+            return r.render(ctx);
         }
+        if let Some(parent) = self.nearest_registered_parent(cursor) {
+            return self.specs[&parent].render(ctx);
+        }
+        View::unknown_cursor_fallback(cursor)
+    }
+
+    /// Innermost registered ancestor of `cursor`, including `cursor`
+    /// itself if it's registered. `None` if no ancestor (or self) is
+    /// registered. Lets host-side commands ask the same question
+    /// `render` asks (e.g. `nav.ascend` needs the page-level ancestor
+    /// of a deeply-focused compound widget).
+    pub fn registered_ancestor_or_self(&self, cursor: &Path) -> Option<Path> {
+        if self.specs.contains_key(cursor) {
+            return Some(cursor.clone());
+        }
+        self.nearest_registered_parent(cursor)
     }
 
     /// Compute the cursor's "ascent" target per the matched renderer's
@@ -353,6 +372,61 @@ mod tests {
 
         let view = reg.render(&cursor, &mut ctx);
         assert_eq!(view, View::unknown_cursor_fallback(&cursor));
+    }
+
+    #[test]
+    fn render_at_descendant_uses_innermost_registered_ancestor() {
+        // Renderer registered only at the page; cursor sits on a
+        // compound-widget leaf below it. The walk must find the page
+        // and run its renderer rather than falling back to "unknown".
+        let mut reg = RendererRegistry::new();
+        reg.register(
+            oxpath!("settings", "accounts"),
+            fake(AscendRule::NearestRegistered),
+        );
+        let theme: () = ();
+        let mut reader = EmptyReader;
+
+        let cursor = oxpath!("settings", "accounts", "_detail", "alpha");
+        let mut ctx = RenderCtx {
+            area: Rect::new(0, 0, 80, 24),
+            data: &mut reader,
+            registry: &reg,
+            theme: &theme as &dyn std::any::Any,
+        };
+
+        let view = reg.render(&cursor, &mut ctx);
+        // FakeRenderer returns View::Empty — proves the registered
+        // ancestor's renderer fired (not the fallback).
+        assert_eq!(view, View::Empty);
+    }
+
+    #[test]
+    fn registered_ancestor_or_self_returns_self_when_registered() {
+        let mut reg = RendererRegistry::new();
+        reg.register(
+            oxpath!("settings", "accounts"),
+            fake(AscendRule::NearestRegistered),
+        );
+        assert_eq!(
+            reg.registered_ancestor_or_self(&oxpath!("settings", "accounts")),
+            Some(oxpath!("settings", "accounts")),
+        );
+    }
+
+    #[test]
+    fn registered_ancestor_or_self_walks_when_descendant() {
+        let mut reg = RendererRegistry::new();
+        reg.register(
+            oxpath!("settings", "accounts"),
+            fake(AscendRule::NearestRegistered),
+        );
+        assert_eq!(
+            reg.registered_ancestor_or_self(&oxpath!(
+                "settings", "accounts", "_detail", "alpha"
+            )),
+            Some(oxpath!("settings", "accounts")),
+        );
     }
 
     #[test]
