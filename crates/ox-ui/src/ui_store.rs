@@ -1443,7 +1443,7 @@ impl Writer for UiStore {
         // Delegate settings/* writes to the generic K/V sub-store.
         // The contract here is "writes are state, paths are addresses" —
         // no verb matching. Without this arm a write to e.g.
-        // `ui/settings/cursor` falls into the verb-resolution path
+        // `ui/settings/focused` falls into the verb-resolution path
         // below, which has no `settings` arm and rejects it.
         if !to.is_empty() && to.components[0] == "settings" {
             let sub = strip_first_component(to);
