@@ -491,6 +491,61 @@ async fn esc_on_index_writes_request_exit() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn esc_after_full_horns_loop_pre_input_seeding_exits() {
+    // Mimics what `run_horns_settings_loop` does pre-input:
+    //   1. Seed focus cursor (if unset).
+    //   2. Seed terminal area.
+    //   3. Bump render-tick.
+    //   4. (Then start polling crossterm in production.)
+    // Then writes Esc and checks the exit-watch. Reproduces the
+    // production order without the ratatui terminal lock so we can
+    // catch any seed/dispatch ordering bug that the simpler
+    // esc_on_index test doesn't exercise.
+    let broker = build_broker_with_seeds().await;
+    let client = broker.client();
+    settings::install(&broker).await.expect("settings::install");
+
+    let focus_path = settings::cursor_path();
+    let focus_set = client.read(&focus_path).await.ok().flatten().is_some();
+    if !focus_set {
+        client
+            .write(
+                &focus_path,
+                Record::parsed(path_to_value(&oxpath!("settings", "index"))),
+            )
+            .await
+            .unwrap();
+    }
+    let area = horns_core::Rect::new(0, 0, 80, 24);
+    client
+        .write_typed(&settings::input_area_path(), &area)
+        .await
+        .unwrap();
+    client
+        .write(
+            &settings::render_tick_path(),
+            Record::parsed(Value::Integer(1)),
+        )
+        .await
+        .unwrap();
+    // Let render cascade fully settle before driving input.
+    tokio::task::yield_now().await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    press_chord(&client, key_named(KeyCodeRepr::Esc)).await;
+
+    let exit = client
+        .read_typed::<bool>(&oxpath!("ui", "settings", "_request_exit"))
+        .await
+        .expect("read exit");
+    assert_eq!(
+        exit,
+        Some(true),
+        "Esc after the full pre-input seed should still write _request_exit = true",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn highlighted_row_has_selected_flag_in_rendered_list() {
     // Drives the cursor → renderer selected-index pipeline. The
     // renderer translates the focus cursor into a `selected: Some(i)`
