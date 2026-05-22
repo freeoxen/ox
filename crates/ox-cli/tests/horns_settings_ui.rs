@@ -2,29 +2,22 @@
 //!
 //! Drives the same flow `run_horns_settings_loop` does in production:
 //!
-//! 1. Set up a broker with the mounts settings::install writes to.
+//! 1. Set up a broker with the mounts `settings::install` writes to.
 //! 2. Install the settings horns instance — registers
-//!    `KeyDispatchSubscription` for input dispatch.
+//!    `KeyDispatchSubscription` and friends on the broker.
 //! 3. Seed cursor + any test-specific config (accounts, expanded set).
 //! 4. For each user action: write a `KeyChord` to the broker's input
-//!    path; the `KeyDispatchSubscription` runs the matched command
+//!    path. The `KeyDispatchSubscription` runs the matched command
 //!    synchronously and the cascade lands on the broker.
-//! 5. Build a `SettingsSnapshot` and render through the renderer
-//!    registry — exactly what the horns loop does each frame.
+//! 5. Render inline via `SettingsSnapshot` + the renderer registry —
+//!    same View shape the production `RenderSubscription` emits, but
+//!    without going through the subscription's serialize/deserialize.
 //! 6. Assert on either the focus cursor (state) or the rendered View
 //!    (visible behavior).
-//!
-//! Crucially: rendering happens INLINE (via the renderer registry +
-//! `SettingsSnapshot`), not through `RenderSubscription`. The broker
-//! reader's `data.read(empty)` doesn't return a flat `Value::Map`
-//! the way an in-memory `LocalConfig` does, so renderer helpers like
-//! `child_names_under` only work against a fetched snapshot. The
-//! horns settings loop renders inline for the same reason.
 
 use std::time::Duration;
 
-use horns_core::Dispatcher;
-use horns_core::view::{ListItem, View};
+use horns_core::view::View;
 use ox_broker::{BrokerStore, ClientHandle};
 use ox_gate::AccountConfig;
 use ox_path::oxpath;
@@ -132,24 +125,15 @@ async fn read_cursor(client: &ClientHandle) -> Option<Path> {
     path_from_value(value)
 }
 
-/// Press a single keystroke via the same inline-dispatch path
-/// `run_horns_settings_loop` uses: build a fresh `SettingsSnapshot`,
-/// invoke `Dispatcher::dispatch` against it, write the resulting
-/// `Vec<Write>` back through the broker. Returns once the cascade has
-/// settled.
+/// Press a single keystroke by writing it to the broker's input key
+/// path. `settings::install` registered `KeyDispatchSubscription` on
+/// the broker; the broker dispatches the subscription synchronously on
+/// the write. Returns once the cascade has settled.
 async fn press_chord(client: &ClientHandle, chord: KeyChord) {
-    let mut bindings = settings::BindingRegistry::new();
-    let mut commands = settings::CommandRegistry::new();
-    let mut renderers = settings::RendererRegistry::new();
-    settings::bindings::register(&mut bindings);
-    settings::commands::register_all(&mut commands);
-    settings::renderers::register_all(&mut renderers);
-    let dispatcher = Dispatcher::new(settings::cursor_path());
-    let mut snap = fetch_settings_view_state(client).await;
-    let writes = dispatcher.dispatch(&mut snap, &chord, &bindings, &commands, &renderers);
-    for write in writes {
-        client.write(&write.path, write.record).await.unwrap();
-    }
+    client
+        .write_typed(&settings::input_key_path(), &chord)
+        .await
+        .unwrap();
     // Cascade settle — broker subscriptions (account_test_status etc.)
     // may have fired off async work; yield + brief sleep mirrors the
     // standard pattern in settings_e2e.
