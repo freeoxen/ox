@@ -591,12 +591,11 @@ async fn delete_account_flow() {
     )
     .await;
 
-    // `d` — open the confirm-delete dialog. Under cursor-as-focus the
-    // page cursor stays at settings/accounts; the focused-row cursor
-    // moves to `settings/_confirm_delete`, and the target account
-    // lives at `ui/settings/pending_delete/target_account`. The
-    // dispatcher routes y/n/Esc through the synthetic
-    // `_confirm_delete` scope.
+    // `d` — open the confirm-delete dialog. Cursor-as-focus: the focus
+    // cursor moves to `settings/_confirm_delete` (the dialog), and the
+    // target account lives at `ui/settings/pending_delete/target_account`.
+    // The dispatcher routes y/n/Esc through the `_confirm_delete` scope
+    // which is on the focus cursor's ancestor chain.
     assert!(matches!(h.dispatch("d").await, KeyDispatchOutcome::Handled));
     let target: Option<String> = h
         .client
@@ -612,7 +611,7 @@ async fn delete_account_flow() {
     assert_eq!(target.as_deref(), Some("anthropic"));
     assert_eq!(
         h.current_cursor().await.expect("cursor"),
-        oxpath!("settings", "accounts"),
+        oxpath!("settings", "_confirm_delete"),
     );
 
     // `y` — confirm delete. The CLI's null-write removes the account

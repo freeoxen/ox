@@ -792,10 +792,12 @@ fn read_dirty_indicator(data: &mut dyn structfs_core_store::Reader) -> Option<St
 }
 
 pub fn register(reg: &mut RendererRegistry) {
-    reg.register(
-        ox_path::oxpath!("settings", "index"),
-        Box::new(IndexRenderer),
-    );
+    // Register at `settings` (not `settings/index`) so the focused-
+    // cursor ancestor walk in `RendererRegistry::render` lands here
+    // from any focus value under `settings/*` — including the index
+    // (`settings/index`), top-level rows (`settings/accounts`), and
+    // compound widgets like `settings/_compose_form/name`.
+    reg.register(ox_path::oxpath!("settings"), Box::new(IndexRenderer));
 }
 
 #[cfg(test)]

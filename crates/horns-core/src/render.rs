@@ -422,9 +422,7 @@ mod tests {
             fake(AscendRule::NearestRegistered),
         );
         assert_eq!(
-            reg.registered_ancestor_or_self(&oxpath!(
-                "settings", "accounts", "_detail", "alpha"
-            )),
+            reg.registered_ancestor_or_self(&oxpath!("settings", "accounts", "_detail", "alpha")),
             Some(oxpath!("settings", "accounts")),
         );
     }
