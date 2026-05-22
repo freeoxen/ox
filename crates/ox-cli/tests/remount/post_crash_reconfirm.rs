@@ -19,13 +19,11 @@
 //! [`ox_cli::test_support::ToolInjector`]; crash/remount spawns a fresh
 //! worker that sees the same `Arc<AtomicU64>`.
 
-mod crash_harness;
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use crash_harness::{
+use super::support::{
     append_log_entry, create_thread, init_tracing, respond_to_approval, wait_for_log_entry,
     wait_for_pending_approval,
 };
@@ -304,7 +302,7 @@ async fn reconfirm_retry_reruns_tool_counter_reaches_two() {
 
     // Ledger invariants: ToolAborted, post-crash ApprovalRequested, and
     // a ToolResult (from the retry) must all be present.
-    let log = crash_harness::read_shared_log(&client, &tid).await;
+    let log = super::support::read_shared_log(&client, &tid).await;
     assert!(
         log.iter()
             .any(|e| matches!(e, LogEntry::ToolAborted { .. })),
@@ -373,7 +371,7 @@ async fn reconfirm_skip_writes_synthetic_tool_result_counter_stays_one() {
     // The synthetic ToolResult must carry the plan-pinned
     // `POST_CRASH_SKIP_CONTENT` string (sourced from the shell at
     // `shell/post_crash_skip_content`, per Task 3c's deviation).
-    let log = crash_harness::read_shared_log(&client, &tid).await;
+    let log = super::support::read_shared_log(&client, &tid).await;
     let tr = log
         .iter()
         .find_map(|e| match e {
@@ -503,7 +501,7 @@ async fn reconfirm_auto_approved_tool_still_surfaces_modal() {
 
     assert_eq!(counter.load(Ordering::SeqCst), 2);
 
-    let log = crash_harness::read_shared_log(&client, &tid).await;
+    let log = super::support::read_shared_log(&client, &tid).await;
     let post_crash = log
         .iter()
         .filter(|e| {

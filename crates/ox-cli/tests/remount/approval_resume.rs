@@ -17,11 +17,9 @@
 //! The pre-crash completion already happened; resumption must not
 //! trigger a second LLM round-trip.
 
-mod crash_harness;
-
 use std::time::Duration;
 
-use crash_harness::{
+use super::support::{
     HarnessBuilder, append_log_entry, create_thread, init_tracing, respond_to_approval,
     wait_for_log_entry, wait_for_pending_approval,
 };

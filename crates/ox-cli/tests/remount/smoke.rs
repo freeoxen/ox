@@ -4,9 +4,7 @@
 //! the plan's correctness scenarios — those come in Task 1+. Each test here
 //! corresponds to a Task 0 step in the plan.
 
-mod crash_harness;
-
-use crash_harness::{
+use crate::support::{
     HarnessBuilder, append_log_entry, assert_shared_log_matches_pre_kill, create_thread,
     init_tracing, read_shared_log,
 };
@@ -59,7 +57,7 @@ async fn per_append_durability_survives_soft_crash() {
     // app. That's the whole point of Task 1a: commit completes before the
     // append returns.
     let ledger_path = harness.ledger_path(&tid);
-    let before_drop = crash_harness::read_ledger_entries(&ledger_path);
+    let before_drop = super::support::read_ledger_entries(&ledger_path);
     assert_eq!(
         before_drop.len(),
         2,
@@ -266,12 +264,12 @@ fn assert_no_dangling_turn_start_accepts_balanced_log() {
             cache_read_input_tokens: 0,
         },
     ];
-    crash_harness::assert_no_dangling_turn_start(&entries);
+    super::support::assert_no_dangling_turn_start(&entries);
 }
 
 #[test]
 #[should_panic(expected = "dangling TurnStart")]
 fn assert_no_dangling_turn_start_rejects_open_start() {
     let entries = vec![LogEntry::TurnStart { scope: None }];
-    crash_harness::assert_no_dangling_turn_start(&entries);
+    super::support::assert_no_dangling_turn_start(&entries);
 }

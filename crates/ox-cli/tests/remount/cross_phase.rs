@@ -13,9 +13,7 @@
 //! Helpers (`wait_for_log_entry`, etc.) live in `crash_harness/mod.rs`
 //! after Task 5's promote-shared-helpers refactor.
 
-mod crash_harness;
-
-use crash_harness::{
+use super::support::{
     HarnessBuilder, append_log_entry, assert_no_dangling_turn_start,
     assert_shared_log_matches_pre_kill, create_thread, init_tracing, read_shared_log,
 };

@@ -24,9 +24,7 @@
 //! `crash_harness_post_crash_reconfirm.rs`. See the "Task 4 test
 //! deviation" note in the plan document.
 
-mod crash_harness;
-
-use crash_harness::{
+use super::support::{
     HarnessBuilder, append_log_entry, create_thread, init_tracing, read_shared_log,
 };
 use ox_kernel::log::{LogEntry, TurnAbortReason};
