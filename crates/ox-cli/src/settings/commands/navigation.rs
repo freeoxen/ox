@@ -102,8 +102,25 @@ fn ascend(data: &mut dyn Reader, ctx: &crate::settings::CommandCtx<'_>) -> Vec<W
     }
 }
 
+command! {
+    struct_name: NavExitScreen,
+    id: "nav.exit_screen",
+    title: "Exit Settings",
+    description: "Leave the settings screen unconditionally, regardless of cursor depth.",
+    cursor: None,
+    run: |_snap, _ctx| exit_screen(),
+}
+
+fn exit_screen() -> Vec<Write> {
+    vec![Write {
+        path: oxpath!("ui", "settings", "_request_exit"),
+        record: Record::parsed(Value::Bool(true)),
+    }]
+}
+
 pub fn register(reg: &mut CommandRegistry) {
     reg.register(Box::new(NavAscend::new()));
+    reg.register(Box::new(NavExitScreen::new()));
 }
 
 // ---------------------------------------------------------------------------

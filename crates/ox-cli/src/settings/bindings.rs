@@ -262,10 +262,24 @@ fn register_index(reg: &mut BindingRegistry) {
     );
     bind_bubble(
         reg,
-        Some(cursor),
+        Some(cursor.clone()),
         no_mods(),
         KeyCodeRepr::Esc,
         "tree.collapse_or_ascend",
+    );
+    // `q` is the unconditional exit-screen escape hatch. Esc has
+    // collapse-on-deep-cursor semantics, which is fine for navigating
+    // back through expansion levels but inconvenient when the user
+    // just wants out. `q` skips the ascend ladder entirely. Prefix
+    // scope so it matches from any focus under `settings/*` without
+    // depending on the dispatcher's bubble walk reaching the outer
+    // `settings` exact scope.
+    bind_prefix_bubble(
+        reg,
+        cursor,
+        no_mods(),
+        KeyCodeRepr::Char('q'),
+        "nav.exit_screen",
     );
 }
 
@@ -803,6 +817,31 @@ mod tests {
             )
             .expect("should match");
         assert_eq!(hit, &cmd("tree.collapse_or_ascend"));
+    }
+
+    #[test]
+    fn q_at_any_settings_focus_resolves_to_nav_exit_screen() {
+        // `q` is the unconditional exit-screen escape hatch. It must
+        // fire from any focus under `settings/*` — page level, account
+        // row, account field, compose form, edit buffer — so the user
+        // can always get out without walking the ascend ladder.
+        let reg = populated();
+        for scope in [
+            oxpath!("settings"),
+            oxpath!("settings", "accounts"),
+            oxpath!("settings", "accounts", "alpha"),
+            oxpath!("settings", "accounts", "alpha", "endpoint"),
+            oxpath!("settings", "_compose_form", "name"),
+        ] {
+            let hit = reg
+                .lookup(
+                    &scope,
+                    &key(no_mods(), KeyCodeRepr::Char('q')),
+                    Phase::Bubble,
+                )
+                .unwrap_or_else(|| panic!("q must resolve at {scope:?}"));
+            assert_eq!(hit, &cmd("nav.exit_screen"));
+        }
     }
 
     #[test]

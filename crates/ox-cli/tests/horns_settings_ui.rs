@@ -491,6 +491,36 @@ async fn esc_on_index_writes_request_exit() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn q_from_deep_focus_writes_request_exit() {
+    // `q` is the unconditional exit-screen hatch. With focus deep
+    // inside an account row (an inline field), pressing `q` must
+    // still write `_request_exit = true` — the user shouldn't have
+    // to walk back up the ascend ladder to get out.
+    let broker = build_broker_with_seeds().await;
+    let client = broker.client();
+    settings::install(&broker).await.expect("settings::install");
+    seed_account(&client, "alpha").await;
+    seed_expanded(&client, &["settings/accounts", "settings/accounts/alpha"]).await;
+    set_cursor(
+        &client,
+        &oxpath!("settings", "accounts", "alpha", "endpoint"),
+    )
+    .await;
+
+    press_chord(&client, key_char('q')).await;
+
+    let exit = client
+        .read_typed::<bool>(&oxpath!("ui", "settings", "_request_exit"))
+        .await
+        .expect("read exit");
+    assert_eq!(
+        exit,
+        Some(true),
+        "q at a deep field focus must request screen exit",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn esc_after_full_horns_loop_pre_input_seeding_exits() {
     // Mimics what `run_horns_settings_loop` does pre-input:
     //   1. Seed focus cursor (if unset).
