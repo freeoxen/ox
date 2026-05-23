@@ -306,22 +306,26 @@ fn walk_view<'a, F: FnMut(&'a View)>(view: &'a View, f: &mut F) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn initial_render_shows_accounts_and_models_section_headers() {
-    let broker = build_broker_with_seeds().await;
-    let client = broker.client();
-    settings::install(&broker).await.expect("settings::install");
+    let (_broker, client, terminal) = build_horns_test_rig().await;
+    // Seed the focus cursor — `RenderSubscription` wakes on cursor
+    // changes and writes the View; `ViewRenderSubscription` then locks
+    // the test terminal and draws into its buffer.
     set_cursor(&client, &oxpath!("settings", "index")).await;
+    // Cascade settle. The render cascade is sync from the broker's
+    // write path; the sleep guards spawned subscription work that
+    // could arrive after this write returns (Problem 2 in the
+    // test-quality debt doc).
+    tokio::task::yield_now().await;
+    tokio::time::sleep(Duration::from_millis(10)).await;
 
-    let view = render_settings(&client).await;
-    let primaries = collect_list_primaries(&view);
-
-    // The two section headers should both be visible.
+    let text = rendered_text(&terminal);
     assert!(
-        primaries.iter().any(|p| p.contains("Accounts")),
-        "Accounts header missing; primaries={primaries:?}",
+        text.contains("Accounts"),
+        "Accounts header missing from rendered output:\n{text}",
     );
     assert!(
-        primaries.iter().any(|p| p.contains("Models")),
-        "Models header missing; primaries={primaries:?}",
+        text.contains("Models"),
+        "Models header missing from rendered output:\n{text}",
     );
 }
 
