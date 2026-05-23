@@ -405,14 +405,39 @@ fn append_account_field_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, 
         Err(_) => return,
     };
     // Use the assembling readers so TOML-loaded accounts (no parent
-    // Map; only flat sub-keys) resolve correctly. A bare
-    // `read_typed::<AccountConfig>(...).unwrap_or_default()` would
-    // return `AccountConfig { provider: "" }` here — the empty
-    // provider then fails `PathComponent::try_new` and the bound
-    // provider can't be resolved, which silently empties the
-    // Endpoint / Auth field rows and locks the Protocol carousel at
-    // its idx-0 fallback.
-    let acct = read_account_assembling_flat(data, name).unwrap_or_default();
+    // Map; only flat sub-keys) resolve correctly. Read failure is a
+    // state-machine bug — the caller enumerates visible accounts from
+    // `child_names_under`, so a name with no readable record means
+    // the broker enumerated something that isn't there. Surface to
+    // the user as a visible "⚠ unreadable" placeholder row instead
+    // of synthesizing an `AccountConfig::default()` (silently empty
+    // Endpoint/Auth rows + stuck Protocol carousel) or vanishing the
+    // field rows entirely (user can't tell what's wrong or act on it).
+    let acct = match read_account_assembling_flat(data, name) {
+        Some(a) => a,
+        None => {
+            tracing::error!(
+                account = %name,
+                "settings: account row enumerated but record unreadable",
+            );
+            let path = row_path(&["settings", "accounts", name, "_unreadable"]);
+            rows.push(VisibleRow {
+                path,
+                depth: 2,
+                label: "⚠ account record unreadable — delete and recreate this connection"
+                    .to_string(),
+                secondary: None,
+                badge: None,
+                kind: RowKind::AccountField {
+                    account: name.to_string(),
+                    field: AccountField::Name,
+                },
+                expandable: false,
+                expanded: false,
+            });
+            return;
+        }
+    };
     let provider = read_provider_assembling_flat(data, &acct.provider);
     let key: Option<ApiKey> = read_typed(data, &oxpath!("secret", "keys", comp.clone()));
 

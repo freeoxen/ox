@@ -44,25 +44,61 @@ pub struct PolicyGuard {
     policy_path: PathBuf,
 }
 
+/// Error returned by [`PolicyGuard::load`] when an explicit policy file
+/// exists but couldn't be loaded as a `PolicyManifest`. Distinct
+/// variants so the caller can act differently (parse error = typo the
+/// user can fix; IO error = permissions or filesystem problem).
+#[derive(Debug)]
+pub enum PolicyLoadError {
+    Io { path: PathBuf, error: String },
+    Parse { path: PathBuf, error: String },
+}
+
+impl std::fmt::Display for PolicyLoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PolicyLoadError::Io { path, error } => {
+                write!(f, "couldn't read {}: {error}", path.display())
+            }
+            PolicyLoadError::Parse { path, error } => {
+                write!(
+                    f,
+                    "couldn't parse {} as a policy manifest: {error}",
+                    path.display()
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for PolicyLoadError {}
+
 impl PolicyGuard {
-    /// Load policy from the workspace. Tries `.clash/policy.json`, falls back to default.
-    pub fn load(workspace: &Path) -> Self {
+    /// Load policy from the workspace. Absent file → `Ok(default policy)`.
+    /// Present-but-broken file → `Err(PolicyLoadError)`. A user with a
+    /// policy file made an explicit assertion that the system honors
+    /// policy; if the file is malformed they want to know, not be
+    /// silently substituted with the more-permissive defaults.
+    pub fn load(workspace: &Path) -> Result<Self, PolicyLoadError> {
         let policy_path = workspace.join(".clash").join("policy.json");
         let manifest = if policy_path.exists() {
-            match std::fs::read_to_string(&policy_path) {
-                Ok(content) => {
-                    serde_json::from_str(&content).unwrap_or_else(|_| default_manifest())
-                }
-                Err(_) => default_manifest(),
-            }
+            let content =
+                std::fs::read_to_string(&policy_path).map_err(|e| PolicyLoadError::Io {
+                    path: policy_path.clone(),
+                    error: e.to_string(),
+                })?;
+            serde_json::from_str(&content).map_err(|e| PolicyLoadError::Parse {
+                path: policy_path.clone(),
+                error: e.to_string(),
+            })?
         } else {
             default_manifest()
         };
-        Self {
+        Ok(Self {
             session_policy: empty_policy(),
             manifest,
             policy_path,
-        }
+        })
     }
 
     /// Create a guard that allows everything (--no-policy mode).
@@ -349,7 +385,7 @@ mod tests {
 
     #[test]
     fn default_policy_allows_read() {
-        let guard = PolicyGuard::load(Path::new("/nonexistent"));
+        let guard = PolicyGuard::load(Path::new("/nonexistent")).expect("absent file → defaults");
         assert!(matches!(
             guard.check("read_file", &serde_json::json!({"path": "src/main.rs"})),
             CheckResult::Allow
@@ -358,7 +394,7 @@ mod tests {
 
     #[test]
     fn default_policy_asks_for_shell() {
-        let guard = PolicyGuard::load(Path::new("/nonexistent"));
+        let guard = PolicyGuard::load(Path::new("/nonexistent")).expect("absent file → defaults");
         assert!(matches!(
             guard.check("shell", &serde_json::json!({"command": "rm -rf /"})),
             CheckResult::Ask { .. }
@@ -407,7 +443,8 @@ mod tests {
 
     #[test]
     fn session_rules_take_priority() {
-        let mut guard = PolicyGuard::load(Path::new("/nonexistent"));
+        let mut guard =
+            PolicyGuard::load(Path::new("/nonexistent")).expect("absent file → defaults");
 
         // Default: shell → ask
         assert!(matches!(
@@ -423,5 +460,28 @@ mod tests {
             guard.check("shell", &serde_json::json!({"command": "ls"})),
             CheckResult::Allow
         ));
+    }
+
+    #[test]
+    fn malformed_policy_file_surfaces_parse_error() {
+        // A user with a `.clash/policy.json` made an explicit assertion
+        // about tool-execution policy. If the file won't parse, the
+        // caller must see the failure — silently falling back to
+        // permissive defaults gives them more access than they asked
+        // for (the regression `unwrap_or_else(|_| default_manifest())`
+        // used to allow).
+        let dir = tempfile::tempdir().unwrap();
+        let clash_dir = dir.path().join(".clash");
+        std::fs::create_dir_all(&clash_dir).unwrap();
+        std::fs::write(clash_dir.join("policy.json"), "{ not valid json").unwrap();
+
+        // expect_err would require PolicyGuard: Debug; matching is cleaner.
+        match PolicyGuard::load(dir.path()) {
+            Err(PolicyLoadError::Parse { path, .. }) => {
+                assert!(path.ends_with(".clash/policy.json"));
+            }
+            Err(other) => panic!("expected Parse error, got {other:?}"),
+            Ok(_) => panic!("malformed policy.json must surface, not fall back"),
+        }
     }
 }

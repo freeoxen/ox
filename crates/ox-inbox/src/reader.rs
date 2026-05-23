@@ -37,7 +37,7 @@ pub fn read_dispatch(
         [a, b, id, c, lim]
             if a.as_str() == "search" && b.as_str() == "results" && c.as_str() == "limit" =>
         {
-            let limit: usize = lim.parse().unwrap_or(20);
+            let limit: usize = lim.parse().unwrap_or(20); // allow(silent_parse_fallback): path-component limit; standard page size
             paginate_search_results(last_search_result, id, None, limit)
         }
         // search/results/{handle}/after/{cursor}/limit/{n}
@@ -47,7 +47,7 @@ pub fn read_dispatch(
                 && c.as_str() == "after"
                 && d.as_str() == "limit" =>
         {
-            let limit: usize = lim.parse().unwrap_or(20);
+            let limit: usize = lim.parse().unwrap_or(20); // allow(silent_parse_fallback): same as above
             paginate_search_results(last_search_result, id, Some(cursor.as_str()), limit)
         }
         // Recent inputs: inputs/recent or inputs/recent/{limit}
@@ -57,7 +57,7 @@ pub fn read_dispatch(
             Ok(Some(Record::parsed(Value::Array(results))))
         }
         [a, b, lim] if a.as_str() == "inputs" && b.as_str() == "recent" => {
-            let limit: usize = lim.parse().unwrap_or(50);
+            let limit: usize = lim.parse().unwrap_or(50); // allow(silent_parse_fallback): matches the no-limit arm above
             let conn = db.lock().map_err(|e| err("read", e))?;
             let results = crate::search::recent_inputs(&conn, limit).map_err(|e| err("read", e))?;
             Ok(Some(Record::parsed(Value::Array(results))))

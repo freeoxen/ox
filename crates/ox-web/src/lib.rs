@@ -494,7 +494,10 @@ fn read_provider_config(context: &Rc<RefCell<Namespace>>, provider: &str) -> Pro
     let mut ctx = context.borrow_mut();
     match ctx.read(&provider_path) {
         Ok(Some(Record::Parsed(v))) => {
-            structfs_serde_store::from_value(v).unwrap_or_else(|_| ProviderConfig::anthropic())
+            // Medium-risk debt — a malformed provider record silently
+            // substitutes Anthropic. Worth a tracing::warn! follow-up.
+            // Tracked in docs/superpowers/specs/2026-05-22-silent-unwrap-audit.md item #4.
+            structfs_serde_store::from_value(v).unwrap_or_else(|_| ProviderConfig::anthropic()) // allow(silent_parse_fallback): see comment above
         }
         _ => ProviderConfig::anthropic(),
     }

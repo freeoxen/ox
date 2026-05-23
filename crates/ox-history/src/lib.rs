@@ -332,8 +332,7 @@ impl Writer for HistoryView {
                             .get("content")
                             .cloned()
                             .unwrap_or(serde_json::json!([]));
-                        let content: Vec<ContentBlock> =
-                            serde_json::from_value(content_json).unwrap_or_default();
+                        let content = decode_assistant_content(content_json)?;
                         self.shared.append(LogEntry::Assistant {
                             content,
                             source: None,
@@ -412,6 +411,22 @@ const ABBREVIATE_TAIL_LINES: usize = 20;
 /// Results under the threshold are returned unchanged. Large results show
 /// the first and last N lines with an omission marker referencing the
 /// tool_use_id so the model can retrieve the full output.
+/// Decode the `content` field of a wire-format assistant message into the
+/// kernel's typed `Vec<ContentBlock>`. Named ingress so the policy on
+/// decode failure lives in one place: surface as a `StoreError` instead
+/// of silently appending a content-less assistant turn (the old
+/// `unwrap_or_default` shape, which produced ghost-empty messages
+/// downstream replay treated as "the assistant said nothing").
+fn decode_assistant_content(raw: serde_json::Value) -> Result<Vec<ContentBlock>, StoreError> {
+    serde_json::from_value(raw).map_err(|e| {
+        StoreError::store(
+            "HistoryView",
+            "decode_assistant_content",
+            format!("assistant content failed to deserialize as Vec<ContentBlock>: {e}"),
+        )
+    })
+}
+
 fn abbreviate_tool_result(content: &str, tool_use_id: &str) -> String {
     let lines: Vec<&str> = content.lines().collect();
     if lines.len() <= ABBREVIATE_THRESHOLD_LINES {

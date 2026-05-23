@@ -390,7 +390,23 @@ fn agent_worker(
     let policy = if no_policy {
         crate::policy::PolicyGuard::permissive()
     } else {
-        crate::policy::PolicyGuard::load(&workspace)
+        match crate::policy::PolicyGuard::load(&workspace) {
+            Ok(p) => p,
+            Err(e) => {
+                // A user with a `.clash/policy.json` made an explicit
+                // assertion about tool-execution policy. Falling back to
+                // permissive defaults would silently give them more
+                // access than they asked for. Refuse to start instead;
+                // surface the parse/IO error so they know what to fix.
+                tracing::error!(
+                    thread_id = %thread_id,
+                    workspace = %workspace.display(),
+                    error = %e,
+                    "policy.json is present but failed to load; agent worker refusing to start",
+                );
+                return;
+            }
+        }
     };
 
     // Create scoped client + SyncClientAdapter
@@ -665,9 +681,23 @@ fn run_one_turn(
     }
 
     if let Err(e) = &result {
-        // Write error to history before commit
+        // Write error to history before commit. The error itself already
+        // surfaced via AgentEvent / TUI; this write durably records it so
+        // remount/replay shows what happened. If recording fails, the
+        // user's conversation log will be missing the error message on
+        // replay — tracing::error gives the operator the diagnostic
+        // (matches the user-message write at line ~564).
         let msg = serde_json::json!({"role": "assistant", "content": [{"type": "text", "text": format!("error: {e}")}]});
-        adapter.write_typed(&path!("history/append"), &msg).ok();
+        if let Err(write_err) = adapter.write_typed(&path!("history/append"), &msg) {
+            tracing::error!(
+                thread_id = %thread_id,
+                turn_error = %e,
+                write_error = %write_err,
+                "history append failed while recording turn error; \
+                 the error WILL surface to the user via AgentEvent but \
+                 WILL NOT be visible on replay",
+            );
+        }
     }
 
     // Read model for per-model tracking (may differ from worker-init if

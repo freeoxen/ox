@@ -1536,9 +1536,27 @@ pub fn run_turn(context: &mut dyn Store, emit: &mut dyn FnMut(AgentEvent)) -> Re
                 .and_then(|v| v.as_str())
                 .unwrap_or("anthropic")
                 .to_string();
-            let inner_refs: Vec<ContextRef> =
-                serde_json::from_value(tc.input.get("refs").cloned().unwrap_or_default())
-                    .unwrap_or_default();
+            // Decode `refs`. Absence is legitimate (no extra context);
+            // a present-but-malformed `refs` is a model error worth
+            // surfacing — the old `unwrap_or_default` silently ran the
+            // inner completion with no refs, so the model thought it
+            // had passed context that the runtime never received.
+            let inner_refs = match decode_complete_refs(&tc.input) {
+                Ok(refs) => refs,
+                Err(msg) => {
+                    // Two audiences: the model gets the ToolResult so it
+                    // can retry with a correct refs shape; the operator
+                    // gets an AgentEvent::Error so a malformed
+                    // model-emitted argument is observable in logs/TUI.
+                    let err_msg = format!("complete.refs failed to decode: {msg}");
+                    emit(AgentEvent::Error(err_msg.clone()));
+                    deferred_results.push(ToolResult {
+                        tool_use_id: tc.id.clone(),
+                        content: serde_json::Value::String(format!("error: {err_msg}")),
+                    });
+                    continue;
+                }
+            };
 
             emit(AgentEvent::ToolCallStart {
                 name: "complete".into(),
@@ -1580,10 +1598,27 @@ fn flush_text(blocks: &mut Vec<ContentBlock>, text: &mut String) {
     }
 }
 
+/// Decode the `refs` field of a `complete` tool-call's input into
+/// the kernel's typed `Vec<ContextRef>`. Named ingress so the policy
+/// on decode failure lives in one place: surface to the caller as a
+/// `Result` so they can fold the failure into a `ToolResult` the
+/// model can see and retry. Absent `refs` is legitimate "no extra
+/// context"; present-but-malformed is a model-side error.
+fn decode_complete_refs(input: &serde_json::Value) -> Result<Vec<ContextRef>, String> {
+    match input.get("refs") {
+        None => Ok(Vec::new()),
+        Some(raw) => serde_json::from_value(raw.clone()).map_err(|e| e.to_string()),
+    }
+}
+
 fn flush_tool(blocks: &mut Vec<ContentBlock>, tool: &mut Option<(String, String, String)>) {
     if let Some((id, name, input_json)) = tool.take() {
+        // Malformed streamed tool input becomes Null; the dispatched
+        // tool rejects null and surfaces a tool-error result the model
+        // can see. Bounded blast radius — see
+        // docs/superpowers/specs/2026-05-22-silent-unwrap-audit.md item #6.
         let input: serde_json::Value =
-            serde_json::from_str(&input_json).unwrap_or(serde_json::Value::Null);
+            serde_json::from_str(&input_json).unwrap_or(serde_json::Value::Null); // allow(silent_parse_fallback): see comment above
         blocks.push(ContentBlock::ToolUse(ToolCall { id, name, input }));
     }
 }
