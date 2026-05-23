@@ -396,14 +396,37 @@ fn agent_worker(
                 // A user with a `.clash/policy.json` made an explicit
                 // assertion about tool-execution policy. Falling back to
                 // permissive defaults would silently give them more
-                // access than they asked for. Refuse to start instead;
-                // surface the parse/IO error so they know what to fix.
+                // access than they asked for. Refuse to start, AND
+                // surface the failure where the user is already looking:
+                // write a synthesized assistant turn to this thread's
+                // history so the TUI shows what happened and how to fix.
                 tracing::error!(
                     thread_id = %thread_id,
                     workspace = %workspace.display(),
                     error = %e,
                     "policy.json is present but failed to load; agent worker refusing to start",
                 );
+                let scoped = broker.client().scoped(&format!("threads/{thread_id}"));
+                let mut tmp_adapter = ox_broker::SyncClientAdapter::new(scoped, rt_handle.clone());
+                let msg = serde_json::json!({
+                    "role": "assistant",
+                    "content": [{
+                        "type": "text",
+                        "text": format!(
+                            "⚠ Agent failed to start: {e}\n\n\
+                             Fix the policy file or remove it to use defaults, then retry.",
+                        ),
+                    }],
+                });
+                if let Err(write_err) = tmp_adapter.write_typed(&path!("history/append"), &msg) {
+                    tracing::error!(
+                        thread_id = %thread_id,
+                        policy_error = %e,
+                        history_write_error = %write_err,
+                        "policy load failed AND couldn't record error to thread history; \
+                         user will see no in-TUI indication agent didn't start",
+                    );
+                }
                 return;
             }
         }

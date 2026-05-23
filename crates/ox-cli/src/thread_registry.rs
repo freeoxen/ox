@@ -327,7 +327,19 @@ impl ThreadNamespace {
                                     loaded = true;
                                     let value = structfs_serde_store::json_to_value(json);
                                     let append_path = ox_path::oxpath!("history", "append");
-                                    ns.write(&append_path, Record::parsed(value)).ok();
+                                    if let Err(e) = ns.write(&append_path, Record::parsed(value)) {
+                                        // Migration failure: one entry from a
+                                        // legacy .jsonl couldn't be re-appended
+                                        // through the broker. Keep migrating the
+                                        // rest (don't bail mid-file), but record
+                                        // the loss so the operator sees what
+                                        // didn't make it across.
+                                        tracing::error!(
+                                            file = %path.display(),
+                                            error = %e,
+                                            "legacy history entry failed to re-append during migration; entry will be missing from the migrated thread",
+                                        );
+                                    }
                                 }
                             }
                         }

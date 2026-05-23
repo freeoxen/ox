@@ -150,11 +150,32 @@ fn append_account_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, expand
         if ox_kernel::PathComponent::try_new(name).is_err() {
             continue;
         }
-        let acct: AccountConfig =
-            read_account_assembling_flat(data, name).unwrap_or(AccountConfig {
-                provider: "anthropic".to_string(),
-                ..Default::default()
-            });
+        // Read failure here used to silently substitute a default-Anthropic
+        // AccountConfig, so the row rendered as a valid-looking entry whose
+        // expanded fields were all broken. Surface to the user as a ⚠
+        // placeholder row instead — same shape as
+        // `append_account_field_rows` does for the same failure mode.
+        let acct: AccountConfig = match read_account_assembling_flat(data, name) {
+            Some(a) => a,
+            None => {
+                tracing::error!(
+                    account = %name,
+                    "settings: account name enumerated but record unreadable; rendering placeholder",
+                );
+                let path = row_path(&["settings", "accounts", name]);
+                rows.push(VisibleRow {
+                    path,
+                    depth: 1,
+                    label: format!("⚠ {name} (account record unreadable)"),
+                    secondary: Some("delete and recreate this connection to recover".to_string()),
+                    badge: None,
+                    kind: RowKind::Account { name: name.clone() },
+                    expandable: false,
+                    expanded: false,
+                });
+                continue;
+            }
+        };
 
         let secondary = {
             // Show what the connection actually IS — dialect + endpoint
