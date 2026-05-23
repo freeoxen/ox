@@ -304,6 +304,60 @@ impl AgentPool {
 // Agent worker — one per thread, runs on its own OS thread
 // ---------------------------------------------------------------------------
 
+/// Single channel a worker uses to surface startup-time failures to
+/// the user (synthesized assistant turn in the thread's history) and
+/// to the operator (`tracing::error!`). Constructed at the very top
+/// of `agent_worker` so every failure path after it has a consistent
+/// place to write to — no per-error-site `tmp_adapter` construction.
+struct WorkerErrorChannel {
+    thread_id: String,
+    adapter: ox_broker::SyncClientAdapter,
+}
+
+impl WorkerErrorChannel {
+    fn new(
+        thread_id: String,
+        broker: &ox_broker::BrokerStore,
+        rt_handle: &tokio::runtime::Handle,
+    ) -> Self {
+        let scoped = broker.client().scoped(&format!("threads/{thread_id}"));
+        let adapter = ox_broker::SyncClientAdapter::new(scoped, rt_handle.clone());
+        Self { thread_id, adapter }
+    }
+
+    /// Report a startup-time failure: log with tracing AND write a
+    /// synthesized assistant turn to the thread's history so the user
+    /// sees what happened in the TUI conversation view. `cause` names
+    /// the failing subsystem (e.g. "policy.json") for the tracing
+    /// event; `display_error` is the user-facing message.
+    fn report_startup_failure(&mut self, cause: &str, display_error: &str, remediation: &str) {
+        tracing::error!(
+            thread_id = %self.thread_id,
+            cause = %cause,
+            error = %display_error,
+            "agent worker refusing to start",
+        );
+        let msg = serde_json::json!({
+            "role": "assistant",
+            "content": [{
+                "type": "text",
+                "text": format!(
+                    "⚠ Agent failed to start: {display_error}\n\n{remediation}",
+                ),
+            }],
+        });
+        if let Err(write_err) = self.adapter.write_typed(&path!("history/append"), &msg) {
+            tracing::error!(
+                thread_id = %self.thread_id,
+                cause = %cause,
+                error = %display_error,
+                history_write_error = %write_err,
+                "startup failure AND history append failed; user will see no in-TUI indication",
+            );
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn agent_worker(
     thread_id: String,
@@ -318,6 +372,13 @@ fn agent_worker(
     transport_factory: Option<crate::test_support::TransportFactory>,
     tool_injector: Option<crate::test_support::ToolInjector>,
 ) {
+    // Build the error channel FIRST, before anything that can fail.
+    // Every startup-failure path below uses `err_channel.report_*`
+    // so there's one consistent place to write to — no per-site
+    // adapter construction. The "real" adapter (used for the main
+    // worker loop) is built downstream.
+    let mut err_channel = WorkerErrorChannel::new(thread_id.clone(), &broker, &rt_handle);
+
     // Build ToolStore — primary tool execution backend
     let executor = std::env::current_exe()
         .ok()
@@ -394,39 +455,17 @@ fn agent_worker(
             Ok(p) => p,
             Err(e) => {
                 // A user with a `.clash/policy.json` made an explicit
-                // assertion about tool-execution policy. Falling back to
-                // permissive defaults would silently give them more
-                // access than they asked for. Refuse to start, AND
-                // surface the failure where the user is already looking:
-                // write a synthesized assistant turn to this thread's
-                // history so the TUI shows what happened and how to fix.
-                tracing::error!(
-                    thread_id = %thread_id,
-                    workspace = %workspace.display(),
-                    error = %e,
-                    "policy.json is present but failed to load; agent worker refusing to start",
+                // assertion about tool-execution policy. Falling back
+                // to permissive defaults would silently give them more
+                // access than they asked for. Refuse to start; the
+                // error channel constructed at the top of the worker
+                // writes to thread history so the user sees what
+                // happened in the TUI conversation view.
+                err_channel.report_startup_failure(
+                    "policy.json",
+                    &format!("{e}"),
+                    "Fix the policy file or remove it to use defaults, then retry.",
                 );
-                let scoped = broker.client().scoped(&format!("threads/{thread_id}"));
-                let mut tmp_adapter = ox_broker::SyncClientAdapter::new(scoped, rt_handle.clone());
-                let msg = serde_json::json!({
-                    "role": "assistant",
-                    "content": [{
-                        "type": "text",
-                        "text": format!(
-                            "⚠ Agent failed to start: {e}\n\n\
-                             Fix the policy file or remove it to use defaults, then retry.",
-                        ),
-                    }],
-                });
-                if let Err(write_err) = tmp_adapter.write_typed(&path!("history/append"), &msg) {
-                    tracing::error!(
-                        thread_id = %thread_id,
-                        policy_error = %e,
-                        history_write_error = %write_err,
-                        "policy load failed AND couldn't record error to thread history; \
-                         user will see no in-TUI indication agent didn't start",
-                    );
-                }
                 return;
             }
         }

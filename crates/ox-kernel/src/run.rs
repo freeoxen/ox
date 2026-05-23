@@ -1613,10 +1613,15 @@ fn decode_complete_refs(input: &serde_json::Value) -> Result<Vec<ContextRef>, St
 
 fn flush_tool(blocks: &mut Vec<ContentBlock>, tool: &mut Option<(String, String, String)>) {
     if let Some((id, name, input_json)) = tool.take() {
-        // Malformed streamed tool input becomes Null; the dispatched
-        // tool rejects null and surfaces a tool-error result the model
-        // can see. Bounded blast radius — see
-        // docs/superpowers/specs/2026-05-22-silent-unwrap-audit.md item #6.
+        // Malformed streamed tool input becomes Null. Verified bounded
+        // for built-in tools (ox-tools fs/os reject null via
+        // `input.get("field").and_then(.as_str()).ok_or_else(...)` →
+        // surface "missing 'X' field" as Err to the model; completion
+        // module takes a typed request, not raw JSON, so null can't
+        // reach it). Native FnTool contract is per-tool — see
+        // NativeTool::execute doc for the input-validation expectation.
+        // See docs/superpowers/specs/2026-05-22-silent-unwrap-audit.md
+        // item #6 for the full audit notes.
         let input: serde_json::Value =
             serde_json::from_str(&input_json).unwrap_or(serde_json::Value::Null); // allow(silent_parse_fallback): see comment above
         blocks.push(ContentBlock::ToolUse(ToolCall { id, name, input }));

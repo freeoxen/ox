@@ -155,13 +155,9 @@ fn append_account_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, expand
         // expanded fields were all broken. Surface to the user as a ⚠
         // placeholder row instead — same shape as
         // `append_account_field_rows` does for the same failure mode.
-        let acct: AccountConfig = match read_account_assembling_flat(data, name) {
+        let acct: AccountConfig = match read_account_or_log(data, name) {
             Some(a) => a,
             None => {
-                tracing::error!(
-                    account = %name,
-                    "settings: account name enumerated but record unreadable; rendering placeholder",
-                );
                 let path = row_path(&["settings", "accounts", name]);
                 rows.push(VisibleRow {
                     path,
@@ -261,6 +257,11 @@ fn read_account_child_string_in_visible_rows(
 /// TOML-loaded accounts read as `AccountConfig::default()` (provider="")
 /// and every downstream lookup fails (Protocol carousel sticks at the
 /// idx-0 fallback, Endpoint/Auth render empty).
+///
+/// Returns `None` when neither shape is readable. Callers that need
+/// to *react* to that (e.g. row enumerators) should prefer
+/// [`read_account_or_log`] so the failure is observable to the
+/// operator at one chokepoint.
 pub(crate) fn read_account_assembling_flat(
     data: &mut dyn Reader,
     name: &str,
@@ -276,6 +277,25 @@ pub(crate) fn read_account_assembling_flat(
         provider,
         ..Default::default()
     })
+}
+
+/// [`read_account_assembling_flat`] + tracing on failure. Both row
+/// enumerators (`append_account_rows` and `append_account_field_rows`)
+/// react to a read failure by surfacing a ⚠ placeholder row of the
+/// right shape; this helper centralizes the "log that we hit an
+/// orphan-name" side effect so the placeholder construction at each
+/// call site stays focused on the row-shape concern. Returns the same
+/// `Option<AccountConfig>` as the underlying ingress.
+fn read_account_or_log(data: &mut dyn Reader, name: &str) -> Option<ox_gate::AccountConfig> {
+    let result = read_account_assembling_flat(data, name);
+    if result.is_none() {
+        tracing::error!(
+            account = %name,
+            "settings: account name enumerated but record unreadable; \
+             caller will render a placeholder row",
+        );
+    }
+    result
 }
 
 /// Read a `ProviderConfig` from the snapshot, trying the parent path
@@ -434,13 +454,9 @@ fn append_account_field_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, 
     // of synthesizing an `AccountConfig::default()` (silently empty
     // Endpoint/Auth rows + stuck Protocol carousel) or vanishing the
     // field rows entirely (user can't tell what's wrong or act on it).
-    let acct = match read_account_assembling_flat(data, name) {
+    let acct = match read_account_or_log(data, name) {
         Some(a) => a,
         None => {
-            tracing::error!(
-                account = %name,
-                "settings: account row enumerated but record unreadable",
-            );
             let path = row_path(&["settings", "accounts", name, "_unreadable"]);
             rows.push(VisibleRow {
                 path,

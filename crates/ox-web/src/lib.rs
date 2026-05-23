@@ -385,7 +385,12 @@ impl OxAgent {
     pub fn refresh_models(&self) -> js_sys::Promise {
         let provider = self.get_provider();
         let api_key = read_api_key(&self.context, &provider);
-        let config = read_provider_config(&self.context, &provider);
+        let config = match read_provider_config(&self.context, &provider) {
+            Ok(c) => c,
+            Err(e) => {
+                return js_sys::Promise::reject(&JsValue::from_str(&e.to_string()));
+            }
+        };
         let context = self.context.clone();
         let callback = self.event_callback.clone();
         wasm_bindgen_futures::future_to_promise(async move {
@@ -484,32 +489,60 @@ fn write_primary_role(
     Ok(())
 }
 
-/// Read the ProviderConfig for the given provider name from the gate store.
-fn read_provider_config(context: &Rc<RefCell<Namespace>>, provider: &str) -> ProviderConfig {
-    let provider_comp = match PathComponent::try_new(provider) {
-        Ok(c) => c,
-        Err(_) => return ProviderConfig::anthropic(),
-    };
+/// Error returned by [`read_provider_config`] when the broker has a
+/// provider record at the given name that won't decode as a
+/// `ProviderConfig`. Distinct from "no record present" — absence is
+/// the legitimate `Ok(ProviderConfig::anthropic())` fallback for
+/// fresh installs; a present-but-broken record is user-visible.
+#[derive(Debug)]
+pub enum ProviderReadError {
+    /// `provider` isn't a valid `PathComponent` (e.g. contains `/`).
+    InvalidName(String),
+    /// Record at `gate/providers/{provider}` exists but didn't
+    /// deserialize as `ProviderConfig`. Carries the original error
+    /// text so callers can surface it in their UI.
+    Decode { provider: String, error: String },
+}
+
+impl std::fmt::Display for ProviderReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProviderReadError::InvalidName(p) => {
+                write!(f, "provider name '{p}' is not a valid path component")
+            }
+            ProviderReadError::Decode { provider, error } => write!(
+                f,
+                "provider config for '{provider}' failed to decode: {error}",
+            ),
+        }
+    }
+}
+
+/// Read the `ProviderConfig` for `provider` from the gate store.
+/// Absent → `Ok(ProviderConfig::anthropic())` (legitimate fresh-install
+/// default). Present-but-broken → `Err(ProviderReadError::Decode { .. })`
+/// — caller decides whether to surface to the user, fall back, or
+/// refuse the operation.
+///
+/// The previous shape silently substituted Anthropic on decode
+/// failure, which routed the user's request to a different endpoint
+/// than they configured without telling them.
+fn read_provider_config(
+    context: &Rc<RefCell<Namespace>>,
+    provider: &str,
+) -> Result<ProviderConfig, ProviderReadError> {
+    let provider_comp = PathComponent::try_new(provider)
+        .map_err(|_| ProviderReadError::InvalidName(provider.to_string()))?;
     let provider_path = oxpath!("gate", "providers", provider_comp);
     let mut ctx = context.borrow_mut();
     match ctx.read(&provider_path) {
-        Ok(Some(Record::Parsed(v))) => match structfs_serde_store::from_value(v) {
-            Ok(cfg) => cfg,
-            Err(decode_err) => {
-                // Silent provider substitution would route the user's
-                // request to Anthropic when they configured something
-                // else — observable divergence. Surface to the browser
-                // console so a developer or curious user sees it. The
-                // fallback itself is still wrong (the user wanted X,
-                // they get Anthropic) but at least it's noisy.
-                web_sys::console::warn_1(&JsValue::from_str(&format!(
-                    "ox-web: provider config '{provider}' decode failed: {decode_err}; \
-                     falling back to Anthropic — check `gate/providers/{provider}` shape",
-                )));
-                ProviderConfig::anthropic()
-            }
-        },
-        _ => ProviderConfig::anthropic(),
+        Ok(Some(Record::Parsed(v))) => {
+            structfs_serde_store::from_value(v).map_err(|e| ProviderReadError::Decode {
+                provider: provider.to_string(),
+                error: e.to_string(),
+            })
+        }
+        _ => Ok(ProviderConfig::anthropic()),
     }
 }
 
@@ -828,7 +861,8 @@ async fn run_agentic_loop(
             _ => "anthropic".to_string(),
         }
     };
-    let provider_config = read_provider_config(context_ref, &provider);
+    let provider_config =
+        read_provider_config(context_ref, &provider).map_err(|e| e.to_string())?;
 
     let api_key = read_api_key(context_ref, &default_account);
 

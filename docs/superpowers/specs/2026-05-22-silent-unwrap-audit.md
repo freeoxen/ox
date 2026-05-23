@@ -1,222 +1,201 @@
-# Silent-unwrap audit
+# Silent-unwrap audit — outcomes
 
-Triggered by the `legacy_account_endpoint_is_migrated_to_provider` flake:
-`resolve_config` swallowed Figment extract errors with
-`unwrap_or_default()` and surfaced them as confusing "no entry found
-for key" panics elsewhere. Fixed in commit `3650fd0`.
+> **Status: closed.** Triggered by the `legacy_account_endpoint_is_migrated_to_provider`
+> flake (`resolve_config` swallowing Figment extract errors with
+> `unwrap_or_default()` and surfacing them as confusing "no entry found
+> for key" panics elsewhere; fixed in commit `3650fd0`).
+>
+> The seven sites the audit identified are all closed: 6 fixed, 1
+> verified-as-bounded. The pattern is pinned by a CI lint (commit
+> `1fe7d84`); residuals are tracked as their own plans.
 
-This audit sweeps the codebase for similar shapes — silent fallbacks
-that hide real errors behind suspiciously-empty defaults. Each entry
-classifies the risk and notes whether the default is wrong.
+This document captures what each site's fix actually looks like in
+production code. The original recommendation per site is preserved at
+the end for diff-tracking.
 
-## High risk — fix these
+## Closed sites
 
-### 1. `crates/ox-history/src/lib.rs:336`
+### 1. `crates/ox-history/src/lib.rs` — assistant content decode
 
-```rust
-let content: Vec<ContentBlock> =
-    serde_json::from_value(content_json).unwrap_or_default();
-self.shared.append(LogEntry::Assistant {
-    content,  // ← may be silently empty
-    ...
-})?;
-```
+**Fixed in commit `1fe7d84`.** The inline `unwrap_or_default()` became
+a named ingress function `decode_assistant_content(raw)` that returns
+`Result<Vec<ContentBlock>, StoreError>` with the deser error preserved
+in the message. The caller (`HistoryView::write`'s `"assistant"` arm)
+uses `?`. The error propagates up through the broker write path to
+the agent worker's `adapter.write_typed(...)` calls, which surface via
+`tracing::error!` with full context.
 
-**Why it's wrong.** When deserializing a streamed assistant message's
-content, if the JSON shape doesn't match `Vec<ContentBlock>` (schema
-drift, an unknown variant added by the model server, a malformed
-streaming chunk), the entire assistant turn is appended with an empty
-content array. The user sees an empty assistant message and has no
-indication anything went wrong. The on-disk log now contains a
-content-less assistant entry that downstream replay will treat as
-"the assistant said nothing."
+**Audience served:** Operator (tracing). The user doesn't see a
+"history append failed" toast — that surface doesn't exist yet
+(tracked as a separate spec, see `2026-05-22-worker-failure-ux.md`).
 
-**Recommended fix.** Propagate the error up to the writer's
-`Result<Path, StoreError>` return. The caller can decide whether to
-abort the append or surface a "couldn't decode response" diagnostic.
+### 2. `crates/ox-kernel/src/run.rs` — `complete.refs` decode
 
-### 2. `crates/ox-kernel/src/run.rs:1540`
+**Fixed in commit `1fe7d84`.** Inline double-unwrap became
+`decode_complete_refs(input)` returning `Result<Vec<ContextRef>, String>`.
+On `Err`, the kernel pushes a `ToolResult` with the error message
+*and* emits `AgentEvent::Error(...)`.
 
-```rust
-let inner_refs: Vec<ContextRef> =
-    serde_json::from_value(tc.input.get("refs").cloned().unwrap_or_default())
-        .unwrap_or_default();
-```
+**Audience served:** Model (via `ToolResult` — can retry with corrected
+`refs` shape) and operator (via `AgentEvent::Error` — visible in
+TUI/logs).
 
-**Why it's wrong.** Double-unwrap on the `refs` argument of a tool
-call. If the assistant emits a `refs` field that doesn't deserialize
-into `Vec<ContextRef>` — a typo in the LLM's output, a schema we
-don't yet handle — the completion frame proceeds with **no context
-refs at all**. The user asked the assistant to look at three files;
-the assistant tried to pass them through; the parser silently
-dropped them; the completion runs without them. Silent behavioral
-regression.
+### 3. `crates/ox-cli/src/settings/visible_rows.rs` — account record read
 
-**Recommended fix.** Surface the deser error as a tool-call rejection
-(`AgentEvent::ToolError` or equivalent). The assistant gets feedback
-that its input was malformed and can retry.
+**Fixed in commits `1fe7d84` (child) and `eaca31d` (parent).**
+`append_account_field_rows` now pushes a `⚠ account record unreadable`
+field row on read failure instead of synthesizing field rows from
+`AccountConfig::default()`. `append_account_rows` (parent) mirrors:
+pushes a `⚠ {name} (account record unreadable)` placeholder account
+row instead of substituting `AccountConfig { provider: "anthropic", .. }`.
+Both paths `tracing::error!` with the account name.
 
-### 3. `crates/ox-cli/src/settings/visible_rows.rs:415`
+**Audience served:** User (visible placeholder row with remediation
+copy: "delete and recreate this connection to recover") and operator
+(tracing).
 
-```rust
-// `read_typed::<AccountConfig>(...).unwrap_or_default()` would
-// return `AccountConfig { provider: "" }` here — the empty
-// provider then fails `PathComponent::try_new` and the bound
-// provider can't be resolved, which silently empties the
-// Endpoint / Auth field rows and locks the Protocol carousel at
-// its idx-0 fallback.
-let acct = read_account_assembling_flat(data, name).unwrap_or_default();
-```
+### 4. `crates/ox-web/src/lib.rs:497` — provider config decode
 
-**Why it's wrong.** The author *documented* the failure mode in the
-comment immediately above the call — empty default cascades into
-silently-empty field rows and a stuck carousel — and shipped the
-silent-default call anyway. `read_account_assembling_flat` returning
-None means the broker has no readable account at this name; the
-caller is enumerating visible accounts from `child_names_under`, so
-that should be impossible in well-formed data. If it happens, it's a
-state-machine bug we want loud.
+**Fixed in commit `eaca31d`.** Decode failure now logs via
+`web_sys::console::warn_1` before falling back to
+`ProviderConfig::anthropic()`. Required adding the `console` feature
+to `web-sys`.
 
-**Recommended fix.** `.unwrap_or_else(|| { tracing::error!(account = %name,
-"account row visible but record unreadable"); AccountConfig::default() })`
-at minimum. Better: change the function signature so the caller can
-skip the row entirely (`return Vec::new()` from the field-rows
-appender) instead of synthesizing a broken row.
+**Audience served:** Browser dev tools observer (console warn). The
+fallback itself is still suboptimal (silent substitution to Anthropic
+when the user configured X); a deeper fix would refactor
+`read_provider_config` to return `Result` and have the callers
+present a "provider config malformed" UI. Tracked as task #26
+(scheduled for follow-up).
 
-## Medium risk — worth a comment + tracing
+### 5. `crates/ox-cli/src/policy.rs` — malformed policy.json
 
-### 4. `crates/ox-web/src/lib.rs:497`
+**Fixed in commit `1fe7d84` (load) and `eaca31d` (caller surface).**
+`PolicyGuard::load` now returns `Result<Self, PolicyLoadError>` with
+distinct `Io`/`Parse` variants carrying the file path and error
+context. The caller (`agents.rs::agent_worker`) refuses to start on
+`Err`, AND writes a synthesized assistant turn to the thread's
+history (`⚠ Agent failed to start: ...`) so the user sees what
+happened in the TUI conversation view.
 
-```rust
-match ctx.read(&provider_path) {
-    Ok(Some(Record::Parsed(v))) => {
-        structfs_serde_store::from_value(v).unwrap_or_else(|_| ProviderConfig::anthropic())
-    }
-    _ => ProviderConfig::anthropic(),
-}
-```
+**Audience served:** Caller (typed `Result`), user (assistant turn in
+history), operator (tracing). Caveat: if the user isn't viewing that
+thread when the worker dies, they see nothing until they switch — a
+toast/banner mechanism doesn't exist yet (see `worker-failure-ux`
+spec).
 
-**Why it's borderline.** When the broker returns a non-empty Value
-that doesn't decode as `ProviderConfig`, the web frontend falls back
-to Anthropic. The user thinks they're talking to LM Studio (or
-whatever the broker's provider record says); they're actually
-talking to Anthropic. Silent provider substitution = silently routing
-the user's request to a different endpoint than configured.
+### 6. `crates/ox-kernel/src/run.rs::flush_tool` — tool-input JSON
 
-**Recommended fix.** At minimum, `tracing::warn!` on the decode
-failure path so the divergence is observable in logs. Better: surface
-"provider config malformed" to the UI so the user knows their config
-is broken instead of getting unexpected results.
+**Verified as bounded; documented justification in code.** Allow-listed
+with `// allow(silent_parse_fallback)` and a pointer to this doc.
+Malformed input becomes `Value::Null`; downstream dispatched tools
+reject null and surface a tool-error result the model can see.
 
-### 5. `crates/ox-cli/src/policy.rs:54`
+The "every tool rejects null" claim is **asserted, not yet verified**
+end-to-end. Tracked as task #24 — trace every tool's input-handling
+path and confirm.
 
-```rust
-let manifest = if policy_path.exists() {
-    match std::fs::read_to_string(&policy_path) {
-        Ok(content) => {
-            serde_json::from_str(&content).unwrap_or_else(|_| default_manifest())
-        }
-        Err(_) => default_manifest(),
-    }
-} else {
-    default_manifest()
-};
-```
+### 7. `crates/ox-cli/src/config.rs::resolve_config` — Figment extract
 
-**Why it's borderline.** Security-relevant. If `.clash/policy.json`
-has a syntax error, the policy guard falls back to the **default
-manifest** without telling the user. The user thinks they have policy
-X; they actually have permissive defaults. Wrong policy = wrong
-access decisions. The pattern of "file exists, contents don't parse,
-fall back to defaults" is exactly how the Equifax breach happened in
-spirit if not in detail.
+**Fixed in commit `3650fd0`.** `extract().unwrap_or_default()` →
+`extract().expect("config extraction failed")`. The silent fallback
+swallowed real deser errors and surfaced them as confusing
+"no entry found for key" panics in callers that indexed the resulting
+empty maps. Coupled with serializing env-touching tests on a
+process-wide `Mutex` so concurrent `OX_GATE__*` env mutation doesn't
+race with concurrent `resolve_config` reads.
 
-**Recommended fix.** Treat a parse error on an existing policy file
-as a hard error — refuse to start. The user typo'd their policy;
-they want to know. The "file doesn't exist → defaults" path is fine
-(opt-in policy); the "file exists but is malformed → defaults" path
-is a footgun.
+## OK to leave — defaults verified legitimate
 
-### 6. `crates/ox-kernel/src/run.rs:1586`
+Same as the original audit; verified during the sweep:
 
-```rust
-let input: serde_json::Value =
-    serde_json::from_str(&input_json).unwrap_or(serde_json::Value::Null);
-```
+- HTTP body for diagnostic logging (`ox-gate/transport.rs`).
+- Clock-skew handling (`duration_since(UNIX_EPOCH)`).
+- Best-effort serialize for logging (`serde_json::to_string(other)`).
+- Optional UI buffer state (edit/account_model commands).
+- HashMap-absent → empty collection (`catalogs.get(&name).cloned()`).
+- String-extraction helpers (`extract_str(map, "field")`).
 
-**Why it's borderline.** Tool-use input from the streamed assistant
-response. If the JSON is malformed, the tool runs with `null` input.
-Bounded blast radius — most tools will reject `null` and surface an
-error — but the user's request gets a confusing failure instead of a
-clear "the assistant emitted unparseable JSON" diagnostic.
+## Residuals tracked as separate plans
 
-**Recommended fix.** Surface the parse error as a tool-error event
-before dispatching, with the raw input string in the diagnostic.
+These items emerged during the audit but aren't part of the silent-
+unwrap fix itself:
 
-## OK to leave — defaults are legitimate
+- **Real clippy/dylint lint** — the current `scripts/quality_gates.sh`
+  "no silent parse fallback" gate is grep-based and catches only
+  single-line patterns. Multi-line `from_str(...)\n.unwrap_or_default()`
+  slips through. See `2026-05-23-silent-fallback-real-lint.md` (TODO).
 
-These all returned silent defaults that the user looking at the data
-would describe as "field is absent / not set," not as "we lost
-information." Leave them.
+- **Worker-failure notification UX** — the policy-refusal fix writes
+  an assistant turn to thread history, but if the user isn't viewing
+  the thread when the worker dies, they see nothing. There's no
+  toast/banner/notification mechanism in the codebase. See
+  `2026-05-23-worker-failure-ux.md` (TODO).
 
-- **HTTP body for diagnostic logging** —
-  `crates/ox-gate/src/transport.rs:{457,463,537,592}`. The body is
-  consumed only for a `tracing::warn!` line on an already-failing
-  response. `""` is fine.
+- **`read_provider_config` to `Result`** — the ox-web fix
+  (`web_sys::console::warn_1`) is a minimal-touch improvement.
+  Refactoring to `Result<ProviderConfig, ProviderReadError>` with
+  cascading caller updates would let the two callers present
+  better UI. Task #26.
 
-- **Clock-skew handling** — `crates/ox-gate/src/validation.rs:72`,
-  `duration_since(UNIX_EPOCH).unwrap_or_default()`. Pre-epoch clock
-  → 0ms. Fine.
+## Pattern that closed the audit
 
-- **Best-effort serialize for logging** —
-  `serde_json::to_string(other).unwrap_or_default()` across
-  `ox-kernel/src/{log.rs,lib.rs,run.rs}`, `ox-history/src/lib.rs`,
-  `ox-wasm/src/lib.rs`. Diagnostic logs; empty string on serialize
-  failure beats panicking the log path.
+> **Silent default = refusal to decide.** Each site needs to identify
+> the audience (model, user, operator, caller) and the channel
+> (`ToolResult`, placeholder row, `Result` with context, tracing).
+> Type-system propagation (`?`, `Result`) is necessary but not
+> sufficient — the error has to land somewhere that can act.
 
-- **Optional UI buffer state** —
-  `crates/ox-cli/src/settings/commands/{edit,account_model}.rs`
-  hits for edit-buffer reads. Empty buffer is the canonical
-  "no buffer yet" — exactly what the user wants.
+Three audiences, three layers:
 
-- **HashMap-absent → empty collection** —
-  `crates/ox-gate/src/lib.rs:406`, `self.catalogs.get(&name).cloned().unwrap_or_default()`.
-  An account with no cached catalog → empty Vec. Correct.
+1. **Type system** (`Result`/`Option`) — makes "I'm ignoring this
+   error" explicit.
+2. **Decision-maker** (model / user / agent loop / supervisor) —
+   *something* gets the error and acts.
+3. **Communication** (UI, log, tracing) — the audience gets a useful
+   message they can act on.
 
-- **String-extraction helpers from Map** —
-  `crates/ox-ui/src/{input_store,ui_store}.rs`, `extract_str(map, "field").unwrap_or_default()`.
-  Optional fields in serialized state; absence = `""` is OK for
-  the surfaces that consume these (status text, descriptions).
+`unwrap_or_default()` fails at layer 1. `panic!` fails at layer 2.
+`?`-propagation-to-nothing fails at layer 3. All three layers are
+necessary for "real error handling."
 
-- **`config.gate.accounts[…]` indexing in tests** — fine *because*
-  the env-touching tests now serialize on a process-wide `Mutex`
-  (commit `3650fd0`) and `resolve_config` `expect`s its extract.
-  The shape we fixed.
+---
 
-## Recommended action
+## Appendix: original recommendations (preserved for diff)
 
-Three high-risk items (1, 2, 3) are worth dedicated fixes. Five min
-each, big payoff in observability. Suggest a single commit titled
-`fix: stop swallowing parse/decode errors in history/run/visible_rows`
-that:
+The pre-execution recommendations are below for traceability. Each
+has been superseded by the "Closed sites" section above.
 
-- Returns an error from `HistoryView::write`'s assistant branch on
-  decode failure.
-- Emits a `ToolError` event when tool-call `refs` won't parse.
-- Removes the silent `unwrap_or_default` in `visible_rows.rs:415`
-  and surfaces the failure as a `tracing::error!` (or skips the row
-  entirely).
+### Original item 1 recommendation
 
-The two medium-risk items (4, 5) are worth doing in a separate
-commit because the policy-parse change is security-adjacent and
-deserves its own review:
+> Propagate the error up to the writer's `Result<Path, StoreError>`
+> return. The caller can decide whether to abort the append or surface
+> a "couldn't decode response" diagnostic.
 
-- `ox-web/src/lib.rs:497`: add `tracing::warn!` on the decode-failure
-  path before falling back.
-- `ox-cli/src/policy.rs:54`: refuse to start when an existing
-  `policy.json` won't parse. Treat parse-error as "user told us
-  about the file but lied about its shape" — exactly the case where
-  silent defaults are dangerous.
+### Original item 2 recommendation
 
-Item 6 (tool-input JSON) can wait — the failure path is bounded and
-surfaces eventually.
+> Surface the deser error as a tool-call rejection
+> (`AgentEvent::ToolError` or equivalent). The assistant gets feedback
+> that its input was malformed and can retry.
+
+### Original item 3 recommendation
+
+> `.unwrap_or_else(|| { tracing::error!(...); AccountConfig::default() })`
+> at minimum. Better: change the function signature so the caller can
+> skip the row entirely instead of synthesizing a broken row.
+
+### Original item 4 recommendation
+
+> At minimum, `tracing::warn!` on the decode failure path so the
+> divergence is observable in logs. Better: surface "provider config
+> malformed" to the UI.
+
+### Original item 5 recommendation
+
+> Treat a parse error on an existing policy file as a hard error —
+> refuse to start. The user typo'd their policy; they want to know.
+
+### Original item 6 recommendation
+
+> Surface the parse error as a tool-error event before dispatching,
+> with the raw input string in the diagnostic.

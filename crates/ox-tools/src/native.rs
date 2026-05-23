@@ -7,8 +7,21 @@
 use crate::ToolSchemaEntry;
 
 /// A tool that executes in-process.
+///
+/// # Input-validation contract
+///
+/// Tool implementations MUST validate their input shape and return
+/// `Err(...)` for malformed or null input — do NOT silently no-op on
+/// `Value::Null` or missing fields. The kernel's stream-accumulator
+/// (`run.rs::flush_tool`) falls back to `Value::Null` when the
+/// model's streamed tool-use JSON fails to parse; built-in tools
+/// reject this with a "missing 'X' field" error the model can see and
+/// retry. A tool that silently no-ops on null would convert a
+/// malformed-input bug into "tool reported success but did nothing,"
+/// which is the silent-default antipattern the audit closed elsewhere.
 pub trait NativeTool: Send + Sync {
-    /// Execute the tool with JSON input, returning JSON output.
+    /// Execute the tool with JSON input, returning JSON output. See
+    /// the trait doc for the input-validation contract.
     fn execute(&self, input: serde_json::Value) -> Result<serde_json::Value, String>;
 
     /// The tool's schema for model consumption.
