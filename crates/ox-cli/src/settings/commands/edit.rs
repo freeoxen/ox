@@ -47,6 +47,15 @@ use super::command;
 // ---------------------------------------------------------------------------
 
 command! {
+    struct_name: BeginEditAccountName,
+    id: "edit.begin.account_name",
+    title: "Rename Connection",
+    description: "Enter inline edit mode for the focused Connection's display name.",
+    cursor: None,
+    run: |snap, _ctx| begin_edit_account_text(snap, AccountField::Name),
+}
+
+command! {
     struct_name: BeginEditAccountEndpoint,
     id: "edit.begin.account_endpoint",
     title: "Edit Endpoint",
@@ -114,6 +123,7 @@ command! {
 }
 
 pub fn register(reg: &mut CommandRegistry) {
+    reg.register(Box::new(BeginEditAccountName::new()));
     reg.register(Box::new(BeginEditAccountEndpoint::new()));
     reg.register(Box::new(BeginEditAccountKey::new()));
     reg.register(Box::new(BeginEditModelField::new()));
@@ -162,6 +172,10 @@ fn read_path(data: &mut dyn Reader, path: &Path) -> Option<Path> {
 /// current value off the data path; if no value exists yet (empty
 /// endpoint, unset key), seeds the buffer with an empty string so the
 /// user can type to fill it in.
+pub(super) fn begin_edit_account_name(data: &mut dyn Reader) -> Vec<Write> {
+    begin_edit_account_text(data, AccountField::Name)
+}
+
 pub(super) fn begin_edit_account_endpoint(data: &mut dyn Reader) -> Vec<Write> {
     begin_edit_account_text(data, AccountField::Endpoint)
 }
@@ -191,6 +205,9 @@ fn begin_edit_account_text(data: &mut dyn Reader, field: AccountField) -> Vec<Wr
         | RowKind::ModelField { .. } => return Vec::new(),
     };
     let initial = match field {
+        AccountField::Name => {
+            current_display_name(data, &account).unwrap_or_else(|| account.clone())
+        }
         AccountField::Endpoint => current_endpoint(data, &account).unwrap_or_default(),
         AccountField::Key => current_api_key(data, &account).unwrap_or_default(),
         // Caller guarantees a text field; the registry-level command
@@ -444,6 +461,15 @@ fn commit(data: &mut dyn Reader) -> Vec<Write> {
 // Per-field reads + writes
 // ---------------------------------------------------------------------------
 
+fn current_display_name(data: &mut dyn Reader, account: &str) -> Option<String> {
+    let acct_comp = ox_kernel::PathComponent::try_new(account).ok()?;
+    let acct: ox_gate::AccountConfig = super::super::renderers::util::read_typed(
+        data,
+        &oxpath!("config", "gate", "accounts", acct_comp),
+    )?;
+    acct.display_name
+}
+
 fn current_endpoint(data: &mut dyn Reader, account: &str) -> Option<String> {
     let acct_comp = ox_kernel::PathComponent::try_new(account).ok()?;
     let acct: ox_gate::AccountConfig = super::super::renderers::util::read_typed(
@@ -520,6 +546,35 @@ fn commit_account_field(
         Err(_) => return Vec::new(),
     };
     match field {
+        AccountField::Name => {
+            // Rename = update `display_name` only. The on-disk path id
+            // (`config/gate/accounts/<id>`) stays fixed, so binding
+            // tables, secret/keys, and any in-flight subscription state
+            // don't need a cascading move. Empty buffer clears
+            // display_name; the row falls back to the path id.
+            let trimmed = buffer.trim();
+            let mut acct: ox_gate::AccountConfig = super::super::renderers::util::read_typed(
+                data,
+                &oxpath!("config", "gate", "accounts", acct_comp.clone()),
+            )
+            .unwrap_or_else(|| ox_gate::AccountConfig {
+                provider: account.to_string(),
+                ..Default::default()
+            });
+            acct.display_name = if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            };
+            let value = match to_value(&acct) {
+                Ok(v) => v,
+                Err(_) => return Vec::new(),
+            };
+            vec![Write {
+                path: oxpath!("config", "gate", "accounts", acct_comp),
+                record: Record::parsed(value),
+            }]
+        }
         AccountField::Endpoint => {
             // Resolve provider name; synthesize default AccountConfig if
             // no parent leaf exists yet.
@@ -573,8 +628,8 @@ fn commit_account_field(
                 record: Record::parsed(value),
             }]
         }
-        // Read-only / selectors don't enter edit mode; defensive.
-        AccountField::Name | AccountField::Protocol | AccountField::Auth => Vec::new(),
+        // Selectors don't enter edit mode; defensive.
+        AccountField::Protocol | AccountField::Auth => Vec::new(),
     }
 }
 
@@ -1214,5 +1269,136 @@ mod tests {
             Record::Parsed(Value::String(s)) => assert_eq!(s, "abZ"),
             other => panic!("unexpected record: {other:?}"),
         }
+    }
+
+    #[test]
+    fn begin_edit_name_seeds_buffer_with_current_display_name() {
+        let mut snap = SettingsSnapshot::empty();
+        // Account with a display_name distinct from its path id.
+        snap.insert(
+            &oxpath!("settings", "index", "entries", "accounts"),
+            to_value(&SettingsIndexEntry {
+                id: "accounts".to_string(),
+                label: "Accounts".to_string(),
+                description: String::new(),
+                target_cursor: Path::parse("settings/accounts").unwrap(),
+                badge: BadgeSource::None,
+            })
+            .unwrap(),
+        );
+        let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
+        snap.insert(
+            &oxpath!("config", "gate", "accounts", comp),
+            to_value(&AccountConfig {
+                provider: "alpha".to_string(),
+                display_name: Some("My Local LM".to_string()),
+            })
+            .unwrap(),
+        );
+        snap.insert(
+            &oxpath!("ui", "settings", "expanded"),
+            expanded_set_to_value(&[
+                "settings/accounts".to_string(),
+                "settings/accounts/alpha".to_string(),
+            ]),
+        );
+        let target = oxpath!("settings", "accounts", "alpha", "name");
+        snap.insert(
+            &oxpath!("ui", "settings", "focused"),
+            path_to_value(&target),
+        );
+
+        let writes = run(&BeginEditAccountName::new(), &mut snap);
+        assert_eq!(writes.len(), 4, "expected target+buffer+saved+focused");
+        // Buffer holds the existing display_name.
+        assert_eq!(writes[1].path, oxpath!("ui", "settings", "edit", "buffer"));
+        match &writes[1].record {
+            Record::Parsed(Value::String(s)) => assert_eq!(s, "My Local LM"),
+            other => panic!("buffer is not a String: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn begin_edit_name_falls_back_to_path_id_when_no_display_name() {
+        let mut snap = SettingsSnapshot::empty();
+        // No display_name set — fall back to the account's path id.
+        write_index_with_account(&mut snap, "alpha", "alpha");
+        let target = oxpath!("settings", "accounts", "alpha", "name");
+        snap.insert(
+            &oxpath!("ui", "settings", "focused"),
+            path_to_value(&target),
+        );
+
+        let writes = run(&BeginEditAccountName::new(), &mut snap);
+        match &writes[1].record {
+            Record::Parsed(Value::String(s)) => assert_eq!(s, "alpha"),
+            other => panic!("buffer is not a String: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn name_edit_commit_updates_display_name_without_moving_path() {
+        let mut snap = SettingsSnapshot::empty();
+        // The accordion must be expanded so the Name field row appears
+        // in `visible_rows::enumerate`; commit dispatches by looking up
+        // the focused field's row kind.
+        write_index_with_account(&mut snap, "alpha", "alpha");
+        let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
+        snap.insert(
+            &oxpath!("config", "gate", "accounts", comp.clone()),
+            to_value(&AccountConfig {
+                provider: "alpha".to_string(),
+                display_name: Some("old".to_string()),
+            })
+            .unwrap(),
+        );
+        let target = oxpath!("settings", "accounts", "alpha", "name");
+        seed_edit_active(&mut snap, &target, "Renamed Connection");
+
+        let writes = run(&Commit::new(), &mut snap);
+        apply_writes(&mut snap, &writes);
+
+        // The account record at the original path id reflects the new
+        // display_name; the path itself is unchanged.
+        let acct: AccountConfig = crate::settings::renderers::util::read_typed(
+            &mut snap,
+            &oxpath!("config", "gate", "accounts", comp),
+        )
+        .expect("account record persists at original id");
+        assert_eq!(acct.display_name.as_deref(), Some("Renamed Connection"));
+        assert_eq!(
+            acct.provider, "alpha",
+            "provider binding unchanged by rename"
+        );
+    }
+
+    #[test]
+    fn name_edit_commit_with_empty_buffer_clears_display_name() {
+        let mut snap = SettingsSnapshot::empty();
+        write_index_with_account(&mut snap, "alpha", "alpha");
+        let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
+        snap.insert(
+            &oxpath!("config", "gate", "accounts", comp.clone()),
+            to_value(&AccountConfig {
+                provider: "alpha".to_string(),
+                display_name: Some("old".to_string()),
+            })
+            .unwrap(),
+        );
+        let target = oxpath!("settings", "accounts", "alpha", "name");
+        seed_edit_active(&mut snap, &target, "");
+
+        let writes = run(&Commit::new(), &mut snap);
+        apply_writes(&mut snap, &writes);
+
+        let acct: AccountConfig = crate::settings::renderers::util::read_typed(
+            &mut snap,
+            &oxpath!("config", "gate", "accounts", comp),
+        )
+        .unwrap();
+        assert!(
+            acct.display_name.is_none(),
+            "empty buffer should clear display_name; row falls back to path id",
+        );
     }
 }

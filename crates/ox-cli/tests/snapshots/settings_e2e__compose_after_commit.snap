@@ -7,8 +7,8 @@ expression: "&frame_after"
 │▾ Connections [1]                                                             │
 │    + New connection                                                          │
 │  ▾ my-personal                                                               │
-│  _N_mypersonal__ca1d                                                         │
-│      Name: _N_mypersonal__ca1d                                               │
+│  anthropic · https://api.example.com                                         │
+│      Name: my-personal                                                       │
 │      Protocol: anthropic                                                     │
 │      Endpoint: https://api.example.com                                       │
 │      Auth: x-api-key                                                         │

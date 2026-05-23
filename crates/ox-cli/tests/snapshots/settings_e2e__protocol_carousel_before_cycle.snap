@@ -7,7 +7,7 @@ expression: "&frame_before"
 │▾ Connections [1]                                                             │
 │    + New connection                                                          │
 │  ▾ LMStudio                                                                  │
-│  LMStudio                                                                    │
+│  openai · http://127.0.0.1:1234                                              │
 │      Name: LMStudio                                                          │
 │      Protocol: ◂ anthropic  openai  anthropic ▸                              │
 │      Endpoint: http://127.0.0.1:1234                                         │

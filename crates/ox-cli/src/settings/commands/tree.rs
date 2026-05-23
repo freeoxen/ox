@@ -191,7 +191,7 @@ fn activate(data: &mut dyn Reader) -> Vec<Write> {
             RowKind::AccountField {
                 field: AccountField::Name,
                 ..
-            } => Vec::new(),
+            } => super::edit::begin_edit_account_name(data),
             RowKind::AccountField {
                 account,
                 field: AccountField::Protocol,
@@ -593,8 +593,9 @@ mod tests {
     }
 
     #[test]
-    fn activate_on_name_field_is_inert() {
-        // Name is read-only — Enter does nothing.
+    fn activate_on_name_field_enters_rename_edit_mode() {
+        // Enter on the Name field opens an inline editor for the
+        // account's display_name (no path-component rename).
         let mut snap = SettingsSnapshot::empty();
         write_index(&mut snap);
         write_account(&mut snap, "alpha");
@@ -607,7 +608,14 @@ mod tests {
         );
         set_focused(&mut snap, "settings/accounts/alpha/name");
         let writes = run(&TreeActivate::new(), &mut snap);
-        assert!(writes.is_empty());
+        // begin_edit_account_name emits target_path + buffer +
+        // cursor_saved + focused — same shape as Endpoint/Key.
+        assert_eq!(writes.len(), 4);
+        assert_eq!(
+            writes[0].path,
+            oxpath!("ui", "settings", "edit", "target_path"),
+        );
+        assert_eq!(writes[3].path, oxpath!("ui", "settings", "focused"));
     }
 
     #[test]

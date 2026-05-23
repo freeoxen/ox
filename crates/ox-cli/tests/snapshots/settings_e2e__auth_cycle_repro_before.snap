@@ -7,7 +7,7 @@ expression: "&frame_before"
 │▾ Connections [1]                                                             │
 │    + New connection                                                          │
 │  ▾ anthropic                                                                 │
-│  anthropic                                                                   │
+│  anthropic · https://api.anthropic.com                                       │
 │      Name: anthropic                                                         │
 │      Protocol: anthropic                                                     │
 │      Endpoint: https://api.anthropic.com                                     │

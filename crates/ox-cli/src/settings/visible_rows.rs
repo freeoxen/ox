@@ -157,16 +157,32 @@ fn append_account_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, expand
             });
 
         let secondary = {
+            // Show what the connection actually IS — dialect + endpoint
+            // — not the provider id. For accounts created via compose,
+            // the provider id is just `path_id(display_name)`, so
+            // surfacing it visually duplicates the row primary. The
+            // dialect + endpoint tells the user what API the connection
+            // speaks and where it points.
+            let provider = read_provider_assembling_flat(data, &acct.provider);
+            let mut parts: Vec<String> = Vec::new();
+            if let Some(p) = &provider {
+                if !p.dialect.is_empty() {
+                    parts.push(p.dialect.clone());
+                }
+                if !p.endpoint.is_empty() {
+                    parts.push(p.endpoint.clone());
+                }
+            }
             let users = provider_users.get(&acct.provider);
             let other_count = users.map(|v| v.len().saturating_sub(1)).unwrap_or(0);
             if other_count > 0 {
                 let plural = if other_count == 1 { "" } else { "s" };
-                Some(format!(
-                    "{} · shared with {} other{}",
-                    acct.provider, other_count, plural
-                ))
+                parts.push(format!("shared with {} other{}", other_count, plural));
+            }
+            if parts.is_empty() {
+                None
             } else {
-                Some(acct.provider.clone())
+                Some(parts.join(" · "))
             }
         };
 
@@ -408,7 +424,14 @@ fn append_account_field_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, 
         AccountField::Key,
     ] {
         let value = match field {
-            AccountField::Name => name.to_string(),
+            // Show the user-typed display name when present; only legacy
+            // records (or untouched defaults) fall back to the path id.
+            // Mirrors the row primary so what the user sees in the title
+            // matches what the Name editor seeds.
+            AccountField::Name => acct
+                .display_name
+                .clone()
+                .unwrap_or_else(|| name.to_string()),
             // Protocol = the dialect the bound provider speaks, not the
             // provider record's name. When the record is missing (orphan
             // binding) fall back to acct.provider, which for legacy
@@ -774,32 +797,63 @@ mod tests {
     }
 
     #[test]
-    fn account_row_secondary_indicates_shared_provider() {
+    fn account_row_secondary_summarizes_connection_and_flags_sharing() {
+        use ox_gate::ProviderConfig;
         let mut snap = SettingsSnapshot::empty();
         write_index_entries(&mut snap);
-        // Three accounts, two share provider "anthropic", one uses "openai".
+        // Three accounts; two bind to the same provider record (legacy
+        // direct-cloud setup where provider id is the dialect name);
+        // one binds to a uniquely-named provider with a custom endpoint
+        // (LM Studio style).
         write_account_with_provider(&mut snap, "personal", "anthropic");
         write_account_with_provider(&mut snap, "work", "anthropic");
         write_account_with_provider(&mut snap, "lab", "openai");
+        let anth = ox_kernel::PathComponent::try_new("anthropic").unwrap();
+        snap.insert(
+            &oxpath!("config", "gate", "providers", anth),
+            to_value(&ProviderConfig {
+                dialect: "anthropic".into(),
+                endpoint: "https://api.anthropic.com".into(),
+                version: String::new(),
+                auth: None,
+            })
+            .unwrap(),
+        );
+        let openai_p = ox_kernel::PathComponent::try_new("openai").unwrap();
+        snap.insert(
+            &oxpath!("config", "gate", "providers", openai_p),
+            to_value(&ProviderConfig {
+                dialect: "openai".into(),
+                endpoint: "http://127.0.0.1:1234".into(),
+                version: String::new(),
+                auth: None,
+            })
+            .unwrap(),
+        );
         snap.insert(
             &oxpath!("ui", "settings", "expanded"),
             expanded_set_to_value(&["settings/accounts".to_string()]),
         );
         let rows = enumerate(&mut snap);
+        // `personal` shares its provider with one other account; summary
+        // joins dialect + endpoint + sharing note.
         let personal = rows
             .iter()
             .find(|r| matches!(&r.kind, RowKind::Account { name } if name == "personal"))
             .expect("personal row");
         assert_eq!(
             personal.secondary.as_deref(),
-            Some("anthropic · shared with 1 other"),
-            "row secondary must reflect provider sharing"
+            Some("anthropic · https://api.anthropic.com · shared with 1 other"),
         );
+        // `lab` is solo on its provider; summary is just dialect + endpoint.
         let lab = rows
             .iter()
             .find(|r| matches!(&r.kind, RowKind::Account { name } if name == "lab"))
             .expect("lab row");
-        assert_eq!(lab.secondary.as_deref(), Some("openai"));
+        assert_eq!(
+            lab.secondary.as_deref(),
+            Some("openai · http://127.0.0.1:1234"),
+        );
     }
 
     #[test]
