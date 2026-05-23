@@ -8,19 +8,19 @@ description = "Wasmtime-based agent runtime for ox"
 
 [dependencies]
 tracing = { workspace = true }
-ox-kernel = { path = "../ox-kernel" }
-ox-path = { path = "../ox-path" }
-ox-context = { path = "../ox-context" }
-ox-history = { path = "../ox-history" }
-ox-gate = { path = "../ox-gate" }
-ox-tools = { path = "../ox-tools" }
+ox-kernel = { workspace = true }
+ox-path = { workspace = true }
+ox-context = { workspace = true }
+ox-history = { workspace = true }
+ox-gate = { workspace = true }
+ox-tools = { workspace = true }
 structfs-core-store = { workspace = true }
 structfs-serde-store = { workspace = true }
-serde = "1"
-serde_json = "1"
-wasmtime = "29"
+serde = { workspace = true }
+serde_json = { workspace = true }
+wasmtime = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
-ox-store-util = { path = "../ox-store-util" }
-ox-types = { path = "../ox-types" }
+tempfile = { workspace = true }
+ox-store-util = { workspace = true }
+ox-types = { workspace = true }

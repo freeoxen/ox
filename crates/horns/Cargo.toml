@@ -15,5 +15,5 @@ default = ["ratatui"]
 ratatui = ["dep:horns-ratatui"]
 
 [dependencies]
-horns-core = { path = "../horns-core" }
-horns-ratatui = { path = "../horns-ratatui", optional = true }
+horns-core = { workspace = true }
+horns-ratatui = { workspace = true, optional = true }

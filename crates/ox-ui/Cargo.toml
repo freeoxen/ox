@@ -10,16 +10,16 @@ authors.workspace = true
 description = "UI stores for ox — state machines driven by StructFS command protocol"
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
 tracing = { workspace = true }
-ox-broker = { path = "../ox-broker" }
-ox-types = { path = "../ox-types" }
-ox-path = { path = "../ox-path" }
-ox-store-util = { path = "../ox-store-util" }
+ox-broker = { workspace = true }
+ox-types = { workspace = true }
+ox-path = { workspace = true }
+ox-store-util = { workspace = true }
 structfs-core-store = { workspace = true }
 structfs-serde-store = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["sync", "time", "rt", "macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["sync", "time", "rt", "macros", "rt-multi-thread"] }

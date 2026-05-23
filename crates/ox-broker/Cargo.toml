@@ -14,13 +14,13 @@ categories = ["data-structures", "asynchronous"]
 
 [dependencies]
 tracing = { workspace = true }
-horns-core = { path = "../horns-core" }
-ox-path = { path = "../ox-path" }
-serde = { version = "1", features = ["derive"] }
+horns-core = { workspace = true }
+ox-path = { workspace = true }
+serde = { workspace = true }
 structfs-core-store = { workspace = true }
 structfs-serde-store = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [dev-dependencies]
-ox-store-util = { path = "../ox-store-util" }
+ox-store-util = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

@@ -7,22 +7,22 @@ license = "Apache-2.0"
 description = "StructFS-backed inbox store for ox agent thread management"
 
 [dependencies]
-ox-path = { path = "../ox-path" }
+ox-path = { workspace = true }
 tracing = { workspace = true }
-ox-kernel = { path = "../ox-kernel" }
-ox-types = { path = "../ox-types" }
+ox-kernel = { workspace = true }
+ox-types = { workspace = true }
 structfs-core-store = { workspace = true }
 structfs-serde-store = { workspace = true }
-rusqlite = { version = "0.32", features = ["bundled"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 sha2 = { workspace = true }
-uuid = { version = "1", features = ["v4"] }
+uuid = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
-ox-context = { path = "../ox-context" }
-ox-gate = { path = "../ox-gate" }
-ox-history = { path = "../ox-history" }
-ox-store-util = { path = "../ox-store-util" }
-ox-tools = { path = "../ox-tools" }
+tempfile = { workspace = true }
+ox-context = { workspace = true }
+ox-gate = { workspace = true }
+ox-history = { workspace = true }
+ox-store-util = { workspace = true }
+ox-tools = { workspace = true }

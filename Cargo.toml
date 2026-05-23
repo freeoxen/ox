@@ -60,8 +60,86 @@ homepage = "https://freeoxen.github.io/ox/"
 authors = ["Adjective Noun, LLC"]
 
 [workspace.dependencies]
+# Internal crates — path deps live in one place so every member references
+# them as `name = { workspace = true }`. Add a feature here once and every
+# crate that opts in inherits it.
+horns = { path = "crates/horns" }
+horns-core = { path = "crates/horns-core" }
+horns-ratatui = { path = "crates/horns-ratatui" }
+ox-broker = { path = "crates/ox-broker" }
+ox-context = { path = "crates/ox-context" }
+ox-core = { path = "crates/ox-core" }
+ox-gate = { path = "crates/ox-gate" }
+ox-history = { path = "crates/ox-history" }
+ox-inbox = { path = "crates/ox-inbox" }
+ox-kernel = { path = "crates/ox-kernel" }
+ox-path = { path = "crates/ox-path" }
+ox-runtime = { path = "crates/ox-runtime" }
+ox-store-util = { path = "crates/ox-store-util" }
+ox-tools = { path = "crates/ox-tools" }
+ox-types = { path = "crates/ox-types" }
+ox-ui = { path = "crates/ox-ui" }
+
+# StructFS — pinned to the upstream git repo for now.
 structfs-core-store = { git = "https://github.com/StructFS/structfs" }
 structfs-serde-store = { git = "https://github.com/StructFS/structfs" }
-sha2 = "0.10"
+
+# Async runtime + tracing.
 tokio = { version = "1", features = ["sync", "time", "rt"] }
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+tracing-appender = "0.2"
+async-trait = "0.1"
+futures = "0.3"
+tokio-stream = "0.1"
+
+# Serde stack.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde-wasm-bindgen = "0.6"
+
+# Hashing / misc utility crates.
+sha2 = "0.10"
+parking_lot = "0.12"
+unicode-width = "0.2"
+unicode-ident = "1"
+uuid = { version = "1", features = ["v4"] }
+
+# Terminal + UI.
+ratatui = "0.29"
+crossterm = "0.28"
+
+# CLI argument parsing + config layering.
+clap = { version = "4", features = ["derive"] }
+figment = { version = "0.10", features = ["toml", "env"] }
+toml = "0.8"
+
+# HTTP / web framework.
+reqwest = "0.12"
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors"] }
+
+# Persistence.
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Wasm runtime + bindings.
+wasmtime = "29"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = "0.3"
+
+# Proc-macro infra.
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"
+
+# Sandboxing / safety primitives.
+clash = "0.6"
+namecode = "0.1"
+
+# Dev / test helpers.
+insta = "1"
+tempfile = "3"
+trybuild = "1"
+proptest = "1"

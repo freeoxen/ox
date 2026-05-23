@@ -9,10 +9,10 @@ publish = false
 
 [dependencies]
 tracing = { workspace = true }
-ox-kernel = { path = "../ox-kernel" }
+ox-kernel = { workspace = true }
 structfs-core-store = { workspace = true }
 structfs-serde-store = { workspace = true }
-serde_json = "1"
+serde_json = { workspace = true }
 
 [lib]
 crate-type = ["cdylib"]

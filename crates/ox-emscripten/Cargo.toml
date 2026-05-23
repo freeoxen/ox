@@ -11,4 +11,4 @@ description = "Emscripten target shell for the ox agent framework (stub)"
 publish = false
 
 [dependencies]
-ox-core = { path = "../ox-core" }
+ox-core = { workspace = true }
