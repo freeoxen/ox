@@ -219,7 +219,13 @@ pub fn resolve_config(config_dir: &std::path::Path, overrides: &CliOverrides) ->
         .merge(Toml::file(toml_path))
         .merge(Env::prefixed("OX_").split("__"));
 
-    let mut config: OxConfig = figment.extract().unwrap_or_default();
+    // `expect` rather than `unwrap_or_default`: a silent fallback to
+    // the empty default hides real deser failures (an unknown env-var
+    // shape, a TOML schema drift) behind "no entry found for key"
+    // panics in callers that index the resulting empty maps. Loud
+    // failure is the right default; specific recovery belongs at the
+    // call site, not buried here.
+    let mut config: OxConfig = figment.extract().expect("config extraction failed");
     config.migrate_legacy_account_endpoints();
     config.apply_overrides(overrides);
     tracing::debug!(
@@ -318,6 +324,26 @@ pub fn has_any_usable_account(config: &OxConfig) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    /// Process-wide lock for tests that read OR mutate `OX_*` env vars.
+    /// Figment reads the env on every `resolve_config` / consumers of
+    /// `read_legacy_key_sources` read env directly — concurrent
+    /// `set_var` from one test corrupts the view another test sees,
+    /// which then deserializes a malformed `AccountEntry` (provider
+    /// missing because the other test only set a `key` field) and the
+    /// surrounding extract returns `Err`. Hold this for the duration
+    /// of every env-touching test body.
+    fn env_lock() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        // Poisoning means a prior test panicked while holding the lock;
+        // the env state may be inconsistent but blocking forever helps
+        // nobody — recover the guard so the rest of the suite can run
+        // and surface the original failure.
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+    }
 
     fn role_from_flat(flat: &BTreeMap<String, Value>) -> ox_types::CompletionRole {
         let v = flat
@@ -356,6 +382,7 @@ mod tests {
 
     #[test]
     fn resolve_from_toml_file() {
+        let _env = env_lock();
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("config.toml"),
@@ -400,6 +427,7 @@ max_tokens = 8192
 
     #[test]
     fn legacy_account_endpoint_is_migrated_to_provider() {
+        let _env = env_lock();
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("config.toml"),
@@ -428,6 +456,7 @@ endpoint = "http://127.0.0.1:1234/v1/chat/completions"
 
     #[test]
     fn env_vars_resolve_through_figment() {
+        let _env = env_lock();
         let dir = tempfile::tempdir().unwrap();
         unsafe {
             std::env::set_var("OX_GATE__DEFAULTS__MODEL", "env-model");
@@ -448,6 +477,7 @@ endpoint = "http://127.0.0.1:1234/v1/chat/completions"
 
     #[test]
     fn cli_overrides_beat_file() {
+        let _env = env_lock();
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("config.toml"),
@@ -480,6 +510,7 @@ endpoint = "http://127.0.0.1:1234/v1/chat/completions"
 
     #[test]
     fn read_legacy_key_sources_env_beats_file() {
+        let _env = env_lock();
         let dir = tempfile::tempdir().unwrap();
         let keys_dir = dir.path().join("keys");
         std::fs::create_dir_all(&keys_dir).unwrap();
@@ -497,6 +528,7 @@ endpoint = "http://127.0.0.1:1234/v1/chat/completions"
 
     #[test]
     fn read_legacy_key_sources_missing_dir_is_ok() {
+        let _env = env_lock();
         // The keys directory may not exist on a fresh install — return the
         // env-only set rather than erroring.
         let dir = tempfile::tempdir().unwrap();
