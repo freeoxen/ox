@@ -1,19 +1,26 @@
-//! UI-behavior tests for the horns-driven settings screen.
+//! Behavior tests for the horns-driven settings screen.
 //!
-//! Drives the same flow `run_horns_settings_loop` does in production:
+//! These tests run the production pipeline end-to-end:
 //!
-//! 1. Set up a broker with the mounts `settings::install` writes to.
-//! 2. Install the settings horns instance — registers
-//!    `KeyDispatchSubscription` and friends on the broker.
-//! 3. Seed cursor + any test-specific config (accounts, expanded set).
-//! 4. For each user action: write a `KeyChord` to the broker's input
-//!    path. The `KeyDispatchSubscription` runs the matched command
-//!    synchronously and the cascade lands on the broker.
-//! 5. Render inline via `SettingsSnapshot` + the renderer registry —
-//!    same View shape the production `RenderSubscription` emits, but
-//!    without going through the subscription's serialize/deserialize.
-//! 6. Assert on either the focus cursor (state) or the rendered View
-//!    (visible behavior).
+//! 1. Build a broker with the mounts `settings::install` writes to.
+//! 2. Install settings + `horns_ratatui` (against a `TestBackend`).
+//! 3. Drive inputs by writing `KeyChord`s to the broker's input path.
+//!    `KeyDispatchSubscription` runs the matched command on the same
+//!    write cascade.
+//! 4. Observe outputs by reading rendered cells from the TestBackend's
+//!    buffer (via `rendered_text(&terminal)`) — the same
+//!    `render_to_frame` call the production ratatui backend makes.
+//!
+//! The user-visible output is the test surface. Assertions are on
+//! rendered cells (what the user sees), not on intermediate View tree
+//! structure. Renderer unit tests — which DO inspect View trees as
+//! pure functions of state — live in `crates/ox-cli/src/settings/
+//! renderers/index.rs::tests`, never here.
+//!
+//! **Do not** construct a `RendererRegistry` in this file. **Do not**
+//! call a `Renderer`'s `render` method directly. If you need to
+//! inspect a View tree, that's a renderer unit test — write it in the
+//! renderer's `src/.../tests` module instead.
 
 use std::sync::Arc;
 use std::time::Duration;
