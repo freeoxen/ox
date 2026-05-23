@@ -202,7 +202,9 @@ fn begin_edit_account_text(data: &mut dyn Reader, field: AccountField) -> Vec<Wr
         | RowKind::Entry { .. }
         | RowKind::Account { .. }
         | RowKind::Model { .. }
-        | RowKind::ModelField { .. } => return Vec::new(),
+        | RowKind::ModelField { .. }
+        | RowKind::EmptyAccountModels { .. }
+        | RowKind::AddModelManual { .. } => return Vec::new(),
     };
     let initial = match field {
         AccountField::Name => {
@@ -234,7 +236,9 @@ fn begin_edit_model_field_inner(data: &mut dyn Reader) -> Vec<Write> {
         RowKind::Entry { .. }
         | RowKind::Account { .. }
         | RowKind::Model { .. }
-        | RowKind::AccountField { .. } => return Vec::new(),
+        | RowKind::AccountField { .. }
+        | RowKind::EmptyAccountModels { .. }
+        | RowKind::AddModelManual { .. } => return Vec::new(),
     };
     let initial = current_model_override(data, &account, &model_id, field).unwrap_or_default();
     enter_edit_mode(row.path, initial)
@@ -323,6 +327,8 @@ fn insert_char_into_edit_buffer(
         Some(RowKind::Entry { .. })
         | Some(RowKind::Account { .. })
         | Some(RowKind::Model { .. })
+        | Some(RowKind::EmptyAccountModels { .. })
+        | Some(RowKind::AddModelManual { .. })
         | None => false,
     };
     if !accept {
@@ -446,6 +452,8 @@ fn commit(data: &mut dyn Reader) -> Vec<Write> {
         Some(RowKind::Entry { .. })
         | Some(RowKind::Account { .. })
         | Some(RowKind::Model { .. })
+        | Some(RowKind::EmptyAccountModels { .. })
+        | Some(RowKind::AddModelManual { .. })
         | None => Vec::new(),
     };
     // Restore cursor to the field row — the row the user just edited.

@@ -618,8 +618,8 @@ fn register_compose_selector_field(reg: &mut BindingRegistry, field: &str) {
 fn register_manual_model(reg: &mut BindingRegistry) {
     let form_scope = oxpath!("settings", "_manual_model");
 
-    // Esc — Capture phase: the wizard claims Esc before any leaf, so
-    // a future per-stage Esc handler can't shadow lifecycle cancel.
+    // Esc — Capture phase: the form claims Esc before any leaf, so
+    // a future per-field Esc handler can't shadow lifecycle cancel.
     reg.register(BindingEntry {
         scope: BindingScope::Exact(form_scope.clone()),
         key: KeyChord {
@@ -630,9 +630,44 @@ fn register_manual_model(reg: &mut BindingRegistry) {
         phase: Phase::Capture,
     });
 
-    // Enter — Bubble phase: leaf stages get first crack at Enter
-    // (Target) so a future multi-line stage can insert a newline; if
-    // nothing claims it there, the form advances on Bubble.
+    // Tab / Down — Capture phase: focus_next preempts the focused
+    // leaf so a Tab keystroke walks the form instead of being eaten
+    // by an insert handler. Mirrors compose-form focus navigation.
+    for key in [KeyCodeRepr::Tab, KeyCodeRepr::Down] {
+        reg.register(BindingEntry {
+            scope: BindingScope::Exact(form_scope.clone()),
+            key: KeyChord {
+                modifiers: no_mods(),
+                code: key,
+            },
+            command_id: cmd("models.compose_manual.focus_next"),
+            phase: Phase::Capture,
+        });
+    }
+    // Shift+Tab — terminals emit BackTab with the shift modifier; mirror
+    // compose's encoding so encode/parse round-trips line up.
+    reg.register(BindingEntry {
+        scope: BindingScope::Exact(form_scope.clone()),
+        key: KeyChord {
+            modifiers: shift_only(),
+            code: KeyCodeRepr::BackTab,
+        },
+        command_id: cmd("models.compose_manual.focus_prev"),
+        phase: Phase::Capture,
+    });
+    reg.register(BindingEntry {
+        scope: BindingScope::Exact(form_scope.clone()),
+        key: KeyChord {
+            modifiers: no_mods(),
+            code: KeyCodeRepr::Up,
+        },
+        command_id: cmd("models.compose_manual.focus_prev"),
+        phase: Phase::Capture,
+    });
+
+    // Enter — Bubble phase: leaf fields get first crack at Enter
+    // (Target) so a future multi-line field can insert a newline; if
+    // nothing claims it there, the form commits on Bubble.
     reg.register(BindingEntry {
         scope: BindingScope::Exact(form_scope),
         key: KeyChord {

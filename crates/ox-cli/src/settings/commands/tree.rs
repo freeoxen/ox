@@ -214,6 +214,10 @@ fn activate(data: &mut dyn Reader) -> Vec<Write> {
             // The expandable arm above already handles every Entry,
             // Account, and Model row.
             RowKind::Entry { .. } | RowKind::Account { .. } | RowKind::Model { .. } => Vec::new(),
+            // Empty-catalog decoration rows aren't editable; `r` / `m`
+            // act on them via their own per-row prefix bindings, not
+            // tree.activate.
+            RowKind::EmptyAccountModels { .. } | RowKind::AddModelManual { .. } => Vec::new(),
         }
     }
 }

@@ -35,26 +35,50 @@ pub enum ModelField {
     OutputTokensOverride,
 }
 
-/// The current stage of the manual-model entry form.
+/// Identifies one of the three fields in the manual-model entry form.
 ///
-/// The form is a three-step state machine: the user types a model id,
-/// then a context-window size, then a max-output-tokens size. Each
-/// stage's commit advances to the next; the final stage's commit
-/// finalizes the new `ModelInfo` into the account's catalog.
+/// The form is a parallel-field form (matching the compose-form
+/// pattern): the user can move focus between `id`, `ctx`, and `out`
+/// with Tab / Shift+Tab and commit the entire form with Enter. The
+/// enum value identifies which field currently holds focus — the
+/// cursor's leaf segment under `settings/_manual_model/<field>` is
+/// the dispatcher-side encoding, this enum is the typed dual.
 ///
-/// Wire format is PascalCase (`"Id"` / `"Ctx"` / `"Out"`) so it stays
-/// distinguishable on read from the legacy stringly-typed values
-/// (`"id"` / `"ctx"` / `"out"`) that older code paths still produce.
-/// The dispatcher's mode-aware pass treats this typed shape as the
-/// discriminator: typed → manual-model mode is active; legacy → fall
-/// through to other passes. That dual-shape coexistence lets the new
-/// command surface land before the old one retires.
+/// The name `ManualModelStage` is historical: an earlier version of
+/// the form was a sequential wizard with stages. The discriminator
+/// set (`Id` / `Ctx` / `Out`) and wire format (`"Id"` / `"Ctx"` /
+/// `"Out"`) are unchanged; only the semantic meaning shifted from
+/// "active stage" to "active field".
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub enum ManualModelStage {
     Id,
     Ctx,
     Out,
+}
+
+/// Per-field validation results for the manual-model form. Mirrors
+/// `ValidationErrors` (compose-form): a closed struct-of-`Option` so
+/// `for_field` can exhaustively match.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ManualModelErrors {
+    pub id: Option<String>,
+    pub ctx: Option<String>,
+    pub out: Option<String>,
+}
+
+impl ManualModelErrors {
+    pub fn is_clean(&self) -> bool {
+        self.id.is_none() && self.ctx.is_none() && self.out.is_none()
+    }
+
+    pub fn for_field(&self, field: ManualModelStage) -> Option<&str> {
+        match field {
+            ManualModelStage::Id => self.id.as_deref(),
+            ManualModelStage::Ctx => self.ctx.as_deref(),
+            ManualModelStage::Out => self.out.as_deref(),
+        }
+    }
 }
 
 /// Identifier for a (account, model) pair. The field name `model_id` matches

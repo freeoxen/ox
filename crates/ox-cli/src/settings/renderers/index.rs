@@ -21,7 +21,7 @@ use ox_gate::AuthScheme;
 
 use crate::settings::commands::account_model::{
     compose_form_view, cursor_is_in_compose_form, cursor_is_in_confirm_delete,
-    cursor_to_manual_model_stage, resolve_protocol_options,
+    resolve_protocol_options,
 };
 use crate::settings::commands::edit::read_edit_state;
 use crate::settings::visible_rows::{self, RowKind};
@@ -58,11 +58,20 @@ impl Renderer for IndexRenderer {
         // slice owns [Models header, models, model fields…].
         let (accounts_rows, models_rows) = partition_rows_by_section(&rows);
 
+        // Manual-model active-account — read once per frame so the
+        // Models section can substitute a View::Form for that
+        // account's AddModelManual row.
+        let manual_account: Option<String> = crate::settings::renderers::util::read_typed(
+            ctx.data,
+            &ox_path::oxpath!("ui", "settings", "manual_model", "account"),
+        );
+
         let ctx_state = SectionCtx {
             cursor: cursor.as_ref(),
             edit_state: edit_state.as_ref(),
             protocol_options: &protocol_options,
             auth_current: auth_current.as_ref(),
+            manual_account: manual_account.as_deref(),
         };
 
         let accounts_section =
@@ -139,6 +148,10 @@ struct SectionCtx<'a> {
     edit_state: Option<&'a crate::settings::commands::edit::EditState>,
     protocol_options: &'a [String],
     auth_current: Option<&'a AuthScheme>,
+    /// Account currently in manual-model mode (`None` when no form is
+    /// active). When set, `render_models_section` replaces that
+    /// account's AddModelManual row with a `View::Form`.
+    manual_account: Option<&'a str>,
 }
 
 /// Split the visible-rows enumeration at the Models Entry boundary.
@@ -304,11 +317,14 @@ fn render_accounts_section(
     }
 }
 
-/// Build the Models section as `Stack[ header_list, optional_content_list ]`.
-/// The content list holds Model rows + empty-catalog decorations
-/// interleaved alphabetically. With both pieces living in the same
-/// sub-List, the decoration indices are local — no rows-into-items
-/// offset math.
+/// Build the Models section as a Stack with a header_list and (when
+/// expanded) one or more content children. The content children are
+/// either (a) a single `View::List` of all content rows projected by
+/// `rows_to_list_items`, or — when manual-mode is active for one of
+/// the section's accounts — (b) `Stack[ list_pre, View::Form, list_post ]`
+/// where the View::Form takes the place of the active account's
+/// AddModelManual decoration row, matching the compose-form pattern
+/// in the Accounts section.
 fn render_models_section(
     data: &mut dyn structfs_core_store::Reader,
     rows: &[visible_rows::VisibleRow],
@@ -330,29 +346,87 @@ fn render_models_section(
     children.push((header_list, Sizing::Fixed(1)));
 
     if header_expanded {
-        // Start with the real Model rows projected from visible_rows.
-        let mut content_items = rows_to_list_items(content_rows, ctx);
-        // Then interleave empty-catalog decorations for accounts that
-        // contribute zero Model rows. Both indices are local to the
-        // Models content list — no offset gymnastics.
-        interleave_empty_catalog_decorations(data, &mut content_items, content_rows);
-
-        // Each sub-List recomputes its own `selected` from its items'
-        // focus IDs. At most one sub-List will return Some.
-        let selected = content_items.iter().position(|it| {
-            it.focus
-                .as_ref()
-                .map(|f| Some(&f.0) == ctx.cursor)
-                .unwrap_or(false)
+        // When manual-mode is active for an account whose AddModelManual
+        // row sits in this section, split the content list around that
+        // row and stack a View::Form in its place.
+        let active_split = ctx.manual_account.and_then(|active| {
+            content_rows.iter().position(|r| {
+                matches!(
+                    &r.kind,
+                    visible_rows::RowKind::AddModelManual { account } if account == active,
+                )
+            })
         });
 
-        children.push((
-            View::List {
-                items: content_items,
-                selected,
-            },
-            Sizing::Min(0),
-        ));
+        match active_split {
+            Some(add_manual_idx) => {
+                let (pre_rows, rest) = content_rows.split_at(add_manual_idx);
+                // `rest[0]` is the AddModelManual row that the Form
+                // replaces; everything after it stays as a tail list.
+                let post_rows = &rest[1..];
+                let pre_items = rows_to_list_items(pre_rows, ctx);
+                let post_items = rows_to_list_items(post_rows, ctx);
+                let pre_selected = pre_items.iter().position(|it| {
+                    it.focus
+                        .as_ref()
+                        .map(|f| Some(&f.0) == ctx.cursor)
+                        .unwrap_or(false)
+                });
+                let post_selected = post_items.iter().position(|it| {
+                    it.focus
+                        .as_ref()
+                        .map(|f| Some(&f.0) == ctx.cursor)
+                        .unwrap_or(false)
+                });
+                let pre_h = pre_items.len() as u16;
+                let post_h = post_items.len() as u16;
+                let form = crate::settings::commands::account_model::manual_model_form_view(data);
+                let form_h = form_height(&form);
+                // Indent the form to align with the depth-2 decoration
+                // row position (four spaces — same as the
+                // "+ add model manually" affordance it replaces).
+                let padded_form = View::Pad {
+                    padding: Padding {
+                        left: 4,
+                        right: 0,
+                        top: 0,
+                        bottom: 0,
+                    },
+                    child: Box::new(form),
+                };
+                children.push((
+                    View::List {
+                        items: pre_items,
+                        selected: pre_selected,
+                    },
+                    Sizing::Fixed(pre_h),
+                ));
+                children.push((padded_form, Sizing::Min(form_h)));
+                children.push((
+                    View::List {
+                        items: post_items,
+                        selected: post_selected,
+                    },
+                    Sizing::Fixed(post_h),
+                ));
+            }
+            None => {
+                let content_items = rows_to_list_items(content_rows, ctx);
+                let selected = content_items.iter().position(|it| {
+                    it.focus
+                        .as_ref()
+                        .map(|f| Some(&f.0) == ctx.cursor)
+                        .unwrap_or(false)
+                });
+                children.push((
+                    View::List {
+                        items: content_items,
+                        selected,
+                    },
+                    Sizing::Min(0),
+                ));
+            }
+        }
     }
 
     View::Stack {
@@ -368,6 +442,31 @@ fn render_models_section(
 fn rows_to_list_items(rows: &[visible_rows::VisibleRow], ctx: &SectionCtx<'_>) -> Vec<ListItem> {
     rows.iter()
         .map(|row| {
+            // AddModelManual always renders as the static affordance.
+            // When manual-mode is active for the account, the renderer's
+            // `render_models_section` replaces this row entirely with a
+            // `View::Form` — list-item projection isn't reached for the
+            // active account's affordance row, so no inline-prompt
+            // branch here.
+            if let visible_rows::RowKind::AddModelManual { .. } = &row.kind {
+                return ListItem {
+                    primary: "    + add model manually (m)".to_string(),
+                    primary_spans: None,
+                    secondary: None,
+                    badge: None,
+                    focus: Some(FocusId(row.path.clone())),
+                };
+            }
+            if let visible_rows::RowKind::EmptyAccountModels { account } = &row.kind {
+                return ListItem {
+                    primary: format!("  {account} / (no models — press r to refresh)"),
+                    primary_spans: None,
+                    secondary: None,
+                    badge: None,
+                    focus: Some(FocusId(row.path.clone())),
+                };
+            }
+
             let indent = "  ".repeat(row.depth);
             let glyph = if row.expandable {
                 if row.expanded { "▾ " } else { "▸ " }
@@ -421,126 +520,6 @@ fn build_list_from_rows(rows: &[visible_rows::VisibleRow], ctx: &SectionCtx<'_>)
             .unwrap_or(false)
     });
     View::List { items, selected }
-}
-
-/// Interleave empty-catalog decorations into the Models content list.
-/// For each account that contributes zero Model rows to `content_rows`,
-/// insert two decoration items — an empty-state line and either a
-/// static "+ add model manually (m)" affordance or — when
-/// `manual_model/account` matches — a per-stage inline form prompt.
-/// All insertion indices are local to the Models content list, so
-/// there's no rows-into-items offset divergence.
-fn interleave_empty_catalog_decorations(
-    data: &mut dyn structfs_core_store::Reader,
-    items: &mut Vec<ListItem>,
-    content_rows: &[visible_rows::VisibleRow],
-) {
-    let manual_account: Option<String> = crate::settings::renderers::util::read_typed(
-        data,
-        &ox_path::oxpath!("ui", "settings", "manual_model", "account"),
-    );
-
-    // Map each non-empty account to its last Model-row index in the
-    // content_rows slice. Decorations for empty-catalog accounts land
-    // after the alphabetically-previous account's last Model row.
-    let mut last_model_idx_per_account: std::collections::BTreeMap<String, usize> =
-        std::collections::BTreeMap::new();
-    for (i, row) in content_rows.iter().enumerate() {
-        if let RowKind::Model { account, .. } = &row.kind {
-            last_model_idx_per_account.insert(account.clone(), i);
-        }
-    }
-
-    let mut sorted_accounts: Vec<String> =
-        crate::settings::renderers::util::child_names_under(data, "config/gate/accounts")
-            .into_iter()
-            .filter(|n| ox_kernel::PathComponent::try_new(n.as_str()).is_ok())
-            .collect();
-    sorted_accounts.sort();
-
-    let mut empty_accounts: Vec<String> = sorted_accounts
-        .iter()
-        .filter(|name| {
-            let comp = match ox_kernel::PathComponent::try_new(name.as_str()) {
-                Ok(c) => c,
-                Err(_) => return false,
-            };
-            let models: Vec<ox_gate::ModelInfo> = crate::settings::renderers::util::read_typed(
-                data,
-                &ox_path::oxpath!("config", "gate", "accounts", comp, "models"),
-            )
-            .unwrap_or_default();
-            models.is_empty()
-        })
-        .cloned()
-        .collect();
-    // Reverse so earlier insertions don't invalidate later indices.
-    empty_accounts.reverse();
-
-    for name in empty_accounts {
-        // Insert index is into `items` (the local Models content list).
-        // For an empty account, the insertion point is "right after the
-        // last Model row of the alphabetically-previous account" — or
-        // at the top of the content list when no earlier account has
-        // any models.
-        let prev_model_idx = sorted_accounts
-            .iter()
-            .filter(|n| n.as_str() < name.as_str())
-            .filter_map(|n| last_model_idx_per_account.get(n))
-            .max()
-            .copied();
-        let insert_idx = match prev_model_idx {
-            Some(idx) => idx + 1,
-            None => 0,
-        };
-
-        let empty_state = ListItem {
-            primary: format!("  {} / (no models — press r to refresh)", name),
-            primary_spans: None,
-            secondary: None,
-            badge: None,
-            focus: None,
-        };
-
-        let in_mode_for_this_account = manual_account.as_deref() == Some(name.as_str());
-        let manual_primary = if in_mode_for_this_account {
-            // Cursor-as-focus: the cursor's leaf segment under
-            // `settings/_manual_model/<stage>` IS the active stage.
-            // Falls back to Id-stage prompt when the cursor isn't in
-            // the form — defensive; the dispatcher only routes here
-            // while cursor is at a stage path, but the renderer also
-            // reaches this branch from `manual_model/account` matching
-            // alone, so we keep a sensible default.
-            let cursor = read_cursor(data);
-            let stage = cursor.as_ref().and_then(cursor_to_manual_model_stage);
-            let buffer: String = crate::settings::renderers::util::read_typed(
-                data,
-                &ox_path::oxpath!("ui", "settings", "manual_model", "buffer"),
-            )
-            .unwrap_or_default();
-            let prompt = match stage {
-                Some(ox_types::settings::ManualModelStage::Id) => "Model id",
-                Some(ox_types::settings::ManualModelStage::Ctx) => "Max context",
-                Some(ox_types::settings::ManualModelStage::Out) => "Max output",
-                None => "Model id",
-            };
-            format!("    {prompt}▸ {buffer}\u{258F}")
-        } else {
-            "    + add model manually (m)".to_string()
-        };
-        let manual = ListItem {
-            primary: manual_primary,
-            primary_spans: None,
-            secondary: None,
-            badge: None,
-            focus: None,
-        };
-
-        // Insert manual first, then empty_state at the same index, so
-        // they end up [empty_state, manual] in display order.
-        items.insert(insert_idx, manual);
-        items.insert(insert_idx, empty_state);
-    }
 }
 
 /// Measured row count of a section (a Stack-of-Lists with an optional
@@ -643,7 +622,9 @@ fn selector_carousel_spans(
         | RowKind::Entry { .. }
         | RowKind::Account { .. }
         | RowKind::Model { .. }
-        | RowKind::ModelField { .. } => return None,
+        | RowKind::ModelField { .. }
+        | RowKind::EmptyAccountModels { .. }
+        | RowKind::AddModelManual { .. } => return None,
     };
     if options.is_empty() {
         return None;
@@ -730,7 +711,11 @@ fn decorate_row_label(
         } => "max_output_tokens",
         // Other row kinds aren't editable; fall through to the
         // original label.
-        RowKind::Entry { .. } | RowKind::Account { .. } | RowKind::Model { .. } => {
+        RowKind::Entry { .. }
+        | RowKind::Account { .. }
+        | RowKind::Model { .. }
+        | RowKind::EmptyAccountModels { .. }
+        | RowKind::AddModelManual { .. } => {
             return row.label.clone();
         }
     };
@@ -1169,10 +1154,10 @@ mod tests {
 
     #[test]
     fn empty_catalog_account_renders_decoration_pair_under_models() {
-        // An empty-catalog account contributes no rows to visible_rows;
-        // the renderer reads the data tree, identifies the empty
-        // account, and inserts two unfocusable decoration ListItems —
-        // an empty-state line and a manual-model affordance.
+        // An empty-catalog account contributes two focusable decoration
+        // rows under Models — an empty-state line keyed to the account
+        // and a manual-model affordance. Both are focusable so j/k lands
+        // on them and `r` / `m` can resolve the account.
         let mut snap = SettingsSnapshot::empty();
         write_index(&mut snap);
         write_account(&mut snap, "alpha");
@@ -1191,13 +1176,19 @@ mod tests {
             "expected empty-state line at idx 2; got {:?}",
             items[2].primary
         );
-        assert!(items[2].focus.is_none(), "empty-state line is decoration");
+        assert!(
+            items[2].focus.is_some(),
+            "empty-state line must be focusable so r refreshes the account",
+        );
         assert!(
             items[3].primary.contains("+ add model manually (m)"),
             "expected manual affordance at idx 3; got {:?}",
             items[3].primary
         );
-        assert!(items[3].focus.is_none(), "manual affordance is decoration");
+        assert!(
+            items[3].focus.is_some(),
+            "manual affordance must be focusable so m opens the form",
+        );
     }
 
     #[test]
@@ -1265,10 +1256,12 @@ mod tests {
     }
 
     #[test]
-    fn empty_catalog_decoration_renders_inline_form_when_in_manual_mode() {
-        // When `manual_model/account` matches the empty account AND the
-        // cursor sits at a manual-model stage path, the affordance line
-        // swaps to a stage-prompt with the live buffer.
+    fn manual_mode_renders_view_form_in_place_of_add_manual_row() {
+        // When `manual_model/account` matches an empty account, the
+        // renderer replaces that account's AddModelManual decoration
+        // row with a View::Form containing three rows (Model id /
+        // Max context / Max output). Mirrors the compose-form
+        // projection in the Accounts section.
         let mut snap = SettingsSnapshot::empty();
         write_index(&mut snap);
         write_account(&mut snap, "alpha");
@@ -1280,23 +1273,35 @@ mod tests {
             &oxpath!("ui", "settings", "manual_model", "account"),
             Value::String("alpha".into()),
         );
-        // Cursor encodes the active stage under cursor-as-focus.
         snap.insert(
             &oxpath!("ui", "settings", "focused"),
             path_to_value(&oxpath!("settings", "_manual_model", "id")),
         );
         snap.insert(
-            &oxpath!("ui", "settings", "manual_model", "buffer"),
+            &oxpath!("ui", "settings", "manual_model", "id"),
             Value::String("custom".into()),
         );
-        let (_title, items, _selected) = assert_list(render(&mut snap));
-        // The manual affordance is now an inline form prompt.
-        assert!(
-            items[3].primary.contains("Model id▸ custom\u{258F}"),
-            "expected inline manual form prompt; got {:?}",
-            items[3].primary
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "ctx"),
+            Value::String(String::new()),
         );
-        assert!(items[3].focus.is_none());
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "out"),
+            Value::String(String::new()),
+        );
+
+        let view = render(&mut snap);
+        let (form_rows, focused) =
+            extract_form(view).expect("manual-model form present when manual_account is set");
+        let labels: Vec<&str> = form_rows.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(labels, vec!["Model id", "Max context", "Max output"]);
+        // The cursor on `_manual_model/id` projects to the first row.
+        assert_eq!(focused, Some(0));
+        // The first row's live buffer surfaces in the form value.
+        match &form_rows[0].value {
+            horns_core::view::FormValue::Text { value, .. } => assert_eq!(value, "custom"),
+            other => panic!("expected Text value for the id row, got {other:?}"),
+        }
     }
 
     #[test]

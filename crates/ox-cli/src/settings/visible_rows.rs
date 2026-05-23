@@ -35,6 +35,14 @@ pub enum RowKind {
         model_id: String,
         field: ModelField,
     },
+    /// Empty-state decoration for an account whose model catalog is
+    /// empty. Focusable so the user can land on it with j/k and act on
+    /// the account: `r` refreshes, `m` opens the manual-model form.
+    EmptyAccountModels { account: String },
+    /// "+ add model manually" affordance for an account whose catalog
+    /// is empty. Focusable; `m` opens the manual-model form for the
+    /// named account.
+    AddModelManual { account: String },
 }
 
 /// One row of the visible tree.
@@ -349,6 +357,13 @@ pub(crate) fn read_provider_assembling_flat(
 
 /// Append one row per (account, model_id) pair. Like accounts, model
 /// rows are expandable — expanding shows the per-model overrides.
+///
+/// Accounts whose catalog is empty contribute a pair of focusable
+/// decoration rows instead — an empty-state line and a manual-model
+/// affordance, both keyed to the account. They land at the
+/// alphabetically-correct position: after the last Model row of the
+/// alphabetically-previous account, or at the top of the Models
+/// content when no earlier account has any models.
 fn append_model_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, expanded: &[String]) {
     use ox_types::settings::ModelKey;
 
@@ -370,7 +385,15 @@ fn append_model_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, expanded
     )
     .unwrap_or_default();
 
-    let account_names = child_names_under(data, "config/gate/accounts");
+    let mut account_names = child_names_under(data, "config/gate/accounts");
+    // Sort so empty-catalog decoration rows interleave deterministically
+    // with their non-empty siblings — the user's eye reads the Models
+    // section as one alphabetical list.
+    account_names.sort();
+    // Read catalogs once per account; classify into (account_name, models)
+    // pairs so the interleave logic doesn't re-read the broker.
+    let mut classified: Vec<(String, Vec<ox_gate::ModelInfo>)> =
+        Vec::with_capacity(account_names.len());
     for account_name in &account_names {
         // `child_names_under` splits broker keys on `/`, so its outputs
         // never contain `/`. Account names live in the broker as path
@@ -385,17 +408,42 @@ fn append_model_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, expanded
         ])
         .expect("account names from child_names_under are valid path components");
         let models: Vec<ox_gate::ModelInfo> = read_typed(data, &models_path).unwrap_or_default();
+        classified.push((account_name.clone(), models));
+    }
 
+    for (account_name, models) in &classified {
         if models.is_empty() {
-            // Empty-catalog accounts contribute no rows to the
-            // visible-rows projection — the renderer reads the data
-            // tree directly and inserts decoration ListItems
-            // (empty-state line + manual-model affordance) at the
-            // alphabetically-correct position.
+            // Empty-catalog account: emit two focusable decoration rows
+            // keyed to this account. j/k can land on either; r/m act on
+            // the named account.
+            rows.push(VisibleRow {
+                path: empty_models_path(account_name),
+                depth: 1,
+                label: format!("{} / (no models — press r to refresh)", account_name),
+                secondary: None,
+                badge: None,
+                kind: RowKind::EmptyAccountModels {
+                    account: account_name.clone(),
+                },
+                expandable: false,
+                expanded: false,
+            });
+            rows.push(VisibleRow {
+                path: add_manual_path(account_name),
+                depth: 2,
+                label: "+ add model manually (m)".to_string(),
+                secondary: None,
+                badge: None,
+                kind: RowKind::AddModelManual {
+                    account: account_name.clone(),
+                },
+                expandable: false,
+                expanded: false,
+            });
             continue;
         }
 
-        for m in models {
+        for m in models.iter().cloned() {
             let path = row_path(&["settings", "models", account_name, &safe_component(&m.id)]);
             let path_str = path_to_string(&path);
             let is_expanded = expanded.iter().any(|s| s == &path_str);
@@ -620,6 +668,19 @@ fn row_path(parts: &[&str]) -> Path {
     let owned: Vec<String> = parts.iter().map(|s| (*s).to_string()).collect();
     Path::try_from_components(owned)
         .expect("row_path callers always supply identifier-safe components")
+}
+
+/// Path for the empty-state decoration row of an account whose model
+/// catalog is empty. Sits under `Prefix(settings/models)` so the same
+/// `r` / `m` row-prefix bindings that fire on Model rows also fire here.
+fn empty_models_path(account: &str) -> Path {
+    row_path(&["settings", "models", account, "_empty"])
+}
+
+/// Path for the "+ add model manually" affordance row. Same prefix as
+/// `empty_models_path` so the row-prefix bindings reach it.
+fn add_manual_path(account: &str) -> Path {
+    row_path(&["settings", "models", account, "_add"])
 }
 
 /// Sanitize a model id for use as a path component. Replaces every
@@ -1259,12 +1320,11 @@ mod tests {
     }
 
     #[test]
-    fn empty_catalog_contributes_no_rows() {
-        // Empty-catalog accounts no longer surface in the visible-rows
-        // projection — the renderer reads the data tree directly and
-        // inserts decoration ListItems (empty-state line + manual-model
-        // affordance) at the alphabetically-correct position. Pin the
-        // contract here: the projection is "real-thing rows only".
+    fn empty_catalog_contributes_focusable_decoration_rows() {
+        // Empty-catalog accounts surface as two focusable decoration
+        // rows — an empty-state line and a manual-model affordance —
+        // both keyed to the account. The user can j/k onto them and
+        // press `r` / `m` to refresh or add a model.
         let mut snap = SettingsSnapshot::empty();
         write_index_entries(&mut snap);
         write_account_with_models(&mut snap, "alpha", &["m1"]);
@@ -1274,9 +1334,18 @@ mod tests {
             expanded_set_to_value(&["settings/models".to_string()]),
         );
         let rows = enumerate(&mut snap);
-        // Visible: [Accounts header, Models header, alpha/m1 row] = 3
-        assert_eq!(rows.len(), 3);
-        // No rows whose path lives under settings/models/beta/* exist.
+        // Visible: [Accounts header, Models header, alpha/m1,
+        //           beta empty-state, beta add-manual] = 5
+        assert_eq!(rows.len(), 5);
+        assert!(matches!(
+            &rows[3].kind,
+            RowKind::EmptyAccountModels { account } if account == "beta",
+        ));
+        assert!(matches!(
+            &rows[4].kind,
+            RowKind::AddModelManual { account } if account == "beta",
+        ));
+        // No Model rows for beta (it has none).
         assert!(
             !rows
                 .iter()

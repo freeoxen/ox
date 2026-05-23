@@ -190,6 +190,51 @@ pub(crate) fn cursor_is_in_manual_model(cursor: &Path) -> bool {
         && cursor.components[1] == "_manual_model"
 }
 
+/// Tab order for the manual-model form. Matches the visual top-to-bottom
+/// order in the rendered View::Form so focus_next/focus_prev walk down
+/// and up the form the way the user expects.
+pub(crate) const MANUAL_FIELD_ORDER: [ox_types::settings::ManualModelStage; 3] = [
+    ox_types::settings::ManualModelStage::Id,
+    ox_types::settings::ManualModelStage::Ctx,
+    ox_types::settings::ManualModelStage::Out,
+];
+
+pub(crate) fn manual_focus_next(
+    field: ox_types::settings::ManualModelStage,
+) -> ox_types::settings::ManualModelStage {
+    let idx = MANUAL_FIELD_ORDER
+        .iter()
+        .position(|f| *f == field)
+        .expect("variant in MANUAL_FIELD_ORDER");
+    MANUAL_FIELD_ORDER[(idx + 1) % MANUAL_FIELD_ORDER.len()]
+}
+
+pub(crate) fn manual_focus_prev(
+    field: ox_types::settings::ManualModelStage,
+) -> ox_types::settings::ManualModelStage {
+    let idx = MANUAL_FIELD_ORDER
+        .iter()
+        .position(|f| *f == field)
+        .expect("variant in MANUAL_FIELD_ORDER");
+    MANUAL_FIELD_ORDER[(idx + MANUAL_FIELD_ORDER.len() - 1) % MANUAL_FIELD_ORDER.len()]
+}
+
+/// Path to a manual-model field's live buffer under
+/// `ui/settings/manual_model/<field>`. The field segment matches the
+/// cursor-leaf segment used by `manual_model_focus_path`, so commands
+/// can route by cursor and reach the matching state path with the
+/// same name.
+pub(crate) fn manual_field_state_path(field: ox_types::settings::ManualModelStage) -> Path {
+    use ox_types::settings::ManualModelStage;
+    let name = match field {
+        ManualModelStage::Id => "id",
+        ManualModelStage::Ctx => "ctx",
+        ManualModelStage::Out => "out",
+    };
+    let comp = PathComponent::try_new(name).expect("manual-model field names are valid XIDs");
+    oxpath!("ui", "settings", "manual_model", comp)
+}
+
 /// Synthetic cursor path for the confirm-delete dialog. The
 /// confirm-delete widget is single-scope (no sub-form), so the cursor
 /// sits at `settings/_confirm_delete` directly — there is no per-field
@@ -570,7 +615,7 @@ command! {
     struct_name: ModelsManualInsertChar,
     id: "models.compose_manual.insert_char",
     title: "Insert character (manual model)",
-    description: "Append the just-pressed char to the manual-model buffer (per-stage rules).",
+    description: "Append the just-pressed char to the focused manual-model field (id accepts any printable, ctx/out digits only).",
     cursor: None,
     run: |snap, ctx| models_manual_insert_char(snap, ctx),
 }
@@ -579,7 +624,7 @@ command! {
     struct_name: ModelsManualDeleteBack,
     id: "models.compose_manual.delete_back",
     title: "Backspace (manual model)",
-    description: "Pop the last character from the manual-model buffer.",
+    description: "Pop the last character from the focused manual-model field.",
     cursor: None,
     run: |snap, _ctx| models_manual_delete_back(snap),
 }
@@ -587,8 +632,8 @@ command! {
 command! {
     struct_name: ModelsManualCommit,
     id: "models.compose_manual.commit",
-    title: "Commit stage (manual model)",
-    description: "Advance the form's stage; the final stage finalizes the new ModelInfo into the catalog.",
+    title: "Commit manual model",
+    description: "Validate all three fields and append the new ModelInfo to the account's catalog.",
     cursor: None,
     run: |snap, _ctx| models_manual_commit(snap),
 }
@@ -597,9 +642,27 @@ command! {
     struct_name: ModelsManualCancel,
     id: "models.compose_manual.cancel",
     title: "Cancel manual model",
-    description: "Discard the manual-model buffer and exit compose mode.",
+    description: "Discard the manual-model draft and exit compose mode.",
     cursor: None,
     run: |snap, _ctx| models_manual_cancel(snap),
+}
+
+command! {
+    struct_name: ModelsManualFocusNext,
+    id: "models.compose_manual.focus_next",
+    title: "Focus next field (manual model)",
+    description: "Move the cursor to the next field in the manual-model form (id → ctx → out → id).",
+    cursor: None,
+    run: |snap, _ctx| models_manual_focus_next(snap),
+}
+
+command! {
+    struct_name: ModelsManualFocusPrev,
+    id: "models.compose_manual.focus_prev",
+    title: "Focus previous field (manual model)",
+    description: "Move the cursor to the previous field in the manual-model form (id → out → ctx → id).",
+    cursor: None,
+    run: |snap, _ctx| models_manual_focus_prev(snap),
 }
 
 // ---------------------------------------------------------------------------
@@ -659,6 +722,10 @@ fn focused_account(data: &mut dyn Reader) -> Option<AccountName> {
             // Field rows under an expanded account also count — the
             // user has focused a field that belongs to that account.
             RowKind::AccountField { account, .. } => account,
+            // Empty-catalog decoration rows under Models also identify
+            // their owning account — `r` on either fires account.refresh.
+            RowKind::EmptyAccountModels { account } => account,
+            RowKind::AddModelManual { account } => account,
             RowKind::Entry { .. } | RowKind::Model { .. } | RowKind::ModelField { .. } => {
                 return None;
             }
@@ -683,7 +750,11 @@ fn focused_model(data: &mut dyn Reader) -> Option<ModelKey> {
             RowKind::ModelField {
                 account, model_id, ..
             } => Some(ModelKey { account, model_id }),
-            RowKind::Entry { .. } | RowKind::Account { .. } | RowKind::AccountField { .. } => None,
+            RowKind::Entry { .. }
+            | RowKind::Account { .. }
+            | RowKind::AccountField { .. }
+            | RowKind::EmptyAccountModels { .. }
+            | RowKind::AddModelManual { .. } => None,
         }
     })
 }
@@ -982,6 +1053,52 @@ pub(crate) const PROTOCOL_OPTIONS: &[&str] = &["anthropic", "openai"];
 /// when the cursor's leaf isn't a known field id the form renders
 /// with no row highlighted (defensive — the dispatcher only routes
 /// here while cursor is at a field path).
+/// Project the manual-model draft state as a typed `View::Form`. One
+/// row per field in `MANUAL_FIELD_ORDER`; every row surfaces the live
+/// buffer at `ui/settings/manual_model/<field>`, plus the matching slot
+/// from the `errors` record. Mirrors `compose_form_view` so the two
+/// forms render with the same shape.
+pub(crate) fn manual_model_form_view(data: &mut dyn Reader) -> horns_core::view::View {
+    use horns_core::view::{FormRow, View};
+    use ox_types::settings::{ManualModelErrors, ManualModelStage};
+
+    let errors: ManualModelErrors =
+        read_typed(data, &oxpath!("ui", "settings", "manual_model", "errors")).unwrap_or_default();
+
+    let rows: Vec<FormRow> = MANUAL_FIELD_ORDER
+        .iter()
+        .map(|f| project_manual_field(data, *f, errors.for_field(*f)))
+        .collect();
+
+    let focused = read_focused_path(data)
+        .as_ref()
+        .and_then(cursor_to_manual_model_stage)
+        .and_then(|f| MANUAL_FIELD_ORDER.iter().position(|x| *x == f));
+    View::Form { rows, focused }
+}
+
+fn project_manual_field(
+    data: &mut dyn Reader,
+    field: ox_types::settings::ManualModelStage,
+    error: Option<&str>,
+) -> horns_core::view::FormRow {
+    use horns_core::view::FormRow;
+    use ox_types::settings::ManualModelStage;
+
+    let (label, hint): (&str, Option<String>) = match field {
+        ManualModelStage::Id => ("Model id", None),
+        ManualModelStage::Ctx => ("Max context", Some("digits only; blank = unknown".into())),
+        ManualModelStage::Out => ("Max output", Some("digits only; blank = unknown".into())),
+    };
+    let value: String = read_typed(data, &manual_field_state_path(field)).unwrap_or_default();
+    FormRow {
+        label: label.to_string(),
+        value: text_form_value(value, /*masked=*/ false),
+        error: error.map(String::from),
+        hint,
+    }
+}
+
 pub(crate) fn compose_form_view(data: &mut dyn Reader) -> horns_core::view::View {
     use horns_core::view::{FormRow, View};
     let errors: ValidationErrors =
@@ -1337,17 +1454,18 @@ fn protocol_default_version(protocol: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// Open the manual-model entry form for the focused account. Resolves
-/// the focused row to its un-sanitized account name (Model and
-/// ModelField rows both carry it), saves the prior cursor for
-/// cancel-restore, then writes the cursor into the synthetic form
-/// namespace at the Id stage and seeds `manual_model/{account, buffer}`.
+/// the focused row to its un-sanitized account name (Model /
+/// ModelField / decoration rows all carry it), saves the prior cursor
+/// for cancel-restore, then writes the cursor into the synthetic form
+/// namespace at the Id field and seeds the three per-field buffer
+/// paths (id / ctx / out) all empty.
 ///
 /// Cursor-as-focus: the act of moving the cursor INTO
-/// `settings/_manual_model/<stage>` IS the open. Mode is encoded in
-/// the cursor's path segments — no separate `manual_model/stage`
-/// discriminator. The dispatcher's `compute_scope_path` walks cursor
-/// ancestors so the form scope plus per-stage leaf scope sit on the
-/// binding scope path naturally.
+/// `settings/_manual_model/<field>` IS the open. The cursor's leaf
+/// segment identifies the focused field — no separate `manual_model/
+/// field` discriminator. The dispatcher's `compute_scope_path` walks
+/// cursor ancestors so the form scope plus per-field leaf scope sit on
+/// the binding scope path naturally.
 fn models_add_manual(data: &mut dyn Reader) -> Vec<Write> {
     use crate::settings::visible_rows::{RowKind, enumerate};
     use ox_types::settings::ManualModelStage;
@@ -1363,6 +1481,9 @@ fn models_add_manual(data: &mut dyn Reader) -> Vec<Write> {
         .and_then(|r| match &r.kind {
             RowKind::Model { account, .. } => Some(account.clone()),
             RowKind::ModelField { account, .. } => Some(account.clone()),
+            // Empty-catalog decoration rows also know their account.
+            RowKind::EmptyAccountModels { account } => Some(account.clone()),
+            RowKind::AddModelManual { account } => Some(account.clone()),
             RowKind::Entry { .. } | RowKind::Account { .. } | RowKind::AccountField { .. } => None,
         });
     let Some(account) = account else {
@@ -1373,13 +1494,24 @@ fn models_add_manual(data: &mut dyn Reader) -> Vec<Write> {
     // back to the new model's row directly and supersedes this save.
     let cursor_saved = read_focused_path(data);
 
+    // Seed every field as an empty String. The form renders all three
+    // rows simultaneously (View::Form), so each needs its own live
+    // buffer — there is no shared `buffer` path anymore.
     vec![
         Write {
             path: oxpath!("ui", "settings", "manual_model", "account"),
             record: Record::parsed(Value::String(account)),
         },
         Write {
-            path: oxpath!("ui", "settings", "manual_model", "buffer"),
+            path: manual_field_state_path(ManualModelStage::Id),
+            record: Record::parsed(Value::String(String::new())),
+        },
+        Write {
+            path: manual_field_state_path(ManualModelStage::Ctx),
+            record: Record::parsed(Value::String(String::new())),
+        },
+        Write {
+            path: manual_field_state_path(ManualModelStage::Out),
             record: Record::parsed(Value::String(String::new())),
         },
         Write {
@@ -1398,14 +1530,13 @@ fn models_add_manual(data: &mut dyn Reader) -> Vec<Write> {
     ]
 }
 
-/// Read the active manual-model stage from the cursor. Under
-/// cursor-as-focus the cursor's leaf segment IS the active stage;
-/// `manual_model/stage` is retired. Returns `None` when the cursor
-/// isn't at a manual-model stage path — command bodies only run while
-/// the dispatcher has routed via the manual-model scope, so this only
-/// ever returns `None` for stale snapshots that the dispatcher's gate
-/// has already excluded.
-fn models_manual_active_stage(
+/// Read the active manual-model field from the cursor. Under
+/// cursor-as-focus the cursor's leaf segment IS the active field.
+/// Returns `None` when the cursor isn't at a manual-model field path
+/// — command bodies only run while the dispatcher has routed via the
+/// manual-model scope, so this only returns `None` for stale snapshots
+/// that the dispatcher's gate has already excluded.
+fn models_manual_active_field(
     data: &mut dyn Reader,
 ) -> Option<ox_types::settings::ManualModelStage> {
     read_focused_path(data)
@@ -1428,174 +1559,178 @@ fn models_manual_insert_char(
         KeyCodeRepr::Char(c) => c,
         _ => return Vec::new(),
     };
-    let stage = match models_manual_active_stage(data) {
-        Some(s) => s,
+    let field = match models_manual_active_field(data) {
+        Some(f) => f,
         None => return Vec::new(),
     };
-    // Per-stage accept rules: Id accepts any printable char; Ctx and
+    // Per-field accept rules: Id accepts any printable char; Ctx and
     // Out accept ASCII digits only (the values are u32 sizes).
-    let accept = match stage {
+    let accept = match field {
         ManualModelStage::Id => true,
         ManualModelStage::Ctx | ManualModelStage::Out => ch.is_ascii_digit(),
     };
     if !accept {
         return Vec::new();
     }
-    let current: String =
-        read_typed(data, &oxpath!("ui", "settings", "manual_model", "buffer")).unwrap_or_default();
+    let path = manual_field_state_path(field);
+    let current: String = read_typed(data, &path).unwrap_or_default();
     let mut next = current;
     next.push(ch);
     vec![Write {
-        path: oxpath!("ui", "settings", "manual_model", "buffer"),
+        path,
         record: Record::parsed(Value::String(next)),
     }]
 }
 
 fn models_manual_delete_back(data: &mut dyn Reader) -> Vec<Write> {
-    let mut current: String =
-        read_typed(data, &oxpath!("ui", "settings", "manual_model", "buffer")).unwrap_or_default();
+    let field = match models_manual_active_field(data) {
+        Some(f) => f,
+        None => return Vec::new(),
+    };
+    let path = manual_field_state_path(field);
+    let mut current: String = read_typed(data, &path).unwrap_or_default();
     if current.pop().is_none() {
         return Vec::new();
     }
     vec![Write {
-        path: oxpath!("ui", "settings", "manual_model", "buffer"),
+        path,
         record: Record::parsed(Value::String(current)),
     }]
 }
 
+/// Commit the manual-model form: read all three field buffers,
+/// validate, and either append the new ModelInfo or write the
+/// per-field errors record for the renderer to surface.
 fn models_manual_commit(data: &mut dyn Reader) -> Vec<Write> {
     use ox_gate::{ModelInfo, ModelInfoSource};
-    use ox_types::settings::ManualModelStage;
+    use ox_types::settings::{ManualModelErrors, ManualModelStage};
 
-    let stage = match models_manual_active_stage(data) {
-        Some(s) => s,
-        None => return Vec::new(),
-    };
-    let buffer: String =
-        read_typed(data, &oxpath!("ui", "settings", "manual_model", "buffer")).unwrap_or_default();
-    let trimmed = buffer.trim();
+    let id_raw: String =
+        read_typed(data, &manual_field_state_path(ManualModelStage::Id)).unwrap_or_default();
+    let ctx_raw: String =
+        read_typed(data, &manual_field_state_path(ManualModelStage::Ctx)).unwrap_or_default();
+    let out_raw: String =
+        read_typed(data, &manual_field_state_path(ManualModelStage::Out)).unwrap_or_default();
+    let id_trimmed = id_raw.trim();
+    let ctx_trimmed = ctx_raw.trim();
+    let out_trimmed = out_raw.trim();
 
-    match stage {
-        ManualModelStage::Id => {
-            if trimmed.is_empty() {
-                return Vec::new();
-            }
-            // Cursor-as-focus: advance the wizard by rewriting the
-            // cursor's leaf to the next stage. No `manual_model/stage`
-            // write — the cursor IS the stage.
-            vec![
-                Write {
-                    path: oxpath!("ui", "settings", "focused"),
-                    record: Record::parsed(path_to_value(&manual_model_focus_path(
-                        ManualModelStage::Ctx,
-                    ))),
-                },
-                Write {
-                    path: oxpath!("ui", "settings", "manual_model", "staged_id"),
-                    record: Record::parsed(Value::String(trimmed.to_string())),
-                },
-                Write {
-                    path: oxpath!("ui", "settings", "manual_model", "buffer"),
-                    record: Record::parsed(Value::String(String::new())),
-                },
-            ]
-        }
-        ManualModelStage::Ctx => {
-            let n: u32 = match trimmed.parse() {
-                Ok(n) if n > 0 => n,
-                _ => return Vec::new(),
-            };
-            vec![
-                Write {
-                    path: oxpath!("ui", "settings", "focused"),
-                    record: Record::parsed(path_to_value(&manual_model_focus_path(
-                        ManualModelStage::Out,
-                    ))),
-                },
-                Write {
-                    path: oxpath!("ui", "settings", "manual_model", "staged_ctx"),
-                    record: Record::parsed(Value::String(n.to_string())),
-                },
-                Write {
-                    path: oxpath!("ui", "settings", "manual_model", "buffer"),
-                    record: Record::parsed(Value::String(String::new())),
-                },
-            ]
-        }
-        ManualModelStage::Out => {
-            let out: u32 = match trimmed.parse() {
-                Ok(n) if n > 0 => n,
-                _ => return Vec::new(),
-            };
-            let id: String = read_typed(
-                data,
-                &oxpath!("ui", "settings", "manual_model", "staged_id"),
-            )
-            .unwrap_or_default();
-            let ctx: u32 = read_typed::<String>(
-                data,
-                &oxpath!("ui", "settings", "manual_model", "staged_ctx"),
-            )
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
-            let account_raw: String =
-                read_typed(data, &oxpath!("ui", "settings", "manual_model", "account"))
-                    .unwrap_or_default();
-            // Broker-read boundary: lift the raw String into AccountName.
-            let account = match AccountName::try_new(account_raw) {
-                Ok(n) => n,
-                Err(_) => return Vec::new(),
-            };
-            let comp = account.to_path_component();
-
-            let catalog_path = oxpath!("config", "gate", "accounts", comp.clone(), "models");
-            let mut catalog: Vec<ModelInfo> = read_typed(data, &catalog_path).unwrap_or_default();
-            catalog.push(ModelInfo {
-                id: id.clone(),
-                display_name: id.clone(),
-                max_context_size: Some(ctx),
-                max_output_tokens: Some(out),
-                source: ModelInfoSource::UserEntered,
-            });
-            let catalog_value = match to_value(&catalog) {
-                Ok(v) => v,
-                Err(_) => return Vec::new(),
-            };
-
-            // Move the cursor to the new model's row so the user lands
-            // on what they just created. Row paths follow
-            // `settings/models/<account>/<safe(model_id)>` — same
-            // encoding the visible-rows enumerator uses. Non-XID ids
-            // degrade to the parent Models page if the safe form
-            // can't be reconstructed as a PathComponent (the
-            // visible-rows filter would also have dropped such a row,
-            // so the user simply lands on the parent section).
-            let safe_id = crate::settings::visible_rows::safe_component(&id);
-            let new_cursor = match PathComponent::try_new(&safe_id) {
-                Ok(model_comp) => oxpath!("settings", "models", comp.clone(), model_comp),
-                Err(_) => oxpath!("settings", "models"),
-            };
-
-            // Write the catalog, restore the cursor to the new row,
-            // and clear the form state. The Null-cascade at the
-            // manual_model root clears every child in one entry
-            // (including `cursor_saved` from open).
-            vec![
-                Write {
-                    path: catalog_path,
-                    record: Record::parsed(catalog_value),
-                },
-                Write {
-                    path: oxpath!("ui", "settings", "focused"),
-                    record: Record::parsed(path_to_value(&new_cursor)),
-                },
-                Write {
-                    path: oxpath!("ui", "settings", "manual_model"),
-                    record: Record::parsed(Value::Null),
-                },
-            ]
-        }
+    // Per-field validation. The renderer reads this record to thread
+    // errors back into the FormRow.error slots, mirroring compose.
+    let mut errors = ManualModelErrors::default();
+    if id_trimmed.is_empty() {
+        errors.id = Some("required".into());
     }
+    let ctx_parsed: Option<u32> = if ctx_trimmed.is_empty() {
+        None
+    } else {
+        match ctx_trimmed.parse::<u32>() {
+            Ok(n) if n > 0 => Some(n),
+            _ => {
+                errors.ctx = Some("must be a positive integer".into());
+                None
+            }
+        }
+    };
+    let out_parsed: Option<u32> = if out_trimmed.is_empty() {
+        None
+    } else {
+        match out_trimmed.parse::<u32>() {
+            Ok(n) if n > 0 => Some(n),
+            _ => {
+                errors.out = Some("must be a positive integer".into());
+                None
+            }
+        }
+    };
+
+    let errors_path = oxpath!("ui", "settings", "manual_model", "errors");
+    if !errors.is_clean() {
+        let errors_value = match to_value(&errors) {
+            Ok(v) => v,
+            Err(_) => return Vec::new(),
+        };
+        return vec![Write {
+            path: errors_path,
+            record: Record::parsed(errors_value),
+        }];
+    }
+
+    let account_raw: String =
+        read_typed(data, &oxpath!("ui", "settings", "manual_model", "account"))
+            .unwrap_or_default();
+    let account = match AccountName::try_new(account_raw) {
+        Ok(n) => n,
+        Err(_) => return Vec::new(),
+    };
+    let comp = account.to_path_component();
+
+    let catalog_path = oxpath!("config", "gate", "accounts", comp.clone(), "models");
+    let mut catalog: Vec<ModelInfo> = read_typed(data, &catalog_path).unwrap_or_default();
+    let id = id_trimmed.to_string();
+    catalog.push(ModelInfo {
+        id: id.clone(),
+        display_name: id.clone(),
+        max_context_size: ctx_parsed,
+        max_output_tokens: out_parsed,
+        source: ModelInfoSource::UserEntered,
+    });
+    let catalog_value = match to_value(&catalog) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+
+    // Move the cursor to the new model's row so the user lands on what
+    // they just created — same encoding the visible-rows enumerator
+    // uses. Non-XID ids fall back to the parent Models page.
+    let safe_id = crate::settings::visible_rows::safe_component(&id);
+    let new_cursor = match PathComponent::try_new(&safe_id) {
+        Ok(model_comp) => oxpath!("settings", "models", comp.clone(), model_comp),
+        Err(_) => oxpath!("settings", "models"),
+    };
+
+    vec![
+        Write {
+            path: catalog_path,
+            record: Record::parsed(catalog_value),
+        },
+        Write {
+            path: oxpath!("ui", "settings", "focused"),
+            record: Record::parsed(path_to_value(&new_cursor)),
+        },
+        // Cascade-clear the whole manual_model subtree (account, three
+        // field buffers, errors, cursor_saved) in one Null write.
+        Write {
+            path: oxpath!("ui", "settings", "manual_model"),
+            record: Record::parsed(Value::Null),
+        },
+    ]
+}
+
+fn models_manual_focus_next(data: &mut dyn Reader) -> Vec<Write> {
+    let current = match models_manual_active_field(data) {
+        Some(f) => f,
+        // Default to Id when stale — the dispatcher's gate has
+        // already excluded calls from outside the manual-model scope.
+        None => ox_types::settings::ManualModelStage::Id,
+    };
+    let next = manual_focus_next(current);
+    vec![Write {
+        path: oxpath!("ui", "settings", "focused"),
+        record: Record::parsed(path_to_value(&manual_model_focus_path(next))),
+    }]
+}
+
+fn models_manual_focus_prev(data: &mut dyn Reader) -> Vec<Write> {
+    let current = match models_manual_active_field(data) {
+        Some(f) => f,
+        None => ox_types::settings::ManualModelStage::Id,
+    };
+    let prev = manual_focus_prev(current);
+    vec![Write {
+        path: oxpath!("ui", "settings", "focused"),
+        record: Record::parsed(path_to_value(&manual_model_focus_path(prev))),
+    }]
 }
 
 /// Discard the manual-model draft and restore the cursor to where it
@@ -2135,7 +2270,9 @@ fn cycle_field(data: &mut dyn Reader, dir: CycleDir) -> Vec<Write> {
         | RowKind::Entry { .. }
         | RowKind::Account { .. }
         | RowKind::Model { .. }
-        | RowKind::ModelField { .. } => Vec::new(),
+        | RowKind::ModelField { .. }
+        | RowKind::EmptyAccountModels { .. }
+        | RowKind::AddModelManual { .. } => Vec::new(),
     }
 }
 
@@ -2349,6 +2486,8 @@ pub fn register(reg: &mut CommandRegistry) {
     reg.register(Box::new(ModelsManualDeleteBack::new()));
     reg.register(Box::new(ModelsManualCommit::new()));
     reg.register(Box::new(ModelsManualCancel::new()));
+    reg.register(Box::new(ModelsManualFocusNext::new()));
+    reg.register(Box::new(ModelsManualFocusPrev::new()));
 }
 
 // ---------------------------------------------------------------------------
@@ -4025,12 +4164,11 @@ mod tests {
     }
 
     #[test]
-    fn models_add_manual_seeds_form_from_focused_model_row() {
-        // Focus a Model row in the expanded Models section; add_manual
-        // reads the row's account and seeds the form at stage Id with
-        // an empty buffer. Empty-catalog connections no longer
-        // contribute focusable rows — the user reaches manual-model
-        // entry from any focused Model row in the section.
+    fn models_add_manual_seeds_three_field_paths() {
+        // Open seeds the three per-field buffer paths (id/ctx/out) all
+        // empty, plus the account name and the cursor at the Id field.
+        // Mirrors compose-open: all field state exists in parallel
+        // from the moment the form opens — no shared `buffer` path.
         use ox_gate::ModelInfo;
         use ox_types::ModelInfoSource;
         let mut snap = SettingsSnapshot::empty();
@@ -4069,24 +4207,29 @@ mod tests {
             by_path.get("ui/settings/manual_model/account").unwrap(),
             &Value::String("alpha".into())
         );
-        // Cursor-as-focus: opening writes cursor to the Id-stage path.
-        // No `manual_model/stage` write — the cursor IS the stage.
+        // Three parallel field buffers seeded empty.
+        assert_eq!(
+            by_path.get("ui/settings/manual_model/id").unwrap(),
+            &Value::String(String::new())
+        );
+        assert_eq!(
+            by_path.get("ui/settings/manual_model/ctx").unwrap(),
+            &Value::String(String::new())
+        );
+        assert_eq!(
+            by_path.get("ui/settings/manual_model/out").unwrap(),
+            &Value::String(String::new())
+        );
+        // The retired single-buffer path must not be written.
+        assert!(
+            !by_path.contains_key("ui/settings/manual_model/buffer"),
+            "shared buffer is retired in favor of per-field paths",
+        );
+        // Cursor lands at the Id field so typing immediately works.
         let focused_val = by_path.get("ui/settings/focused").expect("cursor written");
         let focused = super::super::navigation::path_from_value(focused_val)
             .expect("cursor value decodes as Path");
-        assert_eq!(
-            focused,
-            oxpath!("settings", "_manual_model", "id"),
-            "open writes cursor to the Id stage",
-        );
-        assert!(
-            !by_path.contains_key("ui/settings/manual_model/stage"),
-            "retired discriminator must not be written",
-        );
-        assert_eq!(
-            by_path.get("ui/settings/manual_model/buffer").unwrap(),
-            &Value::String(String::new())
-        );
+        assert_eq!(focused, oxpath!("settings", "_manual_model", "id"));
     }
 
     #[test]
@@ -4146,109 +4289,25 @@ mod tests {
     }
 
     #[test]
-    fn models_manual_commit_id_advances_to_ctx_with_staged_id() {
+    fn models_manual_commit_with_all_valid_fields_writes_full_modelinfo() {
+        // The new commit reads all three per-field buffers, validates,
+        // and appends one ModelInfo with the parsed values. No more
+        // stage-advance writes — commit is a single atomic action.
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
             &oxpath!("ui", "settings", "manual_model", "account"),
             Value::String("alpha".into()),
         );
-        seed_manual_stage(&mut snap, ManualModelStage::Id);
         snap.insert(
-            &oxpath!("ui", "settings", "manual_model", "buffer"),
-            Value::String("custom-model".into()),
-        );
-        let writes = run_cmd(&ModelsManualCommit::new(), &mut snap);
-        let by_path: std::collections::BTreeMap<_, _> = writes
-            .iter()
-            .map(|w| (w.path.to_string(), w.record.as_value().unwrap().clone()))
-            .collect();
-        // Cursor advances to the Ctx-stage path.
-        let focused_val = by_path.get("ui/settings/focused").expect("cursor advanced");
-        let focused = super::super::navigation::path_from_value(focused_val).unwrap();
-        assert_eq!(focused, oxpath!("settings", "_manual_model", "ctx"));
-        assert!(
-            !by_path.contains_key("ui/settings/manual_model/stage"),
-            "retired discriminator must not be written",
-        );
-        assert_eq!(
-            by_path.get("ui/settings/manual_model/staged_id").unwrap(),
-            &Value::String("custom-model".into())
-        );
-        assert_eq!(
-            by_path.get("ui/settings/manual_model/buffer").unwrap(),
-            &Value::String(String::new())
-        );
-    }
-
-    #[test]
-    fn models_manual_commit_id_rejects_empty_buffer() {
-        let mut snap = SettingsSnapshot::empty();
-        seed_manual_stage(&mut snap, ManualModelStage::Id);
-        snap.insert(
-            &oxpath!("ui", "settings", "manual_model", "buffer"),
-            Value::String("   ".into()),
-        );
-        let writes = run_cmd(&ModelsManualCommit::new(), &mut snap);
-        assert!(writes.is_empty());
-    }
-
-    #[test]
-    fn models_manual_commit_ctx_advances_to_out_with_parsed_u32() {
-        let mut snap = SettingsSnapshot::empty();
-        seed_manual_stage(&mut snap, ManualModelStage::Ctx);
-        snap.insert(
-            &oxpath!("ui", "settings", "manual_model", "buffer"),
-            Value::String("200000".into()),
-        );
-        let writes = run_cmd(&ModelsManualCommit::new(), &mut snap);
-        let by_path: std::collections::BTreeMap<_, _> = writes
-            .iter()
-            .map(|w| (w.path.to_string(), w.record.as_value().unwrap().clone()))
-            .collect();
-        // Cursor advances to the Out-stage path.
-        let focused_val = by_path.get("ui/settings/focused").expect("cursor advanced");
-        let focused = super::super::navigation::path_from_value(focused_val).unwrap();
-        assert_eq!(focused, oxpath!("settings", "_manual_model", "out"));
-        assert!(
-            !by_path.contains_key("ui/settings/manual_model/stage"),
-            "retired discriminator must not be written",
-        );
-        assert_eq!(
-            by_path.get("ui/settings/manual_model/staged_ctx").unwrap(),
-            &Value::String("200000".into())
-        );
-    }
-
-    #[test]
-    fn models_manual_commit_ctx_rejects_non_numeric() {
-        let mut snap = SettingsSnapshot::empty();
-        seed_manual_stage(&mut snap, ManualModelStage::Ctx);
-        snap.insert(
-            &oxpath!("ui", "settings", "manual_model", "buffer"),
-            Value::String("not-a-number".into()),
-        );
-        let writes = run_cmd(&ModelsManualCommit::new(), &mut snap);
-        assert!(writes.is_empty());
-    }
-
-    #[test]
-    fn models_manual_commit_out_writes_full_modelinfo_and_clears_form() {
-        let mut snap = SettingsSnapshot::empty();
-        snap.insert(
-            &oxpath!("ui", "settings", "manual_model", "account"),
-            Value::String("alpha".into()),
-        );
-        seed_manual_stage(&mut snap, ManualModelStage::Out);
-        snap.insert(
-            &oxpath!("ui", "settings", "manual_model", "staged_id"),
+            &manual_field_state_path(ManualModelStage::Id),
             Value::String("custom-model".into()),
         );
         snap.insert(
-            &oxpath!("ui", "settings", "manual_model", "staged_ctx"),
+            &manual_field_state_path(ManualModelStage::Ctx),
             Value::String("100000".into()),
         );
         snap.insert(
-            &oxpath!("ui", "settings", "manual_model", "buffer"),
+            &manual_field_state_path(ManualModelStage::Out),
             Value::String("8000".into()),
         );
         let writes = run_cmd(&ModelsManualCommit::new(), &mut snap);
@@ -4267,7 +4326,7 @@ mod tests {
             models[0].source,
             ox_gate::ModelInfoSource::UserEntered
         ));
-        // Single Null write at the manual_model subtree root; the
+        // Single Null write at the manual_model subtree root — the
         // StructFS Null-delete cascade clears every child atomically.
         assert_null_write(&writes, oxpath!("ui", "settings", "manual_model"));
         // Cursor moves to the new model row.
@@ -4286,11 +4345,117 @@ mod tests {
     }
 
     #[test]
+    fn models_manual_commit_empty_id_writes_errors_record() {
+        // Required-field validation: an empty (or whitespace-only) id
+        // produces a ManualModelErrors record at the canonical errors
+        // path. No catalog write fires — the form stays open so the
+        // user sees the error and corrects it.
+        use ox_types::settings::ManualModelErrors;
+
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "account"),
+            Value::String("alpha".into()),
+        );
+        snap.insert(
+            &manual_field_state_path(ManualModelStage::Id),
+            Value::String("   ".into()),
+        );
+        let writes = run_cmd(&ModelsManualCommit::new(), &mut snap);
+        assert!(
+            !writes
+                .iter()
+                .any(|w| w.path.to_string().starts_with("config/gate/accounts")),
+            "commit must not append to the catalog when id is empty",
+        );
+        let errors_val = writes
+            .iter()
+            .find(|w| w.path == oxpath!("ui", "settings", "manual_model", "errors"))
+            .map(|w| w.record.as_value().unwrap().clone())
+            .expect("errors record written");
+        let errors: ManualModelErrors = structfs_serde_store::from_value(errors_val).unwrap();
+        assert!(errors.id.is_some(), "id error must be set");
+    }
+
+    #[test]
+    fn models_manual_commit_non_numeric_ctx_writes_errors_record() {
+        // Per-field validation: a non-numeric ctx produces a per-field
+        // error without rejecting the rest of the form. No catalog
+        // write fires.
+        use ox_types::settings::ManualModelErrors;
+
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "account"),
+            Value::String("alpha".into()),
+        );
+        snap.insert(
+            &manual_field_state_path(ManualModelStage::Id),
+            Value::String("custom-model".into()),
+        );
+        snap.insert(
+            &manual_field_state_path(ManualModelStage::Ctx),
+            Value::String("not-a-number".into()),
+        );
+        let writes = run_cmd(&ModelsManualCommit::new(), &mut snap);
+        assert!(
+            !writes
+                .iter()
+                .any(|w| w.path.to_string().starts_with("config/gate/accounts"))
+        );
+        let errors_val = writes
+            .iter()
+            .find(|w| w.path == oxpath!("ui", "settings", "manual_model", "errors"))
+            .map(|w| w.record.as_value().unwrap().clone())
+            .expect("errors record written");
+        let errors: ManualModelErrors = structfs_serde_store::from_value(errors_val).unwrap();
+        assert!(errors.id.is_none(), "valid id should not error");
+        assert!(errors.ctx.is_some(), "non-numeric ctx must error");
+    }
+
+    #[test]
+    fn models_manual_commit_blank_ctx_and_out_persist_as_none() {
+        // ctx and out are optional — blank fields commit successfully
+        // and the resulting ModelInfo carries None for both token
+        // budgets.
+        let mut snap = SettingsSnapshot::empty();
+        snap.insert(
+            &oxpath!("ui", "settings", "manual_model", "account"),
+            Value::String("alpha".into()),
+        );
+        snap.insert(
+            &manual_field_state_path(ManualModelStage::Id),
+            Value::String("custom-model".into()),
+        );
+        snap.insert(
+            &manual_field_state_path(ManualModelStage::Ctx),
+            Value::String(String::new()),
+        );
+        snap.insert(
+            &manual_field_state_path(ManualModelStage::Out),
+            Value::String(String::new()),
+        );
+        let writes = run_cmd(&ModelsManualCommit::new(), &mut snap);
+        let catalog_write = writes
+            .iter()
+            .find(|w| w.path.to_string() == "config/gate/accounts/alpha/models")
+            .expect("catalog write");
+        let models: Vec<ox_gate::ModelInfo> =
+            structfs_serde_store::from_value(catalog_write.record.as_value().unwrap().clone())
+                .unwrap();
+        assert_eq!(models[0].max_context_size, None);
+        assert_eq!(models[0].max_output_tokens, None);
+    }
+
+    #[test]
     fn models_manual_cancel_clears_all_form_state() {
         let mut snap = SettingsSnapshot::empty();
         seed_manual_stage(&mut snap, ManualModelStage::Ctx);
+        // Per-field buffers + account + errors all live under the
+        // manual_model subtree; the cancel's single Null write cascades
+        // to clear all of them.
         snap.insert(
-            &oxpath!("ui", "settings", "manual_model", "staged_id"),
+            &manual_field_state_path(ManualModelStage::Id),
             Value::String("custom".into()),
         );
         let writes = run_cmd(&ModelsManualCancel::new(), &mut snap);
@@ -4389,50 +4554,68 @@ mod tests {
     }
 
     #[test]
-    fn models_manual_stage_advance_moves_cursor() {
-        // Pin the cursor-as-focus invariant for stage advance: starting
-        // at Id, commit advances cursor to Ctx; from Ctx to Out. No
-        // `manual_model/stage` writes.
+    fn models_manual_focus_next_cycles_id_ctx_out_id() {
+        // Focus walks down the form in tab order and wraps. One write
+        // per call — just the cursor move; field buffers are untouched.
         let mut snap = SettingsSnapshot::empty();
-        snap.insert(
-            &oxpath!("ui", "settings", "manual_model", "account"),
-            Value::String("alpha".into()),
-        );
         seed_manual_stage(&mut snap, ManualModelStage::Id);
-        snap.insert(
-            &oxpath!("ui", "settings", "manual_model", "buffer"),
-            Value::String("model-x".into()),
-        );
-        let writes = run_cmd(&ModelsManualCommit::new(), &mut snap);
-        let focused_val = writes
-            .iter()
-            .find(|w| w.path == oxpath!("ui", "settings", "focused"))
-            .map(|w| w.record.as_value().unwrap().clone())
-            .expect("cursor advanced");
-        let focused = super::super::navigation::path_from_value(&focused_val).unwrap();
-        assert_eq!(focused, oxpath!("settings", "_manual_model", "ctx"));
-        assert!(
-            !writes
-                .iter()
-                .any(|w| w.path == oxpath!("ui", "settings", "manual_model", "stage")),
-            "stage discriminator must not be written",
+        let writes = run_cmd(&ModelsManualFocusNext::new(), &mut snap);
+        assert_eq!(writes.len(), 1);
+        let next = super::super::navigation::path_from_value(writes[0].record.as_value().unwrap())
+            .unwrap();
+        assert_eq!(next, oxpath!("settings", "_manual_model", "ctx"));
+
+        seed_manual_stage(&mut snap, ManualModelStage::Ctx);
+        let writes = run_cmd(&ModelsManualFocusNext::new(), &mut snap);
+        let next = super::super::navigation::path_from_value(writes[0].record.as_value().unwrap())
+            .unwrap();
+        assert_eq!(next, oxpath!("settings", "_manual_model", "out"));
+
+        seed_manual_stage(&mut snap, ManualModelStage::Out);
+        let writes = run_cmd(&ModelsManualFocusNext::new(), &mut snap);
+        let next = super::super::navigation::path_from_value(writes[0].record.as_value().unwrap())
+            .unwrap();
+        assert_eq!(
+            next,
+            oxpath!("settings", "_manual_model", "id"),
+            "focus_next wraps from the last field back to the first",
         );
     }
 
     #[test]
-    fn models_manual_insert_char_id_stage_accepts_any_printable() {
+    fn models_manual_focus_prev_cycles_id_out_ctx_id() {
+        let mut snap = SettingsSnapshot::empty();
+        seed_manual_stage(&mut snap, ManualModelStage::Id);
+        let writes = run_cmd(&ModelsManualFocusPrev::new(), &mut snap);
+        let prev = super::super::navigation::path_from_value(writes[0].record.as_value().unwrap())
+            .unwrap();
+        assert_eq!(
+            prev,
+            oxpath!("settings", "_manual_model", "out"),
+            "focus_prev wraps from the first field to the last",
+        );
+
+        seed_manual_stage(&mut snap, ManualModelStage::Out);
+        let writes = run_cmd(&ModelsManualFocusPrev::new(), &mut snap);
+        let prev = super::super::navigation::path_from_value(writes[0].record.as_value().unwrap())
+            .unwrap();
+        assert_eq!(prev, oxpath!("settings", "_manual_model", "ctx"));
+    }
+
+    #[test]
+    fn models_manual_insert_char_id_field_accepts_any_printable() {
+        // With the cursor at the Id field, an inserted char writes to
+        // the per-field path `ui/settings/manual_model/id` — not the
+        // retired shared buffer.
         let mut snap = SettingsSnapshot::empty();
         seed_manual_stage(&mut snap, ManualModelStage::Id);
         snap.insert(
-            &oxpath!("ui", "settings", "manual_model", "buffer"),
+            &manual_field_state_path(ManualModelStage::Id),
             Value::String("foo".into()),
         );
         let writes = run_with_chord(&ModelsManualInsertChar::new(), &mut snap, '-');
         assert_eq!(writes.len(), 1);
-        assert_eq!(
-            writes[0].path,
-            oxpath!("ui", "settings", "manual_model", "buffer")
-        );
+        assert_eq!(writes[0].path, manual_field_state_path(ManualModelStage::Id));
         match &writes[0].record {
             Record::Parsed(Value::String(s)) => assert_eq!(s, "foo-"),
             other => panic!("unexpected: {other:?}"),
@@ -4440,45 +4623,53 @@ mod tests {
     }
 
     #[test]
-    fn models_manual_insert_char_ctx_stage_accepts_digits_only() {
+    fn models_manual_insert_char_ctx_field_accepts_digits_only() {
+        // ctx field accepts digits; letters are silently dropped. The
+        // accepted char appends to the ctx field's path, not the id
+        // field's.
         let mut snap = SettingsSnapshot::empty();
         seed_manual_stage(&mut snap, ManualModelStage::Ctx);
         snap.insert(
-            &oxpath!("ui", "settings", "manual_model", "buffer"),
+            &manual_field_state_path(ManualModelStage::Ctx),
             Value::String("100".into()),
         );
-        // Digit accepted.
         let writes = run_with_chord(&ModelsManualInsertChar::new(), &mut snap, '5');
         assert_eq!(writes.len(), 1);
+        assert_eq!(
+            writes[0].path,
+            manual_field_state_path(ManualModelStage::Ctx)
+        );
         match &writes[0].record {
             Record::Parsed(Value::String(s)) => assert_eq!(s, "1005"),
             other => panic!("unexpected: {other:?}"),
         }
-        // Letter rejected.
         let writes = run_with_chord(&ModelsManualInsertChar::new(), &mut snap, 'x');
         assert!(writes.is_empty());
     }
 
     #[test]
-    fn models_manual_insert_char_no_op_without_cursor_at_stage() {
-        // Without a cursor at a manual-model stage path the insert-char
-        // must be a no-op — the dispatcher's gating already prevents it
-        // from firing, but the helper itself also short-circuits as a
-        // defense in depth.
+    fn models_manual_insert_char_no_op_without_cursor_at_field() {
+        // Without a cursor at a manual-model field path the insert-char
+        // is a no-op — defense in depth on top of the dispatcher's
+        // scope-based gating.
         let mut snap = SettingsSnapshot::empty();
         let writes = run_with_chord(&ModelsManualInsertChar::new(), &mut snap, 'a');
         assert!(writes.is_empty());
     }
 
     #[test]
-    fn models_manual_delete_back_pops_buffer() {
+    fn models_manual_delete_back_pops_active_field() {
+        // The active-field discriminator is the cursor leaf segment:
+        // delete_back pops from whichever field the cursor sits at.
         let mut snap = SettingsSnapshot::empty();
+        seed_manual_stage(&mut snap, ManualModelStage::Id);
         snap.insert(
-            &oxpath!("ui", "settings", "manual_model", "buffer"),
+            &manual_field_state_path(ManualModelStage::Id),
             Value::String("abc".into()),
         );
         let writes = run_cmd(&ModelsManualDeleteBack::new(), &mut snap);
         assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].path, manual_field_state_path(ManualModelStage::Id));
         match &writes[0].record {
             Record::Parsed(Value::String(s)) => assert_eq!(s, "ab"),
             other => panic!("unexpected: {other:?}"),
@@ -4486,10 +4677,11 @@ mod tests {
     }
 
     #[test]
-    fn models_manual_delete_back_on_empty_is_no_op() {
+    fn models_manual_delete_back_on_empty_field_is_no_op() {
         let mut snap = SettingsSnapshot::empty();
+        seed_manual_stage(&mut snap, ManualModelStage::Id);
         snap.insert(
-            &oxpath!("ui", "settings", "manual_model", "buffer"),
+            &manual_field_state_path(ManualModelStage::Id),
             Value::String(String::new()),
         );
         let writes = run_cmd(&ModelsManualDeleteBack::new(), &mut snap);
