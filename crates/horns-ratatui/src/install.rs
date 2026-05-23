@@ -15,6 +15,12 @@
 //! true the host skips its draw; when false the subscription's
 //! `handle` is a no-op because the cursor doesn't sit on a
 //! horns-registered renderer.
+//!
+//! The backend type is a parameter on `install`: production hosts
+//! pass a `Terminal<CrosstermBackend<Stdout>>`; tests pass a
+//! `Terminal<TestBackend>` and read rendered cells from the backend's
+//! buffer. The subscription handler is identical either way — every
+//! `Backend` impl is what `Terminal::draw` calls into.
 
 use std::sync::Arc;
 
@@ -22,14 +28,15 @@ use horns_core::subscription::{PathPattern, SubCtx, Subscription, SubscriptionId
 use horns_core::view::View;
 use horns_core::write::Write;
 use parking_lot::Mutex;
-use ratatui::DefaultTerminal;
+use ratatui::Terminal;
+use ratatui::backend::Backend;
 use structfs_core_store::Path;
 
 use crate::Theme;
 use crate::render::render_to_frame;
 
 /// Knobs the host passes into `install`.
-pub struct RatatuiOptions {
+pub struct RatatuiOptions<B: Backend + Send + 'static> {
     /// Path the horns framework writes the serialized `View` to. The
     /// subscription watches this; on write it locks the terminal and
     /// draws the View.
@@ -39,7 +46,7 @@ pub struct RatatuiOptions {
     /// for non-horns-owned frames, the subscription for horns-owned
     /// frames. The screen-handoff contract is the host's job to
     /// enforce.
-    pub terminal: Arc<Mutex<DefaultTerminal>>,
+    pub terminal: Arc<Mutex<Terminal<B>>>,
     /// Theme passed through to `render_to_frame`. Owned by the
     /// subscription (a clone is held); future revisions can read theme
     /// from a broker path if live theme-swap matters.
@@ -53,8 +60,11 @@ pub struct RatatuiHandle {
 }
 
 /// Register the ratatui view-render subscription on `broker`.
-pub fn install(broker: &ox_broker::BrokerStore, opts: RatatuiOptions) -> RatatuiHandle {
-    let sub = ViewRenderSubscription {
+pub fn install<B>(broker: &ox_broker::BrokerStore, opts: RatatuiOptions<B>) -> RatatuiHandle
+where
+    B: Backend + Send + 'static,
+{
+    let sub = ViewRenderSubscription::<B> {
         id: SubscriptionId("horns_ratatui.view_render".to_string()),
         watches: vec![PathPattern::Exact(opts.view_input_path.clone())],
         view_input_path: opts.view_input_path,
@@ -69,15 +79,15 @@ pub fn install(broker: &ox_broker::BrokerStore, opts: RatatuiOptions) -> Ratatui
 }
 
 /// Subscription that locks the terminal and draws on every View write.
-struct ViewRenderSubscription {
+struct ViewRenderSubscription<B: Backend + Send + 'static> {
     id: SubscriptionId,
     watches: Vec<PathPattern>,
     view_input_path: Path,
-    terminal: Arc<Mutex<DefaultTerminal>>,
+    terminal: Arc<Mutex<Terminal<B>>>,
     theme: Theme,
 }
 
-impl Subscription for ViewRenderSubscription {
+impl<B: Backend + Send + 'static> Subscription for ViewRenderSubscription<B> {
     fn id(&self) -> &SubscriptionId {
         &self.id
     }
