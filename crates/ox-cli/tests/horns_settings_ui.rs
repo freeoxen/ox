@@ -15,6 +15,7 @@
 //! 6. Assert on either the focus cursor (state) or the rendered View
 //!    (visible behavior).
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use horns_core::view::View;
@@ -24,6 +25,9 @@ use ox_path::oxpath;
 use ox_store_util::local_config::LocalConfig;
 use ox_types::settings::{BadgeSource, SettingsIndexEntry};
 use ox_types::{KeyChord, KeyCodeRepr, KeyModifierSet};
+use parking_lot::Mutex;
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 use structfs_core_store::{Path, Reader, Record, Value};
 
 use ox_cli::settings;
@@ -34,6 +38,68 @@ use ox_cli::settings::visible_rows::expanded_set_to_value;
 // ---------------------------------------------------------------------------
 // Test harness — broker setup, install, and small action helpers.
 // ---------------------------------------------------------------------------
+
+/// Rig for end-to-end behavior tests: builds the broker, installs
+/// settings, installs `horns_ratatui` against a `TestBackend`, and
+/// seeds the input area path so `RenderSubscription` has something to
+/// render against. Returns the broker (kept alive for the test's
+/// duration), the client (drive inputs), and the test terminal (read
+/// rendered cells from `backend().buffer()`).
+#[allow(dead_code)] // First user lands in Task 3 of the end-to-end-render plan.
+async fn build_horns_test_rig()
+-> (BrokerStore, ClientHandle, Arc<Mutex<Terminal<TestBackend>>>) {
+    let broker = build_broker_with_seeds().await;
+    let client = broker.client();
+    settings::install(&broker).await.expect("settings::install");
+
+    let backend = TestBackend::new(80, 24);
+    let terminal = Arc::new(Mutex::new(
+        Terminal::new(backend).expect("construct test terminal"),
+    ));
+
+    let _handle = horns_ratatui::install(
+        &broker,
+        horns_ratatui::RatatuiOptions {
+            view_input_path: settings::render_output_path(),
+            terminal: terminal.clone(),
+            theme: horns_ratatui::Theme::default(),
+        },
+    );
+
+    // Seed the area path so RenderSubscription has a Rect to render
+    // against. Mirrors `seed_initial_state` in `horns_loop`.
+    let area = horns_core::Rect::new(0, 0, 80, 24);
+    client
+        .write_typed(&settings::input_area_path(), &area)
+        .await
+        .unwrap();
+
+    (broker, client, terminal)
+}
+
+/// Read every cell symbol from the test terminal's buffer, row-major,
+/// joined with newlines. Use for substring assertions ("contains
+/// 'alpha' somewhere") and for snapshot-style frame comparisons.
+#[allow(dead_code)] // First user lands in Task 3 of the end-to-end-render plan.
+fn rendered_text(terminal: &Arc<Mutex<Terminal<TestBackend>>>) -> String {
+    let guard = terminal.lock();
+    let buf = guard.backend().buffer();
+    let mut out = String::with_capacity(
+        ((buf.area.width as usize) + 1) * (buf.area.height as usize),
+    );
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+            out.push_str(buf[(x, y)].symbol());
+        }
+        // Trim trailing whitespace on each line so substring tests
+        // don't choke on padding the user can't see.
+        while out.ends_with(' ') {
+            out.pop();
+        }
+        out.push('\n');
+    }
+    out
+}
 
 /// Build a broker with every mount `settings::install` writes to, plus
 /// the test seed data the renderer needs to produce non-empty content.
