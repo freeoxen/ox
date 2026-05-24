@@ -18,6 +18,7 @@ pub mod bootstrap;
 pub mod commands;
 pub mod help;
 pub mod renderers;
+pub mod shortcuts;
 pub mod snapshot;
 pub mod visible_rows;
 
@@ -162,7 +163,29 @@ pub async fn install(broker: &BrokerStore) -> Result<SettingsHandle, StoreError>
     // call site. Until then: any non-null JSON record will do.
     let theme_json = serde_json::json!({});
 
-    // ---- 3. Build the install bundle. ----
+    // ---- 3. Build the joined shortcut registry from the live
+    //         registries, BEFORE they're moved into the install bundle.
+    //         The joined record lives at a store-resident path; the
+    //         resolver reads it on cursor moves and rebuilds it on
+    //         binding/command edits. Seeding here means the very first
+    //         cursor write fires a resolver that finds a populated
+    //         registry waiting — no broker walk needed for the hot path
+    //         even on the first frame.
+    let joined_registry =
+        crate::settings::shortcuts::build_joined_from_registries(&bindings, &commands);
+    let joined_registry_value = structfs_serde_store::to_value(&joined_registry)
+        .map_err(|e| StoreError::store("settings", "install", e.to_string()))?;
+
+    let resolver = crate::settings::shortcuts::ShortcutResolver::new(
+        cursor_path(),
+        bindings_prefix(),
+        commands_prefix(),
+        crate::settings::shortcuts::joined_registry_path(),
+        crate::settings::shortcuts::shortcuts_path(),
+    )
+    .boxed();
+
+    // ---- 4. Build the install bundle (moves bindings + commands). ----
     let paths = InstallPaths {
         cursor_path: cursor_path(),
         input_path: input_path(),
@@ -175,18 +198,38 @@ pub async fn install(broker: &BrokerStore) -> Result<SettingsHandle, StoreError>
     let bundle =
         build_install_bundle_from_registries(bindings, commands, renderers, paths, theme_json);
 
-    // ---- 4. Apply metadata writes through the broker client. ----
+    // ---- 5. Apply metadata writes through the broker client, plus
+    //         the seeded joined registry. The registry write happens
+    //         BEFORE the resolver registers, so the first cursor write
+    //         finds it ready and the install-time binding writes don't
+    //         each trigger a rebuild.
     let client = broker.client();
     for (path, record) in &bundle.metadata_writes {
         client.write(path, record.clone()).await?;
     }
+    client
+        .write(
+            &crate::settings::shortcuts::joined_registry_path(),
+            structfs_core_store::Record::parsed(joined_registry_value),
+        )
+        .await?;
 
-    // ---- 5. Register subscriptions and collect their ids. ----
-    let subscription_ids: Vec<SubscriptionId> = bundle
-        .subscriptions
-        .iter()
-        .map(|s| s.id().clone())
-        .collect();
+    // ---- 6. Register subscriptions and collect their ids. ----
+    //
+    // Order matters: the `ShortcutResolver` watches `cursor_path` and
+    // produces the active shortcut record at `shortcuts_path()`.
+    // `RenderSubscription` *also* watches `cursor_path` and reads
+    // `shortcuts_path()` through the IndexRenderer. Registering the
+    // resolver first means a cursor write fires it before the render
+    // sub, so the render reads the fresh record on the same cascade
+    // — no one-frame stale display, no second render needed to catch
+    // up. `BrokerStore` honors registration order on a single write
+    // (see `ox_broker` spec §3.3).
+    let resolver_id = resolver.id().clone();
+    broker.register_subscription(resolver);
+
+    let mut subscription_ids: Vec<SubscriptionId> = vec![resolver_id];
+    subscription_ids.extend(bundle.subscriptions.iter().map(|s| s.id().clone()));
     for sub in bundle.subscriptions {
         broker.register_subscription(sub);
     }

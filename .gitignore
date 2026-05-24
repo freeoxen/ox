@@ -12,3 +12,5 @@ node_modules
 site/dist
 .superpowers
 .claude/scheduled_tasks.lock
+
+.claude/worktrees/

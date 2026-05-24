@@ -873,7 +873,7 @@ mod tests {
         bindings.register_handler(HandlerEntry {
             scope: BindingScope::Exact(oxpath!("settings", "_edit")),
             phase: Phase::Target,
-                        handler: Arc::new(EatChar),
+            handler: Arc::new(EatChar),
         });
 
         let renderers = RendererRegistry::new();
@@ -928,7 +928,7 @@ mod tests {
         bindings.register_handler(HandlerEntry {
             scope: BindingScope::Exact(oxpath!("settings", "_edit")),
             phase: Phase::Target,
-                        handler: Arc::new(SwallowAll),
+            handler: Arc::new(SwallowAll),
         });
 
         let renderers = RendererRegistry::new();
@@ -978,7 +978,7 @@ mod tests {
         bindings.register_handler(HandlerEntry {
             scope: BindingScope::Exact(oxpath!("settings", "_edit")),
             phase: Phase::Target,
-                        handler: Arc::new(PassAll),
+            handler: Arc::new(PassAll),
         });
 
         let renderers = RendererRegistry::new();
@@ -1034,7 +1034,7 @@ mod tests {
         bindings.register_handler(HandlerEntry {
             scope: BindingScope::Exact(oxpath!("settings", "_edit")),
             phase: Phase::Target,
-                        handler: Arc::new(ShouldNotFire),
+            handler: Arc::new(ShouldNotFire),
         });
 
         let renderers = RendererRegistry::new();
