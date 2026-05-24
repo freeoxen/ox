@@ -13,16 +13,24 @@ feature parity — list, scroll, select, expand/collapse, pretty/raw
 toggle, full/truncated toggle, ledger banner, ascend — including
 mouse.
 
+The port keeps the legacy history implementation alive in the
+binary for the duration of the work, behind a runtime toggle the
+user can flip on the history screen. Both implementations stay
+green and feature-equivalent; the toggle exists so any divergence
+shows up immediately by visual comparison rather than by bug
+report. Legacy retirement is a follow-up change, not in scope
+here.
+
 The port is also the occasion to do two pieces of framework work
 that were always on the path to a second screen:
 
 1. Reshape screen installation so a *screen* is a **mount** rather
    than an ad-hoc collection of paths plus a `SettingsHandle`. The
-   first install (settings) is migrated to the new shape as part of
-   this work.
-2. Add a `HitTarget` variant to `horns_core::View` so mouse routing
-   is declarative rather than a render side-effect, and route
-   clicks through it in the host loop.
+   first install (settings) is migrated to the new shape as part
+   of this work.
+2. Add a `HitTarget` variant to `horns_core::View` so mouse
+   routing is declarative rather than a render side-effect, and
+   route clicks through it in the host loop.
 
 ## Motivation
 
@@ -41,6 +49,78 @@ These work, but they are the reason `event_loop.rs` is 1000+ lines
 and the reason adding a new screen always seems to require touching
 the legacy loop. Porting history is the last step before that loop
 can shrink to a switchboard.
+
+## Dual-implementation during port
+
+For the duration of this work both implementations live in the
+binary:
+
+- **Legacy.** The current `HistoryExplorer` /
+  `history_view::draw_history` / `HistoryHitMap` code in
+  `ox-cli` is untouched. The legacy event loop continues to
+  drive it when active.
+- **Horns.** The new history screen mount under
+  `ui/_horns/history/`. Installed at boot regardless of which
+  implementation is active so its subscriptions can warm
+  derivations in the background.
+
+The active implementation is held at the broker path
+`ui/history_engine` with value `"legacy"` or `"horns"`. A binding
+on the history screen (chord TBD during implementation — likely
+F12 or a `g`-prefixed chord) writes a toggle command that flips
+the value. Both implementations bind the chord; either one being
+visible lets the user flip to the other.
+
+The host state machine (`main.rs`) gains a third state alongside
+`Legacy` and `Settings`: `HistoryOnHorns`. Transitions:
+
+- `ScreenSnapshot::History(_)` with `ui/history_engine = "legacy"`
+  → stay in Legacy (existing event loop draws history in place).
+- `ScreenSnapshot::History(_)` with `ui/history_engine = "horns"`
+  → pivot to HistoryOnHorns (host loop yields the terminal to
+  `run_horns_screen_loop` pointed at the history mount).
+- `ScreenSnapshot::Settings(_)` → pivot to Settings as today.
+- `ScreenSnapshot::Inbox(_)` or `Thread(_)` → return to Legacy.
+- Toggle write while in either history state → exit current
+  state, re-enter on the other side, both with the same
+  `selected` / `expanded` since those live in the broker (legacy
+  in `UiSnapshot`, horns in `state/<thread>/...`).
+
+The toggle is **per-thread-visit, not persistent across
+restarts**. The startup value defaults to `"legacy"` until
+retirement. Persisting the preference is a trivial follow-up
+(add `ui/history_engine` to a settings store) but unnecessary
+for the comparison purpose.
+
+### Pre-port modularity
+
+The existing history code is already adequately factored:
+`LogCache`, `HistoryLayout`, and `parse_log_entries` are
+broker-agnostic and reusable. The coupling that prevents
+coexistence is at the *dispatch* layer — `event_loop.rs:140`
+owns a single `HistoryExplorer`, `tui.rs:127` calls
+`draw_history` unconditionally on `ScreenSnapshot::History`,
+and `event_loop.rs:1067` routes mouse via the returned hit map.
+
+The pre-port refactor confines its changes to the dispatch
+layer:
+
+1. Add the `ui/history_engine` path and a write-handler that
+   normalizes the value (defaulting to `"legacy"` on any
+   read miss or invalid value).
+2. Gate the legacy history calls in `event_loop.rs` and
+   `tui.rs` on `ui/history_engine = "legacy"`. When `"horns"`,
+   the legacy code path returns `LegacyExit::ToHorns(History)`
+   the same way it currently returns `LegacyExit::ToHorns` for
+   settings.
+3. Generalize `horns_loop::run_horns_settings_loop` into
+   `run_horns_screen_loop(screen: &Screen)` (this is the same
+   work the rest of the spec requires).
+
+That's the entire pre-port refactor. No new traits, no
+extracting "engine" interfaces, no moving history code into a
+new crate. The legacy implementation stays exactly where it
+is; what changes is who decides whether to call it.
 
 ## What S-tier looks like
 
@@ -260,14 +340,29 @@ loop {
 }
 ```
 
-The loop knows nothing about settings or history specifically. It
-takes a `&Screen` (the active mount) and operates on its standard
-paths. Settings exits to the legacy inbox screen the same way it
-does today (`UiCommand::Global(GlobalCommand::GoToInbox)` write);
-history exits the same way. The "legacy loop" remains as the
-inbox/thread host until those screens are also ported, but each
-ported screen is a horns mount and the screen-agnostic outer loop
-is now the entry point.
+When invoked, the loop knows nothing about settings or history
+specifically. It takes a `&Screen` (the active mount) and
+operates on its standard paths. Settings exits to the legacy
+inbox screen the same way it does today
+(`UiCommand::Global(GlobalCommand::GoToInbox)` write); history
+exits the same way.
+
+What *does* still distinguish settings, history-on-horns, and
+the legacy screens is the **outer state machine** in `main.rs`
+that decides which loop owns the terminal:
+
+- `ScreenSnapshot::Inbox` / `Thread` → legacy event loop.
+- `ScreenSnapshot::Settings` → `run_horns_screen_loop(settings)`.
+- `ScreenSnapshot::History` and `ui/history_engine = "horns"` →
+  `run_horns_screen_loop(history)`.
+- `ScreenSnapshot::History` and `ui/history_engine = "legacy"`
+  → legacy event loop, with its existing history branch
+  active.
+
+Each loop returns control to `main.rs` when it observes a
+condition that requires a state change (screen change,
+engine-toggle write, exit request). The outer state machine
+re-dispatches based on the new state.
 
 ### Settings migration
 
@@ -378,34 +473,35 @@ If a future change wants history selection/expansion to persist
 across restarts, the change is: add the appropriate alias to
 `PARTICIPATING_MOUNTS`. No code in this port needs to know.
 
-## What gets deleted, what gets migrated
+## What changes, what stays, what's new
 
-**Deleted:**
+**Stays unchanged (legacy implementation):**
 
-- `crates/ox-cli/src/history_state.rs` — `HistoryExplorer`,
-  `LogCache`, `HistoryLayout`. The functionality moves into the
-  `ScreenStore` for history plus the `ParseSubscription` and
-  `LayoutSubscription` handlers.
+- `crates/ox-cli/src/history_state.rs` —
+  `HistoryExplorer`, `LogCache`, `HistoryLayout`. Untouched
+  during this work. Retirement is a follow-up.
 - `crates/ox-cli/src/history_view.rs` — `draw_history`,
-  `HistoryHitMap`, `HitEntry`, `ToolbarHit`. Functionality
-  moves into the history `Renderer` impl in
-  `crates/ox-cli/src/history/renderers/`, with hit targets
-  carried in `View::HitTarget`.
-- The `history_explorer`, `history_hit_map`, and
-  history-specific branches in `event_loop.rs` and `tui.rs`.
+  `HistoryHitMap`, `HitEntry`, `ToolbarHit`. Untouched.
+- The `history_explorer` ownership in `event_loop.rs` and the
+  `draw_history` call in `tui.rs` stay; they are now
+  gated on `ui/history_engine = "legacy"`.
 
-**Migrated (in place where possible):**
+**Migrated (in place):**
 
-- `parse_log_entries` (in `crates/ox-cli/src/parse.rs`) stays;
-  the `ParseSubscription` calls it. Tests against
-  `parse_log_entries` carry over unchanged.
+- `parse_log_entries` (in `crates/ox-cli/src/parse.rs`) stays
+  where it is and is *shared* between legacy and horns
+  callers. The horns `ParseSubscription` calls it; the legacy
+  `LogCache::sync` calls it. Tests against `parse_log_entries`
+  carry over unchanged.
 - `crates/ox-cli/src/settings/{mod.rs,bootstrap.rs}` is
   reshaped from the install pattern to the mount pattern; the
   renderers, commands, and bindings under `settings/` keep
-  their current shape and re-register against the screen mount.
+  their current shape and re-register against the screen
+  mount.
 - `crates/ox-cli/src/horns_loop.rs` is generalized to
   `run_horns_screen_loop(screen: &Screen)`. Settings calls it
-  with its screen; history calls it with its screen.
+  with its screen; history-on-horns calls it with the history
+  screen.
 
 **New:**
 
@@ -417,6 +513,20 @@ across restarts, the change is: add the appropriate alias to
 - `crates/ox-cli/src/history/` — `mod.rs`, `bindings.rs`,
   `bootstrap.rs`, `commands.rs`, `renderers/`,
   `subscriptions.rs` (ParseSubscription, LayoutSubscription).
+  This module sits alongside `history_state.rs` /
+  `history_view.rs` rather than replacing them.
+- A small toggle path/handler:
+  `crates/ox-cli/src/history_engine.rs` (or under
+  `ox-ui`/`ox-types` if cleaner) holding the
+  `HistoryEngine` enum and its serde wiring at
+  `ui/history_engine`.
+
+**Deferred to legacy retirement (separate change):**
+
+- Deletion of `history_state.rs`, `history_view.rs`, and the
+  gating branches.
+- Removal of the `ui/history_engine` toggle path itself.
+- Removal of the toggle key binding.
 
 ## Mouse routing
 
@@ -462,22 +572,34 @@ disk, separate from the state snapshot — but not in this port.
 
 ## Compatibility and rollout
 
-The port is one PR. Settings migrates to the mount shape in
-the same PR; the legacy `run_horns_settings_loop` is renamed
-and generalized; `event_loop.rs` loses its history branches;
-history goes live on horns. There is no flag for "old history
-vs. new history" — the legacy code is deleted, not preserved
-behind a toggle.
+The port lands in one PR. Settings migrates to the mount shape
+in the same PR; `run_horns_settings_loop` is renamed and
+generalized; `event_loop.rs` gains the `ui/history_engine`
+gate around its existing history branches; the horns history
+mount and the toggle binding go in. The default value of
+`ui/history_engine` is `"legacy"`, so behavior on first boot
+after the PR is identical to today — the user opts in by
+pressing the toggle on the history screen.
+
+The dual-implementation period lasts until the user is
+satisfied parity is reached. Retirement is its own PR: flip
+the default to `"horns"`, observe, delete the legacy code,
+remove the gate and the toggle. That PR is small and
+mechanical because everything has been kept ready for it.
 
 The risk is that some interaction (a key chord, a mouse case,
-a ledger-banner edge case) doesn't carry over. Mitigations:
+a ledger-banner edge case) doesn't carry over to horns.
+Mitigations are baked into the dual-implementation choice:
 
-- Hand-test the screen against the same test plan used for
-  the legacy version (see "Testing").
-- Keep the snapshot tests' golden Views around — they encode
-  the current visible-shape contract.
+- The user can flip back to legacy mid-thread if the horns
+  version misrenders, without losing context or restarting.
+- Snapshot tests of the horns renderer's `View` output, plus
+  the existing legacy tests, both run in CI — both implementations
+  stay green continuously.
 - The legacy `parse_log_entries` is reused unchanged, so
-  message rendering content is identical.
+  message *content* is identical between the two; any
+  divergence is in layout, hit targets, or scroll behavior
+  and surfaces by direct comparison.
 
 ## Testing
 
@@ -499,11 +621,16 @@ a ledger-banner edge case) doesn't carry over. Mitigations:
 - **Hit-target geometry test.** Render a known View, walk for
   hit targets, assert each region matches the translator's
   drawn geometry.
+- **Parity test between implementations.** Seed a thread with
+  a fixture log. Drive identical input sequences through both
+  implementations. Assert the rendered terminal buffers (or a
+  semantic projection of them — visible entries, selection,
+  expanded set) match. This is the test that polices
+  divergence during the dual period.
 
 Existing tests for `parse_log_entries`,
-`HistoryExplorer::sync`, and `HistoryLayout` carry over: the
-first as-is, the latter two retargeted to exercise the
-equivalent subscription handlers.
+`HistoryExplorer::sync`, and `HistoryLayout` all remain
+green — the legacy code is untouched.
 
 ## Out of scope
 
@@ -523,6 +650,17 @@ equivalent subscription handlers.
 - **LRU cache for inactive threads' parses.** Cache stays
   scoped to active thread; second-visit is cold. UX-tier
   improvement, defer.
+- **Legacy retirement.** Deletion of `history_state.rs`,
+  `history_view.rs`, the `event_loop.rs`/`tui.rs` gating,
+  the toggle path and binding, and any tests that exercise
+  only the legacy path. Separate change once the
+  dual-implementation comparison has run long enough for the
+  user to be confident. Designed to be mechanical.
+- **Persisting `ui/history_engine` across restarts.** The
+  default is `"legacy"` each boot during the dual period.
+  Persisting the user's last choice would be a one-line
+  addition to a settings store; not done because retirement
+  removes the toggle entirely.
 
 ## Open questions
 
