@@ -423,6 +423,7 @@ mod tests {
             key: key_char('a'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Target,
+            priority: 200,
         });
 
         let renderers = RendererRegistry::new();
@@ -467,6 +468,7 @@ mod tests {
             key: key_char('a'),
             command_id: cmd_id("not.registered"),
             phase: Phase::Target,
+            priority: 200,
         });
 
         let renderers = RendererRegistry::new();
@@ -492,6 +494,7 @@ mod tests {
             key: key_char('a'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Target,
+            priority: 200,
         });
 
         let renderers = RendererRegistry::new();
@@ -519,6 +522,7 @@ mod tests {
             key: key_char('a'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Target,
+            priority: 200,
         });
 
         let renderers = RendererRegistry::new();
@@ -544,6 +548,7 @@ mod tests {
             key: key_char('a'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Target,
+            priority: 200,
         });
 
         let renderers = RendererRegistry::new();
@@ -573,6 +578,7 @@ mod tests {
             key: key_char('y'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Target,
+            priority: 200,
         });
 
         let renderers = RendererRegistry::new();
@@ -602,6 +608,7 @@ mod tests {
             },
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Capture,
+            priority: 200,
         });
 
         let renderers = RendererRegistry::new();
@@ -636,6 +643,7 @@ mod tests {
             key: key_char('y'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Target,
+            priority: 200,
         });
 
         let renderers = RendererRegistry::new();
@@ -660,6 +668,7 @@ mod tests {
             key: key_char('z'),
             command_id: cmd_id("test.report_keystroke"),
             phase: Phase::Target,
+            priority: 200,
         });
 
         let renderers = RendererRegistry::new();
@@ -691,6 +700,7 @@ mod tests {
             key: key_char('a'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Bubble,
+            priority: 200,
         });
 
         let renderers = RendererRegistry::new();
@@ -720,6 +730,7 @@ mod tests {
             },
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Capture,
+            priority: 200,
         });
 
         let renderers = RendererRegistry::new();
@@ -756,6 +767,7 @@ mod tests {
             },
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Bubble,
+            priority: 200,
         });
 
         let renderers = RendererRegistry::new();
@@ -791,6 +803,7 @@ mod tests {
             key: key_char('x'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Target,
+            priority: 200,
         });
 
         let renderers = RendererRegistry::new();
@@ -817,6 +830,7 @@ mod tests {
             key: key_char('a'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Target,
+            priority: 200,
         });
 
         let renderers = RendererRegistry::new();
@@ -859,7 +873,7 @@ mod tests {
         bindings.register_handler(HandlerEntry {
             scope: BindingScope::Exact(oxpath!("settings", "_edit")),
             phase: Phase::Target,
-            handler: Arc::new(EatChar),
+                        handler: Arc::new(EatChar),
         });
 
         let renderers = RendererRegistry::new();
@@ -909,11 +923,12 @@ mod tests {
             key: key_char('x'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Bubble,
+            priority: 200,
         });
         bindings.register_handler(HandlerEntry {
             scope: BindingScope::Exact(oxpath!("settings", "_edit")),
             phase: Phase::Target,
-            handler: Arc::new(SwallowAll),
+                        handler: Arc::new(SwallowAll),
         });
 
         let renderers = RendererRegistry::new();
@@ -958,11 +973,12 @@ mod tests {
             key: key_char('x'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Bubble,
+            priority: 200,
         });
         bindings.register_handler(HandlerEntry {
             scope: BindingScope::Exact(oxpath!("settings", "_edit")),
             phase: Phase::Target,
-            handler: Arc::new(PassAll),
+                        handler: Arc::new(PassAll),
         });
 
         let renderers = RendererRegistry::new();
@@ -1013,11 +1029,12 @@ mod tests {
             key: key_char('x'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Target,
+            priority: 200,
         });
         bindings.register_handler(HandlerEntry {
             scope: BindingScope::Exact(oxpath!("settings", "_edit")),
             phase: Phase::Target,
-            handler: Arc::new(ShouldNotFire),
+                        handler: Arc::new(ShouldNotFire),
         });
 
         let renderers = RendererRegistry::new();
@@ -1047,6 +1064,7 @@ mod tests {
             key: key_char('j'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Bubble,
+            priority: 200,
         });
 
         let renderers = RendererRegistry::new();
@@ -1086,6 +1104,7 @@ mod tests {
             },
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Capture,
+            priority: 200,
         });
 
         let renderers = RendererRegistry::new();
@@ -1125,6 +1144,7 @@ mod tests {
             },
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Bubble,
+            priority: 200,
         });
 
         let renderers = RendererRegistry::new();
@@ -1162,6 +1182,7 @@ mod tests {
             key: key_char('x'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Target,
+            priority: 200,
         });
 
         let renderers = RendererRegistry::new();

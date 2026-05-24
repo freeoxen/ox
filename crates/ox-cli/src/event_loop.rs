@@ -163,6 +163,20 @@ pub async fn run_async(
 
     loop {
         // -----------------------------------------------------------------
+        // 0. Mirror client-side modal flags to the broker so the horns
+        //    settings renderer (which can't see the in-process
+        //    `DialogState`) can react. One write per iteration is cheap
+        //    and idempotent; sub-tree readers Null-cascade when the
+        //    flag flips off.
+        // -----------------------------------------------------------------
+        let _ = client
+            .write_typed(
+                &oxpath!("ui", "dialog", "show_shortcuts"),
+                &dialog.show_shortcuts,
+            )
+            .await;
+
+        // -----------------------------------------------------------------
         // 1. Fetch, draw, extract what we need — scope ViewState tightly
         // -----------------------------------------------------------------
         let ui: UiSnapshot;

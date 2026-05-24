@@ -1060,7 +1060,7 @@ pub(crate) const PROTOCOL_OPTIONS: &[&str] = &["anthropic", "openai"];
 /// forms render with the same shape.
 pub(crate) fn manual_model_form_view(data: &mut dyn Reader) -> horns_core::view::View {
     use horns_core::view::{FormRow, View};
-    use ox_types::settings::{ManualModelErrors, ManualModelStage};
+    use ox_types::settings::ManualModelErrors;
 
     let errors: ManualModelErrors =
         read_typed(data, &oxpath!("ui", "settings", "manual_model", "errors")).unwrap_or_default();

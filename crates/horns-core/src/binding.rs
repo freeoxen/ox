@@ -96,12 +96,30 @@ pub struct BindingId(pub String);
 
 /// One row in the binding registry: under (scope, phase),
 /// the keystroke `key` invokes `command_id`.
+///
+/// `priority` (0–255, lower = more important) drives status-bar
+/// curation: when the page footer has limited horizontal room, the
+/// renderer projects key hints sorted by priority ascending and keeps
+/// the top N that fit. Unset bindings default to [`DEFAULT_BINDING_PRIORITY`]
+/// — high enough that explicitly-curated bindings always win a slot
+/// before unflagged ones.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BindingEntry {
     pub scope: BindingScope,
     pub key: KeyChord,
     pub phase: Phase,
     pub command_id: CommandId,
+    #[serde(default = "default_binding_priority")]
+    pub priority: u8,
+}
+
+/// Catch-all priority for unflagged bindings. Chosen so a curated
+/// binding at any commonly-used priority (10/20/30/etc.) wins ahead
+/// of every unflagged sibling.
+pub const DEFAULT_BINDING_PRIORITY: u8 = 200;
+
+fn default_binding_priority() -> u8 {
+    DEFAULT_BINDING_PRIORITY
 }
 
 /// Stable identifier for a registered handler. Used as the path
@@ -339,12 +357,14 @@ mod tests {
             key: key_char('a'),
             command_id: cmd("screen_wide"),
             phase: Phase::Target,
+            priority: 200,
         });
         reg.register(BindingEntry {
             scope: BindingScope::Exact(p.clone()),
             key: key_char('a'),
             command_id: cmd("cursor_specific"),
             phase: Phase::Target,
+            priority: 200,
         });
 
         let hit = reg
@@ -361,6 +381,7 @@ mod tests {
             key: key_char('q'),
             command_id: cmd("quit"),
             phase: Phase::Target,
+            priority: 200,
         });
 
         // Any cursor — there's no cursor-specific entry, so the
@@ -390,12 +411,14 @@ mod tests {
             key: key_char('x'),
             command_id: cmd("first"),
             phase: Phase::Target,
+            priority: 200,
         });
         reg.register(BindingEntry {
             scope: BindingScope::Anywhere,
             key: key_char('x'),
             command_id: cmd("second"),
             phase: Phase::Target,
+            priority: 200,
         });
 
         let hit = reg
@@ -412,6 +435,7 @@ mod tests {
             key: key_char('j'),
             command_id: cmd("down"),
             phase: Phase::Target,
+            priority: 200,
         });
 
         let hit = reg.lookup(&oxpath!(), &key_char('k'), Phase::Target);
@@ -435,6 +459,7 @@ mod tests {
             key: key_char('a'),
             command_id: cmd("capture_only"),
             phase: Phase::Capture,
+            priority: 200,
         });
 
         // Target lookup misses the Capture entry.
@@ -463,12 +488,14 @@ mod tests {
             key: key_char('x'),
             command_id: cmd("less_specific"),
             phase: Phase::Capture,
+            priority: 200,
         });
         reg.register(BindingEntry {
             scope: BindingScope::Exact(p.clone()),
             key: key_char('x'),
             command_id: cmd("more_specific"),
             phase: Phase::Capture,
+            priority: 200,
         });
 
         let hit = reg
@@ -489,12 +516,14 @@ mod tests {
             key: key_char('x'),
             command_id: cmd("on_capture"),
             phase: Phase::Capture,
+            priority: 200,
         });
         reg.register(BindingEntry {
             scope: BindingScope::Exact(p.clone()),
             key: key_char('x'),
             command_id: cmd("on_target"),
             phase: Phase::Target,
+            priority: 200,
         });
 
         let capture_hit = reg
@@ -531,7 +560,7 @@ mod tests {
         reg.register_handler(super::HandlerEntry {
             scope: BindingScope::Exact(Path::parse("a/b").unwrap()),
             phase: Phase::Target,
-            handler: Arc::new(AcceptAny),
+                        handler: Arc::new(AcceptAny),
         });
 
         let cursor = Path::parse("a/b").unwrap();
@@ -565,7 +594,7 @@ mod tests {
         reg.register_handler(super::HandlerEntry {
             scope: BindingScope::Exact(Path::parse("a").unwrap()),
             phase: Phase::Capture,
-            handler: Arc::new(NoOp),
+                        handler: Arc::new(NoOp),
         });
 
         let cursor = Path::parse("a").unwrap();
@@ -599,7 +628,7 @@ mod tests {
         reg.register_handler(super::HandlerEntry {
             scope: BindingScope::Exact(Path::parse("a/b").unwrap()),
             phase: Phase::Target,
-            handler: Arc::new(NoOp),
+                        handler: Arc::new(NoOp),
         });
 
         let cursor = Path::parse("c").unwrap();

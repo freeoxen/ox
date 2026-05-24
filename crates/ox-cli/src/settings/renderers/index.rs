@@ -14,7 +14,7 @@
 //! the entry's badge string.
 
 use horns_core::view::{
-    Direction, FocusId, ListItem, ModifierSet, Padding, Sizing, Span, Style, View,
+    Align, Direction, FocusId, ListItem, ModifierSet, Padding, Sizing, Span, Style, View,
 };
 
 use ox_gate::AuthScheme;
@@ -96,6 +96,12 @@ impl Renderer for IndexRenderer {
 
         let title_right = read_dirty_indicator(ctx.data);
 
+        // Bottom shortcut bar. Read all available key hints for the
+        // current focus, sort by priority, and pack what fits on the
+        // left half of one row; the right half always shows `? help`
+        // so the user knows how to open the full modal.
+        let footer_view = build_shortcut_bar(ctx.data, cursor.as_ref(), ctx.area.width);
+
         let mut stack_children: Vec<(View, Sizing)> = Vec::new();
         if let Some(name) = pending {
             stack_children.push((
@@ -123,14 +129,39 @@ impl Renderer for IndexRenderer {
         stack_children.push((accounts_section, Sizing::Fixed(accounts_h)));
         stack_children.push((models_section, Sizing::Fixed(models_h)));
         stack_children.push((View::Empty, Sizing::Fill));
+        // Footer pinned to the bottom — Fixed(1) after the Fill filler
+        // means the Fill consumes everything above and the bar gets
+        // its one row at the very bottom of the page.
+        stack_children.push((footer_view, Sizing::Fixed(1)));
 
-        View::Frame {
+        let page = View::Frame {
             title: Some("Settings".into()),
             title_right,
             content: Box::new(View::Stack {
                 dir: Direction::Vertical,
                 children: stack_children,
             }),
+        };
+
+        // Wrap in a horns-native modal when the shortcuts overlay is
+        // requested. The dialog flag lives at `ui/dialog/show_shortcuts`
+        // (mirrored from the event loop's `DialogState`); when true we
+        // build a foreground View listing the same hint stream the bar
+        // pulls from and project the whole thing through `View::Modal`.
+        let show_shortcuts: bool = crate::settings::renderers::util::read_typed(
+            ctx.data,
+            &ox_path::oxpath!("ui", "dialog", "show_shortcuts"),
+        )
+        .unwrap_or(false);
+        if show_shortcuts {
+            let foreground = build_shortcuts_modal_view(ctx.data, cursor.as_ref());
+            View::Modal {
+                background: Box::new(page),
+                foreground: Box::new(foreground),
+                dim: true,
+            }
+        } else {
+            page
         }
     }
 
@@ -168,6 +199,167 @@ fn partition_rows_by_section(
     match models_pos {
         Some(m) => (&rows[..m], &rows[m..]),
         None => (rows, &[]),
+    }
+}
+
+/// Build the one-row shortcut footer for the settings page. Reads
+/// every binding visible at the current focus from the broker, sorts
+/// by curated priority, and packs hints onto the left of the row
+/// until they don't fit. `? help` always renders on the right so the
+/// user knows the modal is one keystroke away.
+///
+/// Width math is intentionally simple: each hint contributes
+/// `key + ":" + description + "  "` characters; we keep pushing until
+/// the next hint wouldn't fit before the right-aligned `? help`. No
+/// truncation of individual hints — if a description is too long for
+/// the remaining slot, it gets dropped instead of clipped.
+fn build_shortcut_bar(
+    data: &mut dyn structfs_core_store::Reader,
+    cursor: Option<&structfs_core_store::Path>,
+    area_width: u16,
+) -> View {
+    use crate::settings::help::key_hints_for_context_via_reader;
+    use ox_path::oxpath;
+    let bindings_prefix = crate::settings::bindings_prefix();
+    let commands_prefix = crate::settings::commands_prefix();
+    let page_cursor = oxpath!("settings");
+    let mut hints = key_hints_for_context_via_reader(
+        data,
+        &bindings_prefix,
+        &commands_prefix,
+        &page_cursor,
+        cursor,
+    );
+    // Sort by priority ascending (lower = more important). Stable so
+    // first-seen order breaks ties, which matches the dispatcher's
+    // resolution order — the binding the user would actually trigger
+    // wins the slot.
+    hints.sort_by_key(|h| h.priority);
+
+    // Right-side `?` indicator. Fixed width carved out of the row so
+    // the left-side hint packing knows how much room it has.
+    let right_label = "? help";
+    let right_width = right_label.chars().count() as u16;
+
+    // Skip the `?` binding in the left list — it's surfaced on the
+    // right indicator already, duplicating it wastes a slot.
+    let left_hints: Vec<_> = hints.into_iter().filter(|h| h.key != "?").collect();
+
+    let mut budget: i32 = (area_width as i32) - (right_width as i32) - 2;
+    let mut parts: Vec<String> = Vec::new();
+    for h in left_hints {
+        let piece = format!("{}:{}", h.key, h.description);
+        let cost = piece.chars().count() as i32 + 2;
+        if cost > budget {
+            break;
+        }
+        parts.push(piece);
+        budget -= cost;
+    }
+    let left_text = parts.join("  ");
+
+    let dim = Style {
+        fg: None,
+        bg: None,
+        modifiers: ModifierSet {
+            dim: true,
+            ..ModifierSet::default()
+        },
+    };
+
+    View::Stack {
+        dir: Direction::Horizontal,
+        children: vec![
+            (
+                View::Text {
+                    spans: vec![Span {
+                        text: left_text,
+                        style: dim,
+                    }],
+                    align: Align::Left,
+                },
+                Sizing::Fill,
+            ),
+            (
+                View::Text {
+                    spans: vec![Span {
+                        text: right_label.to_string(),
+                        style: dim,
+                    }],
+                    align: Align::Right,
+                },
+                Sizing::Fixed(right_width),
+            ),
+        ],
+    }
+}
+
+/// Build the foreground view for the shortcuts modal. Lists every key
+/// hint visible at the current focus, sorted by curated priority then
+/// stable on first-seen order. One row per (key, command) pair; keys
+/// rendered in a fixed left column, descriptions on the right. The
+/// translator centers and frames this view when it sits inside a
+/// `View::Modal`.
+fn build_shortcuts_modal_view(
+    data: &mut dyn structfs_core_store::Reader,
+    cursor: Option<&structfs_core_store::Path>,
+) -> View {
+    use crate::settings::help::key_hints_for_context_via_reader;
+    use ox_path::oxpath;
+    let bindings_prefix = crate::settings::bindings_prefix();
+    let commands_prefix = crate::settings::commands_prefix();
+    let page_cursor = oxpath!("settings");
+    let mut hints = key_hints_for_context_via_reader(
+        data,
+        &bindings_prefix,
+        &commands_prefix,
+        &page_cursor,
+        cursor,
+    );
+    hints.sort_by_key(|h| h.priority);
+
+    let key_col_width = hints
+        .iter()
+        .map(|h| h.key.chars().count())
+        .max()
+        .unwrap_or(6);
+
+    let mut items: Vec<ListItem> = hints
+        .into_iter()
+        .map(|h| ListItem {
+            primary: format!(
+                "  {key:<key_col_width$}  {desc}",
+                key = h.key,
+                desc = h.description,
+            ),
+            primary_spans: None,
+            secondary: None,
+            badge: None,
+            focus: None,
+        })
+        .collect();
+    items.push(ListItem {
+        primary: String::new(),
+        primary_spans: None,
+        secondary: None,
+        badge: None,
+        focus: None,
+    });
+    items.push(ListItem {
+        primary: "  ? or Esc to close".to_string(),
+        primary_spans: None,
+        secondary: None,
+        badge: None,
+        focus: None,
+    });
+
+    View::Frame {
+        title: Some("Shortcuts".into()),
+        title_right: None,
+        content: Box::new(View::List {
+            items,
+            selected: None,
+        }),
     }
 }
 
@@ -1445,16 +1637,25 @@ mod tests {
             },
             other => panic!("expected Frame, got {other:?}"),
         };
-        // Two sections (Accounts, Models) + a trailing Empty filler that
-        // absorbs leftover vertical space at the bottom of the page.
+        // Two sections (Accounts, Models) + a Fill filler that absorbs
+        // leftover vertical space + a single-row shortcut footer
+        // pinned to the bottom.
         assert_eq!(
             stack_children.len(),
-            3,
-            "page is two sections + a trailing Fill filler"
+            4,
+            "page is two sections + Fill filler + shortcut footer"
         );
         assert!(matches!(stack_children[0].0, View::Stack { .. }));
         assert!(matches!(stack_children[1].0, View::Stack { .. }));
         assert!(matches!(stack_children[2].0, View::Empty));
+        // Footer is a horizontal Stack with hint text + `? help`.
+        assert!(matches!(
+            stack_children[3].0,
+            View::Stack {
+                dir: Direction::Horizontal,
+                ..
+            }
+        ));
     }
 
     #[test]

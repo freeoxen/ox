@@ -41,6 +41,7 @@ fn build_install_bundle_emits_metadata_writes_for_bindings() {
                     code: KeyCodeRepr::Esc,
                 },
                 phase: Phase::Bubble,
+                priority: 200,
                 command_id: CommandId("test_noop".into()),
             },
         )],

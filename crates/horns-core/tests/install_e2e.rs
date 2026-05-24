@@ -142,6 +142,7 @@ async fn key_write_triggers_command_dispatch_through_broker() {
                 scope: BindingScope::Anywhere,
                 key: chord.clone(),
                 phase: Phase::Target,
+                priority: 200,
                 command_id: cmd_id.clone(),
             },
         )],

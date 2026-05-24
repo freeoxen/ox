@@ -116,8 +116,139 @@ fn emit_for_scope_path_entry(
             description: display.name.clone(),
             command: entry.command_id.0.clone(),
             status_hint: false,
+            priority: entry.priority,
         });
     }
+}
+
+// ---------------------------------------------------------------------------
+// Sync broker-driven hints — same shape as `key_hints_for_context_from_broker`
+// but reads through the synchronous `Reader` so it can be called from
+// renderers, which run inside the broker's read path and have no async
+// runtime. Used by the page footer to compute the curated shortcut bar.
+// ---------------------------------------------------------------------------
+
+/// Read every `BindingEntry` written under `bindings_prefix` via the
+/// sync Reader. Returns entries in broker-iteration order (children-Map
+/// keys), which is alphabetical for the broker's typical store backing.
+pub fn read_bindings_via_reader(
+    data: &mut dyn structfs_core_store::Reader,
+    bindings_prefix: &Path,
+) -> Vec<horns_core::BindingEntry> {
+    use crate::settings::renderers::util::child_names_under;
+    let prefix_str = bindings_prefix.to_string();
+    let names = child_names_under(data, &prefix_str);
+    let mut out: Vec<horns_core::BindingEntry> = Vec::with_capacity(names.len());
+    for name in names {
+        let Some(child_path) = path_append(bindings_prefix, &name) else {
+            continue;
+        };
+        let Ok(Some(rec)) = data.read(&child_path) else {
+            continue;
+        };
+        let Some(value) = rec.as_value().cloned() else {
+            continue;
+        };
+        if let Ok(entry) = structfs_serde_store::from_value::<horns_core::BindingEntry>(value) {
+            out.push(entry);
+        }
+    }
+    out
+}
+
+/// Same idea for the commands subtree — produces a `name → CommandMetadata`
+/// map for use during projection.
+pub fn read_commands_via_reader(
+    data: &mut dyn structfs_core_store::Reader,
+    commands_prefix: &Path,
+) -> std::collections::HashMap<String, horns_core::CommandMetadata> {
+    use crate::settings::renderers::util::child_names_under;
+    let prefix_str = commands_prefix.to_string();
+    let names = child_names_under(data, &prefix_str);
+    let mut out: std::collections::HashMap<String, horns_core::CommandMetadata> =
+        std::collections::HashMap::new();
+    for name in names {
+        let Some(child_path) = path_append(commands_prefix, &name) else {
+            continue;
+        };
+        let Ok(Some(rec)) = data.read(&child_path) else {
+            continue;
+        };
+        let Some(value) = rec.as_value().cloned() else {
+            continue;
+        };
+        if let Ok(meta) = structfs_serde_store::from_value::<horns_core::CommandMetadata>(value) {
+            out.insert(name, meta);
+        }
+    }
+    out
+}
+
+/// Push a string segment onto `prefix`. Mirrors horns-core's local
+/// `path_join`; both bindings + commands child names came from the same
+/// `BindingId.0` / `CommandId.0` strings that the broker wrote, so
+/// `Path::try_from_components` only fails on entries the writer
+/// shouldn't have admitted in the first place — those entries are
+/// silently skipped (caller sees one fewer row, never a panic).
+fn path_append(prefix: &Path, segment: &str) -> Option<Path> {
+    if segment.is_empty() {
+        return Some(prefix.clone());
+    }
+    let mut components = prefix.components.clone();
+    components.push(segment.to_string());
+    Path::try_from_components(components).ok()
+}
+
+/// Sync sibling of `key_hints_for_context_from_broker`. Walks the
+/// cursor's ancestor chain (innermost → outermost), emitting one
+/// KeyHint per (key, command) the dispatcher could reach from that
+/// scope. Output preserves first-seen order; the caller sorts by
+/// priority for status-bar curation.
+pub fn key_hints_for_context_via_reader(
+    data: &mut dyn structfs_core_store::Reader,
+    bindings_prefix: &Path,
+    commands_prefix: &Path,
+    page_cursor: &Path,
+    focused: Option<&Path>,
+) -> Vec<KeyHint> {
+    let binding_rows = read_bindings_via_reader(data, bindings_prefix);
+    let commands_by_id = read_commands_via_reader(data, commands_prefix);
+
+    let mut out: Vec<KeyHint> = Vec::new();
+    let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let scope_walk = |target: &Path,
+                      seen_keys: &mut std::collections::HashSet<String>,
+                      out: &mut Vec<KeyHint>| {
+        let ancestors = crate::settings::commands::account_model::path_ancestors(target);
+        for scope_path_entry in ancestors.iter().rev() {
+            for entry in &binding_rows {
+                if !entry.scope.matches(scope_path_entry) {
+                    continue;
+                }
+                let Some(wire) = encode_keychord_to_str(&entry.key) else {
+                    continue;
+                };
+                if !seen_keys.insert(wire.clone()) {
+                    continue;
+                }
+                let Some(meta) = commands_by_id.get(&entry.command_id.0) else {
+                    continue;
+                };
+                out.push(KeyHint {
+                    key: wire,
+                    description: meta.display.name.clone(),
+                    command: entry.command_id.0.clone(),
+                    status_hint: false,
+                    priority: entry.priority,
+                });
+            }
+        }
+    };
+    if let Some(focus) = focused {
+        scope_walk(focus, &mut seen_keys, &mut out);
+    }
+    scope_walk(page_cursor, &mut seen_keys, &mut out);
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -191,6 +322,7 @@ pub async fn key_hints_for_context_from_broker(
                     description: meta.display.name.clone(),
                     command: entry.command_id.0.clone(),
                     status_hint: false,
+                    priority: entry.priority,
                 });
             }
         }
@@ -267,12 +399,14 @@ mod tests {
             key: key('?'),
             command_id: CommandId(String::from("highlight.index.next")),
             phase: Phase::Target,
+            priority: 200,
         });
         bindings.register(BindingEntry {
             scope: BindingScope::Anywhere,
             key: key('?'),
             command_id: CommandId(String::from("modal.toggle_shortcuts")),
             phase: Phase::Target,
+            priority: 200,
         });
         let mut commands = CommandRegistry::new();
         register_all_commands(&mut commands);

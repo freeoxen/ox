@@ -65,6 +65,7 @@ fn bind_capture(
         key: KeyChord { modifiers, code },
         command_id: cmd(command_id),
         phase: Phase::Capture,
+        priority: 200,
     });
 }
 
@@ -89,6 +90,7 @@ fn bind_target(
         key: KeyChord { modifiers, code },
         command_id: cmd(command_id),
         phase: Phase::Target,
+        priority: 200,
     });
 }
 
@@ -113,6 +115,7 @@ fn bind_bubble(
         key: KeyChord { modifiers, code },
         command_id: cmd(command_id),
         phase: Phase::Bubble,
+        priority: 200,
     });
 }
 
@@ -132,6 +135,54 @@ fn bind_prefix_bubble(
         key: KeyChord { modifiers, code },
         command_id: cmd(command_id),
         phase: Phase::Bubble,
+        priority: 200,
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Priority-aware variants. Same shape as the helpers above but the caller
+// chooses where the binding sits in the status-bar curation order. Lower
+// `priority` = more important; the bottom bar shows the top-N hints that
+// fit available width. Reserve low single-digit / low-tens priorities for
+// keys the user reaches for constantly (j/k/Enter); reserve mid-tens
+// through low-hundreds for per-page action keys (r/m/P/a/d/t/…).
+// ---------------------------------------------------------------------------
+
+fn bind_bubble_with_priority(
+    reg: &mut BindingRegistry,
+    cursor: Option<Path>,
+    modifiers: KeyModifierSet,
+    code: KeyCodeRepr,
+    command_id: &str,
+    priority: u8,
+) {
+    let scope = match cursor {
+        Some(p) => BindingScope::Exact(p),
+        None => BindingScope::Anywhere,
+    };
+    reg.register(BindingEntry {
+        scope,
+        key: KeyChord { modifiers, code },
+        command_id: cmd(command_id),
+        phase: Phase::Bubble,
+        priority,
+    });
+}
+
+fn bind_prefix_bubble_with_priority(
+    reg: &mut BindingRegistry,
+    prefix: Path,
+    modifiers: KeyModifierSet,
+    code: KeyCodeRepr,
+    command_id: &str,
+    priority: u8,
+) {
+    reg.register(BindingEntry {
+        scope: BindingScope::Prefix(prefix),
+        key: KeyChord { modifiers, code },
+        command_id: cmd(command_id),
+        phase: Phase::Bubble,
+        priority,
     });
 }
 
@@ -154,6 +205,7 @@ fn register_text_editing(reg: &mut BindingRegistry, cursor: Path) {
             },
             command_id: cmd("field.insert"),
             phase: Phase::Target,
+            priority: 200,
         });
     }
     // Backspace.
@@ -165,6 +217,7 @@ fn register_text_editing(reg: &mut BindingRegistry, cursor: Path) {
         },
         command_id: cmd("field.delete_back"),
         phase: Phase::Target,
+        priority: 200,
     });
 }
 
@@ -185,40 +238,47 @@ fn register_index(reg: &mut BindingRegistry) {
     // path. Compound widgets register their own Target/Capture
     // bindings on inner scopes, which the Bubble walk reaches first.
     let cursor = oxpath!("settings");
-    bind_bubble(
+    // Core nav (j/k/Enter) and their arrow aliases get the lowest
+    // priorities so they always claim a slot in the status bar.
+    bind_bubble_with_priority(
         reg,
         Some(cursor.clone()),
         no_mods(),
         KeyCodeRepr::Char('j'),
         "tree.next",
+        10,
     );
-    bind_bubble(
+    bind_bubble_with_priority(
         reg,
         Some(cursor.clone()),
         no_mods(),
         KeyCodeRepr::Down,
         "tree.next",
+        11,
     );
-    bind_bubble(
+    bind_bubble_with_priority(
         reg,
         Some(cursor.clone()),
         no_mods(),
         KeyCodeRepr::Char('k'),
         "tree.prev",
+        10,
     );
-    bind_bubble(
+    bind_bubble_with_priority(
         reg,
         Some(cursor.clone()),
         no_mods(),
         KeyCodeRepr::Up,
         "tree.prev",
+        11,
     );
-    bind_bubble(
+    bind_bubble_with_priority(
         reg,
         Some(cursor.clone()),
         no_mods(),
         KeyCodeRepr::Enter,
         "tree.activate",
+        15,
     );
     // Vim aliases: `e` (edit), `o` (open), `i` (insert) all route
     // to `tree.activate`. `tree.activate` already dispatches by
@@ -260,12 +320,13 @@ fn register_index(reg: &mut BindingRegistry) {
         KeyCodeRepr::Home,
         "tree.first",
     );
-    bind_bubble(
+    bind_bubble_with_priority(
         reg,
         Some(cursor.clone()),
         no_mods(),
         KeyCodeRepr::Esc,
         "tree.collapse_or_ascend",
+        20,
     );
     // `q` is the unconditional exit-screen escape hatch. Esc has
     // collapse-on-deep-cursor semantics, which is fine for navigating
@@ -274,12 +335,13 @@ fn register_index(reg: &mut BindingRegistry) {
     // scope so it matches from any focus under `settings/*` without
     // depending on the dispatcher's bubble walk reaching the outer
     // `settings` exact scope.
-    bind_prefix_bubble(
+    bind_prefix_bubble_with_priority(
         reg,
         cursor,
         no_mods(),
         KeyCodeRepr::Char('q'),
         "nav.exit_screen",
+        25,
     );
 }
 
@@ -297,40 +359,45 @@ fn register_row_prefixes(reg: &mut BindingRegistry) {
     // manual-model stage, edit-mode buffer) can shadow the same key
     // at `Phase::Target`.
     let accounts_subtree = oxpath!("settings", "accounts");
-    bind_prefix_bubble(
+    bind_prefix_bubble_with_priority(
         reg,
         accounts_subtree.clone(),
         no_mods(),
         KeyCodeRepr::Char('a'),
         "accounts.compose.open",
+        30,
     );
-    bind_prefix_bubble(
+    bind_prefix_bubble_with_priority(
         reg,
         accounts_subtree.clone(),
         no_mods(),
         KeyCodeRepr::Char('t'),
         "account.test",
+        40,
     );
-    bind_prefix_bubble(
+    bind_prefix_bubble_with_priority(
         reg,
         accounts_subtree.clone(),
         no_mods(),
         KeyCodeRepr::Char('r'),
         "account.refresh",
+        35,
     );
-    bind_prefix_bubble(
+    bind_prefix_bubble_with_priority(
         reg,
         accounts_subtree.clone(),
         no_mods(),
         KeyCodeRepr::Char('d'),
         "accounts.delete_confirm",
+        50,
     );
-    bind_prefix_bubble(
+    bind_prefix_bubble_with_priority(
         reg,
         accounts_subtree.clone(),
         no_mods(),
         KeyCodeRepr::Char('f'),
         "accounts.fork_provider",
+        60,
     );
     // h / l (and Left / Right) cycle through selector options when
     // the focused row is a selector field. The command itself
@@ -345,40 +412,44 @@ fn register_row_prefixes(reg: &mut BindingRegistry) {
         bind_prefix_bubble(reg, accounts_subtree.clone(), no_mods(), key, id);
     }
     let models_subtree = oxpath!("settings", "models");
-    bind_prefix_bubble(
+    bind_prefix_bubble_with_priority(
         reg,
         models_subtree.clone(),
         shift_only(),
         KeyCodeRepr::Char('P'),
         "models.set_bootstrap",
+        30,
     );
     // `r` refreshes the focused model's owning account catalog. Useful
     // both when focused on an account row and when focused on a model
     // row (the latter is what the accordion makes natural).
-    bind_prefix_bubble(
+    bind_prefix_bubble_with_priority(
         reg,
         models_subtree.clone(),
         no_mods(),
         KeyCodeRepr::Char('r'),
         "account.refresh",
+        35,
     );
-    bind_prefix_bubble(
+    bind_prefix_bubble_with_priority(
         reg,
         models_subtree.clone(),
         no_mods(),
         KeyCodeRepr::Char('d'),
         "models.toggle_default",
+        40,
     );
     // `m` opens the manual-model entry form for the focused account.
     // Bound at Prefix(settings/models) so it fires anywhere inside the
     // expanded Models section — the empty-catalog rows are the natural
     // launch point but a focused model row works too.
-    bind_prefix_bubble(
+    bind_prefix_bubble_with_priority(
         reg,
         models_subtree,
         no_mods(),
         KeyCodeRepr::Char('m'),
         "models.add_manual",
+        45,
     );
 }
 
@@ -423,6 +494,7 @@ fn register_edit_mode(reg: &mut BindingRegistry) {
         },
         command_id: cmd("edit.commit"),
         phase: Phase::Bubble,
+        priority: 200,
     });
     // Esc cancels at Capture: lifecycle key claimed before any leaf.
     reg.register(BindingEntry {
@@ -433,6 +505,7 @@ fn register_edit_mode(reg: &mut BindingRegistry) {
         },
         command_id: cmd("edit.cancel"),
         phase: Phase::Capture,
+        priority: 200,
     });
     // Opaque text-input handler: claims any un-modified or shift-only
     // printable char and produces the same buffer write the discrete
@@ -488,6 +561,7 @@ fn register_compose_form(reg: &mut BindingRegistry) {
         },
         command_id: cmd("accounts.compose.cancel"),
         phase: Phase::Capture,
+        priority: 200,
     });
     // focus_next: Tab / Down.
     for key in [KeyCodeRepr::Tab, KeyCodeRepr::Down] {
@@ -499,6 +573,7 @@ fn register_compose_form(reg: &mut BindingRegistry) {
             },
             command_id: cmd("accounts.compose.focus_next"),
             phase: Phase::Capture,
+            priority: 200,
         });
     }
     // focus_prev: Shift+Tab (terminals emit `BackTab` carrying the
@@ -513,6 +588,7 @@ fn register_compose_form(reg: &mut BindingRegistry) {
         },
         command_id: cmd("accounts.compose.focus_prev"),
         phase: Phase::Capture,
+        priority: 200,
     });
     reg.register(BindingEntry {
         scope: BindingScope::Exact(scope.clone()),
@@ -522,6 +598,7 @@ fn register_compose_form(reg: &mut BindingRegistry) {
         },
         command_id: cmd("accounts.compose.focus_prev"),
         phase: Phase::Capture,
+        priority: 200,
     });
 
     // Bubble phase: caught only if the leaf didn't claim Enter at
@@ -535,6 +612,7 @@ fn register_compose_form(reg: &mut BindingRegistry) {
         },
         command_id: cmd("accounts.compose.commit"),
         phase: Phase::Bubble,
+        priority: 200,
     });
 }
 
@@ -564,6 +642,7 @@ fn register_compose_text_field(reg: &mut BindingRegistry, field: &str) {
             },
             command_id: cmd("accounts.compose.insert_char"),
             phase: Phase::Target,
+            priority: 200,
         });
     }
     bind_target(
@@ -628,6 +707,7 @@ fn register_manual_model(reg: &mut BindingRegistry) {
         },
         command_id: cmd("models.compose_manual.cancel"),
         phase: Phase::Capture,
+        priority: 200,
     });
 
     // Tab / Down — Capture phase: focus_next preempts the focused
@@ -642,6 +722,7 @@ fn register_manual_model(reg: &mut BindingRegistry) {
             },
             command_id: cmd("models.compose_manual.focus_next"),
             phase: Phase::Capture,
+            priority: 200,
         });
     }
     // Shift+Tab — terminals emit BackTab with the shift modifier; mirror
@@ -654,6 +735,7 @@ fn register_manual_model(reg: &mut BindingRegistry) {
         },
         command_id: cmd("models.compose_manual.focus_prev"),
         phase: Phase::Capture,
+        priority: 200,
     });
     reg.register(BindingEntry {
         scope: BindingScope::Exact(form_scope.clone()),
@@ -663,6 +745,7 @@ fn register_manual_model(reg: &mut BindingRegistry) {
         },
         command_id: cmd("models.compose_manual.focus_prev"),
         phase: Phase::Capture,
+        priority: 200,
     });
 
     // Enter — Bubble phase: leaf fields get first crack at Enter
@@ -676,6 +759,7 @@ fn register_manual_model(reg: &mut BindingRegistry) {
         },
         command_id: cmd("models.compose_manual.commit"),
         phase: Phase::Bubble,
+        priority: 200,
     });
 
     // Per-stage leaves: printable ASCII + Backspace at Target. Stages
@@ -701,6 +785,7 @@ fn register_manual_model(reg: &mut BindingRegistry) {
                 },
                 command_id: cmd("models.compose_manual.insert_char"),
                 phase: Phase::Target,
+                priority: 200,
             });
         }
         bind_target(
@@ -746,6 +831,7 @@ fn register_pending_delete(reg: &mut BindingRegistry) {
         },
         command_id: cmd("accounts.confirm.cancel"),
         phase: Phase::Capture,
+        priority: 200,
     });
 }
 
@@ -755,6 +841,10 @@ fn register_pending_delete(reg: &mut BindingRegistry) {
 /// at `Phase::Bubble` so an inner widget's leaf can claim `?` at Target
 /// (no such leaf today; future help-context leaves could).
 fn register_global(reg: &mut BindingRegistry) {
+    // `?` opens the shortcuts modal — rendered separately on the right
+    // side of the status bar, but flagged here too so the modal also
+    // surfaces it as a high-priority entry. Priority 5 wins ahead of
+    // every other binding so it never falls out of the bar.
     reg.register(BindingEntry {
         scope: BindingScope::Anywhere,
         key: KeyChord {
@@ -763,6 +853,7 @@ fn register_global(reg: &mut BindingRegistry) {
         },
         command_id: cmd("modal.toggle_shortcuts"),
         phase: Phase::Bubble,
+        priority: 5,
     });
     // Ctrl+S persists the in-memory runtime config to ~/.ox/config.toml.
     // Without this binding `app.save` was registered but unreachable —
@@ -778,6 +869,7 @@ fn register_global(reg: &mut BindingRegistry) {
         },
         command_id: cmd("app.save"),
         phase: Phase::Bubble,
+        priority: 200,
     });
 }
 
