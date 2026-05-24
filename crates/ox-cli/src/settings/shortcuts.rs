@@ -1,33 +1,32 @@
 //! Active-shortcut registry for the settings screen.
 //!
-//! For the current focus cursor, this module maintains a single broker
-//! record — a `Vec<KeyHint>` filtered to the bindings that are reachable
-//! from the cursor's scope chain, deduped per key, and sorted by curated
-//! priority. Consumers (the footer bar, the shortcuts modal, anything
-//! later) read that one record; nobody re-projects per frame.
+//! Two store-resident records:
 //!
-//! The registry updates when the cursor moves *or* when the binding /
-//! command registries change. Three watches:
+//! - **Joined registry** at `joined_registry_path()` — the full set of
+//!   bindings with their commands' display info, in one flat `Vec`.
+//!   Rebuilt only when bindings or commands actually change; seeded at
+//!   install time from the live registries. Reading this is one cheap
+//!   leaf read.
+//! - **Active shortcut record** at `shortcuts_path()` — the joined
+//!   registry filtered to the cursor's scope chain, deduped per key,
+//!   sorted by curated priority. This is what consumers (footer bar,
+//!   shortcuts modal) read.
 //!
-//! - `PathPattern::Exact(cursor_path)` — re-project against the current
-//!   cached snapshot. The hot path: ~µs per cursor move.
-//! - `PathPattern::Prefix(bindings_prefix)` — invalidate snapshot,
-//!   rebuild from the broker on the next project. Fires only when a
-//!   binding is added / changed / removed (rare; user-defined dynamic
-//!   shortcuts will land here).
-//! - `PathPattern::Prefix(commands_prefix)` — same shape for command
-//!   metadata.
+//! `ShortcutResolver` is the stateless subscription that maintains
+//! both. It watches three patterns:
 //!
-//! The cache is what makes this affordable. `LocalConfig::read` on a
-//! non-leaf is O(total store keys) — reading the bindings subtree from
-//! scratch on every cursor move pegged CPU. Caching the projection
-//! inputs and rebuilding only on actual binding writes keeps the hot
-//! path purely in-memory.
+//! - `Exact(cursor_path)` — read joined registry, project, write the
+//!   shortcut record. Hot path; the only thing the cursor autorepeat
+//!   ever triggers.
+//! - `Prefix(bindings_prefix)` — rebuild joined registry from the
+//!   bindings + commands subtrees, write both joined registry and a
+//!   freshly-projected shortcut record.
+//! - `Prefix(commands_prefix)` — same.
 //!
-//! Initial snapshot is taken at install time from the live
-//! `BindingRegistry` / `CommandRegistry`, so the first cursor move
-//! doesn't pay the broker round-trip just to learn what it already
-//! had in hand.
+//! Why a store-resident joined registry instead of a field on the
+//! resolver: state belongs in stores, handlers are pure functions of
+//! their inputs. No interior mutability, no `Mutex<Snapshot>`, no
+//! "what happens if two cursor moves race the cache" question.
 //!
 //! Ordering note: this subscription is registered *before* horns'
 //! `RenderSubscription` so that when a cursor write fires both, the
@@ -35,77 +34,99 @@
 //! it. Registration order in `BrokerStore::register_subscription` is
 //! the firing order for a single write (see `ox_broker` spec §3.3).
 
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use horns_core::subscription::{PathChange, PathPattern, SubCtx, Subscription, SubscriptionId};
 use horns_core::{
-    BindingEntry, BindingRegistry, CommandMetadata, CommandRegistry, Write as HornsWrite,
+    BindingEntry, BindingRegistry, BindingScope, CommandId, CommandRegistry, KeyChord,
+    Write as HornsWrite,
 };
 use ox_path::oxpath;
 use ox_types::KeyHint;
-use structfs_core_store::{Path, Record, Reader, Value};
+use serde::{Deserialize, Serialize};
+use structfs_core_store::{Path, Reader, Record, Value};
 
 use crate::key_chord_canonical::encode_keychord_to_str;
 use crate::settings::commands::account_model::path_ancestors;
 
-/// Path at which the active shortcut set lives. Settings-scoped today;
-/// when other horns-owned screens land their own resolvers, each gets
-/// its own path under `ui/<screen>/shortcuts`.
+/// Path the resolver writes the cursor-filtered shortcut record to.
+/// Consumers (footer bar, shortcuts modal) read this and nothing else.
 pub fn shortcuts_path() -> Path {
     oxpath!("ui", "settings", "shortcuts")
 }
 
-/// Cached projection inputs. `valid: false` means a binding/command
-/// write fired since the last project; the next handle invocation
-/// re-reads both subtrees from the broker and sets `valid: true`.
-struct Snapshot {
-    bindings: Vec<BindingEntry>,
-    commands: HashMap<String, CommandMetadata>,
-    valid: bool,
+/// Path holding the full binding × command join. Materialized once at
+/// install time from the live registries, then refreshed by the
+/// resolver whenever a write under `bindings_prefix` /
+/// `commands_prefix` says it might have changed.
+pub fn joined_registry_path() -> Path {
+    oxpath!("horns", "settings", "shortcut_registry")
 }
 
-/// Subscription that maintains the active shortcut record for the
-/// settings screen. See module docs for the watch/invalidation model.
+/// One entry in the joined registry. Carries everything projection
+/// needs: dispatcher inputs (scope, key) and display inputs
+/// (description, priority, command_id). Flat so a `Vec<JoinedBinding>`
+/// reads in one leaf hit without any secondary lookups.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct JoinedBinding {
+    pub scope: BindingScope,
+    pub key: KeyChord,
+    pub priority: u8,
+    pub description: String,
+    pub command_id: CommandId,
+}
+
+/// Build the joined registry from the live in-memory registries. Used
+/// at install time so the first write to `joined_registry_path()`
+/// happens with the data install already has in hand — the resolver
+/// doesn't need to do a recursive read of the bindings subtree just
+/// to learn what was just written to it.
+pub fn build_joined_from_registries(
+    bindings: &BindingRegistry,
+    commands: &CommandRegistry,
+) -> Vec<JoinedBinding> {
+    let mut name_by_id: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for cmd in commands.iter() {
+        name_by_id.insert(cmd.id().0.clone(), cmd.display().name.clone());
+    }
+    bindings
+        .entries()
+        .iter()
+        .filter_map(|entry| {
+            let description = name_by_id.get(&entry.command_id.0)?.clone();
+            Some(JoinedBinding {
+                scope: entry.scope.clone(),
+                key: entry.key.clone(),
+                priority: entry.priority,
+                description,
+                command_id: entry.command_id.clone(),
+            })
+        })
+        .collect()
+}
+
+/// Stateless subscription that maintains both the joined registry
+/// (only on binding/command edits) and the cursor-filtered shortcut
+/// record (on every cursor move). See module docs for the watch model.
 pub struct ShortcutResolver {
     id: SubscriptionId,
     watches: Vec<PathPattern>,
     cursor_path: Path,
     bindings_prefix: Path,
     commands_prefix: Path,
+    registry_path: Path,
     output_path: Path,
-    snapshot: Arc<RwLock<Snapshot>>,
 }
 
 impl ShortcutResolver {
-    /// Construct from the live registries — called at install time
-    /// when both registries are still owned locally, before they're
-    /// moved into the horns install bundle. Seeds the snapshot with
-    /// what install has in hand so the first cursor move doesn't pay
-    /// a broker round-trip.
-    pub fn from_registries(
+    pub fn new(
         cursor_path: Path,
         bindings_prefix: Path,
         commands_prefix: Path,
+        registry_path: Path,
         output_path: Path,
-        bindings: &BindingRegistry,
-        commands: &CommandRegistry,
     ) -> Self {
-        let mut command_snapshot: HashMap<String, CommandMetadata> = HashMap::new();
-        for cmd in commands.iter() {
-            command_snapshot.insert(
-                cmd.id().0.clone(),
-                CommandMetadata {
-                    display: cmd.display().clone(),
-                    scope: cmd.scope().clone(),
-                },
-            );
-        }
-        let snapshot = Snapshot {
-            bindings: bindings.entries().to_vec(),
-            commands: command_snapshot,
-            valid: true,
-        };
         Self {
             id: SubscriptionId("ox_cli.settings.shortcut_resolver".to_string()),
             watches: vec![
@@ -116,21 +137,13 @@ impl ShortcutResolver {
             cursor_path,
             bindings_prefix,
             commands_prefix,
+            registry_path,
             output_path,
-            snapshot: Arc::new(RwLock::new(snapshot)),
         }
     }
 
     pub fn boxed(self) -> Arc<dyn Subscription> {
         Arc::new(self)
-    }
-
-    /// True iff `change_path` sits under one of the tracked subtrees
-    /// (bindings or commands). Used to decide whether the snapshot
-    /// needs to be marked stale before we re-project.
-    fn change_invalidates_snapshot(&self, change_path: &Path) -> bool {
-        is_component_prefix(&self.bindings_prefix, change_path)
-            || is_component_prefix(&self.commands_prefix, change_path)
     }
 }
 
@@ -144,72 +157,57 @@ impl Subscription for ShortcutResolver {
     }
 
     fn handle(&self, ctx: SubCtx<'_>) -> Vec<HornsWrite> {
-        // Step 1: invalidate snapshot if a binding / command write
-        // fired us. Cursor-driven fires leave `valid` alone.
-        if self.change_invalidates_snapshot(&ctx.change.path) {
-            self.snapshot
-                .write()
-                .expect("shortcut snapshot poisoned")
-                .valid = false;
-        }
+        let mut writes: Vec<HornsWrite> = Vec::new();
 
-        // Step 2: rebuild snapshot if needed. The recursive subtree
-        // reads here only run after an invalidation — typically once
-        // per binding edit, not per cursor move. Take the write lock
-        // for the rebuild, then drop it before projection so a future
-        // cache hit for an unrelated cursor move can take a read lock.
-        {
-            let needs_rebuild = !self
-                .snapshot
-                .read()
-                .expect("shortcut snapshot poisoned")
-                .valid;
-            if needs_rebuild {
-                let bindings = read_bindings(ctx.snapshot, &self.bindings_prefix);
-                let commands = read_commands(ctx.snapshot, &self.commands_prefix);
-                let mut guard = self
-                    .snapshot
-                    .write()
-                    .expect("shortcut snapshot poisoned");
-                guard.bindings = bindings;
-                guard.commands = commands;
-                guard.valid = true;
+        // A binding or command write means the joined registry might
+        // be stale. Rebuild from the bindings/commands subtrees and
+        // queue a write so the registry path holds the new join.
+        let registry_changed = is_component_prefix(&self.bindings_prefix, &ctx.change.path)
+            || is_component_prefix(&self.commands_prefix, &ctx.change.path);
+
+        let joined: Vec<JoinedBinding> = if registry_changed {
+            let fresh = build_joined_from_broker(
+                ctx.snapshot,
+                &self.bindings_prefix,
+                &self.commands_prefix,
+            );
+            if let Ok(value) = structfs_serde_store::to_value(&fresh) {
+                writes.push(HornsWrite {
+                    path: self.registry_path.clone(),
+                    record: Record::parsed(value),
+                });
             }
-        }
+            fresh
+        } else {
+            // Cursor change — the joined registry didn't change, so
+            // we read it from the store rather than rebuilding.
+            read_joined(ctx.snapshot, &self.registry_path)
+        };
 
-        // Step 3: decode current cursor. When the firing write IS the
-        // cursor, prefer `change.after` (we have the new value in
-        // hand). When the fire came from a binding/command change,
-        // `change.after` holds the binding payload — fall back to a
-        // leaf read of `cursor_path`.
+        // Decode the current cursor. When the firing write IS the
+        // cursor, `change.after` is the new value — use it directly.
+        // Otherwise read the cursor path; the binding/command write
+        // didn't carry a cursor.
         let cursor = match cursor_from_change(ctx.change)
             .or_else(|| read_cursor(ctx.snapshot, &self.cursor_path))
         {
             Some(p) => p,
-            None => return Vec::new(),
+            None => return writes,
         };
 
-        // Step 4: project against the (now-valid) cached snapshot.
-        let guard = self
-            .snapshot
-            .read()
-            .expect("shortcut snapshot poisoned");
-        let hints = project_for_cursor(&guard.bindings, &guard.commands, &cursor);
-        drop(guard);
-
-        let value = match structfs_serde_store::to_value(&hints) {
-            Ok(v) => v,
-            Err(_) => return Vec::new(),
-        };
-        vec![HornsWrite {
-            path: self.output_path.clone(),
-            record: Record::parsed(value),
-        }]
+        let hints = project_for_cursor(&joined, &cursor);
+        if let Ok(value) = structfs_serde_store::to_value(&hints) {
+            writes.push(HornsWrite {
+                path: self.output_path.clone(),
+                record: Record::parsed(value),
+            });
+        }
+        writes
     }
 }
 
 // ---------------------------------------------------------------------------
-// Projection
+// Projection (pure)
 // ---------------------------------------------------------------------------
 
 /// Build the shortcut record for `cursor`: walk the cursor's ancestor
@@ -218,16 +216,12 @@ impl Subscription for ShortcutResolver {
 /// key (first-seen wins, matching the dispatcher's resolution order),
 /// then sort by curated priority ascending so consumers can take the
 /// top-N for compact displays.
-fn project_for_cursor(
-    bindings: &[BindingEntry],
-    commands: &HashMap<String, CommandMetadata>,
-    cursor: &Path,
-) -> Vec<KeyHint> {
+fn project_for_cursor(joined: &[JoinedBinding], cursor: &Path) -> Vec<KeyHint> {
     let mut out: Vec<KeyHint> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let ancestors = path_ancestors(cursor);
     for scope_path in ancestors.iter().rev() {
-        for entry in bindings {
+        for entry in joined {
             if !entry.scope.matches(scope_path) {
                 continue;
             }
@@ -237,12 +231,9 @@ fn project_for_cursor(
             if !seen.insert(wire.clone()) {
                 continue;
             }
-            let Some(meta) = commands.get(&entry.command_id.0) else {
-                continue;
-            };
             out.push(KeyHint {
                 key: wire,
-                description: meta.display.name.clone(),
+                description: entry.description.clone(),
                 command: entry.command_id.0.clone(),
                 status_hint: false,
                 priority: entry.priority,
@@ -254,12 +245,37 @@ fn project_for_cursor(
 }
 
 // ---------------------------------------------------------------------------
-// Snapshot rebuild — runs only after an invalidation, never on the
-// per-cursor hot path. Single Map-read per subtree, then deserialize
-// the values in place (no N+1 child reads).
+// Snapshot rebuild — only on binding/command writes, never on the
+// per-cursor hot path. One Map-read per subtree, then deserialize the
+// values in place (no N+1 child reads).
 // ---------------------------------------------------------------------------
 
-fn read_bindings(data: &mut dyn Reader, prefix: &Path) -> Vec<BindingEntry> {
+fn build_joined_from_broker(
+    data: &mut dyn Reader,
+    bindings_prefix: &Path,
+    commands_prefix: &Path,
+) -> Vec<JoinedBinding> {
+    let bindings = read_subtree_values::<BindingEntry>(data, bindings_prefix);
+    let commands = read_commands_index(data, commands_prefix);
+    bindings
+        .into_iter()
+        .filter_map(|entry| {
+            let description = commands.get(&entry.command_id.0)?.clone();
+            Some(JoinedBinding {
+                scope: entry.scope,
+                key: entry.key,
+                priority: entry.priority,
+                description,
+                command_id: entry.command_id,
+            })
+        })
+        .collect()
+}
+
+fn read_subtree_values<T: for<'de> Deserialize<'de>>(
+    data: &mut dyn Reader,
+    prefix: &Path,
+) -> Vec<T> {
     let Ok(Some(parent_rec)) = data.read(prefix) else {
         return Vec::new();
     };
@@ -267,27 +283,40 @@ fn read_bindings(data: &mut dyn Reader, prefix: &Path) -> Vec<BindingEntry> {
         return Vec::new();
     };
     map.values()
-        .filter_map(|v| structfs_serde_store::from_value::<BindingEntry>(v.clone()).ok())
+        .filter_map(|v| structfs_serde_store::from_value::<T>(v.clone()).ok())
         .collect()
 }
 
-fn read_commands(
+/// Read the commands subtree as `command_id → display_name`. We only
+/// keep the display name because that's all the join needs; the rest
+/// of `CommandMetadata` (scope) is unused in projection.
+fn read_commands_index(
     data: &mut dyn Reader,
     prefix: &Path,
-) -> HashMap<String, CommandMetadata> {
+) -> std::collections::HashMap<String, String> {
     let Ok(Some(parent_rec)) = data.read(prefix) else {
-        return HashMap::new();
+        return std::collections::HashMap::new();
     };
     let Some(Value::Map(map)) = parent_rec.as_value() else {
-        return HashMap::new();
+        return std::collections::HashMap::new();
     };
     map.iter()
         .filter_map(|(name, v)| {
-            structfs_serde_store::from_value::<CommandMetadata>(v.clone())
+            structfs_serde_store::from_value::<horns_core::CommandMetadata>(v.clone())
                 .ok()
-                .map(|meta| (name.clone(), meta))
+                .map(|meta| (name.clone(), meta.display.name))
         })
         .collect()
+}
+
+fn read_joined(data: &mut dyn Reader, path: &Path) -> Vec<JoinedBinding> {
+    let Ok(Some(rec)) = data.read(path) else {
+        return Vec::new();
+    };
+    let Some(value) = rec.as_value() else {
+        return Vec::new();
+    };
+    structfs_serde_store::from_value::<Vec<JoinedBinding>>(value.clone()).unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------
