@@ -6,16 +6,28 @@
 //! priority. Consumers (the footer bar, the shortcuts modal, anything
 //! later) read that one record; nobody re-projects per frame.
 //!
-//! The registry updates when the cursor moves, not on every render.
-//! `ShortcutResolver` watches `cursor_path`; on fire, it re-projects
-//! and writes the result to `shortcuts_path()`. Bindings + commands are
-//! installed once at startup and never change at runtime, so the
-//! resolver holds an in-memory snapshot of both — **no broker subtree
-//! reads at runtime**. The only broker touch per fire is decoding the
-//! new cursor out of `ctx.change.after`. This is load-bearing:
-//! `LocalConfig::read` on a non-leaf path walks every key in the store
-//! recursively, so even one re-read per cursor move at autorepeat speed
-//! pegged CPU in the prior iteration.
+//! The registry updates when the cursor moves *or* when the binding /
+//! command registries change. Three watches:
+//!
+//! - `PathPattern::Exact(cursor_path)` — re-project against the current
+//!   cached snapshot. The hot path: ~µs per cursor move.
+//! - `PathPattern::Prefix(bindings_prefix)` — invalidate snapshot,
+//!   rebuild from the broker on the next project. Fires only when a
+//!   binding is added / changed / removed (rare; user-defined dynamic
+//!   shortcuts will land here).
+//! - `PathPattern::Prefix(commands_prefix)` — same shape for command
+//!   metadata.
+//!
+//! The cache is what makes this affordable. `LocalConfig::read` on a
+//! non-leaf is O(total store keys) — reading the bindings subtree from
+//! scratch on every cursor move pegged CPU. Caching the projection
+//! inputs and rebuilding only on actual binding writes keeps the hot
+//! path purely in-memory.
+//!
+//! Initial snapshot is taken at install time from the live
+//! `BindingRegistry` / `CommandRegistry`, so the first cursor move
+//! doesn't pay the broker round-trip just to learn what it already
+//! had in hand.
 //!
 //! Ordering note: this subscription is registered *before* horns'
 //! `RenderSubscription` so that when a cursor write fires both, the
@@ -24,7 +36,7 @@
 //! the firing order for a single write (see `ox_broker` spec §3.3).
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use horns_core::subscription::{PathChange, PathPattern, SubCtx, Subscription, SubscriptionId};
 use horns_core::{
@@ -32,7 +44,7 @@ use horns_core::{
 };
 use ox_path::oxpath;
 use ox_types::KeyHint;
-use structfs_core_store::{Path, Reader, Record};
+use structfs_core_store::{Path, Record, Reader, Value};
 
 use crate::key_chord_canonical::encode_keychord_to_str;
 use crate::settings::commands::account_model::path_ancestors;
@@ -44,39 +56,42 @@ pub fn shortcuts_path() -> Path {
     oxpath!("ui", "settings", "shortcuts")
 }
 
-/// Subscription that watches the focus cursor and re-projects the
-/// active shortcut record on every move. Holds in-memory snapshots of
-/// the binding + command registries captured at install time — those
-/// never change at runtime, and re-reading them through the broker is
-/// what made the original feature pathological.
+/// Cached projection inputs. `valid: false` means a binding/command
+/// write fired since the last project; the next handle invocation
+/// re-reads both subtrees from the broker and sets `valid: true`.
+struct Snapshot {
+    bindings: Vec<BindingEntry>,
+    commands: HashMap<String, CommandMetadata>,
+    valid: bool,
+}
+
+/// Subscription that maintains the active shortcut record for the
+/// settings screen. See module docs for the watch/invalidation model.
 pub struct ShortcutResolver {
     id: SubscriptionId,
     watches: Vec<PathPattern>,
     cursor_path: Path,
+    bindings_prefix: Path,
+    commands_prefix: Path,
     output_path: Path,
-    /// In-memory copy of every registered binding. Cloned out of the
-    /// `BindingRegistry` at install time before it's moved into horns'
-    /// side-tables. Stable for the lifetime of the subscription.
-    bindings: Vec<BindingEntry>,
-    /// `command_id → metadata` lookup used to attach display names to
-    /// the projected `KeyHint`s. Built once from the `CommandRegistry`
-    /// at install time.
-    commands: HashMap<String, CommandMetadata>,
+    snapshot: Arc<RwLock<Snapshot>>,
 }
 
 impl ShortcutResolver {
     /// Construct from the live registries — called at install time
     /// when both registries are still owned locally, before they're
-    /// moved into the horns install bundle.
+    /// moved into the horns install bundle. Seeds the snapshot with
+    /// what install has in hand so the first cursor move doesn't pay
+    /// a broker round-trip.
     pub fn from_registries(
         cursor_path: Path,
+        bindings_prefix: Path,
+        commands_prefix: Path,
         output_path: Path,
         bindings: &BindingRegistry,
         commands: &CommandRegistry,
     ) -> Self {
-        let binding_snapshot: Vec<BindingEntry> = bindings.entries().to_vec();
-        let mut command_snapshot: HashMap<String, CommandMetadata> =
-            HashMap::with_capacity(commands.iter().count());
+        let mut command_snapshot: HashMap<String, CommandMetadata> = HashMap::new();
         for cmd in commands.iter() {
             command_snapshot.insert(
                 cmd.id().0.clone(),
@@ -86,18 +101,36 @@ impl ShortcutResolver {
                 },
             );
         }
+        let snapshot = Snapshot {
+            bindings: bindings.entries().to_vec(),
+            commands: command_snapshot,
+            valid: true,
+        };
         Self {
             id: SubscriptionId("ox_cli.settings.shortcut_resolver".to_string()),
-            watches: vec![PathPattern::Exact(cursor_path.clone())],
+            watches: vec![
+                PathPattern::Exact(cursor_path.clone()),
+                PathPattern::Prefix(bindings_prefix.clone()),
+                PathPattern::Prefix(commands_prefix.clone()),
+            ],
             cursor_path,
+            bindings_prefix,
+            commands_prefix,
             output_path,
-            bindings: binding_snapshot,
-            commands: command_snapshot,
+            snapshot: Arc::new(RwLock::new(snapshot)),
         }
     }
 
     pub fn boxed(self) -> Arc<dyn Subscription> {
         Arc::new(self)
+    }
+
+    /// True iff `change_path` sits under one of the tracked subtrees
+    /// (bindings or commands). Used to decide whether the snapshot
+    /// needs to be marked stale before we re-project.
+    fn change_invalidates_snapshot(&self, change_path: &Path) -> bool {
+        is_component_prefix(&self.bindings_prefix, change_path)
+            || is_component_prefix(&self.commands_prefix, change_path)
     }
 }
 
@@ -111,10 +144,44 @@ impl Subscription for ShortcutResolver {
     }
 
     fn handle(&self, ctx: SubCtx<'_>) -> Vec<HornsWrite> {
-        // Decode the cursor from the change. Prefer `after` (the new
-        // value); fall back to a snapshot read of the cursor path only
-        // when the change carries nothing — defensive against weird
-        // unset transitions. Both are cheap leaf reads.
+        // Step 1: invalidate snapshot if a binding / command write
+        // fired us. Cursor-driven fires leave `valid` alone.
+        if self.change_invalidates_snapshot(&ctx.change.path) {
+            self.snapshot
+                .write()
+                .expect("shortcut snapshot poisoned")
+                .valid = false;
+        }
+
+        // Step 2: rebuild snapshot if needed. The recursive subtree
+        // reads here only run after an invalidation — typically once
+        // per binding edit, not per cursor move. Take the write lock
+        // for the rebuild, then drop it before projection so a future
+        // cache hit for an unrelated cursor move can take a read lock.
+        {
+            let needs_rebuild = !self
+                .snapshot
+                .read()
+                .expect("shortcut snapshot poisoned")
+                .valid;
+            if needs_rebuild {
+                let bindings = read_bindings(ctx.snapshot, &self.bindings_prefix);
+                let commands = read_commands(ctx.snapshot, &self.commands_prefix);
+                let mut guard = self
+                    .snapshot
+                    .write()
+                    .expect("shortcut snapshot poisoned");
+                guard.bindings = bindings;
+                guard.commands = commands;
+                guard.valid = true;
+            }
+        }
+
+        // Step 3: decode current cursor. When the firing write IS the
+        // cursor, prefer `change.after` (we have the new value in
+        // hand). When the fire came from a binding/command change,
+        // `change.after` holds the binding payload — fall back to a
+        // leaf read of `cursor_path`.
         let cursor = match cursor_from_change(ctx.change)
             .or_else(|| read_cursor(ctx.snapshot, &self.cursor_path))
         {
@@ -122,9 +189,13 @@ impl Subscription for ShortcutResolver {
             None => return Vec::new(),
         };
 
-        // Pure in-memory projection: no broker subtree reads. The
-        // bindings + commands snapshots were captured at install time.
-        let hints = project_for_cursor(&self.bindings, &self.commands, &cursor);
+        // Step 4: project against the (now-valid) cached snapshot.
+        let guard = self
+            .snapshot
+            .read()
+            .expect("shortcut snapshot poisoned");
+        let hints = project_for_cursor(&guard.bindings, &guard.commands, &cursor);
+        drop(guard);
 
         let value = match structfs_serde_store::to_value(&hints) {
             Ok(v) => v,
@@ -183,6 +254,43 @@ fn project_for_cursor(
 }
 
 // ---------------------------------------------------------------------------
+// Snapshot rebuild — runs only after an invalidation, never on the
+// per-cursor hot path. Single Map-read per subtree, then deserialize
+// the values in place (no N+1 child reads).
+// ---------------------------------------------------------------------------
+
+fn read_bindings(data: &mut dyn Reader, prefix: &Path) -> Vec<BindingEntry> {
+    let Ok(Some(parent_rec)) = data.read(prefix) else {
+        return Vec::new();
+    };
+    let Some(Value::Map(map)) = parent_rec.as_value() else {
+        return Vec::new();
+    };
+    map.values()
+        .filter_map(|v| structfs_serde_store::from_value::<BindingEntry>(v.clone()).ok())
+        .collect()
+}
+
+fn read_commands(
+    data: &mut dyn Reader,
+    prefix: &Path,
+) -> HashMap<String, CommandMetadata> {
+    let Ok(Some(parent_rec)) = data.read(prefix) else {
+        return HashMap::new();
+    };
+    let Some(Value::Map(map)) = parent_rec.as_value() else {
+        return HashMap::new();
+    };
+    map.iter()
+        .filter_map(|(name, v)| {
+            structfs_serde_store::from_value::<CommandMetadata>(v.clone())
+                .ok()
+                .map(|meta| (name.clone(), meta))
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // Cursor decode helpers
 // ---------------------------------------------------------------------------
 
@@ -196,4 +304,15 @@ fn read_cursor(data: &mut dyn Reader, cursor_path: &Path) -> Option<Path> {
     let rec = data.read(cursor_path).ok().flatten()?;
     let value = rec.as_value()?;
     crate::settings::commands::navigation::path_from_value(value)
+}
+
+/// Component-wise prefix check: true iff `prefix.components` is a
+/// prefix of `whole.components` (a path is a prefix of itself).
+/// Mirrors horns-core's internal helper without taking a dep on a
+/// private item.
+fn is_component_prefix(prefix: &Path, whole: &Path) -> bool {
+    if prefix.components.len() > whole.components.len() {
+        return false;
+    }
+    whole.components[..prefix.components.len()] == prefix.components[..]
 }

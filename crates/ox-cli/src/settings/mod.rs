@@ -163,14 +163,16 @@ pub async fn install(broker: &BrokerStore) -> Result<SettingsHandle, StoreError>
     // call site. Until then: any non-null JSON record will do.
     let theme_json = serde_json::json!({});
 
-    // ---- 3. Snapshot bindings + commands for the shortcut resolver
-    //         BEFORE moving the registries into the install bundle.
-    //         The resolver holds these in-memory and never re-reads
-    //         them from the broker — bindings are immutable
-    //         infrastructure, and recursive non-leaf reads through
-    //         `LocalConfig` are the per-cursor cost we're avoiding.
+    // ---- 3. Seed the shortcut resolver from the live registries
+    //         BEFORE they move into the install bundle. The resolver
+    //         caches them in-memory and invalidates on writes to
+    //         `bindings_prefix` / `commands_prefix`, so the per-cursor
+    //         hot path stays purely in-memory while still picking up
+    //         user-defined dynamic shortcuts when those land.
     let resolver = crate::settings::shortcuts::ShortcutResolver::from_registries(
         cursor_path(),
+        bindings_prefix(),
+        commands_prefix(),
         crate::settings::shortcuts::shortcuts_path(),
         &bindings,
         &commands,
