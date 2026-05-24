@@ -1657,8 +1657,7 @@ fn models_manual_commit(data: &mut dyn Reader) -> Vec<Write> {
     }
 
     let account_raw: String =
-        read_typed(data, &oxpath!("ui", "settings", "manual_model", "account"))
-            .unwrap_or_default();
+        read_typed(data, &oxpath!("ui", "settings", "manual_model", "account")).unwrap_or_default();
     let account = match AccountName::try_new(account_raw) {
         Ok(n) => n,
         Err(_) => return Vec::new(),
@@ -4615,7 +4614,10 @@ mod tests {
         );
         let writes = run_with_chord(&ModelsManualInsertChar::new(), &mut snap, '-');
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, manual_field_state_path(ManualModelStage::Id));
+        assert_eq!(
+            writes[0].path,
+            manual_field_state_path(ManualModelStage::Id)
+        );
         match &writes[0].record {
             Record::Parsed(Value::String(s)) => assert_eq!(s, "foo-"),
             other => panic!("unexpected: {other:?}"),
@@ -4669,7 +4671,10 @@ mod tests {
         );
         let writes = run_cmd(&ModelsManualDeleteBack::new(), &mut snap);
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, manual_field_state_path(ManualModelStage::Id));
+        assert_eq!(
+            writes[0].path,
+            manual_field_state_path(ManualModelStage::Id)
+        );
         match &writes[0].record {
             Record::Parsed(Value::String(s)) => assert_eq!(s, "ab"),
             other => panic!("unexpected: {other:?}"),

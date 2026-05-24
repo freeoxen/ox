@@ -560,7 +560,7 @@ mod tests {
         reg.register_handler(super::HandlerEntry {
             scope: BindingScope::Exact(Path::parse("a/b").unwrap()),
             phase: Phase::Target,
-                        handler: Arc::new(AcceptAny),
+            handler: Arc::new(AcceptAny),
         });
 
         let cursor = Path::parse("a/b").unwrap();
@@ -594,7 +594,7 @@ mod tests {
         reg.register_handler(super::HandlerEntry {
             scope: BindingScope::Exact(Path::parse("a").unwrap()),
             phase: Phase::Capture,
-                        handler: Arc::new(NoOp),
+            handler: Arc::new(NoOp),
         });
 
         let cursor = Path::parse("a").unwrap();
@@ -628,7 +628,7 @@ mod tests {
         reg.register_handler(super::HandlerEntry {
             scope: BindingScope::Exact(Path::parse("a/b").unwrap()),
             phase: Phase::Target,
-                        handler: Arc::new(NoOp),
+            handler: Arc::new(NoOp),
         });
 
         let cursor = Path::parse("c").unwrap();

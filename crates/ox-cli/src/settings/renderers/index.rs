@@ -96,11 +96,19 @@ impl Renderer for IndexRenderer {
 
         let title_right = read_dirty_indicator(ctx.data);
 
-        // Bottom shortcut bar. Read all available key hints for the
-        // current focus, sort by priority, and pack what fits on the
-        // left half of one row; the right half always shows `? help`
-        // so the user knows how to open the full modal.
-        let footer_view = build_shortcut_bar(ctx.data, cursor.as_ref(), ctx.area.width);
+        // Read the active shortcut record produced by
+        // `ShortcutResolver`. The resolver re-projects on every cursor
+        // change and writes a pre-filtered, pre-sorted `Vec<KeyHint>`
+        // to `shortcuts_path()`. The renderer just consumes it — no
+        // per-frame projection, no per-frame broker walks. Missing /
+        // unset reads back as the empty slice (first frame before the
+        // initial cursor write is the only legitimate case).
+        let shortcuts: Vec<ox_types::KeyHint> = crate::settings::renderers::util::read_typed(
+            ctx.data,
+            &crate::settings::shortcuts::shortcuts_path(),
+        )
+        .unwrap_or_default();
+        let footer_view = build_shortcut_bar(&shortcuts, ctx.area.width);
 
         let mut stack_children: Vec<(View, Sizing)> = Vec::new();
         if let Some(name) = pending {
@@ -154,7 +162,7 @@ impl Renderer for IndexRenderer {
         )
         .unwrap_or(false);
         if show_shortcuts {
-            let foreground = build_shortcuts_modal_view(ctx.data, cursor.as_ref());
+            let foreground = build_shortcuts_modal_view(&shortcuts);
             View::Modal {
                 background: Box::new(page),
                 foreground: Box::new(foreground),
@@ -202,40 +210,19 @@ fn partition_rows_by_section(
     }
 }
 
-/// Build the one-row shortcut footer for the settings page. Reads
-/// every binding visible at the current focus from the broker, sorts
-/// by curated priority, and packs hints onto the left of the row
-/// until they don't fit. `? help` always renders on the right so the
-/// user knows the modal is one keystroke away.
+/// Build the one-row shortcut footer for the settings page. Takes the
+/// pre-projected shortcut record produced by `ShortcutResolver` (already
+/// filtered to the current cursor, deduped, and sorted by priority) and
+/// packs as many entries onto the left as fit before the right-aligned
+/// `? help` indicator. Pure transformation — no broker reads, no scan
+/// of the binding registry, no per-frame work beyond the layout pass.
 ///
 /// Width math is intentionally simple: each hint contributes
 /// `key + ":" + description + "  "` characters; we keep pushing until
-/// the next hint wouldn't fit before the right-aligned `? help`. No
+/// the next hint wouldn't fit before the right-aligned label. No
 /// truncation of individual hints — if a description is too long for
 /// the remaining slot, it gets dropped instead of clipped.
-fn build_shortcut_bar(
-    data: &mut dyn structfs_core_store::Reader,
-    cursor: Option<&structfs_core_store::Path>,
-    area_width: u16,
-) -> View {
-    use crate::settings::help::key_hints_for_context_via_reader;
-    use ox_path::oxpath;
-    let bindings_prefix = crate::settings::bindings_prefix();
-    let commands_prefix = crate::settings::commands_prefix();
-    let page_cursor = oxpath!("settings");
-    let mut hints = key_hints_for_context_via_reader(
-        data,
-        &bindings_prefix,
-        &commands_prefix,
-        &page_cursor,
-        cursor,
-    );
-    // Sort by priority ascending (lower = more important). Stable so
-    // first-seen order breaks ties, which matches the dispatcher's
-    // resolution order — the binding the user would actually trigger
-    // wins the slot.
-    hints.sort_by_key(|h| h.priority);
-
+fn build_shortcut_bar(shortcuts: &[ox_types::KeyHint], area_width: u16) -> View {
     // Right-side `?` indicator. Fixed width carved out of the row so
     // the left-side hint packing knows how much room it has.
     let right_label = "? help";
@@ -243,11 +230,9 @@ fn build_shortcut_bar(
 
     // Skip the `?` binding in the left list — it's surfaced on the
     // right indicator already, duplicating it wastes a slot.
-    let left_hints: Vec<_> = hints.into_iter().filter(|h| h.key != "?").collect();
-
     let mut budget: i32 = (area_width as i32) - (right_width as i32) - 2;
     let mut parts: Vec<String> = Vec::new();
-    for h in left_hints {
+    for h in shortcuts.iter().filter(|h| h.key != "?") {
         let piece = format!("{}:{}", h.key, h.description);
         let cost = piece.chars().count() as i32 + 2;
         if cost > budget {
@@ -300,32 +285,15 @@ fn build_shortcut_bar(
 /// rendered in a fixed left column, descriptions on the right. The
 /// translator centers and frames this view when it sits inside a
 /// `View::Modal`.
-fn build_shortcuts_modal_view(
-    data: &mut dyn structfs_core_store::Reader,
-    cursor: Option<&structfs_core_store::Path>,
-) -> View {
-    use crate::settings::help::key_hints_for_context_via_reader;
-    use ox_path::oxpath;
-    let bindings_prefix = crate::settings::bindings_prefix();
-    let commands_prefix = crate::settings::commands_prefix();
-    let page_cursor = oxpath!("settings");
-    let mut hints = key_hints_for_context_via_reader(
-        data,
-        &bindings_prefix,
-        &commands_prefix,
-        &page_cursor,
-        cursor,
-    );
-    hints.sort_by_key(|h| h.priority);
-
-    let key_col_width = hints
+fn build_shortcuts_modal_view(shortcuts: &[ox_types::KeyHint]) -> View {
+    let key_col_width = shortcuts
         .iter()
         .map(|h| h.key.chars().count())
         .max()
         .unwrap_or(6);
 
-    let mut items: Vec<ListItem> = hints
-        .into_iter()
+    let mut items: Vec<ListItem> = shortcuts
+        .iter()
         .map(|h| ListItem {
             primary: format!(
                 "  {key:<key_col_width$}  {desc}",

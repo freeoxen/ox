@@ -18,6 +18,7 @@ pub mod bootstrap;
 pub mod commands;
 pub mod help;
 pub mod renderers;
+pub mod shortcuts;
 pub mod snapshot;
 pub mod visible_rows;
 
@@ -162,7 +163,21 @@ pub async fn install(broker: &BrokerStore) -> Result<SettingsHandle, StoreError>
     // call site. Until then: any non-null JSON record will do.
     let theme_json = serde_json::json!({});
 
-    // ---- 3. Build the install bundle. ----
+    // ---- 3. Snapshot bindings + commands for the shortcut resolver
+    //         BEFORE moving the registries into the install bundle.
+    //         The resolver holds these in-memory and never re-reads
+    //         them from the broker — bindings are immutable
+    //         infrastructure, and recursive non-leaf reads through
+    //         `LocalConfig` are the per-cursor cost we're avoiding.
+    let resolver = crate::settings::shortcuts::ShortcutResolver::from_registries(
+        cursor_path(),
+        crate::settings::shortcuts::shortcuts_path(),
+        &bindings,
+        &commands,
+    )
+    .boxed();
+
+    // ---- 4. Build the install bundle (moves bindings + commands). ----
     let paths = InstallPaths {
         cursor_path: cursor_path(),
         input_path: input_path(),
@@ -175,18 +190,28 @@ pub async fn install(broker: &BrokerStore) -> Result<SettingsHandle, StoreError>
     let bundle =
         build_install_bundle_from_registries(bindings, commands, renderers, paths, theme_json);
 
-    // ---- 4. Apply metadata writes through the broker client. ----
+    // ---- 5. Apply metadata writes through the broker client. ----
     let client = broker.client();
     for (path, record) in &bundle.metadata_writes {
         client.write(path, record.clone()).await?;
     }
 
-    // ---- 5. Register subscriptions and collect their ids. ----
-    let subscription_ids: Vec<SubscriptionId> = bundle
-        .subscriptions
-        .iter()
-        .map(|s| s.id().clone())
-        .collect();
+    // ---- 6. Register subscriptions and collect their ids. ----
+    //
+    // Order matters: the `ShortcutResolver` watches `cursor_path` and
+    // produces the active shortcut record at `shortcuts_path()`.
+    // `RenderSubscription` *also* watches `cursor_path` and reads
+    // `shortcuts_path()` through the IndexRenderer. Registering the
+    // resolver first means a cursor write fires it before the render
+    // sub, so the render reads the fresh record on the same cascade
+    // — no one-frame stale display, no second render needed to catch
+    // up. `BrokerStore` honors registration order on a single write
+    // (see `ox_broker` spec §3.3).
+    let resolver_id = resolver.id().clone();
+    broker.register_subscription(resolver);
+
+    let mut subscription_ids: Vec<SubscriptionId> = vec![resolver_id];
+    subscription_ids.extend(bundle.subscriptions.iter().map(|s| s.id().clone()));
     for sub in bundle.subscriptions {
         broker.register_subscription(sub);
     }
