@@ -1067,12 +1067,12 @@ fn submit_approval_and_wait(
 
     // Decision is encoded in the returned path's second component.
     // `ApprovalStore` emits `Path::from_components(vec!["request", decision.as_str()])`.
-    if returned.components.len() < 2 {
+    if returned.len() < 2 {
         return Err(format!(
             "approval/request returned malformed path (expected 2+ components): {returned}"
         ));
     }
-    let decision_str = returned.components[1].clone();
+    let decision_str = returned[1].clone();
     serde_json::from_value::<ox_types::Decision>(serde_json::Value::String(decision_str.clone()))
         .map_err(|e| format!("decode approval decision '{decision_str}': {e}"))
 }

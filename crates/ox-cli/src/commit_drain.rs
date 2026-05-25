@@ -208,7 +208,7 @@ mod tests {
             .await
             .unwrap();
         created_path
-            .components
+            .iter()
             .last()
             .map(|c| c.as_str().to_string())
             .expect("create returns the thread id")

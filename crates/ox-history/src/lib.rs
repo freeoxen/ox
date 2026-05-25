@@ -234,7 +234,7 @@ impl Reader for HistoryView {
         let key = if from.is_empty() {
             "messages"
         } else {
-            from.components[0].as_str()
+            from[0].as_str()
         };
         match key {
             "messages" | "" => {
@@ -255,8 +255,8 @@ impl Reader for HistoryView {
                 Ok(Some(Record::parsed(Value::Integer(count as i64))))
             }
             "turn" => {
-                if from.components.len() >= 2 {
-                    let sub = from.components[1].as_str();
+                if from.len() >= 2 {
+                    let sub = from[1].as_str();
                     Ok(self.turn.read(sub).map(Record::parsed))
                 } else {
                     // Bare "turn" read — return the full TurnState as a serialized value.
@@ -275,7 +275,7 @@ impl Writer for HistoryView {
         let key = if to.is_empty() {
             "append"
         } else {
-            to.components[0].as_str()
+            to[0].as_str()
         };
         match key {
             "append" => {
@@ -351,8 +351,8 @@ impl Writer for HistoryView {
                 Ok(to.clone())
             }
             "turn" => {
-                if to.components.len() >= 2 {
-                    let sub = to.components[1].as_str();
+                if to.len() >= 2 {
+                    let sub = to[1].as_str();
                     match sub {
                         "clear" => {
                             // Reset all ephemeral turn state for the next turn.

@@ -377,23 +377,22 @@ fn extract_str(map: &BTreeMap<String, Value>, key: &str) -> Option<String> {
 
 impl Reader for InputStore {
     fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
-        let c = &from.components;
-        match c.len() {
+        match from.len() {
             // "" → all bindings
             0 => Ok(Some(Record::parsed(Value::Array(
                 self.bindings_matching(None, None),
             )))),
             // "bindings" → all bindings
-            1 if c[0] == "bindings" => Ok(Some(Record::parsed(Value::Array(
+            1 if from[0] == "bindings" => Ok(Some(Record::parsed(Value::Array(
                 self.bindings_matching(None, None),
             )))),
             // "bindings/{mode}" → bindings for mode
-            2 if c[0] == "bindings" => Ok(Some(Record::parsed(Value::Array(
-                self.bindings_matching(Some(&c[1]), None),
+            2 if from[0] == "bindings" => Ok(Some(Record::parsed(Value::Array(
+                self.bindings_matching(Some(&from[1]), None),
             )))),
             // "bindings/{mode}/{screen}" → bindings for mode+screen
-            3 if c[0] == "bindings" => Ok(Some(Record::parsed(Value::Array(
-                self.bindings_matching(Some(&c[1]), Some(&c[2])),
+            3 if from[0] == "bindings" => Ok(Some(Record::parsed(Value::Array(
+                self.bindings_matching(Some(&from[1]), Some(&from[2])),
             )))),
             _ => Ok(None),
         }
@@ -409,7 +408,7 @@ impl Writer for InputStore {
         let action = if to.is_empty() {
             ""
         } else {
-            to.components[0].as_str()
+            to[0].as_str()
         };
         let value = data.as_value().ok_or_else(|| {
             StoreError::store("input", "write", "write data must contain a value")
@@ -670,9 +669,9 @@ mod tests {
         let path = store
             .write(&path!("key"), key_event("normal", "z", "inbox"))
             .expect("unbound is Ok with an `unbound/<mode>` path");
-        assert_eq!(path.components.len(), 2);
-        assert_eq!(path.components[0].as_str(), "unbound");
-        assert_eq!(path.components[1].as_str(), "normal");
+        assert_eq!(path.len(), 2);
+        assert_eq!(path[0].as_str(), "unbound");
+        assert_eq!(path[1].as_str(), "normal");
     }
 
     // -- Macro tests --

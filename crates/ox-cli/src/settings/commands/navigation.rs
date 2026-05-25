@@ -29,8 +29,7 @@ use crate::settings::CommandRegistry;
 /// `Path` itself doesn't implement `Serialize`, so we hand-roll the encoding.
 pub fn path_to_value(p: &Path) -> Value {
     Value::Array(
-        p.components
-            .iter()
+        p.iter()
             .map(|c| Value::String(c.clone()))
             .collect(),
     )

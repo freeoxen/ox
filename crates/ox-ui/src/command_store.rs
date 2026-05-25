@@ -76,8 +76,7 @@ impl CommandStore {
 
 impl Reader for CommandStore {
     fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
-        let c = &from.components;
-        match c.len() {
+        match from.len() {
             0 => {
                 let defs: Vec<Value> = self
                     .registry
@@ -86,7 +85,7 @@ impl Reader for CommandStore {
                     .collect();
                 Ok(Some(Record::parsed(Value::Array(defs))))
             }
-            1 if c[0] == "commands" => {
+            1 if from[0] == "commands" => {
                 let defs: Vec<Value> = self
                     .registry
                     .iter()
@@ -94,7 +93,7 @@ impl Reader for CommandStore {
                     .collect();
                 Ok(Some(Record::parsed(Value::Array(defs))))
             }
-            1 if c[0] == "user_facing" => {
+            1 if from[0] == "user_facing" => {
                 let defs: Vec<Value> = self
                     .registry
                     .user_facing()
@@ -102,7 +101,7 @@ impl Reader for CommandStore {
                     .collect();
                 Ok(Some(Record::parsed(Value::Array(defs))))
             }
-            2 if c[0] == "commands" => match self.registry.get(&c[1]) {
+            2 if from[0] == "commands" => match self.registry.get(&from[1]) {
                 Some(def) => {
                     let value = structfs_serde_store::to_value(def).unwrap();
                     Ok(Some(Record::parsed(value)))
@@ -119,7 +118,7 @@ impl Writer for CommandStore {
         let action = if to.is_empty() {
             ""
         } else {
-            to.components[0].as_str()
+            to[0].as_str()
         };
         let value = data.as_value().ok_or_else(|| {
             StoreError::store("command", "write", "write data must contain a value")

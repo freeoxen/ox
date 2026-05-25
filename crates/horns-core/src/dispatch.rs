@@ -220,10 +220,10 @@ fn screen_root_fallback(cursor_path: &Path) -> Vec<BindingScope> {
     // For shapes that don't fit this template, return `[]` — the
     // dispatch becomes inert when no cursor is seeded, which is the
     // safe default.
-    if cursor_path.components.len() < 2 {
+    if cursor_path.len() < 2 {
         return Vec::new();
     }
-    let screen = &cursor_path.components[cursor_path.components.len() - 2];
+    let screen = &cursor_path[cursor_path.len() - 2];
     match Path::try_from_components(vec![screen.clone()]) {
         Ok(p) => vec![BindingScope::Exact(p)],
         Err(_) => Vec::new(),
@@ -235,7 +235,7 @@ fn screen_root_fallback(cursor_path: &Path) -> Vec<BindingScope> {
 /// settings/_compose_form, settings/_compose_form/name]`. Empty paths
 /// yield an empty vec.
 pub fn path_ancestors(path: &Path) -> Vec<Path> {
-    (1..=path.components.len())
+    (1..=path.len())
         .map(|end| path.slice(0, end))
         .collect()
 }
@@ -273,13 +273,13 @@ mod tests {
 
     impl MapReader {
         fn insert(&mut self, path: &Path, record: Record) {
-            self.records.insert(path.components.clone(), record);
+            self.records.insert(path.iter().cloned().collect::<Vec<String>>(), record);
         }
     }
 
     impl Reader for MapReader {
         fn read(&mut self, path: &Path) -> Result<Option<Record>, Error> {
-            Ok(self.records.get(&path.components).cloned())
+            Ok(self.records.get(&path.iter().cloned().collect::<Vec<String>>()).cloned())
         }
     }
 
@@ -290,8 +290,7 @@ mod tests {
     /// same encoding the dispatcher reads.
     fn path_to_value(p: &Path) -> Value {
         Value::Array(
-            p.components
-                .iter()
+            p.iter()
                 .map(|c| Value::String(c.clone()))
                 .collect(),
         )

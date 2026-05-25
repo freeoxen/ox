@@ -63,8 +63,8 @@ impl<B: Reader + Writer + Send, E: HostEffects> HostStore<B, E> {
         }
 
         // Route tools/* reads to ToolStore via effects.
-        if !path.is_empty() && path.components[0] == "tools" {
-            let sub = Path::from_components(path.components[1..].to_vec());
+        if !path.is_empty() && path[0] == "tools" {
+            let sub = path.slice(1, path.len());
             return self.effects.tool_store().read(&sub);
         }
 
@@ -85,21 +85,21 @@ impl<B: Reader + Writer + Send, E: HostEffects> HostStore<B, E> {
         let prefix = if path.is_empty() {
             ""
         } else {
-            path.components[0].as_str()
+            path[0].as_str()
         };
 
         match prefix {
             "tools" => {
-                let sub = Path::from_components(path.components[1..].to_vec());
+                let sub = path.slice(1, path.len());
                 let result_path = self.effects.tool_store().write(&sub, data)?;
                 // Redirect detection: if the returned path starts with "exec",
                 // it's a ToolStore-internal handle — prefix with "tools/" so the
                 // kernel reads it back through the ToolStore. Otherwise it's a
                 // namespace-absolute redirect path — return as-is for the kernel
                 // to read through the full namespace.
-                if result_path.components.first().is_some_and(|c| c == "exec") {
+                if result_path.iter().next().is_some_and(|c| c == "exec") {
                     let mut components = vec!["tools".to_string()];
-                    components.extend(result_path.components);
+                    components.extend(result_path.iter().cloned());
                     Ok(Path::from_components(components))
                 } else {
                     Ok(result_path)

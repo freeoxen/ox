@@ -335,13 +335,8 @@ fn read_cursor(data: &mut dyn Reader, cursor_path: &Path) -> Option<Path> {
     crate::settings::commands::navigation::path_from_value(value)
 }
 
-/// Component-wise prefix check: true iff `prefix.components` is a
-/// prefix of `whole.components` (a path is a prefix of itself).
-/// Mirrors horns-core's internal helper without taking a dep on a
-/// private item.
+/// Component-wise prefix check: true iff `prefix` is a
+/// prefix of `whole` (a path is a prefix of itself).
 fn is_component_prefix(prefix: &Path, whole: &Path) -> bool {
-    if prefix.components.len() > whole.components.len() {
-        return false;
-    }
-    whole.components[..prefix.components.len()] == prefix.components[..]
+    whole.has_prefix(prefix)
 }

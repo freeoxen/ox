@@ -38,7 +38,7 @@ impl AsyncReader for ApprovalStore {
         let key = if from.is_empty() {
             ""
         } else {
-            from.components[0].as_str()
+            from[0].as_str()
         };
         let result = match key {
             "pending" => match &self.pending {
@@ -59,7 +59,7 @@ impl AsyncWriter for ApprovalStore {
         let action = if to.is_empty() {
             ""
         } else {
-            to.components[0].as_str()
+            to[0].as_str()
         };
         let value = match data.as_value() {
             Some(v) => v.clone(),

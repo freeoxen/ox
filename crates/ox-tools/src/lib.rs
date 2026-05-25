@@ -199,7 +199,7 @@ impl ToolStore {
             return None;
         }
 
-        let first = path.components[0].as_str();
+        let first = path[0].as_str();
 
         match first {
             "fs" | "os" | "completions" | "schemas" | "exec" => Some(ResolvedPath::Direct(path)),
@@ -208,8 +208,8 @@ impl ToolStore {
                 if let Some(internal) = self.name_map.to_internal(first) {
                     // internal is like "fs/read" — parse it and append remaining components
                     let parsed = Path::parse(internal).ok()?;
-                    let mut components = parsed.components;
-                    components.extend(path.components[1..].iter().cloned());
+                    let mut components = parsed.iter().cloned().collect::<Vec<String>>();
+                    components.extend(path.iter().skip(1).cloned());
                     Some(ResolvedPath::Resolved(Path::from_components(components)))
                 } else {
                     None
@@ -266,8 +266,8 @@ impl<'a> ResolvedPath<'a> {
 impl Reader for ToolStore {
     fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
         // Exec handle reads — returned by writes, keyed like "exec/0001"
-        if !from.is_empty() && from.components[0] == "exec" {
-            let key = from.components.join("/");
+        if !from.is_empty() && from[0] == "exec" {
+            let key = from.iter().cloned().collect::<Vec<String>>().join("/");
             return Ok(self
                 .exec_results
                 .get(&key)
@@ -276,7 +276,7 @@ impl Reader for ToolStore {
 
         // Check native tools first (keyed by wire name)
         if !from.is_empty() {
-            let first = from.components[0].as_str();
+            let first = from[0].as_str();
             if self.native_tools.contains_key(first) {
                 let internal = self
                     .name_map
@@ -296,7 +296,7 @@ impl Reader for ToolStore {
         };
 
         let path = resolved.as_path();
-        let first = path.components[0].as_str();
+        let first = path[0].as_str();
 
         match first {
             "schemas" => {
@@ -316,7 +316,7 @@ impl Reader for ToolStore {
                 Ok(Some(Record::parsed(value)))
             }
             "completions" => {
-                let sub = Path::from_components(path.components[1..].to_vec());
+                let sub = path.slice(1, path.len());
                 self.completions.read(&sub)
             }
             "fs" | "os" => {
@@ -324,11 +324,11 @@ impl Reader for ToolStore {
                 if path.len() < 2 {
                     return Ok(None);
                 }
-                let op = path.components[1].as_str();
+                let op = path[1].as_str();
                 let internal_path = format!("{first}/{op}");
 
                 // Check if reading a result
-                let is_result = path.len() >= 3 && path.components[2] == "result";
+                let is_result = path.len() >= 3 && path[2] == "result";
                 if is_result {
                     Ok(self
                         .last_result
@@ -351,7 +351,7 @@ impl Writer for ToolStore {
     fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
         // Check native tools first (before resolve_path), keyed by wire name
         if !to.is_empty() {
-            let wire_name = to.components[0].as_str().to_string();
+            let wire_name = to[0].as_str().to_string();
             if self.native_tools.contains_key(&wire_name) {
                 let value = data
                     .as_value()
@@ -389,7 +389,7 @@ impl Writer for ToolStore {
 
         // Check redirect tools
         if !to.is_empty() {
-            let wire_name = to.components[0].as_str();
+            let wire_name = to[0].as_str();
             if let Some(redirect) = self.redirect_tools.get(wire_name) {
                 let value = data
                     .as_value()
@@ -416,24 +416,22 @@ impl Writer for ToolStore {
                 return Err(StoreError::store(
                     "ToolStore",
                     "write",
-                    format!("unresolvable path: {}", to.components.join("/")),
+                    format!("unresolvable path: {to}"),
                 ));
             }
         };
 
         let path = resolved.as_path().clone();
-        let first = path.components[0].as_str();
+        let first = path[0].as_str();
 
         match first {
             "completions" => {
-                let sub = Path::from_components(path.components[1..].to_vec());
+                let sub = path.slice(1, path.len());
                 self.completions.write(&sub, data)?;
 
                 // For complete paths, read the response and store as exec handle
-                if !sub.is_empty() && sub.components[0] == "complete" {
-                    let mut response_components = sub.components.clone();
-                    response_components.push("response".to_string());
-                    let response_path = Path::from_components(response_components);
+                if !sub.is_empty() && sub[0] == "complete" {
+                    let response_path = sub.join(&Path::from_components(vec!["response".to_string()]));
                     if let Some(response) = self.completions.read(&response_path)? {
                         let value = response.as_value().cloned().unwrap_or(Value::Null);
                         return Ok(self.store_exec_result(value));
@@ -449,7 +447,7 @@ impl Writer for ToolStore {
                         format!("missing operation in path: {first}/"),
                     ));
                 }
-                let op = path.components[1].clone();
+                let op = path[1].clone();
 
                 // Extract the serde_json::Value from the record
                 let value = data
@@ -471,7 +469,7 @@ impl Writer for ToolStore {
             _ => Err(StoreError::store(
                 "ToolStore",
                 "write",
-                format!("cannot write to path: {}", path.components.join("/")),
+                format!("cannot write to path: {path}"),
             )),
         }
     }

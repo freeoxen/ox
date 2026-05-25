@@ -562,8 +562,8 @@ impl ThreadNamespace {
         if path.is_empty() {
             return None;
         }
-        let prefix = path.components[0].as_str();
-        let sub = Path::from_components(path.components[1..].to_vec());
+        let prefix = path[0].as_str();
+        let sub = path.slice(1, path.len());
         match prefix {
             "system" => Some((&mut self.system as &mut dyn Store, sub)),
             "history" => Some((&mut self.history as &mut dyn Store, sub)),
@@ -675,8 +675,8 @@ impl ThreadRegistry {
         if path.is_empty() {
             return None;
         }
-        let thread_id = path.components[0].clone();
-        let sub = Path::from_components(path.components[1..].to_vec());
+        let thread_id = path[0].clone();
+        let sub = path.slice(1, path.len());
         Some((thread_id, sub))
     }
 
@@ -685,8 +685,8 @@ impl ThreadRegistry {
         if sub.is_empty() {
             return None;
         }
-        if sub.components[0] == "approval" {
-            Some(Path::from_components(sub.components[1..].to_vec()))
+        if sub[0] == "approval" {
+            Some(sub.slice(1, sub.len()))
         } else {
             None
         }
@@ -720,7 +720,7 @@ impl AsyncWriter for ThreadRegistry {
 
         if let Some(approval_sub) = Self::is_approval_path(&sub) {
             // Log approval events to the structured log
-            let action = approval_sub.components.first().map(|s| s.as_str());
+            let action = approval_sub.iter().next().map(|s| s.as_str());
             match action {
                 Some("request") => {
                     if let Some(val) = data.as_value() {

@@ -68,7 +68,7 @@ impl Writer for Namespace {
             Some(store) => {
                 let sub_path = store.write(&sub, data)?;
                 let mut components = vec![prefix.to_string()];
-                components.extend(sub_path.components);
+                components.extend(sub_path.iter().cloned());
                 Ok(Path::from_components(components))
             }
             None => Err(StoreError::NoRoute { path: to.clone() }),
@@ -81,8 +81,8 @@ fn split_path(path: &Path) -> (&str, Path) {
     if path.is_empty() {
         return ("", oxpath!());
     }
-    let prefix = path.components[0].as_str();
-    let sub = Path::from_components(path.components[1..].to_vec());
+    let prefix = path[0].as_str();
+    let sub = path.slice(1, path.len());
     (prefix, sub)
 }
 
@@ -107,13 +107,13 @@ impl Reader for SystemProvider {
         let key = if from.is_empty() {
             ""
         } else {
-            from.components[0].as_str()
+            from[0].as_str()
         };
         match key {
             "snapshot" => {
                 let state = Value::String(self.prompt.clone());
-                if from.components.len() >= 2 {
-                    match from.components[1].as_str() {
+                if from.len() >= 2 {
+                    match from[1].as_str() {
                         "hash" => {
                             let hash = ox_kernel::snapshot::snapshot_hash(&state);
                             Ok(Some(Record::parsed(Value::String(hash))))
@@ -137,7 +137,7 @@ impl Writer for SystemProvider {
         let key = if to.is_empty() {
             ""
         } else {
-            to.components[0].as_str()
+            to[0].as_str()
         };
         match key {
             "snapshot" => {
@@ -151,7 +151,7 @@ impl Writer for SystemProvider {
                         ));
                     }
                 };
-                let state = if to.components.len() >= 2 && to.components[1].as_str() == "state" {
+                let state = if to.len() >= 2 && to[1].as_str() == "state" {
                     value
                 } else {
                     ox_kernel::snapshot::extract_snapshot_state(value)

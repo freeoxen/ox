@@ -1295,7 +1295,7 @@ mod tests {
     /// True iff the path's first two components are `settings/_*` —
     /// the synthetic compound-widget cursor convention.
     fn is_compound_widget_scope(p: &Path) -> bool {
-        p.components.len() >= 2 && p.components[0] == "settings" && p.components[1].starts_with('_')
+        p.len() >= 2 && p[0] == "settings" && p[1].starts_with('_')
     }
 
     /// True iff `p` is the container scope for a widget that has a
@@ -1305,10 +1305,10 @@ mod tests {
         // The single-scope widgets (_confirm_delete, _edit) also
         // have shape settings/_name but no leaf below — they're handled
         // by the leaf classifier and explicitly excluded here.
-        if p.components.len() != 2 || p.components[0] != "settings" {
+        if p.len() != 2 || p[0] != "settings" {
             return false;
         }
-        matches!(p.components[1].as_str(), "_compose_form" | "_manual_model")
+        matches!(p[1].as_str(), "_compose_form" | "_manual_model")
     }
 
     /// True iff `p` is a leaf scope of a compound widget.
@@ -1319,22 +1319,22 @@ mod tests {
     /// - single-scope widgets where the same scope hosts both lifecycle
     ///   and leaf bindings (`_confirm_delete`, `_edit`).
     fn is_leaf_scope(p: &Path) -> bool {
-        if p.components.len() < 2 || p.components[0] != "settings" {
+        if p.len() < 2 || p[0] != "settings" {
             return false;
         }
-        let head = p.components[1].as_str();
+        let head = p[1].as_str();
         // Split-widget leaves.
-        if head == "_compose_form" && p.components.len() == 3 {
+        if head == "_compose_form" && p.len() == 3 {
             return matches!(
-                p.components[2].as_str(),
+                p[2].as_str(),
                 "name" | "protocol" | "endpoint" | "auth" | "key"
             );
         }
-        if head == "_manual_model" && p.components.len() == 3 {
-            return matches!(p.components[2].as_str(), "id" | "ctx" | "out");
+        if head == "_manual_model" && p.len() == 3 {
+            return matches!(p[2].as_str(), "id" | "ctx" | "out");
         }
         // Single-scope widgets: scope IS the leaf.
-        if p.components.len() == 2 {
+        if p.len() == 2 {
             return matches!(head, "_confirm_delete" | "_edit");
         }
         false

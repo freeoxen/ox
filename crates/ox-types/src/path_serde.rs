@@ -11,7 +11,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use structfs_core_store::Path;
 
 pub fn serialize<S: Serializer>(path: &Path, ser: S) -> Result<S::Ok, S::Error> {
-    path.components.serialize(ser)
+    let components: Vec<&String> = path.iter().collect();
+    components.serialize(ser)
 }
 
 pub fn deserialize<'de, D: Deserializer<'de>>(de: D) -> Result<Path, D::Error> {
@@ -26,7 +27,10 @@ pub mod option {
 
     pub fn serialize<S: Serializer>(path: &Option<Path>, ser: S) -> Result<S::Ok, S::Error> {
         match path {
-            Some(p) => ser.serialize_some(&p.components),
+            Some(p) => {
+                let components: Vec<&String> = p.iter().collect();
+                ser.serialize_some(&components)
+            }
             None => ser.serialize_none(),
         }
     }

@@ -375,13 +375,13 @@ impl Reader for GateStore {
             return Ok(None);
         }
 
-        let first = from.components[0].as_str();
+        let first = from[0].as_str();
         match first {
             "providers" => {
-                if from.components.len() < 2 {
+                if from.len() < 2 {
                     return Ok(None);
                 }
-                let name = from.components[1].as_str().to_string();
+                let name = from[1].as_str().to_string();
 
                 // Resolve provider config: prefer config handle (user-defined
                 // providers seeded from OxConfig/TOML), fall back to local
@@ -391,13 +391,13 @@ impl Reader for GateStore {
                     return Ok(None);
                 };
 
-                if from.components.len() == 2 {
+                if from.len() == 2 {
                     let value = to_value(&config)
                         .map_err(|e| StoreError::store("gate", "read", e.to_string()))?;
                     return Ok(Some(Record::parsed(value)));
                 }
 
-                let field = from.components[2].as_str();
+                let field = from[2].as_str();
                 match field {
                     "dialect" => Ok(Some(Record::parsed(Value::String(config.dialect)))),
                     "endpoint" => Ok(Some(Record::parsed(Value::String(config.endpoint)))),
@@ -413,17 +413,17 @@ impl Reader for GateStore {
             }
 
             "accounts" => {
-                if from.components.len() < 2 {
+                if from.len() < 2 {
                     return Ok(None);
                 }
-                let name = from.components[1].as_str().to_string();
+                let name = from[1].as_str().to_string();
 
                 // Keys come from the secrets handle (`secret/keys/{name}: ApiKey`).
                 // Synthetic read shape — the underlying storage is a typed
                 // `ApiKey` record at a path that has nothing to do with the
                 // gate's namespace; the gate just exposes it under the
                 // `accounts/{name}/key` shape callers already know.
-                if from.components.len() > 2 && from.components[2].as_str() == "key" {
+                if from.len() > 2 && from[2].as_str() == "key" {
                     let key = self.account_key(&name).unwrap_or_default();
                     return Ok(Some(Record::parsed(Value::String(key))));
                 }
@@ -438,13 +438,13 @@ impl Reader for GateStore {
                     return Ok(None);
                 };
 
-                if from.components.len() == 2 {
+                if from.len() == 2 {
                     let value = to_value(&config)
                         .map_err(|e| StoreError::store("gate", "read", e.to_string()))?;
                     return Ok(Some(Record::parsed(value)));
                 }
 
-                let field = from.components[2].as_str();
+                let field = from[2].as_str();
                 match field {
                     "provider" => Ok(Some(Record::parsed(Value::String(config.provider)))),
                     _ => Ok(None),
@@ -452,7 +452,7 @@ impl Reader for GateStore {
             }
 
             "tools" => {
-                if from.components.len() >= 2 && from.components[1].as_str() == "schemas" {
+                if from.len() >= 2 && from[1].as_str() == "schemas" {
                     let schemas = self.completion_tool_schemas();
                     let value = to_value(&schemas)
                         .map_err(|e| StoreError::store("gate", "read", e.to_string()))?;
@@ -464,8 +464,8 @@ impl Reader for GateStore {
 
             "snapshot" => {
                 let state = self.snapshot_state();
-                if from.components.len() >= 2 {
-                    match from.components[1].as_str() {
+                if from.len() >= 2 {
+                    match from[1].as_str() {
                         "hash" => {
                             let hash = ox_kernel::snapshot::snapshot_hash(&state);
                             Ok(Some(Record::parsed(Value::String(hash))))
@@ -503,7 +503,7 @@ impl Reader for GateStore {
                         }
                     }
                 }
-                if from.components.len() == 2 && from.components[1].as_str() == "primary" {
+                if from.len() == 2 && from[1].as_str() == "primary" {
                     let role = ox_types::CompletionRole {
                         account: FALLBACK_ACCOUNT.to_string(),
                         model_id: FALLBACK_MODEL.to_string(),
@@ -526,19 +526,19 @@ impl Writer for GateStore {
             return Err(StoreError::store("gate", "write", "empty path"));
         }
 
-        let first = to.components[0].as_str();
+        let first = to[0].as_str();
         match first {
             "providers" => {
-                if to.components.len() < 2 {
+                if to.len() < 2 {
                     return Err(StoreError::store(
                         "gate",
                         "write",
                         "providers requires a name",
                     ));
                 }
-                let name = to.components[1].as_str().to_string();
+                let name = to[1].as_str().to_string();
 
-                if to.components.len() == 2 {
+                if to.len() == 2 {
                     // Write full ProviderConfig
                     let value = match data {
                         Record::Parsed(v) => v,
@@ -556,7 +556,7 @@ impl Writer for GateStore {
                     return Ok(to.clone());
                 }
 
-                let field = to.components[2].as_str();
+                let field = to[2].as_str();
                 match field {
                     "models" => {
                         let value = match data {
@@ -583,16 +583,16 @@ impl Writer for GateStore {
             }
 
             "accounts" => {
-                if to.components.len() < 2 {
+                if to.len() < 2 {
                     return Err(StoreError::store(
                         "gate",
                         "write",
                         "accounts requires a name",
                     ));
                 }
-                let name = to.components[1].as_str().to_string();
+                let name = to[1].as_str().to_string();
 
-                if to.components.len() == 2 {
+                if to.len() == 2 {
                     // Write full AccountConfig
                     let value = match data {
                         Record::Parsed(v) => v,
@@ -610,7 +610,7 @@ impl Writer for GateStore {
                     return Ok(to.clone());
                 }
 
-                let field = to.components[2].as_str();
+                let field = to[2].as_str();
                 match field {
                     "provider" => match data {
                         Record::Parsed(Value::String(s)) => {
@@ -644,7 +644,7 @@ impl Writer for GateStore {
                     Record::Parsed(v) => v,
                     _ => return Err(StoreError::store("gate", "write", "expected parsed record")),
                 };
-                let state = if to.components.len() >= 2 && to.components[1].as_str() == "state" {
+                let state = if to.len() >= 2 && to[1].as_str() == "state" {
                     value
                 } else {
                     ox_kernel::snapshot::extract_snapshot_state(value)

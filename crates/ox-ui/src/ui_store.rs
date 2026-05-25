@@ -1361,12 +1361,7 @@ impl Default for UiStore {
 /// `p` is empty; only callers that have already matched on components[0]
 /// use this, so the precondition is structurally guaranteed.
 fn strip_first_component(p: &Path) -> Path {
-    let rest = p.components[1..]
-        .iter()
-        .map(|c| c.as_str())
-        .collect::<Vec<_>>()
-        .join("/");
-    Path::parse(&rest).expect("stripped path is valid by construction")
+    p.slice(1, p.len())
 }
 
 // ---------------------------------------------------------------------------
@@ -1378,7 +1373,7 @@ impl Reader for UiStore {
         let key = if from.is_empty() {
             ""
         } else {
-            from.components[0].as_str()
+            from[0].as_str()
         };
         // Delegate command_line/* reads to the embedded sub-store.
         if key == "command_line" {
@@ -1410,8 +1405,8 @@ impl Reader for UiStore {
             "scroll_max" => self.state.scroll_max_value(),
             "viewport_height" => self.state.viewport_height_value(),
             "input" => {
-                let sub = if from.components.len() > 1 {
-                    from.components[1].as_str()
+                let sub = if from.len() > 1 {
+                    from[1].as_str()
                 } else {
                     ""
                 };
@@ -1436,7 +1431,7 @@ impl Reader for UiStore {
 impl Writer for UiStore {
     fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
         // Delegate command_line/* writes to the embedded sub-store.
-        if !to.is_empty() && to.components[0] == "command_line" {
+        if !to.is_empty() && to[0] == "command_line" {
             let sub = strip_first_component(to);
             return self.state.command_line.write(&sub, data);
         }
@@ -1445,14 +1440,14 @@ impl Writer for UiStore {
         // no verb matching. Without this arm a write to e.g.
         // `ui/settings/focused` falls into the verb-resolution path
         // below, which has no `settings` arm and rejects it.
-        if !to.is_empty() && to.components[0] == "settings" {
+        if !to.is_empty() && to[0] == "settings" {
             let sub = strip_first_component(to);
             return self.state.settings.write(&sub, data);
         }
         // Delegate input/* writes to the active editor
-        if !to.is_empty() && to.components[0] == "input" {
-            let action = if to.components.len() > 1 {
-                to.components[1].as_str()
+        if !to.is_empty() && to[0] == "input" {
+            let action = if to.len() > 1 {
+                to[1].as_str()
             } else {
                 return Err(StoreError::store(
                     "ui",
@@ -1519,7 +1514,7 @@ impl Writer for UiStore {
         // Path-based routing: command dispatch chain sends writes to paths
         // like "select_next", "scroll_down", etc. Map these to UiCommand.
         else if !to.is_empty() {
-            let cmd_name = &to.components[0];
+            let cmd_name = &to[0];
             // approve: parse decision, set PendingAction; event loop resolves thread scope
             if cmd_name == "approve" {
                 let value = data.as_value().ok_or_else(|| {

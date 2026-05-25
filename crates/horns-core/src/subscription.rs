@@ -75,34 +75,25 @@ impl PathPattern {
     /// docs for the exact semantics.
     pub fn matches(&self, path: &Path) -> bool {
         match self {
-            PathPattern::Exact(p) => path.components == p.components,
-            PathPattern::Prefix(p) => is_component_prefix(&p.components, &path.components),
+            PathPattern::Exact(p) => path == p,
+            PathPattern::Prefix(p) => path.has_prefix(p),
             PathPattern::PrefixSuffix { prefix, suffix } => {
-                let plen = prefix.components.len();
-                let slen = suffix.components.len();
-                let total = path.components.len();
+                let plen = prefix.len();
+                let slen = suffix.len();
+                let total = path.len();
                 // Must have at least one component between prefix and suffix.
                 if plen + slen >= total {
                     return false;
                 }
-                if !is_component_prefix(&prefix.components, &path.components) {
+                if !path.has_prefix(prefix) {
                     return false;
                 }
-                // Compare suffix tail.
+                // Compare suffix tail component-by-component.
                 let tail_start = total - slen;
-                path.components[tail_start..] == suffix.components[..]
+                (0..slen).all(|i| path[tail_start + i] == suffix[i])
             }
         }
     }
-}
-
-/// `prefix` is a component-wise prefix of `whole` (a path is a prefix
-/// of itself).
-fn is_component_prefix(prefix: &[String], whole: &[String]) -> bool {
-    if prefix.len() > whole.len() {
-        return false;
-    }
-    whole[..prefix.len()] == *prefix
 }
 
 /// An observed change at a path. `before == None` means the path was

@@ -49,11 +49,8 @@ impl BindingScope {
     pub fn matches(&self, cursor: &Path) -> bool {
         match self {
             BindingScope::Anywhere => true,
-            BindingScope::Exact(p) => p.components == cursor.components,
-            BindingScope::Prefix(p) => {
-                p.components.len() <= cursor.components.len()
-                    && cursor.components[..p.components.len()] == p.components[..]
-            }
+            BindingScope::Exact(p) => p == cursor,
+            BindingScope::Prefix(p) => cursor.has_prefix(p),
         }
     }
 
@@ -284,7 +281,7 @@ fn specificity_class(e: &BindingEntry) -> i32 {
         // Within Prefix entries, a longer (more specific) prefix should
         // outrank a shorter one. Encode as negative depth so deeper
         // sorts earlier.
-        BindingScope::Prefix(p) => (1, -(p.components.len() as i32)),
+        BindingScope::Prefix(p) => (1, -(p.len() as i32)),
         BindingScope::Anywhere => (2, 0),
     };
     scope_major * 1000 + scope_depth_penalty * 10

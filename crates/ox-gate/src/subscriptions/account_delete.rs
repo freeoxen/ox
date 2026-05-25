@@ -95,7 +95,7 @@ impl Subscription for AccountDeleteCleanupSubscription {
         let name = ctx
             .change
             .path
-            .components
+            .iter()
             .last()
             .cloned()
             .unwrap_or_default();

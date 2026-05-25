@@ -141,7 +141,7 @@ impl Reader for TextInputStore {
         if from.is_empty() {
             return Ok(Some(Record::parsed(self.snapshot())));
         }
-        match from.components[0].as_str() {
+        match from[0].as_str() {
             "content" => Ok(Some(Record::parsed(Value::String(self.content.clone())))),
             "cursor" => Ok(Some(Record::parsed(Value::Integer(self.cursor as i64)))),
             _ => Ok(None),
@@ -162,7 +162,7 @@ impl Writer for TextInputStore {
                 "write to root not supported",
             ));
         } else {
-            to.components[0].as_str()
+            to[0].as_str()
         };
 
         match action {

@@ -147,7 +147,7 @@ impl Reader for CommandLineStore {
         if from.is_empty() {
             return Ok(Some(Record::parsed(self.snapshot())));
         }
-        match from.components[0].as_str() {
+        match from[0].as_str() {
             "open" => Ok(Some(Record::parsed(Value::Bool(self.open)))),
             "content" | "cursor" => self.buffer.read(from),
             "pending_submit" => Ok(Some(Record::parsed(
@@ -174,7 +174,7 @@ impl Writer for CommandLineStore {
                 "write to root not supported",
             ));
         }
-        match to.components[0].as_str() {
+        match to[0].as_str() {
             "open" => self.do_open(),
             "close" => self.do_close(),
             "submit" => self.do_submit(),

@@ -339,7 +339,7 @@ pub async fn create_thread(client: &ClientHandle, title: &str) -> String {
         .await
         .expect("create thread");
     created
-        .components
+        .iter()
         .last()
         .expect("new thread path carries id")
         .as_str()

@@ -360,7 +360,6 @@ async fn pressing_a_opens_compose_new_connection() {
         .await
         .expect("cursor should be set after pressing a");
     let components: Vec<String> = cursor
-        .components
         .iter()
         .map(|c| c.as_str().to_string())
         .collect();

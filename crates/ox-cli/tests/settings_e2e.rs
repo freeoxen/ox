@@ -1588,7 +1588,7 @@ async fn delete_account_removes_connection_from_rendered_frame() {
         if path.len() <= prefix_len {
             continue;
         }
-        let segment = path.components[prefix_len].clone();
+        let segment = path[prefix_len].clone();
         if !child_names.contains(&segment) {
             child_names.push(segment);
         }
@@ -1802,7 +1802,7 @@ async fn add_connections_have_independent_providers() {
         if path.len() <= prefix_len {
             continue;
         }
-        let segment = path.components[prefix_len].clone();
+        let segment = path[prefix_len].clone();
         if !provider_child_names.contains(&segment) {
             provider_child_names.push(segment);
         }

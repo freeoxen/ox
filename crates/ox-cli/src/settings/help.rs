@@ -194,7 +194,7 @@ fn path_append(prefix: &Path, segment: &str) -> Option<Path> {
     if segment.is_empty() {
         return Some(prefix.clone());
     }
-    let mut components = prefix.components.clone();
+    let mut components = prefix.iter().cloned().collect::<Vec<String>>();
     components.push(segment.to_string());
     Path::try_from_components(components).ok()
 }
@@ -284,7 +284,7 @@ pub async fn key_hints_for_context_from_broker(
         std::collections::HashMap::new();
     if let Ok(map) = client.read_subtree(commands_prefix).await {
         for (path, rec) in map.into_iter() {
-            let Some(id_component) = path.components.last() else {
+            let Some(id_component) = path.iter().last() else {
                 continue;
             };
             let id = id_component.as_str().to_string();

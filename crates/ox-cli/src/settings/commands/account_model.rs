@@ -107,13 +107,13 @@ pub(crate) fn field_focus_path(f: AccountField) -> Path {
 /// sub-element by virtue of its leaf component. The dispatcher uses
 /// this same mapping to decide whether the compose form is "active".
 pub(crate) fn cursor_to_field(cursor: &Path) -> Option<AccountField> {
-    if cursor.components.len() != 3 {
+    if cursor.len() != 3 {
         return None;
     }
-    if cursor.components[0] != "settings" || cursor.components[1] != "_compose_form" {
+    if cursor[0] != "settings" || cursor[1] != "_compose_form" {
         return None;
     }
-    match cursor.components[2].as_str() {
+    match cursor[2].as_str() {
         "name" => Some(AccountField::Name),
         "protocol" => Some(AccountField::Protocol),
         "endpoint" => Some(AccountField::Endpoint),
@@ -128,9 +128,9 @@ pub(crate) fn cursor_to_field(cursor: &Path) -> Option<AccountField> {
 /// decide whether to push the compose-form scope onto the binding
 /// scope path under cursor-as-focus.
 pub(crate) fn cursor_is_in_compose_form(cursor: &Path) -> bool {
-    cursor.components.len() >= 2
-        && cursor.components[0] == "settings"
-        && cursor.components[1] == "_compose_form"
+    cursor.len() >= 2
+        && cursor[0] == "settings"
+        && cursor[1] == "_compose_form"
 }
 
 /// Build the progressively-longer prefixes of `path`, ending at
@@ -138,7 +138,7 @@ pub(crate) fn cursor_is_in_compose_form(cursor: &Path) -> bool {
 /// [settings, settings/_compose_form, settings/_compose_form/name]`.
 /// Empty paths yield an empty vec.
 pub(crate) fn path_ancestors(path: &Path) -> Vec<Path> {
-    (1..=path.components.len())
+    (1..=path.len())
         .map(|end| path.slice(0, end))
         .collect()
 }
@@ -166,13 +166,13 @@ pub(crate) fn cursor_to_manual_model_stage(
     cursor: &Path,
 ) -> Option<ox_types::settings::ManualModelStage> {
     use ox_types::settings::ManualModelStage;
-    if cursor.components.len() != 3 {
+    if cursor.len() != 3 {
         return None;
     }
-    if cursor.components[0] != "settings" || cursor.components[1] != "_manual_model" {
+    if cursor[0] != "settings" || cursor[1] != "_manual_model" {
         return None;
     }
-    match cursor.components[2].as_str() {
+    match cursor[2].as_str() {
         "id" => Some(ManualModelStage::Id),
         "ctx" => Some(ManualModelStage::Ctx),
         "out" => Some(ManualModelStage::Out),
@@ -185,9 +185,9 @@ pub(crate) fn cursor_to_manual_model_stage(
 /// decide whether to push the manual-model form scope onto the binding
 /// scope path under cursor-as-focus.
 pub(crate) fn cursor_is_in_manual_model(cursor: &Path) -> bool {
-    cursor.components.len() >= 2
-        && cursor.components[0] == "settings"
-        && cursor.components[1] == "_manual_model"
+    cursor.len() >= 2
+        && cursor[0] == "settings"
+        && cursor[1] == "_manual_model"
 }
 
 /// Tab order for the manual-model form. Matches the visual top-to-bottom
@@ -248,9 +248,9 @@ pub(crate) fn confirm_delete_focus_path() -> Path {
 /// cursor-as-focus; the target account being confirmed lives at the
 /// separate data path `ui/settings/pending_delete/target_account`.
 pub(crate) fn cursor_is_in_confirm_delete(cursor: &Path) -> bool {
-    cursor.components.len() == 2
-        && cursor.components[0] == "settings"
-        && cursor.components[1] == "_confirm_delete"
+    cursor.len() == 2
+        && cursor[0] == "settings"
+        && cursor[1] == "_confirm_delete"
 }
 
 /// True iff `cursor` equals `settings/_edit`. The dispatcher uses
@@ -259,9 +259,9 @@ pub(crate) fn cursor_is_in_confirm_delete(cursor: &Path) -> bool {
 /// the separate data subtree `ui/settings/edit/{target_path, buffer,
 /// cursor_saved}`.
 pub(crate) fn cursor_is_in_edit(cursor: &Path) -> bool {
-    cursor.components.len() == 2
-        && cursor.components[0] == "settings"
-        && cursor.components[1] == "_edit"
+    cursor.len() == 2
+        && cursor[0] == "settings"
+        && cursor[1] == "_edit"
 }
 
 // ---------------------------------------------------------------------------

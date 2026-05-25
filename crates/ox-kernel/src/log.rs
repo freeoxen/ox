@@ -361,7 +361,7 @@ impl Reader for LogStore {
         let key = if from.is_empty() {
             "entries"
         } else {
-            from.components[0].as_str()
+            from[0].as_str()
         };
 
         match key {
@@ -385,7 +385,7 @@ impl Reader for LogStore {
                     ));
                 }
                 let n: usize =
-                    from.components[1]
+                    from[1]
                         .parse()
                         .map_err(|e: std::num::ParseIntError| {
                             StoreError::store("LogStore", "read", e.to_string())
@@ -405,7 +405,7 @@ impl Reader for LogStore {
                         "results requires tool_use_id: results/{id}",
                     ));
                 }
-                let tool_use_id = &from.components[1];
+                let tool_use_id = &from[1];
                 let output = self.shared.tool_result_output(tool_use_id).ok_or_else(|| {
                     StoreError::store(
                         "LogStore",
@@ -422,7 +422,7 @@ impl Reader for LogStore {
                     return Ok(Some(Record::parsed(Value::String(full))));
                 }
 
-                let sub = from.components[2].as_str();
+                let sub = from[2].as_str();
                 match sub {
                     "line_count" => {
                         let count = full.lines().count() as i64;
@@ -437,13 +437,13 @@ impl Reader for LogStore {
                             ));
                         }
                         let offset: usize =
-                            from.components[3]
+                            from[3]
                                 .parse()
                                 .map_err(|e: std::num::ParseIntError| {
                                     StoreError::store("LogStore", "read", e.to_string())
                                 })?;
                         let limit: usize =
-                            from.components[4]
+                            from[4]
                                 .parse()
                                 .map_err(|e: std::num::ParseIntError| {
                                     StoreError::store("LogStore", "read", e.to_string())
@@ -478,7 +478,7 @@ impl Writer for LogStore {
         let key = if to.is_empty() {
             "append"
         } else {
-            to.components[0].as_str()
+            to[0].as_str()
         };
 
         match key {

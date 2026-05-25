@@ -107,10 +107,10 @@ async fn send_via_input_store(
     };
     let result = client.write_typed(&oxpath!("input", "key"), &event).await;
     match result {
-        Ok(p) if p.components.first().map(|c| c.as_str()) == Some("unbound") => {
+        Ok(p) if p.iter().next().map(|c| c.as_str()) == Some("unbound") => {
             let mode = p
-                .components
-                .get(1)
+                .iter()
+                .nth(1)
                 .and_then(|c| Mode::parse(c.as_str()))
                 .unwrap_or(Mode::Normal);
             KeyDispatchOutcome::Unbound { mode }

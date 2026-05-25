@@ -225,7 +225,7 @@ mod tests {
             )
             .await
             .unwrap();
-        path.components
+        path.iter()
             .last()
             .map(|c| c.as_str().to_string())
             .expect("created path must carry the thread id")
@@ -919,7 +919,7 @@ mod tests {
             .await
             .unwrap();
         let tid = created_path
-            .components
+            .iter()
             .last()
             .map(|c| c.as_str().to_string())
             .expect("created path should carry the thread id");
@@ -1150,7 +1150,7 @@ mod tests {
             .await
             .unwrap();
         let tid = created_path
-            .components
+            .iter()
             .last()
             .map(|c| c.as_str().to_string())
             .expect("created path should carry the thread id");
@@ -1877,10 +1877,10 @@ mod tests {
             .write_typed(&path!("input/key"), &event)
             .await
             .expect("unbound key is Ok with `unbound/<mode>` path");
-        assert_eq!(path.components.len(), 2);
-        assert_eq!(path.components[0].as_str(), "unbound");
+        assert_eq!(path.len(), 2);
+        assert_eq!(path[0].as_str(), "unbound");
         assert_eq!(
-            path.components[1].as_str(),
+            path[1].as_str(),
             "normal",
             "unbound key on plain inbox must resolve to Mode::Normal"
         );
@@ -1925,9 +1925,9 @@ mod tests {
             .write_typed(&path!("input/key"), &event)
             .await
             .expect("unbound key is Ok with `unbound/<mode>` path");
-        assert_eq!(path.components[0].as_str(), "unbound");
+        assert_eq!(path[0].as_str(), "unbound");
         assert_eq!(
-            path.components[1].as_str(),
+            path[1].as_str(),
             "insert",
             "unbound key with editor open must resolve to Mode::Insert"
         );

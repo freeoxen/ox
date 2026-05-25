@@ -51,7 +51,7 @@ impl CliPolicyCheck {
         // "fs/read", the ToolStore resolves wire→internal before dispatching,
         // but PolicyStore sits in front, so we see the raw path which uses
         // wire names (e.g. "read_file", "shell").
-        path.components[0].clone()
+        path[0].clone()
     }
 
     /// Convert a StructFS Record to a serde_json::Value for PolicyGuard.
@@ -104,8 +104,8 @@ impl CliPolicyCheck {
         let decision_str = match result {
             Ok(returned_path) => {
                 // Decision encoded in path: "request/{decision}"
-                if returned_path.components.len() >= 2 {
-                    returned_path.components[1].clone()
+                if returned_path.len() >= 2 {
+                    returned_path[1].clone()
                 } else {
                     "deny_once".to_string()
                 }

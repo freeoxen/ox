@@ -40,10 +40,10 @@ pub fn instance_segment(change_path: &Path, prefix: &Path, suffix: &Path) -> Opt
         return None;
     }
     let tail_start = change_path.len() - suffix.len();
-    if change_path.components[tail_start..] != suffix.components[..] {
+    if !(tail_start..change_path.len()).all(|i| change_path[i] == suffix[i - tail_start]) {
         return None;
     }
-    Some(change_path.components[prefix.len()].clone())
+    Some(change_path[prefix.len()].clone())
 }
 
 /// `config/gate/accounts/{name}` — the account record path.
@@ -136,8 +136,7 @@ pub fn null_write(path: Path) -> Write {
 /// values into the broker go through this encoder.
 pub fn path_to_value(p: &Path) -> structfs_core_store::Value {
     structfs_core_store::Value::Array(
-        p.components
-            .iter()
+        p.iter()
             .map(|c| structfs_core_store::Value::String(c.clone()))
             .collect(),
     )
