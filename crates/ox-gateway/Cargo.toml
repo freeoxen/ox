@@ -22,6 +22,7 @@ ox-broker = { workspace = true }
 ox-gate = { workspace = true }
 ox-store-util = { workspace = true }
 ox-path = { workspace = true }
+ox-ui = { workspace = true }
 structfs-core-store = { workspace = true }
 structfs-serde-store = { workspace = true }
 structfs-http = { workspace = true }
@@ -37,6 +38,8 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
+figment = { workspace = true }
+toml = { workspace = true }
 
 [dev-dependencies]
 reqwest = { workspace = true, features = ["json", "stream"] }
