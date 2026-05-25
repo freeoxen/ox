@@ -13,6 +13,9 @@
 mod dispatch;
 mod inflight;
 
+#[cfg(any(test, feature = "test-utils"))]
+pub mod mock;
+
 pub use inflight::CompletionStatus;
 #[allow(unused_imports)]
 pub(crate) use inflight::{Inflight, InflightState};

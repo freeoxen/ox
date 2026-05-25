@@ -12,6 +12,9 @@ readme = "README.md"
 keywords = ["agent", "ai", "llm", "structfs", "transport"]
 categories = ["api-bindings"]
 
+[features]
+test-utils = []
+
 [dependencies]
 thiserror = { workspace = true }
 tracing = { workspace = true }
