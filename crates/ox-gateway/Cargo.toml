@@ -27,6 +27,7 @@ structfs-serde-store = { workspace = true }
 structfs-http = { workspace = true }
 
 axum = { workspace = true }
+bytes = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 async-stream = { workspace = true }
 futures = { workspace = true }
