@@ -7,12 +7,14 @@
 
 pub mod backing;
 pub mod cascade;
+pub mod jsonl_file_backing;
 pub mod local_config;
 pub mod masked;
 pub mod read_only;
 
 pub use backing::StoreBacking;
 pub use cascade::Cascade;
+pub use jsonl_file_backing::JsonlFileBacking;
 pub use local_config::LocalConfig;
 pub use masked::Masked;
 pub use read_only::ReadOnly;

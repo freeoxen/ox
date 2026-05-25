@@ -11,3 +11,8 @@ authors.workspace = true
 [dependencies]
 tracing = { workspace = true }
 structfs-core-store.workspace = true
+structfs-serde-store = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
