@@ -134,7 +134,7 @@ pub async fn buffer_response(
 ///
 /// Numeric strings are valid `PathComponent`s (pure-digit rule in
 /// `structfs_core_store::Path`), so we can form this at runtime.
-fn events_from_subpath(seq: usize) -> Path {
+pub(crate) fn events_from_subpath(seq: usize) -> Path {
     Path::try_from_components(vec![
         "events".to_string(),
         "from".to_string(),
