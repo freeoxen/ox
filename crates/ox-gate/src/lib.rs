@@ -28,6 +28,10 @@ pub mod transport;
 // file I/O and no need for this module.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod usage_store;
+// `completion_broker` requires ox-broker (tokio rt-multi-thread) and the
+// async executor — neither available on wasm.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod completion_broker;
 pub mod validation;
 
 pub use account::AccountConfig;
@@ -41,6 +45,8 @@ pub use provider::{
     AuthScheme, Preset, ProviderConfig, completion_url, dialect_paths, models_url, presets,
     validate_endpoint,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use completion_broker::{CompletionBrokerStore, CompletionStatus, RequestId};
 #[cfg(not(target_arch = "wasm32"))]
 pub use transport::{HttpTransport, Transport};
 #[cfg(not(target_arch = "wasm32"))]
