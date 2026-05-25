@@ -152,25 +152,7 @@ pub struct CompletionRequest {
 // Stream events (from the transport)
 // ---------------------------------------------------------------------------
 
-/// A single event from a streaming completion response.
-#[derive(Debug, Clone)]
-pub enum StreamEvent {
-    /// A chunk of text from the assistant.
-    TextDelta(String),
-    /// A new tool invocation has started.
-    ToolUseStart {
-        /// Unique ID for this tool use.
-        id: String,
-        /// Name of the tool.
-        name: String,
-    },
-    /// A chunk of JSON input for the current tool invocation.
-    ToolUseInputDelta(String),
-    /// The model has finished its response.
-    MessageStop,
-    /// An error occurred during streaming.
-    Error(String),
-}
+pub use ox_types::StreamEvent;
 
 // ---------------------------------------------------------------------------
 // Agent events (for observability subscribers)

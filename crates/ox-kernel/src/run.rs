@@ -156,7 +156,7 @@ pub fn default_refs() -> Vec<ContextRef> {
 /// Serialize a [`StreamEvent`] to JSON.
 pub fn stream_event_to_json(event: &StreamEvent) -> serde_json::Value {
     match event {
-        StreamEvent::TextDelta(text) => serde_json::json!({
+        StreamEvent::TextDelta { text } => serde_json::json!({
             "type": "text_delta",
             "text": text,
         }),
@@ -165,16 +165,26 @@ pub fn stream_event_to_json(event: &StreamEvent) -> serde_json::Value {
             "id": id,
             "name": name,
         }),
-        StreamEvent::ToolUseInputDelta(delta) => serde_json::json!({
+        StreamEvent::ToolUseInputDelta { delta } => serde_json::json!({
             "type": "tool_use_input_delta",
             "delta": delta,
         }),
         StreamEvent::MessageStop => serde_json::json!({
             "type": "message_stop",
         }),
-        StreamEvent::Error(msg) => serde_json::json!({
+        StreamEvent::Error { message } => serde_json::json!({
             "type": "error",
-            "message": msg,
+            "message": message,
+        }),
+        StreamEvent::InputUsage { input_tokens, cache_creation, cache_read } => serde_json::json!({
+            "type": "input_usage",
+            "input_tokens": input_tokens,
+            "cache_creation": cache_creation,
+            "cache_read": cache_read,
+        }),
+        StreamEvent::OutputUsage { output_tokens } => serde_json::json!({
+            "type": "output_usage",
+            "output_tokens": output_tokens,
         }),
     }
 }
@@ -192,7 +202,7 @@ pub fn json_to_stream_event(json: &serde_json::Value) -> Result<StreamEvent, Str
                 .get("text")
                 .and_then(|v| v.as_str())
                 .ok_or("missing 'text' field")?;
-            Ok(StreamEvent::TextDelta(text.to_string()))
+            Ok(StreamEvent::TextDelta { text: text.to_string() })
         }
         "tool_use_start" => {
             let id = json
@@ -213,7 +223,7 @@ pub fn json_to_stream_event(json: &serde_json::Value) -> Result<StreamEvent, Str
                 .get("delta")
                 .and_then(|v| v.as_str())
                 .ok_or("missing 'delta' field")?;
-            Ok(StreamEvent::ToolUseInputDelta(delta.to_string()))
+            Ok(StreamEvent::ToolUseInputDelta { delta: delta.to_string() })
         }
         "message_stop" => Ok(StreamEvent::MessageStop),
         "error" => {
@@ -221,8 +231,16 @@ pub fn json_to_stream_event(json: &serde_json::Value) -> Result<StreamEvent, Str
                 .get("message")
                 .and_then(|v| v.as_str())
                 .ok_or("missing 'message' field")?;
-            Ok(StreamEvent::Error(msg.to_string()))
+            Ok(StreamEvent::Error { message: msg.to_string() })
         }
+        "input_usage" => Ok(StreamEvent::InputUsage {
+            input_tokens: json.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+            cache_creation: json.get("cache_creation").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+            cache_read: json.get("cache_read").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+        }),
+        "output_usage" => Ok(StreamEvent::OutputUsage {
+            output_tokens: json.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+        }),
         other => Err(format!("unknown stream event type: {other}")),
     }
 }
@@ -348,7 +366,7 @@ pub fn accumulate_response(
 
     for event in events {
         match event {
-            StreamEvent::TextDelta(text) => {
+            StreamEvent::TextDelta { text } => {
                 // Flush any pending tool
                 flush_tool(&mut blocks, &mut current_tool);
                 current_text.push_str(&text);
@@ -361,7 +379,7 @@ pub fn accumulate_response(
                 flush_tool(&mut blocks, &mut current_tool);
                 current_tool = Some((id, name, String::new()));
             }
-            StreamEvent::ToolUseInputDelta(delta) => {
+            StreamEvent::ToolUseInputDelta { delta } => {
                 if let Some((_, _, ref mut input_json)) = current_tool {
                     input_json.push_str(&delta);
                 }
@@ -369,12 +387,13 @@ pub fn accumulate_response(
             StreamEvent::MessageStop => {
                 break;
             }
-            StreamEvent::Error(e) => {
+            StreamEvent::Error { message } => {
                 flush_text(&mut blocks, &mut current_text);
                 flush_tool(&mut blocks, &mut current_tool);
-                emit(AgentEvent::Error(e.clone()));
-                return Err(e);
+                emit(AgentEvent::Error(message.clone()));
+                return Err(message);
             }
+            StreamEvent::InputUsage { .. } | StreamEvent::OutputUsage { .. } => {}
         }
     }
 
@@ -440,7 +459,7 @@ fn accumulate_response_durable(
 
     for event in events {
         match event {
-            StreamEvent::TextDelta(text) => {
+            StreamEvent::TextDelta { text } => {
                 flush_tool(&mut blocks, &mut current_tool);
                 current_text.push_str(&text);
                 visible_accumulated.push_str(&text);
@@ -471,7 +490,7 @@ fn accumulate_response_durable(
                     events_since_last_progress = 0;
                 }
             }
-            StreamEvent::ToolUseInputDelta(delta) => {
+            StreamEvent::ToolUseInputDelta { delta } => {
                 if let Some((_, _, ref mut input_json)) = current_tool {
                     input_json.push_str(&delta);
                 }
@@ -479,12 +498,13 @@ fn accumulate_response_durable(
             StreamEvent::MessageStop => {
                 break;
             }
-            StreamEvent::Error(e) => {
+            StreamEvent::Error { message } => {
                 flush_text(&mut blocks, &mut current_text);
                 flush_tool(&mut blocks, &mut current_tool);
-                emit(AgentEvent::Error(e.clone()));
-                return Err(e);
+                emit(AgentEvent::Error(message.clone()));
+                return Err(message);
             }
+            StreamEvent::InputUsage { .. } | StreamEvent::OutputUsage { .. } => {}
         }
     }
 
@@ -2015,14 +2035,14 @@ mod tests {
     #[test]
     fn stream_event_json_roundtrip() {
         let events = vec![
-            StreamEvent::TextDelta("hello".into()),
+            StreamEvent::TextDelta { text: "hello".into() },
             StreamEvent::ToolUseStart {
                 id: "t1".into(),
                 name: "read".into(),
             },
-            StreamEvent::ToolUseInputDelta("{\"a\":1}".into()),
+            StreamEvent::ToolUseInputDelta { delta: "{\"a\":1}".into() },
             StreamEvent::MessageStop,
-            StreamEvent::Error("boom".into()),
+            StreamEvent::Error { message: "boom".into() },
         ];
 
         for event in &events {
@@ -2058,8 +2078,8 @@ mod tests {
     #[test]
     fn accumulate_text_only() {
         let events = vec![
-            StreamEvent::TextDelta("Hello ".into()),
-            StreamEvent::TextDelta("world".into()),
+            StreamEvent::TextDelta { text: "Hello ".into() },
+            StreamEvent::TextDelta { text: "world".into() },
             StreamEvent::MessageStop,
         ];
         let mut emitted = Vec::new();
@@ -2087,7 +2107,7 @@ mod tests {
                 id: "t1".into(),
                 name: "get_weather".into(),
             },
-            StreamEvent::ToolUseInputDelta(r#"{"city":"NYC"}"#.into()),
+            StreamEvent::ToolUseInputDelta { delta: r#"{"city":"NYC"}"#.into() },
             StreamEvent::MessageStop,
         ];
         let mut emitted = Vec::new();
@@ -2113,12 +2133,12 @@ mod tests {
         // durable if the process exited between the last TextDelta and
         // `record_turn_scoped`.
         let events = vec![
-            StreamEvent::TextDelta("Let me check".into()),
+            StreamEvent::TextDelta { text: "Let me check".into() },
             StreamEvent::ToolUseStart {
                 id: "t1".into(),
                 name: "get_weather".into(),
             },
-            StreamEvent::ToolUseInputDelta("{}".into()),
+            StreamEvent::ToolUseInputDelta { delta: "{}".into() },
             StreamEvent::MessageStop,
         ];
         let mut store = MockStore::new();
@@ -2160,7 +2180,7 @@ mod tests {
         // With `durable_stream_enabled=false`, behaviour is identical
         // to `accumulate_response`: no progress entries written.
         let events = vec![
-            StreamEvent::TextDelta("Hello".into()),
+            StreamEvent::TextDelta { text: "Hello".into() },
             StreamEvent::ToolUseStart {
                 id: "t1".into(),
                 name: "t".into(),
@@ -2198,7 +2218,7 @@ mod tests {
         // here would duplicate the final text as a superseded
         // snapshot.
         let events = vec![
-            StreamEvent::TextDelta("Hi".into()),
+            StreamEvent::TextDelta { text: "Hi".into() },
             StreamEvent::MessageStop,
         ];
         let mut store = MockStore::new();
@@ -2225,12 +2245,12 @@ mod tests {
     #[test]
     fn accumulate_mixed_text_and_tools() {
         let events = vec![
-            StreamEvent::TextDelta("Let me check.".into()),
+            StreamEvent::TextDelta { text: "Let me check.".into() },
             StreamEvent::ToolUseStart {
                 id: "t1".into(),
                 name: "get_weather".into(),
             },
-            StreamEvent::ToolUseInputDelta("{}".into()),
+            StreamEvent::ToolUseInputDelta { delta: "{}".into() },
             StreamEvent::MessageStop,
         ];
         let mut emitted = Vec::new();
@@ -2322,7 +2342,7 @@ mod tests {
         let record = Record::parsed(structfs_serde_store::json_to_value(json));
         let events = deserialize_events(record).unwrap();
         assert_eq!(events.len(), 2);
-        assert!(matches!(&events[0], StreamEvent::TextDelta(t) if t == "hello"));
+        assert!(matches!(&events[0], StreamEvent::TextDelta { text: t } if t == "hello"));
         assert!(matches!(&events[1], StreamEvent::MessageStop));
     }
 
@@ -2385,7 +2405,7 @@ mod tests {
         };
         let events = send_completion(&mut store, "test", &request).unwrap();
         assert_eq!(events.len(), 2);
-        assert!(matches!(&events[0], StreamEvent::TextDelta(t) if t == "hello"));
+        assert!(matches!(&events[0], StreamEvent::TextDelta { text: t } if t == "hello"));
         assert!(matches!(&events[1], StreamEvent::MessageStop));
     }
 
@@ -2453,8 +2473,8 @@ mod tests {
     #[test]
     fn accumulate_response_error_event() {
         let events = vec![
-            StreamEvent::TextDelta("partial".into()),
-            StreamEvent::Error("something broke".into()),
+            StreamEvent::TextDelta { text: "partial".into() },
+            StreamEvent::Error { message: "something broke".into() },
         ];
         let mut emitted = vec![];
         let result = accumulate_response(events, &mut |e| emitted.push(format!("{e:?}")));
@@ -2731,7 +2751,7 @@ mod tests {
         let refs = default_refs();
         let events = complete(&mut store, "test", &refs).unwrap();
         assert_eq!(events.len(), 2);
-        assert!(matches!(&events[0], StreamEvent::TextDelta(t) if t == "Hello!"));
+        assert!(matches!(&events[0], StreamEvent::TextDelta { text: t } if t == "Hello!"));
     }
 
     #[test]
