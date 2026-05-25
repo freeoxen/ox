@@ -1,0 +1,43 @@
+[package]
+name = "ox-gateway"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Local LLM gateway exposing Anthropic / OpenAI APIs over the StructFS substrate"
+keywords = ["ai", "llm", "gateway", "api", "structfs"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "ox-gateway"
+path = "src/main.rs"
+
+[dependencies]
+ox-types = { workspace = true }
+ox-kernel = { workspace = true }
+ox-broker = { workspace = true }
+ox-gate = { workspace = true }
+ox-store-util = { workspace = true }
+ox-path = { workspace = true }
+structfs-core-store = { workspace = true }
+structfs-serde-store = { workspace = true }
+structfs-http = { workspace = true }
+
+axum = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+async-stream = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+reqwest = { workspace = true, features = ["json", "stream"] }
+tempfile = { workspace = true }
+ox-gate = { workspace = true, features = ["test-utils"] }
