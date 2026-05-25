@@ -184,6 +184,147 @@ pub fn extract_usage(body: &str) -> UsageInfo {
     info
 }
 
+/// Encode a buffered slice of [`StreamEvent`]s into an Anthropic Messages response shape.
+///
+/// Used when the client sends `stream: false`; the gateway collects all events and calls
+/// this function to produce a single JSON object in place of an SSE stream.
+pub fn encode_response(events: &[StreamEvent]) -> serde_json::Value {
+    let mut content_blocks: Vec<serde_json::Value> = Vec::new();
+    let mut current_text = String::new();
+    let mut current_tool: Option<(String, String, String)> = None; // (id, name, input_json)
+    let mut input_tokens = 0u32;
+    let mut cache_creation = 0u32;
+    let mut cache_read = 0u32;
+    let mut output_tokens = 0u32;
+
+    fn flush_text(blocks: &mut Vec<serde_json::Value>, text: &mut String) {
+        if !text.is_empty() {
+            blocks.push(serde_json::json!({ "type": "text", "text": text.clone() }));
+            text.clear();
+        }
+    }
+    fn flush_tool(blocks: &mut Vec<serde_json::Value>, tool: &mut Option<(String, String, String)>) {
+        if let Some((id, name, input_json)) = tool.take() {
+            let input = serde_json::from_str::<serde_json::Value>(&input_json)
+                .unwrap_or(serde_json::Value::Object(Default::default()));
+            blocks.push(serde_json::json!({
+                "type": "tool_use",
+                "id": id,
+                "name": name,
+                "input": input,
+            }));
+        }
+    }
+
+    for ev in events {
+        match ev {
+            StreamEvent::TextDelta { text } => {
+                flush_tool(&mut content_blocks, &mut current_tool);
+                current_text.push_str(text);
+            }
+            StreamEvent::ToolUseStart { id, name } => {
+                flush_text(&mut content_blocks, &mut current_text);
+                flush_tool(&mut content_blocks, &mut current_tool);
+                current_tool = Some((id.clone(), name.clone(), String::new()));
+            }
+            StreamEvent::ToolUseInputDelta { delta } => {
+                if let Some((_, _, ref mut input_json)) = current_tool {
+                    input_json.push_str(delta);
+                }
+            }
+            StreamEvent::InputUsage { input_tokens: it, cache_creation: cc, cache_read: cr } => {
+                input_tokens = *it;
+                cache_creation = *cc;
+                cache_read = *cr;
+            }
+            StreamEvent::OutputUsage { output_tokens: ot } => {
+                output_tokens = *ot;
+            }
+            StreamEvent::MessageStop | StreamEvent::Error { .. } => {}
+        }
+    }
+    flush_text(&mut content_blocks, &mut current_text);
+    flush_tool(&mut content_blocks, &mut current_tool);
+
+    serde_json::json!({
+        "type": "message",
+        "role": "assistant",
+        "model": "",
+        "content": content_blocks,
+        "stop_reason": "end_turn",
+        "usage": {
+            "input_tokens": input_tokens,
+            "cache_creation_input_tokens": cache_creation,
+            "cache_read_input_tokens": cache_read,
+            "output_tokens": output_tokens,
+        }
+    })
+}
+
+#[cfg(test)]
+mod encode_response_tests {
+    use super::*;
+
+    #[test]
+    fn encode_text_only_response() {
+        let events = vec![
+            StreamEvent::InputUsage { input_tokens: 10, cache_creation: 0, cache_read: 0 },
+            StreamEvent::TextDelta { text: "Hello".into() },
+            StreamEvent::TextDelta { text: " world".into() },
+            StreamEvent::OutputUsage { output_tokens: 2 },
+            StreamEvent::MessageStop,
+        ];
+        let resp = encode_response(&events);
+        assert_eq!(resp["type"], "message");
+        assert_eq!(resp["role"], "assistant");
+        assert_eq!(resp["content"][0]["type"], "text");
+        assert_eq!(resp["content"][0]["text"], "Hello world");
+        assert_eq!(resp["usage"]["input_tokens"], 10);
+        assert_eq!(resp["usage"]["output_tokens"], 2);
+    }
+
+    #[test]
+    fn encode_response_with_tool_use() {
+        let events = vec![
+            StreamEvent::ToolUseStart { id: "t1".into(), name: "read_file".into() },
+            StreamEvent::ToolUseInputDelta { delta: r#"{"path":"#.into() },
+            StreamEvent::ToolUseInputDelta { delta: r#""/etc/hosts"}"#.into() },
+            StreamEvent::OutputUsage { output_tokens: 5 },
+            StreamEvent::MessageStop,
+        ];
+        let resp = encode_response(&events);
+        let blocks = resp["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["type"], "tool_use");
+        assert_eq!(blocks[0]["id"], "t1");
+        assert_eq!(blocks[0]["name"], "read_file");
+        assert_eq!(blocks[0]["input"]["path"], "/etc/hosts");
+    }
+
+    #[test]
+    fn encode_mixed_text_and_tool_use_preserves_order() {
+        let events = vec![
+            StreamEvent::TextDelta { text: "I'll read it.".into() },
+            StreamEvent::ToolUseStart { id: "t1".into(), name: "read_file".into() },
+            StreamEvent::ToolUseInputDelta { delta: r#"{"p":"/a"}"#.into() },
+            StreamEvent::MessageStop,
+        ];
+        let resp = encode_response(&events);
+        let blocks = resp["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[0]["text"], "I'll read it.");
+        assert_eq!(blocks[1]["type"], "tool_use");
+    }
+
+    #[test]
+    fn encode_empty_events_yields_empty_content() {
+        let resp = encode_response(&[]);
+        assert_eq!(resp["content"].as_array().unwrap().len(), 0);
+        assert_eq!(resp["usage"]["input_tokens"], 0);
+    }
+}
+
 #[cfg(test)]
 mod decode_tests {
     use super::*;
