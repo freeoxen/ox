@@ -10,7 +10,7 @@ use ox_path::oxpath;
 use ox_store_util::StoreBacking;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use structfs_core_store::{Error as StoreError, Value, path};
+use structfs_core_store::{Error as StoreError, Record, Value, path};
 use structfs_serde_store::to_value;
 
 /// Minimal in-memory `StoreBacking` for the UsageStore in tests.
@@ -119,6 +119,64 @@ pub async fn build_test_broker(
     broker
         .mount_async(oxpath!("gateway", "completions"), store)
         .await;
+
+    broker
+}
+
+/// Build a broker preloaded with two accounts ("anthropic" + "openai") each
+/// pointing at the matching provider. Catalogs are populated via
+/// `GateStore::write`.
+///
+/// Used by the /v1/models aggregation test. No mock executor or UsageStore is
+/// needed because that test only calls GET /v1/models which reads from the
+/// gate directly; no upstream LLM call is made.
+pub async fn build_test_broker_two_accounts() -> BrokerStore {
+    use ox_gate::{ApiKey, ModelInfo, ModelInfoSource};
+    use ox_store_util::LocalConfig;
+    use structfs_core_store::Writer;
+
+    let broker = BrokerStore::new(Duration::from_secs(5));
+
+    // GateStore::new() already carries built-in anthropic + openai accounts
+    // and providers. We only need to add the per-provider model catalogs.
+    let mut gate = ox_gate::GateStore::new();
+
+    let claude = ModelInfo {
+        id: "claude-sonnet-4-20250514".into(),
+        display_name: "Claude Sonnet 4".into(),
+        max_context_size: None,
+        max_output_tokens: None,
+        source: ModelInfoSource::Server,
+    };
+    let gpt = ModelInfo {
+        id: "gpt-4o".into(),
+        display_name: "GPT-4o".into(),
+        max_context_size: None,
+        max_output_tokens: None,
+        source: ModelInfoSource::Server,
+    };
+
+    gate.write(
+        &path!("providers/anthropic/models"),
+        Record::parsed(to_value(&vec![claude]).unwrap()),
+    )
+    .expect("write anthropic catalog");
+    gate.write(
+        &path!("providers/openai/models"),
+        Record::parsed(to_value(&vec![gpt]).unwrap()),
+    )
+    .expect("write openai catalog");
+
+    // Mount GateStore at "gate/" so that gate/snapshot/state is served by
+    // GateStore's own Reader (not a raw LocalConfig key).
+    broker.mount(oxpath!("gate"), gate).await;
+
+    // Secrets aren't needed for /v1/models (no upstream call), but populate
+    // them so any key-read path that fires doesn't panic on a missing mount.
+    let mut secret = LocalConfig::new();
+    secret.set("keys/anthropic", to_value(&ApiKey::new("sk-anth-test")).unwrap());
+    secret.set("keys/openai", to_value(&ApiKey::new("sk-oai-test")).unwrap());
+    broker.mount(oxpath!("secret"), secret).await;
 
     broker
 }
