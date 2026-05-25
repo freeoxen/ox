@@ -46,14 +46,16 @@ pub fn parse_sse_events(body: &str) -> Vec<StreamEvent> {
                     match delta_type {
                         "text_delta" => {
                             if let Some(text) = delta.get("text").and_then(|t| t.as_str()) {
-                                events.push(StreamEvent::TextDelta(text.to_string()));
+                                events.push(StreamEvent::TextDelta { text: text.to_string() });
                             }
                         }
                         "input_json_delta" => {
                             if let Some(partial) =
                                 delta.get("partial_json").and_then(|t| t.as_str())
                             {
-                                events.push(StreamEvent::ToolUseInputDelta(partial.to_string()));
+                                events.push(StreamEvent::ToolUseInputDelta {
+                                    delta: partial.to_string(),
+                                });
                             }
                         }
                         _ => {}
@@ -69,7 +71,7 @@ pub fn parse_sse_events(body: &str) -> Vec<StreamEvent> {
                     .and_then(|e| e.get("message"))
                     .and_then(|m| m.as_str())
                     .unwrap_or("unknown error");
-                events.push(StreamEvent::Error(msg.to_string()));
+                events.push(StreamEvent::Error { message: msg.to_string() });
             }
             _ => {
                 // ping, message_start, content_block_stop, message_delta — ignore
@@ -139,7 +141,7 @@ mod tests {
         let body = "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n";
         let events = parse_sse_events(body);
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], StreamEvent::TextDelta(t) if t == "Hello"));
+        assert!(matches!(&events[0], StreamEvent::TextDelta { text } if text == "Hello"));
     }
 
     #[test]
@@ -157,7 +159,7 @@ mod tests {
         let body = "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"loc\\\"\"}}\n";
         let events = parse_sse_events(body);
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], StreamEvent::ToolUseInputDelta(s) if s == "{\"loc\""));
+        assert!(matches!(&events[0], StreamEvent::ToolUseInputDelta { delta } if delta == "{\"loc\""));
     }
 
     #[test]
@@ -181,7 +183,7 @@ mod tests {
         let body = "data: {\"type\":\"error\",\"error\":{\"message\":\"rate limit exceeded\"}}\n";
         let events = parse_sse_events(body);
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], StreamEvent::Error(msg) if msg == "rate limit exceeded"));
+        assert!(matches!(&events[0], StreamEvent::Error { message } if message == "rate limit exceeded"));
     }
 
     #[test]
@@ -203,9 +205,9 @@ data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"input_json_delta\"
 data: {\"type\":\"message_stop\"}\n";
         let events = parse_sse_events(body);
         assert_eq!(events.len(), 4);
-        assert!(matches!(&events[0], StreamEvent::TextDelta(t) if t == "Hi"));
+        assert!(matches!(&events[0], StreamEvent::TextDelta { text } if text == "Hi"));
         assert!(matches!(&events[1], StreamEvent::ToolUseStart { .. }));
-        assert!(matches!(&events[2], StreamEvent::ToolUseInputDelta(s) if s == "{}"));
+        assert!(matches!(&events[2], StreamEvent::ToolUseInputDelta { delta } if delta == "{}"));
         assert!(matches!(&events[3], StreamEvent::MessageStop));
     }
 

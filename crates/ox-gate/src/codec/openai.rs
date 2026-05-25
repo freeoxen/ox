@@ -197,7 +197,7 @@ pub fn parse_sse_events(body: &str) -> (Vec<StreamEvent>, UsageInfo) {
                 // Text content
                 if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
                     if !content.is_empty() {
-                        events.push(StreamEvent::TextDelta(content.to_string()));
+                        events.push(StreamEvent::TextDelta { text: content.to_string() });
                     }
                 }
 
@@ -228,7 +228,9 @@ pub fn parse_sse_events(body: &str) -> (Vec<StreamEvent>, UsageInfo) {
                             .and_then(|a| a.as_str())
                         {
                             if !args.is_empty() {
-                                events.push(StreamEvent::ToolUseInputDelta(args.to_string()));
+                                events.push(StreamEvent::ToolUseInputDelta {
+                                    delta: args.to_string(),
+                                });
                             }
                         }
                     }
@@ -370,7 +372,7 @@ mod tests {
         let body = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n";
         let (events, usage) = parse_sse_events(body);
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], StreamEvent::TextDelta(t) if t == "Hello"));
+        assert!(matches!(&events[0], StreamEvent::TextDelta { text } if text == "Hello"));
         assert_eq!(usage.input_tokens, 0);
     }
 
@@ -386,8 +388,8 @@ data: [DONE]\n";
         assert!(
             matches!(&events[0], StreamEvent::ToolUseStart { id, name } if id == "tc1" && name == "echo")
         );
-        assert!(matches!(&events[1], StreamEvent::ToolUseInputDelta(s) if s == "{\"text\""));
-        assert!(matches!(&events[2], StreamEvent::ToolUseInputDelta(s) if s == ": \"hi\"}"));
+        assert!(matches!(&events[1], StreamEvent::ToolUseInputDelta { delta } if delta == "{\"text\""));
+        assert!(matches!(&events[2], StreamEvent::ToolUseInputDelta { delta } if delta == ": \"hi\"}"));
         assert!(matches!(&events[3], StreamEvent::MessageStop));
     }
 
@@ -433,7 +435,7 @@ data: [DONE]\n";
             ": comment\nevent: ping\ndata: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n";
         let (events, _usage) = parse_sse_events(body);
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], StreamEvent::TextDelta(t) if t == "Hi"));
+        assert!(matches!(&events[0], StreamEvent::TextDelta { text } if text == "Hi"));
     }
 
     #[test]
@@ -445,9 +447,9 @@ data: [DONE]\n";
         let (events, _usage) = parse_sse_events(body);
         assert_eq!(events.len(), 5); // start+args, start+args, MessageStop
         assert!(matches!(&events[0], StreamEvent::ToolUseStart { name, .. } if name == "a"));
-        assert!(matches!(&events[1], StreamEvent::ToolUseInputDelta(s) if s == "{}"));
+        assert!(matches!(&events[1], StreamEvent::ToolUseInputDelta { delta } if delta == "{}"));
         assert!(matches!(&events[2], StreamEvent::ToolUseStart { name, .. } if name == "b"));
-        assert!(matches!(&events[3], StreamEvent::ToolUseInputDelta(s) if s == "{}"));
+        assert!(matches!(&events[3], StreamEvent::ToolUseInputDelta { delta } if delta == "{}"));
         assert!(matches!(&events[4], StreamEvent::MessageStop));
     }
 }

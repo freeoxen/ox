@@ -299,7 +299,7 @@ impl Writer for CompletionModule {
 
 fn stream_event_to_json(event: &StreamEvent) -> serde_json::Value {
     match event {
-        StreamEvent::TextDelta(text) => serde_json::json!({
+        StreamEvent::TextDelta { text } => serde_json::json!({
             "type": "text_delta",
             "text": text,
         }),
@@ -308,16 +308,26 @@ fn stream_event_to_json(event: &StreamEvent) -> serde_json::Value {
             "id": id,
             "name": name,
         }),
-        StreamEvent::ToolUseInputDelta(delta) => serde_json::json!({
+        StreamEvent::ToolUseInputDelta { delta } => serde_json::json!({
             "type": "tool_use_input_delta",
             "delta": delta,
         }),
         StreamEvent::MessageStop => serde_json::json!({
             "type": "message_stop",
         }),
-        StreamEvent::Error(msg) => serde_json::json!({
+        StreamEvent::Error { message } => serde_json::json!({
             "type": "error",
-            "message": msg,
+            "message": message,
+        }),
+        StreamEvent::InputUsage { input_tokens, cache_creation, cache_read } => serde_json::json!({
+            "type": "input_usage",
+            "input_tokens": input_tokens,
+            "cache_creation": cache_creation,
+            "cache_read": cache_read,
+        }),
+        StreamEvent::OutputUsage { output_tokens } => serde_json::json!({
+            "type": "output_usage",
+            "output_tokens": output_tokens,
         }),
     }
 }
@@ -447,7 +457,7 @@ mod tests {
     #[test]
     fn execute_calls_transport_and_stores_result() {
         let events = vec![
-            StreamEvent::TextDelta("Hi".into()),
+            StreamEvent::TextDelta { text: "Hi".into() },
             StreamEvent::MessageStop,
         ];
         let transport = MockTransport::new(events.clone(), 10, 5);
@@ -472,7 +482,7 @@ mod tests {
 
     #[test]
     fn result_returns_stored_completion() {
-        let events = vec![StreamEvent::TextDelta("response".into())];
+        let events = vec![StreamEvent::TextDelta { text: "response".into() }];
         let transport = MockTransport::new(events, 42, 17);
         let mut module =
             CompletionModule::new(GateStore::new()).with_transport(Box::new(transport));
@@ -489,8 +499,8 @@ mod tests {
     #[test]
     fn on_event_callback_invoked_during_execute() {
         let events = vec![
-            StreamEvent::TextDelta("a".into()),
-            StreamEvent::TextDelta("b".into()),
+            StreamEvent::TextDelta { text: "a".into() },
+            StreamEvent::TextDelta { text: "b".into() },
         ];
         let transport = MockTransport::new(events, 0, 0);
         let mut module =
@@ -509,7 +519,7 @@ mod tests {
 
     #[test]
     fn writer_triggers_completion_on_complete_path() {
-        let events = vec![StreamEvent::TextDelta("done".into())];
+        let events = vec![StreamEvent::TextDelta { text: "done".into() }];
         let transport = MockTransport::new(events, 8, 3);
         let mut module =
             CompletionModule::new(GateStore::new()).with_transport(Box::new(transport));
@@ -530,7 +540,7 @@ mod tests {
 
     #[test]
     fn reader_returns_response_for_complete_path() {
-        let events = vec![StreamEvent::TextDelta("x".into())];
+        let events = vec![StreamEvent::TextDelta { text: "x".into() }];
         let transport = MockTransport::new(events, 20, 10);
         let mut module =
             CompletionModule::new(GateStore::new()).with_transport(Box::new(transport));
@@ -553,7 +563,7 @@ mod tests {
 
     #[test]
     fn reader_returns_metadata_for_complete_account_path() {
-        let events = vec![StreamEvent::TextDelta("x".into())];
+        let events = vec![StreamEvent::TextDelta { text: "x".into() }];
         let transport = MockTransport::new(events, 20, 10);
         let mut module =
             CompletionModule::new(GateStore::new()).with_transport(Box::new(transport));

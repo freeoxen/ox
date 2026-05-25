@@ -70,7 +70,6 @@ fn parse_response(dialect: &str, body: &str) -> Vec<StreamEvent> {
 pub struct SseParser {
     dialect: String,
     openai_tool_started: HashSet<u64>,
-    pub usage: UsageInfo,
 }
 
 impl SseParser {
@@ -78,7 +77,6 @@ impl SseParser {
         Self {
             dialect: dialect.to_string(),
             openai_tool_started: HashSet::new(),
-            usage: UsageInfo::default(),
         }
     }
 
@@ -104,32 +102,38 @@ impl SseParser {
         let event_type = json.get("type").and_then(|t| t.as_str()).unwrap_or("");
         match event_type {
             "message_start" => {
+                let mut out = Vec::new();
                 if let Some(usage) = json.get("message").and_then(|m| m.get("usage")) {
-                    if let Some(it) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
-                        self.usage.input_tokens = it as u32;
-                    }
-                    if let Some(ct) = usage
+                    let input_tokens = usage
+                        .get("input_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0) as u32;
+                    let cache_creation = usage
                         .get("cache_creation_input_tokens")
                         .and_then(|v| v.as_u64())
-                    {
-                        self.usage.cache_creation_input_tokens = ct as u32;
-                    }
-                    if let Some(cr) = usage
+                        .unwrap_or(0) as u32;
+                    let cache_read = usage
                         .get("cache_read_input_tokens")
                         .and_then(|v| v.as_u64())
-                    {
-                        self.usage.cache_read_input_tokens = cr as u32;
-                    }
+                        .unwrap_or(0) as u32;
+                    out.push(StreamEvent::InputUsage {
+                        input_tokens,
+                        cache_creation,
+                        cache_read,
+                    });
                 }
-                vec![]
+                out
             }
             "message_delta" => {
+                let mut out = Vec::new();
                 if let Some(usage) = json.get("usage") {
                     if let Some(ot) = usage.get("output_tokens").and_then(|v| v.as_u64()) {
-                        self.usage.output_tokens = ot as u32;
+                        out.push(StreamEvent::OutputUsage {
+                            output_tokens: ot as u32,
+                        });
                     }
                 }
-                vec![]
+                out
             }
             "content_block_start" => {
                 if let Some(cb) = json.get("content_block") {
@@ -154,12 +158,14 @@ impl SseParser {
                     match delta.get("type").and_then(|t| t.as_str()).unwrap_or("") {
                         "text_delta" => {
                             if let Some(text) = delta.get("text").and_then(|t| t.as_str()) {
-                                return vec![StreamEvent::TextDelta(text.to_string())];
+                                return vec![StreamEvent::TextDelta { text: text.to_string() }];
                             }
                         }
                         "input_json_delta" => {
                             if let Some(p) = delta.get("partial_json").and_then(|t| t.as_str()) {
-                                return vec![StreamEvent::ToolUseInputDelta(p.to_string())];
+                                return vec![StreamEvent::ToolUseInputDelta {
+                                    delta: p.to_string(),
+                                }];
                             }
                         }
                         _ => {}
@@ -174,31 +180,41 @@ impl SseParser {
                     .and_then(|e| e.get("message"))
                     .and_then(|m| m.as_str())
                     .unwrap_or("unknown error");
-                vec![StreamEvent::Error(msg.to_string())]
+                vec![StreamEvent::Error { message: msg.to_string() }]
             }
             _ => vec![],
         }
     }
 
     fn parse_openai(&mut self, json: &serde_json::Value) -> Vec<StreamEvent> {
-        // Track usage if present
+        let mut events = Vec::new();
+
         if let Some(usage_obj) = json.get("usage") {
-            if let Some(pt) = usage_obj.get("prompt_tokens").and_then(|v| v.as_u64()) {
-                self.usage.input_tokens = pt as u32;
-            }
-            if let Some(ct) = usage_obj.get("completion_tokens").and_then(|v| v.as_u64()) {
-                self.usage.output_tokens = ct as u32;
-            }
-            if let Some(cached) = usage_obj
+            let input_tokens = usage_obj
+                .get("prompt_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            let output_tokens = usage_obj
+                .get("completion_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            let cache_read = usage_obj
                 .get("prompt_tokens_details")
                 .and_then(|d| d.get("cached_tokens"))
                 .and_then(|v| v.as_u64())
-            {
-                self.usage.cache_read_input_tokens = cached as u32;
+                .unwrap_or(0) as u32;
+            if input_tokens > 0 || cache_read > 0 {
+                events.push(StreamEvent::InputUsage {
+                    input_tokens,
+                    cache_creation: 0,
+                    cache_read,
+                });
+            }
+            if output_tokens > 0 {
+                events.push(StreamEvent::OutputUsage { output_tokens });
             }
         }
 
-        let mut events = Vec::new();
         let Some(choices) = json.get("choices").and_then(|c| c.as_array()) else {
             return events;
         };
@@ -208,7 +224,7 @@ impl SseParser {
             };
             if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
                 if !content.is_empty() {
-                    events.push(StreamEvent::TextDelta(content.to_string()));
+                    events.push(StreamEvent::TextDelta { text: content.to_string() });
                 }
             }
             if let Some(tool_calls) = delta.get("tool_calls").and_then(|t| t.as_array()) {
@@ -233,7 +249,9 @@ impl SseParser {
                         .and_then(|a| a.as_str())
                     {
                         if !args.is_empty() {
-                            events.push(StreamEvent::ToolUseInputDelta(args.to_string()));
+                            events.push(StreamEvent::ToolUseInputDelta {
+                                delta: args.to_string(),
+                            });
                         }
                     }
                 }
@@ -478,13 +496,14 @@ pub fn streaming_fetch(
             }
         }
 
+        let usage = UsageInfo::from_events(&all_events);
         tracing::debug!(
             events = all_events.len(),
-            input_tokens = parser.usage.input_tokens,
-            output_tokens = parser.usage.output_tokens,
+            input_tokens = usage.input_tokens,
+            output_tokens = usage.output_tokens,
             "streaming fetch complete"
         );
-        return Ok((all_events, parser.usage));
+        return Ok((all_events, usage));
     }
 
     tracing::error!(last_err = %last_err, "streaming fetch exhausted retries");
@@ -865,7 +884,7 @@ mod tests {
         let body = "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\ndata: {\"type\":\"message_stop\"}\n";
         let events = parse_response("anthropic", body);
         assert_eq!(events.len(), 2);
-        assert!(matches!(&events[0], StreamEvent::TextDelta(t) if t == "Hello"));
+        assert!(matches!(&events[0], StreamEvent::TextDelta { text } if text == "Hello"));
         assert!(matches!(&events[1], StreamEvent::MessageStop));
     }
 
@@ -874,7 +893,7 @@ mod tests {
         let body = "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\ndata: [DONE]\n";
         let events = parse_response("openai", body);
         assert_eq!(events.len(), 2);
-        assert!(matches!(&events[0], StreamEvent::TextDelta(t) if t == "Hi"));
+        assert!(matches!(&events[0], StreamEvent::TextDelta { text } if text == "Hi"));
         assert!(matches!(&events[1], StreamEvent::MessageStop));
     }
 
@@ -885,7 +904,7 @@ mod tests {
         let mut parser = SseParser::new("anthropic");
         let events = parser.feed("data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}");
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], StreamEvent::TextDelta(t) if t == "Hi"));
+        assert!(matches!(&events[0], StreamEvent::TextDelta { text } if text == "Hi"));
     }
 
     #[test]
@@ -917,12 +936,16 @@ mod tests {
     #[test]
     fn sse_parser_anthropic_usage_tracking() {
         let mut parser = SseParser::new("anthropic");
-        parser.feed(
+        let mut events = Vec::new();
+        events.extend(parser.feed(
             "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":150}}}",
+        ));
+        events.extend(
+            parser.feed("data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":42}}"),
         );
-        assert_eq!(parser.usage.input_tokens, 150);
-        parser.feed("data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":42}}");
-        assert_eq!(parser.usage.output_tokens, 42);
+        let usage = UsageInfo::from_events(&events);
+        assert_eq!(usage.input_tokens, 150);
+        assert_eq!(usage.output_tokens, 42);
     }
 
     #[test]
@@ -930,7 +953,7 @@ mod tests {
         let mut parser = SseParser::new("openai");
         let events = parser.feed("data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}");
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], StreamEvent::TextDelta(t) if t == "Hello"));
+        assert!(matches!(&events[0], StreamEvent::TextDelta { text } if text == "Hello"));
     }
 
     #[test]
@@ -942,23 +965,26 @@ mod tests {
 
         let e2 = parser.feed("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"cmd\\\"\"}}]}}]}");
         assert_eq!(e2.len(), 1);
-        assert!(matches!(&e2[0], StreamEvent::ToolUseInputDelta(_)));
+        assert!(matches!(&e2[0], StreamEvent::ToolUseInputDelta { .. }));
     }
 
     #[test]
     fn sse_parser_openai_usage_tracking() {
         let mut parser = SseParser::new("openai");
-        parser.feed("data: {\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":50}}");
-        assert_eq!(parser.usage.input_tokens, 100);
-        assert_eq!(parser.usage.output_tokens, 50);
+        let events =
+            parser.feed("data: {\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":50}}");
+        let usage = UsageInfo::from_events(&events);
+        assert_eq!(usage.input_tokens, 100);
+        assert_eq!(usage.output_tokens, 50);
     }
 
     #[test]
     fn sse_parser_openai_cached_tokens() {
         let mut parser = SseParser::new("openai");
-        parser.feed("data: {\"usage\":{\"prompt_tokens\":500,\"completion_tokens\":80,\"prompt_tokens_details\":{\"cached_tokens\":400}}}");
-        assert_eq!(parser.usage.input_tokens, 500);
-        assert_eq!(parser.usage.output_tokens, 80);
-        assert_eq!(parser.usage.cache_read_input_tokens, 400);
+        let events = parser.feed("data: {\"usage\":{\"prompt_tokens\":500,\"completion_tokens\":80,\"prompt_tokens_details\":{\"cached_tokens\":400}}}");
+        let usage = UsageInfo::from_events(&events);
+        assert_eq!(usage.input_tokens, 500);
+        assert_eq!(usage.output_tokens, 80);
+        assert_eq!(usage.cache_read_input_tokens, 400);
     }
 }
