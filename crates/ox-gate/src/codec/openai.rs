@@ -242,6 +242,143 @@ pub fn parse_sse_events(body: &str) -> (Vec<StreamEvent>, UsageInfo) {
     (events, usage)
 }
 
+/// Encode a buffered slice of [`StreamEvent`]s into an OpenAI chat.completion response shape.
+pub fn encode_response(events: &[StreamEvent]) -> serde_json::Value {
+    let mut content = String::new();
+    let mut tool_calls: Vec<serde_json::Value> = Vec::new();
+    let mut current_tool: Option<(String, String, String)> = None; // (id, name, arguments)
+    let mut input_tokens = 0u32;
+    let mut output_tokens = 0u32;
+    let mut cache_read = 0u32;
+
+    for ev in events {
+        match ev {
+            StreamEvent::TextDelta { text } => content.push_str(text),
+            StreamEvent::ToolUseStart { id, name } => {
+                if let Some((tid, tname, args)) = current_tool.take() {
+                    tool_calls.push(serde_json::json!({
+                        "id": tid, "type": "function",
+                        "function": { "name": tname, "arguments": args },
+                    }));
+                }
+                current_tool = Some((id.clone(), name.clone(), String::new()));
+            }
+            StreamEvent::ToolUseInputDelta { delta } => {
+                if let Some((_, _, ref mut args)) = current_tool {
+                    args.push_str(delta);
+                }
+            }
+            StreamEvent::InputUsage { input_tokens: it, cache_read: cr, .. } => {
+                input_tokens = *it;
+                cache_read = *cr;
+            }
+            StreamEvent::OutputUsage { output_tokens: ot } => output_tokens = *ot,
+            StreamEvent::MessageStop | StreamEvent::Error { .. } => {}
+        }
+    }
+    if let Some((id, name, args)) = current_tool.take() {
+        tool_calls.push(serde_json::json!({
+            "id": id, "type": "function",
+            "function": { "name": name, "arguments": args },
+        }));
+    }
+
+    let mut message = serde_json::json!({ "role": "assistant" });
+    if !content.is_empty() {
+        message["content"] = serde_json::Value::String(content);
+    }
+    if !tool_calls.is_empty() {
+        message["tool_calls"] = serde_json::Value::Array(tool_calls);
+    }
+
+    let finish_reason = if message.get("tool_calls").is_some() { "tool_calls" } else { "stop" };
+
+    let mut usage = serde_json::json!({
+        "prompt_tokens": input_tokens,
+        "completion_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens,
+    });
+    if cache_read > 0 {
+        usage["prompt_tokens_details"] = serde_json::json!({ "cached_tokens": cache_read });
+    }
+
+    serde_json::json!({
+        "id": "chatcmpl-stub",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "",
+        "choices": [{
+            "index": 0,
+            "message": message,
+            "finish_reason": finish_reason,
+        }],
+        "usage": usage,
+    })
+}
+
+#[cfg(test)]
+mod encode_response_tests {
+    use super::*;
+    use ox_kernel::StreamEvent;
+
+    #[test]
+    fn encode_text_only_chat_completion() {
+        let events = vec![
+            StreamEvent::TextDelta { text: "Hello".into() },
+            StreamEvent::TextDelta { text: " world".into() },
+            StreamEvent::InputUsage { input_tokens: 10, cache_creation: 0, cache_read: 0 },
+            StreamEvent::OutputUsage { output_tokens: 2 },
+            StreamEvent::MessageStop,
+        ];
+        let resp = encode_response(&events);
+        assert_eq!(resp["object"], "chat.completion");
+        let choices = resp["choices"].as_array().unwrap();
+        assert_eq!(choices.len(), 1);
+        assert_eq!(choices[0]["message"]["role"], "assistant");
+        assert_eq!(choices[0]["message"]["content"], "Hello world");
+        assert_eq!(choices[0]["finish_reason"], "stop");
+        assert_eq!(resp["usage"]["prompt_tokens"], 10);
+        assert_eq!(resp["usage"]["completion_tokens"], 2);
+        assert_eq!(resp["usage"]["total_tokens"], 12);
+    }
+
+    #[test]
+    fn encode_tool_call_finish_reason() {
+        let events = vec![
+            StreamEvent::ToolUseStart { id: "t1".into(), name: "read_file".into() },
+            StreamEvent::ToolUseInputDelta { delta: r#"{"path":"/etc/hosts"}"#.into() },
+            StreamEvent::MessageStop,
+        ];
+        let resp = encode_response(&events);
+        assert_eq!(resp["choices"][0]["finish_reason"], "tool_calls");
+        let tool_calls = resp["choices"][0]["message"]["tool_calls"].as_array().unwrap();
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0]["id"], "t1");
+        assert_eq!(tool_calls[0]["type"], "function");
+        assert_eq!(tool_calls[0]["function"]["name"], "read_file");
+        assert_eq!(tool_calls[0]["function"]["arguments"], r#"{"path":"/etc/hosts"}"#);
+    }
+
+    #[test]
+    fn encode_cached_tokens_emit_details() {
+        let events = vec![
+            StreamEvent::InputUsage { input_tokens: 100, cache_creation: 0, cache_read: 80 },
+            StreamEvent::OutputUsage { output_tokens: 10 },
+            StreamEvent::MessageStop,
+        ];
+        let resp = encode_response(&events);
+        assert_eq!(resp["usage"]["prompt_tokens_details"]["cached_tokens"], 80);
+    }
+
+    #[test]
+    fn encode_empty_events_has_no_content() {
+        let resp = encode_response(&[]);
+        assert_eq!(resp["object"], "chat.completion");
+        assert!(resp["choices"][0]["message"].get("content").is_none());
+        assert!(resp["choices"][0]["message"].get("tool_calls").is_none());
+    }
+}
+
 use crate::codec::CodecError;
 
 pub fn decode_request(body: &serde_json::Value) -> Result<ox_kernel::CompletionRequest, CodecError> {
