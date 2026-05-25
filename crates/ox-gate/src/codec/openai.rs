@@ -242,6 +242,161 @@ pub fn parse_sse_events(body: &str) -> (Vec<StreamEvent>, UsageInfo) {
     (events, usage)
 }
 
+use crate::codec::CodecError;
+
+pub fn decode_request(body: &serde_json::Value) -> Result<ox_kernel::CompletionRequest, CodecError> {
+    let obj = body.as_object().ok_or_else(|| {
+        CodecError::InvalidShape("body must be a JSON object".into())
+    })?;
+
+    let model = obj.get("model").and_then(|v| v.as_str())
+        .ok_or(CodecError::MissingField("model"))?
+        .to_string();
+
+    // OpenAI default when max_tokens is omitted. The gateway picks something
+    // sensible; downstream provider may apply its own cap.
+    let max_tokens = obj.get("max_tokens").and_then(|v| v.as_u64()).unwrap_or(4096) as u32;
+
+    let stream = obj.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    let raw_messages = obj.get("messages").and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut system = String::new();
+    let mut messages = Vec::new();
+    for m in raw_messages {
+        let role = m.get("role").and_then(|v| v.as_str()).unwrap_or("");
+        if role == "system" {
+            let content = m.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            if !system.is_empty() {
+                system.push_str("\n\n");
+            }
+            system.push_str(content);
+        } else {
+            messages.push(m);
+        }
+    }
+
+    let tools: Vec<ox_kernel::ToolSchema> = obj.get("tools").and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|t| {
+                    let f = t.get("function")?;
+                    let name = f.get("name")?.as_str()?.to_string();
+                    let description = f.get("description")
+                        .and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let input_schema = f.get("parameters")
+                        .cloned().unwrap_or(serde_json::Value::Null);
+                    Some(ox_kernel::ToolSchema { name, description, input_schema })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok(ox_kernel::CompletionRequest {
+        model, max_tokens, system, messages, tools, stream,
+    })
+}
+
+#[cfg(test)]
+mod decode_tests {
+    use super::*;
+    use crate::codec::CodecError;
+
+    #[test]
+    fn decode_minimal_request() {
+        let body = serde_json::json!({
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        let req = decode_request(&body).unwrap();
+        assert_eq!(req.model, "gpt-4o-mini");
+        assert_eq!(req.messages.len(), 1);
+        assert!(req.max_tokens > 0);
+        assert_eq!(req.system, "");
+        assert!(!req.stream);
+    }
+
+    #[test]
+    fn decode_extracts_system_from_messages() {
+        let body = serde_json::json!({
+            "model": "m",
+            "messages": [
+                {"role": "system", "content": "be helpful"},
+                {"role": "user", "content": "hi"}
+            ]
+        });
+        let req = decode_request(&body).unwrap();
+        assert_eq!(req.system, "be helpful");
+        assert_eq!(req.messages.len(), 1);
+        assert_eq!(req.messages[0]["role"], "user");
+    }
+
+    #[test]
+    fn decode_concatenates_multiple_system_messages() {
+        let body = serde_json::json!({
+            "model": "m",
+            "messages": [
+                {"role": "system", "content": "first"},
+                {"role": "system", "content": "second"},
+                {"role": "user", "content": "hi"}
+            ]
+        });
+        let req = decode_request(&body).unwrap();
+        assert_eq!(req.system, "first\n\nsecond");
+        assert_eq!(req.messages.len(), 1);
+    }
+
+    #[test]
+    fn decode_max_tokens_when_provided() {
+        let body = serde_json::json!({
+            "model": "m",
+            "max_tokens": 512,
+            "messages": []
+        });
+        let req = decode_request(&body).unwrap();
+        assert_eq!(req.max_tokens, 512);
+    }
+
+    #[test]
+    fn missing_model_errors() {
+        let body = serde_json::json!({"messages": []});
+        assert_eq!(decode_request(&body).unwrap_err(), CodecError::MissingField("model"));
+    }
+
+    #[test]
+    fn decode_translates_tools() {
+        let body = serde_json::json!({
+            "model": "m",
+            "messages": [],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "Read a file",
+                    "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}
+                }
+            }]
+        });
+        let req = decode_request(&body).unwrap();
+        assert_eq!(req.tools.len(), 1);
+        assert_eq!(req.tools[0].name, "read_file");
+        assert_eq!(req.tools[0].description, "Read a file");
+    }
+
+    #[test]
+    fn decode_honors_stream_flag() {
+        let body = serde_json::json!({
+            "model": "m",
+            "stream": true,
+            "messages": []
+        });
+        let req = decode_request(&body).unwrap();
+        assert!(req.stream);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
