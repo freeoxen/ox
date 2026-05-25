@@ -24,10 +24,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use ox_broker::ClientHandle;
-use structfs_core_store::Path;
+use ox_broker::async_store::{AsyncReader, AsyncWriter, BoxFuture};
+use structfs_core_store::{Error as StoreError, Path, Record, Value};
 use tokio::runtime::Handle as TokioHandle;
 
 use crate::transport::SseHttpExecutor;
+
+// Used in the AsyncWriter impl for deserializing the inbound record.
+#[allow(unused_imports)]
+use structfs_serde_store;
 
 pub type RequestId = u64;
 
@@ -101,6 +106,306 @@ impl<E: SseHttpExecutor> CompletionBrokerStore<E> {
             None
         };
         Some((id, sub))
+    }
+}
+
+/// `AsyncReader` stub — implemented fully in Task 3.5.
+///
+/// The read side serves status, request echo, event slices, and usage from
+/// the in-memory `Inflight` handles. For now it returns `None` for all paths
+/// so the store can be mounted via `mount_async` without the full impl.
+impl<E: SseHttpExecutor> AsyncReader for CompletionBrokerStore<E> {
+    fn read(&mut self, _from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
+        Box::pin(async move { Ok(None) })
+    }
+}
+
+/// `AsyncWriter` for `CompletionBrokerStore`.
+///
+/// Two legal write shapes:
+///
+/// 1. Root (`/`) with a `CompletionRequest` record — inserts an `Inflight`
+///    handle, spawns the per-request dispatch task, returns `outstanding/{N}`.
+///
+/// 2. `outstanding/{N}` with `Value::Null` — GC: removes the handle and
+///    returns the same path.
+///
+/// All other paths and non-null writes to existing handles are errors.
+impl<E: SseHttpExecutor> AsyncWriter for CompletionBrokerStore<E> {
+    fn write(&mut self, to: &Path, data: Record) -> BoxFuture<Result<Path, StoreError>> {
+        let to = to.clone();
+
+        // GC: write null to outstanding/{N}
+        if let Some((id, None)) = Self::parse_handle_path(&to) {
+            let value_is_null = matches!(data.as_value(), Some(Value::Null));
+            if value_is_null {
+                self.handles.remove(&id);
+                return Box::pin(async move { Ok(to) });
+            }
+            return Box::pin(async move {
+                Err(StoreError::store(
+                    "completion_broker",
+                    "write",
+                    "cannot overwrite an outstanding handle; write null to delete",
+                ))
+            });
+        }
+
+        // Queue: write CompletionRequest to root
+        if to.is_empty() {
+            let value = match data.as_value() {
+                Some(v) => v.clone(),
+                None => {
+                    return Box::pin(async move {
+                        Err(StoreError::store(
+                            "completion_broker",
+                            "write",
+                            "expected parsed record",
+                        ))
+                    });
+                }
+            };
+            let request: ox_kernel::CompletionRequest =
+                match structfs_serde_store::from_value(value) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return Box::pin(async move {
+                            Err(StoreError::store(
+                                "completion_broker",
+                                "write",
+                                format!("invalid CompletionRequest: {e}"),
+                            ))
+                        });
+                    }
+                };
+
+            let id = self.next_request_id;
+            self.next_request_id += 1;
+
+            let inflight = Inflight::new(request);
+            self.handles.insert(id, inflight.clone());
+
+            let substrate = self.substrate.clone();
+            let executor = self.executor.clone();
+            let usage_writer = self.usage_writer.clone();
+            self.runtime.spawn(async move {
+                dispatch::per_request_task(inflight, substrate, executor, usage_writer).await;
+            });
+
+            let path = Path::try_from_components(vec![
+                "outstanding".to_string(),
+                id.to_string(),
+            ])
+            .map_err(|e| StoreError::store("completion_broker", "write", e.to_string()));
+            return Box::pin(async move { path });
+        }
+
+        Box::pin(async move {
+            Err(StoreError::store(
+                "completion_broker",
+                "write",
+                format!("unexpected write path: {to}"),
+            ))
+        })
+    }
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+    use crate::completion_broker::mock::MockSseExecutor;
+    use ox_broker::BrokerStore;
+    use ox_kernel::CompletionRequest;
+    use ox_path::oxpath;
+    use ox_store_util::StoreBacking;
+    use ox_types::StreamEvent;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+    use structfs_core_store::{Error as StoreError, Record, Value, path};
+    use structfs_serde_store::to_value;
+
+    /// Minimal in-memory `StoreBacking` for tests. Holds an append-only
+    /// Vec of items (or a single snapshot value for save/load).
+    struct MemoryBacking {
+        items: Mutex<Vec<Value>>,
+    }
+
+    impl MemoryBacking {
+        fn new() -> Self {
+            Self {
+                items: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl StoreBacking for MemoryBacking {
+        fn load(&self) -> Result<Option<Value>, StoreError> {
+            let items = self.items.lock().unwrap();
+            if items.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(Value::Array(items.clone())))
+            }
+        }
+
+        fn save(&self, value: &Value) -> Result<(), StoreError> {
+            let mut items = self.items.lock().unwrap();
+            *items = match value {
+                Value::Array(a) => a.clone(),
+                other => vec![other.clone()],
+            };
+            Ok(())
+        }
+
+        fn append(&self, item: &Value) -> Result<(), StoreError> {
+            self.items.lock().unwrap().push(item.clone());
+            Ok(())
+        }
+    }
+
+    /// Stand up an in-memory broker seeded with gate + secret mounts that the
+    /// dispatch task resolves.
+    async fn build_substrate() -> BrokerStore {
+        use crate::{AccountConfig, ApiKey, ProviderConfig};
+        use ox_store_util::LocalConfig;
+        use ox_types::CompletionRole;
+
+        let broker = BrokerStore::new(Duration::from_secs(2));
+
+        let mut gate_config = LocalConfig::new();
+        let role = CompletionRole {
+            account: "anthropic".into(),
+            model_id: "claude-sonnet-4-20250514".into(),
+        };
+        gate_config.set("gate/completions/fast", to_value(&role).unwrap());
+        gate_config.set(
+            "gate/accounts/anthropic",
+            to_value(&AccountConfig {
+                provider: "anthropic".into(),
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        gate_config.set(
+            "gate/providers/anthropic",
+            to_value(&ProviderConfig::anthropic()).unwrap(),
+        );
+        // Mount at root so paths like "gate/accounts/anthropic" resolve directly.
+        broker.mount(path!(""), gate_config).await;
+
+        let mut secret = LocalConfig::new();
+        secret.set("keys/anthropic", to_value(&ApiKey::new("sk-test")).unwrap());
+        broker.mount(oxpath!("secret"), secret).await;
+
+        broker
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn write_returns_handle_and_dispatch_completes() {
+        let broker = build_substrate().await;
+
+        // Stand up an in-memory UsageStore at gateway/usage.
+        let usage_backing = Box::new(MemoryBacking::new());
+        let usage_store = crate::UsageStore::new(usage_backing);
+        broker
+            .mount(oxpath!("gateway", "usage"), usage_store)
+            .await;
+
+        let executor = Arc::new(MockSseExecutor::new());
+        executor.push_immediate(StreamEvent::TextDelta { text: "hi".into() });
+        executor.push_immediate(StreamEvent::OutputUsage { output_tokens: 1 });
+        executor.push_immediate(StreamEvent::MessageStop);
+
+        let client = broker.client();
+        let substrate = client.clone();
+        let usage_writer = client.scoped("gateway/usage");
+
+        let store = CompletionBrokerStore::new(
+            substrate,
+            executor,
+            usage_writer,
+            tokio::runtime::Handle::current(),
+        );
+        broker
+            .mount_async(oxpath!("gateway", "completions"), store)
+            .await;
+
+        let request = CompletionRequest {
+            model: "anthropic/claude-sonnet-4-20250514".into(),
+            max_tokens: 100,
+            system: String::new(),
+            messages: vec![serde_json::json!({"role": "user", "content": "hi"})],
+            tools: vec![],
+            stream: true,
+        };
+
+        let handle_path = client
+            .write_typed(&path!("gateway/completions"), &request)
+            .await
+            .unwrap();
+
+        // The returned path must be outstanding/0.
+        assert!(
+            handle_path.to_string().contains("outstanding"),
+            "expected outstanding/N path, got: {handle_path}"
+        );
+
+        // Wait briefly for the dispatch task to complete.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // A usage record should have been appended — the usage store returns
+        // the full ledger as an array at its root.
+        let usage_records: Vec<crate::UsageRecord> = client
+            .read_typed(&path!("gateway/usage"))
+            .await
+            .unwrap()
+            .unwrap_or_default();
+        assert_eq!(
+            usage_records.len(),
+            1,
+            "expected 1 usage record after dispatch, got: {usage_records:?}",
+        );
+        assert_eq!(usage_records[0].output_tokens, 1);
+        assert_eq!(usage_records[0].account, "anthropic");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn write_null_to_outstanding_gc_removes_handle() {
+        // Directly exercise the GC path on the AsyncWriter without going
+        // through the broker: construct the store and call write() directly.
+        let broker = build_substrate().await;
+        let client = broker.client();
+        let usage_writer = client.scoped("gateway/usage");
+        let executor = Arc::new(MockSseExecutor::new());
+
+        let mut store = CompletionBrokerStore::new(
+            client,
+            executor,
+            usage_writer,
+            tokio::runtime::Handle::current(),
+        );
+
+        // Insert a dummy handle by writing a request.
+        let request = CompletionRequest {
+            model: "anthropic/claude-sonnet-4-20250514".into(),
+            max_tokens: 1,
+            system: String::new(),
+            messages: vec![],
+            tools: vec![],
+            stream: true,
+        };
+        let value = to_value(&request).unwrap();
+        let root = path!("");
+        let handle_path = store.write(&root, Record::parsed(value)).await.unwrap();
+        assert_eq!(store.handles.len(), 1, "handle should be inserted");
+
+        // GC: write null to the handle path.
+        let gc_result = store
+            .write(&handle_path, Record::parsed(Value::Null))
+            .await
+            .unwrap();
+        assert_eq!(gc_result, handle_path);
+        assert_eq!(store.handles.len(), 0, "handle should be removed after GC");
     }
 }
 
