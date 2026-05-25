@@ -109,15 +109,131 @@ impl<E: SseHttpExecutor> CompletionBrokerStore<E> {
     }
 }
 
-/// `AsyncReader` stub — implemented fully in Task 3.5.
-///
-/// The read side serves status, request echo, event slices, and usage from
-/// the in-memory `Inflight` handles. For now it returns `None` for all paths
-/// so the store can be mounted via `mount_async` without the full impl.
 impl<E: SseHttpExecutor> AsyncReader for CompletionBrokerStore<E> {
-    fn read(&mut self, _from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
-        Box::pin(async move { Ok(None) })
+    fn read(&mut self, from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
+        // Root descriptor map.
+        if from.is_empty() {
+            let mut map = std::collections::BTreeMap::new();
+            map.insert("outstanding".to_string(), Value::String("outstanding".into()));
+            map.insert("docs".to_string(), Value::String("docs".into()));
+            return Box::pin(async move { Ok(Some(Record::parsed(Value::Map(map)))) });
+        }
+
+        // /docs
+        if from.len() == 1 && from[0].as_str() == "docs" {
+            return Box::pin(async move { Ok(Some(Record::parsed(docs_value()))) });
+        }
+
+        // /outstanding listing
+        if from.len() == 1 && from[0].as_str() == "outstanding" {
+            let items: Vec<Value> = self
+                .handles
+                .keys()
+                .map(|id| Value::String(format!("outstanding/{id}")))
+                .collect();
+            let mut map = std::collections::BTreeMap::new();
+            map.insert("items".to_string(), Value::Array(items));
+            return Box::pin(async move { Ok(Some(Record::parsed(Value::Map(map)))) });
+        }
+
+        // /outstanding/{N}[/sub]
+        let (id, sub) = match Self::parse_handle_path(from) {
+            Some(t) => t,
+            None => return Box::pin(async move { Ok(None) }),
+        };
+
+        // Clone the Arc out of the map; the borrow on self ends when this
+        // function returns, freeing the actor lock for other reads/writes.
+        let inflight = match self.handles.get(&id) {
+            Some(arc) => arc.clone(),
+            None => return Box::pin(async move { Ok(None) }),
+        };
+
+        Box::pin(async move {
+            match sub.as_deref() {
+                // outstanding/{N} — current status (non-blocking)
+                None => {
+                    let state = inflight.state.lock().await;
+                    let value = structfs_serde_store::to_value(&state.status).map_err(|e| {
+                        StoreError::store("completion_broker", "read", e.to_string())
+                    })?;
+                    Ok(Some(Record::parsed(value)))
+                }
+                // outstanding/{N}/request — original CompletionRequest
+                Some("request") => {
+                    let state = inflight.state.lock().await;
+                    let value = structfs_serde_store::to_value(&state.request).map_err(|e| {
+                        StoreError::store("completion_broker", "read", e.to_string())
+                    })?;
+                    Ok(Some(Record::parsed(value)))
+                }
+                // outstanding/{N}/usage — UsageInfo (None until Complete)
+                Some("usage") => {
+                    let state = inflight.state.lock().await;
+                    match &state.usage {
+                        Some(u) => {
+                            let value = structfs_serde_store::to_value(u).map_err(|e| {
+                                StoreError::store("completion_broker", "read", e.to_string())
+                            })?;
+                            Ok(Some(Record::parsed(value)))
+                        }
+                        None => Ok(None),
+                    }
+                }
+                // outstanding/{N}/events/count — buffer length (non-blocking)
+                Some("events/count") => {
+                    let state = inflight.state.lock().await;
+                    Ok(Some(Record::parsed(Value::Integer(
+                        state.events.len() as i64,
+                    ))))
+                }
+                // outstanding/{N}/events/from/{S} — blocking drain from index S.
+                //
+                // Using the simpler lock-check-drop-await form. The notify is
+                // always fired on terminal status flip (see dispatch.rs), so a
+                // missed notification between the lock drop and the await just
+                // means one extra iteration — not a deadlock.
+                Some(s) if s.starts_with("events/from/") => {
+                    let seq: usize = s
+                        .trim_start_matches("events/from/")
+                        .parse()
+                        .map_err(|e: std::num::ParseIntError| {
+                            StoreError::store("completion_broker", "read", e.to_string())
+                        })?;
+                    loop {
+                        {
+                            let state = inflight.state.lock().await;
+                            if state.events.len() > seq || state.status.is_terminal() {
+                                let tail = state.events[seq..].to_vec();
+                                let value = structfs_serde_store::to_value(&tail).map_err(|e| {
+                                    StoreError::store("completion_broker", "read", e.to_string())
+                                })?;
+                                return Ok(Some(Record::parsed(value)));
+                            }
+                        }
+                        inflight.notify.notified().await;
+                    }
+                }
+                _ => Ok(None),
+            }
+        })
     }
+}
+
+fn docs_value() -> Value {
+    let json = serde_json::json!({
+        "title": "CompletionBrokerStore",
+        "paths": {
+            "write /": "Queue CompletionRequest → outstanding/{N}",
+            "read outstanding/{N}": "CompletionStatus",
+            "read outstanding/{N}/request": "Original CompletionRequest",
+            "read outstanding/{N}/events/from/{S}": "Vec<StreamEvent> from index S (BLOCKING)",
+            "read outstanding/{N}/events/count": "usize current buffer length",
+            "read outstanding/{N}/usage": "UsageInfo (None until Complete)",
+            "write outstanding/{N} null": "Delete handle"
+        }
+    });
+    structfs_serde_store::json_to_value(json)
 }
 
 /// `AsyncWriter` for `CompletionBrokerStore`.
@@ -462,5 +578,250 @@ mod tests {
             ),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    use crate::completion_broker::mock::MockSseExecutor;
+    use ox_broker::BrokerStore;
+    use ox_kernel::CompletionRequest;
+    use ox_path::oxpath;
+    use ox_store_util::StoreBacking;
+    use ox_types::StreamEvent;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+    use structfs_core_store::{Error as StoreError, Value, path};
+    use structfs_serde_store::to_value;
+
+    /// Minimal in-memory `StoreBacking` for the UsageStore in tests.
+    struct MemoryBacking {
+        items: Mutex<Vec<Value>>,
+    }
+
+    impl MemoryBacking {
+        fn new() -> Self {
+            Self {
+                items: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl StoreBacking for MemoryBacking {
+        fn load(&self) -> Result<Option<Value>, StoreError> {
+            let items = self.items.lock().unwrap();
+            if items.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(Value::Array(items.clone())))
+            }
+        }
+
+        fn save(&self, value: &Value) -> Result<(), StoreError> {
+            let mut items = self.items.lock().unwrap();
+            *items = match value {
+                Value::Array(a) => a.clone(),
+                other => vec![other.clone()],
+            };
+            Ok(())
+        }
+
+        fn append(&self, item: &Value) -> Result<(), StoreError> {
+            self.items.lock().unwrap().push(item.clone());
+            Ok(())
+        }
+    }
+
+    /// Stand up a broker seeded with gate + secret mounts for the named role.
+    async fn build_substrate_with_role(role_name: &str) -> BrokerStore {
+        use crate::{AccountConfig, ApiKey, ProviderConfig};
+        use ox_store_util::LocalConfig;
+        use ox_types::CompletionRole;
+
+        let broker = BrokerStore::new(Duration::from_secs(5));
+
+        let mut gate_config = LocalConfig::new();
+        gate_config.set(
+            &format!("gate/completions/{role_name}"),
+            to_value(&CompletionRole {
+                account: "anthropic".into(),
+                model_id: "claude-sonnet-4-20250514".into(),
+            })
+            .unwrap(),
+        );
+        gate_config.set(
+            "gate/accounts/anthropic",
+            to_value(&AccountConfig {
+                provider: "anthropic".into(),
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        gate_config.set(
+            "gate/providers/anthropic",
+            to_value(&ProviderConfig::anthropic()).unwrap(),
+        );
+        broker.mount(path!(""), gate_config).await;
+
+        let mut secret = LocalConfig::new();
+        secret.set("keys/anthropic", to_value(&ApiKey::new("sk-test")).unwrap());
+        broker.mount(oxpath!("secret"), secret).await;
+
+        broker
+    }
+
+    /// Mount UsageStore and CompletionBrokerStore on the broker, returning the
+    /// client ready for test use.
+    async fn mount_completion_store(
+        broker: &BrokerStore,
+        executor: Arc<MockSseExecutor>,
+    ) -> ox_broker::ClientHandle {
+        let usage_backing = Box::new(MemoryBacking::new());
+        let usage_store = crate::UsageStore::new(usage_backing);
+        broker.mount(oxpath!("gateway", "usage"), usage_store).await;
+
+        let client = broker.client();
+        let substrate = client.clone();
+        let usage_writer = client.scoped("gateway/usage");
+
+        let store = CompletionBrokerStore::new(
+            substrate,
+            executor,
+            usage_writer,
+            tokio::runtime::Handle::current(),
+        );
+        broker
+            .mount_async(oxpath!("gateway", "completions"), store)
+            .await;
+
+        client
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn drains_all_events_to_terminal_via_blocking_read() {
+        let broker = build_substrate_with_role("primary").await;
+
+        let executor = Arc::new(MockSseExecutor::new());
+        executor.push_immediate(StreamEvent::InputUsage {
+            input_tokens: 10,
+            cache_creation: 0,
+            cache_read: 0,
+        });
+        executor.push_immediate(StreamEvent::TextDelta { text: "Hello".into() });
+        executor.push_immediate(StreamEvent::OutputUsage { output_tokens: 1 });
+        executor.push_immediate(StreamEvent::MessageStop);
+
+        let client = mount_completion_store(&broker, executor).await;
+
+        let request = CompletionRequest {
+            model: "anthropic/claude-sonnet-4-20250514".into(),
+            max_tokens: 100,
+            system: String::new(),
+            messages: vec![serde_json::json!({"role": "user", "content": "hi"})],
+            tools: vec![],
+            stream: true,
+        };
+
+        // write_typed returns the store-relative path (e.g. "outstanding/0").
+        // Prefix with the mount point to get the broker-absolute path for reads.
+        let handle_rel = client
+            .write_typed(&path!("gateway/completions"), &request)
+            .await
+            .unwrap();
+        let mount = path!("gateway/completions");
+        let handle_path = mount.join(&handle_rel);
+
+        // Drain events using the blocking events/from/{S} read, polling
+        // until the handle reports a terminal status.
+        let mut next = 0usize;
+        let mut all_events: Vec<StreamEvent> = Vec::new();
+        loop {
+            let events_sub = Path::parse(&format!("events/from/{next}")).unwrap();
+            let events_path = handle_path.join(&events_sub);
+            let batch: Vec<StreamEvent> = client
+                .read_typed(&events_path)
+                .await
+                .unwrap()
+                .unwrap_or_default();
+            next += batch.len();
+            all_events.extend(batch);
+
+            let status: CompletionStatus = client
+                .read_typed(&handle_path)
+                .await
+                .unwrap()
+                .unwrap();
+            if status.is_terminal() {
+                break;
+            }
+        }
+
+        assert_eq!(all_events.len(), 4, "expected 4 events, got: {all_events:?}");
+        assert!(
+            matches!(all_events.last().unwrap(), StreamEvent::MessageStop),
+            "last event should be MessageStop"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn named_role_resolves_model_id_at_executor() {
+        let broker = build_substrate_with_role("fast").await;
+
+        let executor = Arc::new(MockSseExecutor::new());
+        executor.push_immediate(StreamEvent::TextDelta { text: "ok".into() });
+        executor.push_immediate(StreamEvent::MessageStop);
+
+        let client = mount_completion_store(&broker, executor.clone()).await;
+
+        let request = CompletionRequest {
+            model: "fast".into(),
+            max_tokens: 50,
+            system: String::new(),
+            messages: vec![],
+            tools: vec![],
+            stream: true,
+        };
+
+        // write_typed returns the store-relative path; prefix with mount for reads.
+        let handle_rel = client
+            .write_typed(&path!("gateway/completions"), &request)
+            .await
+            .unwrap();
+        let mount = path!("gateway/completions");
+        let handle_path = mount.join(&handle_rel);
+
+        // Drain to terminal so the dispatch task finishes.
+        let mut next = 0usize;
+        loop {
+            let events_sub = Path::parse(&format!("events/from/{next}")).unwrap();
+            let events_path = handle_path.join(&events_sub);
+            let batch: Vec<StreamEvent> = client
+                .read_typed(&events_path)
+                .await
+                .unwrap()
+                .unwrap_or_default();
+            next += batch.len();
+
+            let status: CompletionStatus = client
+                .read_typed(&handle_path)
+                .await
+                .unwrap()
+                .unwrap();
+            if status.is_terminal() {
+                break;
+            }
+        }
+
+        // The request that reached the executor must carry the upstream model
+        // id, not the role alias "fast".
+        let seen = executor.requests_seen();
+        assert_eq!(seen.len(), 1, "expected exactly one upstream request");
+        if let Some(body) = &seen[0].body {
+            assert_eq!(
+                body["model"], "claude-sonnet-4-20250514",
+                "model id should be rewritten to upstream id"
+            );
+        }
     }
 }

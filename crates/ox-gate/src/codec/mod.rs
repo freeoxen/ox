@@ -10,7 +10,7 @@ pub use error::CodecError;
 pub use sse_encoder::SseEncoder;
 
 /// Token usage information from a completion response.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct UsageInfo {
     /// Number of input (prompt) tokens consumed.
     pub input_tokens: u32,
