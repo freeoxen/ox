@@ -1,7 +1,7 @@
-//! End-to-end streaming test for POST /v1/messages.
+//! End-to-end streaming test for POST /v1/chat/completions.
 //!
 //! Sets up an in-memory broker + MockSseExecutor, starts axum on a
-//! random port, and verifies that the response carries Anthropic-shaped
+//! random port, and verifies that the response carries OpenAI-shaped
 //! SSE frames matching the scripted event sequence.
 
 mod common;
@@ -12,18 +12,13 @@ use ox_types::StreamEvent;
 use std::sync::Arc;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn streaming_anthropic_messages_endpoint() {
+async fn streaming_openai_chat_completions_endpoint() {
     let executor = Arc::new(MockSseExecutor::new());
-    executor.push_immediate(StreamEvent::InputUsage {
-        input_tokens: 10,
-        cache_creation: 0,
-        cache_read: 0,
-    });
-    executor.push_immediate(StreamEvent::TextDelta { text: "Hello".into() });
+    executor.push_immediate(StreamEvent::TextDelta { text: "Hi".into() });
     executor.push_immediate(StreamEvent::OutputUsage { output_tokens: 1 });
     executor.push_immediate(StreamEvent::MessageStop);
 
-    let broker = build_test_broker(executor, "anthropic").await;
+    let broker = build_test_broker(executor, "openai").await;
     let app = ox_gateway::routes::build_router(broker.client());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -34,10 +29,9 @@ async fn streaming_anthropic_messages_endpoint() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .post(format!("http://{}/v1/messages", addr))
+        .post(format!("http://{}/v1/chat/completions", addr))
         .json(&serde_json::json!({
-            "model": "anthropic/claude-sonnet-4-20250514",
-            "max_tokens": 100,
+            "model": "openai/gpt-4o",
             "messages": [{"role": "user", "content": "hi"}],
             "stream": true
         }))
@@ -46,22 +40,8 @@ async fn streaming_anthropic_messages_endpoint() {
         .unwrap();
 
     assert!(resp.status().is_success(), "got status {}", resp.status());
-
     let body = resp.text().await.unwrap();
-    assert!(
-        body.contains("event: message_start"),
-        "missing message_start in body:\n{body}"
-    );
-    assert!(
-        body.contains("event: content_block_start"),
-        "missing content_block_start in body:\n{body}"
-    );
-    assert!(
-        body.contains("\"text\":\"Hello\""),
-        "missing text content in body:\n{body}"
-    );
-    assert!(
-        body.contains("event: message_stop"),
-        "missing message_stop in body:\n{body}"
-    );
+    assert!(body.contains("\"role\":\"assistant\""), "missing role: {body}");
+    assert!(body.contains("\"content\":\"Hi\""), "missing content: {body}");
+    assert!(body.contains("data: [DONE]"), "missing [DONE] terminator: {body}");
 }
