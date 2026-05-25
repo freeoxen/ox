@@ -264,7 +264,7 @@ async fn reconfirm_retry_reruns_tool_counter_reaches_two() {
     // emits text-only so the turn ends cleanly.
     let transport = FakeTransport::new();
     transport.push_turn(vec![
-        ox_kernel::StreamEvent::TextDelta("Counter bumped.".into()),
+        ox_kernel::StreamEvent::TextDelta { text: "Counter bumped.".into() },
         ox_kernel::StreamEvent::MessageStop,
     ]);
 
@@ -337,7 +337,7 @@ async fn reconfirm_skip_writes_synthetic_tool_result_counter_stays_one() {
 
     let transport = FakeTransport::new();
     transport.push_turn(vec![
-        ox_kernel::StreamEvent::TextDelta("Acknowledged skip.".into()),
+        ox_kernel::StreamEvent::TextDelta { text: "Acknowledged skip.".into() },
         ox_kernel::StreamEvent::MessageStop,
     ]);
 
@@ -470,7 +470,7 @@ async fn reconfirm_auto_approved_tool_still_surfaces_modal() {
 
     let transport = FakeTransport::new();
     transport.push_turn(vec![
-        ox_kernel::StreamEvent::TextDelta("Retried.".into()),
+        ox_kernel::StreamEvent::TextDelta { text: "Retried.".into() },
         ox_kernel::StreamEvent::MessageStop,
     ]);
 

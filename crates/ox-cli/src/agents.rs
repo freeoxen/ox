@@ -49,7 +49,7 @@ impl CompletionTransport for CliCompletionTransport {
             &ctx,
             &|event| {
                 on_event(event);
-                if let StreamEvent::TextDelta(text) = event {
+                if let StreamEvent::TextDelta { text } = event {
                     handle
                         .block_on(scoped.write_typed(&path!("history/turn/streaming"), text))
                         .ok();

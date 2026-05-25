@@ -36,7 +36,7 @@ async fn awaiting_approval_resume_completes_turn_without_second_llm_call() {
     // assertion: resumption must NOT issue a second LLM round-trip.
     let transport = FakeTransport::new();
     transport.push_turn(vec![
-        ox_kernel::StreamEvent::TextDelta("Done.".into()),
+        ox_kernel::StreamEvent::TextDelta { text: "Done.".into() },
         ox_kernel::StreamEvent::MessageStop,
     ]);
     transport.fail_if_called_more_than(1);
