@@ -24,6 +24,10 @@ pub mod subscriptions;
 // providers directly via `fetch`/wasm-bindgen and don't need this module.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod transport;
+// `usage_store` writes to disk via `JsonlFileBacking`; wasm builds have no
+// file I/O and no need for this module.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod usage_store;
 pub mod validation;
 
 pub use account::AccountConfig;
@@ -39,6 +43,8 @@ pub use provider::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use transport::{HttpTransport, Transport};
+#[cfg(not(target_arch = "wasm32"))]
+pub use usage_store::{TodayProjection, UsageRecord, UsageStore};
 
 use ox_kernel::ToolSchema;
 use std::collections::{BTreeMap, HashMap};

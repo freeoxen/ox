@@ -34,7 +34,9 @@ tokio = { workspace = true }
 # matching cfg gate. ox-web/wasm builds skip subscriptions entirely.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 ox-broker = { workspace = true }
+ox-store-util = { workspace = true }
 
 [dev-dependencies]
 ox-store-util = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time", "rt", "rt-multi-thread", "macros"] }

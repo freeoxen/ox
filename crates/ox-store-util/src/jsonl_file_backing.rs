@@ -47,6 +47,11 @@ impl JsonlFileBacking {
 }
 
 impl StoreBacking for JsonlFileBacking {
+    /// Override: write a single JSON line without rewriting the whole file.
+    fn append(&self, item: &Value) -> Result<(), StoreError> {
+        JsonlFileBacking::append(self, item)
+    }
+
     fn load(&self) -> Result<Option<Value>, StoreError> {
         let f = match std::fs::File::open(&self.path) {
             Ok(f) => f,

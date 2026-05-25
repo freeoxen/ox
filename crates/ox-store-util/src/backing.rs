@@ -17,4 +17,26 @@ pub trait StoreBacking: Send + Sync {
 
     /// Persist the full state atomically (overwrite).
     fn save(&self, value: &Value) -> Result<(), StoreError>;
+
+    /// Append one item to an array-shaped backing.
+    ///
+    /// The default implementation does a load-extend-save round-trip and
+    /// works for any backing whose `save` succeeds. Append-optimised backings
+    /// (e.g. `JsonlFileBacking`) override this to write a single line without
+    /// rewriting the entire file.
+    fn append(&self, item: &Value) -> Result<(), StoreError> {
+        let mut arr = match self.load()? {
+            Some(Value::Array(a)) => a,
+            Some(other) => {
+                return Err(StoreError::store(
+                    "backing",
+                    "append",
+                    format!("expected array, got {:?}", other),
+                ));
+            }
+            None => vec![],
+        };
+        arr.push(item.clone());
+        self.save(&Value::Array(arr))
+    }
 }
