@@ -32,12 +32,13 @@ async fn post_completions(
     Json(req): Json<CompletionRequest>,
 ) -> Response {
     let streaming = req.stream;
-    let handle_path = match client.write_typed(&path!("gateway/completions"), &req).await {
+    let handle_rel = match client.write_typed(&path!("gateway/completions"), &req).await {
         Ok(p) => p,
         Err(e) => {
             return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
         }
     };
+    let handle_path = path!("gateway/completions").join(&handle_rel);
 
     if streaming {
         ox_native_sse_response(client, handle_path).into_response()

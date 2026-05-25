@@ -40,7 +40,7 @@ async fn post_chat_completions(
     };
     let streaming = req.stream;
 
-    let handle_path = match client.write_typed(&path!("gateway/completions"), &req).await {
+    let handle_rel = match client.write_typed(&path!("gateway/completions"), &req).await {
         Ok(p) => p,
         Err(e) => {
             return openai_error(
@@ -51,6 +51,7 @@ async fn post_chat_completions(
             .into_response()
         }
     };
+    let handle_path = path!("gateway/completions").join(&handle_rel);
 
     if streaming {
         handle::stream_response(client, handle_path, "openai".into()).into_response()
