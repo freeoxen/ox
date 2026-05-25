@@ -5,7 +5,9 @@
 pub mod anthropic;
 pub mod error;
 pub mod openai;
+pub mod sse_encoder;
 pub use error::CodecError;
+pub use sse_encoder::SseEncoder;
 
 /// Token usage information from a completion response.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
