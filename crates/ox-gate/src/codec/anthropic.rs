@@ -1,8 +1,60 @@
 //! Anthropic SSE parsing and usage extraction.
 
-use ox_kernel::StreamEvent;
+use ox_kernel::{CompletionRequest, StreamEvent, ToolSchema};
 
-use super::UsageInfo;
+use super::{CodecError, UsageInfo};
+
+/// Decode an Anthropic Messages API request body into a [`CompletionRequest`].
+///
+/// `system` may be a plain string or an array of `{type:"text", text:"..."}` blocks;
+/// the latter are joined with `\n\n` to produce a flat string.
+pub fn decode_request(body: &serde_json::Value) -> Result<CompletionRequest, CodecError> {
+    let obj = body.as_object().ok_or_else(|| {
+        CodecError::InvalidShape("body must be a JSON object".into())
+    })?;
+
+    let model = obj.get("model").and_then(|v| v.as_str())
+        .ok_or(CodecError::MissingField("model"))?
+        .to_string();
+
+    let max_tokens = obj.get("max_tokens").and_then(|v| v.as_u64())
+        .ok_or(CodecError::MissingField("max_tokens"))? as u32;
+
+    let system = match obj.get("system") {
+        None => String::new(),
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(serde_json::Value::Array(arr)) => arr.iter()
+            .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        _ => return Err(CodecError::InvalidShape(
+            "system must be string or array of text blocks".into()
+        )),
+    };
+
+    let messages = obj.get("messages").and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let tools: Vec<ToolSchema> = obj.get("tools").and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|t| {
+                    let name = t.get("name")?.as_str()?.to_string();
+                    let description = t.get("description")
+                        .and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let input_schema = t.get("input_schema")
+                        .cloned().unwrap_or(serde_json::Value::Null);
+                    Some(ToolSchema { name, description, input_schema })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let stream = obj.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    Ok(CompletionRequest { model, max_tokens, system, messages, tools, stream })
+}
 
 /// Parse an Anthropic SSE response body into a sequence of [`StreamEvent`]s.
 pub fn parse_sse_events(body: &str) -> Vec<StreamEvent> {
@@ -130,6 +182,96 @@ pub fn extract_usage(body: &str) -> UsageInfo {
     }
 
     info
+}
+
+#[cfg(test)]
+mod decode_tests {
+    use super::*;
+    use crate::codec::CodecError;
+
+    #[test]
+    fn decode_minimal_request() {
+        let body = serde_json::json!({
+            "model": "claude-sonnet-4-20250514",
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        let req = decode_request(&body).unwrap();
+        assert_eq!(req.model, "claude-sonnet-4-20250514");
+        assert_eq!(req.max_tokens, 1024);
+        assert_eq!(req.messages.len(), 1);
+        assert_eq!(req.system, "");
+        assert!(req.tools.is_empty());
+        assert!(!req.stream);
+    }
+
+    #[test]
+    fn decode_with_system_string() {
+        let body = serde_json::json!({
+            "model": "m",
+            "max_tokens": 1,
+            "system": "you are helpful",
+            "messages": []
+        });
+        let req = decode_request(&body).unwrap();
+        assert_eq!(req.system, "you are helpful");
+    }
+
+    #[test]
+    fn decode_with_system_block_array() {
+        // Anthropic also accepts `system: [{type:"text", text:"..."}]`.
+        // Flatten to a single string for the internal CompletionRequest.
+        let body = serde_json::json!({
+            "model": "m",
+            "max_tokens": 1,
+            "system": [{"type": "text", "text": "first"}, {"type": "text", "text": "second"}],
+            "messages": []
+        });
+        let req = decode_request(&body).unwrap();
+        assert_eq!(req.system, "first\n\nsecond");
+    }
+
+    #[test]
+    fn missing_model_errors() {
+        let body = serde_json::json!({"max_tokens": 1, "messages": []});
+        assert_eq!(decode_request(&body).unwrap_err(), CodecError::MissingField("model"));
+    }
+
+    #[test]
+    fn missing_max_tokens_errors() {
+        let body = serde_json::json!({"model": "m", "messages": []});
+        assert_eq!(decode_request(&body).unwrap_err(), CodecError::MissingField("max_tokens"));
+    }
+
+    #[test]
+    fn decode_includes_tools() {
+        let body = serde_json::json!({
+            "model": "m",
+            "max_tokens": 1,
+            "messages": [],
+            "tools": [{
+                "name": "read_file",
+                "description": "Read a file",
+                "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}}
+            }]
+        });
+        let req = decode_request(&body).unwrap();
+        assert_eq!(req.tools.len(), 1);
+        assert_eq!(req.tools[0].name, "read_file");
+        assert_eq!(req.tools[0].description, "Read a file");
+    }
+
+    #[test]
+    fn decode_honors_stream_flag() {
+        let body = serde_json::json!({
+            "model": "m",
+            "max_tokens": 1,
+            "stream": true,
+            "messages": []
+        });
+        let req = decode_request(&body).unwrap();
+        assert!(req.stream);
+    }
 }
 
 #[cfg(test)]
