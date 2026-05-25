@@ -720,6 +720,130 @@ impl Transport for HttpTransport {
     }
 }
 
+// ---------------------------------------------------------------------------
+// SseHttpExecutor — async streaming sibling of structfs_http::HttpExecutor
+// ---------------------------------------------------------------------------
+
+use futures::stream::BoxStream;
+use structfs_http::types::HttpRequest;
+
+/// Streaming HTTP executor — sibling of structfs_http::HttpExecutor for
+/// SSE responses. Generic injection point for CompletionBrokerStore.
+///
+/// The executor is responsible for parsing wire SSE bytes into typed
+/// StreamEvents (using the dialect-aware SseParser). Errors propagate
+/// through the stream's Err variant rather than panicking.
+#[async_trait::async_trait]
+pub trait SseHttpExecutor: Send + Sync + 'static {
+    async fn execute(
+        &self,
+        request: HttpRequest,
+        dialect: String,
+    ) -> BoxStream<'static, Result<StreamEvent, String>>;
+}
+
+/// Production SseHttpExecutor backed by reqwest.
+pub struct ReqwestSseExecutor {
+    client: reqwest::Client,
+}
+
+impl ReqwestSseExecutor {
+    /// Create with the given end-to-end timeout. Applies to the full
+    /// stream lifetime, not per-chunk.
+    pub fn new(timeout: std::time::Duration) -> Result<Self, String> {
+        let client = reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            .map_err(|e| e.to_string())?;
+        Ok(Self { client })
+    }
+
+    /// Default 5-minute timeout. Most LLM completions finish well within
+    /// this; longer requires explicit configuration.
+    pub fn with_default_timeout() -> Result<Self, String> {
+        Self::new(std::time::Duration::from_secs(300))
+    }
+}
+
+#[async_trait::async_trait]
+impl SseHttpExecutor for ReqwestSseExecutor {
+    async fn execute(
+        &self,
+        request: HttpRequest,
+        dialect: String,
+    ) -> BoxStream<'static, Result<StreamEvent, String>> {
+        use futures::stream::StreamExt;
+        let client = self.client.clone();
+
+        Box::pin(async_stream::stream! {
+            let method = match request.method {
+                structfs_http::types::Method::POST => reqwest::Method::POST,
+                structfs_http::types::Method::GET => reqwest::Method::GET,
+                m => { yield Err(format!("unsupported method: {:?}", m)); return; }
+            };
+
+            let mut req = client.request(method, &request.path);
+            for (k, v) in &request.headers {
+                req = req.header(k, v);
+            }
+            if let Some(body) = &request.body {
+                req = req.json(body);
+            }
+
+            let resp = match req.send().await {
+                Ok(r) => r,
+                Err(e) => { yield Err(format!("network error: {e}")); return; }
+            };
+
+            let status = resp.status();
+            if !status.is_success() {
+                let body = resp.text().await.unwrap_or_default();
+                yield Err(format!("HTTP {} from upstream: {}", status, body));
+                return;
+            }
+
+            let mut stream = resp.bytes_stream();
+            let mut buf = String::new();
+            let mut parser = SseParser::new(&dialect);
+
+            while let Some(chunk) = stream.next().await {
+                let chunk = match chunk {
+                    Ok(b) => b,
+                    Err(e) => { yield Err(format!("read error: {e}")); return; }
+                };
+                buf.push_str(&String::from_utf8_lossy(&chunk));
+                while let Some(nl) = buf.find('\n') {
+                    let line = buf[..nl].to_string();
+                    buf.drain(..=nl);
+                    for ev in parser.feed(&line) {
+                        yield Ok(ev);
+                    }
+                }
+            }
+            if !buf.is_empty() {
+                for ev in parser.feed(&buf) {
+                    yield Ok(ev);
+                }
+            }
+        })
+    }
+}
+
+#[cfg(test)]
+mod sse_executor_tests {
+    use super::*;
+
+    #[test]
+    fn executor_constructs_with_default_timeout() {
+        assert!(ReqwestSseExecutor::with_default_timeout().is_ok());
+    }
+
+    #[test]
+    fn executor_constructs_with_custom_timeout() {
+        assert!(ReqwestSseExecutor::new(std::time::Duration::from_secs(60)).is_ok());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

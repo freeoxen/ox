@@ -82,6 +82,7 @@ ox-ui = { path = "crates/ox-ui" }
 
 # StructFS — pinned to the upstream git repo for now.
 structfs-core-store = { git = "https://github.com/StructFS/structfs" }
+structfs-http = { git = "https://github.com/StructFS/structfs" }
 structfs-serde-store = { git = "https://github.com/StructFS/structfs" }
 
 # Async runtime + tracing.
