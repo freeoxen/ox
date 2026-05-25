@@ -138,6 +138,9 @@ proc-macro2 = "1"
 clash = "0.6"
 namecode = "0.1"
 
+# Error ergonomics.
+thiserror = "2"
+
 # Dev / test helpers.
 insta = "1"
 tempfile = "3"

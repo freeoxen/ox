@@ -3,7 +3,9 @@
 //! Each sub-module handles a specific provider's SSE format and request shape.
 
 pub mod anthropic;
+pub mod error;
 pub mod openai;
+pub use error::CodecError;
 
 /// Token usage information from a completion response.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

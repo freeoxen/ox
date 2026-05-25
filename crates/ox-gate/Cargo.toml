@@ -13,6 +13,7 @@ keywords = ["agent", "ai", "llm", "structfs", "transport"]
 categories = ["api-bindings"]
 
 [dependencies]
+thiserror = { workspace = true }
 tracing = { workspace = true }
 ox-kernel = { workspace = true }
 ox-types = { workspace = true }
