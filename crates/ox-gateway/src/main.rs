@@ -13,10 +13,15 @@ use ox_broker::{BrokerStore, SyncClientAdapter};
 use ox_path::oxpath;
 use std::sync::Arc;
 use std::time::Duration;
+use tracing_subscriber::EnvFilter;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
 
     let ox_dir = ox_dir()?;
     let toml_path = ox_dir.join("config.toml");
