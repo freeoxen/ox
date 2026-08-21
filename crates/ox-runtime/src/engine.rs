@@ -432,7 +432,7 @@ mod tests {
         ) -> Result<ox_tools::completion::CompletionOutput, String> {
             Ok(ox_tools::completion::CompletionOutput {
                 events: vec![
-                    StreamEvent::TextDelta("Hello from the agent!".to_string()),
+                    StreamEvent::TextDelta { text: "Hello from the agent!".to_string() },
                     StreamEvent::MessageStop,
                 ],
                 input_tokens: 10,

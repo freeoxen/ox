@@ -180,7 +180,7 @@ mod tests {
     fn run_turn_text_only_response() {
         let transport = SequentialTransport::new(vec![(
             vec![
-                StreamEvent::TextDelta("Hello!".into()),
+                StreamEvent::TextDelta { text: "Hello!".into() },
                 StreamEvent::MessageStop,
             ],
             10,
@@ -237,7 +237,7 @@ mod tests {
                         id: "tc1".into(),
                         name: "echo_tool".into(),
                     },
-                    StreamEvent::ToolUseInputDelta(r#"{"text": "ping"}"#.into()),
+                    StreamEvent::ToolUseInputDelta { delta: r#"{"text": "ping"}"#.into() },
                     StreamEvent::MessageStop,
                 ],
                 10,
@@ -245,7 +245,7 @@ mod tests {
             ),
             (
                 vec![
-                    StreamEvent::TextDelta("pong".into()),
+                    StreamEvent::TextDelta { text: "pong".into() },
                     StreamEvent::MessageStop,
                 ],
                 5,
@@ -332,8 +332,8 @@ mod tests {
                         id: "tc1".into(),
                         name: "complete".into(),
                     },
-                    StreamEvent::ToolUseInputDelta(
-                        serde_json::json!({
+                    StreamEvent::ToolUseInputDelta {
+                        delta: serde_json::json!({
                             "account": "anthropic",
                             "refs": [
                                 {"type": "system", "path": "system"},
@@ -341,7 +341,7 @@ mod tests {
                             ]
                         })
                         .to_string(),
-                    ),
+                    },
                     StreamEvent::MessageStop,
                 ],
                 10,
@@ -350,7 +350,7 @@ mod tests {
             // Inner completion (fired by the kernel's stack reactor)
             (
                 vec![
-                    StreamEvent::TextDelta("Brief summary.".into()),
+                    StreamEvent::TextDelta { text: "Brief summary.".into() },
                     StreamEvent::MessageStop,
                 ],
                 10,
@@ -359,7 +359,7 @@ mod tests {
             // Outer completion #2: LLM produces final response using tool result
             (
                 vec![
-                    StreamEvent::TextDelta("Here is the summary: Brief summary.".into()),
+                    StreamEvent::TextDelta { text: "Here is the summary: Brief summary.".into() },
                     StreamEvent::MessageStop,
                 ],
                 10,
