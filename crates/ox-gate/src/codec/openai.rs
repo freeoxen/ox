@@ -137,10 +137,19 @@ pub fn translate_request(request: &CompletionRequest) -> serde_json::Value {
 
     let mut body = serde_json::json!({
         "model": request.model,
-        "max_tokens": request.max_tokens,
         "messages": messages,
         "stream": true,
+        // Without this OpenAI-dialect upstreams never report token usage on
+        // streams, which leaves the gateway's ledger and the client-visible
+        // usage empty for those providers.
+        "stream_options": { "include_usage": true },
     });
+    // max_tokens == 0 is the "client omitted it" sentinel from
+    // decode_request; forward nothing rather than fabricating a cap the
+    // client never asked for.
+    if request.max_tokens > 0 {
+        body["max_tokens"] = serde_json::json!(request.max_tokens);
+    }
 
     if !tools.is_empty() {
         body["tools"] = serde_json::Value::Array(tools);
@@ -429,21 +438,32 @@ pub fn decode_request(body: &serde_json::Value) -> Result<ox_kernel::CompletionR
         }
     }
 
-    let tools: Vec<ox_kernel::ToolSchema> = obj.get("tools").and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|t| {
-                    let f = t.get("function")?;
-                    let name = f.get("name")?.as_str()?.to_string();
-                    let description = f.get("description")
-                        .and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let input_schema = f.get("parameters")
-                        .cloned().unwrap_or(serde_json::Value::Null);
-                    Some(ox_kernel::ToolSchema { name, description, input_schema })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut tools: Vec<ox_kernel::ToolSchema> = Vec::new();
+    if let Some(arr) = obj.get("tools").and_then(|v| v.as_array()) {
+        for t in arr {
+            // A malformed entry is a client error, not something to silently
+            // drop — the model would run without a tool the client sent.
+            let Some(f) = t.get("function") else {
+                return Err(CodecError::InvalidShape(
+                    "tools entries require a `function` object".into(),
+                ));
+            };
+            let Some(name) = f.get("name").and_then(|v| v.as_str()) else {
+                return Err(CodecError::InvalidShape(
+                    "tools entries require function.name".into(),
+                ));
+            };
+            let description = f.get("description")
+                .and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let input_schema = f.get("parameters")
+                .cloned().unwrap_or(serde_json::Value::Null);
+            tools.push(ox_kernel::ToolSchema {
+                name: name.to_string(),
+                description,
+                input_schema,
+            });
+        }
+    }
 
     Ok(ox_kernel::CompletionRequest {
         model, max_tokens, system, messages, tools, stream,

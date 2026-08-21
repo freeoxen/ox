@@ -36,20 +36,23 @@ pub fn decode_request(body: &serde_json::Value) -> Result<CompletionRequest, Cod
         .cloned()
         .unwrap_or_default();
 
-    let tools: Vec<ToolSchema> = obj.get("tools").and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|t| {
-                    let name = t.get("name")?.as_str()?.to_string();
-                    let description = t.get("description")
-                        .and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let input_schema = t.get("input_schema")
-                        .cloned().unwrap_or(serde_json::Value::Null);
-                    Some(ToolSchema { name, description, input_schema })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut tools: Vec<ToolSchema> = Vec::new();
+    if let Some(arr) = obj.get("tools").and_then(|v| v.as_array()) {
+        for t in arr {
+            // A malformed entry is a client error, not something to silently
+            // drop — the model would run without a tool the client sent.
+            let Some(name) = t.get("name").and_then(|v| v.as_str()) else {
+                return Err(CodecError::InvalidShape(
+                    "tools entries require a string `name`".into(),
+                ));
+            };
+            let description = t.get("description")
+                .and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let input_schema = t.get("input_schema")
+                .cloned().unwrap_or(serde_json::Value::Null);
+            tools.push(ToolSchema { name: name.to_string(), description, input_schema });
+        }
+    }
 
     let stream = obj.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
 

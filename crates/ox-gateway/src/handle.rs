@@ -118,7 +118,10 @@ fn raw_sse_stream(
             next += events.len();
 
             let status: Option<CompletionStatus> = client.read_typed(&handle).await.ok().flatten();
-            let Some(status) = status else { continue };
+            // None means the inflight entry is gone (concurrently GC'd) —
+            // nothing will ever arrive, and continuing would busy-spin: the
+            // missing-entry reads return immediately instead of parking.
+            let Some(status) = status else { break };
             if !status.is_terminal() {
                 continue;
             }

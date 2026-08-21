@@ -75,9 +75,17 @@ pub(super) async fn per_request_task<E: SseHttpExecutor>(
     };
 
     let mut stream = executor.execute(http_request, provider.dialect.clone()).await;
+    // An in-band error frame (upstream 200 + `event: error`) still gets
+    // pushed so streaming drains relay it, but the task must finish Failed —
+    // flipping Complete would hand non-streaming clients a 200 with
+    // truncated content and write a usage record for a failed request.
+    let mut in_band_error: Option<String> = None;
     while let Some(item) = stream.next().await {
         match item {
             Ok(ev) => {
+                if let ox_types::StreamEvent::Error { message } = &ev {
+                    in_band_error = Some(message.clone());
+                }
                 let mut state = inflight.state.lock().await;
                 state.events.push(ev);
                 drop(state);
@@ -88,6 +96,10 @@ pub(super) async fn per_request_task<E: SseHttpExecutor>(
                 return;
             }
         }
+    }
+    if let Some(reason) = in_band_error {
+        mark_failed(&inflight, role.account.clone(), role.model_id.clone(), reason).await;
+        return;
     }
 
     // Terminal clean path: compute usage, flip to Complete, notify, append
@@ -214,11 +226,17 @@ fn build_http_request(
     // event streams, and the client's stream flag governs only how the
     // gateway shapes its own response. Forwarding stream:false would get a
     // plain JSON reply back that the SSE parser silently drops.
-    let rebuilt = CompletionRequest {
+    let mut rebuilt = CompletionRequest {
         model: upstream_model_id.to_string(),
         stream: true,
         ..request.clone()
     };
+    // max_tokens == 0 means the (OpenAI-dialect) client omitted it. The
+    // openai codec omits the field for that sentinel, but Anthropic-dialect
+    // upstreams require max_tokens, so give the cross-dialect case a cap.
+    if rebuilt.max_tokens == 0 && provider.dialect != "openai" {
+        rebuilt.max_tokens = 4096;
+    }
 
     let body: serde_json::Value = match provider.dialect.as_str() {
         "openai" => crate::codec::openai::translate_request(&rebuilt),

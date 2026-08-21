@@ -16,6 +16,10 @@ pub struct SseEncoder {
     // Set once any tool call starts; drives stop_reason/finish_reason.
     saw_tool_use: bool,
     // Anthropic state
+    anthropic_message_started: bool,
+    // Input usage that arrived after message_start already went out (OpenAI
+    // upstreams report usage at stream end); folded into message_delta.
+    anthropic_late_input_usage: Option<(u32, u32, u32)>,
     next_content_block: usize,
     open_text_block: Option<usize>,
     open_tool_block: Option<usize>,
@@ -35,6 +39,8 @@ impl SseEncoder {
             dialect: dialect.to_string(),
             meta,
             saw_tool_use: false,
+            anthropic_message_started: false,
+            anthropic_late_input_usage: None,
             next_content_block: 0,
             open_text_block: None,
             open_tool_block: None,
@@ -88,31 +94,56 @@ impl SseEncoder {
         }
     }
 
+    fn anthropic_message_start_frame(&self, input: (u32, u32, u32)) -> String {
+        let (input_tokens, cache_creation, cache_read) = input;
+        let frame = serde_json::json!({
+            "type": "message_start",
+            "message": {
+                "id": self.meta.id,
+                "type": "message",
+                "role": "assistant",
+                "model": self.meta.model,
+                "content": [],
+                "stop_reason": null,
+                "stop_sequence": null,
+                "usage": {
+                    "input_tokens": input_tokens,
+                    "cache_creation_input_tokens": cache_creation,
+                    "cache_read_input_tokens": cache_read,
+                    "output_tokens": 0,
+                },
+            },
+        });
+        format!("event: message_start\ndata: {}\n\n", frame)
+    }
+
+    /// Anthropic streams MUST open with message_start, but only Anthropic
+    /// upstreams put input usage at the front of the stream — OpenAI
+    /// upstreams report usage at the end, so their first event is content.
+    /// Synthesize a zero-usage start in that case; SDK state machines
+    /// reject streams that open with content_block_start.
+    fn ensure_anthropic_message_start(&mut self, out: &mut Vec<String>) {
+        if !self.anthropic_message_started {
+            self.anthropic_message_started = true;
+            out.push(self.anthropic_message_start_frame((0, 0, 0)));
+        }
+    }
+
     fn encode_anthropic(&mut self, event: &StreamEvent) -> Vec<String> {
         match event {
             StreamEvent::InputUsage { input_tokens, cache_creation, cache_read } => {
-                let frame = serde_json::json!({
-                    "type": "message_start",
-                    "message": {
-                        "id": self.meta.id,
-                        "type": "message",
-                        "role": "assistant",
-                        "model": self.meta.model,
-                        "content": [],
-                        "stop_reason": null,
-                        "stop_sequence": null,
-                        "usage": {
-                            "input_tokens": input_tokens,
-                            "cache_creation_input_tokens": cache_creation,
-                            "cache_read_input_tokens": cache_read,
-                            "output_tokens": 0,
-                        },
-                    },
-                });
-                vec![format!("event: message_start\ndata: {}\n\n", frame)]
+                let usage = (*input_tokens, *cache_creation, *cache_read);
+                if self.anthropic_message_started {
+                    self.anthropic_late_input_usage = Some(usage);
+                    vec![]
+                } else {
+                    self.anthropic_message_started = true;
+                    vec![self.anthropic_message_start_frame(usage)]
+                }
             }
             StreamEvent::TextDelta { text } => {
                 let mut out = Vec::new();
+                self.ensure_anthropic_message_start(&mut out);
                 if self.open_text_block.is_none() {
                     let idx = self.next_content_block;
                     self.next_content_block += 1;
@@ -140,6 +171,7 @@ impl SseEncoder {
             StreamEvent::ToolUseStart { id, name } => {
                 self.saw_tool_use = true;
                 let mut out = Vec::new();
+                self.ensure_anthropic_message_start(&mut out);
                 if let Some(text_idx) = self.open_text_block.take() {
                     out.push(format!(
                         "event: content_block_stop\ndata: {}\n\n",
@@ -180,18 +212,28 @@ impl SseEncoder {
                 )]
             }
             StreamEvent::OutputUsage { output_tokens } => {
+                let mut out = Vec::new();
+                self.ensure_anthropic_message_start(&mut out);
                 let stop_reason = if self.saw_tool_use { "tool_use" } else { "end_turn" };
-                vec![format!(
+                let mut usage = serde_json::json!({ "output_tokens": output_tokens });
+                if let Some((it, cc, cr)) = self.anthropic_late_input_usage.take() {
+                    usage["input_tokens"] = serde_json::json!(it);
+                    usage["cache_creation_input_tokens"] = serde_json::json!(cc);
+                    usage["cache_read_input_tokens"] = serde_json::json!(cr);
+                }
+                out.push(format!(
                     "event: message_delta\ndata: {}\n\n",
                     serde_json::json!({
                         "type": "message_delta",
                         "delta": { "stop_reason": stop_reason, "stop_sequence": null },
-                        "usage": { "output_tokens": output_tokens },
+                        "usage": usage,
                     })
-                )]
+                ));
+                out
             }
             StreamEvent::MessageStop => {
                 let mut out = Vec::new();
+                self.ensure_anthropic_message_start(&mut out);
                 if let Some(idx) = self.open_text_block.take() {
                     out.push(format!(
                         "event: content_block_stop\ndata: {}\n\n",
@@ -307,10 +349,13 @@ mod tests {
     fn anthropic_text_delta_emits_block_start_then_delta() {
         let mut enc = SseEncoder::new("anthropic", meta());
         let frames = enc.encode_sse(&StreamEvent::TextDelta { text: "hi".into() });
-        assert_eq!(frames.len(), 2);
-        assert!(frames[0].contains("content_block_start"));
-        assert!(frames[1].contains("content_block_delta"));
-        assert!(frames[1].contains("\"text\":\"hi\""));
+        // No InputUsage arrived first, so the encoder synthesizes the
+        // message_start the Anthropic stream contract requires.
+        assert_eq!(frames.len(), 3);
+        assert!(frames[0].contains("message_start"));
+        assert!(frames[1].contains("content_block_start"));
+        assert!(frames[2].contains("content_block_delta"));
+        assert!(frames[2].contains("\"text\":\"hi\""));
     }
 
     #[test]
@@ -372,7 +417,10 @@ mod tests {
     fn anthropic_stop_reason_end_turn_without_tools() {
         let mut enc = SseEncoder::new("anthropic", meta());
         let frames = enc.encode_sse(&StreamEvent::OutputUsage { output_tokens: 5 });
-        assert!(frames[0].contains("\"stop_reason\":\"end_turn\""));
+        // Synthetic message_start precedes the message_delta.
+        assert_eq!(frames.len(), 2);
+        assert!(frames[0].contains("message_start"));
+        assert!(frames[1].contains("\"stop_reason\":\"end_turn\""));
     }
 
     #[test]
@@ -453,6 +501,25 @@ mod tests {
         assert!(frames[0].contains("\"total_tokens\":17"));
         assert!(frames[0].contains("\"cached_tokens\":4"));
         assert_eq!(frames[1], "data: [DONE]\n\n");
+    }
+
+    #[test]
+    fn anthropic_late_input_usage_folds_into_message_delta() {
+        // OpenAI-dialect upstream: content arrives first, usage at the end.
+        let mut enc = SseEncoder::new("anthropic", meta());
+        let first = enc.encode_sse(&StreamEvent::TextDelta { text: "hi".into() });
+        assert!(first[0].contains("message_start"), "stream must open with message_start");
+        assert!(enc
+            .encode_sse(&StreamEvent::InputUsage {
+                input_tokens: 9,
+                cache_creation: 0,
+                cache_read: 2,
+            })
+            .is_empty());
+        let delta = enc.encode_sse(&StreamEvent::OutputUsage { output_tokens: 4 });
+        assert!(delta[0].contains("\"output_tokens\":4"));
+        assert!(delta[0].contains("\"input_tokens\":9"));
+        assert!(delta[0].contains("\"cache_read_input_tokens\":2"));
     }
 
     #[test]
