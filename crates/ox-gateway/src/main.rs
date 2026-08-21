@@ -90,8 +90,37 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(addr = %listener.local_addr()?, "ox-gateway listening");
 
     let app = ox_gateway::routes::build_router(broker.client());
-    axum::serve(listener, app).await.context("axum::serve")?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .context("axum::serve")?;
+    tracing::info!("ox-gateway shut down");
     Ok(())
+}
+
+/// Resolve on SIGINT (ctrl-c) or SIGTERM so in-flight requests get to
+/// drain instead of being severed mid-stream.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(_) => std::future::pending().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
+    tracing::info!("shutdown signal received; draining");
 }
 
 fn ox_dir() -> anyhow::Result<std::path::PathBuf> {

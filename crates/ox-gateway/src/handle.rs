@@ -22,6 +22,45 @@ use ox_gate::completion_broker::CompletionStatus;
 use ox_types::StreamEvent;
 use structfs_core_store::{Path, Record, Value};
 
+/// GC's the inflight handle even when the drain future never runs to
+/// completion. axum drops the response stream (and cancels the buffered
+/// handler) the moment the client disconnects, so a GC write placed after
+/// the drain loop would never execute — every abandoned request would leak
+/// its inflight entry (status + full event buffer) forever. The guard's
+/// Drop spawns the `write(Null)` instead; the normal path disarms it after
+/// GC'ing inline.
+struct InflightGc {
+    client: ClientHandle,
+    handle: Path,
+    armed: bool,
+}
+
+impl InflightGc {
+    fn new(client: ClientHandle, handle: Path) -> Self {
+        Self { client, handle, armed: true }
+    }
+
+    async fn gc_now(mut self) {
+        self.armed = false;
+        let _ = self.client.write(&self.handle, Record::parsed(Value::Null)).await;
+    }
+}
+
+impl Drop for InflightGc {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let client = self.client.clone();
+        let handle = self.handle.clone();
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            rt.spawn(async move {
+                let _ = client.write(&handle, Record::parsed(Value::Null)).await;
+            });
+        }
+    }
+}
+
 /// Stream events from `handle` as raw SSE bytes.
 ///
 /// `handle` is the broker-relative path returned by
@@ -54,6 +93,7 @@ fn raw_sse_stream(
     meta: ResponseMeta,
 ) -> impl Stream<Item = Result<Bytes, std::convert::Infallible>> {
     async_stream::stream! {
+        let gc = InflightGc::new(client.clone(), handle.clone());
         let mut encoder = SseEncoder::new(&dialect, meta);
         let mut next: usize = 0;
         loop {
@@ -108,7 +148,7 @@ fn raw_sse_stream(
             }
             break;
         }
-        let _ = client.write(&handle, Record::parsed(Value::Null)).await;
+        gc.gc_now().await;
     }
 }
 
@@ -123,6 +163,7 @@ pub async fn buffer_response(
     client: ClientHandle,
     handle: Path,
 ) -> Result<(CompletionStatus, Vec<StreamEvent>), String> {
+    let gc = InflightGc::new(client.clone(), handle.clone());
     let mut next: usize = 0;
     let mut all: Vec<StreamEvent> = Vec::new();
     loop {
@@ -150,7 +191,7 @@ pub async fn buffer_response(
                 .map_err(|e| e.to_string())?
                 .unwrap_or_default();
             all.extend(tail);
-            let _ = client.write(&handle, Record::parsed(Value::Null)).await;
+            gc.gc_now().await;
             return Ok((status, all));
         }
     }
