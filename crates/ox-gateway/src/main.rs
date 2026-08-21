@@ -79,6 +79,29 @@ async fn main() -> anyhow::Result<()> {
     );
     broker.mount_async(oxpath!("gateway", "completions"), completions).await;
 
+    // Same gate subscriptions ox-cli registers (catalog refresh, account
+    // test/delete, config save), then kick a catalog refresh per account so
+    // /v1/models serves real entries shortly after boot instead of an empty
+    // list until something else triggers a refresh.
+    {
+        let transport: Arc<dyn ox_gate::transport::Transport> =
+            Arc::new(ox_gate::transport::HttpTransport);
+        ox_gate::subscriptions::register_all(&broker, transport);
+        let client = broker.client();
+        for name in ox_config.gate.accounts.keys() {
+            let Ok(comp) = ox_kernel::PathComponent::try_new(name) else {
+                continue;
+            };
+            let path = oxpath!("config", "gate", "accounts", comp, "refresh_now");
+            if let Err(e) = client
+                .write(&path, structfs_core_store::Record::parsed(structfs_core_store::Value::Null))
+                .await
+            {
+                tracing::warn!(account = %name, error = %e, "catalog refresh trigger failed");
+            }
+        }
+    }
+
     // axum
     let bind_addr =
         std::env::var("OX_GATEWAY_BIND").unwrap_or_else(|_| "127.0.0.1:11343".into());
