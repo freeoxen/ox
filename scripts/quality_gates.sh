@@ -116,35 +116,36 @@ gate "no silent parse fallback"   bash -c '
 '
 
 # 4. Lint (wasm, ox-web)
+#
+# Clippy subsumes `cargo check` for both targets — a full type-check
+# with lints on top — so there are no separate check gates.
 gate "clippy (wasm)"              cargo clippy --target wasm32-unknown-unknown -p ox-web -- -D warnings
 
-# 5. Check (native)
-gate "check (native)"            cargo check --workspace
+# 5. Tests + coverage (Rust + TypeScript, thresholds from coverage.toml).
+#
+# This is the canonical Rust test run: cargo-llvm-cov executes the whole
+# workspace suite (instrumented) and coverage.sh fails on any test
+# failure, so a separate `cargo test --workspace` pass would run every
+# test a second time for no additional signal. Doctests are the one
+# thing llvm-cov skips, and the workspace has none that run (all fences
+# are `text` or `ignore`).
+gate "test + coverage"            "$ROOT/scripts/coverage.sh" --gate
 
-# 6. Check (wasm)
-gate "check (wasm)"              cargo check --target wasm32-unknown-unknown -p ox-web
-
-# 7. Tests
-gate "test"                       cargo test --workspace
-
-# 8. wasm-pack build
+# 6. wasm-pack build
 gate "wasm-pack build"            wasm-pack build crates/ox-web --target web --out-dir ../../target/wasm-pkg
 
-# 9. Install UI dependencies
+# 7. Install UI dependencies
 gate "bun install (ui)"           "$BUN" install --cwd crates/ox-web/ui
 
-# 10. SvelteKit sync + check
+# 8. SvelteKit sync + check
 gate "svelte-kit sync (ui)"       bash -c "cd crates/ox-web/ui && \"$BUN\" run node_modules/@sveltejs/kit/svelte-kit.js sync"
 gate "svelte-check (ui)"          bash -c "cd crates/ox-web/ui && \"$BUN\" run check"
 
-# 11. TypeScript tests (ui)
+# 9. TypeScript tests (ui)
 gate "bun test (ui)"              bash -c "cd crates/ox-web/ui && \"$BUN\" test"
 
-# 12. SvelteKit build
+# 10. SvelteKit build
 gate "vite build (ui)"            bash -c "cd crates/ox-web/ui && \"$BUN\" run build"
-
-# 13. Coverage (Rust + TypeScript, thresholds from coverage.toml)
-gate "coverage"                   "$ROOT/scripts/coverage.sh" --gate
 
 # Summary
 echo ""

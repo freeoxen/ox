@@ -109,7 +109,13 @@ ensure_rust_coverage_data() {
     mkdir -p "$COVERAGE_DIR"
     echo -e "${DIM}Running Rust tests with coverage instrumentation...${NC}" >&2
 
-    cargo llvm-cov --workspace 2>&1 | tee "$summary_file" | grep -E "^(running|test |TOTAL)" >&2 || true
+    # The trailing `|| true` belongs to grep alone (no matches is fine);
+    # with pipefail a cargo failure must still fail this function — this
+    # is the only place the Rust test suite runs in the quality gates.
+    if ! cargo llvm-cov --workspace 2>&1 | tee "$summary_file" | { grep -E "^(running|test |TOTAL)" >&2 || true; }; then
+        echo -e "${RED}Rust tests failed under coverage. Full output: $summary_file${NC}" >&2
+        return 1
+    fi
 
     echo -e "${DIM}Generating detailed Rust coverage report...${NC}" >&2
     cargo llvm-cov report --text 2>&1 > "$detail_file"
@@ -141,8 +147,13 @@ ensure_ts_coverage_data() {
     mkdir -p "$COVERAGE_DIR"
     echo -e "${DIM}Running TypeScript tests with coverage...${NC}" >&2
 
-    # bun test --coverage prints coverage table to stderr; capture everything
-    (cd "$TS_UI_DIR" && bun test --coverage 2>&1) | tee "$ts_summary_file" | grep -E "^(✓|✗|pass|fail)" >&2 || true
+    # bun test --coverage prints coverage table to stderr; capture everything.
+    # `|| true` covers only grep's no-match case — a bun test failure must
+    # propagate.
+    if ! (cd "$TS_UI_DIR" && bun test --coverage 2>&1) | tee "$ts_summary_file" | { grep -E "^(✓|✗|pass|fail)" >&2 || true; }; then
+        echo -e "${RED}TypeScript tests failed under coverage. Full output: $ts_summary_file${NC}" >&2
+        return 1
+    fi
 
     echo -e "${DIM}TypeScript coverage data cached.${NC}" >&2
 }
