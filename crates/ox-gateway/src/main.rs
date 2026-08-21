@@ -26,7 +26,11 @@ async fn main() -> anyhow::Result<()> {
     let keys_path = ox_dir.join("keys.json");
     let usage_path = ox_dir.join("usage.jsonl");
 
-    let broker = BrokerStore::new(Duration::from_secs(2));
+    // Generous client timeout: the completion drain's events/from read
+    // legitimately parks for the whole inter-token gap, which for thinking
+    // models can be minutes. A short timeout here turns normal upstream
+    // latency into fatal error frames on healthy requests.
+    let broker = BrokerStore::new(Duration::from_secs(600));
 
     // config/ — ConfigStore over the same TOML ox-cli reads.
     // The figment-resolved base flat map is loaded from the file; runtime

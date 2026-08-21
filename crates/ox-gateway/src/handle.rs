@@ -29,18 +29,18 @@ use structfs_core_store::{Path, Record, Value};
 /// its inflight entry (status + full event buffer) forever. The guard's
 /// Drop spawns the `write(Null)` instead; the normal path disarms it after
 /// GC'ing inline.
-struct InflightGc {
+pub(crate) struct InflightGc {
     client: ClientHandle,
     handle: Path,
     armed: bool,
 }
 
 impl InflightGc {
-    fn new(client: ClientHandle, handle: Path) -> Self {
+    pub(crate) fn new(client: ClientHandle, handle: Path) -> Self {
         Self { client, handle, armed: true }
     }
 
-    async fn gc_now(mut self) {
+    pub(crate) async fn gc_now(mut self) {
         self.armed = false;
         let _ = self.client.write(&self.handle, Record::parsed(Value::Null)).await;
     }

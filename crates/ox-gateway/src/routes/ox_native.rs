@@ -17,7 +17,7 @@ use ox_gate::completion_broker::CompletionStatus;
 use ox_kernel::CompletionRequest;
 use ox_types::StreamEvent;
 use std::convert::Infallible;
-use structfs_core_store::{path, Record, Value};
+use structfs_core_store::path;
 
 use crate::handle;
 
@@ -72,6 +72,9 @@ fn ox_native_sse_stream(
     handle_path: structfs_core_store::Path,
 ) -> impl Stream<Item = Result<Bytes, Infallible>> + Send + 'static {
     async_stream::stream! {
+        // Same Drop-guard as the dialect routes: axum drops this stream on
+        // client disconnect, so GC must not rely on code after the loop.
+        let gc = handle::InflightGc::new(client.clone(), handle_path.clone());
         let mut next: usize = 0;
         loop {
             let events_path = handle_path.join(&handle::events_from_subpath(next));
@@ -88,20 +91,32 @@ fn ox_native_sse_stream(
             next += events.len();
 
             let status: Option<CompletionStatus> = client.read_typed(&handle_path).await.ok().flatten();
-            match status {
-                Some(CompletionStatus::Complete { .. }) => break,
-                Some(CompletionStatus::Failed { reason, .. }) => {
-                    let frame = format!(
-                        "event: error\ndata: {}\n\n",
-                        serde_json::json!({ "message": reason })
-                    );
-                    yield Ok(Bytes::from(frame));
-                    break;
-                }
-                None => break,
-                _ => continue,
+            let Some(status) = status else { break };
+            if !status.is_terminal() {
+                continue;
             }
+            // Close-out drain, same as handle.rs: events appended between the
+            // events-read and the status-read would otherwise be dropped.
+            let events_path = handle_path.join(&handle::events_from_subpath(next));
+            let tail: Vec<StreamEvent> = client
+                .read_typed(&events_path)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            for ev in &tail {
+                let json = serde_json::to_string(ev).unwrap_or_default();
+                yield Ok::<_, Infallible>(Bytes::from(format!("data: {}\n\n", json)));
+            }
+            if let CompletionStatus::Failed { reason, .. } = status {
+                let frame = format!(
+                    "event: error\ndata: {}\n\n",
+                    serde_json::json!({ "message": reason })
+                );
+                yield Ok(Bytes::from(frame));
+            }
+            break;
         }
-        let _ = client.write(&handle_path, Record::parsed(Value::Null)).await;
+        gc.gc_now().await;
     }
 }
