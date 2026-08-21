@@ -26,7 +26,7 @@ pub mod thread_registry;
 pub(crate) mod action_executor;
 pub(crate) mod clash_sandbox;
 pub(crate) mod commit_drain;
-pub(crate) mod config;
+pub(crate) use ox_config::config;
 pub(crate) mod dialogs;
 /// Test-only key-dispatch shim. Kept on the library surface so the
 /// settings_e2e integration test (which runs against `ox_cli::…`) can
@@ -43,7 +43,7 @@ pub(crate) mod history_view;
 pub(crate) mod horns_loop;
 pub(crate) mod inbox_shell;
 pub(crate) mod inbox_view;
-pub(crate) mod json_backing;
+pub(crate) use ox_config::json_backing;
 pub(crate) mod key_chord_canonical;
 pub(crate) mod key_encode;
 pub(crate) mod key_handlers;
@@ -82,7 +82,7 @@ pub mod test_render_exports {
 }
 pub(crate) mod thread_shell;
 pub(crate) mod thread_view;
-pub(crate) mod toml_backing;
+pub(crate) use ox_config::toml_backing;
 pub(crate) mod tui;
 pub(crate) mod types;
 pub(crate) mod view_state;

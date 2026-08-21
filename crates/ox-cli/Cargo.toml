@@ -41,6 +41,7 @@ ratatui = { workspace = true }
 unicode-width = { workspace = true }
 reqwest = { workspace = true, features = ["blocking"] }
 clash = { workspace = true }
+ox-config = { workspace = true }
 # Not used directly: constrains the transitive allocative dep below 0.3.6,
 # which moved to hashbrown 0.16 and no longer implements Allocative for the
 # hashbrown-0.14 types starlark_map 0.13 (via clash) derives it on —

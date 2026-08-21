@@ -12,6 +12,7 @@ members = [
     "crates/ox-wasm",
     "crates/ox-web",
     "crates/ox-cli",
+    "crates/ox-config",
     "crates/ox-inbox",
     "crates/ox-runtime",
     "crates/ox-broker",
@@ -39,6 +40,7 @@ default-members = [
     "crates/ox-kernel",
     "crates/ox-web",
     "crates/ox-cli",
+    "crates/ox-config",
     "crates/ox-inbox",
     "crates/ox-runtime",
     "crates/ox-broker",
@@ -72,6 +74,7 @@ ox-broker = { path = "crates/ox-broker" }
 ox-context = { path = "crates/ox-context" }
 ox-core = { path = "crates/ox-core" }
 ox-gate = { path = "crates/ox-gate" }
+ox-config = { path = "crates/ox-config" }
 ox-history = { path = "crates/ox-history" }
 ox-inbox = { path = "crates/ox-inbox" }
 ox-kernel = { path = "crates/ox-kernel" }
