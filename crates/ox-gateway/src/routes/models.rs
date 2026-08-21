@@ -46,14 +46,26 @@ async fn list_models(headers: HeaderMap, State(client): State<ClientHandle>) -> 
             Some(p) => p,
             None => continue,
         };
+        let account_comp = match PathComponent::try_new(account_name.as_str()) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
         let provider_comp = match PathComponent::try_new(provider_name) {
             Ok(c) => c,
             Err(_) => continue,
         };
-        let models_path = oxpath!("gate", "providers", provider_comp, "models");
-        let models: Vec<ModelInfo> = match client.read_typed(&models_path).await {
-            Ok(Some(m)) => m,
-            _ => continue,
+        // The catalog_refresh subscription lands catalogs at
+        // config/gate/accounts/{name}/models; gate/providers/{p}/models only
+        // holds catalogs written directly into the GateStore instance.
+        // Prefer the refreshed per-account catalog, fall back to the gate's.
+        let account_models_path = oxpath!("config", "gate", "accounts", account_comp, "models");
+        let provider_models_path = oxpath!("gate", "providers", provider_comp, "models");
+        let models: Vec<ModelInfo> = match client.read_typed(&account_models_path).await {
+            Ok(Some(m)) if !Vec::is_empty(&m) => m,
+            _ => match client.read_typed(&provider_models_path).await {
+                Ok(Some(m)) => m,
+                _ => continue,
+            },
         };
         for m in models {
             items.push((account_name.clone(), m));

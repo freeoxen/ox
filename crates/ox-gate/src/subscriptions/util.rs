@@ -169,10 +169,10 @@ pub fn now_ms() -> u64 {
 // Test fixtures shared across the subscription tests
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 #[allow(dead_code)] // some helpers (with_catalog, entries) are consumed by
-// sibling subscription tests added in N4/N5/N6/N8.
-pub(crate) mod testing {
+// sibling subscription tests.
+pub mod testing {
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
 
