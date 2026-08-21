@@ -107,7 +107,13 @@ pub(crate) async fn spawn_async_server<
     })
 }
 
-/// The async server loop: reads resolved inline, writes spawned as tasks.
+/// The async server loop: reads and writes both spawn as independent tasks.
+///
+/// `AsyncReader::read` returns a `'static` future that does not borrow the
+/// store (the trait's `BoxFuture` has no lifetime parameter), so the loop
+/// only builds the future inline and never awaits it. Awaiting reads inline
+/// would let one long-parked read — e.g. a blocking `events/from` drain —
+/// stall every other request on the mount.
 async fn async_server_loop<S: crate::async_store::AsyncReader + crate::async_store::AsyncWriter>(
     mut store: S,
     mut rx: tokio::sync::mpsc::Receiver<Request>,
@@ -115,8 +121,11 @@ async fn async_server_loop<S: crate::async_store::AsyncReader + crate::async_sto
     while let Some(request) = rx.recv().await {
         match request {
             Request::Read { path, reply } => {
-                let result = store.read(&path).await;
-                let _ = reply.send(result);
+                let fut = store.read(&path);
+                tokio::spawn(async move {
+                    let result = fut.await;
+                    let _ = reply.send(result);
+                });
             }
             Request::Write { path, data, reply } => {
                 let fut = store.write(&path, data);
