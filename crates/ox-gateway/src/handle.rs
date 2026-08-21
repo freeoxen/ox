@@ -78,22 +78,35 @@ fn raw_sse_stream(
             next += events.len();
 
             let status: Option<CompletionStatus> = client.read_typed(&handle).await.ok().flatten();
-            match status {
-                Some(CompletionStatus::Complete { .. }) => {
-                    for frame in encoder.finish() {
-                        yield Ok(Bytes::from(frame));
-                    }
-                    break;
+            let Some(status) = status else { continue };
+            if !status.is_terminal() {
+                continue;
+            }
+            // Events appended between the events-read above and this status
+            // read would otherwise be dropped. No events land after the
+            // terminal flip, so one more drain gets everything.
+            let events_path = handle.join(&events_from_subpath(next));
+            let tail: Vec<StreamEvent> =
+                client.read_typed(&events_path).await.ok().flatten().unwrap_or_default();
+            for ev in &tail {
+                for frame in encoder.encode_sse(ev) {
+                    yield Ok(Bytes::from(frame));
                 }
-                Some(CompletionStatus::Failed { reason, .. }) => {
+            }
+            match status {
+                CompletionStatus::Failed { reason, .. } => {
                     let ev = StreamEvent::Error { message: reason };
                     for frame in encoder.encode_sse(&ev) {
                         yield Ok(Bytes::from(frame));
                     }
-                    break;
                 }
-                _ => continue,
+                _ => {
+                    for frame in encoder.finish() {
+                        yield Ok(Bytes::from(frame));
+                    }
+                }
             }
+            break;
         }
         let _ = client.write(&handle, Record::parsed(Value::Null)).await;
     }
@@ -128,6 +141,15 @@ pub async fn buffer_response(
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "inflight vanished mid-drain".to_string())?;
         if status.is_terminal() {
+            // Same close-out drain as the streaming path: pick up events that
+            // landed between the events-read and the status-read.
+            let events_path = handle.join(&events_from_subpath(next));
+            let tail: Vec<StreamEvent> = client
+                .read_typed(&events_path)
+                .await
+                .map_err(|e| e.to_string())?
+                .unwrap_or_default();
+            all.extend(tail);
             let _ = client.write(&handle, Record::parsed(Value::Null)).await;
             return Ok((status, all));
         }
