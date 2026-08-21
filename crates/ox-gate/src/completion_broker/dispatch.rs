@@ -210,8 +210,13 @@ fn build_http_request(
 ) -> Result<HttpRequest, String> {
     // Rebuild request with the upstream model id (the inbound id may be a
     // named role or a slash-form that differs from the provider's model id).
+    // The upstream call always streams — the SSE executor can only consume
+    // event streams, and the client's stream flag governs only how the
+    // gateway shapes its own response. Forwarding stream:false would get a
+    // plain JSON reply back that the SSE parser silently drops.
     let rebuilt = CompletionRequest {
         model: upstream_model_id.to_string(),
+        stream: true,
         ..request.clone()
     };
 

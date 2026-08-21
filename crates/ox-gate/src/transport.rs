@@ -803,7 +803,11 @@ impl SseHttpExecutor for ReqwestSseExecutor {
             }
 
             let mut stream = resp.bytes_stream();
-            let mut buf = String::new();
+            // Accumulate raw bytes and split on newlines BEFORE decoding:
+            // HTTP chunk boundaries land anywhere, including inside a
+            // multi-byte UTF-8 codepoint, and a per-chunk lossy decode
+            // would turn such a split into U+FFFD garbage in the text.
+            let mut buf: Vec<u8> = Vec::new();
             let mut parser = SseParser::new(&dialect);
 
             while let Some(chunk) = stream.next().await {
@@ -811,17 +815,18 @@ impl SseHttpExecutor for ReqwestSseExecutor {
                     Ok(b) => b,
                     Err(e) => { yield Err(format!("read error: {e}")); return; }
                 };
-                buf.push_str(&String::from_utf8_lossy(&chunk));
-                while let Some(nl) = buf.find('\n') {
-                    let line = buf[..nl].to_string();
-                    buf.drain(..=nl);
+                buf.extend_from_slice(&chunk);
+                while let Some(nl) = buf.iter().position(|&b| b == b'\n') {
+                    let line_bytes: Vec<u8> = buf.drain(..=nl).collect();
+                    let line = String::from_utf8_lossy(&line_bytes[..nl]);
                     for ev in parser.feed(&line) {
                         yield Ok(ev);
                     }
                 }
             }
             if !buf.is_empty() {
-                for ev in parser.feed(&buf) {
+                let rest = String::from_utf8_lossy(&buf);
+                for ev in parser.feed(&rest) {
                     yield Ok(ev);
                 }
             }

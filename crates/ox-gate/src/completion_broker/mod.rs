@@ -189,10 +189,12 @@ impl<E: SseHttpExecutor> AsyncReader for CompletionBrokerStore<E> {
                 }
                 // outstanding/{N}/events/from/{S} — blocking drain from index S.
                 //
-                // Using the simpler lock-check-drop-await form. The notify is
-                // always fired on terminal status flip (see dispatch.rs), so a
-                // missed notification between the lock drop and the await just
-                // means one extra iteration — not a deadlock.
+                // The Notified future is created and enabled BEFORE the state
+                // check. dispatch.rs signals with notify_waiters(), which
+                // stores no permit — a plain check-then-notified().await form
+                // loses any notification that lands between the lock drop and
+                // the await's first poll, and with no later notification the
+                // read hangs forever.
                 Some(s) if s.starts_with("events/from/") => {
                     let seq: usize = s
                         .trim_start_matches("events/from/")
@@ -201,17 +203,24 @@ impl<E: SseHttpExecutor> AsyncReader for CompletionBrokerStore<E> {
                             StoreError::store("completion_broker", "read", e.to_string())
                         })?;
                     loop {
+                        let notified = inflight.notify.notified();
+                        tokio::pin!(notified);
+                        notified.as_mut().enable();
                         {
                             let state = inflight.state.lock().await;
                             if state.events.len() > seq || state.status.is_terminal() {
-                                let tail = state.events[seq..].to_vec();
+                                // Terminal short-circuits the length check, so
+                                // clamp: a client-supplied seq past the end must
+                                // read as empty, not panic the actor.
+                                let start = seq.min(state.events.len());
+                                let tail = state.events[start..].to_vec();
                                 let value = structfs_serde_store::to_value(&tail).map_err(|e| {
                                     StoreError::store("completion_broker", "read", e.to_string())
                                 })?;
                                 return Ok(Some(Record::parsed(value)));
                             }
                         }
-                        inflight.notify.notified().await;
+                        notified.await;
                     }
                 }
                 _ => Ok(None),
