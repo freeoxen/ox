@@ -41,6 +41,11 @@ ratatui = { workspace = true }
 unicode-width = { workspace = true }
 reqwest = { workspace = true, features = ["blocking"] }
 clash = { workspace = true }
+# Not used directly: constrains the transitive allocative dep below 0.3.6,
+# which moved to hashbrown 0.16 and no longer implements Allocative for the
+# hashbrown-0.14 types starlark_map 0.13 (via clash) derives it on —
+# breaking every clean build. Drop when clash's starlark moves past 0.13.
+allocative = ">=0.3, <0.3.6"
 namecode = { workspace = true }
 toml = { workspace = true }
 figment = { workspace = true }

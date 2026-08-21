@@ -411,6 +411,9 @@ fn format_value(val: &Value) -> String {
                 .collect();
             format!("{{{}}}", items.join(", "))
         }
+        // Value is #[non_exhaustive]; render variants added upstream opaquely
+        // rather than failing the build.
+        other => format!("{other:?}"),
     }
 }
 
