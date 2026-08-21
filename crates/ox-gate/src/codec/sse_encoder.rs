@@ -22,6 +22,11 @@ pub struct SseEncoder {
     // OpenAI state
     openai_message_started: bool,
     openai_tool_index: HashMap<String, u32>,
+    // (prompt_tokens, cached_tokens) / completion_tokens, held until
+    // finish(): OpenAI streams report usage as one final chunk carrying
+    // prompt + completion + total together, after the finish_reason chunk.
+    openai_prompt_usage: Option<(u32, u32)>,
+    openai_completion_tokens: Option<u32>,
 }
 
 impl SseEncoder {
@@ -35,6 +40,8 @@ impl SseEncoder {
             open_tool_block: None,
             openai_message_started: false,
             openai_tool_index: HashMap::new(),
+            openai_prompt_usage: None,
+            openai_completion_tokens: None,
         }
     }
 
@@ -52,7 +59,31 @@ impl SseEncoder {
     /// OpenAI; nothing for Anthropic (message_stop already closes the stream).
     pub fn finish(&mut self) -> Vec<String> {
         match self.dialect.as_str() {
-            "openai" => vec!["data: [DONE]\n\n".into()],
+            "openai" => {
+                let mut out = Vec::new();
+                if self.openai_prompt_usage.is_some() || self.openai_completion_tokens.is_some() {
+                    let (prompt, cached) = self.openai_prompt_usage.unwrap_or((0, 0));
+                    let completion = self.openai_completion_tokens.unwrap_or(0);
+                    out.push(format!(
+                        "data: {}\n\n",
+                        serde_json::json!({
+                            "id": self.meta.id,
+                            "object": "chat.completion.chunk",
+                            "created": self.meta.created,
+                            "model": self.meta.model,
+                            "choices": [],
+                            "usage": {
+                                "prompt_tokens": prompt,
+                                "completion_tokens": completion,
+                                "total_tokens": prompt + completion,
+                                "prompt_tokens_details": { "cached_tokens": cached },
+                            },
+                        })
+                    ));
+                }
+                out.push("data: [DONE]\n\n".into());
+                out
+            }
             _ => vec![],
         }
     }
@@ -113,6 +144,12 @@ impl SseEncoder {
                     out.push(format!(
                         "event: content_block_stop\ndata: {}\n\n",
                         serde_json::json!({ "type": "content_block_stop", "index": text_idx })
+                    ));
+                }
+                if let Some(tool_idx) = self.open_tool_block.take() {
+                    out.push(format!(
+                        "event: content_block_stop\ndata: {}\n\n",
+                        serde_json::json!({ "type": "content_block_stop", "index": tool_idx })
                     ));
                 }
                 let idx = self.next_content_block;
@@ -201,17 +238,6 @@ impl SseEncoder {
                 }],
             })
         };
-        let (id2, model2) = (self.meta.id.clone(), self.meta.model.clone());
-        let usage_chunk = move |usage: serde_json::Value| {
-            serde_json::json!({
-                "id": id2,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": model2,
-                "choices": [],
-                "usage": usage,
-            })
-        };
 
         match event {
             StreamEvent::TextDelta { text } => {
@@ -248,19 +274,12 @@ impl SseEncoder {
                 vec![format!("data: {}\n\n", chunk(serde_json::json!({}), Some(finish)))]
             }
             StreamEvent::InputUsage { input_tokens, cache_read, .. } => {
-                vec![format!(
-                    "data: {}\n\n",
-                    usage_chunk(serde_json::json!({
-                        "prompt_tokens": input_tokens,
-                        "prompt_tokens_details": { "cached_tokens": cache_read },
-                    }))
-                )]
+                self.openai_prompt_usage = Some((*input_tokens, *cache_read));
+                vec![]
             }
             StreamEvent::OutputUsage { output_tokens } => {
-                vec![format!(
-                    "data: {}\n\n",
-                    usage_chunk(serde_json::json!({ "completion_tokens": output_tokens }))
-                )]
+                self.openai_completion_tokens = Some(*output_tokens);
+                vec![]
             }
             StreamEvent::Error { message } => {
                 vec![format!(
@@ -403,6 +422,37 @@ mod tests {
         let frames = enc.encode_sse(&StreamEvent::MessageStop);
         assert_eq!(frames.len(), 1);
         assert!(frames[0].contains("\"finish_reason\":\"stop\""));
+    }
+
+    #[test]
+    fn anthropic_second_tool_use_closes_first_block() {
+        let mut enc = SseEncoder::new("anthropic", meta());
+        let _ = enc.encode_sse(&StreamEvent::ToolUseStart { id: "t1".into(), name: "a".into() });
+        let frames = enc.encode_sse(&StreamEvent::ToolUseStart { id: "t2".into(), name: "b".into() });
+        assert!(
+            frames.iter().any(|f| f.contains("content_block_stop") && f.contains("\"index\":0")),
+            "first tool block must be closed before the second opens: {frames:?}"
+        );
+    }
+
+    #[test]
+    fn openai_usage_buffered_into_single_final_chunk() {
+        let mut enc = SseEncoder::new("openai", meta());
+        assert!(enc.encode_sse(&StreamEvent::InputUsage {
+            input_tokens: 10,
+            cache_creation: 0,
+            cache_read: 4,
+        }).is_empty());
+        let _ = enc.encode_sse(&StreamEvent::TextDelta { text: "hi".into() });
+        assert!(enc.encode_sse(&StreamEvent::OutputUsage { output_tokens: 7 }).is_empty());
+        let _ = enc.encode_sse(&StreamEvent::MessageStop);
+        let frames = enc.finish();
+        assert_eq!(frames.len(), 2, "usage chunk then [DONE]: {frames:?}");
+        assert!(frames[0].contains("\"prompt_tokens\":10"));
+        assert!(frames[0].contains("\"completion_tokens\":7"));
+        assert!(frames[0].contains("\"total_tokens\":17"));
+        assert!(frames[0].contains("\"cached_tokens\":4"));
+        assert_eq!(frames[1], "data: [DONE]\n\n");
     }
 
     #[test]
