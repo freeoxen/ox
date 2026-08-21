@@ -9,6 +9,18 @@ pub mod sse_encoder;
 pub use error::CodecError;
 pub use sse_encoder::SseEncoder;
 
+/// Wire-level identity for one response: the message/completion id, the
+/// model name echoed back to the client, and the unix creation timestamp
+/// (OpenAI's `created` field). Real clients parse all three — official
+/// SDKs deserialize `id` and `model` non-optionally — so the gateway
+/// threads this through every encoder instead of emitting placeholders.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResponseMeta {
+    pub id: String,
+    pub model: String,
+    pub created: u64,
+}
+
 /// Token usage information from a completion response.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct UsageInfo {

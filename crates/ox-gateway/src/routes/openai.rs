@@ -39,6 +39,7 @@ async fn post_chat_completions(
         }
     };
     let streaming = req.stream;
+    let meta = crate::routes::response_meta("chatcmpl-", &req.model);
 
     let handle_rel = match client.write_typed(&path!("gateway/completions"), &req).await {
         Ok(p) => p,
@@ -54,11 +55,11 @@ async fn post_chat_completions(
     let handle_path = path!("gateway/completions").join(&handle_rel);
 
     if streaming {
-        handle::stream_response(client, handle_path, "openai".into()).into_response()
+        handle::stream_response(client, handle_path, "openai".into(), meta).into_response()
     } else {
         match handle::buffer_response(client, handle_path).await {
             Ok((CompletionStatus::Complete { .. }, events)) => {
-                Json(codec::encode_response(&events)).into_response()
+                Json(codec::encode_response(&events, &meta)).into_response()
             }
             Ok((CompletionStatus::Failed { reason, .. }, _)) => {
                 openai_error(StatusCode::INTERNAL_SERVER_ERROR, reason, None).into_response()

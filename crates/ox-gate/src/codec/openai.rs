@@ -243,7 +243,7 @@ pub fn parse_sse_events(body: &str) -> (Vec<StreamEvent>, UsageInfo) {
 }
 
 /// Encode a buffered slice of [`StreamEvent`]s into an OpenAI chat.completion response shape.
-pub fn encode_response(events: &[StreamEvent]) -> serde_json::Value {
+pub fn encode_response(events: &[StreamEvent], meta: &crate::codec::ResponseMeta) -> serde_json::Value {
     let mut content = String::new();
     let mut tool_calls: Vec<serde_json::Value> = Vec::new();
     let mut current_tool: Option<(String, String, String)> = None; // (id, name, arguments)
@@ -303,10 +303,10 @@ pub fn encode_response(events: &[StreamEvent]) -> serde_json::Value {
     }
 
     serde_json::json!({
-        "id": "chatcmpl-stub",
+        "id": meta.id,
         "object": "chat.completion",
-        "created": 0,
-        "model": "",
+        "created": meta.created,
+        "model": meta.model,
         "choices": [{
             "index": 0,
             "message": message,
@@ -321,6 +321,14 @@ mod encode_response_tests {
     use super::*;
     use ox_kernel::StreamEvent;
 
+    fn meta() -> crate::codec::ResponseMeta {
+        crate::codec::ResponseMeta {
+            id: "chatcmpl-test01".into(),
+            model: "gpt-test".into(),
+            created: 1_700_000_000,
+        }
+    }
+
     #[test]
     fn encode_text_only_chat_completion() {
         let events = vec![
@@ -330,8 +338,11 @@ mod encode_response_tests {
             StreamEvent::OutputUsage { output_tokens: 2 },
             StreamEvent::MessageStop,
         ];
-        let resp = encode_response(&events);
+        let resp = encode_response(&events, &meta());
         assert_eq!(resp["object"], "chat.completion");
+        assert_eq!(resp["id"], "chatcmpl-test01");
+        assert_eq!(resp["model"], "gpt-test");
+        assert_eq!(resp["created"], 1_700_000_000);
         let choices = resp["choices"].as_array().unwrap();
         assert_eq!(choices.len(), 1);
         assert_eq!(choices[0]["message"]["role"], "assistant");
@@ -349,7 +360,7 @@ mod encode_response_tests {
             StreamEvent::ToolUseInputDelta { delta: r#"{"path":"/etc/hosts"}"#.into() },
             StreamEvent::MessageStop,
         ];
-        let resp = encode_response(&events);
+        let resp = encode_response(&events, &meta());
         assert_eq!(resp["choices"][0]["finish_reason"], "tool_calls");
         let tool_calls = resp["choices"][0]["message"]["tool_calls"].as_array().unwrap();
         assert_eq!(tool_calls.len(), 1);
@@ -366,14 +377,17 @@ mod encode_response_tests {
             StreamEvent::OutputUsage { output_tokens: 10 },
             StreamEvent::MessageStop,
         ];
-        let resp = encode_response(&events);
+        let resp = encode_response(&events, &meta());
         assert_eq!(resp["usage"]["prompt_tokens_details"]["cached_tokens"], 80);
     }
 
     #[test]
     fn encode_empty_events_has_no_content() {
-        let resp = encode_response(&[]);
+        let resp = encode_response(&[], &meta());
         assert_eq!(resp["object"], "chat.completion");
+        assert_eq!(resp["id"], "chatcmpl-test01");
+        assert_eq!(resp["model"], "gpt-test");
+        assert_eq!(resp["created"], 1_700_000_000);
         assert!(resp["choices"][0]["message"].get("content").is_none());
         assert!(resp["choices"][0]["message"].get("tool_calls").is_none());
     }

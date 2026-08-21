@@ -17,7 +17,7 @@ use axum::response::Response;
 use bytes::Bytes;
 use futures::stream::Stream;
 use ox_broker::ClientHandle;
-use ox_gate::codec::SseEncoder;
+use ox_gate::codec::{ResponseMeta, SseEncoder};
 use ox_gate::completion_broker::CompletionStatus;
 use ox_types::StreamEvent;
 use structfs_core_store::{Path, Record, Value};
@@ -32,8 +32,13 @@ use structfs_core_store::{Path, Record, Value};
 /// wire shape matches the inbound API. On terminal status the encoder's
 /// `finish()` frames are flushed, the handle is GC'd with `write(Null)`,
 /// and the stream closes.
-pub fn stream_response(client: ClientHandle, handle: Path, dialect: String) -> Response {
-    let raw_stream = raw_sse_stream(client, handle, dialect);
+pub fn stream_response(
+    client: ClientHandle,
+    handle: Path,
+    dialect: String,
+    meta: ResponseMeta,
+) -> Response {
+    let raw_stream = raw_sse_stream(client, handle, dialect, meta);
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, HeaderValue::from_static("text/event-stream"))
@@ -46,9 +51,10 @@ fn raw_sse_stream(
     client: ClientHandle,
     handle: Path,
     dialect: String,
+    meta: ResponseMeta,
 ) -> impl Stream<Item = Result<Bytes, std::convert::Infallible>> {
     async_stream::stream! {
-        let mut encoder = SseEncoder::new(&dialect);
+        let mut encoder = SseEncoder::new(&dialect, meta);
         let mut next: usize = 0;
         loop {
             let events_path = handle.join(&events_from_subpath(next));
@@ -56,11 +62,10 @@ fn raw_sse_stream(
                 Ok(Some(v)) => v,
                 Ok(None) => Vec::new(),
                 Err(e) => {
-                    let frame = format!(
-                        "event: error\ndata: {}\n\n",
-                        serde_json::json!({ "message": e.to_string() })
-                    );
-                    yield Ok(Bytes::from(frame));
+                    let ev = StreamEvent::Error { message: e.to_string() };
+                    for frame in encoder.encode_sse(&ev) {
+                        yield Ok(Bytes::from(frame));
+                    }
                     break;
                 }
             };
@@ -81,11 +86,10 @@ fn raw_sse_stream(
                     break;
                 }
                 Some(CompletionStatus::Failed { reason, .. }) => {
-                    let frame = format!(
-                        "event: error\ndata: {}\n\n",
-                        serde_json::json!({ "message": reason })
-                    );
-                    yield Ok(Bytes::from(frame));
+                    let ev = StreamEvent::Error { message: reason };
+                    for frame in encoder.encode_sse(&ev) {
+                        yield Ok(Bytes::from(frame));
+                    }
                     break;
                 }
                 _ => continue,

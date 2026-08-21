@@ -6,11 +6,15 @@
 //! block (Anthropic) or `data: <json>\n\n` block (OpenAI); the caller
 //! writes each into the SSE response body.
 
+use crate::codec::ResponseMeta;
 use ox_types::StreamEvent;
 use std::collections::HashMap;
 
 pub struct SseEncoder {
     dialect: String,
+    meta: ResponseMeta,
+    // Set once any tool call starts; drives stop_reason/finish_reason.
+    saw_tool_use: bool,
     // Anthropic state
     next_content_block: usize,
     open_text_block: Option<usize>,
@@ -21,9 +25,11 @@ pub struct SseEncoder {
 }
 
 impl SseEncoder {
-    pub fn new(dialect: &str) -> Self {
+    pub fn new(dialect: &str, meta: ResponseMeta) -> Self {
         Self {
             dialect: dialect.to_string(),
+            meta,
+            saw_tool_use: false,
             next_content_block: 0,
             open_text_block: None,
             open_tool_block: None,
@@ -57,9 +63,13 @@ impl SseEncoder {
                 let frame = serde_json::json!({
                     "type": "message_start",
                     "message": {
+                        "id": self.meta.id,
                         "type": "message",
                         "role": "assistant",
+                        "model": self.meta.model,
                         "content": [],
+                        "stop_reason": null,
+                        "stop_sequence": null,
                         "usage": {
                             "input_tokens": input_tokens,
                             "cache_creation_input_tokens": cache_creation,
@@ -97,6 +107,7 @@ impl SseEncoder {
                 out
             }
             StreamEvent::ToolUseStart { id, name } => {
+                self.saw_tool_use = true;
                 let mut out = Vec::new();
                 if let Some(text_idx) = self.open_text_block.take() {
                     out.push(format!(
@@ -132,11 +143,12 @@ impl SseEncoder {
                 )]
             }
             StreamEvent::OutputUsage { output_tokens } => {
+                let stop_reason = if self.saw_tool_use { "tool_use" } else { "end_turn" };
                 vec![format!(
                     "event: message_delta\ndata: {}\n\n",
                     serde_json::json!({
                         "type": "message_delta",
-                        "delta": { "stop_reason": "end_turn" },
+                        "delta": { "stop_reason": stop_reason, "stop_sequence": null },
                         "usage": { "output_tokens": output_tokens },
                     })
                 )]
@@ -174,17 +186,30 @@ impl SseEncoder {
     }
 
     fn encode_openai(&mut self, event: &StreamEvent) -> Vec<String> {
+        let (id, model, created) =
+            (self.meta.id.clone(), self.meta.model.clone(), self.meta.created);
         let chunk = |delta: serde_json::Value, finish_reason: Option<&str>| {
             serde_json::json!({
-                "id": "chatcmpl-stub",
+                "id": id,
                 "object": "chat.completion.chunk",
-                "created": 0,
-                "model": "stub",
+                "created": created,
+                "model": model,
                 "choices": [{
                     "index": 0,
                     "delta": delta,
                     "finish_reason": finish_reason,
                 }],
+            })
+        };
+        let (id2, model2) = (self.meta.id.clone(), self.meta.model.clone());
+        let usage_chunk = move |usage: serde_json::Value| {
+            serde_json::json!({
+                "id": id2,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model2,
+                "choices": [],
+                "usage": usage,
             })
         };
 
@@ -198,6 +223,7 @@ impl SseEncoder {
                 vec![format!("data: {}\n\n", chunk(delta, None))]
             }
             StreamEvent::ToolUseStart { id, name } => {
+                self.saw_tool_use = true;
                 let next = self.openai_tool_index.len() as u32;
                 self.openai_tool_index.insert(id.clone(), next);
                 let delta = serde_json::json!({
@@ -218,41 +244,28 @@ impl SseEncoder {
                 vec![format!("data: {}\n\n", chunk(payload, None))]
             }
             StreamEvent::MessageStop => {
-                vec![format!("data: {}\n\n", chunk(serde_json::json!({}), Some("stop")))]
+                let finish = if self.saw_tool_use { "tool_calls" } else { "stop" };
+                vec![format!("data: {}\n\n", chunk(serde_json::json!({}), Some(finish)))]
             }
             StreamEvent::InputUsage { input_tokens, cache_read, .. } => {
                 vec![format!(
                     "data: {}\n\n",
-                    serde_json::json!({
-                        "id": "chatcmpl-stub",
-                        "object": "chat.completion.chunk",
-                        "created": 0,
-                        "model": "stub",
-                        "choices": [],
-                        "usage": {
-                            "prompt_tokens": input_tokens,
-                            "prompt_tokens_details": { "cached_tokens": cache_read },
-                        },
-                    })
+                    usage_chunk(serde_json::json!({
+                        "prompt_tokens": input_tokens,
+                        "prompt_tokens_details": { "cached_tokens": cache_read },
+                    }))
                 )]
             }
             StreamEvent::OutputUsage { output_tokens } => {
                 vec![format!(
                     "data: {}\n\n",
-                    serde_json::json!({
-                        "id": "chatcmpl-stub",
-                        "object": "chat.completion.chunk",
-                        "created": 0,
-                        "model": "stub",
-                        "choices": [],
-                        "usage": { "completion_tokens": output_tokens },
-                    })
+                    usage_chunk(serde_json::json!({ "completion_tokens": output_tokens }))
                 )]
             }
             StreamEvent::Error { message } => {
                 vec![format!(
                     "data: {}\n\n",
-                    serde_json::json!({ "error": { "message": message } })
+                    serde_json::json!({ "error": { "type": "api_error", "message": message } })
                 )]
             }
         }
@@ -263,9 +276,17 @@ impl SseEncoder {
 mod tests {
     use super::*;
 
+    fn meta() -> ResponseMeta {
+        ResponseMeta {
+            id: "msg_test01".into(),
+            model: "claude-test".into(),
+            created: 1_700_000_000,
+        }
+    }
+
     #[test]
     fn anthropic_text_delta_emits_block_start_then_delta() {
-        let mut enc = SseEncoder::new("anthropic");
+        let mut enc = SseEncoder::new("anthropic", meta());
         let frames = enc.encode_sse(&StreamEvent::TextDelta { text: "hi".into() });
         assert_eq!(frames.len(), 2);
         assert!(frames[0].contains("content_block_start"));
@@ -275,7 +296,7 @@ mod tests {
 
     #[test]
     fn anthropic_second_text_delta_reuses_block() {
-        let mut enc = SseEncoder::new("anthropic");
+        let mut enc = SseEncoder::new("anthropic", meta());
         let _ = enc.encode_sse(&StreamEvent::TextDelta { text: "a".into() });
         let frames = enc.encode_sse(&StreamEvent::TextDelta { text: "b".into() });
         assert_eq!(frames.len(), 1);
@@ -284,7 +305,7 @@ mod tests {
 
     #[test]
     fn anthropic_message_stop_closes_open_block() {
-        let mut enc = SseEncoder::new("anthropic");
+        let mut enc = SseEncoder::new("anthropic", meta());
         let _ = enc.encode_sse(&StreamEvent::TextDelta { text: "x".into() });
         let frames = enc.encode_sse(&StreamEvent::MessageStop);
         assert_eq!(frames.len(), 2);
@@ -294,7 +315,7 @@ mod tests {
 
     #[test]
     fn anthropic_tool_use_closes_open_text_block() {
-        let mut enc = SseEncoder::new("anthropic");
+        let mut enc = SseEncoder::new("anthropic", meta());
         let _ = enc.encode_sse(&StreamEvent::TextDelta { text: "a".into() });
         let frames = enc.encode_sse(&StreamEvent::ToolUseStart {
             id: "t1".into(),
@@ -306,8 +327,8 @@ mod tests {
     }
 
     #[test]
-    fn anthropic_input_usage_emits_message_start() {
-        let mut enc = SseEncoder::new("anthropic");
+    fn anthropic_message_start_carries_id_and_model() {
+        let mut enc = SseEncoder::new("anthropic", meta());
         let frames = enc.encode_sse(&StreamEvent::InputUsage {
             input_tokens: 100,
             cache_creation: 0,
@@ -315,12 +336,29 @@ mod tests {
         });
         assert_eq!(frames.len(), 1);
         assert!(frames[0].contains("message_start"));
+        assert!(frames[0].contains("\"id\":\"msg_test01\""));
+        assert!(frames[0].contains("\"model\":\"claude-test\""));
         assert!(frames[0].contains("\"input_tokens\":100"));
     }
 
     #[test]
+    fn anthropic_stop_reason_reflects_tool_use() {
+        let mut enc = SseEncoder::new("anthropic", meta());
+        let _ = enc.encode_sse(&StreamEvent::ToolUseStart { id: "t1".into(), name: "x".into() });
+        let frames = enc.encode_sse(&StreamEvent::OutputUsage { output_tokens: 5 });
+        assert!(frames[0].contains("\"stop_reason\":\"tool_use\""));
+    }
+
+    #[test]
+    fn anthropic_stop_reason_end_turn_without_tools() {
+        let mut enc = SseEncoder::new("anthropic", meta());
+        let frames = enc.encode_sse(&StreamEvent::OutputUsage { output_tokens: 5 });
+        assert!(frames[0].contains("\"stop_reason\":\"end_turn\""));
+    }
+
+    #[test]
     fn openai_first_text_includes_role() {
-        let mut enc = SseEncoder::new("openai");
+        let mut enc = SseEncoder::new("openai", meta());
         let frames = enc.encode_sse(&StreamEvent::TextDelta { text: "hi".into() });
         assert_eq!(frames.len(), 1);
         assert!(frames[0].contains("\"role\":\"assistant\""));
@@ -329,7 +367,7 @@ mod tests {
 
     #[test]
     fn openai_second_text_omits_role() {
-        let mut enc = SseEncoder::new("openai");
+        let mut enc = SseEncoder::new("openai", meta());
         let _ = enc.encode_sse(&StreamEvent::TextDelta { text: "a".into() });
         let frames = enc.encode_sse(&StreamEvent::TextDelta { text: "b".into() });
         assert_eq!(frames.len(), 1);
@@ -337,24 +375,41 @@ mod tests {
     }
 
     #[test]
+    fn openai_chunks_carry_meta() {
+        let mut enc = SseEncoder::new("openai", meta());
+        let frames = enc.encode_sse(&StreamEvent::TextDelta { text: "hi".into() });
+        assert!(frames[0].contains("\"id\":\"msg_test01\""));
+        assert!(frames[0].contains("\"model\":\"claude-test\""));
+        assert!(frames[0].contains("\"created\":1700000000"));
+    }
+
+    #[test]
     fn openai_finish_emits_done() {
-        let mut enc = SseEncoder::new("openai");
+        let mut enc = SseEncoder::new("openai", meta());
         let frames = enc.finish();
         assert_eq!(frames, vec!["data: [DONE]\n\n"]);
     }
 
     #[test]
     fn anthropic_finish_emits_nothing() {
-        let mut enc = SseEncoder::new("anthropic");
+        let mut enc = SseEncoder::new("anthropic", meta());
         let frames = enc.finish();
         assert!(frames.is_empty());
     }
 
     #[test]
     fn openai_message_stop_emits_stop_finish_reason() {
-        let mut enc = SseEncoder::new("openai");
+        let mut enc = SseEncoder::new("openai", meta());
         let frames = enc.encode_sse(&StreamEvent::MessageStop);
         assert_eq!(frames.len(), 1);
         assert!(frames[0].contains("\"finish_reason\":\"stop\""));
+    }
+
+    #[test]
+    fn openai_message_stop_after_tools_emits_tool_calls() {
+        let mut enc = SseEncoder::new("openai", meta());
+        let _ = enc.encode_sse(&StreamEvent::ToolUseStart { id: "t1".into(), name: "x".into() });
+        let frames = enc.encode_sse(&StreamEvent::MessageStop);
+        assert!(frames[0].contains("\"finish_reason\":\"tool_calls\""));
     }
 }

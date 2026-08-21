@@ -34,6 +34,7 @@ async fn post_messages(
         Err(e) => return anthropic_error(StatusCode::BAD_REQUEST, codec_error_message(&e)).into_response(),
     };
     let streaming = req.stream;
+    let meta = crate::routes::response_meta("msg_", &req.model);
 
     let handle_rel = match client.write_typed(&path!("gateway/completions"), &req).await {
         Ok(p) => p,
@@ -42,11 +43,11 @@ async fn post_messages(
     let handle_path = path!("gateway/completions").join(&handle_rel);
 
     if streaming {
-        handle::stream_response(client, handle_path, "anthropic".into()).into_response()
+        handle::stream_response(client, handle_path, "anthropic".into(), meta).into_response()
     } else {
         match handle::buffer_response(client, handle_path).await {
             Ok((CompletionStatus::Complete { .. }, events)) => {
-                Json(codec::encode_response(&events)).into_response()
+                Json(codec::encode_response(&events, &meta)).into_response()
             }
             Ok((CompletionStatus::Failed { reason, .. }, _)) => {
                 anthropic_error(StatusCode::INTERNAL_SERVER_ERROR, reason).into_response()
