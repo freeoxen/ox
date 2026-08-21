@@ -155,3 +155,26 @@ insta = "1"
 tempfile = "3"
 trybuild = "1"
 proptest = "1"
+
+[profile.dev]
+# Full debuginfo multiplies artifact sizes (the debug dir was 100GB+ of
+# mostly DWARF) and dominates link time on incremental builds. Line
+# tables keep file:line in backtraces and panic messages; switch a
+# single run back with CARGO_PROFILE_DEV_DEBUG=full when stepping
+# through code in a debugger.
+debug = "line-tables-only"
+
+# Dependencies are not debugged here at all — no debuginfo, and enough
+# optimization that dep-heavy test paths (serde, tokio, ratatui) don't
+# crawl. Deps compile once and cache, so this costs nothing day-to-day.
+[profile.dev.package."*"]
+debug = false
+opt-level = 1
+
+# Wasmtime compiles agent.wasm through cranelift on every Engine
+# construction in tests; unoptimized cranelift makes each of those
+# compilations ~10x slower.
+[profile.dev.package.cranelift-codegen]
+opt-level = 2
+[profile.dev.package.wasmtime]
+opt-level = 2

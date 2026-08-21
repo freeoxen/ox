@@ -8,16 +8,36 @@ fn main() {
     let out_wasm = Path::new(&out_dir).join("agent.wasm");
 
     // Build ox-wasm for wasm32-unknown-unknown
-    let output = Command::new("cargo")
-        .args([
-            "build",
-            "--target",
-            "wasm32-unknown-unknown",
-            "--release",
-            "-p",
-            "ox-wasm",
-        ])
-        .current_dir(&workspace_root)
+    let mut cmd = Command::new("cargo");
+    cmd.args([
+        "build",
+        "--target",
+        "wasm32-unknown-unknown",
+        "--release",
+        "-p",
+        "ox-wasm",
+    ])
+    .current_dir(&workspace_root)
+    // Coverage instrumentation from the outer build must not leak into
+    // the wasm32 build: that target has no profiler_builtins, and the
+    // agent module is embedded data, never the thing being measured.
+    // cargo-llvm-cov injects `-C instrument-coverage` two ways — via
+    // RUSTFLAGS-family vars and via a rustc wrapper driven by
+    // __CARGO_LLVM_COV_* vars — so scrub both channels.
+    .env_remove("RUSTFLAGS")
+    .env_remove("CARGO_ENCODED_RUSTFLAGS");
+    if std::env::var_os("CARGO_LLVM_COV").is_some() {
+        // Only llvm-cov's own wrapper is dropped; an unrelated wrapper
+        // (e.g. sccache) stays in place.
+        cmd.env_remove("RUSTC_WRAPPER");
+        cmd.env_remove("RUSTC_WORKSPACE_WRAPPER");
+    }
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().contains("LLVM_COV") {
+            cmd.env_remove(&key);
+        }
+    }
+    let output = cmd
         .output()
         .expect("failed to invoke cargo for ox-wasm build");
 
@@ -39,8 +59,16 @@ fn main() {
         panic!("ox-wasm build failed (see cargo warnings above){hint}");
     }
 
-    // Copy to OUT_DIR
-    let built = workspace_root.join("target/wasm32-unknown-unknown/release/ox_wasm.wasm");
+    // Copy to OUT_DIR. The inner cargo inherits CARGO_TARGET_DIR from
+    // this process (cargo-llvm-cov, for one, redirects it), so the
+    // artifact lands wherever that points — not necessarily `target/`.
+    // A relative CARGO_TARGET_DIR resolves against the inner cargo's
+    // cwd, which is the workspace root; `join` also handles the
+    // absolute case.
+    let target_root = std::env::var_os("CARGO_TARGET_DIR")
+        .map(|dir| workspace_root.join(dir))
+        .unwrap_or_else(|| workspace_root.join("target"));
+    let built = target_root.join("wasm32-unknown-unknown/release/ox_wasm.wasm");
     std::fs::copy(&built, &out_wasm).unwrap_or_else(|e| {
         panic!(
             "failed to copy {} to {}: {e}",
