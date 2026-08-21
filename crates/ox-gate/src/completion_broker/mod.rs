@@ -708,6 +708,80 @@ mod lifecycle_tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn keyless_account_with_auth_none_completes() {
+        use crate::{AccountConfig, AuthScheme, ProviderConfig};
+        use ox_store_util::LocalConfig;
+        use ox_types::CompletionRole;
+
+        // LM Studio-shaped config: openai dialect, auth explicitly none,
+        // and NO entry in the secrets mount.
+        let broker = BrokerStore::new(Duration::from_secs(5));
+        let mut gate_config = LocalConfig::new();
+        gate_config.set(
+            "gate/completions/primary",
+            to_value(&CompletionRole {
+                account: "lmstudio".into(),
+                model_id: "qwen".into(),
+            })
+            .unwrap(),
+        );
+        gate_config.set(
+            "gate/accounts/lmstudio",
+            to_value(&AccountConfig {
+                provider: "lmstudio".into(),
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        gate_config.set(
+            "gate/providers/lmstudio",
+            to_value(&ProviderConfig {
+                dialect: "openai".into(),
+                endpoint: "http://127.0.0.1:1234".into(),
+                version: String::new(),
+                auth: Some(AuthScheme::None),
+            })
+            .unwrap(),
+        );
+        broker.mount(path!(""), gate_config).await;
+        broker.mount(oxpath!("secret"), LocalConfig::new()).await;
+
+        let executor = Arc::new(MockSseExecutor::new());
+        executor.push_immediate(StreamEvent::TextDelta { text: "hi".into() });
+        executor.push_immediate(StreamEvent::MessageStop);
+        let client = mount_completion_store(&broker, executor).await;
+
+        let req = CompletionRequest {
+            model: "primary".into(),
+            max_tokens: 100,
+            system: String::new(),
+            messages: vec![serde_json::json!({"role": "user", "content": "hi"})],
+            tools: vec![],
+            stream: true,
+        };
+        let handle = client
+            .write_typed(&path!("gateway/completions"), &req)
+            .await
+            .expect("write completion request");
+        let handle_path = path!("gateway/completions").join(&handle);
+
+        let mut status = None;
+        for _ in 0..50 {
+            let s: Option<CompletionStatus> =
+                client.read_typed(&handle_path).await.expect("status read");
+            if s.as_ref().is_some_and(|s| s.is_terminal()) {
+                status = s;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        match status {
+            Some(CompletionStatus::Complete { .. }) => {}
+            other => panic!("keyless account should complete, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn drains_all_events_to_terminal_via_blocking_read() {
         let broker = build_substrate_with_role("primary").await;
 

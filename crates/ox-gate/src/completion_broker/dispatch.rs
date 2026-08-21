@@ -185,17 +185,23 @@ async fn resolve_account(
         .await?
         .ok_or_else(|| format!("no provider named '{}'", acct.provider))?;
 
+    // Keyless providers (auth = "none": LM Studio, Ollama, other local
+    // endpoints) are a first-class configuration — only require a key when
+    // the provider's resolved auth scheme actually uses one.
     let key_comp = PathComponent::try_new(&role.account).map_err(|e| e.to_string())?;
     let key_path = oxpath!("secret", "keys", key_comp);
-    let key: ApiKey = read_typed(substrate, &key_path)
-        .await?
-        .ok_or_else(|| {
-            format!(
+    let key: Option<ApiKey> = read_typed(substrate, &key_path).await?;
+    let key = match key {
+        Some(k) => k,
+        None if !provider.resolved_auth().requires_key() => ApiKey::new(""),
+        None => {
+            return Err(format!(
                 "no API key for account '{}' — add one to ~/.ox/keys.json or set OX_GATE__ACCOUNTS__{}__KEY",
                 role.account,
                 role.account.to_uppercase(),
-            )
-        })?;
+            ));
+        }
+    };
 
     Ok((acct, provider, key))
 }
