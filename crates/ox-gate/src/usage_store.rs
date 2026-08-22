@@ -10,28 +10,7 @@ use serde::{Deserialize, Serialize};
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer};
 use structfs_serde_store::{from_value, to_value};
 
-/// One completion's usage line. Appended to the ledger on terminal
-/// status by `CompletionBrokerStore`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct UsageRecord {
-    pub id: String,
-    pub account: String,
-    pub model_id: String,
-    /// Inbound dialect the client sent ("anthropic" | "openai" | "ox").
-    pub dialect: String,
-    /// Resolved provider.dialect used for the upstream call.
-    pub upstream_dialect: String,
-    pub input_tokens: u32,
-    pub output_tokens: u32,
-    pub cache_creation_input_tokens: u32,
-    pub cache_read_input_tokens: u32,
-    pub started_at_ms: u64,
-    pub completed_at_ms: u64,
-    /// Best-effort cost estimate from `pricing::model_pricing`. None when
-    /// the model isn't in the pricing table — better to show absence than
-    /// to lie about cost.
-    pub estimated_cost_usd: Option<f64>,
-}
+pub use ox_types::UsageRecord;
 
 /// Read-projection over today's records (UTC-midnight boundary).
 #[derive(Debug, Default, Serialize, Deserialize)]

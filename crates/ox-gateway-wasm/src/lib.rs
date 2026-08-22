@@ -73,9 +73,14 @@ pub extern "C" fn run() -> i32 {
         return wire::run(&cfg);
     }
     // Broker mode: a block/config present in the namespace means this
-    // instance drives one completion end-to-end. Codec mode otherwise.
+    // instance drives one completion end-to-end.
     if let Ok(Some(cfg)) = host_read("block/config") {
         return broker::run(&cfg);
+    }
+    // Stats mode: aggregate the usage ledger into one summary. Codec mode
+    // otherwise.
+    if let Ok(Some(cfg)) = host_read("block/stats_config") {
+        return stats::run(&cfg);
     }
     let outcome = match execute() {
         Ok(result) => host_write("codec/result", &result.to_string()),
@@ -682,5 +687,169 @@ mod wire {
             &format!("{wire}/head"),
             &serde_json::json!({ "mode": "json", "status": 200, "body": body }),
         )
+    }
+}
+
+mod stats {
+    //! Stats mode: one instance per stats request. Reads the usage ledger
+    //! and the in-flight listing through the assembly-wired namespace,
+    //! computes the dashboard aggregates, writes the summary onto the
+    //! telemetry handle. The edge route never sees a usage record.
+
+    use super::{host_read, host_write};
+    use ox_types::UsageRecord;
+    use std::collections::BTreeMap;
+
+    const HOUR_MS: u64 = 3_600_000;
+    const DAY_MS: u64 = 86_400_000;
+    const RECENT_LIMIT: usize = 20;
+
+    fn read_json(path: &str) -> Result<Option<serde_json::Value>, String> {
+        match host_read(path)? {
+            Some(s) => serde_json::from_str(&s)
+                .map(Some)
+                .map_err(|e| format!("bad JSON at {path}: {e}")),
+            None => Ok(None),
+        }
+    }
+
+    pub fn run(cfg_str: &str) -> i32 {
+        match drive(cfg_str) {
+            Ok(()) => 0,
+            Err(_) => 1,
+        }
+    }
+
+    #[derive(Default)]
+    struct Totals {
+        requests: u64,
+        input_tokens: u64,
+        output_tokens: u64,
+        cache_read_input_tokens: u64,
+        cache_creation_input_tokens: u64,
+        estimated_cost_usd: Option<f64>,
+        priced_requests: u64,
+    }
+
+    impl Totals {
+        fn add(&mut self, r: &UsageRecord) {
+            self.requests += 1;
+            self.input_tokens += r.input_tokens as u64;
+            self.output_tokens += r.output_tokens as u64;
+            self.cache_read_input_tokens += r.cache_read_input_tokens as u64;
+            self.cache_creation_input_tokens += r.cache_creation_input_tokens as u64;
+            if let Some(c) = r.estimated_cost_usd {
+                *self.estimated_cost_usd.get_or_insert(0.0) += c;
+                self.priced_requests += 1;
+            }
+        }
+
+        fn json(&self) -> serde_json::Value {
+            serde_json::json!({
+                "requests": self.requests,
+                "input_tokens": self.input_tokens,
+                "output_tokens": self.output_tokens,
+                "cache_read_input_tokens": self.cache_read_input_tokens,
+                "cache_creation_input_tokens": self.cache_creation_input_tokens,
+                "estimated_cost_usd": self.estimated_cost_usd,
+                "priced_requests": self.priced_requests,
+            })
+        }
+    }
+
+    fn drive(cfg_str: &str) -> Result<(), String> {
+        let cfg: serde_json::Value =
+            serde_json::from_str(cfg_str).map_err(|e| format!("bad stats_config: {e}"))?;
+        let handle = cfg["telemetry"]
+            .as_str()
+            .ok_or("stats_config missing telemetry")?
+            .to_string();
+
+        // Absent ledger (nothing recorded yet) is zeros, not an error;
+        // a refused or failing read still propagates.
+        let records: Vec<UsageRecord> = match read_json("gateway/usage")? {
+            Some(v) => serde_json::from_value(v).map_err(|e| format!("bad usage ledger: {e}"))?,
+            None => Vec::new(),
+        };
+
+        let in_flight = read_json("gateway/completions/outstanding")?
+            .and_then(|v| v["items"].as_array().map(|a| a.len() as u64))
+            .unwrap_or(0);
+
+        let now_ms = read_json("sys/time/now_unix_ms")?
+            .and_then(|v| v.as_u64())
+            .ok_or("no clock at sys/time/now_unix_ms")?;
+        let start_of_today_ms = now_ms - (now_ms % DAY_MS);
+        let window_start = (now_ms - 23 * HOUR_MS) - ((now_ms - 23 * HOUR_MS) % HOUR_MS);
+
+        let mut totals = Totals::default();
+        let mut today = Totals::default();
+        let mut by_model: BTreeMap<(String, String), Totals> = BTreeMap::new();
+        let mut by_hour: BTreeMap<u64, (u64, u64, u64)> = BTreeMap::new();
+        for i in 0..24 {
+            by_hour.insert(window_start + i * HOUR_MS, (0, 0, 0));
+        }
+
+        for r in &records {
+            totals.add(r);
+            if r.completed_at_ms >= start_of_today_ms {
+                today.add(r);
+            }
+            by_model
+                .entry((r.account.clone(), r.model_id.clone()))
+                .or_default()
+                .add(r);
+            if r.completed_at_ms >= window_start {
+                let bucket = r.completed_at_ms - (r.completed_at_ms % HOUR_MS);
+                if let Some(b) = by_hour.get_mut(&bucket) {
+                    b.0 += 1;
+                    b.1 += r.input_tokens as u64;
+                    b.2 += r.output_tokens as u64;
+                }
+            }
+        }
+
+        let mut model_rows: Vec<((String, String), Totals)> = by_model.into_iter().collect();
+        model_rows.sort_by(|a, b| {
+            (b.1.input_tokens + b.1.output_tokens).cmp(&(a.1.input_tokens + a.1.output_tokens))
+        });
+        let by_model: Vec<serde_json::Value> = model_rows
+            .into_iter()
+            .map(|((account, model_id), t)| {
+                let mut row = t.json();
+                row["account"] = serde_json::json!(account);
+                row["model_id"] = serde_json::json!(model_id);
+                row
+            })
+            .collect();
+
+        let by_hour: Vec<serde_json::Value> = by_hour
+            .into_iter()
+            .map(|(start, (req, inp, out))| {
+                serde_json::json!({
+                    "hour_start_ms": start,
+                    "requests": req,
+                    "input_tokens": inp,
+                    "output_tokens": out,
+                })
+            })
+            .collect();
+
+        let mut recent = records;
+        recent.sort_by(|a, b| b.completed_at_ms.cmp(&a.completed_at_ms));
+        recent.truncate(RECENT_LIMIT);
+        let recent =
+            serde_json::to_value(&recent).map_err(|e| format!("recent encode: {e}"))?;
+
+        let summary = serde_json::json!({
+            "generated_at_ms": now_ms,
+            "in_flight": in_flight,
+            "totals": totals.json(),
+            "today": today.json(),
+            "by_model": by_model,
+            "by_hour": by_hour,
+            "recent": recent,
+        });
+        host_write(&format!("{handle}/summary"), &summary.to_string()).map(|_| ())
     }
 }

@@ -27,12 +27,14 @@ imports:
   traffic: "Traffic log appends (optional; Blocks skip it when disabled)"
   http-out: "Upstream HTTP dispatch: write a request, drain SSE events"
   wire-handles: "Inbound HTTP exchange handles (head, frames, done)"
+  telemetry: "Stats request handles (params in, computed summary out)"
   sys: "Host clock"
 
 blocks:
   # One artifact, mode-switched by which config path the host serves.
   wire: embedded:ox-gateway-wasm
   broker: embedded:ox-gateway-wasm
+  stats: embedded:ox-gateway-wasm
 
 # The wire Block is the Assembly's external face: every inbound HTTP
 # exchange enters through it.
@@ -55,9 +57,19 @@ wiring:
   - "broker:/gateway/traffic -> $traffic"
   - "broker:/sys -> $sys"
 
+  # stats: aggregate the usage ledger and in-flight listing into one
+  # summary on the telemetry handle. Read-side wiring only — no keys,
+  # no wire handles, no upstream socket.
+  - "stats:/gateway/telemetry -> $telemetry"
+  - "stats:/gateway/usage -> $usage"
+  - "stats:/gateway/completions -> $completions"
+  - "stats:/sys -> $sys"
+
 config:
   # Static config is empty today; the host merges per-spawn fields in:
   #   wire:   {wire: <handle path>, dialect}
   #   broker: {inflight: <handle path>, traffic: <bool>}
+  #   stats:  {telemetry: <handle path>}
   wire: {}
   broker: {}
+  stats: {}

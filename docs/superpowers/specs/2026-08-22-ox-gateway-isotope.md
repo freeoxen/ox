@@ -123,8 +123,11 @@ logic exists solely in ox-gateway-wasm.
   is a wiring interpreter, not a runtime.
 - Wasm-compiling the HTTP edges. WASI-http could later replace http-in/out;
   the Block boundary is designed so that swap needs no Block changes.
-- The dashboard/stats routes stay native in http-in (they are host-edge
-  reads of substrate paths, not gateway logic).
+- ~~The dashboard/stats routes stay native in http-in (they are host-edge
+  reads of substrate paths, not gateway logic).~~ Superseded 2026-08-24:
+  the stats aggregation moved into a `stats` Block reading through the
+  `gateway/telemetry` handle store; only the dashboard HTML (a static
+  asset) and the write-params/read-summary shuttle stay at the edge.
 
 ## Decisions (settled 2026-08-22)
 

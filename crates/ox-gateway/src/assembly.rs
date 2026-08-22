@@ -218,6 +218,7 @@ pub fn standard_bindings() -> BTreeMap<String, String> {
         ("traffic", "gateway/traffic"),
         ("http-out", "upstream"),
         ("wire-handles", "wire"),
+        ("telemetry", "gateway/telemetry"),
         ("sys", "sys"),
     ]
     .into_iter()
@@ -266,6 +267,18 @@ mod tests {
         // The wire Block cannot reach keys or the upstream socket.
         assert_eq!(wire.resolve("secret/keys/anthropic"), None);
         assert_eq!(wire.resolve("upstream"), None);
+
+        // The stats Block reads ledger + in-flight and writes summaries;
+        // it cannot reach keys, wire handles, or the upstream socket.
+        let stats = m.wiring_for("stats", &bindings).unwrap();
+        assert_eq!(
+            stats.resolve("gateway/telemetry/outstanding/0/summary").as_deref(),
+            Some("gateway/telemetry/outstanding/0/summary")
+        );
+        assert_eq!(stats.resolve("gateway/usage").as_deref(), Some("gateway/usage"));
+        assert_eq!(stats.resolve("secret/keys/anthropic"), None);
+        assert_eq!(stats.resolve("wire/outstanding/0"), None);
+        assert_eq!(stats.resolve("upstream"), None);
     }
 
     #[test]

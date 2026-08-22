@@ -36,6 +36,9 @@ async fn main() -> anyhow::Result<()> {
     let wire_wiring = manifest
         .wiring_for(&manifest.public, &bindings)
         .map_err(anyhow::Error::msg)?;
+    let stats_wiring = manifest
+        .wiring_for("stats", &bindings)
+        .map_err(anyhow::Error::msg)?;
     tracing::info!(
         assembly = %manifest.assembly,
         version = %manifest.version,
@@ -244,6 +247,32 @@ async fn main() -> anyhow::Result<()> {
             }),
         );
         broker.mount_async(oxpath!("wire"), wire).await;
+    }
+
+    // gateway/telemetry/ — one handle per stats request; the stats Block
+    // aggregates the usage ledger into the summary the /stats edge reads.
+    {
+        let runner_client = broker.client();
+        let runtime = tokio::runtime::Handle::current();
+        let telemetry = ox_gateway::telemetry_store::TelemetryStore::new(
+            tokio::runtime::Handle::current(),
+            Arc::new(move |id, cancel| {
+                if let Err(e) = ox_gateway::broker_block::run_stats(
+                    format!("gateway/telemetry/outstanding/{id}"),
+                    stats_wiring.clone(),
+                    cancel.clone(),
+                    runner_client.clone(),
+                    runtime.clone(),
+                ) {
+                    if cancel.is_cancelled() {
+                        tracing::debug!(id, "stats block run cancelled");
+                    } else {
+                        tracing::error!(error = %e, id, "stats block run failed");
+                    }
+                }
+            }),
+        );
+        broker.mount_async(oxpath!("gateway", "telemetry"), telemetry).await;
     }
     let mut app = ox_gateway::routes::build_router(broker.client());
     if traffic_enabled.is_some() {

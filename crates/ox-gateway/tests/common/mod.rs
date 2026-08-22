@@ -126,6 +126,7 @@ pub async fn install_blocks(broker: &BrokerStore, traffic: bool) {
     let bindings = ox_gateway::assembly::standard_bindings();
     let broker_wiring = manifest.wiring_for("broker", &bindings).unwrap();
     let wire_wiring = manifest.wiring_for("wire", &bindings).unwrap();
+    let stats_wiring = manifest.wiring_for("stats", &bindings).unwrap();
 
     let client = broker.client();
     let runtime = tokio::runtime::Handle::current();
@@ -179,6 +180,26 @@ pub async fn install_blocks(broker: &BrokerStore, traffic: bool) {
         }),
     );
     broker.mount_async(oxpath!("wire"), wire).await;
+
+    let stats_client = broker.client();
+    let stats_runtime = tokio::runtime::Handle::current();
+    let telemetry = ox_gateway::telemetry_store::TelemetryStore::new(
+        tokio::runtime::Handle::current(),
+        Arc::new(move |id, cancel| {
+            if let Err(e) = ox_gateway::broker_block::run_stats(
+                format!("gateway/telemetry/outstanding/{id}"),
+                stats_wiring.clone(),
+                cancel,
+                stats_client.clone(),
+                stats_runtime.clone(),
+            ) {
+                eprintln!("STATS BLOCK ERROR: {e}");
+            }
+        }),
+    );
+    broker
+        .mount_async(oxpath!("gateway", "telemetry"), telemetry)
+        .await;
 }
 
 /// Build a broker preloaded with two accounts ("anthropic" + "openai") each

@@ -159,6 +159,32 @@ pub fn run_wire(
     outcome
 }
 
+/// Run the stats Block for one telemetry request. Blocking; call from
+/// the blocking pool.
+pub fn run_stats(
+    telemetry_path: String,
+    wiring: WiringTable,
+    cancel: CancelHandle,
+    client: ClientHandle,
+    runtime: tokio::runtime::Handle,
+) -> Result<(), String> {
+    let config = structfs_serde_store::json_to_value(serde_json::json!({
+        "telemetry": telemetry_path,
+    }));
+    let backing = BlockBacking {
+        config_path: "block/stats_config",
+        config,
+        wiring,
+        cancel,
+        client,
+        runtime,
+    };
+    let host_store = ox_runtime::HostStore::new(backing, NoEffects { tools: EmptyToolStore });
+    let module = codec_block::module()?;
+    let (_store, outcome) = module.run(host_store);
+    outcome
+}
+
 struct NoEffects {
     tools: EmptyToolStore,
 }
