@@ -155,6 +155,35 @@ pub fn translate_request(request: &CompletionRequest) -> serde_json::Value {
         body["tools"] = serde_json::Value::Array(tools);
     }
 
+    // Generation params from the canonical extras map. Whitelisted —
+    // OpenAI rejects unrecognized top-level arguments, so nothing else
+    // from the map reaches the wire.
+    const OPENAI_PASSTHROUGH: [&str; 10] = [
+        "temperature",
+        "top_p",
+        "seed",
+        "presence_penalty",
+        "frequency_penalty",
+        "logit_bias",
+        "logprobs",
+        "top_logprobs",
+        "parallel_tool_calls",
+        "user",
+    ];
+    for key in OPENAI_PASSTHROUGH {
+        if let Some(v) = request.extra.get(key) {
+            body[key] = v.clone();
+        }
+    }
+    if let Some(stop) = request.extra.get("stop_sequences") {
+        body["stop"] = stop.clone();
+    }
+    if let Some(tc) = request.extra.get("tool_choice") {
+        if let Some(openai_tc) = tool_choice_to_openai(tc) {
+            body["tool_choice"] = openai_tc;
+        }
+    }
+
     body
 }
 
@@ -413,9 +442,15 @@ pub fn decode_request(body: &serde_json::Value) -> Result<ox_kernel::CompletionR
         .ok_or(CodecError::MissingField("model"))?
         .to_string();
 
-    // OpenAI default when max_tokens is omitted. The gateway picks something
-    // sensible; downstream provider may apply its own cap.
-    let max_tokens = obj.get("max_tokens").and_then(|v| v.as_u64()).unwrap_or(4096) as u32;
+    // 0 is the "omitted" sentinel: OpenAI treats max_tokens as optional, so
+    // translate_request forwards nothing rather than fabricating a cap that
+    // silently truncates long generations. max_completion_tokens is the
+    // current OpenAI SDK spelling; accept both.
+    let max_tokens = obj
+        .get("max_tokens")
+        .or_else(|| obj.get("max_completion_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
 
     let stream = obj.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
 
@@ -465,9 +500,166 @@ pub fn decode_request(body: &serde_json::Value) -> Result<ox_kernel::CompletionR
         }
     }
 
+    // Carry generation params. `stop` and `tool_choice` are renamed/reshaped
+    // to the canonical Anthropic-style form the extras map uses; everything
+    // else is captured verbatim (openai-only keys like seed or
+    // presence_penalty keep their names and are only re-emitted by the
+    // openai translate path).
+    const HANDLED: [&str; 8] = [
+        "model",
+        "max_tokens",
+        "max_completion_tokens",
+        "messages",
+        "tools",
+        "stream",
+        "stream_options",
+        "tool_choice",
+    ];
+    let mut extra: std::collections::BTreeMap<String, serde_json::Value> = obj
+        .iter()
+        .filter(|(k, _)| !HANDLED.contains(&k.as_str()) && k.as_str() != "stop")
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    match obj.get("stop") {
+        Some(serde_json::Value::String(s)) => {
+            extra.insert("stop_sequences".into(), serde_json::json!([s]));
+        }
+        Some(serde_json::Value::Array(a)) => {
+            extra.insert("stop_sequences".into(), serde_json::Value::Array(a.clone()));
+        }
+        _ => {}
+    }
+    if let Some(tc) = obj.get("tool_choice") {
+        if let Some(canonical) = tool_choice_to_canonical(tc) {
+            extra.insert("tool_choice".into(), canonical);
+        }
+    }
+
     Ok(ox_kernel::CompletionRequest {
-        model, max_tokens, system, messages, tools, stream,
+        model, max_tokens, system, messages, tools, stream, extra,
     })
+}
+
+/// OpenAI `tool_choice` → the canonical (Anthropic-shaped) form.
+/// Unknown shapes translate to None and are dropped rather than guessed.
+fn tool_choice_to_canonical(tc: &serde_json::Value) -> Option<serde_json::Value> {
+    match tc {
+        serde_json::Value::String(s) => match s.as_str() {
+            "auto" => Some(serde_json::json!({"type": "auto"})),
+            "none" => Some(serde_json::json!({"type": "none"})),
+            "required" => Some(serde_json::json!({"type": "any"})),
+            _ => None,
+        },
+        serde_json::Value::Object(o) => {
+            let name = o.get("function")?.get("name")?.as_str()?;
+            Some(serde_json::json!({"type": "tool", "name": name}))
+        }
+        _ => None,
+    }
+}
+
+/// Canonical `tool_choice` → the OpenAI wire shape.
+fn tool_choice_to_openai(tc: &serde_json::Value) -> Option<serde_json::Value> {
+    match tc.get("type")?.as_str()? {
+        "auto" => Some(serde_json::json!("auto")),
+        "none" => Some(serde_json::json!("none")),
+        "any" => Some(serde_json::json!("required")),
+        "tool" => {
+            let name = tc.get("name")?.as_str()?;
+            Some(serde_json::json!({"type": "function", "function": {"name": name}}))
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod passthrough_tests {
+    use super::*;
+
+    #[test]
+    fn decode_canonicalizes_stop_and_tool_choice() {
+        let body = serde_json::json!({
+            "model": "m",
+            "messages": [],
+            "temperature": 1.5,
+            "stop": "DONE",
+            "tool_choice": "required",
+            "seed": 7,
+        });
+        let req = decode_request(&body).unwrap();
+        assert_eq!(req.extra["temperature"], serde_json::json!(1.5));
+        assert_eq!(req.extra["stop_sequences"], serde_json::json!(["DONE"]));
+        assert_eq!(req.extra["tool_choice"], serde_json::json!({"type": "any"}));
+        assert_eq!(req.extra["seed"], serde_json::json!(7));
+    }
+
+    #[test]
+    fn decode_maps_function_tool_choice() {
+        let body = serde_json::json!({
+            "model": "m",
+            "messages": [],
+            "tool_choice": {"type": "function", "function": {"name": "read_file"}},
+        });
+        let req = decode_request(&body).unwrap();
+        assert_eq!(
+            req.extra["tool_choice"],
+            serde_json::json!({"type": "tool", "name": "read_file"})
+        );
+    }
+
+    #[test]
+    fn decode_accepts_max_completion_tokens() {
+        let body = serde_json::json!({
+            "model": "m",
+            "messages": [],
+            "max_completion_tokens": 256,
+        });
+        let req = decode_request(&body).unwrap();
+        assert_eq!(req.max_tokens, 256);
+    }
+
+    #[test]
+    fn translate_emits_openai_shapes_and_skips_anthropic_only_keys() {
+        let body = serde_json::json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "temperature": 0.3,
+            "stop": ["A", "B"],
+            "tool_choice": "auto",
+            "seed": 42,
+        });
+        let req = decode_request(&body).unwrap();
+        let mut req = req;
+        // simulate an anthropic-only canonical key arriving cross-dialect
+        req.extra.insert("top_k".into(), serde_json::json!(40));
+        req.extra.insert("thinking".into(), serde_json::json!({"type": "enabled"}));
+        let wire = translate_request(&req);
+        assert_eq!(wire["temperature"], serde_json::json!(0.3));
+        assert_eq!(wire["stop"], serde_json::json!(["A", "B"]));
+        assert_eq!(wire["tool_choice"], serde_json::json!("auto"));
+        assert_eq!(wire["seed"], serde_json::json!(42));
+        assert!(wire.get("top_k").is_none(), "top_k must not reach an openai upstream");
+        assert!(wire.get("thinking").is_none());
+        assert!(wire.get("stop_sequences").is_none());
+    }
+
+    #[test]
+    fn cross_dialect_anthropic_client_to_openai_upstream() {
+        // Anthropic-shaped inbound params, openai upstream body.
+        let inbound = serde_json::json!({
+            "model": "m",
+            "max_tokens": 50,
+            "messages": [{"role": "user", "content": "hi"}],
+            "temperature": 0.1,
+            "stop_sequences": ["HALT"],
+            "tool_choice": {"type": "any"},
+        });
+        let req = crate::codec::anthropic::decode_request(&inbound).unwrap();
+        let wire = translate_request(&req);
+        assert_eq!(wire["temperature"], serde_json::json!(0.1));
+        assert_eq!(wire["stop"], serde_json::json!(["HALT"]));
+        assert_eq!(wire["tool_choice"], serde_json::json!("required"));
+    }
 }
 
 #[cfg(test)]
@@ -484,7 +676,10 @@ mod decode_tests {
         let req = decode_request(&body).unwrap();
         assert_eq!(req.model, "gpt-4o-mini");
         assert_eq!(req.messages.len(), 1);
-        assert!(req.max_tokens > 0);
+        // 0 = omitted sentinel; translate_request forwards no cap.
+        assert_eq!(req.max_tokens, 0);
+        let wire = translate_request(&req);
+        assert!(wire.get("max_tokens").is_none());
         assert_eq!(req.system, "");
         assert!(!req.stream);
     }
@@ -582,6 +777,7 @@ mod tests {
             messages: vec![],
             tools: vec![],
             stream: true,
+            extra: Default::default(),
         };
         let body = translate_request(&request);
         let msgs = body["messages"].as_array().unwrap();
@@ -599,6 +795,7 @@ mod tests {
             messages: vec![serde_json::json!({"role": "user", "content": "Hello"})],
             tools: vec![],
             stream: true,
+            extra: Default::default(),
         };
         let body = translate_request(&request);
         let msgs = body["messages"].as_array().unwrap();
@@ -622,6 +819,7 @@ mod tests {
             })],
             tools: vec![],
             stream: true,
+            extra: Default::default(),
         };
         let body = translate_request(&request);
         let msgs = body["messages"].as_array().unwrap();
@@ -648,6 +846,7 @@ mod tests {
             })],
             tools: vec![],
             stream: true,
+            extra: Default::default(),
         };
         let body = translate_request(&request);
         let msgs = body["messages"].as_array().unwrap();
@@ -670,6 +869,7 @@ mod tests {
                 input_schema: serde_json::json!({"type": "object", "properties": {"city": {"type": "string"}}}),
             }],
             stream: true,
+            extra: Default::default(),
         };
         let body = translate_request(&request);
         let tools = body["tools"].as_array().unwrap();
@@ -688,6 +888,7 @@ mod tests {
             messages: vec![],
             tools: vec![],
             stream: true,
+            extra: Default::default(),
         };
         let body = translate_request(&request);
         assert!(body.get("tools").is_none());

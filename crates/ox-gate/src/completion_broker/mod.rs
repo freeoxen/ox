@@ -462,6 +462,7 @@ mod dispatch_tests {
             messages: vec![serde_json::json!({"role": "user", "content": "hi"})],
             tools: vec![],
             stream: true,
+            extra: Default::default(),
         };
 
         let handle_path = client
@@ -518,6 +519,7 @@ mod dispatch_tests {
             messages: vec![],
             tools: vec![],
             stream: true,
+            extra: Default::default(),
         };
         let value = to_value(&request).unwrap();
         let root = path!("");
@@ -758,6 +760,7 @@ mod lifecycle_tests {
             messages: vec![serde_json::json!({"role": "user", "content": "hi"})],
             tools: vec![],
             stream: true,
+            extra: Default::default(),
         };
         let handle = client
             .write_typed(&path!("gateway/completions"), &req)
@@ -804,6 +807,7 @@ mod lifecycle_tests {
             messages: vec![serde_json::json!({"role": "user", "content": "hi"})],
             tools: vec![],
             stream: true,
+            extra: Default::default(),
         };
 
         // write_typed returns the store-relative path (e.g. "outstanding/0").
@@ -864,6 +868,7 @@ mod lifecycle_tests {
             messages: vec![],
             tools: vec![],
             stream: true,
+            extra: Default::default(),
         };
 
         // write_typed returns the store-relative path; prefix with mount for reads.

@@ -146,6 +146,15 @@ pub struct CompletionRequest {
     /// Whether to use streaming responses.
     #[serde(default)]
     pub stream: bool,
+    /// Generation parameters beyond the typed fields — temperature, top_p,
+    /// stop_sequences, tool_choice, thinking, and anything else the client
+    /// sent. Keys use canonical Anthropic-style names where a cross-dialect
+    /// mapping exists (the gateway codecs normalize on decode); dialect
+    /// translate functions emit only the keys their upstream accepts.
+    /// Flattened so a raw CompletionRequest on the wire carries them at the
+    /// top level and older serialized records roundtrip unchanged.
+    #[serde(default, flatten)]
+    pub extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 // ---------------------------------------------------------------------------

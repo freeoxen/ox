@@ -56,7 +56,69 @@ pub fn decode_request(body: &serde_json::Value) -> Result<CompletionRequest, Cod
 
     let stream = obj.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
 
-    Ok(CompletionRequest { model, max_tokens, system, messages, tools, stream })
+    // Everything else the client sent — temperature, top_p, top_k,
+    // stop_sequences, tool_choice, thinking, metadata, … — is carried as-is.
+    // Anthropic-style names are the canonical extras form, so no renaming.
+    const HANDLED: [&str; 6] = ["model", "max_tokens", "system", "messages", "tools", "stream"];
+    let extra: std::collections::BTreeMap<String, serde_json::Value> = obj
+        .iter()
+        .filter(|(k, _)| !HANDLED.contains(&k.as_str()))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+
+    Ok(CompletionRequest { model, max_tokens, system, messages, tools, stream, extra })
+}
+
+/// Keys from `extra` that are valid on an Anthropic Messages request.
+/// Emitting anything else risks a 400 — Anthropic rejects unknown
+/// top-level fields — so the body is built from this whitelist rather
+/// than splatting the map.
+const ANTHROPIC_PASSTHROUGH: [&str; 8] = [
+    "temperature",
+    "top_p",
+    "top_k",
+    "stop_sequences",
+    "tool_choice",
+    "thinking",
+    "metadata",
+    "service_tier",
+];
+
+/// Build an Anthropic Messages API request body from a [`CompletionRequest`].
+///
+/// The upstream call always streams (the gateway's executor only consumes
+/// SSE); passthrough params come from the whitelist above.
+pub fn translate_request(request: &CompletionRequest) -> serde_json::Value {
+    let tools: Vec<serde_json::Value> = request
+        .tools
+        .iter()
+        .map(|t| {
+            serde_json::json!({
+                "name": t.name,
+                "description": t.description,
+                "input_schema": t.input_schema,
+            })
+        })
+        .collect();
+
+    let mut body = serde_json::json!({
+        "model": request.model,
+        "max_tokens": request.max_tokens,
+        "messages": request.messages,
+        "stream": true,
+    });
+    if !request.system.is_empty() {
+        body["system"] = serde_json::Value::String(request.system.clone());
+    }
+    if !tools.is_empty() {
+        body["tools"] = serde_json::Value::Array(tools);
+    }
+    for key in ANTHROPIC_PASSTHROUGH {
+        if let Some(v) = request.extra.get(key) {
+            body[key] = v.clone();
+        }
+    }
+    body
 }
 
 /// Parse an Anthropic SSE response body into a sequence of [`StreamEvent`]s.
@@ -343,6 +405,50 @@ mod encode_response_tests {
         let resp = encode_response(&[], &meta());
         assert_eq!(resp["content"].as_array().unwrap().len(), 0);
         assert_eq!(resp["usage"]["input_tokens"], 0);
+    }
+}
+
+#[cfg(test)]
+mod passthrough_tests {
+    use super::*;
+
+    #[test]
+    fn decode_captures_generation_params_as_extras() {
+        let body = serde_json::json!({
+            "model": "m",
+            "max_tokens": 10,
+            "messages": [],
+            "temperature": 0.2,
+            "top_p": 0.9,
+            "top_k": 40,
+            "stop_sequences": ["END"],
+            "thinking": {"type": "enabled", "budget_tokens": 1024},
+        });
+        let req = decode_request(&body).unwrap();
+        assert_eq!(req.extra["temperature"], serde_json::json!(0.2));
+        assert_eq!(req.extra["top_p"], serde_json::json!(0.9));
+        assert_eq!(req.extra["top_k"], serde_json::json!(40));
+        assert_eq!(req.extra["stop_sequences"], serde_json::json!(["END"]));
+        assert_eq!(req.extra["thinking"]["budget_tokens"], serde_json::json!(1024));
+    }
+
+    #[test]
+    fn translate_emits_whitelisted_extras_only() {
+        let body = serde_json::json!({
+            "model": "m",
+            "max_tokens": 10,
+            "messages": [{"role": "user", "content": "hi"}],
+            "temperature": 0.0,
+            "stop_sequences": ["END"],
+            "seed": 42,
+        });
+        let req = decode_request(&body).unwrap();
+        let wire = translate_request(&req);
+        assert_eq!(wire["temperature"], serde_json::json!(0.0));
+        assert_eq!(wire["stop_sequences"], serde_json::json!(["END"]));
+        // openai-only key must not leak — Anthropic rejects unknown fields
+        assert!(wire.get("seed").is_none());
+        assert_eq!(wire["stream"], serde_json::json!(true));
     }
 }
 

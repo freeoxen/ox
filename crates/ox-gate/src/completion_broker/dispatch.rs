@@ -244,9 +244,12 @@ fn build_http_request(
         rebuilt.max_tokens = 4096;
     }
 
+    // Both arms build via a dialect translate fn with a passthrough
+    // whitelist — a raw struct serialization would splat every extras key
+    // into the body, and both upstream APIs reject unknown fields.
     let body: serde_json::Value = match provider.dialect.as_str() {
         "openai" => crate::codec::openai::translate_request(&rebuilt),
-        _ => serde_json::to_value(&rebuilt).map_err(|e| e.to_string())?,
+        _ => crate::codec::anthropic::translate_request(&rebuilt),
     };
 
     let mut http = HttpRequest::post(crate::completion_url(provider))

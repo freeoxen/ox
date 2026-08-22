@@ -322,6 +322,7 @@ pub fn complete(
         messages: resolved.messages,
         tools: resolved.tools,
         stream: true,
+        extra: Default::default(),
     };
 
     send_completion(context, account, &request)
@@ -344,6 +345,7 @@ pub fn synthesize(context: &mut dyn Reader) -> Result<CompletionRequest, String>
         messages: resolved.messages,
         tools: resolved.tools,
         stream: true,
+        extra: Default::default(),
     })
 }
 
@@ -2402,6 +2404,7 @@ mod tests {
             messages: vec![],
             tools: vec![],
             stream: true,
+            extra: Default::default(),
         };
         let events = send_completion(&mut store, "test", &request).unwrap();
         assert_eq!(events.len(), 2);

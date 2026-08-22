@@ -537,6 +537,7 @@ pub async fn test_connection_async(
         messages: vec![serde_json::json!({"role": "user", "content": "hi"})],
         tools: vec![],
         stream: true,
+        extra: Default::default(),
     };
 
     let (url, headers, body) = build_request(config, api_key, &request)?;
@@ -861,6 +862,7 @@ mod tests {
             messages: vec![serde_json::json!({"role": "user", "content": "Hi"})],
             tools: vec![],
             stream: true,
+            extra: Default::default(),
         }
     }
 

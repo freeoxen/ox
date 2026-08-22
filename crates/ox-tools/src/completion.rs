@@ -385,6 +385,7 @@ mod tests {
             messages: vec![serde_json::json!({"role": "user", "content": "hello"})],
             tools: vec![],
             stream: true,
+            extra: Default::default(),
         }
     }
 
