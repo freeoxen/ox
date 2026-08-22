@@ -105,6 +105,11 @@ sync guest ABI costs one host call per batch, not per token.
    and namespace-scoped `ClientHandle`s so the manifest — not code — defines
    the wiring.
 
+All five phases shipped (phase 5: 2026-08-22). The Block backings route
+every guest read/write through the manifest's wiring table and refuse
+undeclared paths, so the manifest is enforced, not documentation;
+`OX_GATEWAY_ASSEMBLY` points the loader at an alternate manifest.
+
 ## Out of scope
 
 - Implementing an Isotope runtime (scheduler, lifecycle, `/iso/*` system

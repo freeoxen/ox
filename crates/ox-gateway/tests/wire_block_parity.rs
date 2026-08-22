@@ -58,7 +58,11 @@ async fn build_all_wasm_broker(executor: Arc<MockSseExecutor>) -> BrokerStore {
     let upstream = ox_gate::UpstreamStore::new(executor, tokio::runtime::Handle::current());
     broker.mount_async(oxpath!("upstream"), upstream).await;
 
-    // Broker Block dispatch.
+    // Broker Block dispatch, namespaced by the embedded assembly manifest.
+    let manifest = ox_gateway::assembly::Manifest::embedded().unwrap();
+    let bindings = ox_gateway::assembly::standard_bindings();
+    let broker_wiring = manifest.wiring_for("broker", &bindings).unwrap();
+    let wire_wiring = manifest.wiring_for("wire", &bindings).unwrap();
     let runner_client = client.clone();
     let runtime = tokio::runtime::Handle::current();
     let store = CompletionBrokerStore::new(
@@ -71,6 +75,7 @@ async fn build_all_wasm_broker(executor: Arc<MockSseExecutor>) -> BrokerStore {
         if let Err(e) = ox_gateway::broker_block::run_broker(
             format!("gateway/completions/outstanding/{id}"),
             false,
+            broker_wiring.clone(),
             runner_client.clone(),
             runtime.clone(),
         ) {
@@ -105,6 +110,7 @@ async fn build_all_wasm_broker(executor: Arc<MockSseExecutor>) -> BrokerStore {
             if let Err(e) = ox_gateway::broker_block::run_wire(
                 path,
                 dialect,
+                wire_wiring.clone(),
                 wire_client.clone(),
                 wire_runtime.clone(),
             ) {

@@ -21,6 +21,28 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
+    // The assembly manifest declares the Blocks and their wiring; the
+    // Block backings enforce it, so it must load before anything runs.
+    // OX_GATEWAY_ASSEMBLY points at an alternate manifest file.
+    let manifest = match std::env::var("OX_GATEWAY_ASSEMBLY") {
+        Ok(path) => ox_gateway::assembly::Manifest::load(std::path::Path::new(&path)),
+        Err(_) => ox_gateway::assembly::Manifest::embedded(),
+    }
+    .map_err(anyhow::Error::msg)?;
+    let bindings = ox_gateway::assembly::standard_bindings();
+    let broker_wiring = manifest
+        .wiring_for("broker", &bindings)
+        .map_err(anyhow::Error::msg)?;
+    let wire_wiring = manifest
+        .wiring_for(&manifest.public, &bindings)
+        .map_err(anyhow::Error::msg)?;
+    tracing::info!(
+        assembly = %manifest.assembly,
+        version = %manifest.version,
+        public = %manifest.public,
+        "assembly manifest loaded"
+    );
+
     let ox_dir = ox_dir()?;
     let toml_path = ox_dir.join("config.toml");
     let keys_path = ox_dir.join("keys.json");
@@ -141,10 +163,12 @@ async fn main() -> anyhow::Result<()> {
         let client = broker.client();
         let runtime = tokio::runtime::Handle::current();
         let traffic = traffic_enabled.is_some();
+        let wiring = broker_wiring.clone();
         completions = completions.with_block_runner(Arc::new(move |id| {
             if let Err(e) = ox_gateway::broker_block::run_broker(
                 format!("gateway/completions/outstanding/{id}"),
                 traffic,
+                wiring.clone(),
                 client.clone(),
                 runtime.clone(),
             ) {
@@ -195,7 +219,6 @@ async fn main() -> anyhow::Result<()> {
     let mut app = if wasm_wire {
         let runner_client = broker.client();
         let runtime = tokio::runtime::Handle::current();
-        let wire_client = broker.client();
         let wire = ox_gateway::wire_store::WireStore::new(
             tokio::runtime::Handle::current(),
             Arc::new(move |id| {
@@ -217,6 +240,7 @@ async fn main() -> anyhow::Result<()> {
                 if let Err(e) = ox_gateway::broker_block::run_wire(
                     path,
                     dialect,
+                    wire_wiring.clone(),
                     runner_client.clone(),
                     runtime.clone(),
                 ) {

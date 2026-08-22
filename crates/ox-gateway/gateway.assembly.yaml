@@ -1,0 +1,63 @@
+# ox-gateway as an Isotope Assembly (spec 02/08).
+#
+# This manifest is load-bearing: the host loader derives each Block's
+# namespace from the wiring below. A path a Block touches that is not
+# covered by a wiring entry is refused at the namespace boundary — remove
+# a line here and the Block loses that capability.
+#
+# Pre-Isotope host notes (until an Isotope runtime exists):
+#   - `imports` are wired by the native host (main.rs plays the parent
+#     Assembly): each import name binds to a substrate mount.
+#   - The completions import is the substrate store that holds inflight
+#     completion state; the host spawns one `broker` Block instance per
+#     completion queued there, and one `wire` Block instance per HTTP
+#     exchange. Pooling/scaling is a host concern, not declared here.
+#   - Per-instance identity (which inflight handle, which dialect) is
+#     merged into the Block's config at spawn.
+
+assembly: ox-gateway
+version: 1.0.0
+
+# Services this Assembly expects its parent to provide.
+imports:
+  gate: "Role/account/provider resolution views"
+  secret: "API key material"
+  completions: "Inflight completion substrate (queue, events, status, usage)"
+  usage: "Usage ledger appends"
+  traffic: "Traffic log appends (optional; Blocks skip it when disabled)"
+  http-out: "Upstream HTTP dispatch: write a request, drain SSE events"
+  wire-handles: "Inbound HTTP exchange handles (head, frames, done)"
+  sys: "Host clock"
+
+blocks:
+  # One artifact, mode-switched by which config path the host serves.
+  wire: embedded:ox-gateway-wasm
+  broker: embedded:ox-gateway-wasm
+
+# The wire Block is the Assembly's external face: every inbound HTTP
+# exchange enters through it.
+public: wire
+
+wiring:
+  # wire: decode the inbound body, queue a completion, drain it back out
+  # as wire frames or a buffered body.
+  - "wire:/gateway/completions -> $completions"
+  - "wire:/wire -> $wire-handles"
+  - "wire:/sys -> $sys"
+
+  # broker: resolve the request, dispatch upstream, stream events back
+  # into the completion handle, record usage and traffic.
+  - "broker:/gateway/completions -> $completions"
+  - "broker:/gate -> $gate"
+  - "broker:/secret -> $secret"
+  - "broker:/upstream -> $http-out"
+  - "broker:/gateway/usage -> $usage"
+  - "broker:/gateway/traffic -> $traffic"
+  - "broker:/sys -> $sys"
+
+config:
+  # Static config is empty today; the host merges per-spawn fields in:
+  #   wire:   {wire: <handle path>, dialect}
+  #   broker: {inflight: <handle path>, traffic: <bool>}
+  wire: {}
+  broker: {}

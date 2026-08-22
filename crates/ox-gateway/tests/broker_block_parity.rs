@@ -17,9 +17,19 @@ use std::time::Duration;
 use structfs_core_store::{path, Value};
 use structfs_serde_store::to_value;
 
-async fn build_block_broker(
+async fn build_block_broker(executor: Arc<MockSseExecutor>, traffic: bool) -> BrokerStore {
+    // The block runs against the manifest-derived namespace, same as prod.
+    let wiring = ox_gateway::assembly::Manifest::embedded()
+        .unwrap()
+        .wiring_for("broker", &ox_gateway::assembly::standard_bindings())
+        .unwrap();
+    build_block_broker_with(executor, traffic, wiring).await
+}
+
+async fn build_block_broker_with(
     executor: Arc<MockSseExecutor>,
     traffic: bool,
+    wiring: ox_gateway::assembly::WiringTable,
 ) -> BrokerStore {
     use ox_gate::{AccountConfig, ApiKey, ProviderConfig};
     use ox_store_util::LocalConfig;
@@ -79,6 +89,7 @@ async fn build_block_broker(
         if let Err(e) = ox_gateway::broker_block::run_broker(
             format!("gateway/completions/outstanding/{id}"),
             traffic,
+            wiring.clone(),
             runner_client.clone(),
             runtime.clone(),
         ) {
@@ -267,4 +278,39 @@ async fn block_dispatch_writes_traffic_record() {
     assert_eq!(rec["upstream_body"]["temperature"], 0.1);
     assert_eq!(rec["status"]["state"], "complete");
     assert_eq!(rec["events"].as_array().unwrap().len(), 5);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn manifest_wiring_is_load_bearing() {
+    // Strip the broker's /secret wiring from the real manifest: the Block
+    // must lose the ability to read keys, and the request must fail with
+    // the namespace refusal — proving the manifest governs the namespace
+    // rather than documenting it.
+    let text = include_str!("../gateway.assembly.yaml")
+        .replace("  - \"broker:/secret -> $secret\"\n", "");
+    let manifest = ox_gateway::assembly::Manifest::parse(&text).unwrap();
+    let wiring = manifest
+        .wiring_for("broker", &ox_gateway::assembly::standard_bindings())
+        .unwrap();
+    assert_eq!(wiring.resolve("secret/keys/anthropic"), None);
+
+    let executor = Arc::new(MockSseExecutor::new());
+    let broker = build_block_broker_with(executor, false, wiring).await;
+    let addr = serve(&broker).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/v1/messages"))
+        .json(&serde_json::json!({
+            "model": "primary",
+            "max_tokens": 10,
+            "messages": [{"role": "user", "content": "hi"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 500);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let msg = body["error"]["message"].as_str().unwrap();
+    assert!(msg.contains("not wired"), "unexpected error body: {body}");
+    assert!(msg.contains("secret/keys"), "unexpected error body: {body}");
 }

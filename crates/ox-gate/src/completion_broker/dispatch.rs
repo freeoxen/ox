@@ -20,7 +20,7 @@ use structfs_serde_store::{from_value, to_value};
 use crate::codec::UsageInfo;
 use crate::completion_broker::inflight::{CompletionStatus, Inflight};
 use crate::upstream_store::{UpstreamRequest, UpstreamStatus};
-use crate::{AccountConfig, ApiKey, AuthScheme, ProviderConfig, UsageRecord};
+use crate::{AccountConfig, ApiKey, ProviderConfig, UsageRecord};
 
 pub(super) async fn per_request_task(
     inflight: Arc<Inflight>,
