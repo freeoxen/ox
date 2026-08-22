@@ -67,6 +67,45 @@ async fn main() -> anyhow::Result<()> {
     let usage = ox_gate::UsageStore::new(usage_backing);
     broker.mount(oxpath!("gateway", "usage"), usage).await;
 
+    // Traffic log — opt-in via OX_GATEWAY_TRAFFIC_LOG ("1"/"true" for the
+    // default ~/.ox/traffic.jsonl, or an explicit file path). Captures full
+    // prompts and completions: the JSONL stream plus daily conversation
+    // threads in ox ledger format under ~/.ox/threads.
+    let traffic_enabled = match std::env::var("OX_GATEWAY_TRAFFIC_LOG") {
+        Ok(v) if !v.is_empty() && v != "0" && v.to_lowercase() != "false" => Some(v),
+        _ => None,
+    };
+    if let Some(setting) = &traffic_enabled {
+        let jsonl_path = if setting == "1" || setting.to_lowercase() == "true" {
+            ox_dir.join("traffic.jsonl")
+        } else {
+            std::path::PathBuf::from(setting)
+        };
+        let backing = ox_store_util::JsonlFileBacking::new(&jsonl_path)
+            .context("opening traffic.jsonl backing")?;
+        // The backing only creates the file on first append; create it now
+        // so the 0600 clamp applies before any content lands. Traffic
+        // records carry full prompt/completion text — owner-only.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&jsonl_path)
+                .with_context(|| format!("creating {}", jsonl_path.display()))?;
+            std::fs::set_permissions(&jsonl_path, std::fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("restricting {}", jsonl_path.display()))?;
+        }
+        let store = ox_gateway::traffic::TrafficLogStore::new(
+            Box::new(backing),
+            Some(ox_dir.join("threads")),
+        );
+        broker.mount(oxpath!("gateway", "traffic"), store).await;
+        tracing::info!(path = %jsonl_path.display(), "traffic logging enabled");
+    }
+
+
     // gateway/completions/ — CompletionBrokerStore with the production
     // SSE executor. Uses mount_async (the store is AsyncReader/AsyncWriter).
     let executor = Arc::new(
@@ -75,12 +114,16 @@ async fn main() -> anyhow::Result<()> {
             .context("constructing ReqwestSseExecutor")?,
     );
     let usage_client = broker.client().scoped("gateway/usage");
-    let completions = ox_gate::CompletionBrokerStore::new(
+    let mut completions = ox_gate::CompletionBrokerStore::new(
         broker.client(),
         executor,
         usage_client,
         tokio::runtime::Handle::current(),
     );
+    if traffic_enabled.is_some() {
+        completions =
+            completions.with_traffic_writer(broker.client().scoped("gateway/traffic"));
+    }
     broker.mount_async(oxpath!("gateway", "completions"), completions).await;
 
     // Same gate subscriptions ox-cli registers (catalog refresh, account
@@ -114,7 +157,13 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("binding {bind_addr}"))?;
     tracing::info!(addr = %listener.local_addr()?, "ox-gateway listening");
 
-    let app = ox_gateway::routes::build_router(broker.client());
+    let mut app = ox_gateway::routes::build_router(broker.client());
+    if traffic_enabled.is_some() {
+        app = app.layer(axum::middleware::from_fn_with_state(
+            broker.client(),
+            ox_gateway::traffic::http_log_middleware,
+        ));
+    }
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await

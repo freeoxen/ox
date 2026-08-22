@@ -66,6 +66,13 @@ pub struct CompletionBrokerStore<E: SseHttpExecutor> {
     /// Tokio handle for spawning per-request dispatch tasks.
     #[allow(dead_code)]
     pub(crate) runtime: TokioHandle,
+
+    /// Optional traffic-log writer (scoped to gateway/traffic). When set,
+    /// each request's full lifecycle — decoded request, upstream body,
+    /// every stream event, terminal status, usage — is appended as one
+    /// record at terminal. Opt-in because the record contains complete
+    /// prompt and completion text.
+    pub(crate) traffic_writer: Option<ClientHandle>,
 }
 
 impl<E: SseHttpExecutor> CompletionBrokerStore<E> {
@@ -82,7 +89,15 @@ impl<E: SseHttpExecutor> CompletionBrokerStore<E> {
             next_request_id: 0,
             usage_writer,
             runtime,
+            traffic_writer: None,
         }
+    }
+
+    /// Enable full traffic logging: one record per request appended via
+    /// `handle` (expected to be scoped to a traffic-log mount).
+    pub fn with_traffic_writer(mut self, handle: ClientHandle) -> Self {
+        self.traffic_writer = Some(handle);
+        self
     }
 
     /// Parse `outstanding/{id}[/sub/...]` path. Returns the request id
@@ -313,8 +328,10 @@ impl<E: SseHttpExecutor> AsyncWriter for CompletionBrokerStore<E> {
             let substrate = self.substrate.clone();
             let executor = self.executor.clone();
             let usage_writer = self.usage_writer.clone();
+            let traffic_writer = self.traffic_writer.clone();
             self.runtime.spawn(async move {
-                dispatch::per_request_task(inflight, substrate, executor, usage_writer).await;
+                dispatch::per_request_task(inflight, substrate, executor, usage_writer, traffic_writer)
+                    .await;
             });
 
             let path = Path::try_from_components(vec![

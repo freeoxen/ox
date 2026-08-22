@@ -55,6 +55,7 @@ impl StoreBacking for MemoryBacking {
 /// Build a broker preloaded with gate config, secrets, UsageStore, and
 /// CompletionBrokerStore for the given `provider_dialect` ("anthropic" or
 /// "openai"). The executor is mounted at `gateway/completions`.
+#[allow(dead_code)]
 pub async fn build_test_broker(
     executor: Arc<ox_gate::completion_broker::mock::MockSseExecutor>,
     provider_dialect: &str,
@@ -130,6 +131,7 @@ pub async fn build_test_broker(
 /// Used by the /v1/models aggregation test. No mock executor or UsageStore is
 /// needed because that test only calls GET /v1/models which reads from the
 /// gate directly; no upstream LLM call is made.
+#[allow(dead_code)]
 pub async fn build_test_broker_two_accounts() -> BrokerStore {
     use ox_gate::{ApiKey, ModelInfo, ModelInfoSource};
     use ox_store_util::LocalConfig;

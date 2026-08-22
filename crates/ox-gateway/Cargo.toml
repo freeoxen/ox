@@ -21,6 +21,7 @@ ox-kernel = { workspace = true }
 ox-broker = { workspace = true }
 ox-gate = { workspace = true }
 ox-config = { workspace = true }
+ox-inbox = { workspace = true }
 ox-store-util = { workspace = true }
 ox-path = { workspace = true }
 ox-ui = { workspace = true }

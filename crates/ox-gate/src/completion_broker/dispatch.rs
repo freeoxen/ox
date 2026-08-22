@@ -28,25 +28,59 @@ pub(super) async fn per_request_task<E: SseHttpExecutor>(
     substrate: ClientHandle,
     executor: Arc<E>,
     usage_writer: ClientHandle,
+    traffic_writer: Option<ClientHandle>,
 ) {
+    let started_at_ms = now_ms();
+    let upstream_body = drive(&inflight, &substrate, executor, &usage_writer).await;
+
+    // Traffic log: one complete record per request at terminal, success or
+    // failure. Read back from the inflight state so the record reflects
+    // exactly what drains observed. The Arc keeps the state alive even if
+    // the route GC'd the handle already.
+    let Some(traffic) = traffic_writer else { return };
+    let record = {
+        let state = inflight.state.lock().await;
+        serde_json::json!({
+            "kind": "completion",
+            "started_at_ms": started_at_ms,
+            "completed_at_ms": now_ms(),
+            "request": serde_json::to_value(&state.request).unwrap_or_default(),
+            "upstream_body": upstream_body,
+            "events": serde_json::to_value(&state.events).unwrap_or_default(),
+            "status": serde_json::to_value(&state.status).unwrap_or_default(),
+            "usage": serde_json::to_value(&state.usage).unwrap_or_default(),
+        })
+    };
+    let value = structfs_serde_store::json_to_value(record);
+    let _ = traffic.write(&oxpath!("append"), Record::parsed(value)).await;
+}
+
+/// Drive one request to a terminal status. Returns the upstream request
+/// body when the request got far enough to build one.
+async fn drive<E: SseHttpExecutor>(
+    inflight: &Arc<Inflight>,
+    substrate: &ClientHandle,
+    executor: Arc<E>,
+    usage_writer: &ClientHandle,
+) -> Option<serde_json::Value> {
     let request: CompletionRequest = {
         let state = inflight.state.lock().await;
         state.request.clone()
     };
 
-    let role = match resolve_model(&request.model, &substrate).await {
+    let role = match resolve_model(&request.model, substrate).await {
         Ok(r) => r,
         Err(reason) => {
-            mark_failed(&inflight, "(unknown)".into(), request.model.clone(), reason).await;
-            return;
+            mark_failed(inflight, "(unknown)".into(), request.model.clone(), reason).await;
+            return None;
         }
     };
 
-    let (account_cfg, provider, api_key) = match resolve_account(&role, &substrate).await {
+    let (account_cfg, provider, api_key) = match resolve_account(&role, substrate).await {
         Ok(t) => t,
         Err(reason) => {
-            mark_failed(&inflight, role.account.clone(), role.model_id.clone(), reason).await;
-            return;
+            mark_failed(inflight, role.account.clone(), role.model_id.clone(), reason).await;
+            return None;
         }
     };
     // `account_cfg` is resolved for completeness; no per-account fields are
@@ -69,10 +103,11 @@ pub(super) async fn per_request_task<E: SseHttpExecutor>(
     let http_request = match build_http_request(&provider, &api_key, &request, &role.model_id) {
         Ok(r) => r,
         Err(reason) => {
-            mark_failed(&inflight, role.account.clone(), role.model_id.clone(), reason).await;
-            return;
+            mark_failed(inflight, role.account.clone(), role.model_id.clone(), reason).await;
+            return None;
         }
     };
+    let upstream_body = http_request.body.clone();
 
     let mut stream = executor.execute(http_request, provider.dialect.clone()).await;
     // An in-band error frame (upstream 200 + `event: error`) still gets
@@ -92,14 +127,14 @@ pub(super) async fn per_request_task<E: SseHttpExecutor>(
                 inflight.notify.notify_waiters();
             }
             Err(reason) => {
-                mark_failed(&inflight, role.account.clone(), role.model_id.clone(), reason).await;
-                return;
+                mark_failed(inflight, role.account.clone(), role.model_id.clone(), reason).await;
+                return upstream_body;
             }
         }
     }
     if let Some(reason) = in_band_error {
-        mark_failed(&inflight, role.account.clone(), role.model_id.clone(), reason).await;
-        return;
+        mark_failed(inflight, role.account.clone(), role.model_id.clone(), reason).await;
+        return upstream_body;
     }
 
     // Terminal clean path: compute usage, flip to Complete, notify, append
@@ -140,6 +175,7 @@ pub(super) async fn per_request_task<E: SseHttpExecutor>(
         let append_path = oxpath!("append");
         let _ = usage_writer.write(&append_path, Record::parsed(value)).await;
     }
+    upstream_body
 }
 
 /// Resolve the model string to a `CompletionRole`.
