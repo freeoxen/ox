@@ -130,6 +130,29 @@ async fn main() -> anyhow::Result<()> {
         completions =
             completions.with_traffic_writer(broker.client().scoped("gateway/traffic"));
     }
+    // OX_GATEWAY_WASM_BROKER=1: run each request's dispatch inside the
+    // broker Block instead of the native task. Same substrate surface
+    // either way; the parity suite holds the two together.
+    let wasm_broker = matches!(
+        std::env::var("OX_GATEWAY_WASM_BROKER").as_deref(),
+        Ok(v) if !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false")
+    );
+    if wasm_broker {
+        let client = broker.client();
+        let runtime = tokio::runtime::Handle::current();
+        let traffic = traffic_enabled.is_some();
+        completions = completions.with_block_runner(Arc::new(move |id| {
+            if let Err(e) = ox_gateway::broker_block::run_broker(
+                format!("gateway/completions/outstanding/{id}"),
+                traffic,
+                client.clone(),
+                runtime.clone(),
+            ) {
+                tracing::error!(error = %e, id, "broker block run failed");
+            }
+        }));
+        tracing::info!("broker block enabled (wasm dispatch)");
+    }
     broker.mount_async(oxpath!("gateway", "completions"), completions).await;
 
     // Same gate subscriptions ox-cli registers (catalog refresh, account

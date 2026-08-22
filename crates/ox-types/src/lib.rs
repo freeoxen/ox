@@ -1,3 +1,5 @@
+pub mod account;
+pub mod api_key;
 pub mod approval;
 pub mod command;
 pub mod command_name;
@@ -8,6 +10,8 @@ pub mod input;
 pub mod key_chord;
 pub mod key_hint;
 pub mod model_info;
+pub mod pricing;
+pub mod provider;
 pub(crate) mod path_serde;
 pub mod settings;
 pub mod snapshot;
@@ -35,3 +39,7 @@ pub use stream_event::StreamEvent;
 pub use subscription::*;
 pub use turn::*;
 pub use ui::*;
+
+pub use account::AccountConfig;
+pub use api_key::ApiKey;
+pub use provider::{AuthScheme, ProviderConfig};

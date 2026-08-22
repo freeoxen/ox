@@ -19,7 +19,7 @@ static MODULE_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/codec_blo
 
 static MODULE: OnceLock<Result<AgentModule, String>> = OnceLock::new();
 
-fn module() -> Result<&'static AgentModule, String> {
+pub(crate) fn module() -> Result<&'static AgentModule, String> {
     MODULE
         .get_or_init(|| {
             let runtime = AgentRuntime::new()?;

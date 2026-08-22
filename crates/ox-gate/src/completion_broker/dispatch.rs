@@ -338,49 +338,15 @@ fn build_http_request(
     request: &CompletionRequest,
     upstream_model_id: &str,
 ) -> Result<HttpRequest, String> {
-    // Rebuild request with the upstream model id (the inbound id may be a
-    // named role or a slash-form that differs from the provider's model id).
-    // The upstream call always streams — the SSE executor can only consume
-    // event streams, and the client's stream flag governs only how the
-    // gateway shapes its own response. Forwarding stream:false would get a
-    // plain JSON reply back that the SSE parser silently drops.
-    let mut rebuilt = CompletionRequest {
-        model: upstream_model_id.to_string(),
-        stream: true,
-        ..request.clone()
-    };
-    // max_tokens == 0 means the (OpenAI-dialect) client omitted it. The
-    // openai codec omits the field for that sentinel, but Anthropic-dialect
-    // upstreams require max_tokens, so give the cross-dialect case a cap.
-    if rebuilt.max_tokens == 0 && provider.dialect != "openai" {
-        rebuilt.max_tokens = 4096;
-    }
-
-    // Both arms build via a dialect translate fn with a passthrough
-    // whitelist — a raw struct serialization would splat every extras key
-    // into the body, and both upstream APIs reject unknown fields.
-    let body: serde_json::Value = match provider.dialect.as_str() {
-        "openai" => crate::codec::openai::translate_request(&rebuilt),
-        _ => crate::codec::anthropic::translate_request(&rebuilt),
-    };
-
-    let mut http = HttpRequest::post(crate::completion_url(provider))
-        .with_header("Content-Type", "application/json")
-        .with_json_body(body);
-
-    match provider.resolved_auth() {
-        AuthScheme::BearerToken => {
-            http = http.with_header("Authorization", format!("Bearer {}", api_key.expose()));
-        }
-        AuthScheme::XApiKey => {
-            http = http.with_header("x-api-key", api_key.expose());
-        }
-        AuthScheme::None => {}
-    }
-    if provider.dialect == "anthropic" && !provider.version.is_empty() {
-        http = http.with_header("anthropic-version", &provider.version);
-    }
-    Ok(http)
+    // Shared with the broker Block — one builder, no drift. The JSON is
+    // the serde form of UpstreamRequest; deserialize the request half.
+    let json = crate::codec::upstream::build_upstream_request_json(
+        provider,
+        api_key,
+        request,
+        upstream_model_id,
+    );
+    serde_json::from_value(json["request"].clone()).map_err(|e| e.to_string())
 }
 
 async fn mark_failed(inflight: &Arc<Inflight>, account: String, model_id: String, reason: String) {
@@ -403,19 +369,7 @@ async fn mark_failed(inflight: &Arc<Inflight>, account: String, model_id: String
 /// conventions: OpenAI clients use "gpt-*" / "o1-*" / "o3-*"; Anthropic
 /// clients use "claude-*". Does not affect dispatch behavior.
 fn detect_inbound_dialect(model: &str) -> String {
-    let lower = model.to_lowercase();
-    if lower.contains("gpt")
-        || lower.contains("/o1")
-        || lower.starts_with("o1")
-        || lower.contains("/o3")
-        || lower.starts_with("o3")
-    {
-        "openai".into()
-    } else if lower.contains("claude") {
-        "anthropic".into()
-    } else {
-        "unknown".into()
-    }
+    crate::codec::upstream::detect_inbound_dialect(model)
 }
 
 fn estimate_cost(model: &str, input_tokens: u32, output_tokens: u32) -> Option<f64> {

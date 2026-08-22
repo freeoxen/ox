@@ -5,14 +5,14 @@
 //! [`GateStore`] that manages provider configs, accounts, and model catalogs
 //! via the StructFS Reader/Writer interface.
 
-pub mod account;
+pub use ox_types::account;
 pub mod account_test_status;
-pub mod api_key;
+pub use ox_types::api_key;
 pub mod catalog_refresh_status;
 pub use ox_codec as codec;
 pub mod known_family;
-pub mod pricing;
-pub mod provider;
+pub use ox_types::pricing;
+pub use ox_types::provider;
 // Subscriptions sit on top of ox-broker, which uses
 // `tokio::task::block_in_place` and so requires the multi-thread runtime —
 // neither is available on wasm. ox-web has no need for the broker-side

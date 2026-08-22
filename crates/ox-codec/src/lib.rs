@@ -9,6 +9,7 @@ pub mod anthropic;
 pub mod error;
 pub mod openai;
 pub mod sse_encoder;
+pub mod upstream;
 pub use error::CodecError;
 pub use sse_encoder::SseEncoder;
 

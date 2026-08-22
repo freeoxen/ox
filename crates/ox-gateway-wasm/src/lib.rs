@@ -41,7 +41,7 @@ fn host_read(path: &str) -> Result<Option<String>, String> {
     }
 }
 
-fn host_write(path: &str, data: &str) -> Result<(), String> {
+fn host_write(path: &str, data: &str) -> Result<String, String> {
     let n = unsafe {
         store_write(
             path.as_ptr() as i32,
@@ -54,8 +54,10 @@ fn host_write(path: &str, data: &str) -> Result<(), String> {
         if n > 0 {
             let mut buf = vec![0u8; n as usize];
             unsafe { store_result(buf.as_mut_ptr() as i32) };
+            String::from_utf8(buf).map_err(|e| e.to_string())
+        } else {
+            Ok(String::new())
         }
-        Ok(())
     } else {
         let mut buf = vec![0u8; (-n) as usize];
         unsafe { store_result(buf.as_mut_ptr() as i32) };
@@ -65,6 +67,11 @@ fn host_write(path: &str, data: &str) -> Result<(), String> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn run() -> i32 {
+    // Broker mode: a block/config present in the namespace means this
+    // instance drives one completion end-to-end. Codec mode otherwise.
+    if let Ok(Some(cfg)) = host_read("block/config") {
+        return broker::run(&cfg);
+    }
     let outcome = match execute() {
         Ok(result) => host_write("codec/result", &result.to_string()),
         Err(e) => host_write(
@@ -73,7 +80,7 @@ pub extern "C" fn run() -> i32 {
         ),
     };
     match outcome {
-        Ok(()) => 0,
+        Ok(_) => 0,
         Err(_) => 1,
     }
 }
@@ -135,4 +142,317 @@ fn events_and_meta(job: &serde_json::Value) -> Result<(Vec<StreamEvent>, Respons
         created: job["meta"]["created"].as_u64().unwrap_or(0),
     };
     Ok((events, meta))
+}
+
+mod broker {
+    //! The broker Block: the per-request dispatch state machine as pure
+    //! path reads/writes. This is the native `dispatch::drive` ported to
+    //! the sync guest ABI — resolution via gate/* and secret/*, upstream
+    //! dispatch and drain via upstream/*, progress reported through the
+    //! completion broker's push/status/usage sub-paths, records appended
+    //! to gateway/usage and gateway/traffic.
+
+    use super::{host_read, host_write};
+    use ox_codec::UsageInfo;
+    use ox_kernel::{CompletionRequest, StreamEvent};
+    use ox_types::api_key::ApiKey;
+    use ox_types::provider::ProviderConfig;
+    use ox_types::AccountConfig;
+
+    pub fn run(cfg_str: &str) -> i32 {
+        match drive(cfg_str) {
+            Ok(()) => 0,
+            Err(_) => 1,
+        }
+    }
+
+    struct Ctx {
+        base: String,
+        traffic: bool,
+        request: CompletionRequest,
+        started_at_ms: u64,
+        events: Vec<StreamEvent>,
+        upstream_body: Option<serde_json::Value>,
+        account: String,
+        model_id: String,
+        upstream_dialect: String,
+    }
+
+    fn read_json(path: &str) -> Result<Option<serde_json::Value>, String> {
+        Ok(match host_read(path)? {
+            Some(s) => Some(serde_json::from_str(&s).map_err(|e| format!("bad JSON at {path}: {e}"))?),
+            None => None,
+        })
+    }
+
+    fn write_json(path: &str, value: &serde_json::Value) -> Result<(), String> {
+        host_write(path, &value.to_string()).map(|_| ())
+    }
+
+    fn now_ms() -> u64 {
+        // The host serves time at the Isotope-conventional /sys path; the
+        // guest has no clock of its own.
+        read_json("sys/time/now_unix_ms")
+            .ok()
+            .flatten()
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+    }
+
+    fn drive(cfg_str: &str) -> Result<(), String> {
+        let cfg: serde_json::Value =
+            serde_json::from_str(cfg_str).map_err(|e| format!("bad block/config: {e}"))?;
+        let base = cfg["inflight"].as_str().ok_or("config missing inflight")?.to_string();
+        let traffic = cfg["traffic"].as_bool().unwrap_or(false);
+
+        let request: CompletionRequest = serde_json::from_value(
+            read_json(&format!("{base}/request"))?.ok_or("no request at inflight")?,
+        )
+        .map_err(|e| format!("bad request: {e}"))?;
+
+        let mut ctx = Ctx {
+            base,
+            traffic,
+            started_at_ms: now_ms(),
+            account: "(unknown)".into(),
+            model_id: request.model.clone(),
+            upstream_dialect: String::new(),
+            request,
+            events: Vec::new(),
+            upstream_body: None,
+        };
+
+        match run_request(&mut ctx) {
+            Ok(()) => Ok(()),
+            Err(reason) => {
+                fail(&ctx, &reason);
+                // The request terminated Failed — the Block itself
+                // completed its job, so exit 0 after recording.
+                Ok(())
+            }
+        }
+    }
+
+    fn run_request(ctx: &mut Ctx) -> Result<(), String> {
+        // --- resolution --------------------------------------------------
+        let (account, model_id) = match ctx.request.model.split_once('/') {
+            Some((a, m)) => (a.to_string(), m.to_string()),
+            None => {
+                let role = read_json(&format!("gate/completions/{}", ctx.request.model))?
+                    .ok_or_else(|| format!("no role named '{}'", ctx.request.model))?;
+                let account = role["account"].as_str().ok_or("invalid CompletionRole")?.to_string();
+                let model_id = role["model_id"].as_str().ok_or("invalid CompletionRole")?.to_string();
+                (account, model_id)
+            }
+        };
+        ctx.account = account.clone();
+        ctx.model_id = model_id.clone();
+
+        let acct: AccountConfig = serde_json::from_value(
+            read_json(&format!("gate/accounts/{account}"))?
+                .ok_or_else(|| format!("no account named '{account}'"))?,
+        )
+        .map_err(|e| format!("invalid AccountConfig: {e}"))?;
+        let provider: ProviderConfig = serde_json::from_value(
+            read_json(&format!("gate/providers/{}", acct.provider))?
+                .ok_or_else(|| format!("no provider named '{}'", acct.provider))?,
+        )
+        .map_err(|e| format!("invalid ProviderConfig: {e}"))?;
+        ctx.upstream_dialect = provider.dialect.clone();
+
+        let key: Option<ApiKey> = read_json(&format!("secret/keys/{account}"))?
+            .and_then(|v| serde_json::from_value(v).ok());
+        let key = match key {
+            Some(k) => k,
+            None if !provider.resolved_auth().requires_key() => ApiKey::new(""),
+            None => {
+                return Err(format!(
+                    "no API key for account '{account}' — add one to ~/.ox/keys.json or set OX_GATE__ACCOUNTS__{}__KEY",
+                    account.to_uppercase(),
+                ));
+            }
+        };
+
+        // --- streaming status -------------------------------------------
+        write_json(
+            &format!("{}/status", ctx.base),
+            &serde_json::json!({
+                "state": "streaming",
+                "account": account,
+                "model_id": model_id,
+                "started_at_ms": ctx.started_at_ms,
+            }),
+        )?;
+
+        // --- upstream dispatch ------------------------------------------
+        let upstream_req = ox_codec::upstream::build_upstream_request_json(
+            &provider,
+            &key,
+            &ctx.request,
+            &model_id,
+        );
+        ctx.upstream_body = Some(upstream_req["request"]["body"].clone());
+        let rel = host_write("upstream", &upstream_req.to_string())
+            .map_err(|e| format!("upstream dispatch failed: {e}"))?;
+        // Mounted stores return mount-relative paths (e.g. "outstanding/0").
+        let handle = format!("upstream/{}", rel.trim_start_matches("upstream/"));
+
+        // --- drain -------------------------------------------------------
+        let mut in_band_error: Option<String> = None;
+        let mut next = 0usize;
+        let outcome = loop {
+            let events: Vec<StreamEvent> = match read_json(&format!("{handle}/events/from/{next}")) {
+                Ok(v) => serde_json::from_value(v.unwrap_or(serde_json::json!([])))
+                    .map_err(|e| format!("bad events: {e}"))?,
+                Err(e) => break Err(format!("upstream drain failed: {e}")),
+            };
+            if !events.is_empty() {
+                push_events(ctx, &events, &mut in_band_error)?;
+                next += events.len();
+            }
+            let status = match read_json(&format!("{handle}")) {
+                Ok(Some(s)) => s,
+                Ok(None) => break Err("upstream inflight vanished".to_string()),
+                Err(e) => break Err(format!("upstream status read failed: {e}")),
+            };
+            match status["state"].as_str() {
+                Some("streaming") => continue,
+                Some("complete") | Some("failed") => {
+                    // Close-out drain for events racing the terminal flip.
+                    if let Ok(Some(tail)) = read_json(&format!("{handle}/events/from/{next}")) {
+                        let tail: Vec<StreamEvent> = serde_json::from_value(tail)
+                            .map_err(|e| format!("bad tail: {e}"))?;
+                        if !tail.is_empty() {
+                            push_events(ctx, &tail, &mut in_band_error)?;
+                        }
+                    }
+                    if status["state"] == "failed" {
+                        break Err(status["reason"].as_str().unwrap_or("upstream failed").to_string());
+                    }
+                    break Ok(());
+                }
+                _ => break Err("unknown upstream status".to_string()),
+            }
+        };
+        // GC the upstream handle regardless of outcome.
+        let _ = host_write(&handle, "null");
+        outcome?;
+        if let Some(reason) = in_band_error {
+            return Err(reason);
+        }
+
+        // --- terminal clean path ----------------------------------------
+        let usage = UsageInfo::from_events(&ctx.events);
+        let completed_at_ms = now_ms();
+        write_json(
+            &format!("{}/usage", ctx.base),
+            &serde_json::to_value(&usage).map_err(|e| e.to_string())?,
+        )?;
+        write_json(
+            &format!("{}/status", ctx.base),
+            &serde_json::json!({
+                "state": "complete",
+                "account": account,
+                "model_id": model_id,
+                "completed_at_ms": completed_at_ms,
+            }),
+        )?;
+
+        let record = serde_json::json!({
+            "id": new_id(ctx.started_at_ms),
+            "account": account,
+            "model_id": model_id,
+            "dialect": detect_inbound_dialect(&ctx.request.model),
+            "upstream_dialect": ctx.upstream_dialect,
+            "input_tokens": usage.input_tokens,
+            "output_tokens": usage.output_tokens,
+            "cache_creation_input_tokens": usage.cache_creation_input_tokens,
+            "cache_read_input_tokens": usage.cache_read_input_tokens,
+            "started_at_ms": ctx.started_at_ms,
+            "completed_at_ms": completed_at_ms,
+            "estimated_cost_usd": ox_types::pricing::estimate_cost(
+                &model_id,
+                usage.input_tokens,
+                usage.output_tokens,
+            ),
+        });
+        write_json("gateway/usage/append", &record)?;
+
+        write_traffic(
+            ctx,
+            Some(&usage),
+            completed_at_ms,
+            serde_json::json!({
+                "state": "complete",
+                "account": account,
+                "model_id": model_id,
+                "completed_at_ms": completed_at_ms,
+            }),
+        );
+        Ok(())
+    }
+
+    fn push_events(
+        ctx: &mut Ctx,
+        events: &[StreamEvent],
+        in_band: &mut Option<String>,
+    ) -> Result<(), String> {
+        for ev in events {
+            if let StreamEvent::Error { message } = ev {
+                *in_band = Some(message.clone());
+            }
+        }
+        write_json(
+            &format!("{}/push", ctx.base),
+            &serde_json::to_value(events).map_err(|e| e.to_string())?,
+        )?;
+        ctx.events.extend(events.iter().cloned());
+        Ok(())
+    }
+
+    fn fail(ctx: &Ctx, reason: &str) {
+        let failed_at_ms = now_ms();
+        let status = serde_json::json!({
+            "state": "failed",
+            "account": ctx.account,
+            "model_id": ctx.model_id,
+            "reason": reason,
+            "failed_at_ms": failed_at_ms,
+        });
+        let _ = write_json(&format!("{}/status", ctx.base), &status);
+        write_traffic(ctx, None, failed_at_ms, status);
+    }
+
+    fn write_traffic(
+        ctx: &Ctx,
+        usage: Option<&UsageInfo>,
+        completed_at_ms: u64,
+        status: serde_json::Value,
+    ) {
+        if !ctx.traffic {
+            return;
+        }
+        // The status the Block itself wrote — re-reading the inflight races
+        // the route's GC once the terminal status lands.
+        let record = serde_json::json!({
+            "kind": "completion",
+            "started_at_ms": ctx.started_at_ms,
+            "completed_at_ms": completed_at_ms,
+            "request": serde_json::to_value(&ctx.request).unwrap_or_default(),
+            "upstream_body": ctx.upstream_body,
+            "events": serde_json::to_value(&ctx.events).unwrap_or_default(),
+            "status": status,
+            "usage": usage.map(|u| serde_json::to_value(u).unwrap_or_default()),
+        });
+        let _ = write_json("gateway/traffic/append", &record);
+    }
+
+    use ox_codec::upstream::detect_inbound_dialect;
+
+    fn new_id(started_at_ms: u64) -> String {
+        // Time-derived, matching the native scheme's shape. The guest has
+        // no counter across instances; the ms clock plus the request's
+        // start time gives adequate uniqueness for a log id.
+        format!("{:016x}-{:08x}", started_at_ms, now_ms() as u32)
+    }
 }

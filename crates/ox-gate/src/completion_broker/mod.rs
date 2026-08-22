@@ -65,6 +65,13 @@ pub struct CompletionBrokerStore {
     #[allow(dead_code)]
     pub(crate) runtime: TokioHandle,
 
+    /// Optional Block runner. When set, the store hands each new request's
+    /// inflight id to this callback instead of spawning the native dispatch
+    /// task — the callback runs the broker Block (wasm) against the same
+    /// substrate surface. Injected by the binary because the wasm artifact
+    /// and its harness live there, not in ox-gate.
+    pub(crate) block_runner: Option<Arc<dyn Fn(RequestId) + Send + Sync>>,
+
     /// Optional traffic-log writer (scoped to gateway/traffic). When set,
     /// each request's full lifecycle — decoded request, upstream body,
     /// every stream event, terminal status, usage — is appended as one
@@ -88,7 +95,15 @@ impl CompletionBrokerStore {
             usage_writer,
             runtime,
             traffic_writer: None,
+            block_runner: None,
         }
+    }
+
+    /// Route new requests through a Block runner instead of the native
+    /// dispatch task.
+    pub fn with_block_runner(mut self, runner: Arc<dyn Fn(RequestId) + Send + Sync>) -> Self {
+        self.block_runner = Some(runner);
+        self
     }
 
     /// Enable full traffic logging: one record per request appended via
@@ -323,14 +338,28 @@ impl AsyncWriter for CompletionBrokerStore {
             let inflight = Inflight::new(request);
             self.handles.insert(id, inflight.clone());
 
-            let substrate = self.substrate.clone();
-            let upstream = self.upstream.clone();
-            let usage_writer = self.usage_writer.clone();
-            let traffic_writer = self.traffic_writer.clone();
-            self.runtime.spawn(async move {
-                dispatch::per_request_task(inflight, substrate, upstream, usage_writer, traffic_writer)
+            if let Some(runner) = self.block_runner.clone() {
+                // Broker Block path: the Block does resolution, dispatch,
+                // drain, and record emission through the substrate. It runs
+                // on the blocking pool — wasm execution plus blocking
+                // substrate reads must not park an async worker.
+                self.runtime.spawn_blocking(move || runner(id));
+            } else {
+                let substrate = self.substrate.clone();
+                let upstream = self.upstream.clone();
+                let usage_writer = self.usage_writer.clone();
+                let traffic_writer = self.traffic_writer.clone();
+                self.runtime.spawn(async move {
+                    dispatch::per_request_task(
+                        inflight,
+                        substrate,
+                        upstream,
+                        usage_writer,
+                        traffic_writer,
+                    )
                     .await;
-            });
+                });
+            }
 
             let path = Path::try_from_components(vec![
                 "outstanding".to_string(),
@@ -338,6 +367,80 @@ impl AsyncWriter for CompletionBrokerStore {
             ])
             .map_err(|e| StoreError::store("completion_broker", "write", e.to_string()));
             return Box::pin(async move { path });
+        }
+
+        // Block-facing sub-path writes: the broker Block reports progress
+        // through these instead of holding the Inflight in memory.
+        //   push   — append a batch of StreamEvents and wake drains
+        //   status — set the CompletionStatus (wakes drains)
+        //   usage  — set the computed UsageInfo
+        if let Some((id, Some(sub))) = Self::parse_handle_path(&to) {
+            let inflight = match self.handles.get(&id) {
+                Some(arc) => arc.clone(),
+                None => {
+                    return Box::pin(async move {
+                        Err(StoreError::store(
+                            "completion_broker",
+                            "write",
+                            format!("no outstanding handle {id}"),
+                        ))
+                    });
+                }
+            };
+            let value = match data.as_value() {
+                Some(v) => v.clone(),
+                None => {
+                    return Box::pin(async move {
+                        Err(StoreError::store(
+                            "completion_broker",
+                            "write",
+                            "expected parsed record",
+                        ))
+                    });
+                }
+            };
+            return Box::pin(async move {
+                match sub.as_str() {
+                    "push" => {
+                        let events: Vec<ox_types::StreamEvent> =
+                            structfs_serde_store::from_value(value).map_err(|e| {
+                                StoreError::store("completion_broker", "write", e.to_string())
+                            })?;
+                        let mut state = inflight.state.lock().await;
+                        state.events.extend(events);
+                        drop(state);
+                        inflight.notify.notify_waiters();
+                        Ok(to)
+                    }
+                    "status" => {
+                        let status: CompletionStatus = structfs_serde_store::from_value(value)
+                            .map_err(|e| {
+                                StoreError::store("completion_broker", "write", e.to_string())
+                            })?;
+                        let mut state = inflight.state.lock().await;
+                        state.status = status;
+                        drop(state);
+                        inflight.notify.notify_waiters();
+                        Ok(to)
+                    }
+                    "usage" => {
+                        let usage: crate::codec::UsageInfo =
+                            structfs_serde_store::from_value(value).map_err(|e| {
+                                StoreError::store("completion_broker", "write", e.to_string())
+                            })?;
+                        let mut state = inflight.state.lock().await;
+                        state.usage = Some(usage);
+                        drop(state);
+                        inflight.notify.notify_waiters();
+                        Ok(to)
+                    }
+                    other => Err(StoreError::store(
+                        "completion_broker",
+                        "write",
+                        format!("unknown outstanding sub-path: {other}"),
+                    )),
+                }
+            });
         }
 
         Box::pin(async move {
