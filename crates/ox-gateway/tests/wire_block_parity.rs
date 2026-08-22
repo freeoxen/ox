@@ -9,7 +9,6 @@ mod common;
 use common::MemoryBacking;
 use ox_broker::BrokerStore;
 use ox_gate::completion_broker::mock::MockSseExecutor;
-use ox_gate::completion_broker::CompletionBrokerStore;
 use ox_path::oxpath;
 use ox_types::StreamEvent;
 use std::sync::Arc;
@@ -54,77 +53,15 @@ async fn build_all_wasm_broker(executor: Arc<MockSseExecutor>) -> BrokerStore {
     let usage = ox_gate::UsageStore::new(Box::new(MemoryBacking::new()));
     broker.mount(oxpath!("gateway", "usage"), usage).await;
 
-    let client = broker.client();
     let upstream = ox_gate::UpstreamStore::new(executor, tokio::runtime::Handle::current());
     broker.mount_async(oxpath!("upstream"), upstream).await;
-
-    // Broker Block dispatch, namespaced by the embedded assembly manifest.
-    let manifest = ox_gateway::assembly::Manifest::embedded().unwrap();
-    let bindings = ox_gateway::assembly::standard_bindings();
-    let broker_wiring = manifest.wiring_for("broker", &bindings).unwrap();
-    let wire_wiring = manifest.wiring_for("wire", &bindings).unwrap();
-    let runner_client = client.clone();
-    let runtime = tokio::runtime::Handle::current();
-    let store = CompletionBrokerStore::new(
-        client.clone(),
-        client.scoped("upstream"),
-        client.scoped("gateway/usage"),
-        tokio::runtime::Handle::current(),
-    )
-    .with_block_runner(Arc::new(move |id| {
-        if let Err(e) = ox_gateway::broker_block::run_broker(
-            format!("gateway/completions/outstanding/{id}"),
-            false,
-            broker_wiring.clone(),
-            runner_client.clone(),
-            runtime.clone(),
-        ) {
-            eprintln!("BROKER BLOCK ERROR: {e}");
-        }
-    }));
-    broker
-        .mount_async(oxpath!("gateway", "completions"), store)
-        .await;
-
-    // Wire Block edge.
-    let wire_client = client.clone();
-    let wire_runtime = tokio::runtime::Handle::current();
-    let wire = ox_gateway::wire_store::WireStore::new(
-        tokio::runtime::Handle::current(),
-        Arc::new(move |id| {
-            let path = format!("wire/outstanding/{id}");
-            let dialect = wire_runtime
-                .block_on(async {
-                    wire_client
-                        .read(
-                            &structfs_core_store::Path::parse(&format!("{path}/inbound")).unwrap(),
-                        )
-                        .await
-                        .ok()
-                        .flatten()
-                        .and_then(|r| r.as_value().cloned())
-                        .map(structfs_serde_store::value_to_json)
-                })
-                .and_then(|j| j["dialect"].as_str().map(|s| s.to_string()))
-                .unwrap_or_else(|| "anthropic".into());
-            if let Err(e) = ox_gateway::broker_block::run_wire(
-                path,
-                dialect,
-                wire_wiring.clone(),
-                wire_client.clone(),
-                wire_runtime.clone(),
-            ) {
-                eprintln!("WIRE BLOCK ERROR: {e}");
-            }
-        }),
-    );
-    broker.mount_async(oxpath!("wire"), wire).await;
+    common::install_blocks(&broker, false).await;
 
     broker
 }
 
 async fn serve(broker: &BrokerStore) -> std::net::SocketAddr {
-    let app = ox_gateway::routes::build_router_wire(broker.client());
+    let app = ox_gateway::routes::build_router(broker.client());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {

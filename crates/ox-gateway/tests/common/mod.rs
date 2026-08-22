@@ -109,21 +109,76 @@ pub async fn build_test_broker(
     let usage_store = ox_gate::UsageStore::new(usage_backing);
     broker.mount(oxpath!("gateway", "usage"), usage_store).await;
 
-    let client = broker.client();
-    let usage_writer = client.scoped("gateway/usage");
     let upstream = ox_gate::UpstreamStore::new(executor, tokio::runtime::Handle::current());
     broker.mount_async(oxpath!("upstream"), upstream).await;
+    install_blocks(&broker, false).await;
+
+    broker
+}
+
+/// Mount the completion substrate and wire store with their Block runners,
+/// namespaced by the embedded assembly manifest — the same stack main.rs
+/// assembles. Expects gate/secret/usage/upstream (and traffic when
+/// `traffic` is set) to be mounted already.
+#[allow(dead_code)]
+pub async fn install_blocks(broker: &BrokerStore, traffic: bool) {
+    let manifest = ox_gateway::assembly::Manifest::embedded().unwrap();
+    let bindings = ox_gateway::assembly::standard_bindings();
+    let broker_wiring = manifest.wiring_for("broker", &bindings).unwrap();
+    let wire_wiring = manifest.wiring_for("wire", &bindings).unwrap();
+
+    let client = broker.client();
+    let runtime = tokio::runtime::Handle::current();
     let store = CompletionBrokerStore::new(
-        client.clone(),
-        client.scoped("upstream"),
-        usage_writer,
-        tokio::runtime::Handle::current(),
+        runtime.clone(),
+        Arc::new(move |id, cancel| {
+            if let Err(e) = ox_gateway::broker_block::run_broker(
+                format!("gateway/completions/outstanding/{id}"),
+                traffic,
+                broker_wiring.clone(),
+                cancel,
+                client.clone(),
+                runtime.clone(),
+            ) {
+                eprintln!("BROKER BLOCK ERROR: {e}");
+            }
+        }),
     );
     broker
         .mount_async(oxpath!("gateway", "completions"), store)
         .await;
 
-    broker
+    let wire_client = broker.client();
+    let wire_runtime = tokio::runtime::Handle::current();
+    let wire = ox_gateway::wire_store::WireStore::new(
+        tokio::runtime::Handle::current(),
+        Arc::new(move |id, cancel| {
+            let path = format!("wire/outstanding/{id}");
+            let dialect = wire_runtime
+                .block_on(async {
+                    wire_client
+                        .read(&structfs_core_store::Path::parse(&format!("{path}/inbound")).unwrap())
+                        .await
+                        .ok()
+                        .flatten()
+                        .and_then(|r| r.as_value().cloned())
+                        .map(structfs_serde_store::value_to_json)
+                })
+                .and_then(|j| j["dialect"].as_str().map(|s| s.to_string()))
+                .unwrap_or_else(|| "anthropic".into());
+            if let Err(e) = ox_gateway::broker_block::run_wire(
+                path,
+                dialect,
+                wire_wiring.clone(),
+                cancel,
+                wire_client.clone(),
+                wire_runtime.clone(),
+            ) {
+                eprintln!("WIRE BLOCK ERROR: {e}");
+            }
+        }),
+    );
+    broker.mount_async(oxpath!("wire"), wire).await;
 }
 
 /// Build a broker preloaded with two accounts ("anthropic" + "openai") each

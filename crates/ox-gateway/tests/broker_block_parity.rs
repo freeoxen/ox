@@ -77,31 +77,66 @@ async fn build_block_broker_with(
     let upstream = ox_gate::UpstreamStore::new(executor, tokio::runtime::Handle::current());
     broker.mount_async(oxpath!("upstream"), upstream).await;
 
+    // Manual completion mount (rather than common::install_blocks) so the
+    // enforcement test below can run the broker Block against a stripped
+    // wiring table.
     let runner_client = client.clone();
     let runtime = tokio::runtime::Handle::current();
-    let mut store = CompletionBrokerStore::new(
-        client.clone(),
-        client.scoped("upstream"),
-        client.scoped("gateway/usage"),
+    let store = CompletionBrokerStore::new(
         tokio::runtime::Handle::current(),
-    )
-    .with_block_runner(Arc::new(move |id| {
-        if let Err(e) = ox_gateway::broker_block::run_broker(
-            format!("gateway/completions/outstanding/{id}"),
-            traffic,
-            wiring.clone(),
-            runner_client.clone(),
-            runtime.clone(),
-        ) {
-            eprintln!("BROKER BLOCK ERROR: {e}");
-        }
-    }));
-    if traffic {
-        store = store.with_traffic_writer(client.scoped("gateway/traffic"));
-    }
+        Arc::new(move |id, cancel| {
+            if let Err(e) = ox_gateway::broker_block::run_broker(
+                format!("gateway/completions/outstanding/{id}"),
+                traffic,
+                wiring.clone(),
+                cancel,
+                runner_client.clone(),
+                runtime.clone(),
+            ) {
+                eprintln!("BROKER BLOCK ERROR: {e}");
+            }
+        }),
+    );
     broker
         .mount_async(oxpath!("gateway", "completions"), store)
         .await;
+
+    // The wire edge (standard wiring) fronts every request either way.
+    let manifest = ox_gateway::assembly::Manifest::embedded().unwrap();
+    let wire_wiring = manifest
+        .wiring_for("wire", &ox_gateway::assembly::standard_bindings())
+        .unwrap();
+    let wire_client = client.clone();
+    let wire_runtime = tokio::runtime::Handle::current();
+    let wire = ox_gateway::wire_store::WireStore::new(
+        tokio::runtime::Handle::current(),
+        Arc::new(move |id, cancel| {
+            let path = format!("wire/outstanding/{id}");
+            let dialect = wire_runtime
+                .block_on(async {
+                    wire_client
+                        .read(&structfs_core_store::Path::parse(&format!("{path}/inbound")).unwrap())
+                        .await
+                        .ok()
+                        .flatten()
+                        .and_then(|r| r.as_value().cloned())
+                        .map(structfs_serde_store::value_to_json)
+                })
+                .and_then(|j| j["dialect"].as_str().map(|s| s.to_string()))
+                .unwrap_or_else(|| "anthropic".into());
+            if let Err(e) = ox_gateway::broker_block::run_wire(
+                path,
+                dialect,
+                wire_wiring.clone(),
+                cancel,
+                wire_client.clone(),
+                wire_runtime.clone(),
+            ) {
+                eprintln!("WIRE BLOCK ERROR: {e}");
+            }
+        }),
+    );
+    broker.mount_async(oxpath!("wire"), wire).await;
 
     broker
 }
@@ -313,4 +348,68 @@ async fn manifest_wiring_is_load_bearing() {
     let msg = body["error"]["message"].as_str().unwrap();
     assert!(msg.contains("not wired"), "unexpected error body: {body}");
     assert!(msg.contains("secret/keys"), "unexpected error body: {body}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn keyless_account_with_auth_none_completes() {
+    // Accounts with auth = "none" (local runtimes like LM Studio) have no
+    // entry in secret/keys; the Block must dispatch with an empty key
+    // instead of failing resolution.
+    use ox_gate::{AccountConfig, ProviderConfig};
+    use ox_store_util::LocalConfig;
+    use ox_types::CompletionRole;
+
+    let executor = Arc::new(MockSseExecutor::new());
+    script(&executor);
+
+    let broker = BrokerStore::new(Duration::from_secs(5));
+    let mut gate_config = LocalConfig::new();
+    gate_config.set(
+        "gate/completions/primary",
+        to_value(&CompletionRole {
+            account: "local".into(),
+            model_id: "local-model".into(),
+        })
+        .unwrap(),
+    );
+    gate_config.set(
+        "gate/accounts/local",
+        to_value(&AccountConfig {
+            provider: "local".into(),
+            ..Default::default()
+        })
+        .unwrap(),
+    );
+    gate_config.set(
+        "gate/providers/local",
+        to_value(&ProviderConfig {
+            dialect: "openai".into(),
+            endpoint: "http://127.0.0.1:1234".into(),
+            version: String::new(),
+            auth: Some(ox_gate::AuthScheme::None),
+        })
+        .unwrap(),
+    );
+    broker.mount(path!(""), gate_config).await;
+    broker.mount(oxpath!("secret"), LocalConfig::new()).await;
+    let usage = ox_gate::UsageStore::new(Box::new(MemoryBacking::new()));
+    broker.mount(oxpath!("gateway", "usage"), usage).await;
+    let upstream = ox_gate::UpstreamStore::new(executor, tokio::runtime::Handle::current());
+    broker.mount_async(oxpath!("upstream"), upstream).await;
+    common::install_blocks(&broker, false).await;
+
+    let addr = serve(&broker).await;
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/v1/messages"))
+        .json(&serde_json::json!({
+            "model": "primary",
+            "max_tokens": 20,
+            "messages": [{"role": "user", "content": "hi"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "keyless account must complete");
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["content"][0]["text"], "Hello block");
 }

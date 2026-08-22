@@ -7,7 +7,6 @@ mod common;
 use common::MemoryBacking;
 use ox_broker::BrokerStore;
 use ox_gate::completion_broker::mock::MockSseExecutor;
-use ox_gate::completion_broker::CompletionBrokerStore;
 use ox_path::oxpath;
 use ox_types::StreamEvent;
 use std::sync::Arc;
@@ -61,19 +60,9 @@ async fn build_broker_with_traffic(
     );
     broker.mount(oxpath!("gateway", "traffic"), traffic).await;
 
-    let client = broker.client();
     let upstream = ox_gate::UpstreamStore::new(executor, tokio::runtime::Handle::current());
     broker.mount_async(oxpath!("upstream"), upstream).await;
-    let store = CompletionBrokerStore::new(
-        client.clone(),
-        client.scoped("upstream"),
-        client.scoped("gateway/usage"),
-        tokio::runtime::Handle::current(),
-    )
-    .with_traffic_writer(client.scoped("gateway/traffic"));
-    broker
-        .mount_async(oxpath!("gateway", "completions"), store)
-        .await;
+    common::install_blocks(&broker, true).await;
 
     broker
 }

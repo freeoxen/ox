@@ -10,12 +10,13 @@
 //!   read  outstanding/{N}/usage            UsageInfo (None until Complete)
 //!   write outstanding/{N} null             GC
 
-mod dispatch;
+mod cancel;
 mod inflight;
 
 #[cfg(any(test, feature = "test-utils"))]
 pub mod mock;
 
+pub use cancel::CancelHandle;
 pub use inflight::CompletionStatus;
 #[allow(unused_imports)]
 pub(crate) use inflight::{Inflight, InflightState};
@@ -23,7 +24,6 @@ pub(crate) use inflight::{Inflight, InflightState};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use ox_broker::ClientHandle;
 use ox_broker::async_store::{AsyncReader, AsyncWriter, BoxFuture};
 use structfs_core_store::{Error as StoreError, Path, Record, Value};
 use tokio::runtime::Handle as TokioHandle;
@@ -35,82 +35,42 @@ use structfs_serde_store;
 
 pub type RequestId = u64;
 
-/// Streaming completion broker.
+/// Streaming completion broker: the substrate store holding per-request
+/// state (queue, events, status, usage). All completion *logic* lives in
+/// the broker Block the runner spawns; this store is only the mechanics.
 pub struct CompletionBrokerStore {
-    /// Broker client handle used by per-request dispatch tasks to resolve
-    /// gate/* and secret/* paths. Cloned per spawn.
-    #[allow(dead_code)]
-    pub(crate) substrate: ClientHandle,
-
-    /// Handle scoped to the upstream mount (`UpstreamStore`). Dispatch
-    /// writes the outbound request there and drains events with blocking
-    /// reads — the broker owns no sockets, only paths.
-    #[allow(dead_code)]
-    pub(crate) upstream: ClientHandle,
-
     /// In-memory in-flight tracker. Per-request state has its own Notify.
     /// No outer Mutex needed — AsyncReader/AsyncWriter give us &mut self.
-    #[allow(dead_code)]
     pub(crate) handles: HashMap<RequestId, Arc<Inflight>>,
 
-    #[allow(dead_code)]
+    /// Cancellation for each request's Block run; GC triggers it so a
+    /// Block parked on a blocking read unwinds instead of leaking.
+    pub(crate) cancels: HashMap<RequestId, CancelHandle>,
+
     pub(crate) next_request_id: RequestId,
 
-    /// Broker client scoped to gateway/usage for appending UsageRecords on
-    /// Complete (Task 3.4 uses this).
-    #[allow(dead_code)]
-    pub(crate) usage_writer: ClientHandle,
-
-    /// Tokio handle for spawning per-request dispatch tasks.
-    #[allow(dead_code)]
+    /// Tokio handle for spawning per-request Block runs.
     pub(crate) runtime: TokioHandle,
 
-    /// Optional Block runner. When set, the store hands each new request's
-    /// inflight id to this callback instead of spawning the native dispatch
-    /// task — the callback runs the broker Block (wasm) against the same
-    /// substrate surface. Injected by the binary because the wasm artifact
-    /// and its harness live there, not in ox-gate.
-    pub(crate) block_runner: Option<Arc<dyn Fn(RequestId) + Send + Sync>>,
-
-    /// Optional traffic-log writer (scoped to gateway/traffic). When set,
-    /// each request's full lifecycle — decoded request, upstream body,
-    /// every stream event, terminal status, usage — is appended as one
-    /// record at terminal. Opt-in because the record contains complete
-    /// prompt and completion text.
-    pub(crate) traffic_writer: Option<ClientHandle>,
+    /// Block runner: the store hands each new request's inflight id to
+    /// this callback, which runs the broker Block (wasm) against the
+    /// substrate. Injected by the binary because the wasm artifact and
+    /// its harness live there, not in ox-gate.
+    pub(crate) runner: BlockRunner,
 }
 
+/// Per-request Block entry point: (inflight id, cancellation for the run).
+pub type BlockRunner = Arc<dyn Fn(RequestId, CancelHandle) + Send + Sync>;
+
 impl CompletionBrokerStore {
-    pub fn new(
-        substrate: ClientHandle,
-        upstream: ClientHandle,
-        usage_writer: ClientHandle,
-        runtime: TokioHandle,
-    ) -> Self {
+    pub fn new(runtime: TokioHandle, runner: BlockRunner) -> Self {
         Self {
-            substrate,
-            upstream,
             handles: HashMap::new(),
+            cancels: HashMap::new(),
             next_request_id: 0,
-            usage_writer,
             runtime,
-            traffic_writer: None,
-            block_runner: None,
+            runner,
         }
-    }
-
-    /// Route new requests through a Block runner instead of the native
-    /// dispatch task.
-    pub fn with_block_runner(mut self, runner: Arc<dyn Fn(RequestId) + Send + Sync>) -> Self {
-        self.block_runner = Some(runner);
-        self
-    }
-
-    /// Enable full traffic logging: one record per request appended via
-    /// `handle` (expected to be scoped to a traffic-log mount).
-    pub fn with_traffic_writer(mut self, handle: ClientHandle) -> Self {
-        self.traffic_writer = Some(handle);
-        self
     }
 
     /// Parse `outstanding/{id}[/sub/...]` path. Returns the request id
@@ -218,7 +178,7 @@ impl AsyncReader for CompletionBrokerStore {
                 // outstanding/{N}/events/from/{S} — blocking drain from index S.
                 //
                 // The Notified future is created and enabled BEFORE the state
-                // check. dispatch.rs signals with notify_waiters(), which
+                // check. Push/status writes signal with notify_waiters(), which
                 // stores no permit — a plain check-then-notified().await form
                 // loses any notification that lands between the lock drop and
                 // the await's first poll, and with no later notification the
@@ -293,6 +253,11 @@ impl AsyncWriter for CompletionBrokerStore {
             let value_is_null = matches!(data.as_value(), Some(Value::Null));
             if value_is_null {
                 self.handles.remove(&id);
+                // Unpark the Block run so it tears down instead of holding
+                // its downstream handles until the upstream next emits.
+                if let Some(cancel) = self.cancels.remove(&id) {
+                    cancel.cancel();
+                }
                 return Box::pin(async move { Ok(to) });
             }
             return Box::pin(async move {
@@ -335,31 +300,16 @@ impl AsyncWriter for CompletionBrokerStore {
             let id = self.next_request_id;
             self.next_request_id += 1;
 
-            let inflight = Inflight::new(request);
-            self.handles.insert(id, inflight.clone());
+            self.handles.insert(id, Inflight::new(request));
+            let cancel = CancelHandle::new();
+            self.cancels.insert(id, cancel.clone());
 
-            if let Some(runner) = self.block_runner.clone() {
-                // Broker Block path: the Block does resolution, dispatch,
-                // drain, and record emission through the substrate. It runs
-                // on the blocking pool — wasm execution plus blocking
-                // substrate reads must not park an async worker.
-                self.runtime.spawn_blocking(move || runner(id));
-            } else {
-                let substrate = self.substrate.clone();
-                let upstream = self.upstream.clone();
-                let usage_writer = self.usage_writer.clone();
-                let traffic_writer = self.traffic_writer.clone();
-                self.runtime.spawn(async move {
-                    dispatch::per_request_task(
-                        inflight,
-                        substrate,
-                        upstream,
-                        usage_writer,
-                        traffic_writer,
-                    )
-                    .await;
-                });
-            }
+            // The Block does resolution, dispatch, drain, and record
+            // emission through the substrate. It runs on the blocking
+            // pool — wasm execution plus blocking substrate reads must
+            // not park an async worker.
+            let runner = self.runner.clone();
+            self.runtime.spawn_blocking(move || runner(id, cancel));
 
             let path = Path::try_from_components(vec![
                 "outstanding".to_string(),
@@ -454,213 +404,6 @@ impl AsyncWriter for CompletionBrokerStore {
 }
 
 #[cfg(test)]
-mod dispatch_tests {
-    use super::*;
-    use crate::completion_broker::mock::MockSseExecutor;
-    use ox_broker::BrokerStore;
-    use ox_kernel::CompletionRequest;
-    use ox_path::oxpath;
-    use ox_store_util::StoreBacking;
-    use ox_types::StreamEvent;
-    use std::sync::{Arc, Mutex};
-    use std::time::Duration;
-    use structfs_core_store::{Error as StoreError, Record, Value, path};
-    use structfs_serde_store::to_value;
-
-    /// Minimal in-memory `StoreBacking` for tests. Holds an append-only
-    /// Vec of items (or a single snapshot value for save/load).
-    struct MemoryBacking {
-        items: Mutex<Vec<Value>>,
-    }
-
-    impl MemoryBacking {
-        fn new() -> Self {
-            Self {
-                items: Mutex::new(Vec::new()),
-            }
-        }
-    }
-
-    impl StoreBacking for MemoryBacking {
-        fn load(&self) -> Result<Option<Value>, StoreError> {
-            let items = self.items.lock().unwrap();
-            if items.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(Value::Array(items.clone())))
-            }
-        }
-
-        fn save(&self, value: &Value) -> Result<(), StoreError> {
-            let mut items = self.items.lock().unwrap();
-            *items = match value {
-                Value::Array(a) => a.clone(),
-                other => vec![other.clone()],
-            };
-            Ok(())
-        }
-
-        fn append(&self, item: &Value) -> Result<(), StoreError> {
-            self.items.lock().unwrap().push(item.clone());
-            Ok(())
-        }
-    }
-
-    /// Stand up an in-memory broker seeded with gate + secret mounts that the
-    /// dispatch task resolves.
-    async fn build_substrate() -> BrokerStore {
-        use crate::{AccountConfig, ApiKey, ProviderConfig};
-        use ox_store_util::LocalConfig;
-        use ox_types::CompletionRole;
-
-        let broker = BrokerStore::new(Duration::from_secs(2));
-
-        let mut gate_config = LocalConfig::new();
-        let role = CompletionRole {
-            account: "anthropic".into(),
-            model_id: "claude-sonnet-4-20250514".into(),
-        };
-        gate_config.set("gate/completions/fast", to_value(&role).unwrap());
-        gate_config.set(
-            "gate/accounts/anthropic",
-            to_value(&AccountConfig {
-                provider: "anthropic".into(),
-                ..Default::default()
-            })
-            .unwrap(),
-        );
-        gate_config.set(
-            "gate/providers/anthropic",
-            to_value(&ProviderConfig::anthropic()).unwrap(),
-        );
-        // Mount at root so paths like "gate/accounts/anthropic" resolve directly.
-        broker.mount(path!(""), gate_config).await;
-
-        let mut secret = LocalConfig::new();
-        secret.set("keys/anthropic", to_value(&ApiKey::new("sk-test")).unwrap());
-        broker.mount(oxpath!("secret"), secret).await;
-
-        broker
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn write_returns_handle_and_dispatch_completes() {
-        let broker = build_substrate().await;
-
-        // Stand up an in-memory UsageStore at gateway/usage.
-        let usage_backing = Box::new(MemoryBacking::new());
-        let usage_store = crate::UsageStore::new(usage_backing);
-        broker
-            .mount(oxpath!("gateway", "usage"), usage_store)
-            .await;
-
-        let executor = Arc::new(MockSseExecutor::new());
-        executor.push_immediate(StreamEvent::TextDelta { text: "hi".into() });
-        executor.push_immediate(StreamEvent::OutputUsage { output_tokens: 1 });
-        executor.push_immediate(StreamEvent::MessageStop);
-
-        let client = broker.client();
-        let substrate = client.clone();
-        let usage_writer = client.scoped("gateway/usage");
-
-        let upstream_store =
-            crate::upstream_store::UpstreamStore::new(executor, tokio::runtime::Handle::current());
-        broker.mount_async(oxpath!("upstream"), upstream_store).await;
-        let store = CompletionBrokerStore::new(
-            substrate,
-            client.scoped("upstream"),
-            usage_writer,
-            tokio::runtime::Handle::current(),
-        );
-        broker
-            .mount_async(oxpath!("gateway", "completions"), store)
-            .await;
-
-        let request = CompletionRequest {
-            model: "anthropic/claude-sonnet-4-20250514".into(),
-            max_tokens: 100,
-            system: String::new(),
-            messages: vec![serde_json::json!({"role": "user", "content": "hi"})],
-            tools: vec![],
-            stream: true,
-            extra: Default::default(),
-        };
-
-        let handle_path = client
-            .write_typed(&path!("gateway/completions"), &request)
-            .await
-            .unwrap();
-
-        // The returned path must be outstanding/0.
-        assert!(
-            handle_path.to_string().contains("outstanding"),
-            "expected outstanding/N path, got: {handle_path}"
-        );
-
-        // Wait briefly for the dispatch task to complete.
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        // A usage record should have been appended — the usage store returns
-        // the full ledger as an array at its root.
-        let usage_records: Vec<crate::UsageRecord> = client
-            .read_typed(&path!("gateway/usage"))
-            .await
-            .unwrap()
-            .unwrap_or_default();
-        assert_eq!(
-            usage_records.len(),
-            1,
-            "expected 1 usage record after dispatch, got: {usage_records:?}",
-        );
-        assert_eq!(usage_records[0].output_tokens, 1);
-        assert_eq!(usage_records[0].account, "anthropic");
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn write_null_to_outstanding_gc_removes_handle() {
-        // Directly exercise the GC path on the AsyncWriter without going
-        // through the broker: construct the store and call write() directly.
-        let broker = build_substrate().await;
-        let client = broker.client();
-        let usage_writer = client.scoped("gateway/usage");
-        let executor = Arc::new(MockSseExecutor::new());
-        let upstream_store =
-            crate::upstream_store::UpstreamStore::new(executor, tokio::runtime::Handle::current());
-        broker.mount_async(oxpath!("upstream"), upstream_store).await;
-
-        let mut store = CompletionBrokerStore::new(
-            client.clone(),
-            client.scoped("upstream"),
-            usage_writer,
-            tokio::runtime::Handle::current(),
-        );
-
-        // Insert a dummy handle by writing a request.
-        let request = CompletionRequest {
-            model: "anthropic/claude-sonnet-4-20250514".into(),
-            max_tokens: 1,
-            system: String::new(),
-            messages: vec![],
-            tools: vec![],
-            stream: true,
-            extra: Default::default(),
-        };
-        let value = to_value(&request).unwrap();
-        let root = path!("");
-        let handle_path = store.write(&root, Record::parsed(value)).await.unwrap();
-        assert_eq!(store.handles.len(), 1, "handle should be inserted");
-
-        // GC: write null to the handle path.
-        let gc_result = store
-            .write(&handle_path, Record::parsed(Value::Null))
-            .await
-            .unwrap();
-        assert_eq!(gc_result, handle_path);
-        assert_eq!(store.handles.len(), 0, "handle should be removed after GC");
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use structfs_core_store::path;
@@ -715,328 +458,128 @@ mod tests {
         );
     }
 }
-
 #[cfg(test)]
-mod lifecycle_tests {
+mod mechanics_tests {
+    //! Store mechanics only: queue → runner invocation → sub-path writes →
+    //! blocking drain → GC. Completion logic (resolution, upstream dispatch)
+    //! lives in the broker Block; ox-gateway's parity suites cover it.
+
     use super::*;
-    use crate::completion_broker::mock::MockSseExecutor;
     use ox_broker::BrokerStore;
     use ox_kernel::CompletionRequest;
     use ox_path::oxpath;
-    use ox_store_util::StoreBacking;
     use ox_types::StreamEvent;
-    use std::sync::{Arc, Mutex};
     use std::time::Duration;
-    use structfs_core_store::{Error as StoreError, Value, path};
+    use structfs_core_store::path;
     use structfs_serde_store::to_value;
 
-    /// Minimal in-memory `StoreBacking` for the UsageStore in tests.
-    struct MemoryBacking {
-        items: Mutex<Vec<Value>>,
-    }
-
-    impl MemoryBacking {
-        fn new() -> Self {
-            Self {
-                items: Mutex::new(Vec::new()),
-            }
-        }
-    }
-
-    impl StoreBacking for MemoryBacking {
-        fn load(&self) -> Result<Option<Value>, StoreError> {
-            let items = self.items.lock().unwrap();
-            if items.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(Value::Array(items.clone())))
-            }
-        }
-
-        fn save(&self, value: &Value) -> Result<(), StoreError> {
-            let mut items = self.items.lock().unwrap();
-            *items = match value {
-                Value::Array(a) => a.clone(),
-                other => vec![other.clone()],
-            };
-            Ok(())
-        }
-
-        fn append(&self, item: &Value) -> Result<(), StoreError> {
-            self.items.lock().unwrap().push(item.clone());
-            Ok(())
-        }
-    }
-
-    /// Stand up a broker seeded with gate + secret mounts for the named role.
-    async fn build_substrate_with_role(role_name: &str) -> BrokerStore {
-        use crate::{AccountConfig, ApiKey, ProviderConfig};
-        use ox_store_util::LocalConfig;
-        use ox_types::CompletionRole;
-
-        let broker = BrokerStore::new(Duration::from_secs(5));
-
-        let mut gate_config = LocalConfig::new();
-        gate_config.set(
-            &format!("gate/completions/{role_name}"),
-            to_value(&CompletionRole {
-                account: "anthropic".into(),
-                model_id: "claude-sonnet-4-20250514".into(),
-            })
-            .unwrap(),
-        );
-        gate_config.set(
-            "gate/accounts/anthropic",
-            to_value(&AccountConfig {
-                provider: "anthropic".into(),
-                ..Default::default()
-            })
-            .unwrap(),
-        );
-        gate_config.set(
-            "gate/providers/anthropic",
-            to_value(&ProviderConfig::anthropic()).unwrap(),
-        );
-        broker.mount(path!(""), gate_config).await;
-
-        let mut secret = LocalConfig::new();
-        secret.set("keys/anthropic", to_value(&ApiKey::new("sk-test")).unwrap());
-        broker.mount(oxpath!("secret"), secret).await;
-
-        broker
-    }
-
-    /// Mount UsageStore and CompletionBrokerStore on the broker, returning the
-    /// client ready for test use.
-    async fn mount_completion_store(
-        broker: &BrokerStore,
-        executor: Arc<MockSseExecutor>,
-    ) -> ox_broker::ClientHandle {
-        let usage_backing = Box::new(MemoryBacking::new());
-        let usage_store = crate::UsageStore::new(usage_backing);
-        broker.mount(oxpath!("gateway", "usage"), usage_store).await;
-
-        let client = broker.client();
-        let substrate = client.clone();
-        let usage_writer = client.scoped("gateway/usage");
-
-        let upstream_store =
-            crate::upstream_store::UpstreamStore::new(executor, tokio::runtime::Handle::current());
-        broker.mount_async(oxpath!("upstream"), upstream_store).await;
-        let store = CompletionBrokerStore::new(
-            substrate,
-            client.scoped("upstream"),
-            usage_writer,
-            tokio::runtime::Handle::current(),
-        );
-        broker
-            .mount_async(oxpath!("gateway", "completions"), store)
-            .await;
-
-        client
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn keyless_account_with_auth_none_completes() {
-        use crate::{AccountConfig, AuthScheme, ProviderConfig};
-        use ox_store_util::LocalConfig;
-        use ox_types::CompletionRole;
-
-        // LM Studio-shaped config: openai dialect, auth explicitly none,
-        // and NO entry in the secrets mount.
-        let broker = BrokerStore::new(Duration::from_secs(5));
-        let mut gate_config = LocalConfig::new();
-        gate_config.set(
-            "gate/completions/primary",
-            to_value(&CompletionRole {
-                account: "lmstudio".into(),
-                model_id: "qwen".into(),
-            })
-            .unwrap(),
-        );
-        gate_config.set(
-            "gate/accounts/lmstudio",
-            to_value(&AccountConfig {
-                provider: "lmstudio".into(),
-                ..Default::default()
-            })
-            .unwrap(),
-        );
-        gate_config.set(
-            "gate/providers/lmstudio",
-            to_value(&ProviderConfig {
-                dialect: "openai".into(),
-                endpoint: "http://127.0.0.1:1234".into(),
-                version: String::new(),
-                auth: Some(AuthScheme::None),
-            })
-            .unwrap(),
-        );
-        broker.mount(path!(""), gate_config).await;
-        broker.mount(oxpath!("secret"), LocalConfig::new()).await;
-
-        let executor = Arc::new(MockSseExecutor::new());
-        executor.push_immediate(StreamEvent::TextDelta { text: "hi".into() });
-        executor.push_immediate(StreamEvent::MessageStop);
-        let client = mount_completion_store(&broker, executor).await;
-
-        let req = CompletionRequest {
-            model: "primary".into(),
-            max_tokens: 100,
-            system: String::new(),
-            messages: vec![serde_json::json!({"role": "user", "content": "hi"})],
-            tools: vec![],
-            stream: true,
-            extra: Default::default(),
-        };
-        let handle = client
-            .write_typed(&path!("gateway/completions"), &req)
-            .await
-            .expect("write completion request");
-        let handle_path = path!("gateway/completions").join(&handle);
-
-        let mut status = None;
-        for _ in 0..50 {
-            let s: Option<CompletionStatus> =
-                client.read_typed(&handle_path).await.expect("status read");
-            if s.as_ref().is_some_and(|s| s.is_terminal()) {
-                status = s;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        match status {
-            Some(CompletionStatus::Complete { .. }) => {}
-            other => panic!("keyless account should complete, got {other:?}"),
-        }
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn drains_all_events_to_terminal_via_blocking_read() {
-        let broker = build_substrate_with_role("primary").await;
-
-        let executor = Arc::new(MockSseExecutor::new());
-        executor.push_immediate(StreamEvent::InputUsage {
-            input_tokens: 10,
-            cache_creation: 0,
-            cache_read: 0,
-        });
-        executor.push_immediate(StreamEvent::TextDelta { text: "Hello".into() });
-        executor.push_immediate(StreamEvent::OutputUsage { output_tokens: 1 });
-        executor.push_immediate(StreamEvent::MessageStop);
-
-        let client = mount_completion_store(&broker, executor).await;
-
-        let request = CompletionRequest {
+    fn request() -> CompletionRequest {
+        CompletionRequest {
             model: "anthropic/claude-sonnet-4-20250514".into(),
-            max_tokens: 100,
+            max_tokens: 10,
             system: String::new(),
             messages: vec![serde_json::json!({"role": "user", "content": "hi"})],
             tools: vec![],
             stream: true,
             extra: Default::default(),
-        };
-
-        // write_typed returns the store-relative path (e.g. "outstanding/0").
-        // Prefix with the mount point to get the broker-absolute path for reads.
-        let handle_rel = client
-            .write_typed(&path!("gateway/completions"), &request)
-            .await
-            .unwrap();
-        let mount = path!("gateway/completions");
-        let handle_path = mount.join(&handle_rel);
-
-        // Drain events using the blocking events/from/{S} read, polling
-        // until the handle reports a terminal status.
-        let mut next = 0usize;
-        let mut all_events: Vec<StreamEvent> = Vec::new();
-        loop {
-            let events_sub = Path::parse(&format!("events/from/{next}")).unwrap();
-            let events_path = handle_path.join(&events_sub);
-            let batch: Vec<StreamEvent> = client
-                .read_typed(&events_path)
-                .await
-                .unwrap()
-                .unwrap_or_default();
-            next += batch.len();
-            all_events.extend(batch);
-
-            let status: CompletionStatus = client
-                .read_typed(&handle_path)
-                .await
-                .unwrap()
-                .unwrap();
-            if status.is_terminal() {
-                break;
-            }
         }
-
-        assert_eq!(all_events.len(), 4, "expected 4 events, got: {all_events:?}");
-        assert!(
-            matches!(all_events.last().unwrap(), StreamEvent::MessageStop),
-            "last event should be MessageStop"
-        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn named_role_resolves_model_id_at_executor() {
-        let broker = build_substrate_with_role("fast").await;
+    async fn queue_invokes_runner_and_drains_to_terminal() {
+        let broker = BrokerStore::new(Duration::from_secs(2));
+        let client = broker.client();
 
-        let executor = Arc::new(MockSseExecutor::new());
-        executor.push_immediate(StreamEvent::TextDelta { text: "ok".into() });
-        executor.push_immediate(StreamEvent::MessageStop);
+        // Fake runner standing in for the broker Block: reads the request
+        // back, pushes events, and writes terminal status through the same
+        // sub-paths the Block uses.
+        let runner_client = client.clone();
+        let runtime = tokio::runtime::Handle::current();
+        let store = CompletionBrokerStore::new(
+            runtime.clone(),
+            Arc::new(move |id, _cancel| {
+                let base = format!("gateway/completions/outstanding/{id}");
+                runtime.block_on(async {
+                    let req: CompletionRequest = runner_client
+                        .read_typed(&Path::parse(&format!("{base}/request")).unwrap())
+                        .await
+                        .unwrap()
+                        .expect("queued request must be readable");
+                    assert_eq!(req.max_tokens, 10);
+                    runner_client
+                        .write_typed(
+                            &Path::parse(&format!("{base}/push")).unwrap(),
+                            &vec![
+                                StreamEvent::TextDelta { text: "hi".into() },
+                                StreamEvent::MessageStop,
+                            ],
+                        )
+                        .await
+                        .unwrap();
+                    runner_client
+                        .write_typed(
+                            &Path::parse(&format!("{base}/status")).unwrap(),
+                            &CompletionStatus::Complete {
+                                account: "anthropic".into(),
+                                model_id: "claude-sonnet-4-20250514".into(),
+                                completed_at_ms: 0,
+                            },
+                        )
+                        .await
+                        .unwrap();
+                });
+            }),
+        );
+        broker.mount_async(oxpath!("gateway", "completions"), store).await;
 
-        let client = mount_completion_store(&broker, executor.clone()).await;
-
-        let request = CompletionRequest {
-            model: "fast".into(),
-            max_tokens: 50,
-            system: String::new(),
-            messages: vec![],
-            tools: vec![],
-            stream: true,
-            extra: Default::default(),
-        };
-
-        // write_typed returns the store-relative path; prefix with mount for reads.
-        let handle_rel = client
-            .write_typed(&path!("gateway/completions"), &request)
+        let handle_path = client
+            .write_typed(&path!("gateway/completions"), &request())
             .await
             .unwrap();
-        let mount = path!("gateway/completions");
-        let handle_path = mount.join(&handle_rel);
+        assert!(handle_path.to_string().contains("outstanding"));
 
-        // Drain to terminal so the dispatch task finishes.
-        let mut next = 0usize;
-        loop {
-            let events_sub = Path::parse(&format!("events/from/{next}")).unwrap();
-            let events_path = handle_path.join(&events_sub);
-            let batch: Vec<StreamEvent> = client
-                .read_typed(&events_path)
-                .await
-                .unwrap()
-                .unwrap_or_default();
-            next += batch.len();
+        // Blocking drain: parks until the runner's push lands.
+        let events: Vec<StreamEvent> = client
+            .read_typed(&path!("gateway/completions/outstanding/0/events/from/0"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[1], StreamEvent::MessageStop));
 
-            let status: CompletionStatus = client
-                .read_typed(&handle_path)
+        // Terminal status is visible non-blockingly once written.
+        let status: CompletionStatus = loop {
+            let s: CompletionStatus = client
+                .read_typed(&path!("gateway/completions/outstanding/0"))
                 .await
                 .unwrap()
                 .unwrap();
-            if status.is_terminal() {
-                break;
+            if s.is_terminal() {
+                break s;
             }
-        }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        assert!(matches!(status, CompletionStatus::Complete { .. }));
+    }
 
-        // The request that reached the executor must carry the upstream model
-        // id, not the role alias "fast".
-        let seen = executor.requests_seen();
-        assert_eq!(seen.len(), 1, "expected exactly one upstream request");
-        if let Some(body) = &seen[0].body {
-            assert_eq!(
-                body["model"], "claude-sonnet-4-20250514",
-                "model id should be rewritten to upstream id"
-            );
-        }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn write_null_to_outstanding_gc_removes_handle() {
+        let mut store = CompletionBrokerStore::new(
+            tokio::runtime::Handle::current(),
+            Arc::new(|_, _| {}),
+        );
+        let value = to_value(&request()).unwrap();
+        let handle_path = store
+            .write(&path!(""), Record::parsed(value))
+            .await
+            .unwrap();
+        assert_eq!(store.handles.len(), 1);
+
+        let gc_result = store
+            .write(&handle_path, Record::parsed(Value::Null))
+            .await
+            .unwrap();
+        assert_eq!(gc_result, handle_path);
+        assert_eq!(store.handles.len(), 0);
     }
 }

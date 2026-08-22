@@ -20,14 +20,18 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use ox_broker::async_store::{AsyncReader, AsyncWriter, BoxFuture};
+use ox_gate::completion_broker::CancelHandle;
 use structfs_core_store::{Error as StoreError, Path, Record, Value};
 use tokio::sync::{Mutex, Notify};
 
-pub type WireRunner = Arc<dyn Fn(u64) + Send + Sync>;
+/// Per-exchange wire Block entry point: (handle id, cancellation for the
+/// run — triggered when the edge GC's the handle, e.g. client disconnect).
+pub type WireRunner = Arc<dyn Fn(u64, CancelHandle) + Send + Sync>;
 
 struct WireInflight {
     state: Mutex<WireState>,
     notify: Notify,
+    cancel: CancelHandle,
 }
 
 #[derive(Default)]
@@ -156,7 +160,12 @@ impl AsyncWriter for WireStore {
         // GC
         if let Some((id, None)) = Self::parse(&to) {
             if matches!(data.as_value(), Some(Value::Null)) {
-                self.handles.remove(&id);
+                if let Some(inflight) = self.handles.remove(&id) {
+                    // Unpark the wire Block if it's still draining: it
+                    // unwinds through its error path and GC's the
+                    // completion handle it holds.
+                    inflight.cancel.cancel();
+                }
                 return Box::pin(async move { Ok(to) });
             }
             return Box::pin(async move {
@@ -250,17 +259,19 @@ impl AsyncWriter for WireStore {
         };
         let id = self.next_id;
         self.next_id += 1;
+        let cancel = CancelHandle::new();
         let inflight = Arc::new(WireInflight {
             state: Mutex::new(WireState {
                 inbound: Some(value),
                 ..Default::default()
             }),
             notify: Notify::new(),
+            cancel: cancel.clone(),
         });
         self.handles.insert(id, inflight);
 
         let runner = self.runner.clone();
-        self.runtime.spawn_blocking(move || runner(id));
+        self.runtime.spawn_blocking(move || runner(id, cancel));
 
         Box::pin(async move {
             Path::try_from_components(vec!["outstanding".to_string(), id.to_string()])

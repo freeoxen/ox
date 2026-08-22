@@ -12,6 +12,7 @@
 //! deadlock the runtime.
 
 use ox_broker::ClientHandle;
+use ox_gate::completion_broker::CancelHandle;
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Store, Value, Writer};
 
 use crate::assembly::WiringTable;
@@ -25,6 +26,7 @@ struct BlockBacking {
     config_path: &'static str,
     config: Value,
     wiring: WiringTable,
+    cancel: CancelHandle,
     client: ClientHandle,
     runtime: tokio::runtime::Handle,
 }
@@ -62,7 +64,20 @@ impl Reader for BlockBacking {
         if target.to_string() == "sys/time/now_unix_ms" {
             return Ok(Some(Record::parsed(Value::Integer(Self::now_unix_ms()))));
         }
-        let r = self.runtime.block_on(self.client.read(&target));
+        // Reads can legitimately park for the whole inter-token gap. When
+        // the handle this run serves is GC'd, cancellation fails the read
+        // so the guest unwinds and GC's its downstream handles — writes
+        // stay open so that teardown can land.
+        let r = self.runtime.block_on(async {
+            tokio::select! {
+                r = self.client.read(&target) => r,
+                _ = self.cancel.cancelled() => Err(StoreError::store(
+                    "block",
+                    "read",
+                    "cancelled: handle GC'd",
+                )),
+            }
+        });
         if std::env::var("OX_BROKER_BLOCK_TRACE").is_ok() {
             eprintln!("BB READ {key} -> {:?}", r.as_ref().map(|o| o.is_some()));
         }
@@ -92,6 +107,7 @@ pub fn run_broker(
     inflight_path: String,
     traffic: bool,
     wiring: WiringTable,
+    cancel: CancelHandle,
     client: ClientHandle,
     runtime: tokio::runtime::Handle,
 ) -> Result<(), String> {
@@ -103,6 +119,7 @@ pub fn run_broker(
         config_path: "block/config",
         config,
         wiring,
+        cancel,
         client,
         runtime,
     };
@@ -120,6 +137,7 @@ pub fn run_wire(
     wire_path: String,
     dialect: String,
     wiring: WiringTable,
+    cancel: CancelHandle,
     client: ClientHandle,
     runtime: tokio::runtime::Handle,
 ) -> Result<(), String> {
@@ -131,6 +149,7 @@ pub fn run_wire(
         config_path: "block/wire_config",
         config,
         wiring,
+        cancel,
         client,
         runtime,
     };

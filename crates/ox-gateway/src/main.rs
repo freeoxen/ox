@@ -128,55 +128,49 @@ async fn main() -> anyhow::Result<()> {
     }
 
 
-    // gateway/completions/ — CompletionBrokerStore with the production
-    // SSE executor. Uses mount_async (the store is AsyncReader/AsyncWriter).
+    // upstream/ — the SSE executor behind its own mount. Nothing but this
+    // store owns a socket to providers; the broker Block drains events
+    // from these paths.
     let executor = Arc::new(
         ox_gate::transport::ReqwestSseExecutor::with_default_timeout()
             .map_err(anyhow::Error::msg)
             .context("constructing ReqwestSseExecutor")?,
     );
-    let usage_client = broker.client().scoped("gateway/usage");
-    // upstream/ — the SSE executor behind its own mount. The broker's
-    // dispatch drains events from these paths instead of owning a socket;
-    // the phase-3 broker Block runs against exactly this surface.
     let upstream_store =
         ox_gate::UpstreamStore::new(executor, tokio::runtime::Handle::current());
     broker.mount_async(oxpath!("upstream"), upstream_store).await;
-    let mut completions = ox_gate::CompletionBrokerStore::new(
-        broker.client(),
-        broker.client().scoped("upstream"),
-        usage_client,
-        tokio::runtime::Handle::current(),
-    );
-    if traffic_enabled.is_some() {
-        completions =
-            completions.with_traffic_writer(broker.client().scoped("gateway/traffic"));
-    }
-    // OX_GATEWAY_WASM_BROKER=1: run each request's dispatch inside the
-    // broker Block instead of the native task. Same substrate surface
-    // either way; the parity suite holds the two together.
-    let wasm_broker = matches!(
-        std::env::var("OX_GATEWAY_WASM_BROKER").as_deref(),
-        Ok(v) if !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false")
-    );
-    if wasm_broker {
+
+    // gateway/completions/ — the inflight substrate. Each queued request
+    // runs one broker Block instance (wasm) against the manifest-derived
+    // namespace; there is no native dispatch path.
+    let completions = {
         let client = broker.client();
         let runtime = tokio::runtime::Handle::current();
         let traffic = traffic_enabled.is_some();
         let wiring = broker_wiring.clone();
-        completions = completions.with_block_runner(Arc::new(move |id| {
-            if let Err(e) = ox_gateway::broker_block::run_broker(
-                format!("gateway/completions/outstanding/{id}"),
-                traffic,
-                wiring.clone(),
-                client.clone(),
-                runtime.clone(),
-            ) {
-                tracing::error!(error = %e, id, "broker block run failed");
-            }
-        }));
-        tracing::info!("broker block enabled (wasm dispatch)");
-    }
+        ox_gate::CompletionBrokerStore::new(
+            tokio::runtime::Handle::current(),
+            Arc::new(move |id, cancel| {
+                if let Err(e) = ox_gateway::broker_block::run_broker(
+                    format!("gateway/completions/outstanding/{id}"),
+                    traffic,
+                    wiring.clone(),
+                    cancel.clone(),
+                    client.clone(),
+                    runtime.clone(),
+                ) {
+                    // A cancelled run exits nonzero by design (teardown,
+                    // not failure); the guest's exit code hides the error
+                    // string, so ask the handle rather than the message.
+                    if cancel.is_cancelled() {
+                        tracing::debug!(id, "broker block run cancelled");
+                    } else {
+                        tracing::error!(error = %e, id, "broker block run failed");
+                    }
+                }
+            }),
+        )
+    };
     broker.mount_async(oxpath!("gateway", "completions"), completions).await;
 
     // Same gate subscriptions ox-cli registers (catalog refresh, account
@@ -210,18 +204,14 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("binding {bind_addr}"))?;
     tracing::info!(addr = %listener.local_addr()?, "ox-gateway listening");
 
-    // OX_GATEWAY_WASM_WIRE=1: the dialect routes become the dumb http-in
-    // edge and the wire Block owns each HTTP exchange end-to-end.
-    let wasm_wire = matches!(
-        std::env::var("OX_GATEWAY_WASM_WIRE").as_deref(),
-        Ok(v) if !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false")
-    );
-    let mut app = if wasm_wire {
+    // wire/ — one handle per HTTP exchange. The http-in edge writes the
+    // inbound body here; the wire Block owns the exchange end-to-end.
+    {
         let runner_client = broker.client();
         let runtime = tokio::runtime::Handle::current();
         let wire = ox_gateway::wire_store::WireStore::new(
             tokio::runtime::Handle::current(),
-            Arc::new(move |id| {
+            Arc::new(move |id, cancel| {
                 // The dialect rides in the inbound record; the runner reads
                 // it back so the Block gets it in its config.
                 let path = format!("wire/outstanding/{id}");
@@ -241,19 +231,21 @@ async fn main() -> anyhow::Result<()> {
                     path,
                     dialect,
                     wire_wiring.clone(),
+                    cancel.clone(),
                     runner_client.clone(),
                     runtime.clone(),
                 ) {
-                    tracing::error!(error = %e, id, "wire block run failed");
+                    if cancel.is_cancelled() {
+                        tracing::debug!(id, "wire block run cancelled");
+                    } else {
+                        tracing::error!(error = %e, id, "wire block run failed");
+                    }
                 }
             }),
         );
         broker.mount_async(oxpath!("wire"), wire).await;
-        tracing::info!("wire block enabled (wasm http-in edge)");
-        ox_gateway::routes::build_router_wire(broker.client())
-    } else {
-        ox_gateway::routes::build_router(broker.client())
-    };
+    }
+    let mut app = ox_gateway::routes::build_router(broker.client());
     if traffic_enabled.is_some() {
         app = app.layer(axum::middleware::from_fn_with_state(
             broker.client(),

@@ -110,6 +110,12 @@ every guest read/write through the manifest's wiring table and refuse
 undeclared paths, so the manifest is enforced, not documentation;
 `OX_GATEWAY_ASSEMBLY` points the loader at an alternate manifest.
 
+The Blocks are the only path: the native dialect routes, native dispatch
+task, and the `OX_GATEWAY_WASM_*` opt-in flags were removed once the
+wasm path had run clean in production. `CompletionBrokerStore` requires
+a Block runner; ox-gate holds only substrate mechanics, and completion
+logic exists solely in ox-gateway-wasm.
+
 ## Out of scope
 
 - Implementing an Isotope runtime (scheduler, lifecycle, `/iso/*` system
