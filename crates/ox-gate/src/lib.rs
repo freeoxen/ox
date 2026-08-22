@@ -295,13 +295,26 @@ impl GateStore {
     }
 
     /// Build the snapshot state: providers + accounts (keys excluded).
-    fn snapshot_state(&self) -> Value {
+    ///
+    /// User-defined entries from the config handle merge over the local
+    /// built-ins — without that, snapshot consumers (the gateway's
+    /// /v1/models account enumeration, for one) only ever see the
+    /// hardcoded anthropic/openai pair and every account the user actually
+    /// configured is invisible.
+    fn snapshot_state(&mut self) -> Value {
         let mut state = BTreeMap::new();
 
         let mut providers_map = BTreeMap::new();
         for (name, config) in &self.providers {
             let v = to_value(config).expect("ProviderConfig always serializes");
             providers_map.insert(name.clone(), v);
+        }
+        for (name, value) in self.config_children("gate/providers") {
+            if let Ok(parsed) = from_value::<ProviderConfig>(value) {
+                if let Ok(v) = to_value(&parsed) {
+                    providers_map.insert(name, v);
+                }
+            }
         }
         state.insert("providers".to_string(), Value::Map(providers_map));
 
@@ -314,9 +327,41 @@ impl GateStore {
             );
             accounts_map.insert(name.clone(), Value::Map(acct));
         }
+        for (name, value) in self.config_children("gate/accounts") {
+            // Entries carry extra subtrees (refresh_status etc.); only the
+            // provider pointer belongs in the snapshot shape.
+            let provider = match &value {
+                Value::Map(m) => m.get("provider").cloned(),
+                _ => None,
+            };
+            if let Some(provider @ Value::String(_)) = provider {
+                let mut acct = BTreeMap::new();
+                acct.insert("provider".to_string(), provider);
+                accounts_map.insert(name, Value::Map(acct));
+            }
+        }
         state.insert("accounts".to_string(), Value::Map(accounts_map));
 
         Value::Map(state)
+    }
+
+    /// Read a config-handle subtree and return its immediate children as
+    /// (name, value) pairs. Empty when there is no config handle or the
+    /// path has no entries.
+    fn config_children(&mut self, path_str: &str) -> Vec<(String, Value)> {
+        let Some(config) = self.config.as_mut() else {
+            return Vec::new();
+        };
+        let Ok(path) = Path::parse(path_str) else {
+            return Vec::new();
+        };
+        let Ok(Some(record)) = config.read(&path) else {
+            return Vec::new();
+        };
+        match record.as_value() {
+            Some(Value::Map(m)) => m.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            _ => Vec::new(),
+        }
     }
 
     /// Restore the store from a snapshot state value.

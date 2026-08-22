@@ -19,20 +19,20 @@ async fn refresh_trigger_populates_v1_models() {
     // config/ — flat map in the same shape OxConfig::to_flat_map emits.
     let mut base = BTreeMap::new();
     base.insert(
-        "gate/providers/anthropic/dialect".to_string(),
+        "gate/providers/localbox/dialect".to_string(),
         Value::String("anthropic".into()),
     );
     base.insert(
-        "gate/providers/anthropic/endpoint".to_string(),
+        "gate/providers/localbox/endpoint".to_string(),
         Value::String("http://127.0.0.1:1".into()),
     );
     base.insert(
-        "gate/providers/anthropic/version".to_string(),
+        "gate/providers/localbox/version".to_string(),
         Value::String("2023-06-01".into()),
     );
     base.insert(
-        "gate/accounts/anthropic/provider".to_string(),
-        Value::String("anthropic".into()),
+        "gate/accounts/localbox/provider".to_string(),
+        Value::String("localbox".into()),
     );
     broker
         .mount(oxpath!("config"), ox_ui::ConfigStore::new(base))
@@ -41,7 +41,7 @@ async fn refresh_trigger_populates_v1_models() {
     // secret/ — key for the anthropic account.
     let mut secret_base = BTreeMap::new();
     secret_base.insert(
-        "keys/anthropic".to_string(),
+        "keys/localbox".to_string(),
         Value::String("sk-test".into()),
     );
     broker
@@ -72,7 +72,7 @@ async fn refresh_trigger_populates_v1_models() {
     let client = broker.client();
     client
         .write(
-            &path!("config/gate/accounts/anthropic/refresh_now"),
+            &path!("config/gate/accounts/localbox/refresh_now"),
             Record::parsed(Value::Null),
         )
         .await
@@ -82,7 +82,7 @@ async fn refresh_trigger_populates_v1_models() {
     let mut catalog_seen = false;
     for _ in 0..50 {
         let models: Option<Vec<ModelInfo>> = client
-            .read_typed(&path!("config/gate/accounts/anthropic/models"))
+            .read_typed(&path!("config/gate/accounts/localbox/models"))
             .await
             .ok()
             .flatten();
@@ -117,7 +117,7 @@ async fn refresh_trigger_populates_v1_models() {
         .filter_map(|m| m["id"].as_str())
         .collect();
     assert!(
-        ids.contains(&"anthropic/claude-warm"),
+        ids.contains(&"localbox/claude-warm"),
         "expected refreshed model in /v1/models, got {ids:?}"
     );
 }

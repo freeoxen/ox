@@ -198,13 +198,20 @@ impl OxConfig {
         // per-account catalog). The TOML schema keeps `[gate.defaults]`
         // as the user-facing surface; the figment loader still resolves
         // those into the in-memory `DefaultsConfig`.
-        let role = ox_types::CompletionRole {
-            account: self.gate.defaults.account.clone(),
-            model_id: self.gate.defaults.model.clone(),
-        };
-        if let Ok(role_value) = structfs_serde_store::to_value(&role) {
-            map.insert("gate/completions/primary".into(), role_value);
-        }
+        // Emit the role in the flattened child shape ("primary/account",
+        // "primary/model_id") — the same shape the TOML file backing loads.
+        // A typed leaf at "gate/completions/primary" collides with the
+        // backing's children for the same path and the store rejects reads
+        // of a path that is both leaf and parent. Children-walk reads
+        // reassemble the map, which deserializes to CompletionRole as before.
+        map.insert(
+            "gate/completions/primary/account".into(),
+            Value::String(self.gate.defaults.account.clone()),
+        );
+        map.insert(
+            "gate/completions/primary/model_id".into(),
+            Value::String(self.gate.defaults.model.clone()),
+        );
         map
     }
 }
@@ -346,11 +353,16 @@ mod tests {
     }
 
     fn role_from_flat(flat: &BTreeMap<String, Value>) -> ox_types::CompletionRole {
-        let v = flat
-            .get("gate/completions/primary")
-            .expect("primary CompletionRole must be seeded")
-            .clone();
-        structfs_serde_store::from_value(v).expect("CompletionRole deserializes")
+        let leaf = |key: &str| -> String {
+            match flat.get(key) {
+                Some(Value::String(s)) => s.clone(),
+                other => panic!("expected string at {key}, got {other:?}"),
+            }
+        };
+        ox_types::CompletionRole {
+            account: leaf("gate/completions/primary/account"),
+            model_id: leaf("gate/completions/primary/model_id"),
+        }
     }
 
     #[test]
