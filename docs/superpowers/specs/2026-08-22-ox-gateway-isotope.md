@@ -115,14 +115,15 @@ sync guest ABI costs one host call per batch, not per token.
 - The dashboard/stats routes stay native in http-in (they are host-edge
   reads of substrate paths, not gateway logic).
 
-## Open decisions (blocking phase 3+)
+## Decisions (settled 2026-08-22)
 
-1. **Block granularity under load** — instance-per-request (spec-pure,
-   simple lifecycle, wasmtime instantiation cost per request) vs a pooled
-   long-lived broker Block multiplexing requests (faster, but reintroduces
-   internal concurrency the Block model deliberately avoids).
-2. **Guest ABI evolution** — keep the existing 3-import sync ABI (proven,
-   ships today) vs extending toward Isotope spec 07's server protocol
-   (Blocks *serving* stores, not just clienting) which phase 5 wiring would
-   prefer. Recommendation: ship on the existing ABI; add the server half as
-   its own phase once a second consumer exists.
+1. **Block granularity: pooled long-lived instances, scaled with load.**
+   Each Block instance remains single-threaded and handles exactly one
+   request at a time — no internal multiplexing, so the Isotope
+   single-threaded discipline holds — but instances are checked out of a
+   pool and reused rather than instantiated per request. The pool grows
+   under demand up to a cap and shrinks when idle.
+2. **Guest ABI: the existing 3-import sync ABI** (`store_read` /
+   `store_write` / `store_result` + `run()`), unchanged from agent.wasm.
+   The spec-07 server half (Blocks serving stores) becomes its own later
+   phase once assembly wiring needs it.
