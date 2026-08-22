@@ -111,9 +111,11 @@ pub async fn build_test_broker(
 
     let client = broker.client();
     let usage_writer = client.scoped("gateway/usage");
+    let upstream = ox_gate::UpstreamStore::new(executor, tokio::runtime::Handle::current());
+    broker.mount_async(oxpath!("upstream"), upstream).await;
     let store = CompletionBrokerStore::new(
-        client,
-        executor,
+        client.clone(),
+        client.scoped("upstream"),
         usage_writer,
         tokio::runtime::Handle::current(),
     );

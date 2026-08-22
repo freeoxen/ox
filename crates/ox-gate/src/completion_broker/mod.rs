@@ -28,7 +28,6 @@ use ox_broker::async_store::{AsyncReader, AsyncWriter, BoxFuture};
 use structfs_core_store::{Error as StoreError, Path, Record, Value};
 use tokio::runtime::Handle as TokioHandle;
 
-use crate::transport::SseHttpExecutor;
 
 // Used in the AsyncWriter impl for deserializing the inbound record.
 #[allow(unused_imports)]
@@ -36,19 +35,18 @@ use structfs_serde_store;
 
 pub type RequestId = u64;
 
-/// Streaming completion broker — Reader/Writer impls come in Tasks 3.4
-/// and 3.5. Generic on the executor for mockability (same pattern as
-/// structfs_http::HttpBrokerStore<E: HttpExecutor>).
-pub struct CompletionBrokerStore<E: SseHttpExecutor> {
+/// Streaming completion broker.
+pub struct CompletionBrokerStore {
     /// Broker client handle used by per-request dispatch tasks to resolve
     /// gate/* and secret/* paths. Cloned per spawn.
     #[allow(dead_code)]
     pub(crate) substrate: ClientHandle,
 
-    /// Upstream streaming HTTP executor. Held as Arc so each per-request
-    /// task can clone cheaply.
+    /// Handle scoped to the upstream mount (`UpstreamStore`). Dispatch
+    /// writes the outbound request there and drains events with blocking
+    /// reads — the broker owns no sockets, only paths.
     #[allow(dead_code)]
-    pub(crate) executor: Arc<E>,
+    pub(crate) upstream: ClientHandle,
 
     /// In-memory in-flight tracker. Per-request state has its own Notify.
     /// No outer Mutex needed — AsyncReader/AsyncWriter give us &mut self.
@@ -75,16 +73,16 @@ pub struct CompletionBrokerStore<E: SseHttpExecutor> {
     pub(crate) traffic_writer: Option<ClientHandle>,
 }
 
-impl<E: SseHttpExecutor> CompletionBrokerStore<E> {
+impl CompletionBrokerStore {
     pub fn new(
         substrate: ClientHandle,
-        executor: Arc<E>,
+        upstream: ClientHandle,
         usage_writer: ClientHandle,
         runtime: TokioHandle,
     ) -> Self {
         Self {
             substrate,
-            executor,
+            upstream,
             handles: HashMap::new(),
             next_request_id: 0,
             usage_writer,
@@ -124,7 +122,7 @@ impl<E: SseHttpExecutor> CompletionBrokerStore<E> {
     }
 }
 
-impl<E: SseHttpExecutor> AsyncReader for CompletionBrokerStore<E> {
+impl AsyncReader for CompletionBrokerStore {
     fn read(&mut self, from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
         // Root descriptor map.
         if from.is_empty() {
@@ -271,7 +269,7 @@ fn docs_value() -> Value {
 ///    returns the same path.
 ///
 /// All other paths and non-null writes to existing handles are errors.
-impl<E: SseHttpExecutor> AsyncWriter for CompletionBrokerStore<E> {
+impl AsyncWriter for CompletionBrokerStore {
     fn write(&mut self, to: &Path, data: Record) -> BoxFuture<Result<Path, StoreError>> {
         let to = to.clone();
 
@@ -326,11 +324,11 @@ impl<E: SseHttpExecutor> AsyncWriter for CompletionBrokerStore<E> {
             self.handles.insert(id, inflight.clone());
 
             let substrate = self.substrate.clone();
-            let executor = self.executor.clone();
+            let upstream = self.upstream.clone();
             let usage_writer = self.usage_writer.clone();
             let traffic_writer = self.traffic_writer.clone();
             self.runtime.spawn(async move {
-                dispatch::per_request_task(inflight, substrate, executor, usage_writer, traffic_writer)
+                dispatch::per_request_task(inflight, substrate, upstream, usage_writer, traffic_writer)
                     .await;
             });
 
@@ -462,9 +460,12 @@ mod dispatch_tests {
         let substrate = client.clone();
         let usage_writer = client.scoped("gateway/usage");
 
+        let upstream_store =
+            crate::upstream_store::UpstreamStore::new(executor, tokio::runtime::Handle::current());
+        broker.mount_async(oxpath!("upstream"), upstream_store).await;
         let store = CompletionBrokerStore::new(
             substrate,
-            executor,
+            client.scoped("upstream"),
             usage_writer,
             tokio::runtime::Handle::current(),
         );
@@ -520,10 +521,13 @@ mod dispatch_tests {
         let client = broker.client();
         let usage_writer = client.scoped("gateway/usage");
         let executor = Arc::new(MockSseExecutor::new());
+        let upstream_store =
+            crate::upstream_store::UpstreamStore::new(executor, tokio::runtime::Handle::current());
+        broker.mount_async(oxpath!("upstream"), upstream_store).await;
 
         let mut store = CompletionBrokerStore::new(
-            client,
-            executor,
+            client.clone(),
+            client.scoped("upstream"),
             usage_writer,
             tokio::runtime::Handle::current(),
         );
@@ -561,7 +565,7 @@ mod tests {
     #[test]
     fn parse_handle_path_basic() {
         assert_eq!(
-            CompletionBrokerStore::<crate::transport::ReqwestSseExecutor>::parse_handle_path(
+            CompletionBrokerStore::parse_handle_path(
                 &path!("outstanding/42")
             ),
             Some((42, None))
@@ -571,7 +575,7 @@ mod tests {
     #[test]
     fn parse_handle_path_with_subpath() {
         assert_eq!(
-            CompletionBrokerStore::<crate::transport::ReqwestSseExecutor>::parse_handle_path(
+            CompletionBrokerStore::parse_handle_path(
                 &path!("outstanding/7/events/from/3")
             ),
             Some((7, Some("events/from/3".into())))
@@ -581,7 +585,7 @@ mod tests {
     #[test]
     fn parse_handle_path_root_returns_none() {
         assert_eq!(
-            CompletionBrokerStore::<crate::transport::ReqwestSseExecutor>::parse_handle_path(
+            CompletionBrokerStore::parse_handle_path(
                 &path!("")
             ),
             None
@@ -591,7 +595,7 @@ mod tests {
     #[test]
     fn parse_handle_path_outstanding_only_returns_none() {
         assert_eq!(
-            CompletionBrokerStore::<crate::transport::ReqwestSseExecutor>::parse_handle_path(
+            CompletionBrokerStore::parse_handle_path(
                 &path!("outstanding")
             ),
             None
@@ -601,7 +605,7 @@ mod tests {
     #[test]
     fn parse_handle_path_nonnumeric_id_returns_none() {
         assert_eq!(
-            CompletionBrokerStore::<crate::transport::ReqwestSseExecutor>::parse_handle_path(
+            CompletionBrokerStore::parse_handle_path(
                 &path!("outstanding/abc")
             ),
             None
@@ -713,9 +717,12 @@ mod lifecycle_tests {
         let substrate = client.clone();
         let usage_writer = client.scoped("gateway/usage");
 
+        let upstream_store =
+            crate::upstream_store::UpstreamStore::new(executor, tokio::runtime::Handle::current());
+        broker.mount_async(oxpath!("upstream"), upstream_store).await;
         let store = CompletionBrokerStore::new(
             substrate,
-            executor,
+            client.scoped("upstream"),
             usage_writer,
             tokio::runtime::Handle::current(),
         );

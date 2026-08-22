@@ -114,9 +114,15 @@ async fn main() -> anyhow::Result<()> {
             .context("constructing ReqwestSseExecutor")?,
     );
     let usage_client = broker.client().scoped("gateway/usage");
+    // upstream/ — the SSE executor behind its own mount. The broker's
+    // dispatch drains events from these paths instead of owning a socket;
+    // the phase-3 broker Block runs against exactly this surface.
+    let upstream_store =
+        ox_gate::UpstreamStore::new(executor, tokio::runtime::Handle::current());
+    broker.mount_async(oxpath!("upstream"), upstream_store).await;
     let mut completions = ox_gate::CompletionBrokerStore::new(
         broker.client(),
-        executor,
+        broker.client().scoped("upstream"),
         usage_client,
         tokio::runtime::Handle::current(),
     );

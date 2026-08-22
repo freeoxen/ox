@@ -9,7 +9,6 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use futures::StreamExt;
 use ox_broker::ClientHandle;
 use ox_kernel::{CompletionRequest, PathComponent};
 use ox_path::oxpath;
@@ -20,18 +19,18 @@ use structfs_serde_store::{from_value, to_value};
 
 use crate::codec::UsageInfo;
 use crate::completion_broker::inflight::{CompletionStatus, Inflight};
-use crate::transport::SseHttpExecutor;
+use crate::upstream_store::{UpstreamRequest, UpstreamStatus};
 use crate::{AccountConfig, ApiKey, AuthScheme, ProviderConfig, UsageRecord};
 
-pub(super) async fn per_request_task<E: SseHttpExecutor>(
+pub(super) async fn per_request_task(
     inflight: Arc<Inflight>,
     substrate: ClientHandle,
-    executor: Arc<E>,
+    upstream: ClientHandle,
     usage_writer: ClientHandle,
     traffic_writer: Option<ClientHandle>,
 ) {
     let started_at_ms = now_ms();
-    let upstream_body = drive(&inflight, &substrate, executor, &usage_writer).await;
+    let upstream_body = drive(&inflight, &substrate, &upstream, &usage_writer).await;
 
     // Traffic log: one complete record per request at terminal, success or
     // failure. Read back from the inflight state so the record reflects
@@ -57,10 +56,10 @@ pub(super) async fn per_request_task<E: SseHttpExecutor>(
 
 /// Drive one request to a terminal status. Returns the upstream request
 /// body when the request got far enough to build one.
-async fn drive<E: SseHttpExecutor>(
+async fn drive(
     inflight: &Arc<Inflight>,
     substrate: &ClientHandle,
-    executor: Arc<E>,
+    upstream: &ClientHandle,
     usage_writer: &ClientHandle,
 ) -> Option<serde_json::Value> {
     let request: CompletionRequest = {
@@ -109,28 +108,105 @@ async fn drive<E: SseHttpExecutor>(
     };
     let upstream_body = http_request.body.clone();
 
-    let mut stream = executor.execute(http_request, provider.dialect.clone()).await;
+    // Hand the request to the upstream mount and drain it back through
+    // blocking substrate reads. The broker holds no sockets: this loop is
+    // pure paths, which is exactly the surface the phase-3 broker Block
+    // will run against.
+    let handle_rel = match upstream
+        .write_typed(
+            &Path::try_from_components(Vec::new()).expect("empty path is valid"),
+            &UpstreamRequest {
+                dialect: provider.dialect.clone(),
+                request: http_request,
+            },
+        )
+        .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            mark_failed(
+                inflight,
+                role.account.clone(),
+                role.model_id.clone(),
+                format!("upstream dispatch failed: {e}"),
+            )
+            .await;
+            return upstream_body;
+        }
+    };
+
     // An in-band error frame (upstream 200 + `event: error`) still gets
     // pushed so streaming drains relay it, but the task must finish Failed —
     // flipping Complete would hand non-streaming clients a 200 with
     // truncated content and write a usage record for a failed request.
     let mut in_band_error: Option<String> = None;
-    while let Some(item) = stream.next().await {
-        match item {
-            Ok(ev) => {
-                if let ox_types::StreamEvent::Error { message } = &ev {
+    let mut next: usize = 0;
+    let terminal = loop {
+        let sub = Path::parse(&format!("events/from/{next}"))
+            .expect("events/from/{n} components are valid");
+        let events: Vec<ox_types::StreamEvent> = match upstream
+            .read_typed(&handle_rel.join(&sub))
+            .await
+        {
+            Ok(v) => v.unwrap_or_default(),
+            Err(e) => break Err(format!("upstream drain failed: {e}")),
+        };
+        if !events.is_empty() {
+            let mut state = inflight.state.lock().await;
+            for ev in &events {
+                if let ox_types::StreamEvent::Error { message } = ev {
                     in_band_error = Some(message.clone());
                 }
-                let mut state = inflight.state.lock().await;
-                state.events.push(ev);
-                drop(state);
-                inflight.notify.notify_waiters();
+                state.events.push(ev.clone());
             }
-            Err(reason) => {
-                mark_failed(inflight, role.account.clone(), role.model_id.clone(), reason).await;
-                return upstream_body;
-            }
+            drop(state);
+            inflight.notify.notify_waiters();
+            next += events.len();
         }
+        let status: UpstreamStatus = match upstream.read_typed(&handle_rel).await {
+            Ok(Some(s)) => s,
+            Ok(None) => break Err("upstream inflight vanished".to_string()),
+            Err(e) => break Err(format!("upstream status read failed: {e}")),
+        };
+        if status.is_terminal() {
+            // Close-out drain: events landing between the events-read and
+            // the terminal flip.
+            let sub = Path::parse(&format!("events/from/{next}"))
+                .expect("valid path");
+            if let Ok(Some(tail)) = upstream
+                .read_typed::<Vec<ox_types::StreamEvent>>(&handle_rel.join(&sub))
+                .await
+            {
+                if !tail.is_empty() {
+                    let mut state = inflight.state.lock().await;
+                    for ev in &tail {
+                        if let ox_types::StreamEvent::Error { message } = ev {
+                            in_band_error = Some(message.clone());
+                        }
+                        state.events.push(ev.clone());
+                    }
+                    drop(state);
+                    inflight.notify.notify_waiters();
+                }
+            }
+            break Ok(status);
+        }
+    };
+    // GC the upstream handle regardless of outcome.
+    let _ = upstream
+        .write(&handle_rel, Record::parsed(structfs_core_store::Value::Null))
+        .await;
+
+    match terminal {
+        Err(reason) => {
+            mark_failed(inflight, role.account.clone(), role.model_id.clone(), reason).await;
+            return upstream_body;
+        }
+        Ok(UpstreamStatus::Failed { reason }) => {
+            mark_failed(inflight, role.account.clone(), role.model_id.clone(), reason).await;
+            return upstream_body;
+        }
+        Ok(_) => {}
     }
     if let Some(reason) = in_band_error {
         mark_failed(inflight, role.account.clone(), role.model_id.clone(), reason).await;

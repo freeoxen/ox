@@ -27,6 +27,7 @@ pub mod transport;
 // `usage_store` writes to disk via `JsonlFileBacking`; wasm builds have no
 // file I/O and no need for this module.
 #[cfg(not(target_arch = "wasm32"))]
+pub mod upstream_store;
 pub mod usage_store;
 // `completion_broker` requires ox-broker (tokio rt-multi-thread) and the
 // async executor — neither available on wasm.
@@ -51,6 +52,7 @@ pub use completion_broker::{CompletionBrokerStore, CompletionStatus, RequestId};
 pub use transport::{HttpTransport, Transport};
 #[cfg(not(target_arch = "wasm32"))]
 pub use usage_store::{TodayProjection, UsageRecord, UsageStore};
+pub use upstream_store::{UpstreamRequest, UpstreamStatus, UpstreamStore};
 
 use ox_kernel::ToolSchema;
 use std::collections::{BTreeMap, HashMap};

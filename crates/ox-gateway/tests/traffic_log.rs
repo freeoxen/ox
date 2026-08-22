@@ -62,9 +62,11 @@ async fn build_broker_with_traffic(
     broker.mount(oxpath!("gateway", "traffic"), traffic).await;
 
     let client = broker.client();
+    let upstream = ox_gate::UpstreamStore::new(executor, tokio::runtime::Handle::current());
+    broker.mount_async(oxpath!("upstream"), upstream).await;
     let store = CompletionBrokerStore::new(
         client.clone(),
-        executor,
+        client.scoped("upstream"),
         client.scoped("gateway/usage"),
         tokio::runtime::Handle::current(),
     )
