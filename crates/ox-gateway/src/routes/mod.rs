@@ -4,6 +4,7 @@ pub mod anthropic;
 pub mod models;
 pub mod openai;
 pub mod ox_native;
+pub mod http_in;
 pub mod stats;
 
 use axum::Router;
@@ -32,6 +33,26 @@ pub fn build_router(client: ClientHandle) -> Router {
     Router::new()
         .merge(anthropic::router(client.clone()))
         .merge(openai::router(client.clone()))
+        .merge(models::router(client.clone()))
+        .merge(stats::router(client.clone()))
+        .merge(ox_native::router(client))
+}
+
+/// Phase-4 router: the dialect routes are the dumb http-in edge over the
+/// wire/ mount (all dialect logic in the wire Block). Everything else —
+/// models, stats, dashboard, ox-native, count_tokens — stays native edge.
+pub fn build_router_wire(client: ClientHandle) -> Router {
+    Router::new()
+        .merge(http_in::router(client.clone()))
+        .route(
+            "/v1/messages/count_tokens",
+            axum::routing::post(|| async {
+                crate::error::anthropic_error(
+                    axum::http::StatusCode::NOT_IMPLEMENTED,
+                    "count_tokens not yet implemented",
+                )
+            }),
+        )
         .merge(models::router(client.clone()))
         .merge(stats::router(client.clone()))
         .merge(ox_native::router(client))

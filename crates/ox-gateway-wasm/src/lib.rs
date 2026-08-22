@@ -67,6 +67,11 @@ fn host_write(path: &str, data: &str) -> Result<String, String> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn run() -> i32 {
+    // Wire mode: block/wire_config means this instance owns one HTTP
+    // exchange — decode, dispatch, drain, encode, and error envelopes.
+    if let Ok(Some(cfg)) = host_read("block/wire_config") {
+        return wire::run(&cfg);
+    }
     // Broker mode: a block/config present in the namespace means this
     // instance drives one completion end-to-end. Codec mode otherwise.
     if let Ok(Some(cfg)) = host_read("block/config") {
@@ -454,5 +459,228 @@ mod broker {
         // no counter across instances; the ms clock plus the request's
         // start time gives adequate uniqueness for a log id.
         format!("{:016x}-{:08x}", started_at_ms, now_ms() as u32)
+    }
+}
+
+mod wire {
+    //! The wire Block: one HTTP exchange end-to-end. This is the native
+    //! route handler ported to the sync guest ABI — decode the inbound
+    //! wire body, mint the response identity, queue the completion, drain
+    //! it, and produce either a buffered response body or a stream of
+    //! wire frames, with dialect-shaped error envelopes throughout.
+
+    use super::{host_read, host_write};
+    use ox_codec::{ResponseMeta, SseEncoder};
+    use ox_kernel::StreamEvent;
+
+    pub fn run(cfg_str: &str) -> i32 {
+        match drive(cfg_str) {
+            Ok(()) => 0,
+            Err(_) => 1,
+        }
+    }
+
+    fn read_json(path: &str) -> Result<Option<serde_json::Value>, String> {
+        Ok(match host_read(path)? {
+            Some(s) => {
+                Some(serde_json::from_str(&s).map_err(|e| format!("bad JSON at {path}: {e}"))?)
+            }
+            None => None,
+        })
+    }
+
+    fn write_json(path: &str, value: &serde_json::Value) -> Result<(), String> {
+        host_write(path, &value.to_string()).map(|_| ())
+    }
+
+    fn now_ms() -> u64 {
+        read_json("sys/time/now_unix_ms")
+            .ok()
+            .flatten()
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+    }
+
+    fn error_head(wire: &str, dialect: &str, status: u16, message: &str) {
+        let _ = write_json(
+            &format!("{wire}/head"),
+            &serde_json::json!({
+                "mode": "error",
+                "status": status,
+                "body": ox_codec::wire::error_body(dialect, status, message),
+            }),
+        );
+        let _ = write_json(&format!("{wire}/done"), &serde_json::json!(true));
+    }
+
+    fn drive(cfg_str: &str) -> Result<(), String> {
+        let cfg: serde_json::Value =
+            serde_json::from_str(cfg_str).map_err(|e| format!("bad wire_config: {e}"))?;
+        let wire = cfg["wire"].as_str().ok_or("wire_config missing wire")?.to_string();
+        let dialect = cfg["dialect"].as_str().unwrap_or("anthropic").to_string();
+
+        let inbound = read_json(&format!("{wire}/inbound"))?
+            .ok_or("no inbound record")?;
+        let body = inbound["body"].clone();
+
+        // --- decode ------------------------------------------------------
+        let req = match dialect.as_str() {
+            "openai" => ox_codec::openai::decode_request(&body),
+            _ => ox_codec::anthropic::decode_request(&body),
+        };
+        let req = match req {
+            Ok(r) => r,
+            Err(e) => {
+                error_head(&wire, &dialect, 400, &e.to_string());
+                return Ok(());
+            }
+        };
+        let streaming = req.stream;
+
+        // --- response identity ------------------------------------------
+        let now = now_ms();
+        let prefix = if dialect == "openai" { "chatcmpl-" } else { "msg_" };
+        let meta = ResponseMeta {
+            id: format!("{prefix}{:x}", now.wrapping_mul(1_000_003) ^ 0x9e37_79b9),
+            model: req.model.clone(),
+            created: now / 1000,
+        };
+
+        // --- queue -------------------------------------------------------
+        let req_value = serde_json::to_value(&req).map_err(|e| e.to_string())?;
+        let rel = match host_write("gateway/completions", &req_value.to_string()) {
+            Ok(p) => p,
+            Err(e) => {
+                error_head(&wire, &dialect, 500, &e);
+                return Ok(());
+            }
+        };
+        let base = format!(
+            "gateway/completions/{}",
+            rel.trim_start_matches("gateway/completions/")
+        );
+
+        // --- drain + encode ---------------------------------------------
+        let outcome = if streaming {
+            stream_response(&wire, &dialect, &base, meta)
+        } else {
+            buffered_response(&wire, &dialect, &base, meta)
+        };
+        // GC the completion handle; the wire handle is the edge's to GC.
+        let _ = host_write(&base, "null");
+        let _ = write_json(&format!("{wire}/done"), &serde_json::json!(true));
+        outcome
+    }
+
+    /// Read one drain step: events since `next`, then status. Terminal
+    /// includes the close-out tail, mirroring the native drains.
+    fn drain_step(
+        base: &str,
+        next: &mut usize,
+        sink: &mut Vec<StreamEvent>,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let events: Vec<StreamEvent> = serde_json::from_value(
+            read_json(&format!("{base}/events/from/{next}"))?
+                .unwrap_or(serde_json::json!([])),
+        )
+        .map_err(|e| format!("bad events: {e}"))?;
+        *next += events.len();
+        sink.extend(events);
+
+        let status = read_json(base)?.ok_or("inflight vanished mid-drain")?;
+        let state = status["state"].as_str().unwrap_or("");
+        if state == "complete" || state == "failed" {
+            let tail: Vec<StreamEvent> = serde_json::from_value(
+                read_json(&format!("{base}/events/from/{next}"))?
+                    .unwrap_or(serde_json::json!([])),
+            )
+            .map_err(|e| format!("bad tail: {e}"))?;
+            *next += tail.len();
+            sink.extend(tail);
+            return Ok(Some(status));
+        }
+        Ok(None)
+    }
+
+    fn stream_response(
+        wire: &str,
+        dialect: &str,
+        base: &str,
+        meta: ResponseMeta,
+    ) -> Result<(), String> {
+        write_json(&format!("{wire}/head"), &serde_json::json!({ "mode": "stream" }))?;
+        let mut enc = SseEncoder::new(dialect, meta);
+        let mut next = 0usize;
+        let mut emitted = 0usize;
+        loop {
+            let mut batch: Vec<StreamEvent> = Vec::new();
+            let terminal = drain_step(base, &mut next, &mut batch)?;
+            let mut frames: Vec<serde_json::Value> = Vec::new();
+            for ev in &batch {
+                for f in enc.encode_sse(ev) {
+                    frames.push(serde_json::json!(f));
+                }
+            }
+            emitted += batch.len();
+            let _ = emitted;
+            match terminal {
+                None => {
+                    if !frames.is_empty() {
+                        write_json(
+                            &format!("{wire}/frames/push"),
+                            &serde_json::Value::Array(frames),
+                        )?;
+                    }
+                }
+                Some(status) => {
+                    if status["state"] == "failed" {
+                        let reason =
+                            status["reason"].as_str().unwrap_or("upstream failed").to_string();
+                        for f in enc.encode_sse(&StreamEvent::Error { message: reason }) {
+                            frames.push(serde_json::json!(f));
+                        }
+                    } else {
+                        for f in enc.finish() {
+                            frames.push(serde_json::json!(f));
+                        }
+                    }
+                    if !frames.is_empty() {
+                        write_json(
+                            &format!("{wire}/frames/push"),
+                            &serde_json::Value::Array(frames),
+                        )?;
+                    }
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    fn buffered_response(
+        wire: &str,
+        dialect: &str,
+        base: &str,
+        meta: ResponseMeta,
+    ) -> Result<(), String> {
+        let mut events: Vec<StreamEvent> = Vec::new();
+        let mut next = 0usize;
+        let status = loop {
+            if let Some(status) = drain_step(base, &mut next, &mut events)? {
+                break status;
+            }
+        };
+        if status["state"] == "failed" {
+            let reason = status["reason"].as_str().unwrap_or("upstream failed");
+            error_head(wire, dialect, 500, reason);
+            return Ok(());
+        }
+        let body = match dialect {
+            "openai" => ox_codec::openai::encode_response(&events, &meta),
+            _ => ox_codec::anthropic::encode_response(&events, &meta),
+        };
+        write_json(
+            &format!("{wire}/head"),
+            &serde_json::json!({ "mode": "json", "status": 200, "body": body }),
+        )
     }
 }

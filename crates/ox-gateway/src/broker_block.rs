@@ -81,6 +81,58 @@ pub fn run_broker(
     outcome
 }
 
+/// Run the wire Block for one HTTP exchange. Blocking; call from the
+/// blocking pool. The same backing as the broker Block, with the config
+/// served at block/wire_config instead.
+pub fn run_wire(
+    wire_path: String,
+    dialect: String,
+    client: ClientHandle,
+    runtime: tokio::runtime::Handle,
+) -> Result<(), String> {
+    let config = structfs_serde_store::json_to_value(serde_json::json!({
+        "wire": wire_path,
+        "dialect": dialect,
+    }));
+    let backing = WireBlockBacking {
+        config,
+        client,
+        runtime,
+    };
+    let host_store = ox_runtime::HostStore::new(backing, NoEffects { tools: EmptyToolStore });
+    let module = codec_block::module()?;
+    let (_store, outcome) = module.run(host_store);
+    outcome
+}
+
+/// Same bridge as BrokerBlockBacking, serving block/wire_config.
+struct WireBlockBacking {
+    config: Value,
+    client: ClientHandle,
+    runtime: tokio::runtime::Handle,
+}
+
+impl Reader for WireBlockBacking {
+    fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
+        let key = from.to_string();
+        if key == "block/wire_config" {
+            return Ok(Some(Record::parsed(self.config.clone())));
+        }
+        if key == "sys/time/now_unix_ms" {
+            return Ok(Some(Record::parsed(Value::Integer(
+                BrokerBlockBacking::now_unix_ms(),
+            ))));
+        }
+        self.runtime.block_on(self.client.read(from))
+    }
+}
+
+impl Writer for WireBlockBacking {
+    fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
+        self.runtime.block_on(self.client.write(to, data))
+    }
+}
+
 struct NoEffects {
     tools: EmptyToolStore,
 }

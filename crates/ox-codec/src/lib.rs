@@ -10,6 +10,7 @@ pub mod error;
 pub mod openai;
 pub mod sse_encoder;
 pub mod upstream;
+pub mod wire;
 pub use error::CodecError;
 pub use sse_encoder::SseEncoder;
 

@@ -6,3 +6,4 @@ pub mod routes;
 pub mod broker_block;
 pub mod codec_block;
 pub mod traffic;
+pub mod wire_store;

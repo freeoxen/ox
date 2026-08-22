@@ -186,7 +186,50 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("binding {bind_addr}"))?;
     tracing::info!(addr = %listener.local_addr()?, "ox-gateway listening");
 
-    let mut app = ox_gateway::routes::build_router(broker.client());
+    // OX_GATEWAY_WASM_WIRE=1: the dialect routes become the dumb http-in
+    // edge and the wire Block owns each HTTP exchange end-to-end.
+    let wasm_wire = matches!(
+        std::env::var("OX_GATEWAY_WASM_WIRE").as_deref(),
+        Ok(v) if !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false")
+    );
+    let mut app = if wasm_wire {
+        let runner_client = broker.client();
+        let runtime = tokio::runtime::Handle::current();
+        let wire_client = broker.client();
+        let wire = ox_gateway::wire_store::WireStore::new(
+            tokio::runtime::Handle::current(),
+            Arc::new(move |id| {
+                // The dialect rides in the inbound record; the runner reads
+                // it back so the Block gets it in its config.
+                let path = format!("wire/outstanding/{id}");
+                let dialect = runtime
+                    .block_on(async {
+                        runner_client
+                            .read(&structfs_core_store::Path::parse(&format!("{path}/inbound")).unwrap())
+                            .await
+                            .ok()
+                            .flatten()
+                            .and_then(|r| r.as_value().cloned())
+                            .map(structfs_serde_store::value_to_json)
+                    })
+                    .and_then(|j| j["dialect"].as_str().map(|s| s.to_string()))
+                    .unwrap_or_else(|| "anthropic".into());
+                if let Err(e) = ox_gateway::broker_block::run_wire(
+                    path,
+                    dialect,
+                    runner_client.clone(),
+                    runtime.clone(),
+                ) {
+                    tracing::error!(error = %e, id, "wire block run failed");
+                }
+            }),
+        );
+        broker.mount_async(oxpath!("wire"), wire).await;
+        tracing::info!("wire block enabled (wasm http-in edge)");
+        ox_gateway::routes::build_router_wire(broker.client())
+    } else {
+        ox_gateway::routes::build_router(broker.client())
+    };
     if traffic_enabled.is_some() {
         app = app.layer(axum::middleware::from_fn_with_state(
             broker.client(),

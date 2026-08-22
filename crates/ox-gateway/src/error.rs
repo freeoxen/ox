@@ -6,25 +6,13 @@
 //! returning.
 
 use axum::http::StatusCode;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 pub fn anthropic_error(
     status: StatusCode,
     message: impl Into<String>,
 ) -> (StatusCode, axum::Json<Value>) {
-    let kind = match status.as_u16() {
-        400 => "invalid_request_error",
-        401 => "authentication_error",
-        403 => "permission_error",
-        404 => "not_found_error",
-        429 => "rate_limit_error",
-        500..=599 => "api_error",
-        _ => "api_error",
-    };
-    let body = json!({
-        "type": "error",
-        "error": { "type": kind, "message": message.into() }
-    });
+    let body = ox_codec::wire::anthropic_error_body(status.as_u16(), &message.into());
     (status, axum::Json(body))
 }
 
@@ -33,18 +21,7 @@ pub fn openai_error(
     message: impl Into<String>,
     code: Option<&str>,
 ) -> (StatusCode, axum::Json<Value>) {
-    let kind = match status.as_u16() {
-        400 | 401 | 403 | 404 => "invalid_request_error",
-        429 => "rate_limit_exceeded",
-        _ => "api_error",
-    };
-    let body = json!({
-        "error": {
-            "message": message.into(),
-            "type": kind,
-            "code": code,
-        }
-    });
+    let body = ox_codec::wire::openai_error_body(status.as_u16(), &message.into(), code);
     (status, axum::Json(body))
 }
 
