@@ -3,4 +3,5 @@
 pub mod error;
 pub mod handle;
 pub mod routes;
+pub mod codec_block;
 pub mod traffic;

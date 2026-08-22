@@ -6,7 +6,7 @@
 //! block (Anthropic) or `data: <json>\n\n` block (OpenAI); the caller
 //! writes each into the SSE response body.
 
-use crate::codec::ResponseMeta;
+use crate::ResponseMeta;
 use ox_types::StreamEvent;
 use std::collections::HashMap;
 

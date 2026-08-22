@@ -281,7 +281,7 @@ pub fn parse_sse_events(body: &str) -> (Vec<StreamEvent>, UsageInfo) {
 }
 
 /// Encode a buffered slice of [`StreamEvent`]s into an OpenAI chat.completion response shape.
-pub fn encode_response(events: &[StreamEvent], meta: &crate::codec::ResponseMeta) -> serde_json::Value {
+pub fn encode_response(events: &[StreamEvent], meta: &crate::ResponseMeta) -> serde_json::Value {
     let mut content = String::new();
     let mut tool_calls: Vec<serde_json::Value> = Vec::new();
     let mut current_tool: Option<(String, String, String)> = None; // (id, name, arguments)
@@ -359,8 +359,8 @@ mod encode_response_tests {
     use super::*;
     use ox_kernel::StreamEvent;
 
-    fn meta() -> crate::codec::ResponseMeta {
-        crate::codec::ResponseMeta {
+    fn meta() -> crate::ResponseMeta {
+        crate::ResponseMeta {
             id: "chatcmpl-test01".into(),
             model: "gpt-test".into(),
             created: 1_700_000_000,
@@ -431,7 +431,7 @@ mod encode_response_tests {
     }
 }
 
-use crate::codec::CodecError;
+use crate::CodecError;
 
 pub fn decode_request(body: &serde_json::Value) -> Result<ox_kernel::CompletionRequest, CodecError> {
     let obj = body.as_object().ok_or_else(|| {
@@ -654,7 +654,7 @@ mod passthrough_tests {
             "stop_sequences": ["HALT"],
             "tool_choice": {"type": "any"},
         });
-        let req = crate::codec::anthropic::decode_request(&inbound).unwrap();
+        let req = crate::anthropic::decode_request(&inbound).unwrap();
         let wire = translate_request(&req);
         assert_eq!(wire["temperature"], serde_json::json!(0.1));
         assert_eq!(wire["stop"], serde_json::json!(["HALT"]));
@@ -665,7 +665,7 @@ mod passthrough_tests {
 #[cfg(test)]
 mod decode_tests {
     use super::*;
-    use crate::codec::CodecError;
+    use crate::CodecError;
 
     #[test]
     fn decode_minimal_request() {

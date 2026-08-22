@@ -12,6 +12,7 @@ members = [
     "crates/ox-wasm",
     "crates/ox-web",
     "crates/ox-cli",
+    "crates/ox-codec",
     "crates/ox-config",
     "crates/ox-inbox",
     "crates/ox-runtime",
@@ -24,6 +25,7 @@ members = [
     "crates/ox-path",
     "crates/ox-tools",
     "crates/ox-types",
+    "crates/ox-gateway-wasm",
 ]
 # ox-wasm is wasm32-only (its host imports are unresolved on native targets)
 # and is built explicitly by ox-cli's build.rs against wasm32-unknown-unknown.
@@ -40,6 +42,7 @@ default-members = [
     "crates/ox-kernel",
     "crates/ox-web",
     "crates/ox-cli",
+    "crates/ox-codec",
     "crates/ox-config",
     "crates/ox-inbox",
     "crates/ox-runtime",
@@ -75,6 +78,7 @@ ox-context = { path = "crates/ox-context" }
 ox-core = { path = "crates/ox-core" }
 ox-gate = { path = "crates/ox-gate" }
 ox-config = { path = "crates/ox-config" }
+ox-codec = { path = "crates/ox-codec" }
 ox-history = { path = "crates/ox-history" }
 ox-inbox = { path = "crates/ox-inbox" }
 ox-kernel = { path = "crates/ox-kernel" }

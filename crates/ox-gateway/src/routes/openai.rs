@@ -27,7 +27,15 @@ async fn post_chat_completions(
     State(client): State<ClientHandle>,
     Json(body): Json<Value>,
 ) -> Response {
-    let req = match codec::decode_request(&body) {
+    let req = if crate::codec_block::enabled() {
+        match crate::codec_block::decode_request("openai", body.clone()).await {
+            Ok(r) => Ok(r),
+            Err(e) => Err(CodecError::InvalidShape(e)),
+        }
+    } else {
+        codec::decode_request(&body)
+    };
+    let req = match req {
         Ok(r) => r,
         Err(e) => {
             return openai_error(
@@ -59,7 +67,14 @@ async fn post_chat_completions(
     } else {
         match handle::buffer_response(client, handle_path).await {
             Ok((CompletionStatus::Complete { .. }, events)) => {
-                Json(codec::encode_response(&events, &meta)).into_response()
+                if crate::codec_block::enabled() {
+                    match crate::codec_block::encode_response("openai", &events, &meta).await {
+                        Ok(body) => Json(body).into_response(),
+                        Err(e) => openai_error(StatusCode::INTERNAL_SERVER_ERROR, e, None).into_response(),
+                    }
+                } else {
+                    Json(codec::encode_response(&events, &meta)).into_response()
+                }
             }
             Ok((CompletionStatus::Failed { reason, .. }, _)) => {
                 openai_error(StatusCode::INTERNAL_SERVER_ERROR, reason, None).into_response()

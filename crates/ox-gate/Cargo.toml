@@ -19,6 +19,7 @@ test-utils = []
 thiserror = { workspace = true }
 tracing = { workspace = true }
 ox-kernel = { workspace = true }
+ox-codec = { workspace = true }
 ox-types = { workspace = true }
 ox-path = { workspace = true }
 serde = { workspace = true }

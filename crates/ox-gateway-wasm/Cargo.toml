@@ -1,0 +1,16 @@
+[package]
+name = "ox-gateway-wasm"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+description = "Gateway codec Block — dialect codecs as a Wasm guest over host StructFS imports"
+publish = false
+
+[dependencies]
+ox-codec = { workspace = true }
+ox-kernel = { workspace = true }
+serde_json = { workspace = true }
+
+[lib]
+crate-type = ["cdylib"]

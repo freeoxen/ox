@@ -1,6 +1,9 @@
-//! Codec functions for LLM provider wire formats.
+//! Codec functions for LLM provider wire formats — the sans-IO core.
 //!
-//! Each sub-module handles a specific provider's SSE format and request shape.
+//! Each sub-module handles a specific provider's SSE format and request
+//! shape. This crate is deliberately wasm-clean (no tokio, no reqwest, no
+//! filesystem): it is the code that runs inside the gateway's codec Block,
+//! and the same build serves the native call sites via ox-gate's re-export.
 
 pub mod anthropic;
 pub mod error;

@@ -9,7 +9,7 @@ pub mod account;
 pub mod account_test_status;
 pub mod api_key;
 pub mod catalog_refresh_status;
-pub mod codec;
+pub use ox_codec as codec;
 pub mod known_family;
 pub mod pricing;
 pub mod provider;

@@ -1,0 +1,17 @@
+[package]
+name = "ox-codec"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Sans-IO wire codecs for LLM provider dialects — wasm-clean core shared by ox-gate and the gateway codec Block"
+
+[dependencies]
+ox-kernel = { workspace = true }
+ox-types = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

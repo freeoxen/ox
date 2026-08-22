@@ -253,7 +253,7 @@ pub fn extract_usage(body: &str) -> UsageInfo {
 ///
 /// Used when the client sends `stream: false`; the gateway collects all events and calls
 /// this function to produce a single JSON object in place of an SSE stream.
-pub fn encode_response(events: &[StreamEvent], meta: &crate::codec::ResponseMeta) -> serde_json::Value {
+pub fn encode_response(events: &[StreamEvent], meta: &crate::ResponseMeta) -> serde_json::Value {
     let mut content_blocks: Vec<serde_json::Value> = Vec::new();
     let mut current_text = String::new();
     let mut current_tool: Option<(String, String, String)> = None; // (id, name, input_json)
@@ -337,8 +337,8 @@ pub fn encode_response(events: &[StreamEvent], meta: &crate::codec::ResponseMeta
 mod encode_response_tests {
     use super::*;
 
-    fn meta() -> crate::codec::ResponseMeta {
-        crate::codec::ResponseMeta {
+    fn meta() -> crate::ResponseMeta {
+        crate::ResponseMeta {
             id: "msg_test01".into(),
             model: "claude-test".into(),
             created: 1_700_000_000,
@@ -455,7 +455,7 @@ mod passthrough_tests {
 #[cfg(test)]
 mod decode_tests {
     use super::*;
-    use crate::codec::CodecError;
+    use crate::CodecError;
 
     #[test]
     fn decode_minimal_request() {
