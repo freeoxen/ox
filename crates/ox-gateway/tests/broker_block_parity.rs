@@ -207,7 +207,9 @@ async fn block_dispatch_serves_buffered_completion() {
     let r = &records[0];
     assert_eq!(r["account"], "anthropic");
     assert_eq!(r["model_id"], "claude-sonnet-4-20250514");
-    assert_eq!(r["dialect"], "unknown");
+    // The wire Block stamps the inbound dialect; this request arrived on
+    // /v1/messages.
+    assert_eq!(r["dialect"], "anthropic");
     assert_eq!(r["upstream_dialect"], "anthropic");
     assert_eq!(r["input_tokens"], 10);
     assert_eq!(r["output_tokens"], 3);

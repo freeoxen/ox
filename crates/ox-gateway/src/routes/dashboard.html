@@ -242,7 +242,7 @@ function renderRecent(recent) {
 
 async function refresh() {
   try {
-    const s = await (await fetch("/stats")).json();
+    const s = await (await fetch("/stats?tz_offset_min=" + (-new Date().getTimezoneOffset()))).json();
     $("meta").textContent = `updated ${new Date(s.generated_at_ms).toLocaleTimeString()}`;
     renderTiles(s);
     renderModels(s.by_model);

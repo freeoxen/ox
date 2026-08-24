@@ -25,8 +25,17 @@ pub fn router(client: ClientHandle) -> Router {
         .with_state(client)
 }
 
-async fn get_stats(State(client): State<ClientHandle>) -> Response {
-    let params = structfs_serde_store::json_to_value(serde_json::json!({}));
+async fn get_stats(
+    State(client): State<ClientHandle>,
+    axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    // Pass the caller's timezone through; the Block owns what it means.
+    let tz_offset_min = query
+        .get("tz_offset_min")
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(0);
+    let params =
+        structfs_serde_store::json_to_value(serde_json::json!({ "tz_offset_min": tz_offset_min }));
     let rel = match client
         .write(&path!("gateway/telemetry"), Record::parsed(params))
         .await

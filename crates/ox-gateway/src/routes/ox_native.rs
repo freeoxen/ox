@@ -29,9 +29,13 @@ pub fn router(client: ClientHandle) -> Router {
 
 async fn post_completions(
     State(client): State<ClientHandle>,
-    Json(req): Json<CompletionRequest>,
+    Json(mut req): Json<CompletionRequest>,
 ) -> Response {
     let streaming = req.stream;
+    // Same provenance stamp the wire Block applies: usage records name
+    // the inbound dialect, and this route is the "ox" dialect.
+    req.extra
+        .insert("ox_inbound_dialect".into(), serde_json::json!("ox"));
     let handle_rel = match client.write_typed(&path!("gateway/completions"), &req).await {
         Ok(p) => p,
         Err(e) => {

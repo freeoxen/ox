@@ -106,5 +106,69 @@ async fn dashboard_serves_html() {
     assert!(ct.starts_with("text/html"), "content-type was {ct}");
     let body = resp.text().await.unwrap();
     assert!(body.contains("Tokens by model"));
-    assert!(body.contains("fetch(\"/stats\")"));
+    assert!(body.contains("fetch(\"/stats?tz_offset_min=\""));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn today_boundary_follows_client_timezone() {
+    // Seed one record completed two hours ago, then move the client's
+    // local midnight around it. Offsets are computed relative to now, so
+    // the test is deterministic at any wall-clock time.
+    let executor = Arc::new(MockSseExecutor::new());
+    let broker = build_test_broker(executor, "anthropic").await;
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let record = serde_json::json!({
+        "id": "t-old", "account": "anthropic", "model_id": "m",
+        "dialect": "anthropic", "upstream_dialect": "anthropic",
+        "input_tokens": 5, "output_tokens": 5,
+        "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+        "started_at_ms": now_ms - 7_200_000,
+        "completed_at_ms": now_ms - 7_200_000,
+        "estimated_cost_usd": null,
+    });
+    broker
+        .client()
+        .write(
+            &structfs_core_store::path!("gateway/usage/append"),
+            structfs_core_store::Record::parsed(structfs_serde_store::json_to_value(record)),
+        )
+        .await
+        .unwrap();
+
+    let app = ox_gateway::routes::build_router(broker.client());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let http = reqwest::Client::new();
+
+    let day = 86_400_000i64;
+    // Offset placing local midnight one hour ago: the 2h-old record falls
+    // before it, so "today" is empty.
+    let midnight_1h_ago = ((3_600_000 - now_ms % day) % day + day) % day / 60_000;
+    // Offset placing local midnight three hours ago: the record is inside
+    // today.
+    let midnight_3h_ago = ((3 * 3_600_000 - now_ms % day) % day + day) % day / 60_000;
+
+    for (offset_min, expect_today) in [(midnight_1h_ago, 0), (midnight_3h_ago, 1)] {
+        let stats: serde_json::Value = http
+            .get(format!("http://{addr}/stats?tz_offset_min={offset_min}"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(stats["totals"]["requests"], 1, "offset {offset_min}");
+        assert_eq!(
+            stats["today"]["requests"], expect_today,
+            "offset {offset_min} should put the record {} today",
+            if expect_today == 1 { "inside" } else { "outside" }
+        );
+    }
 }

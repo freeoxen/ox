@@ -372,7 +372,7 @@ mod broker {
             "id": new_id(ctx.started_at_ms),
             "account": account,
             "model_id": model_id,
-            "dialect": detect_inbound_dialect(&ctx.request.model),
+            "dialect": inbound_dialect(&ctx.request),
             "upstream_dialect": ctx.upstream_dialect,
             "input_tokens": usage.input_tokens,
             "output_tokens": usage.output_tokens,
@@ -457,7 +457,17 @@ mod broker {
         let _ = write_json("gateway/traffic/append", &record);
     }
 
-    use ox_codec::upstream::detect_inbound_dialect;
+    /// The wire Block stamps the inbound dialect on the request it queues;
+    /// requests that arrive without one (raw ox-native posts, older
+    /// records) fall back to the model-string heuristic.
+    fn inbound_dialect(request: &CompletionRequest) -> String {
+        request
+            .extra
+            .get("ox_inbound_dialect")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| ox_codec::upstream::detect_inbound_dialect(&request.model))
+    }
 
     fn new_id(started_at_ms: u64) -> String {
         // Time-derived, matching the native scheme's shape. The guest has
@@ -533,13 +543,18 @@ mod wire {
             "openai" => ox_codec::openai::decode_request(&body),
             _ => ox_codec::anthropic::decode_request(&body),
         };
-        let req = match req {
+        let mut req = match req {
             Ok(r) => r,
             Err(e) => {
                 error_head(&wire, &dialect, 400, &e.to_string());
                 return Ok(());
             }
         };
+        // Provenance for usage records: which dialect this exchange arrived
+        // in. Stamped unconditionally so a client-sent value can't spoof it;
+        // the translate allow-lists keep it out of the upstream body.
+        req.extra
+            .insert("ox_inbound_dialect".into(), serde_json::json!(dialect));
         let streaming = req.stream;
 
         // --- response identity ------------------------------------------
@@ -779,7 +794,16 @@ mod stats {
         let now_ms = read_json("sys/time/now_unix_ms")?
             .and_then(|v| v.as_u64())
             .ok_or("no clock at sys/time/now_unix_ms")?;
-        let start_of_today_ms = now_ms - (now_ms % DAY_MS);
+        // "Today" starts at the caller's local midnight when the request
+        // carries a timezone offset (minutes east of UTC); UTC otherwise.
+        let tz_offset_ms: i64 = read_json(&format!("{handle}/params"))?
+            .and_then(|p| p["tz_offset_min"].as_i64())
+            .unwrap_or(0)
+            * 60_000;
+        let start_of_today_ms = {
+            let local = now_ms as i64 + tz_offset_ms;
+            (local - local.rem_euclid(DAY_MS as i64) - tz_offset_ms).max(0) as u64
+        };
         let window_start = (now_ms - 23 * HOUR_MS) - ((now_ms - 23 * HOUR_MS) % HOUR_MS);
 
         let mut totals = Totals::default();
