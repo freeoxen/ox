@@ -1,151 +1,160 @@
 # Data Model Reference
 
-A map of the types that cross durability, approval, and log boundaries. Each entry names the type, its crate, its purpose, and its lifetime — so type names that sound similar don't get conflated.
+A map of types crossing durability, approval, log, and Store boundaries. Similar
+names here are distinct shapes; plans must not substitute one for another.
 
-> **For plan authors:** read this before writing about `ApprovalRequest`, `ApprovalRequested`, `LogEntry`, `LedgerEntry`, or similar. The conflation of runtime types with their log-variant cousins has historically produced incorrect plans.
+Verified against the repository on 2026-08-31 with:
 
-Cross-references use `file:line` where verification is cheap.
+```sh
+rg -n "struct ApprovalRequest|enum Decision|enum LogEntry|struct SharedLog|trait Durability" crates/ox-types crates/ox-kernel
+rg -n "struct LedgerEntry|struct SaveResult|struct ContextFile|enum LedgerHealth" crates/ox-inbox
+rg -n "trait AsyncReader|trait AsyncWriter|pub fn run_turn|enum AgentEvent" crates/ox-broker crates/ox-kernel
+```
 
----
+## Approval types
 
-## Approval types — three distinct shapes
+### `ox_types::ApprovalRequest` — runtime state
 
-These three names refer to **three different types**. They are related but not interchangeable.
+- Location: `crates/ox-types/src/approval.rs:3-8`.
+- Fields: `tool_name` and full `tool_input: serde_json::Value`.
+- Lifetime: held in `ApprovalStore.pending` and paired with a process-local
+  oneshot sender (`crates/ox-ui/src/approval_store.rs:11-20`).
+- Persistence: none. Crash recovery reconstructs it from durable log entries.
 
-### `ox_types::ApprovalRequest` — runtime, in-memory
+### `LogEntry::ApprovalRequested` — durable event
 
-- **Location**: `crates/ox-types/src/approval.rs:3–8`
-- **Fields**:
-  ```rust
-  pub struct ApprovalRequest {
-      pub tool_name: String,
-      pub tool_input: serde_json::Value,  // FULL input, not a preview
-  }
-  ```
-- **Lifetime**: Lives in `ApprovalStore.pending` (`crates/ox-ui/src/approval_store.rs:12`). Cleared when the user decides.
-- **Persistence**: Not persisted. A crash loses it. Recovery must reconstruct it (see `life-of-a-log-entry.md` → "Approval resumption").
+- Location: `crates/ox-kernel/src/log.rs:125-143`.
+- Fields: `tool_name`, display-only `input_preview`, and
+  `post_crash_reconfirm` (default false and omitted when false).
+- It does not contain the full tool input. Recovery joins it to the nearest
+  matching `ToolCall { id, name, input }` (`log.rs:70-77`).
+- Write routing is owned by `ThreadNamespace::write`; the log event and runtime
+  `ApprovalRequest` are related but not interchangeable.
 
-### `LogEntry::ApprovalRequested` — log variant, durable
+### `ApprovalResponse` and `Decision` — user answer
 
-- **Location**: `crates/ox-kernel/src/log.rs:98–102`
-- **Fields**:
-  ```rust
-  ApprovalRequested {
-      tool_name: String,
-      input_preview: String,  // truncated for display — NOT the full input
-  },
-  ```
-- **Lifetime**: Written once, persists in `ledger.jsonl` forever.
-- **Write site**: `crates/ox-cli/src/thread_registry.rs:281–292` — `ThreadNamespace::write` routes `approval/request` through here, computing `input_preview` by peeking at `tool_input.path` or `tool_input.command`.
-- **Gap**: This variant loses the full `tool_input`. Recovering a pending approval from the log alone cannot reconstruct a complete `ApprovalRequest`. Plans that propose "rehydrate the approval from the log" must address this gap (extend the variant with `tool_input: serde_json::Value` or read the input from the matching `ToolCall` entry).
+- Location: `crates/ox-types/src/approval.rs:10-73`.
+- `Decision` variants are `AllowOnce`, `AllowSession`, `AllowAlways`,
+  `DenyOnce`, `DenySession`, `DenyAlways`, and `CancelTurn`.
+- `CancelTurn` is neither allow nor deny. Exhaustive callers must handle it
+  directly; `is_allow()` and `is_deny()` both return false.
+- Normal runtime delivery uses `ApprovalStore.deferred_tx`; durable recovery
+  records the surrounding request/resolution/abort log shapes.
 
-### `ApprovalResponse` / `Decision` — the user's answer
+## Log and ledger types
 
-- **Location**: `crates/ox-types/src/approval.rs:10–55`
-- `Decision` is a `Copy + PartialEq + Eq` enum: `AllowOnce`, `AllowSession`, `AllowAlways`, `DenyOnce`, `DenySession`, `DenyAlways`.
-- Delivered through `ApprovalStore::deferred_tx: Option<tokio::sync::oneshot::Sender<Decision>>` (`approval_store.rs:13`).
-- **Does not have a "cancel turn" variant today.** Any plan that needs "user cancels" must decide whether to extend `Decision` or add a sibling signal.
+### `LogEntry` — structured conversation event
 
----
+- Location: `crates/ox-kernel/src/log.rs:47-207`.
+- Current variants: `User`, `Assistant`, `ToolCall`, `ToolResult`, `Meta`,
+  `TurnStart`, `TurnEnd`, `CompletionEnd`, `ApprovalRequested`,
+  `ApprovalResolved`, `Error`, `TurnAborted`, `ToolAborted`, and
+  `AssistantProgress`.
+- `Meta` has an open `serde_json::Value` payload. The enum itself is not marked
+  `non_exhaustive`, so state-machine matches should remain explicit.
+- `ToolCall` is the round-trippable durable source of tool name/input.
 
-## Log types — in-memory vs on-disk
+### `SharedLog` and `Durability` — memory plus commit seam
 
-### `LogEntry` — enum of structured log events
+- Location: `crates/ox-kernel/src/log.rs:209-300`.
+- `SharedLogInner` contains `entries: Vec<LogEntry>` and an optional
+  `Arc<dyn Durability>` under one mutex (`log.rs:223-237`).
+- `Durability::commit` is synchronous and fallible (`log.rs:209-220`).
+- `SharedLog::append` commits while holding the ordering mutex, then publishes
+  the entry only on success (`log.rs:266-283`).
+- Replay runs without a sink; `with_durability` is installed afterward.
 
-- **Location**: `crates/ox-kernel/src/log.rs:23–116`
-- **Variants (at time of writing — verify before claiming exhaustive)**: `User`, `Assistant`, `ToolCall`, `ToolResult`, `Meta`, `TurnStart`, `TurnEnd`, `CompletionEnd`, `ApprovalRequested`, `ApprovalResolved`, `Error`. 11 variants.
-- `Meta { data: serde_json::Value }` is an open-payload escape hatch. Exhaustive `match` works at the enum level, but `Meta` content is untyped.
-- Not `#[non_exhaustive]`.
+### `LogStore` — StructFS facade
 
-### `SharedLog` — in-memory projection (with optional durability sink)
+`LogStore` implements synchronous StructFS `Reader`/`Writer`. Its append path
+deserializes a `LogEntry` and funnels it through `SharedLog::append`. It does not
+open a ledger file itself; the installed durability sink owns that I/O.
 
-- **Location**: `crates/ox-kernel/src/log.rs:138` (struct), `:128` (`Durability` trait), `:148–211` (impl).
-- `SharedLog { inner: Arc<Mutex<SharedLogInner>> }` where `SharedLogInner { entries: Vec<LogEntry>, durability: Option<Arc<dyn Durability>> }`. The single mutex covers both so append-order equals observation-order under concurrent writers.
-- Methods: `append(&self, entry) -> Result<(), StoreError>` (fallible, sync, line 186), `entries()`, `len()`, `last_n(n)`, `with_durability(sink)` (line 163), `clear_durability()` (line 171).
-- **Durability trait** (line 128): `pub trait Durability: Send + Sync { fn commit(&self, entry: &LogEntry) -> Result<(), StoreError>; }`. The concrete impl lives in `ox-inbox` (`ledger_writer::LedgerWriterHandle`) — `ox-kernel` holds only the trait to keep the crate dependency pointed one way.
-- **When a sink is installed**, `append` calls `sink.commit(&entry)` inside the critical section; the entry is pushed to `entries` only on success. Commit failure propagates the `StoreError` and the entry is **not** pushed.
-- **Lifetime**: In-process. Cleared on CLI exit. Reconstructed on relaunch by replaying `ledger.jsonl` through `log/append` — replay must run **before** `with_durability` is called, otherwise replayed entries are re-persisted.
+### `LedgerEntry` — JSONL disk envelope
 
-### `LogStore` — StructFS `Writer` facade over `SharedLog`
+- Location: `crates/ox-inbox/src/ledger.rs:8-15`.
+- Fields: `seq: u64`, truncated SHA-256 `hash`, optional parent hash, and
+  `msg: serde_json::Value` containing the serialized `LogEntry`.
+- File format: one JSON object per line in `ledger.jsonl`.
+- `ledger::append_entry` constructs the next sequence/parent envelope at
+  `ledger.rs:102-140`; live ownership belongs to `LedgerWriter`, not snapshot
+  code.
 
-- **Location**: `crates/ox-kernel/src/log.rs` (struct) — `impl Writer for LogStore` sync `write(&mut self, to, data)` propagates `SharedLog::append`'s `Result` via `?`.
-- **Does not touch the ledger file directly.** When `SharedLog` has a durability sink installed, the sink is what writes the ledger — `LogStore::write` just funnels into `SharedLog::append`, which in turn calls the sink.
+### `LedgerHealth` — mount/write health
 
-### `LedgerEntry` — on-disk envelope
+- Location: `crates/ox-inbox/src/ledger.rs:17-54`.
+- Variants: `Ok`, `Missing`, `RepairFailed`, `Degraded`.
+- Missing/repair-failed/degraded conversations surface explicit health and do
+  not silently claim writable durability.
 
-- **Location**: `crates/ox-inbox/src/ledger.rs:10–15`
-- **Fields**:
-  ```rust
-  pub struct LedgerEntry {
-      pub seq: u64,
-      pub hash: String,       // SHA-256 truncated to 16 hex chars
-      pub parent: Option<String>,
-      pub msg: serde_json::Value,  // the original LogEntry, serialized
-  }
-  ```
-- `msg` is a serialized `LogEntry`, wrapped in this envelope.
-- Each entry's `hash` is computed by `ledger::entry_hash(msg)` (line 18) — **content-addressed on the `msg` alone**. `parent` links to the previous entry's `hash`, forming a chain.
-- **Ledger file format**: JSONL. Each line: `{"seq": N, "hash": "...", "parent": "...", "msg": {...}}`.
-- **Not the same as writing `LogEntry` as JSONL.** Any plan that says "write the log entry to disk" must account for the envelope and the hash chain.
+### `SaveResult` — cumulative commit projection
 
-### `SaveResult` — return type of `save_thread_state`
+- Location: `crates/ox-inbox/src/snapshot.rs:27-41`.
+- Fields: `last_seq`, optional `last_hash`, and user/assistant
+  `message_count`.
+- It is published through `LedgerWriterHandle::latest_save_result`
+  (`crates/ox-inbox/src/ledger_writer.rs:158-171`), then a per-thread
+  `CommitDrain` forwards it to inbox metadata. It is not returned by a
+  `save_thread_state` function.
 
-- **Location**: `crates/ox-inbox/src/snapshot.rs:19–27`
-- **Fields**: `last_seq`, `last_hash`, `message_count` (count of user+assistant entries).
-- Used by the inbox indexer to keep SQLite listings fresh mid-session.
+## Files per thread
 
----
+Each `~/.ox/threads/{thread_id}/` directory contains:
 
-## File artifacts per thread
-
-Each thread directory (`~/.ox/threads/{thread_id}/`) holds:
-
-| File | Owner | Contents |
+| File | Authoritative writer | Contents/cadence |
 |---|---|---|
-| `context.json` | `ox-inbox/src/snapshot.rs:65–75` | `ContextFile { version, thread_id, title, labels, created_at, updated_at, stores }` where `stores` is a map of snapshot states from `PARTICIPATING_MOUNTS` (`["system", "gate"]`). Written by `save_thread_state`. Overwritten each save. |
-| `view.json` | `ox-inbox/src/thread_dir.rs` | UI metadata. Written by `save_thread_state` only if missing. |
-| `ledger.jsonl` | `ox-inbox/src/ledger.rs:28` (`append_entry`) | JSONL of `LedgerEntry`. Append-only. Parent-hash chained. |
+| `ledger.jsonl` | one `LedgerWriter` | hash-chained `LedgerEntry`; every live log append |
+| `context.json` | `snapshot::save_config_snapshot` | `ContextFile` metadata plus `system`/`gate` snapshots; turn boundary |
+| `view.json` | `snapshot::write_default_view_if_missing` | projection metadata; once during mount if absent |
 
----
+`ContextFile` lives at `crates/ox-inbox/src/thread_dir.rs:7-20`.
+`save_config_snapshot` writes it at `crates/ox-inbox/src/snapshot.rs:43-94`.
+`view.json` bootstrap is at `snapshot.rs:96-104`.
+
+Restore reads config and ledger with durability disabled, then installs the
+writer. See [`save-and-restore.md`](save-and-restore.md).
 
 ## Kernel execution types
 
-### `run_turn(context: &mut dyn Store, emit: &mut dyn FnMut(AgentEvent)) -> Result<(), String>`
+### `run_turn`
 
-- **Location**: `crates/ox-kernel/src/run.rs:597`
-- **Synchronous.** Called once per turn.
-- Invoked from `crates/ox-cli/src/agents.rs:437` via `module.run(host_store)` — the Wasm-module boundary. Wasmtime uses `Engine::default()` (no async feature).
-- **There is no "agent worker" or "parked coroutine."** A turn is one call to `run_turn`. When it needs approval, the Wasm-module thread blocks inside a host import function via `rt_handle.block_on(...)`. When the turn ends (naturally or via error), the thread returns. Until the next user input, there is no running kernel.
+- Location: `crates/ox-kernel/src/run.rs:1142`.
+- Signature: synchronous `run_turn(context: &mut dyn Store, emit: &mut dyn
+  FnMut(AgentEvent)) -> Result<(), String>`.
+- The CLI invokes the Wasm boundary through `AgentModule::run` at
+  `crates/ox-cli/src/agents.rs:735`.
+- Approval may block the conversation's execution thread through the async
+  Store bridge. This does not preserve a coroutine across process death;
+  durable restart decisions come from the log classifier and run-turn resume
+  prologue.
 
-### `AgentEvent` — what `run_turn` emits
+### `AgentEvent`
 
-- **Location**: `crates/ox-kernel/src/lib.rs` (serialized via `agent_event_to_json`)
-- Variants include `TurnStart`, `TextDelta`, `ToolCallStart`, `ToolCallResult`, `TurnEnd`, `Error`.
-- The emit callback is how the kernel talks to the host. Log entries are written separately through the `Store` interface.
+- Location: `crates/ox-kernel/src/lib.rs:175`.
+- Transient host/UI emission is separate from durable `LogEntry` writes. A
+  remote event projection must name which source it is projecting; it must not
+  assume every `AgentEvent` is independently durable.
 
----
+## Store trait families
 
-## Store traits — sync vs async
+### Synchronous StructFS
 
-Two trait families, two worlds. Plans that conflate them produce incorrect durability stories.
+- `Reader::read(&mut self, &Path) -> Result<Option<Record>, Error>`.
+- `Writer::write(&mut self, &Path, Record) -> Result<Path, Error>`.
+- Used by kernel and in-process Stores. Calls may block.
 
-### Sync — `structfs_core_store`
+### Repository-local asynchronous StructFS
 
-- `Reader::read(&mut self, from: &Path) -> Result<Option<Record>, Error>`
-- `Writer::write(&mut self, to: &Path, data: Record) -> Result<Path, Error>`
-- Used by kernel, LogStore, in-process stores.
-- Blocking. Called from Wasm host functions, test harnesses, anywhere without a runtime constraint.
+- Location: `crates/ox-broker/src/async_store.rs:1-20`.
+- `AsyncReader` and `AsyncWriter` preserve StructFS `Path`, `Record`, and
+  `Error` while returning `Send + 'static` futures.
+- Broker `mount_async` independently spawns request futures; public cursor and
+  remote Stores must use this seam so a parked request does not stall a mount.
 
-### Async — `ox_broker::async_store`
+### StructFS transport values
 
-- **Location**: `crates/ox-broker/src/async_store.rs:11–20`
-- `AsyncReader::read` returns `BoxFuture<Result<Option<Record>, Error>>`.
-- `AsyncWriter::write` returns `BoxFuture<Result<Path, Error>>`.
-- Used by broker dispatch, UI-side store access, anything needing tokio-level concurrency.
-- `ApprovalStore` implements `AsyncReader` + `AsyncWriter` (writes from the TUI land here).
-
-### Bridge
-
-The broker has a sync/async adapter (`crates/ox-broker/src/sync_adapter.rs`). The broker's client (`ClientHandle`) is async; it dispatches into mounted stores which may be sync or async.
-
-**When a plan proposes "make `X::append` async" or "durable-sync the write path," it must specify which trait layer the change lives at.** Otherwise the architecture is ambiguous.
+The pinned StructFS `Value` and `Record` enums are non-exhaustive. Current
+`Value` shapes include null, bool, signed i64, f64, string, bytes, array, and
+string-keyed map. `Record` is raw bytes plus format or parsed `Value`. A wire
+codec must preserve all current shapes and reject unsupported future shapes
+explicitly; JSON-only conversion is lossy.
