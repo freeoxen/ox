@@ -75,6 +75,98 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_worker_inputs_accepted_seq ON worker_inputs(accepted_seq);
         CREATE INDEX IF NOT EXISTS idx_worker_decisions_accepted_seq ON worker_decisions(accepted_seq);
         CREATE INDEX IF NOT EXISTS idx_worker_cancels_accepted_seq ON worker_cancels(accepted_seq);
+
+        -- Local orchestration state for remote ox workers. These rows record
+        -- local intent and observations; the worker's ordinary thread ledger
+        -- remains the authoritative remote conversation history.
+        CREATE TABLE IF NOT EXISTS remote_nodes (
+            node_id             TEXT PRIMARY KEY,
+            node_attempt_id     TEXT NOT NULL,
+            provider            TEXT NOT NULL,
+            vm_name             TEXT NOT NULL UNIQUE,
+            ssh_host            TEXT NOT NULL,
+            ssh_port            INTEGER NOT NULL,
+            ssh_user            TEXT,
+            ssh_dest            TEXT NOT NULL,
+            identity_path       TEXT NOT NULL,
+            known_hosts_path    TEXT NOT NULL,
+            worker_socket_path  TEXT NOT NULL,
+            desired_state       TEXT NOT NULL,
+            observed_state      TEXT NOT NULL,
+            cleanup_state       TEXT NOT NULL,
+            image_digest        TEXT,
+            request_hash        TEXT NOT NULL,
+            created_at          INTEGER NOT NULL,
+            updated_at          INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS remote_conversations (
+            conversation_id     TEXT PRIMARY KEY,
+            node_id             TEXT NOT NULL,
+            node_attempt_id     TEXT NOT NULL,
+            worker_thread_id    TEXT,
+            create_id           TEXT NOT NULL UNIQUE,
+            title               TEXT NOT NULL,
+            initial_prompt      TEXT NOT NULL,
+            parent_thread_id    TEXT,
+            placement           TEXT NOT NULL,
+            desired_state       TEXT NOT NULL,
+            observed_state      TEXT NOT NULL,
+            cleanup_state       TEXT NOT NULL,
+            request_hash        TEXT NOT NULL,
+            created_at          INTEGER NOT NULL,
+            updated_at          INTEGER NOT NULL,
+            FOREIGN KEY (node_id) REFERENCES remote_nodes(node_id),
+            UNIQUE (node_id, node_attempt_id, worker_thread_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS remote_operations (
+            operation_id        TEXT PRIMARY KEY,
+            operation_kind      TEXT NOT NULL,
+            node_id             TEXT,
+            node_attempt_id     TEXT,
+            conversation_id     TEXT,
+            request_hash        TEXT NOT NULL,
+            intent_json         BLOB NOT NULL,
+            state               TEXT NOT NULL DEFAULT 'pending',
+            result_json         BLOB,
+            lease_owner         TEXT,
+            lease_until         INTEGER,
+            created_at          INTEGER NOT NULL,
+            updated_at          INTEGER NOT NULL,
+            FOREIGN KEY (conversation_id)
+                REFERENCES remote_conversations(conversation_id),
+            FOREIGN KEY (node_id) REFERENCES remote_nodes(node_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS remote_cached_ledger_entries (
+            conversation_id     TEXT NOT NULL
+                REFERENCES remote_conversations(conversation_id) ON DELETE CASCADE,
+            seq                 INTEGER NOT NULL,
+            hash                TEXT NOT NULL,
+            parent_hash         TEXT,
+            message_json        BLOB NOT NULL,
+            PRIMARY KEY (conversation_id, seq),
+            UNIQUE (conversation_id, hash)
+        );
+
+        CREATE TABLE IF NOT EXISTS remote_ledger_cursors (
+            conversation_id     TEXT PRIMARY KEY
+                REFERENCES remote_conversations(conversation_id) ON DELETE CASCADE,
+            last_seq            INTEGER NOT NULL DEFAULT -1,
+            last_hash           TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_remote_nodes_state
+            ON remote_nodes(desired_state, observed_state, cleanup_state);
+        CREATE INDEX IF NOT EXISTS idx_remote_conversations_node
+            ON remote_conversations(node_id, node_attempt_id);
+        CREATE INDEX IF NOT EXISTS idx_remote_conversations_state
+            ON remote_conversations(desired_state, observed_state, cleanup_state);
+        CREATE INDEX IF NOT EXISTS idx_remote_operations_state
+            ON remote_operations(state, created_at);
+        CREATE INDEX IF NOT EXISTS idx_remote_operations_node
+            ON remote_operations(node_id, node_attempt_id);
         ",
     )?;
 
@@ -291,6 +383,58 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(count, 17);
+        }
+    }
+
+    #[test]
+    fn migrates_current_pre_remote_schema_additively_and_idempotently() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("ox.db");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            initialize(&conn).unwrap();
+            conn.execute(
+                "INSERT INTO threads (id, title, created_at, updated_at) VALUES ('existing', 'keep me', 1, 2)",
+                [],
+            )
+            .unwrap();
+            // The immediately preceding repository schema had every table
+            // initialized above except these additive remote tables.
+            conn.execute_batch(
+                "DROP TABLE remote_cached_ledger_entries;
+                 DROP TABLE remote_ledger_cursors;
+                 DROP TABLE remote_operations;
+                 DROP TABLE remote_conversations;
+                 DROP TABLE remote_nodes;",
+            )
+            .unwrap();
+        }
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            initialize(&conn).unwrap();
+            initialize(&conn).unwrap();
+            let title: String = conn
+                .query_row("SELECT title FROM threads WHERE id='existing'", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(title, "keep me");
+            for table in [
+                "remote_nodes",
+                "remote_conversations",
+                "remote_operations",
+                "remote_cached_ledger_entries",
+                "remote_ledger_cursors",
+            ] {
+                let exists: bool = conn
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                        [table],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert!(exists, "missing additive table {table}");
+            }
         }
     }
 }

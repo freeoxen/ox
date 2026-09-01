@@ -5,6 +5,7 @@
 //! authoritative execution state.
 
 use crate::InboxStore;
+use crate::id_codec;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
@@ -166,34 +167,13 @@ fn receipt_path(kind: IntentKind, id: &str) -> Result<Path, StoreError> {
     Path::parse(&format!(
         "worker/{}/{}",
         kind.path_component(),
-        encode_id(id)
+        id_codec::encode_id(id)
     ))
     .map_err(StoreError::from)
 }
 
-fn encode_id(id: &str) -> String {
-    let mut encoded = String::with_capacity(1 + id.len() * 2);
-    encoded.push('i');
-    for byte in id.as_bytes() {
-        use std::fmt::Write as _;
-        let _ = write!(encoded, "{byte:02x}");
-    }
-    encoded
-}
-
 fn decode_id(encoded: &str) -> Result<String, StoreError> {
-    let hex = encoded
-        .strip_prefix('i')
-        .ok_or_else(|| err("worker_path", "encoded semantic id must start with 'i'"))?;
-    if hex.len() % 2 != 0 {
-        return Err(err("worker_path", "encoded semantic id has odd length"));
-    }
-    let bytes = (0..hex.len())
-        .step_by(2)
-        .map(|index| u8::from_str_radix(&hex[index..index + 2], 16))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| err("worker_path", error))?;
-    String::from_utf8(bytes).map_err(|error| err("worker_path", error))
+    id_codec::decode_id("InboxStore", "worker_path", encoded)
 }
 
 fn conflict(kind: IntentKind, id: &str) -> StoreError {

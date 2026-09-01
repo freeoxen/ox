@@ -1,12 +1,15 @@
 pub mod file_backing;
 pub use file_backing::JsonFileBacking;
 
+mod id_codec;
+
 pub mod ledger;
 pub mod ledger_writer;
 pub mod model;
 pub mod pagination;
 mod reader;
 pub mod reconcile;
+pub mod remote_state;
 mod schema;
 pub mod search;
 pub mod snapshot;
@@ -94,6 +97,9 @@ impl Reader for InboxStore {
     fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
         if from.iter().next().is_some_and(|part| part == "worker") {
             return self.worker_read_path(from);
+        }
+        if from.iter().next().is_some_and(|part| part == "remote") {
+            return self.remote_read_path(from);
         }
         reader::read_dispatch(&self.db, &self.last_search_result, from)
     }
@@ -203,6 +209,15 @@ impl Writer for InboxStore {
         {
             return self
                 .worker_write_path(to, &data)?
+                .ok_or_else(|| StoreError::NoRoute { path: to.clone() });
+        }
+
+        if segments
+            .first()
+            .is_some_and(|part| part.as_str() == "remote")
+        {
+            return self
+                .remote_write_path(to, &data)?
                 .ok_or_else(|| StoreError::NoRoute { path: to.clone() });
         }
 

@@ -870,19 +870,90 @@ executor.
 
 ## Task 8 — Persist local remote orchestration through `ox-inbox`
 
-**Files:** additive remote tables/paths in `ox-inbox`; remote domain records in
-`ox-remote`.
+**Files:** additive remote tables, closed persistence DTOs, and StructFS paths
+in `ox-inbox`. Task 9 may re-export those DTOs from `ox-remote`; `ox-inbox`
+must not acquire a reverse dependency on the provider/coordinator crate.
 
-- [ ] Add local `remote_nodes`, `remote_conversations`, `remote_operations`, and
+### Prerequisites
+
+- [x] **T8-P1. `InboxStore` is the sole owner of the local `ox.db` connection
+  used by this feature.** Verified 2026-09-01 with
+  `nl -ba crates/ox-inbox/src/lib.rs | sed -n '20,110p'`:
+  `InboxStore` owns one `Mutex<Connection>` at
+  `crates/ox-inbox/src/lib.rs:28-30`; `open` opens the connection and invokes
+  the existing schema initializer at `:62-67`. Task 8 therefore adds to this
+  Store and does not create another database owner.
+
+- [x] **T8-P2. The existing `tasks` table is too thin for durable remote
+  orchestration, while worker ingress demonstrates the repository's additive
+  intent-table pattern.** Verified 2026-09-01 with
+  `nl -ba crates/ox-inbox/src/schema.rs | sed -n '20,180p'`: `tasks` has only
+  thread/title/status/timestamps at `schema.rs:27-34`; the four worker intent
+  tables separately persist semantic IDs, request hashes, records, and state at
+  `:43-77`. The remote schema follows the latter pattern without reusing either
+  model.
+
+- [x] **T8-P3. Cached remote ledger records must preserve and verify the
+  existing ledger envelope and content hash.** Verified 2026-09-01 with
+  `nl -ba crates/ox-inbox/src/ledger.rs | sed -n '1,20p;308,322p'`:
+  `LedgerEntry` is `seq/hash/parent/msg` at `ledger.rs:10-15`, and the public
+  canonical `entry_hash` is at `:315-319`. The cache transaction reuses that
+  hash at `crates/ox-inbox/src/remote_state.rs:1183`.
+
+- [x] **T8-P4. Coordinator persistence can remain a StructFS boundary rather
+  than exposing SQLite methods.** Verified 2026-09-01 with
+  `nl -ba crates/ox-inbox/src/lib.rs | sed -n '90,225p'`: the existing Store
+  explicitly dispatches `worker/*` at `lib.rs:97-100` and `:202-212`. Parallel
+  `remote/*` dispatch is at `:101-103` and `:215-221`; its exact read/write path
+  matches are implemented at `remote_state.rs:1223-1353` and exercised at
+  `:1464-1505`.
+
+- [x] **T8-P5. SQLite foreign-key enforcement is not enabled by the current
+  `InboxStore`, so remote correctness must not depend on declarative foreign
+  keys.** Verified 2026-09-01 with
+  `rg -n "foreign_keys" crates/ox-inbox/src` (no matches). Node-attempt and
+  target checks execute in the same `TransactionBehavior::Immediate`
+  transaction as their mutation at `remote_state.rs:765-796`, `:871-934`, and
+  `:1005-1095`; cached batch validation and commit are similarly atomic at
+  `:1149-1215`. This preserves legacy FK behavior while closing cross-process
+  check/write races for the new tables.
+
+- [x] **T8-P6. exe.dev's provider user is optional and must be persisted
+  without synthesizing it from `ssh_dest`.** Verified 2026-09-01 with
+  `rg -n "ssh_user: Option" crates/ox-remote/src/exe.rs`: the provider record
+  uses `Option<String>` at `exe.rs:42` and `:504`. The persistence DTO preserves
+  that distinction at `remote_state.rs:29-31` and the schema permits NULL at
+  `schema.rs:87-90`.
+
+- [x] Add local `remote_nodes`, `remote_conversations`, `remote_operations`, and
   cached-ledger-cursor tables. Do not reuse the thin existing `tasks` table.
-- [ ] Store node attempt, deterministic VM name, provider SSH fields, worker
+- [x] Store node attempt, deterministic VM name, provider SSH fields, worker
   thread ID, last ledger seq/hash, cleanup state, and complete durable intent.
-- [ ] Enforce unique semantic operation IDs and compare-by-attempt updates.
-- [ ] Commit cached ledger batch plus cursor advancement in one transaction.
-- [ ] Keep credentials as handles/paths only; never store key bytes or secret
+- [x] Enforce unique semantic operation IDs and compare-by-attempt updates.
+- [x] Commit cached ledger batch plus cursor advancement in one transaction.
+- [x] Keep credentials as handles/paths only; never store key bytes or secret
   Store snapshots.
-- [ ] Test current-schema migration, idempotent reopen, rollback, and stale
+- [x] Test current-schema migration, idempotent reopen, rollback, and stale
   attempt rejection.
+
+### StructFS path contract
+
+All caller IDs in path components use the shared `i<hex-encoded UTF-8>` codec;
+callers treat returned item paths as opaque stable references.
+
+- Reads: `remote/nodes`, `remote/nodes/<node-id>`,
+  `remote/conversations`, `remote/conversations/<conversation-id>`,
+  `remote/conversations/<conversation-id>/ledger/cursor`,
+  `remote/conversations/<conversation-id>/ledger/from/<seq>` (bounded to 1,024
+  rows), `remote/operations/pending`, and
+  `remote/operations/<operation-id>`.
+- Writes: `remote/nodes` (durable node intent),
+  `remote/nodes/<node-id>/attempt` (compare-and-swap current attempt),
+  `remote/nodes/<node-id>/state`, `remote/conversations` (durable create
+  intent), `remote/conversations/<conversation-id>/state`,
+  `remote/conversations/<conversation-id>/ledger` (atomic batch plus cursor),
+  `remote/operations` (deterministic semantic acceptance), and
+  `remote/operations/<operation-id>/state` (state/attempt compare-and-swap).
 
 **Success:** Local restart can reconcile every external effect without a second
 local database owner.
