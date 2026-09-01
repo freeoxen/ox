@@ -510,19 +510,21 @@ open, prompt, inspect, approve, and shut down threads through the same core.
 
 **Files:** `ox-runtime`, `ox-tools`, extracted sandbox policy, executor config.
 
-- [ ] Add an explicit sandbox enforcement mode: local compatibility may retain
+- [x] Add an explicit sandbox enforcement mode: local compatibility may retain
   configured fallback; remote mode fails closed when profile compilation or
   enforcement is unavailable.
 - [ ] Prove Landlock/Clash actually constrains `ox-tool-exec` in the worker image
-  with read/write/network escape tests.
-- [ ] Add cancellable tool execution with bounded stdout/stderr, timeout, and
+  with read/write/network escape tests. The Linux-only executable tests are at
+  `crates/ox-tools/tests/sandbox_limits.rs:198-284`; running them in the final
+  image is pending and blocks remote readiness by <1 day.
+- [x] Add cancellable tool execution with bounded stdout/stderr, timeout, and
   process-group cleanup to existing `sandboxed_exec`.
-- [ ] Add configurable Wasmtime memory, fuel/epoch, and interruption limits to
+- [x] Add configurable Wasmtime memory, fuel/epoch, and interruption limits to
   `AgentRuntime`; preserve current defaults for local CLI until separately
   changed.
-- [ ] Audit registered native tools. Remote configuration allowlists only trusted
+- [x] Audit registered native tools. Remote configuration allowlists only trusted
   host capabilities; filesystem/shell implementations remain subprocess tools.
-- [ ] Add active-turn permits around the existing `module.run` call and release
+- [x] Add active-turn permits around the existing `module.run` call and release
   them on success, error, trap, or cancellation.
 
 **Success:** Remote hardening strengthens the same runtime/tool paths the CLI

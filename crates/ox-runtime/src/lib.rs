@@ -11,5 +11,5 @@ pub mod bridge;
 pub mod engine;
 pub mod host_store;
 
-pub use engine::{AgentModule, AgentRuntime, AgentState};
+pub use engine::{AgentModule, AgentRuntime, AgentRuntimeConfig, AgentState};
 pub use host_store::{HostEffects, HostStore};

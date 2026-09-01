@@ -8,7 +8,9 @@ use serde_json::Value;
 use crate::ToolSchemaEntry;
 use crate::sandbox::SandboxPolicy;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::sandbox::{AccessIntent, ExecCommand, sandboxed_exec};
+use crate::sandbox::{
+    AccessIntent, ExecCommand, SandboxedExecOptions, sandboxed_exec_with_options,
+};
 
 /// File-system tool module: read, write, and edit files within a workspace.
 ///
@@ -19,6 +21,8 @@ pub struct FsModule {
     workspace: PathBuf,
     executor_bin: PathBuf,
     policy: Arc<dyn SandboxPolicy>,
+    #[cfg(not(target_arch = "wasm32"))]
+    exec_options: SandboxedExecOptions,
 }
 
 impl FsModule {
@@ -27,7 +31,15 @@ impl FsModule {
             workspace,
             executor_bin,
             policy,
+            #[cfg(not(target_arch = "wasm32"))]
+            exec_options: SandboxedExecOptions::default(),
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_exec_options(mut self, options: SandboxedExecOptions) -> Self {
+        self.exec_options = options;
+        self
     }
 
     /// Resolve a relative path against the workspace root, rejecting escapes.
@@ -84,7 +96,13 @@ impl FsModule {
                 args,
             };
 
-            sandboxed_exec(&intent, &exec_cmd, &self.executor_bin, self.policy.as_ref())
+            sandboxed_exec_with_options(
+                &intent,
+                &exec_cmd,
+                &self.executor_bin,
+                self.policy.as_ref(),
+                &self.exec_options,
+            )
         }
     }
 

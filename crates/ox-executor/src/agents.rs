@@ -1,8 +1,8 @@
 use ox_gate::{GateStore, ProviderConfig};
 use ox_kernel::{AgentEvent, CompletionRequest, Record, StreamEvent, Value, path};
-use ox_runtime::{AgentModule, AgentRuntime, HostEffects, HostStore};
+use ox_runtime::{AgentModule, AgentRuntime, AgentRuntimeConfig, HostEffects, HostStore};
 use ox_tools::completion::CompletionTransport;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::thread;
@@ -96,6 +96,7 @@ pub(crate) const AGENT_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/a
 struct ThreadHandle {
     prompt_tx: mpsc::Sender<String>,
     execution: ThreadExecutionConfig,
+    cancellation: ox_tools::sandbox::ToolCancellation,
 }
 
 /// Tool-policy profile selected for one conversation worker.
@@ -103,8 +104,97 @@ struct ThreadHandle {
 pub enum PolicyProfile {
     /// Load and enforce the workspace's Clash policy.
     Enforced,
+    /// Require kernel enforcement; any unsupported/setup path rejects tools.
+    RemoteEnforced,
     /// Preserve the CLI's `--no-policy` behavior.
     Permissive,
+}
+
+/// Node-wide hardening controls layered onto the shared local executor.
+#[derive(Clone, Debug)]
+pub struct ExecutorConfig {
+    pub runtime: AgentRuntimeConfig,
+    pub local_tool_execution: ox_tools::sandbox::SandboxedExecOptions,
+    pub remote_tool_execution: ox_tools::sandbox::SandboxedExecOptions,
+    pub max_active_turns: usize,
+    pub remote_native_tool_allowlist: BTreeSet<String>,
+}
+
+impl Default for ExecutorConfig {
+    fn default() -> Self {
+        Self {
+            runtime: AgentRuntimeConfig::default(),
+            local_tool_execution: ox_tools::sandbox::SandboxedExecOptions::local_compatible(),
+            remote_tool_execution: ox_tools::sandbox::SandboxedExecOptions::remote(),
+            max_active_turns: usize::MAX,
+            remote_native_tool_allowlist: BTreeSet::new(),
+        }
+    }
+}
+
+impl ExecutorConfig {
+    pub fn remote(max_active_turns: usize) -> Result<Self, String> {
+        if max_active_turns == 0 {
+            return Err("max_active_turns must be non-zero".to_string());
+        }
+        Ok(Self {
+            runtime: AgentRuntimeConfig::remote(),
+            max_active_turns,
+            ..Self::default()
+        })
+    }
+}
+
+struct TurnLimiter {
+    max: usize,
+    active: std::sync::Mutex<usize>,
+    available: std::sync::Condvar,
+}
+
+impl TurnLimiter {
+    fn new(max: usize) -> Result<Arc<Self>, String> {
+        if max == 0 {
+            return Err("max_active_turns must be non-zero".to_string());
+        }
+        Ok(Arc::new(Self {
+            max,
+            active: std::sync::Mutex::new(0),
+            available: std::sync::Condvar::new(),
+        }))
+    }
+
+    fn acquire(self: &Arc<Self>) -> TurnPermit {
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        while *active >= self.max {
+            active = self
+                .available
+                .wait(active)
+                .unwrap_or_else(|error| error.into_inner());
+        }
+        *active += 1;
+        TurnPermit {
+            limiter: self.clone(),
+        }
+    }
+}
+
+struct TurnPermit {
+    limiter: Arc<TurnLimiter>,
+}
+
+impl Drop for TurnPermit {
+    fn drop(&mut self) {
+        let mut active = self
+            .limiter
+            .active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        *active -= 1;
+        self.limiter.available.notify_one();
+    }
 }
 
 /// Execution settings that belong to one conversation, not to the process.
@@ -143,6 +233,8 @@ pub struct AgentPool {
     /// their `ToolStore` before the prompt loop starts. See
     /// `test_support::ToolInjector`.
     tool_injector: Option<crate::test_support::ToolInjector>,
+    executor_config: ExecutorConfig,
+    turn_limiter: Arc<TurnLimiter>,
 }
 
 impl AgentPool {
@@ -186,8 +278,34 @@ impl AgentPool {
         transport_factory: Option<crate::test_support::TransportFactory>,
         tool_injector: Option<crate::test_support::ToolInjector>,
     ) -> Result<Self, String> {
-        let runtime = AgentRuntime::new()?;
+        Self::new_with_config_and_test_hooks(
+            workspace,
+            no_policy,
+            inbox,
+            inbox_root,
+            broker,
+            rt_handle,
+            ExecutorConfig::default(),
+            transport_factory,
+            tool_injector,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_config_and_test_hooks(
+        workspace: PathBuf,
+        no_policy: bool,
+        inbox: ox_inbox::InboxStore,
+        inbox_root: PathBuf,
+        broker: ox_broker::BrokerStore,
+        rt_handle: tokio::runtime::Handle,
+        executor_config: ExecutorConfig,
+        transport_factory: Option<crate::test_support::TransportFactory>,
+        tool_injector: Option<crate::test_support::ToolInjector>,
+    ) -> Result<Self, String> {
+        let runtime = AgentRuntime::with_config(executor_config.runtime.clone())?;
         let module = runtime.load_module_from_bytes(AGENT_WASM)?;
+        let turn_limiter = TurnLimiter::new(executor_config.max_active_turns)?;
         Ok(Self {
             module,
             threads: HashMap::new(),
@@ -205,6 +323,8 @@ impl AgentPool {
             rt_handle,
             transport_factory,
             tool_injector,
+            executor_config,
+            turn_limiter,
         })
     }
 
@@ -327,22 +447,26 @@ impl AgentPool {
 
     fn spawn_worker(&mut self, thread_id: String, title: String, execution: ThreadExecutionConfig) {
         let (prompt_tx, prompt_rx) = mpsc::channel::<String>();
+        let cancellation = ox_tools::sandbox::ToolCancellation::default();
         self.threads.insert(
             thread_id.clone(),
             ThreadHandle {
                 prompt_tx,
                 execution: execution.clone(),
+                cancellation: cancellation.clone(),
             },
         );
 
         let module = self.module.clone();
         let workspace = execution.workspace;
-        let no_policy = execution.policy_profile == PolicyProfile::Permissive;
+        let policy_profile = execution.policy_profile;
         let inbox_root = self.inbox_root.clone();
         let broker = self.broker.clone();
         let rt_handle = self.rt_handle.clone();
         let transport_factory = self.transport_factory.clone();
         let tool_injector = self.tool_injector.clone();
+        let executor_config = self.executor_config.clone();
+        let turn_limiter = self.turn_limiter.clone();
 
         thread::spawn(move || {
             // Attach a `thread_id`-scoped span so every tracing event
@@ -360,15 +484,27 @@ impl AgentPool {
                 title,
                 module,
                 workspace,
-                no_policy,
+                policy_profile,
                 inbox_root,
                 prompt_rx,
                 broker,
                 rt_handle,
                 transport_factory,
                 tool_injector,
+                executor_config,
+                cancellation,
+                turn_limiter,
             );
         });
+    }
+
+    pub fn cancel_thread(&self, thread_id: &str) -> Result<(), String> {
+        let handle = self
+            .threads
+            .get(thread_id)
+            .ok_or_else(|| format!("no running thread {thread_id}"))?;
+        handle.cancellation.cancel();
+        Ok(())
     }
 }
 
@@ -395,6 +531,29 @@ pub struct ExecutionCore {
 
 impl ExecutionCore {
     #[allow(clippy::too_many_arguments)]
+    pub fn new_with_config(
+        workspace: PathBuf,
+        no_policy: bool,
+        inbox: ox_inbox::InboxStore,
+        inbox_root: PathBuf,
+        broker: ox_broker::BrokerStore,
+        rt_handle: tokio::runtime::Handle,
+        executor_config: ExecutorConfig,
+    ) -> Result<Self, String> {
+        Self::new_with_config_and_test_hooks(
+            workspace,
+            no_policy,
+            inbox,
+            inbox_root,
+            broker,
+            rt_handle,
+            executor_config,
+            None,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_test_hooks(
         workspace: PathBuf,
         no_policy: bool,
@@ -405,14 +564,40 @@ impl ExecutionCore {
         transport_factory: Option<crate::test_support::TransportFactory>,
         tool_injector: Option<crate::test_support::ToolInjector>,
     ) -> Result<Self, String> {
+        Self::new_with_config_and_test_hooks(
+            workspace,
+            no_policy,
+            inbox,
+            inbox_root,
+            broker,
+            rt_handle,
+            ExecutorConfig::default(),
+            transport_factory,
+            tool_injector,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_config_and_test_hooks(
+        workspace: PathBuf,
+        no_policy: bool,
+        inbox: ox_inbox::InboxStore,
+        inbox_root: PathBuf,
+        broker: ox_broker::BrokerStore,
+        rt_handle: tokio::runtime::Handle,
+        executor_config: ExecutorConfig,
+        transport_factory: Option<crate::test_support::TransportFactory>,
+        tool_injector: Option<crate::test_support::ToolInjector>,
+    ) -> Result<Self, String> {
         Ok(Self {
-            pool: AgentPool::new_with_test_hooks(
+            pool: AgentPool::new_with_config_and_test_hooks(
                 workspace,
                 no_policy,
                 inbox,
                 inbox_root,
                 broker,
                 rt_handle,
+                executor_config,
                 transport_factory,
                 tool_injector,
             )?,
@@ -482,6 +667,10 @@ impl ExecutionCore {
         self.pool.inbox_root()
     }
 
+    pub fn cancel_thread(&self, thread_id: &str) -> Result<(), String> {
+        self.pool.cancel_thread(thread_id)
+    }
+
     /// Move the core onto one control thread behind a bounded queue.
     pub fn into_handle(self, command_capacity: usize) -> ExecutionHandle {
         assert!(
@@ -529,6 +718,10 @@ enum ExecutionCommand {
         execution: ThreadExecutionConfig,
         reply: mpsc::Sender<Result<(), String>>,
     },
+    Cancel {
+        thread_id: String,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
     Shutdown,
 }
 
@@ -556,6 +749,9 @@ fn execution_control_loop(mut core: ExecutionCore, receiver: mpsc::Receiver<Exec
                 reply,
             } => {
                 let _ = reply.send(core.send_prompt_with_config(&thread_id, prompt, execution));
+            }
+            ExecutionCommand::Cancel { thread_id, reply } => {
+                let _ = reply.send(core.cancel_thread(&thread_id));
             }
             ExecutionCommand::Shutdown => break,
         }
@@ -643,6 +839,20 @@ impl ExecutionHandle {
             thread_id: thread_id.into(),
             prompt: prompt.into(),
             execution,
+            reply,
+        })?;
+        response
+            .recv()
+            .map_err(|_| ExecutionCommandError::Stopped)?
+            .map_err(ExecutionCommandError::Executor)
+    }
+
+    /// Interrupt an active Wasm turn and any sandboxed tool process sharing
+    /// its cancellation token. Control admission is independent of turn permits.
+    pub fn cancel_thread(&self, thread_id: impl Into<String>) -> Result<(), ExecutionCommandError> {
+        let (reply, response) = mpsc::channel();
+        self.enqueue(ExecutionCommand::Cancel {
+            thread_id: thread_id.into(),
             reply,
         })?;
         response
@@ -756,14 +966,19 @@ fn agent_worker(
     title: String,
     module: AgentModule,
     workspace: PathBuf,
-    no_policy: bool,
+    policy_profile: PolicyProfile,
     inbox_root: PathBuf,
     prompt_rx: mpsc::Receiver<String>,
     broker: ox_broker::BrokerStore,
     rt_handle: tokio::runtime::Handle,
     transport_factory: Option<crate::test_support::TransportFactory>,
     tool_injector: Option<crate::test_support::ToolInjector>,
+    executor_config: ExecutorConfig,
+    cancellation: ox_tools::sandbox::ToolCancellation,
+    turn_limiter: Arc<TurnLimiter>,
 ) {
+    let no_policy = policy_profile == PolicyProfile::Permissive;
+    let remote = policy_profile == PolicyProfile::RemoteEnforced;
     // Build the error channel FIRST, before anything that can fail.
     // Every startup-failure path below uses `err_channel.report_*`
     // so there's one consistent place to write to — no per-site
@@ -778,14 +993,26 @@ fn agent_worker(
         .unwrap_or_else(|| PathBuf::from("ox-tool-exec"));
     let sandbox_policy: Arc<dyn ox_tools::sandbox::SandboxPolicy> = if no_policy {
         Arc::new(ox_tools::sandbox::PermissivePolicy)
+    } else if remote {
+        Arc::new(crate::clash_sandbox::ClashSandboxPolicy::required(
+            workspace.clone(),
+        ))
     } else {
         Arc::new(crate::clash_sandbox::ClashSandboxPolicy::new(
             workspace.clone(),
         ))
     };
+    let mut tool_options = if remote {
+        executor_config.remote_tool_execution.clone()
+    } else {
+        executor_config.local_tool_execution.clone()
+    };
+    tool_options.cancellation = cancellation.clone();
     let fs_module =
-        ox_tools::fs::FsModule::new(workspace.clone(), executor.clone(), sandbox_policy.clone());
-    let os_module = ox_tools::os::OsModule::new(workspace.clone(), executor, sandbox_policy);
+        ox_tools::fs::FsModule::new(workspace.clone(), executor.clone(), sandbox_policy.clone())
+            .with_exec_options(tool_options.clone());
+    let os_module = ox_tools::os::OsModule::new(workspace.clone(), executor, sandbox_policy)
+        .with_exec_options(tool_options);
     let gate = GateStore::new();
     let completion_module = ox_tools::completion::CompletionModule::new(gate);
     let mut tool_store = ox_tools::ToolStore::new(fs_module, os_module, completion_module);
@@ -836,6 +1063,19 @@ fn agent_worker(
     // Production workers pass `None` here.
     if let Some(injector) = &tool_injector {
         for tool in injector() {
+            let wire_name = tool.schema().wire_name;
+            if remote
+                && !executor_config
+                    .remote_native_tool_allowlist
+                    .contains(&wire_name)
+            {
+                err_channel.report_startup_failure(
+                    "native tool allowlist",
+                    &format!("native tool '{wire_name}' is not trusted for remote execution"),
+                    "Audit the in-process adapter and add its wire name to the worker allowlist.",
+                );
+                return;
+            }
             tool_store.register_native(tool);
         }
     }
@@ -1021,6 +1261,8 @@ fn agent_worker(
             &scoped_client,
             &broker_client,
             &rt_handle,
+            &cancellation,
+            &turn_limiter,
         );
         adapter = ret_adapter;
         gated_store = ret_gated;
@@ -1061,6 +1303,8 @@ fn agent_worker(
             &scoped_client,
             &broker_client,
             &rt_handle,
+            &cancellation,
+            &turn_limiter,
         );
         adapter = ret_adapter;
         gated_store = ret_gated;
@@ -1099,6 +1343,8 @@ fn run_one_turn(
     scoped_client: &ox_broker::ClientHandle,
     broker_client: &ox_broker::ClientHandle,
     rt_handle: &tokio::runtime::Handle,
+    cancellation: &ox_tools::sandbox::ToolCancellation,
+    turn_limiter: &Arc<TurnLimiter>,
 ) -> (
     ox_broker::SyncClientAdapter,
     ox_tools::policy_store::PolicyStore<ox_tools::ToolStore, crate::policy_check::CliPolicyCheck>,
@@ -1114,6 +1360,7 @@ fn run_one_turn(
         .write_typed(&path!("history/turn/run_start"), &pre_run_session)
         .ok();
 
+    cancellation.reset();
     let effects = CliEffects {
         thread_id: thread_id.to_string(),
         gated_store,
@@ -1124,7 +1371,9 @@ fn run_one_turn(
 
     let host_store = HostStore::new(adapter, effects);
     tracing::debug!(thread_id = %thread_id, "running wasm module");
-    let (returned_store, result) = module.run(host_store);
+    let _turn_permit = turn_limiter.acquire();
+    let (returned_store, result) = module.run_with_cancellation(host_store, cancellation.clone());
+    drop(_turn_permit);
 
     let mut adapter = returned_store.backend;
     let gated_store = returned_store.effects.gated_store;
@@ -1481,6 +1730,9 @@ mod tests {
         handle
             .open_thread(thread_id.clone(), execution.clone())
             .expect("matching execution config reuses worker");
+        handle
+            .cancel_thread(thread_id.clone())
+            .expect("public control surface reaches the worker cancellation token");
 
         let other_workspace = tempfile::tempdir().expect("other workspace tempdir");
         let workspace_error = handle
@@ -1532,5 +1784,22 @@ mod tests {
             control_exited.load(std::sync::atomic::Ordering::Acquire),
             "ExecutionHandle::drop must join its control thread"
         );
+    }
+
+    #[test]
+    fn turn_permit_is_released_on_drop_and_unwind() {
+        let limiter = TurnLimiter::new(1).unwrap();
+        let first = limiter.acquire();
+        drop(first);
+        {
+            let _after_success = limiter.acquire();
+        }
+
+        let unwind_limiter = limiter.clone();
+        let _ = std::panic::catch_unwind(move || {
+            let _permit = unwind_limiter.acquire();
+            panic!("simulated Wasm trap path");
+        });
+        let _after_unwind = limiter.acquire();
     }
 }

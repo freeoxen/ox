@@ -8,8 +8,11 @@
 //! function.
 
 use std::path::Path as FilePath;
+use std::time::Duration;
 
-use wasmtime::{Caller, Engine, Linker, Module, Store};
+use wasmtime::{
+    Caller, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder, UpdateDeadline,
+};
 
 use structfs_core_store::{Reader, Writer};
 
@@ -26,6 +29,7 @@ pub struct AgentState<B: Reader + Writer + Send, E: HostEffects> {
     pub host_store: HostStore<B, E>,
     /// The pending result bytes from the last store_read or store_write.
     pending_result: Option<Vec<u8>>,
+    limits: StoreLimits,
 }
 
 // ---------------------------------------------------------------------------
@@ -37,13 +41,102 @@ pub struct AgentState<B: Reader + Writer + Send, E: HostEffects> {
 /// Create once, reuse for loading multiple modules.
 pub struct AgentRuntime {
     engine: Engine,
+    config: AgentRuntimeConfig,
+    epoch_ticker: Option<std::sync::Arc<EpochTicker>>,
+}
+
+struct EpochTicker {
+    stop: Option<std::sync::mpsc::SyncSender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl EpochTicker {
+    fn start(engine: Engine, interval: Duration) -> std::sync::Arc<Self> {
+        let (stop, stop_rx) = std::sync::mpsc::sync_channel(1);
+        let thread = std::thread::spawn(move || {
+            loop {
+                match stop_rx.recv_timeout(interval) {
+                    Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => engine.increment_epoch(),
+                }
+            }
+        });
+        std::sync::Arc::new(Self {
+            stop: Some(stop),
+            thread: Some(thread),
+        })
+    }
+}
+
+impl Drop for EpochTicker {
+    fn drop(&mut self) {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// Per-turn Wasmtime resource controls. `Default` deliberately preserves the
+/// local CLI's prior unlimited behavior.
+#[derive(Clone, Debug, Default)]
+pub struct AgentRuntimeConfig {
+    pub max_memory_bytes: Option<usize>,
+    pub fuel_per_turn: Option<u64>,
+    pub turn_timeout: Option<Duration>,
+    pub epoch_poll_interval: Option<Duration>,
+}
+
+impl AgentRuntimeConfig {
+    pub fn remote() -> Self {
+        Self {
+            max_memory_bytes: Some(512 * 1024 * 1024),
+            fuel_per_turn: Some(10_000_000_000),
+            turn_timeout: Some(Duration::from_secs(15 * 60)),
+            epoch_poll_interval: Some(Duration::from_millis(10)),
+        }
+    }
 }
 
 impl AgentRuntime {
     /// Create a new runtime.
     pub fn new() -> Result<Self, String> {
-        let engine = Engine::default();
-        Ok(Self { engine })
+        Self::with_config(AgentRuntimeConfig::default())
+    }
+
+    pub fn with_config(config: AgentRuntimeConfig) -> Result<Self, String> {
+        if config.max_memory_bytes == Some(0) {
+            return Err("max_memory_bytes must be non-zero".to_string());
+        }
+        if config.fuel_per_turn == Some(0) {
+            return Err("fuel_per_turn must be non-zero".to_string());
+        }
+        if config.turn_timeout.is_some_and(|timeout| timeout.is_zero()) {
+            return Err("turn_timeout must be non-zero".to_string());
+        }
+        if config.turn_timeout.is_some() && config.epoch_poll_interval.is_none() {
+            return Err("turn_timeout requires epoch_poll_interval".to_string());
+        }
+        if config
+            .epoch_poll_interval
+            .is_some_and(|interval| interval.is_zero())
+        {
+            return Err("epoch_poll_interval must be non-zero".to_string());
+        }
+        let mut engine_config = wasmtime::Config::new();
+        engine_config.consume_fuel(config.fuel_per_turn.is_some());
+        engine_config.epoch_interruption(config.epoch_poll_interval.is_some());
+        let engine = Engine::new(&engine_config).map_err(|error| error.to_string())?;
+        let epoch_ticker = config
+            .epoch_poll_interval
+            .map(|interval| EpochTicker::start(engine.clone(), interval));
+        Ok(Self {
+            engine,
+            config,
+            epoch_ticker,
+        })
     }
 
     /// Access the underlying engine.
@@ -57,6 +150,8 @@ impl AgentRuntime {
         Ok(AgentModule {
             engine: self.engine.clone(),
             module,
+            config: self.config.clone(),
+            epoch_ticker: self.epoch_ticker.clone(),
         })
     }
 
@@ -66,6 +161,8 @@ impl AgentRuntime {
         Ok(AgentModule {
             engine: self.engine.clone(),
             module,
+            config: self.config.clone(),
+            epoch_ticker: self.epoch_ticker.clone(),
         })
     }
 }
@@ -81,6 +178,8 @@ impl AgentRuntime {
 pub struct AgentModule {
     engine: Engine,
     module: Module,
+    config: AgentRuntimeConfig,
+    epoch_ticker: Option<std::sync::Arc<EpochTicker>>,
 }
 
 impl AgentModule {
@@ -96,9 +195,25 @@ impl AgentModule {
         &self,
         host_store: HostStore<B, E>,
     ) -> (HostStore<B, E>, Result<(), String>) {
+        self.run_with_cancellation(host_store, ox_tools::sandbox::ToolCancellation::default())
+    }
+
+    /// Run with a cancellation signal shared with sandboxed tool calls.
+    pub fn run_with_cancellation<B: Reader + Writer + Send + 'static, E: HostEffects + 'static>(
+        &self,
+        host_store: HostStore<B, E>,
+        cancellation: ox_tools::sandbox::ToolCancellation,
+    ) -> (HostStore<B, E>, Result<(), String>) {
+        let mut limits = StoreLimitsBuilder::new();
+        if let Some(max_memory_bytes) = self.config.max_memory_bytes {
+            limits = limits
+                .memory_size(max_memory_bytes)
+                .trap_on_grow_failure(true);
+        }
         let state = AgentState {
             host_store,
             pending_result: None,
+            limits: limits.build(),
         };
 
         // -- Linker: register host imports ------------------------------------
@@ -261,6 +376,13 @@ impl AgentModule {
 
         // -- Instantiate and call run -----------------------------------------
         let mut store = Store::new(&self.engine, state);
+        store.limiter(|state| &mut state.limits);
+        if let Some(fuel) = self.config.fuel_per_turn {
+            if let Err(error) = store.set_fuel(fuel) {
+                let state = store.into_data();
+                return (state.host_store, Err(error.to_string()));
+            }
+        }
 
         let instance = match linker.instantiate(&mut store, &self.module) {
             Ok(i) => i,
@@ -279,6 +401,22 @@ impl AgentModule {
         };
 
         tracing::info!("wasm module starting");
+        if self.epoch_ticker.is_some() {
+            store.set_epoch_deadline(1);
+            let deadline = self
+                .config
+                .turn_timeout
+                .map(|timeout| std::time::Instant::now() + timeout);
+            store.epoch_deadline_callback(move |_| {
+                if cancellation.is_cancelled() {
+                    return Err(wasmtime::Error::msg("wasm execution cancelled"));
+                }
+                if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+                    return Err(wasmtime::Error::msg("wasm execution timed out"));
+                }
+                Ok(UpdateDeadline::Continue(1))
+            });
+        }
         let call_result = run_func.call(&mut store, ());
         let state = store.into_data();
 
@@ -313,7 +451,7 @@ impl AgentModule {
             }
             Err(e) => {
                 tracing::info!(error = %e, "wasm module finished with trap");
-                (state.host_store, Err(e.to_string()))
+                (state.host_store, Err(format!("{e:#}")))
             }
         }
     }
@@ -396,6 +534,140 @@ mod tests {
         assert!(result.is_err(), "missing file should fail to load");
     }
 
+    #[test]
+    fn runtime_rejects_zero_resource_limits() {
+        for config in [
+            AgentRuntimeConfig {
+                max_memory_bytes: Some(0),
+                ..AgentRuntimeConfig::default()
+            },
+            AgentRuntimeConfig {
+                fuel_per_turn: Some(0),
+                ..AgentRuntimeConfig::default()
+            },
+            AgentRuntimeConfig {
+                turn_timeout: Some(Duration::ZERO),
+                epoch_poll_interval: Some(Duration::from_millis(1)),
+                ..AgentRuntimeConfig::default()
+            },
+        ] {
+            assert!(AgentRuntime::with_config(config).is_err());
+        }
+    }
+
+    fn empty_host() -> HostStore<Namespace, MockEffects> {
+        HostStore::new(Namespace::new(), MockEffects::new())
+    }
+
+    #[test]
+    fn memory_limit_traps_growth() {
+        let runtime = AgentRuntime::with_config(AgentRuntimeConfig {
+            max_memory_bytes: Some(64 * 1024),
+            ..AgentRuntimeConfig::default()
+        })
+        .unwrap();
+        let module = runtime
+            .load_module_from_bytes(
+                br#"(module
+                    (memory 1)
+                    (func (export "run") (result i32)
+                        i32.const 1
+                        memory.grow
+                        drop
+                        i32.const 0))"#,
+            )
+            .unwrap();
+        let (_, result) = module.run(empty_host());
+        assert!(
+            matches!(result, Err(ref error) if error.contains("grow")),
+            "unexpected result: {result:?}"
+        );
+    }
+
+    #[test]
+    fn fuel_limit_traps_cpu_loop() {
+        let runtime = AgentRuntime::with_config(AgentRuntimeConfig {
+            fuel_per_turn: Some(10_000),
+            ..AgentRuntimeConfig::default()
+        })
+        .unwrap();
+        let module = runtime
+            .load_module_from_bytes(
+                br#"(module
+                    (func (export "run") (result i32)
+                        (loop $forever br $forever)
+                        i32.const 0))"#,
+            )
+            .unwrap();
+        let (_, result) = module.run(empty_host());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn epoch_timeout_interrupts_cpu_loop() {
+        let runtime = AgentRuntime::with_config(AgentRuntimeConfig {
+            turn_timeout: Some(Duration::from_millis(30)),
+            epoch_poll_interval: Some(Duration::from_millis(5)),
+            ..AgentRuntimeConfig::default()
+        })
+        .unwrap();
+        let module = runtime
+            .load_module_from_bytes(
+                br#"(module
+                    (func (export "run") (result i32)
+                        (loop $forever br $forever)
+                        i32.const 0))"#,
+            )
+            .unwrap();
+        let (_, result) = module.run(empty_host());
+        assert!(
+            matches!(result, Err(ref error) if error.contains("timed out")),
+            "unexpected result: {result:?}"
+        );
+    }
+
+    #[test]
+    fn cancelling_one_store_does_not_interrupt_another_on_shared_engine() {
+        let runtime = AgentRuntime::with_config(AgentRuntimeConfig {
+            epoch_poll_interval: Some(Duration::from_millis(2)),
+            ..AgentRuntimeConfig::default()
+        })
+        .unwrap();
+        let infinite = runtime
+            .load_module_from_bytes(
+                br#"(module
+                    (func (export "run") (result i32)
+                        (loop $forever br $forever)
+                        i32.const 0))"#,
+            )
+            .unwrap();
+        let finite = runtime
+            .load_module_from_bytes(
+                br#"(module
+                    (func (export "run") (result i32)
+                        (local $i i64)
+                        (loop $work
+                            local.get $i
+                            i64.const 1
+                            i64.add
+                            local.tee $i
+                            i64.const 100000000
+                            i64.lt_u
+                            br_if $work)
+                        i32.const 0))"#,
+            )
+            .unwrap();
+        let cancel_a = ox_tools::sandbox::ToolCancellation::default();
+        let run_cancel = cancel_a.clone();
+        let a =
+            std::thread::spawn(move || infinite.run_with_cancellation(empty_host(), run_cancel).1);
+        let b = std::thread::spawn(move || finite.run(empty_host()).1);
+        std::thread::sleep(Duration::from_millis(20));
+        cancel_a.cancel();
+        assert!(a.join().unwrap().is_err());
+        assert!(b.join().unwrap().is_ok(), "unrelated store was interrupted");
+    }
+
     // -- Integration test: load and run the real agent.wasm ---------------------
 
     struct MockEffects {
@@ -432,7 +704,9 @@ mod tests {
         ) -> Result<ox_tools::completion::CompletionOutput, String> {
             Ok(ox_tools::completion::CompletionOutput {
                 events: vec![
-                    StreamEvent::TextDelta { text: "Hello from the agent!".to_string() },
+                    StreamEvent::TextDelta {
+                        text: "Hello from the agent!".to_string(),
+                    },
                     StreamEvent::MessageStop,
                 ],
                 input_tokens: 10,

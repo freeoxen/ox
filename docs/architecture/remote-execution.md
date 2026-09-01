@@ -24,19 +24,19 @@ node from the first compatible schema and protocol version.
 - [x] **R1. `AgentPool` already owns concurrent per-thread workers and one
   shared compiled module.**
   Verified with
-  `nl -ba crates/ox-executor/src/agents.rs | sed -n '95,365p'`.
+  `nl -ba crates/ox-executor/src/agents.rs | sed -n '95,510p'`.
   `AgentPool` owns `HashMap<String, ThreadHandle>` at
-  `crates/ox-executor/src/agents.rs:131-145`, loads the agent module once at
-  line 190, clones it at line 338, and starts one mailbox and OS worker thread
-  per ox thread at lines 328–366. If this changes before extraction, remote
+  `crates/ox-executor/src/agents.rs:221-239`, loads the agent module once at
+  lines 306–307, clones it at line 460, and starts one mailbox and OS worker
+  thread per ox thread at lines 448–499. If this changes, remote
   work is blocked for ~2–4 days to re-establish local/remote executor parity.
 
 - [x] **R2. A turn already gets a fresh Wasmtime Store and instance.**
   Verified with
-  `nl -ba crates/ox-runtime/src/engine.rs | sed -n '35,105p;262,290p'`.
+  `nl -ba crates/ox-runtime/src/engine.rs | sed -n '35,190p;370,420p'`.
   `AgentRuntime` owns the reusable engine and compiled-module infrastructure at
-  `crates/ox-runtime/src/engine.rs:35-70`; `AgentModule::run` constructs a new
-  Store and instance at lines 262–283. If this ceases to be true, the remote
+  `crates/ox-runtime/src/engine.rs:42-158`; `AgentModule::run` constructs a new
+  Store and instance at lines 378–390. If this ceases to be true, the remote
   isolation and resource-control design is blocked for ~3–5 days.
 
 - [x] **R3. `ThreadRegistry` already owns lazy thread namespaces, restore, and
@@ -80,16 +80,19 @@ node from the first compatible schema and protocol version.
   If another owner is introduced, remote persistence is blocked for ~3–5 days
   to restore one-writer ownership.
 
-- [x] **R7. Tool subprocess isolation already exists, but the CLI Clash
-  adapter can currently fall back to unsandboxed execution.**
+- [x] **R7. Tool subprocess isolation now has distinct compatibility and
+  fail-closed enforcement modes.**
   Verified with
-  `nl -ba crates/ox-tools/src/sandbox.rs | sed -n '54,125p'` and
-  `nl -ba crates/ox-executor/src/clash_sandbox.rs | sed -n '142,162p'`.
-  `sandboxed_exec` starts `ox-tool-exec` under a policy at
-  `crates/ox-tools/src/sandbox.rs:68-124`; Clash returns the original command
-  after policy compilation failure at
-  `crates/ox-executor/src/clash_sandbox.rs:154-160`. Remote deployment is blocked
-  until that profile fails closed; estimated hardening scope is ~2–4 days.
+  `nl -ba crates/ox-tools/src/sandbox.rs | sed -n '55,335p'`,
+  `nl -ba crates/ox-executor/src/clash_sandbox.rs | sed -n '15,320p'`, and
+  `nl -ba crates/ox-tools/src/bin/ox-tool-exec.rs | sed -n '95,135p'`.
+  `sandboxed_exec_with_options` bounds and supervises the subprocess at
+  `crates/ox-tools/src/sandbox.rs:168-320`; required policy uses the hidden
+  executor launcher and fails instead of falling through at
+  `crates/ox-executor/src/clash_sandbox.rs:267-305`; the launcher calls Clash's
+  actual platform backend at `crates/ox-tools/src/bin/ox-tool-exec.rs:106-133`.
+  Linux deployment remains blocked until the worker-image job executes the
+  Landlock/seccomp escape tests; estimated CI/image work is <1 day.
 
 ## Reuse budget
 
@@ -200,6 +203,33 @@ Turn admission cannot gate status, approval, cancellation, or ledger reads. A
 conversation waiting on approval or model I/O must not hold a global control
 lock or prevent unrelated worker threads and async Store requests from making
 progress.
+
+The executor exposes two explicit hardening profiles. Local defaults preserve
+the existing unlimited Wasmtime configuration and Clash compatibility fallback.
+`ExecutorConfig::remote` selects memory, fuel, epoch timeout, bounded tool I/O,
+tool timeout, node-wide turn permits, and an empty-by-default trusted-native-tool
+allowlist. `PolicyProfile::RemoteEnforced` uses a Clash launcher which enters
+Landlock/seccomp on Linux or Seatbelt on macOS before `ox-tool-exec` handles a
+request. The remote policy has no root-wide read default and denies shell
+network access. Required launchers also clear the worker environment before
+re-exec: only an audited `PATH`, locale, and conversation-scoped `HOME` and
+`TMPDIR` survive. Provider credentials and arbitrary worker environment values
+therefore cannot be read by a remote shell through environment inheritance.
+
+One cancellation token is owned by each existing sequential thread worker. It
+is reset only after the prior turn and all of its subprocesses have joined.
+Public cancel control sets it; the active tool supervisor kills and reaps the
+tool process group, while the active Wasmtime Store observes it through its own
+epoch callback. The engine epoch is continuously ticked, but each Store
+independently extends its deadline, so cancelling conversation A cannot trap B.
+The active-turn permit is acquired immediately around `AgentModule::run` and is
+released by RAII on success, error, trap, cancellation, or unwind.
+
+Linux escape coverage lives at
+`crates/ox-tools/tests/sandbox_limits.rs:198-284`: it proves an allowed workspace
+read while rejecting an out-of-workspace read, write, and loopback connection.
+Because the development host is macOS, those `cfg(target_os = "linux")` tests
+must execute in the final worker image before it reports ready.
 
 If stronger tenant-level host isolation becomes necessary, placement assigns
 that tenant a separate node. It does not create a second execution architecture.
