@@ -589,15 +589,45 @@ kill/reap cancellation (`crates/ox-tools/tests/sandbox_limits.rs:81-97`).
 **Files:** create `crates/ox-structfs-transport/` with frame/codec/error types
 and byte fixtures.
 
-- [ ] Encode version, request ID, read/write, validated path components,
-  optional record/deadline, response, and typed error in canonical CBOR.
-- [ ] Preserve absent versus parsed null, every current `Value` variant, and Raw
-  versus Parsed `Record`, including raw format.
-- [ ] Bound frame bytes, nesting, path length, map entries, and decoded
-  allocation before transport code uses the codec.
-- [ ] Reject duplicate keys, invalid paths, truncated frames, unsupported enum
-  variants, and noncanonical fixture changes.
-- [ ] Commit byte-for-byte fixtures and property/fuzz tests first.
+- [x] Encode version, request ID, read/write, validated path components,
+  optional record/deadline, response, and typed error in canonical CBOR
+  (`codec.rs:5-70`, `frame.rs:395-513`, `:701-1029`). Verified with
+  `rg -n 'pub (struct|enum) (Request|Response|WireError)|fn (decode_message|encode_request|encode_response)' crates/ox-structfs-transport/src/{codec,frame}.rs`.
+- [x] Preserve absent versus parsed null, every current `Value` variant, and Raw
+  versus Parsed `Record`, including custom raw format (`codec.rs:30-38`,
+  `frame.rs:545-614`, `:957-1029`; `conformance.rs:34-162`). Ordinary f64
+  values and signed zero are exact; deterministic canonical NaNs intentionally
+  normalize payload/sign bits (`WIRE.md:63-65`). Verified with
+  `cargo test -p ox-structfs-transport every_value_variant_and_both_record_forms_round_trip_losslessly`
+  and the committed read-missing/read-null fixtures.
+- [x] Bound frame bytes, nesting, path length, map entries, and additive decoded
+  allocation before transport code uses the codec (`frame.rs:17-45`,
+  `:76-135`, `:174-342`, `:349-401`, `:515-638`). Exact encoded size is also
+  checked against the configured payload limit and the u32 frame prefix before
+  the output buffer is built (`frame.rs:64-73`, `:701-867`). Encoder structural
+  validation mirrors envelope/path/record/error/Value CBOR depths and wrapper
+  collection counts (`frame.rs:1181-1357`; `conformance.rs:492-602`,
+  `:685-707`). `max_decoded_allocation` remains receiver-specific as documented
+  at `WIRE.md:22-27`.
+  Verified with `cargo test -p ox-structfs-transport framing_and_resource_limits_fail_closed`
+  plus the declared-length, depth/map-entry, and encode-size conformance tests.
+- [x] Reject duplicate keys, invalid paths, truncated frames/CBOR, unknown or
+  missing fields, unsupported enum variants, and noncanonical integer, length,
+  map-order, and float encodings (`frame.rs:107-135`, `:403-638`;
+  `conformance.rs:199-380`, `:393-489`, `:605-623`). Verified with
+  `cargo test -p ox-structfs-transport --no-fail-fast` (17 conformance tests
+  plus one unit preflight test).
+- [x] Commit byte-for-byte fixtures and property/fuzz tests first. Five fixed
+  frame fixtures live under `crates/ox-structfs-transport/tests/fixtures/`;
+  three 256-case property tests prove stable round trips, tight structural-limit
+  encode/decode symmetry, and panic-free arbitrary payload rejection
+  (`conformance.rs:34-96`, `:663-715`).
+
+**Tests:** `cargo test -p ox-structfs-transport --no-fail-fast` covers the five
+byte fixtures, every current StructFS value/record form, all typed error codes,
+canonical ordering/preferred serialization, malformed inputs, every resource
+limit, and 768 property/fuzz-style generated cases. The crate remains sans-I/O;
+carrier conformance begins in Task 5.
 
 **Success:** Wire code transports StructFS exactly and contains no ox remote
 domain concepts.

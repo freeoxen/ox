@@ -23,6 +23,7 @@ members = [
     "crates/horns-ratatui",
     "crates/horns",
     "crates/ox-store-util",
+    "crates/ox-structfs-transport",
     "crates/ox-path",
     "crates/ox-tools",
     "crates/ox-types",
@@ -54,6 +55,7 @@ default-members = [
     "crates/horns-ratatui",
     "crates/horns",
     "crates/ox-store-util",
+    "crates/ox-structfs-transport",
     "crates/ox-path",
     "crates/ox-tools",
     "crates/ox-types",
@@ -88,6 +90,7 @@ ox-kernel = { path = "crates/ox-kernel" }
 ox-path = { path = "crates/ox-path" }
 ox-runtime = { path = "crates/ox-runtime" }
 ox-store-util = { path = "crates/ox-store-util" }
+ox-structfs-transport = { path = "crates/ox-structfs-transport" }
 ox-tools = { path = "crates/ox-tools" }
 ox-types = { path = "crates/ox-types" }
 ox-ui = { path = "crates/ox-ui" }
