@@ -1,5 +1,5 @@
 [package]
-name = "ox-structfs-transport"
+name = "ox-remote"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,20 +7,20 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
-description = "Bounded canonical-CBOR wire protocol for transporting generic StructFS operations"
+description = "Typed remote-provider Store adapters for ox"
 
 [dependencies]
 async-trait = { workspace = true }
-bytes = { workspace = true }
 ox-broker = { workspace = true }
-fs2 = { workspace = true }
-libc = { workspace = true }
+ox-structfs-transport = { workspace = true }
 russh = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 structfs-core-store = { workspace = true, features = ["async"] }
+structfs-serde-store = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["io-util", "io-std", "macros", "net", "rt-multi-thread"] }
-zeroize = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "net", "rt-multi-thread"] }
 
 [dev-dependencies]
-proptest = { workspace = true }
 tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros"] }

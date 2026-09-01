@@ -232,10 +232,12 @@ later fails, stop and revise the dependent task before implementation.
   turn path. If these paths diverge into separate executors, the plan is
   blocked for ~2 days to restore parity.
 
-- [x] **P16. The worker-facing remote, RuSSH, and exe.dev layers do not yet
-  exist.** Verified with
-  `rg -n 'russh|exe\.dev|structfs-stdio|ox-worker' Cargo.toml crates` returning
-  no matches. New work begins at the edge, not inside the executor.
+- [x] **P16. The worker-facing transport and provider layers remain outside the
+  executor.** Verified with
+  `rg -n 'russh|ExeControlStore|connect_worker_ssh' crates/ox-executor crates/ox-worker crates/ox-remote crates/ox-structfs-transport`:
+  RuSSH is confined to `ox-structfs-transport/src/ssh.rs` and
+  `ox-remote/src/exe.rs`; neither `ox-executor` nor `ox-worker` imports it.
+  Provider mechanics therefore do not fork the execution core.
 
 - [x] **P17. StructFS wire encoding cannot be JSON-only.** Verified against the
   pinned checkout with
@@ -249,10 +251,11 @@ later fails, stop and revise the dependent task before implementation.
   remote commands before UI initialization.
 
 - [x] **P19. exe.dev and RuSSH provide the required external seams.** Verified
-  2026-08-31 by reading exe.dev's official API/new/list/remove docs and RuSSH
+  2026-09-01 by reading exe.dev's official API/new/list/remove docs and RuSSH
   0.63.1 `client::connect` plus `Channel::{exec,split,into_stream}` docs. RuSSH
-  versions affected by GHSA-m65r-rprj-r5rg are prohibited. If these APIs drift,
-  Task 6 is blocked for fixture updates (~2-4 days).
+  versions affected by GHSA-m65r-rprj-r5rg, GHSA-47hw-gvq5-r2gm, or
+  GHSA-p8qx-h547-fjw9 are prohibited. If these APIs drift, Task 7 is blocked for
+  fixture updates (~2-4 days).
 
 ---
 
@@ -788,18 +791,74 @@ tunnel. This is the shortest proof of the architecture.
 **Files:** RuSSH transport adapter in `ox-structfs-transport`; typed exe adapter
 in `ox-remote`; fake SSH/exe fixtures.
 
-- [ ] Pin a non-vulnerable RuSSH version with exactly one crypto backend.
-- [ ] Verify/enroll host keys in a user-only known-hosts file; changed keys
+### Task 7 prerequisites — verification manifest
+
+- [x] **T7-P1. The pinned RuSSH release is outside every currently published
+  affected range, and feature unification selects only `ring`.** Verified
+  2026-09-01 against the upstream RuSSH/GitHub Security Advisories index and
+  the individual affected/patched ranges, including
+  `GHSA-m65r-rprj-r5rg` (`<=0.62.4`, patched `0.62.5`) and the August client
+  advisory set (`<=0.63.0`, patched `0.63.1`). `cargo audit` is not installed
+  in this environment (`command -v cargo-audit` returned no path), so this was
+  an explicit upstream-advisory audit rather than a claim based on an absent
+  tool. `rg -n 'russh = ' Cargo.toml` verifies the exact `=0.63.1`,
+  `default-features = false`, `features = ["ring"]` pin at `Cargo.toml:118`;
+  `cargo tree -p ox-remote -e features -i russh` reports only
+  `russh feature "ring"`, and `rg -n 'name = "aws-lc-rs"' Cargo.lock`
+  returns no match. If a new advisory affects 0.63.1, remote SSH is blocked
+  until a patched exact pin is reviewed.
+
+- [x] **T7-P2. The worker CLI requires a socket argument, so the SSH command
+  must include one validated path.** Verified with
+  `nl -ba crates/ox-worker/src/main.rs | sed -n '35,90p'`:
+  `StructfsStdio { socket: PathBuf }` is defined at `main.rs:40-43` and passed
+  to `bridge_stdio_to_unix` at `:85-86`. The carrier's sole command constant
+  and safe-path constructor are at
+  `crates/ox-structfs-transport/src/ssh.rs:18,230-265`.
+
+- [x] **T7-P3. exe.dev documents `ssh_host` and optional `ssh_user` as the
+  dial fields; `ssh_dest` may contain a routing username.** Verified
+  2026-09-01 against the official `https://exe.dev/docs/api` response example
+  and field notes, plus `https://exe.dev/docs/cli-ls`. The typed parser requires
+  and preserves all three fields at `crates/ox-remote/src/exe.rs:498-545`; it
+  never derives one from another. If those documented fields are removed, the
+  provider adapter is blocked for a fixture/schema revision.
+
+- [x] **T7-P4. The adapter needs only four exe.dev control operations, each
+  with documented JSON mode and documented GB resource examples.** Verified
+  2026-09-01 against official `cli-new`, `cli-ls`, `cli-rm`, and `cli-whoami`
+  pages. The closed `ExeCommand` enum and audited encoder are at
+  `crates/ox-remote/src/exe.rs:67-117`; no raw command variant exists.
+
+- [ ] **T7-P5. exe.dev has a documented stable field schema for
+  `whoami --json`.** Pending: the official page documents JSON output but not
+  its fields. The implementation therefore validates one bounded JSON object
+  and exposes only the typed fact `authenticated: true` at
+  `crates/ox-remote/src/exe.rs:374-389`; it does not guess, alias, or pass
+  through provider fields. Rich identity projection is blocked on a captured
+  provider fixture, but authenticated control and the Task 7 MVP are not.
+
+- [x] **T7-P6. Task 5's generic `RemoteStore` accepts any bidirectional Tokio
+  byte stream and performs no blind retries.** Verified with
+  `nl -ba crates/ox-structfs-transport/src/client.rs | sed -n '70,190p'`:
+  `RemoteStore::connect` accepts `AsyncRead + AsyncWrite` at `client.rs:116-120`,
+  and one request is encoded/enqueued/awaited at `:175-242` without a retry
+  loop. RuSSH therefore supplies only a carrier stream at
+  `crates/ox-structfs-transport/src/ssh.rs:373-406`, not another Store client.
+
+- [x] Pin a non-vulnerable RuSSH version with exactly one crypto backend.
+- [x] Verify/enroll host keys in a user-only known-hosts file; changed keys
   always fail closed.
-- [ ] Open one no-PTY fixed-command `ox-worker structfs-stdio` channel. Disable
+- [x] Open one no-PTY fixed-command
+  `ox-worker structfs-stdio --socket <validated>` channel. Disable
   shell, arbitrary exec, forwarding, agent forwarding, and env injection.
-- [ ] Add a separate bulk channel only when artifact transfer is implemented and
-  measurements justify it.
-- [ ] Implement `ExeControlStore` with validated, allowlisted typed JSON commands
+- [x] Keep one multiplexed channel; no bulk channel is present because artifact
+  transfer and measurements do not exist yet.
+- [x] Implement `ExeControlStore` with validated, allowlisted typed JSON commands
   for create/list/remove/identity. Never expose raw command execution.
-- [ ] Parse provider-returned SSH destination fields rather than synthesizing
+- [x] Parse provider-returned SSH destination fields rather than synthesizing
   hostnames.
-- [ ] Resolve ambiguous create through exact-name list before any retry; verify
+- [x] Resolve ambiguous create through exact-name list before any retry; verify
   node/attempt identity before adoption or deletion.
 
 **Success:** Transport and provider mechanics remain Store adapters outside the

@@ -26,6 +26,7 @@ members = [
     "crates/ox-structfs-transport",
     "crates/ox-worker",
     "crates/ox-path",
+    "crates/ox-remote",
     "crates/ox-tools",
     "crates/ox-types",
     "crates/ox-gateway-wasm",
@@ -59,6 +60,7 @@ default-members = [
     "crates/ox-structfs-transport",
     "crates/ox-worker",
     "crates/ox-path",
+    "crates/ox-remote",
     "crates/ox-tools",
     "crates/ox-types",
 ]
@@ -90,6 +92,7 @@ ox-history = { path = "crates/ox-history" }
 ox-inbox = { path = "crates/ox-inbox" }
 ox-kernel = { path = "crates/ox-kernel" }
 ox-path = { path = "crates/ox-path" }
+ox-remote = { path = "crates/ox-remote" }
 ox-runtime = { path = "crates/ox-runtime" }
 ox-store-util = { path = "crates/ox-store-util" }
 ox-structfs-transport = { path = "crates/ox-structfs-transport" }
@@ -112,6 +115,10 @@ async-trait = "0.1"
 async-stream = "0.3"
 futures = "0.3"
 tokio-stream = "0.1"
+russh = { version = "=0.63.1", default-features = false, features = ["ring"] }
+fs2 = "0.4"
+libc = "0.2"
+zeroize = "1"
 
 # Serde stack.
 serde = { version = "1", features = ["derive"] }

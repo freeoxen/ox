@@ -14,6 +14,8 @@ mod frame;
 mod io;
 mod root;
 mod server;
+#[cfg(unix)]
+mod ssh;
 
 #[cfg(unix)]
 mod unix;
@@ -26,6 +28,11 @@ pub use error::CodecError;
 pub use frame::{CodecLimits, WIRE_VERSION, WireCodec};
 pub use root::ExportRoot;
 pub use server::{ErrorMapper, ServerConfig, connect_in_process, serve_stream};
+#[cfg(unix)]
+pub use ssh::{
+    HostKeyEnrollment, IdentityFileError, KnownHosts, KnownHostsError, SshConnectError,
+    WorkerSshConfig, connect_worker_ssh, load_private_identity,
+};
 
 #[cfg(unix)]
 pub use unix::{
