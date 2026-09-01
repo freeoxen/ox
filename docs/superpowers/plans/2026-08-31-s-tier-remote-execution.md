@@ -638,19 +638,65 @@ domain concepts.
 
 ## Task 5 — Implement multiplexed stream, Unix, and stdio carriers
 
-**Files:** transport client/server/multiplexer plus worker `serve` and
-`structfs-stdio` entrypoints.
+**Files:** generic transport client/server/multiplexer and reusable Unix/stdio
+service hooks. Task 6 owns the thin `ox-worker` binary entrypoints so this task
+does not introduce a second service lifecycle.
 
-- [ ] Implement `RemoteStore: AsyncReader + AsyncWriter` over an abstract
-  bidirectional stream with concurrent in-flight IDs and out-of-order replies.
-- [ ] Add bounded sends, deadlines, late-response discard, deterministic
-  disconnect errors, and no blind write retry.
-- [ ] Export only a supplied Store root; prove path escape cannot reach the
-  worker broker.
-- [ ] Implement Unix socket server in long-lived `ox-worker serve`.
-- [ ] Implement stateless stdio bridge to that socket. Channel EOF only detaches.
-- [ ] Run one conformance suite against in-process, duplex, Unix, and stdio
-  carriers.
+### Task 5 verification manifest
+
+- [x] **T5.P1. Existing broker async Stores construct detached futures.**
+  Verified with
+  `nl -ba crates/ox-broker/src/async_store.rs | sed -n '1,82p'` and
+  `nl -ba crates/ox-broker/src/server.rs | sed -n '90,139p'`: both operations
+  return a Send, `'static` future and the broker spawns each without awaiting
+  under the dispatch loop. `ExportRoot` preserves that seam and releases its
+  short construction mutex before await at
+  `crates/ox-structfs-transport/src/root.rs:40-74`. If this ceases to be true,
+  the carrier is blocked for ~1 day to replace the adapter without serializing
+  parked reads.
+- [x] **T5.P2. Upstream StructFS exposes object-safe async read/write traits.**
+  Verified with
+  `nl -ba ~/.cargo/git/checkouts/structfs-33a5c53178d143e8/80a613e/packages/core-store/src/async_traits.rs | sed -n '31,84p'`;
+  `RemoteStore` implements them at `client.rs:246-262` and also implements the
+  existing broker detached traits at `client.rs:264-287`. If the pinned API
+  changes, the task is blocked for ~0.5 day to update the compatibility seam.
+- [x] **T5.P3. StructFS paths are validated component arrays with exact prefix
+  operations.** Verified with
+  `nl -ba ~/.cargo/git/checkouts/structfs-33a5c53178d143e8/80a613e/packages/core-store/src/path.rs | sed -n '48,178p'`;
+  root prepend and exact result stripping are at `root.rs:44-73`. If path
+  components gain parent traversal semantics, carrier export is blocked until
+  a new confinement proof and tests land.
+
+- [x] Implement `RemoteStore: AsyncReader + AsyncWriter` over an abstract
+  `AsyncRead + AsyncWrite` stream with a shared request-ID table and independent
+  reader/writer tasks (`client.rs:106-243`, `:290-376`). Server Store futures
+  are independently spawned, so responses can complete out of order
+  (`server.rs:65-159`). Verified with
+  `rg -n 'impl (AsyncReader|AsyncWriter) for RemoteStore|tokio::spawn' crates/ox-structfs-transport/src/{client,server}.rs`.
+- [x] Add bounded send and in-flight admission, absolute deadlines,
+  cancellation-safe RAII correlation cleanup, late-response discard, stable
+  disconnect errors, typed remote errors, and no blind write retry
+  (`client.rs:21-104`, `:175-243`, `:315-376`). The server rejects only an
+  already-expired request and never cancels an admitted Store future
+  (`server.rs:109-159`). Verified by carrier tests at `carriers.rs:295-409` and
+  `:452-592`.
+- [x] Export only a supplied Store root. `ExportRoot` joins every relative path
+  below one immutable root and rejects any returned write path outside that
+  exact prefix (`root.rs:9-74`). The shared conformance suite proves a sibling
+  secret is unreadable, exact-root results succeed, and sibling/prefix-collision
+  results fail (`carriers.rs:269-291`).
+- [x] Provide the Unix accept-loop hook for the long-lived Task 6 service
+  (`unix.rs:12-67`) without creating an executor or worker lifecycle here.
+- [x] Implement a stateless stdio-to-Unix bridge. Input EOF half-closes the
+  request direction, drains replies, and never owns service/Store work
+  (`unix.rs:77-116`; half-close E2E at `carriers.rs:594-636`).
+- [x] Run one semantic conformance suite against the direct in-process root,
+  caller-owned duplex stream, Unix socket, and stdio-to-Unix carrier
+  (`carriers.rs:240-293`), plus deadline/late response, disconnect during a
+  long write, actual send-queue saturation, cancellation cleanup, typed error
+  mapping, frame-limit isolation, and path-confinement regressions
+  (`carriers.rs:295-636`). Verified
+  with `cargo test -p ox-structfs-transport --no-fail-fast`.
 
 **Success:** Disconnecting every client leaves existing executor turns running.
 

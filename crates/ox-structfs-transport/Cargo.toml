@@ -10,9 +10,13 @@ authors.workspace = true
 description = "Bounded canonical-CBOR wire protocol for transporting generic StructFS operations"
 
 [dependencies]
+async-trait = { workspace = true }
 bytes = { workspace = true }
-structfs-core-store = { workspace = true }
+ox-broker = { workspace = true }
+structfs-core-store = { workspace = true, features = ["async"] }
 thiserror = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "io-std", "macros", "net", "rt-multi-thread"] }
 
 [dev-dependencies]
 proptest = { workspace = true }
+tempfile = { workspace = true }

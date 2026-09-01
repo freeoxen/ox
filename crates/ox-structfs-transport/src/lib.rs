@@ -7,12 +7,27 @@
 //!
 //! The normative byte layout is documented in `WIRE.md` at the crate root.
 
+mod client;
 mod codec;
 mod error;
 mod frame;
+mod io;
+mod root;
+mod server;
 
+#[cfg(unix)]
+mod unix;
+
+pub use client::{RemoteError, RemoteStore, RemoteStoreConfig};
 pub use codec::{
     Request, RequestOperation, Response, ResponseBody, WireError, WireErrorCode, WireMessage,
 };
 pub use error::CodecError;
 pub use frame::{CodecLimits, WIRE_VERSION, WireCodec};
+pub use root::ExportRoot;
+pub use server::{ErrorMapper, ServerConfig, connect_in_process, serve_stream};
+
+#[cfg(unix)]
+pub use unix::{
+    UnixServer, bridge_stdio_to_unix, bridge_streams_to_unix, connect_unix, spawn_unix_server,
+};

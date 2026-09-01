@@ -299,7 +299,20 @@ catalog, per-conversation manifest, or parallel event log.
 All coordinator/worker operations are StructFS reads and writes. RuSSH and the
 stdio/Unix streams are carriers. Wire v1 uses bounded length-prefixed canonical
 CBOR frames, preserves all StructFS `Record`/`Value` variants, allows multiple
-in-flight request IDs, and returns typed errors.
+in-flight request IDs, and returns typed errors. `RemoteStore` has bounded send
+and in-flight admission, per-request deadlines, cancellation-safe correlation
+cleanup, out-of-order response dispatch, stable disconnect failure, and no
+automatic write retry. The server rejects only a deadline already expired at
+admission; once a Store operation starts, loss of its response channel does not
+cancel it.
+
+Every connection receives the same explicitly supplied `ExportRoot`, not the
+worker broker. The adapter prepends that root to request paths and verifies that
+write-result paths strip the exact root, including rejection of sibling and
+prefix-collision paths. The long-lived service owns the Unix accept loop. Its
+stdio command is only a byte bridge: request-side EOF half-closes Unix and
+drains pending replies, while dropping the bridge leaves the service and
+admitted Store operations alive.
 
 Public and remote proxy Stores use async mounts. One parked ledger-cursor read
 therefore cannot block a message, approval, cancellation, or another

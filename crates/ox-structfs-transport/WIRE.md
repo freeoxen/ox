@@ -90,3 +90,25 @@ as a protocol discriminator.
 Wire v1 is closed: an unsupported version, discriminant, or field is rejected.
 A future version may define a different schema without making v1 peers silently
 reinterpret data.
+
+## Carrier contract
+
+`RemoteStore` multiplexes requests by ID over one ordered bidirectional byte
+stream; responses may arrive out of order. Its send queue and correlation table
+are bounded. A local deadline removes correlation state, so a later response is
+discarded by ID. Dropping a request future performs the same synchronous
+cleanup.
+
+Transport never retries a write. Timeout and disconnect are ambiguous outcomes
+which the caller reconciles using its domain idempotency key. The server rejects
+a request whose wire deadline is already expired, but after invoking the Store
+it never cancels that operation merely because the deadline or connection has
+ended. In particular, closing SSH/stdio/Unix response delivery cannot cancel an
+admitted write.
+
+Each server is constructed with one `ExportRoot`. Incoming relative paths are
+joined beneath that root, and returned write paths must strip that exact root;
+a sibling path or textual prefix collision is rejected. The Unix accept loop is
+owned by the long-lived service. The stdio adapter carries bytes to that socket
+without owning service or execution lifetime; stdin EOF half-closes the request
+direction and drains outstanding responses before detaching.
