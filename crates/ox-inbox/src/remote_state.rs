@@ -24,11 +24,13 @@ pub struct RemoteNodeIntent {
     pub node_attempt_id: String,
     pub provider: String,
     pub vm_name: String,
-    pub ssh_host: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh_host: Option<String>,
     pub ssh_port: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh_user: Option<String>,
-    pub ssh_dest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh_dest: Option<String>,
     /// Filesystem handle only. Private-key bytes are not accepted by this type.
     pub identity_path: String,
     /// Filesystem handle only. Known-host contents are not accepted by this type.
@@ -58,6 +60,42 @@ pub struct RemoteNodeUpdate {
     pub observed_state: Option<RemoteNodeObservedState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cleanup_state: Option<RemoteCleanupState>,
+}
+
+/// Provider-returned addressing observed after a provisioning effect. The
+/// node attempt compare-and-swap prevents a late provider response from being
+/// attached to a replacement attempt.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteNodeObservation {
+    pub node_attempt_id: String,
+    pub ssh_host: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh_user: Option<String>,
+    pub ssh_dest: String,
+    pub observed_state: RemoteNodeObservedState,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteOperationLeaseRequest {
+    pub owner_id: String,
+    pub lease_seconds: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteOperationLeaseRelease {
+    pub owner_id: String,
+    pub lease_epoch: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteOperationLease {
+    pub owner_id: String,
+    pub lease_epoch: i64,
+    pub lease_until: i64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -91,43 +129,45 @@ pub struct RemoteConversationUpdate {
     pub cleanup_state: Option<RemoteCleanupState>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-struct RemoteConversationRecord {
-    conversation_id: String,
-    node_id: String,
-    node_attempt_id: String,
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RemoteConversationRecord {
+    pub conversation_id: String,
+    pub node_id: String,
+    pub node_attempt_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    worker_thread_id: Option<String>,
-    create_id: String,
-    title: String,
-    initial_prompt: String,
+    pub worker_thread_id: Option<String>,
+    pub create_id: String,
+    pub title: String,
+    pub initial_prompt: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    parent_thread_id: Option<String>,
-    placement: String,
-    desired_state: String,
-    observed_state: String,
-    cleanup_state: String,
+    pub parent_thread_id: Option<String>,
+    pub placement: String,
+    pub desired_state: String,
+    pub observed_state: String,
+    pub cleanup_state: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-struct RemoteNodeRecord {
-    node_id: String,
-    node_attempt_id: String,
-    provider: String,
-    vm_name: String,
-    ssh_host: String,
-    ssh_port: i64,
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RemoteNodeRecord {
+    pub node_id: String,
+    pub node_attempt_id: String,
+    pub provider: String,
+    pub vm_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh_host: Option<String>,
+    pub ssh_port: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    ssh_user: Option<String>,
-    ssh_dest: String,
-    identity_path: String,
-    known_hosts_path: String,
-    worker_socket_path: String,
-    desired_state: String,
-    observed_state: String,
-    cleanup_state: String,
+    pub ssh_user: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh_dest: Option<String>,
+    pub identity_path: String,
+    pub known_hosts_path: String,
+    pub worker_socket_path: String,
+    pub desired_state: String,
+    pub observed_state: String,
+    pub cleanup_state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    image_digest: Option<String>,
+    pub image_digest: Option<String>,
 }
 
 /// Closed durable intent vocabulary. It intentionally has no credential-specific
@@ -163,6 +203,10 @@ pub enum RemoteAction {
     },
     DeleteNode {
         delete_id: String,
+        #[serde(default)]
+        force: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        affected_references: Vec<String>,
     },
     ReconcileLedger {
         from_seq: i64,
@@ -218,7 +262,34 @@ pub struct RemoteOperationUpdate {
     pub expected_state: RemoteOperationState,
     pub state: RemoteOperationState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_owner: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_epoch: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<RemoteOperationResult>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteOperationRecord {
+    pub operation_id: String,
+    pub operation_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_attempt_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
+    pub request_hash: String,
+    pub intent: RemoteOperationIntent,
+    pub state: RemoteOperationState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<RemoteOperationResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_owner: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_until: Option<i64>,
+    pub lease_epoch: i64,
 }
 
 macro_rules! string_enum {
@@ -508,8 +579,6 @@ fn validate_node(node: &RemoteNodeIntent) -> Result<(), StoreError> {
     for (field, value) in [
         ("provider", node.provider.as_str()),
         ("vm_name", node.vm_name.as_str()),
-        ("ssh_host", node.ssh_host.as_str()),
-        ("ssh_dest", node.ssh_dest.as_str()),
         ("desired_state", node.desired_state.as_str()),
         ("observed_state", node.observed_state.as_str()),
         ("cleanup_state", node.cleanup_state.as_str()),
@@ -518,6 +587,12 @@ fn validate_node(node: &RemoteNodeIntent) -> Result<(), StoreError> {
         if value.len() > 4_096 {
             return Err(err("remote_node", format!("{field} exceeds 4096 bytes")));
         }
+    }
+    if let Some(host) = &node.ssh_host {
+        validate_nonempty("remote_node", "ssh_host", host)?;
+    }
+    if let Some(dest) = &node.ssh_dest {
+        validate_nonempty("remote_node", "ssh_dest", dest)?;
     }
     if let Some(user) = &node.ssh_user {
         validate_nonempty("remote_node", "ssh_user", user)?;
@@ -540,9 +615,13 @@ fn decode_id(encoded: &str) -> Result<String, StoreError> {
     Ok(id)
 }
 
-fn item_path(kind: &str, id: &str) -> Result<Path, StoreError> {
+pub fn remote_item_path(kind: &str, id: &str) -> Result<Path, StoreError> {
     validate_id("remote_path", id)?;
     Path::parse(&format!("remote/{kind}/{}", id_codec::encode_id(id))).map_err(StoreError::from)
+}
+
+fn item_path(kind: &str, id: &str) -> Result<Path, StoreError> {
+    remote_item_path(kind, id)
 }
 
 fn serialize<T: Serialize>(operation: &'static str, value: &T) -> Result<Vec<u8>, StoreError> {
@@ -580,6 +659,11 @@ fn operation_identity(intent: &RemoteOperationIntent) -> Result<(String, String)
     Ok((format!("rop_{:x}", identity.finalize()), request_hash))
 }
 
+pub fn remote_operation_item_path(intent: &RemoteOperationIntent) -> Result<Path, StoreError> {
+    let (operation_id, _) = operation_identity(intent)?;
+    remote_item_path("operations", &operation_id)
+}
+
 fn validate_operation_shape(intent: &RemoteOperationIntent) -> Result<(), StoreError> {
     let has_node = intent.node_id.is_some() && intent.node_attempt_id.is_some();
     let has_conversation = intent.conversation_id.is_some();
@@ -608,7 +692,7 @@ fn validate_operation_shape(intent: &RemoteOperationIntent) -> Result<(), StoreE
             }
             has_node && !has_conversation
         }
-        RemoteAction::DeleteNode { delete_id } => {
+        RemoteAction::DeleteNode { delete_id, .. } => {
             validate_id("remote_operation", delete_id)?;
             has_node && !has_conversation
         }
@@ -787,7 +871,7 @@ impl InboxStore {
                 params![now_epoch(), path_node_id, replacement.expected_attempt_id],
             ).map_err(|error| err("remote_node_attempt", error))?;
             tx.execute(
-                "UPDATE remote_operations SET state='superseded', updated_at=?1 WHERE node_id=?2 AND node_attempt_id=?3 AND state IN ('pending', 'running')",
+                "UPDATE remote_operations SET state='superseded', lease_owner=NULL, lease_until=NULL, updated_at=?1 WHERE node_id=?2 AND node_attempt_id=?3 AND state IN ('pending', 'running')",
                 params![now_epoch(), path_node_id, replacement.expected_attempt_id],
             ).map_err(|error| err("remote_node_attempt", error))?;
         }
@@ -841,6 +925,139 @@ impl InboxStore {
         item_path("nodes", node_id)
     }
 
+    fn observe_remote_node(
+        &self,
+        node_id: &str,
+        observation: &RemoteNodeObservation,
+    ) -> Result<Path, StoreError> {
+        validate_id("remote_node_observation", node_id)?;
+        validate_id("remote_node_observation", &observation.node_attempt_id)?;
+        validate_nonempty("remote_node_observation", "ssh_host", &observation.ssh_host)?;
+        validate_nonempty("remote_node_observation", "ssh_dest", &observation.ssh_dest)?;
+        if let Some(user) = &observation.ssh_user {
+            validate_nonempty("remote_node_observation", "ssh_user", user)?;
+        }
+        let mut conn = self
+            .db
+            .lock()
+            .map_err(|error| err("remote_node_observation", error))?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| err("remote_node_observation", error))?;
+        let current: Option<String> = tx
+            .query_row(
+                "SELECT observed_state FROM remote_nodes WHERE node_id=?1 AND node_attempt_id=?2",
+                params![node_id, observation.node_attempt_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| err("remote_node_observation", error))?;
+        let Some(current) = current else {
+            return Err(err("remote_node_observation", "stale node attempt"));
+        };
+        if !node_observed_transition_allowed(&current, observation.observed_state.as_str()) {
+            return Err(err("remote_node_observation", "illegal state transition"));
+        }
+        let changed = tx
+            .execute(
+                "UPDATE remote_nodes SET ssh_host=?1, ssh_user=?2, ssh_dest=?3, observed_state=?4, updated_at=?5 WHERE node_id=?6 AND node_attempt_id=?7 AND observed_state=?8",
+                params![observation.ssh_host, observation.ssh_user, observation.ssh_dest, observation.observed_state.as_str(), now_epoch(), node_id, observation.node_attempt_id, current],
+            )
+            .map_err(|error| err("remote_node_observation", error))?;
+        if changed != 1 {
+            return Err(err("remote_node_observation", "stale node attempt"));
+        }
+        tx.commit()
+            .map_err(|error| err("remote_node_observation", error))?;
+        item_path("nodes", node_id)
+    }
+
+    fn claim_remote_operation(
+        &self,
+        operation_id: &str,
+        request: &RemoteOperationLeaseRequest,
+    ) -> Result<Path, StoreError> {
+        validate_id("remote_operation_lease", operation_id)?;
+        validate_id("remote_operation_lease", &request.owner_id)?;
+        if !(1..=60).contains(&request.lease_seconds) {
+            return Err(err(
+                "remote_operation_lease",
+                "lease_seconds must be in 1..=60",
+            ));
+        }
+        let now = now_epoch();
+        let until = now.saturating_add(i64::from(request.lease_seconds));
+        let mut conn = self
+            .db
+            .lock()
+            .map_err(|error| err("remote_operation_lease", error))?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| err("remote_operation_lease", error))?;
+        let current: Option<(String, Option<String>, Option<i64>, i64)> = tx
+            .query_row(
+                "SELECT state, lease_owner, lease_until, lease_epoch FROM remote_operations WHERE operation_id=?1",
+                [operation_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .map_err(|error| err("remote_operation_lease", error))?;
+        let Some((state, owner, expiry, epoch)) = current else {
+            return Err(err("remote_operation_lease", "unknown operation"));
+        };
+        if !matches!(state.as_str(), "pending" | "running") {
+            return Err(err("remote_operation_lease", "operation is terminal"));
+        }
+        let renewal = owner.as_deref() == Some(request.owner_id.as_str())
+            && expiry.is_some_and(|expiry| expiry > now);
+        if !renewal && expiry.is_some_and(|expiry| expiry > now) {
+            return Err(err("remote_operation_lease", "operation lease is held"));
+        }
+        let next_epoch = if renewal {
+            epoch
+        } else {
+            epoch.saturating_add(1)
+        };
+        let changed = tx.execute(
+            "UPDATE remote_operations SET state='running', lease_owner=?1, lease_until=?2, lease_epoch=?3, updated_at=?4 WHERE operation_id=?5 AND state=?6 AND lease_epoch=?7",
+            params![request.owner_id, until, next_epoch, now, operation_id, state, epoch],
+        )
+        .map_err(|error| err("remote_operation_lease", error))?;
+        if changed != 1 {
+            return Err(err("remote_operation_lease", "operation lease raced"));
+        }
+        tx.commit()
+            .map_err(|error| err("remote_operation_lease", error))?;
+        Path::parse(&format!(
+            "remote/operations/{}/lease/{next_epoch}",
+            id_codec::encode_id(operation_id)
+        ))
+        .map_err(StoreError::from)
+    }
+
+    fn release_remote_operation(
+        &self,
+        operation_id: &str,
+        request: &RemoteOperationLeaseRelease,
+    ) -> Result<Path, StoreError> {
+        validate_id("remote_operation_lease", operation_id)?;
+        validate_id("remote_operation_lease", &request.owner_id)?;
+        let conn = self
+            .db
+            .lock()
+            .map_err(|error| err("remote_operation_lease", error))?;
+        let changed = conn
+            .execute(
+                "UPDATE remote_operations SET state='pending', lease_owner=NULL, lease_until=NULL, updated_at=?1 WHERE operation_id=?2 AND state='running' AND lease_owner=?3 AND lease_epoch=?4 AND lease_until>?1",
+                params![now_epoch(), operation_id, request.owner_id, request.lease_epoch],
+            )
+            .map_err(|error| err("remote_operation_lease", error))?;
+        if changed != 1 {
+            return Err(err("remote_operation_lease", "stale operation lease"));
+        }
+        item_path("operations", operation_id)
+    }
+
     fn put_remote_conversation(
         &self,
         value: &RemoteConversationIntent,
@@ -890,16 +1107,24 @@ impl InboxStore {
                 .map_err(|error| err("remote_conversation", error))?;
             return item_path("conversations", &value.conversation_id);
         }
-        let current_attempt: Option<String> = tx
+        let current_attempt: Option<(String, String)> = tx
             .query_row(
-                "SELECT node_attempt_id FROM remote_nodes WHERE node_id=?1",
+                "SELECT node_attempt_id, desired_state FROM remote_nodes WHERE node_id=?1",
                 [&value.node_id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
             .map_err(|error| err("remote_conversation", error))?;
-        if current_attempt.as_deref() != Some(value.node_attempt_id.as_str()) {
+        if current_attempt.as_ref().map(|value| value.0.as_str())
+            != Some(value.node_attempt_id.as_str())
+        {
             return Err(err("remote_conversation", "stale or unknown node attempt"));
+        }
+        if current_attempt.as_ref().map(|value| value.1.as_str()) != Some("active") {
+            return Err(err(
+                "remote_conversation",
+                "node is draining and rejects new conversations",
+            ));
         }
         let inserted = tx.execute(
             "INSERT OR IGNORE INTO remote_conversations (conversation_id, node_id, node_attempt_id, create_id, title, initial_prompt, parent_thread_id, placement, desired_state, observed_state, cleanup_state, request_hash, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)",
@@ -1113,15 +1338,40 @@ impl InboxStore {
             .db
             .lock()
             .map_err(|error| err("remote_operation_update", error))?;
-        let changed = match &update.node_attempt_id {
-            Some(attempt) => conn.execute(
+        if update.lease_owner.is_some() != update.lease_epoch.is_some() {
+            return Err(err(
+                "remote_operation_update",
+                "lease owner and epoch must be supplied together",
+            ));
+        }
+        if update.expected_state == RemoteOperationState::Running && update.lease_owner.is_none() {
+            return Err(err(
+                "remote_operation_update",
+                "running operation commit requires a fenced lease",
+            ));
+        }
+        if let Some(owner) = &update.lease_owner {
+            validate_id("remote_operation_update", owner)?;
+        }
+        let now = now_epoch();
+        let changed = match (&update.node_attempt_id, &update.lease_owner, update.lease_epoch) {
+            (Some(attempt), Some(owner), Some(epoch)) => conn.execute(
+                "UPDATE remote_operations SET state=?1, result_json=?2, lease_owner=NULL, lease_until=NULL, updated_at=?3 WHERE operation_id=?4 AND state=?5 AND node_attempt_id=?6 AND lease_owner=?7 AND lease_epoch=?8 AND lease_until>?3 AND EXISTS(SELECT 1 FROM remote_nodes n WHERE n.node_id=remote_operations.node_id AND n.node_attempt_id=?6)",
+                params![update.state.as_str(), result, now, id, update.expected_state.as_str(), attempt, owner, epoch],
+            ),
+            (None, Some(owner), Some(epoch)) => conn.execute(
+                "UPDATE remote_operations SET state=?1, result_json=?2, lease_owner=NULL, lease_until=NULL, updated_at=?3 WHERE operation_id=?4 AND state=?5 AND node_attempt_id IS NULL AND lease_owner=?6 AND lease_epoch=?7 AND lease_until>?3",
+                params![update.state.as_str(), result, now, id, update.expected_state.as_str(), owner, epoch],
+            ),
+            (Some(attempt), None, None) => conn.execute(
                 "UPDATE remote_operations SET state=?1, result_json=?2, updated_at=?3 WHERE operation_id=?4 AND state=?5 AND node_attempt_id=?6 AND EXISTS(SELECT 1 FROM remote_nodes n WHERE n.node_id=remote_operations.node_id AND n.node_attempt_id=?6)",
-                params![update.state.as_str(), result, now_epoch(), id, update.expected_state.as_str(), attempt],
+                params![update.state.as_str(), result, now, id, update.expected_state.as_str(), attempt],
             ),
-            None => conn.execute(
+            (None, None, None) => conn.execute(
                 "UPDATE remote_operations SET state=?1, result_json=?2, updated_at=?3 WHERE operation_id=?4 AND state=?5 AND node_attempt_id IS NULL",
-                params![update.state.as_str(), result, now_epoch(), id, update.expected_state.as_str()],
+                params![update.state.as_str(), result, now, id, update.expected_state.as_str()],
             ),
+            _ => unreachable!(),
         }.map_err(|error| err("remote_operation_update", error))?;
         if changed != 1 {
             return Err(err(
@@ -1263,12 +1513,12 @@ impl InboxStore {
                 Some(structfs_serde_store::to_value(&entries).map_err(|error| err("remote_read", error))?)
             }
             [remote, operations, pending] if remote.as_str()=="remote" && operations.as_str()=="operations" && pending.as_str()=="pending" => {
-                let mut statement=conn.prepare("SELECT operation_id, operation_kind, node_id, node_attempt_id, conversation_id, request_hash, intent_json, state, result_json FROM remote_operations WHERE state='pending' ORDER BY created_at, operation_id").map_err(|error| err("remote_read", error))?;
-                let rows=statement.query_map([], operation_value).map_err(|error| err("remote_read", error))?;
+                let mut statement=conn.prepare("SELECT operation_id, operation_kind, node_id, node_attempt_id, conversation_id, request_hash, intent_json, state, result_json, lease_owner, lease_until, lease_epoch FROM remote_operations WHERE state='pending' OR (state='running' AND (lease_until IS NULL OR lease_until<=?1)) ORDER BY created_at, operation_id").map_err(|error| err("remote_read", error))?;
+                let rows=statement.query_map([now_epoch()], operation_value).map_err(|error| err("remote_read", error))?;
                 Some(Value::Array(rows.collect::<Result<Vec<_>,_>>().map_err(|error| err("remote_read", error))?))
             }
             [remote, operations, id] if remote.as_str()=="remote" && operations.as_str()=="operations" => conn.query_row(
-                "SELECT operation_id, operation_kind, node_id, node_attempt_id, conversation_id, request_hash, intent_json, state, result_json FROM remote_operations WHERE operation_id=?1",
+                "SELECT operation_id, operation_kind, node_id, node_attempt_id, conversation_id, request_hash, intent_json, state, result_json, lease_owner, lease_until, lease_epoch FROM remote_operations WHERE operation_id=?1",
                 [decode_id(id)?], operation_value,
             ).optional().map_err(|error| err("remote_read", error))?,
             _ => None,
@@ -1307,6 +1557,16 @@ impl InboxStore {
             {
                 self.update_remote_node(&decode_id(id)?, &decode(value, "remote_node_update")?)?
             }
+            [remote, nodes, id, observation]
+                if remote.as_str() == "remote"
+                    && nodes.as_str() == "nodes"
+                    && observation.as_str() == "observation" =>
+            {
+                self.observe_remote_node(
+                    &decode_id(id)?,
+                    &decode(value, "remote_node_observation")?,
+                )?
+            }
             [remote, conversations]
                 if remote.as_str() == "remote" && conversations.as_str() == "conversations" =>
             {
@@ -1342,6 +1602,27 @@ impl InboxStore {
                 self.update_remote_operation(
                     &decode_id(id)?,
                     &decode(value, "remote_operation_update")?,
+                )?
+            }
+            [remote, operations, id, lease]
+                if remote.as_str() == "remote"
+                    && operations.as_str() == "operations"
+                    && lease.as_str() == "lease" =>
+            {
+                self.claim_remote_operation(
+                    &decode_id(id)?,
+                    &decode(value, "remote_operation_lease")?,
+                )?
+            }
+            [remote, operations, id, lease, release]
+                if remote.as_str() == "remote"
+                    && operations.as_str() == "operations"
+                    && lease.as_str() == "lease"
+                    && release.as_str() == "release" =>
+            {
+                self.release_remote_operation(
+                    &decode_id(id)?,
+                    &decode(value, "remote_operation_lease_release")?,
                 )?
             }
             _ => return Ok(None),
@@ -1395,6 +1676,13 @@ fn operation_value(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
         })?;
         map.insert("result".into(), structfs_serde_store::json_to_value(result));
     }
+    if let Some(owner) = row.get::<_, Option<String>>(9)? {
+        map.insert("lease_owner".into(), Value::String(owner));
+    }
+    if let Some(until) = row.get::<_, Option<i64>>(10)? {
+        map.insert("lease_until".into(), Value::Integer(until));
+    }
+    map.insert("lease_epoch".into(), Value::Integer(row.get(11)?));
     Ok(Value::Map(map))
 }
 
@@ -1413,10 +1701,10 @@ mod tests {
             node_attempt_id: attempt.into(),
             provider: "exe.dev".into(),
             vm_name: format!("ox-{node_id}"),
-            ssh_host: "203.0.113.7".into(),
+            ssh_host: Some("203.0.113.7".into()),
             ssh_port: 22,
             ssh_user: None,
-            ssh_dest: "route@203.0.113.7".into(),
+            ssh_dest: Some("route@203.0.113.7".into()),
             identity_path: "/home/test/.ssh/id_ed25519".into(),
             known_hosts_path: "/home/test/.ox/known_hosts".into(),
             worker_socket_path: "/run/user/1000/ox-worker.sock".into(),
@@ -1882,5 +2170,183 @@ mod tests {
                 .to_string()
                 .contains("illegal state transition")
         );
+    }
+
+    #[test]
+    fn provider_observation_is_nullable_before_effect_and_attempt_fenced() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = InboxStore::open(root.path()).unwrap();
+        let mut pending = node("node-pending", "attempt-1");
+        pending.ssh_host = None;
+        pending.ssh_dest = None;
+        pending.observed_state = RemoteNodeObservedState::Pending;
+        let node_path = write_node(&mut store, &pending);
+        let persisted = store.read(&node_path).unwrap().unwrap();
+        assert!(!value_map(&persisted).contains_key("ssh_host"));
+        assert!(!value_map(&persisted).contains_key("ssh_dest"));
+
+        let observation = RemoteNodeObservation {
+            node_attempt_id: "attempt-1".into(),
+            ssh_host: "203.0.113.9".into(),
+            ssh_user: Some("route".into()),
+            ssh_dest: "route@203.0.113.9".into(),
+            observed_state: RemoteNodeObservedState::Provisioning,
+        };
+        store
+            .write(
+                &Path::parse(&format!("{node_path}/observation")).unwrap(),
+                record(&observation),
+            )
+            .unwrap();
+        let persisted = store.read(&node_path).unwrap().unwrap();
+        assert_eq!(
+            value_map(&persisted).get("ssh_host"),
+            Some(&Value::String("203.0.113.9".into()))
+        );
+        let stale = RemoteNodeObservation {
+            node_attempt_id: "attempt-old".into(),
+            ..observation
+        };
+        assert!(
+            store
+                .write(
+                    &Path::parse(&format!("{node_path}/observation")).unwrap(),
+                    record(&stale),
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("stale")
+        );
+    }
+
+    #[test]
+    fn expired_lease_takeover_fences_old_owner_terminal_commit_and_release() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = InboxStore::open(root.path()).unwrap();
+        write_node(&mut store, &node("node-lease", "attempt-1"));
+        let intent = RemoteOperationIntent {
+            semantic_key: "lease-op".into(),
+            node_id: Some("node-lease".into()),
+            node_attempt_id: Some("attempt-1".into()),
+            conversation_id: None,
+            action: RemoteAction::ProvisionNode {
+                cpu: 2,
+                memory_gb: 4,
+                disk_gb: 20,
+                image: "image@sha256:one".into(),
+            },
+        };
+        let operation_path = store
+            .write(&path!("remote/operations"), record(&intent))
+            .unwrap();
+        let lease_path = Path::parse(&format!("{operation_path}/lease")).unwrap();
+        let first = store
+            .write(
+                &lease_path,
+                record(&RemoteOperationLeaseRequest {
+                    owner_id: "owner-a".into(),
+                    lease_seconds: 30,
+                }),
+            )
+            .unwrap();
+        assert_eq!(first.iter().last().map(String::as_str), Some("1"));
+        store
+            .db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE remote_operations SET lease_until=0 WHERE operation_id=?1",
+                [decode_id(operation_path.iter().nth(2).unwrap()).unwrap()],
+            )
+            .unwrap();
+        let second = store
+            .write(
+                &lease_path,
+                record(&RemoteOperationLeaseRequest {
+                    owner_id: "owner-b".into(),
+                    lease_seconds: 30,
+                }),
+            )
+            .unwrap();
+        assert_eq!(second.iter().last().map(String::as_str), Some("2"));
+
+        let release_path = Path::parse(&format!("{lease_path}/release")).unwrap();
+        assert!(
+            store
+                .write(
+                    &release_path,
+                    record(&RemoteOperationLeaseRelease {
+                        owner_id: "owner-a".into(),
+                        lease_epoch: 1,
+                    }),
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("stale")
+        );
+        let state_path = Path::parse(&format!("{operation_path}/state")).unwrap();
+        let old_commit = RemoteOperationUpdate {
+            node_attempt_id: Some("attempt-1".into()),
+            expected_state: RemoteOperationState::Running,
+            state: RemoteOperationState::Applied,
+            lease_owner: Some("owner-a".into()),
+            lease_epoch: Some(1),
+            result: None,
+        };
+        assert!(store.write(&state_path, record(&old_commit)).is_err());
+        let current_commit = RemoteOperationUpdate {
+            lease_owner: Some("owner-b".into()),
+            lease_epoch: Some(2),
+            ..old_commit
+        };
+        store.write(&state_path, record(&current_commit)).unwrap();
+    }
+
+    #[test]
+    fn simultaneous_store_claimers_have_exactly_one_winner() {
+        let root = tempfile::tempdir().unwrap();
+        let operation_path = {
+            let mut store = InboxStore::open(root.path()).unwrap();
+            write_node(&mut store, &node("node-race", "attempt-1"));
+            store
+                .write(
+                    &path!("remote/operations"),
+                    record(&RemoteOperationIntent {
+                        semantic_key: "race-op".into(),
+                        node_id: Some("node-race".into()),
+                        node_attempt_id: Some("attempt-1".into()),
+                        conversation_id: None,
+                        action: RemoteAction::ProvisionNode {
+                            cpu: 2,
+                            memory_gb: 4,
+                            disk_gb: 20,
+                            image: "image@sha256:one".into(),
+                        },
+                    }),
+                )
+                .unwrap()
+        };
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let mut joins = Vec::new();
+        for owner in ["owner-a", "owner-b"] {
+            let root = root.path().to_path_buf();
+            let barrier = barrier.clone();
+            let lease_path = Path::parse(&format!("{operation_path}/lease")).unwrap();
+            joins.push(std::thread::spawn(move || {
+                let mut store = InboxStore::open(&root).unwrap();
+                barrier.wait();
+                store.write(
+                    &lease_path,
+                    record(&RemoteOperationLeaseRequest {
+                        owner_id: owner.into(),
+                        lease_seconds: 30,
+                    }),
+                )
+            }));
+        }
+        barrier.wait();
+        let results: Vec<_> = joins.into_iter().map(|join| join.join().unwrap()).collect();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
     }
 }

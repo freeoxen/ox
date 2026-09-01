@@ -84,10 +84,10 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             node_attempt_id     TEXT NOT NULL,
             provider            TEXT NOT NULL,
             vm_name             TEXT NOT NULL UNIQUE,
-            ssh_host            TEXT NOT NULL,
+            ssh_host            TEXT,
             ssh_port            INTEGER NOT NULL,
             ssh_user            TEXT,
-            ssh_dest            TEXT NOT NULL,
+            ssh_dest            TEXT,
             identity_path       TEXT NOT NULL,
             known_hosts_path    TEXT NOT NULL,
             worker_socket_path  TEXT NOT NULL,
@@ -132,6 +132,7 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             result_json         BLOB,
             lease_owner         TEXT,
             lease_until         INTEGER,
+            lease_epoch         INTEGER NOT NULL DEFAULT 0,
             created_at          INTEGER NOT NULL,
             updated_at          INTEGER NOT NULL,
             FOREIGN KEY (conversation_id)
@@ -169,6 +170,47 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
             ON remote_operations(node_id, node_attempt_id);
         ",
     )?;
+
+    // Task 9 persists node intent before provider creation, so provider-returned
+    // addressing must be nullable. Rebuild only the short-lived remote table
+    // created by the earlier development schema; local intent is preserved.
+    let provider_fields_not_null: bool = conn
+        .prepare("PRAGMA table_info(remote_nodes)")?
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(1)?, row.get::<_, i64>(3)?))
+        })?
+        .filter_map(Result::ok)
+        .any(|(name, not_null)| matches!(name.as_str(), "ssh_host" | "ssh_dest") && not_null != 0);
+    if provider_fields_not_null {
+        conn.execute_batch(
+            "BEGIN IMMEDIATE;
+             CREATE TABLE remote_nodes_v2 (
+                node_id TEXT PRIMARY KEY, node_attempt_id TEXT NOT NULL,
+                provider TEXT NOT NULL, vm_name TEXT NOT NULL UNIQUE,
+                ssh_host TEXT, ssh_port INTEGER NOT NULL, ssh_user TEXT,
+                ssh_dest TEXT, identity_path TEXT NOT NULL,
+                known_hosts_path TEXT NOT NULL, worker_socket_path TEXT NOT NULL,
+                desired_state TEXT NOT NULL, observed_state TEXT NOT NULL,
+                cleanup_state TEXT NOT NULL, image_digest TEXT,
+                request_hash TEXT NOT NULL, created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+             );
+             INSERT INTO remote_nodes_v2 SELECT * FROM remote_nodes;
+             DROP TABLE remote_nodes;
+             ALTER TABLE remote_nodes_v2 RENAME TO remote_nodes;
+             CREATE INDEX IF NOT EXISTS idx_remote_nodes_state
+                ON remote_nodes(desired_state, observed_state, cleanup_state);
+             COMMIT;",
+        )?;
+    }
+    if conn
+        .prepare("SELECT lease_epoch FROM remote_operations LIMIT 0")
+        .is_err()
+    {
+        conn.execute_batch(
+            "ALTER TABLE remote_operations ADD COLUMN lease_epoch INTEGER NOT NULL DEFAULT 0;",
+        )?;
+    }
 
     // Migrate: add columns if missing (for databases created before this version)
     let has_last_seq: bool = conn.prepare("SELECT last_seq FROM threads LIMIT 0").is_ok();
@@ -436,5 +478,90 @@ mod tests {
                 assert!(exists, "missing additive table {table}");
             }
         }
+    }
+
+    #[test]
+    fn migrates_task8_remote_shape_without_losing_related_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize(&conn).unwrap();
+        conn.pragma_update(None, "foreign_keys", "OFF").unwrap();
+        conn.execute_batch(
+            "INSERT INTO remote_nodes VALUES (
+                'node-1','attempt-1','exe.dev','oxnode1','203.0.113.1',22,NULL,
+                'route@203.0.113.1','/tmp/id','/tmp/known','/tmp/worker.sock',
+                'active','ready','none','sha256:image','hash-node',1,1
+             );
+             INSERT INTO remote_conversations VALUES (
+                'conversation-1','node-1','attempt-1','t_remote','create-1',
+                'title','prompt',NULL,'fresh_node','active','running','none',
+                'hash-conversation',1,1
+             );
+             INSERT INTO remote_operations (
+                operation_id,operation_kind,node_id,node_attempt_id,conversation_id,
+                request_hash,intent_json,state,created_at,updated_at
+             ) VALUES (
+                'operation-1','send_message','node-1','attempt-1','conversation-1',
+                'hash-operation',x'7b7d','applied',1,1
+             );
+             CREATE TABLE remote_nodes_task8 (
+                node_id TEXT PRIMARY KEY, node_attempt_id TEXT NOT NULL,
+                provider TEXT NOT NULL, vm_name TEXT NOT NULL UNIQUE,
+                ssh_host TEXT NOT NULL, ssh_port INTEGER NOT NULL, ssh_user TEXT,
+                ssh_dest TEXT NOT NULL, identity_path TEXT NOT NULL,
+                known_hosts_path TEXT NOT NULL, worker_socket_path TEXT NOT NULL,
+                desired_state TEXT NOT NULL, observed_state TEXT NOT NULL,
+                cleanup_state TEXT NOT NULL, image_digest TEXT,
+                request_hash TEXT NOT NULL, created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+             );
+             INSERT INTO remote_nodes_task8 SELECT * FROM remote_nodes;
+             DROP TABLE remote_nodes;
+             ALTER TABLE remote_nodes_task8 RENAME TO remote_nodes;
+             ALTER TABLE remote_operations DROP COLUMN lease_epoch;",
+        )
+        .unwrap();
+
+        initialize(&conn).unwrap();
+        initialize(&conn).unwrap();
+        for (table, expected) in [
+            ("remote_nodes", 1_i64),
+            ("remote_conversations", 1),
+            ("remote_operations", 1),
+        ] {
+            let count: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, expected, "lost rows from {table}");
+        }
+        let provider_nullability: Vec<(String, i64)> = conn
+            .prepare("PRAGMA table_info(remote_nodes)")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(1)?, row.get(3)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        for field in ["ssh_host", "ssh_dest"] {
+            assert_eq!(
+                provider_nullability
+                    .iter()
+                    .find(|(name, _)| name == field)
+                    .map(|(_, not_null)| *not_null),
+                Some(0)
+            );
+        }
+        assert!(
+            conn.prepare("SELECT lease_epoch FROM remote_operations LIMIT 0")
+                .is_ok()
+        );
+        let relation: String = conn
+            .query_row(
+                "SELECT c.node_id FROM remote_conversations c JOIN remote_nodes n ON n.node_id=c.node_id WHERE c.conversation_id='conversation-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(relation, "node-1");
     }
 }

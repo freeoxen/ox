@@ -908,10 +908,10 @@ must not acquire a reverse dependency on the provider/coordinator crate.
   matches are implemented at `remote_state.rs:1223-1353` and exercised at
   `:1464-1505`.
 
-- [x] **T8-P5. SQLite foreign-key enforcement is not enabled by the current
-  `InboxStore`, so remote correctness must not depend on declarative foreign
+- [x] **T8-P5. Remote correctness does not depend on declarative foreign
   keys.** Verified 2026-09-01 with
-  `rg -n "foreign_keys" crates/ox-inbox/src` (no matches). Node-attempt and
+  `rg -n "foreign_keys" crates/ox-inbox/src`: the only match is the Task 8
+  legacy migration fixture explicitly disabling enforcement. Node-attempt and
   target checks execute in the same `TransactionBehavior::Immediate`
   transaction as their mutation at `remote_state.rs:765-796`, `:871-934`, and
   `:1005-1095`; cached batch validation and commit are similarly atomic at
@@ -967,18 +967,67 @@ local database owner.
 **Files:** `ox-remote/src/{manager,reconcile,placement,state,records,error}.rs`
 with fake provider/worker Stores and crash injection.
 
-- [ ] Persist intent and all IDs before provisioning or remote mutation.
-- [ ] Implement `fresh_node`, `prefer_existing`, and `require_node` using worker
+### Prerequisites
+
+- [x] **T9-P1. The coordinator can remain entirely on StructFS Store seams.**
+  Verified 2026-09-01 with
+  `nl -ba crates/ox-remote/src/state.rs | sed -n '1,105p'` and
+  `rg -n 'impl AsyncReader|impl AsyncWriter' crates/ox-remote/src/exe.rs crates/ox-worker/src/public_store.rs`:
+  `StorePort` exposes only `Path`/`Record` reads and writes, adapters detach
+  async futures before releasing their short mutex, and provider/worker
+  implementations already expose those Store traits. No SQLite connection,
+  provider runner, or worker executor method enters `RemoteManagerStore`.
+
+- [x] **T9-P2. Worker identity, capacity, ingress, and ledger paths are the
+  existing public worker contract.** Verified with
+  `nl -ba crates/ox-worker/src/public_store.rs | sed -n '203,272p;318,450p'`:
+  health includes exact node/attempt at `:206-215`, capacity at `:221-235`,
+  bounded ledger batches at `:243-271`, and create/message/approval/cancel
+  writes at `:321-448`. Placement and reconciliation call these paths rather
+  than introducing another executor or event model.
+
+- [x] **T9-P3. Task 8 owns closed intent, compare-by-attempt observation,
+  cursor commit, and fenced short leases.** Verified with
+  `rg -n 'RemoteNodeObservation|claim_remote_operation|release_remote_operation|running operation commit requires|operations/pending' crates/ox-inbox/src/remote_state.rs`:
+  provider observation is attempt-scoped at `remote_state.rs:931-976`; claims
+  increment/renew an epoch at `:978-1035`; release and terminal commits require
+  owner/epoch plus an unexpired lease at `:1037-1061` and `:1349-1365`; pending
+  reads include expired running work at `:1515`. If these checks regress,
+  multi-process reconciliation is blocked until fencing is restored.
+
+- [x] **T9-P4. A deletion drain and conversation insert share the InboxStore
+  transactional state machine.** Verified with
+  `nl -ba crates/ox-inbox/src/remote_state.rs | sed -n '1060,1130p'`:
+  idempotent existing intent returns first, while a new row requires the exact
+  current attempt and `desired_state='active'` at `:1109-1127`. The manager
+  sets draining before deletion preflight (`manager.rs:843`), closing the
+  placement/delete race without a global lock.
+
+- [x] **T9-P5. The durable ledger remains the only event stream.** Verified
+  with `nl -ba crates/ox-remote/src/reconcile.rs | sed -n '15,100p'`:
+  reconciliation reads the committed local cursor, requests the worker's
+  existing `LedgerEntry` batch, and writes one Task 8 `CachedLedgerBatch`; Task
+  8 verifies sequence/parent/content hashes and atomically advances the cursor.
+
+- [x] Persist intent and all IDs before provisioning or remote mutation.
+- [x] Implement `fresh_node`, `prefer_existing`, and `require_node` using worker
   health/capacity; default to `fresh_node` for MVP.
-- [ ] Verify worker node/attempt identity before creating or adopting a thread.
-- [ ] Replay stable create/message/approval/cancel IDs after ambiguous transport
+- [x] Verify worker node/attempt identity before creating or adopting a thread.
+- [x] Replay stable create/message/approval/cancel IDs after ambiguous transport
   outcomes and accept the worker's idempotent original result.
-- [ ] Reconcile ledger batches from the last committed seq/hash.
-- [ ] Treat timeout/disconnect as unavailable, not lost. Mark lost only after a
+- [x] Reconcile ledger batches from the last committed seq/hash.
+- [x] Treat timeout/disconnect as unavailable, not lost. Mark lost only after a
   successful exact-name provider query proves absence.
-- [ ] Refuse node deletion while any local or verified worker thread is active;
+- [x] Refuse node deletion while any local or verified worker thread is active;
   forced deletion enumerates affected remote references.
-- [ ] Use short per-operation advisory leases, not a process-global lock.
+- [x] Use short per-operation advisory leases, not a process-global lock.
+
+Crash and concurrency evidence is in
+`crates/ox-remote/tests/manager_reconcile.rs:255-420` (pre-effect intent,
+provider and worker ambiguity, pending replay, delete-after-effect recovery,
+same-semantic racing starts, and ledger cursor commit) plus
+`crates/ox-inbox/src/remote_state.rs:2175-2370` (nullable observations,
+expired-owner fencing, and simultaneous claimers).
 
 **Success:** Killing the local process around every commit/external call
 converges without duplicate VM, worker thread, prompt, approval, or cancel.

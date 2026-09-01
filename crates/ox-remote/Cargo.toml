@@ -12,10 +12,13 @@ description = "Typed remote-provider Store adapters for ox"
 [dependencies]
 async-trait = { workspace = true }
 ox-broker = { workspace = true }
+ox-inbox = { workspace = true }
 ox-structfs-transport = { workspace = true }
+ox-types = { workspace = true }
 russh = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 structfs-core-store = { workspace = true, features = ["async"] }
 structfs-serde-store = { workspace = true }
 thiserror = { workspace = true }
