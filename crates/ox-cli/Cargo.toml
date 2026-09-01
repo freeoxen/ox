@@ -21,6 +21,8 @@ path = "src/main.rs"
 [dependencies]
 parking_lot = { workspace = true }
 ox-path = { workspace = true }
+ox-remote = { workspace = true }
+ox-structfs-transport = { workspace = true }
 ox-kernel = { workspace = true }
 ox-context = { workspace = true }
 ox-executor = { workspace = true }
@@ -35,7 +37,7 @@ ox-tools = { workspace = true }
 ox-types = { workspace = true }
 horns-core = { workspace = true }
 horns-ratatui = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "io-std", "signal"] }
 clap = { workspace = true }
 crossterm = { workspace = true }
 ratatui = { workspace = true }
@@ -53,6 +55,7 @@ toml = { workspace = true }
 figment = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+uuid = { workspace = true }
 structfs-core-store = { workspace = true }
 structfs-serde-store = { workspace = true }
 tracing = { workspace = true }

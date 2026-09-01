@@ -1,0 +1,22 @@
+ARG BUILD_IMAGE
+FROM ${BUILD_IMAGE} AS build
+
+WORKDIR /src
+COPY . .
+RUN rustup target add wasm32-unknown-unknown
+RUN cargo build --locked --release -p ox-worker -p ox-tools --bin ox-tool-exec
+
+ARG RUNTIME_IMAGE
+FROM ${RUNTIME_IMAGE}
+
+RUN groupadd --system ox && useradd --system --gid ox --home-dir /var/lib/ox ox \
+    && install -d -o ox -g ox -m 0700 /var/lib/ox /run/ox
+COPY --from=build /src/target/release/ox-worker /usr/local/bin/ox-worker
+COPY --from=build /src/target/release/ox-tool-exec /usr/local/bin/ox-tool-exec
+COPY --chmod=0755 deploy/ox-worker/entrypoint.sh /usr/local/bin/ox-worker-entrypoint
+
+LABEL org.opencontainers.image.title="ox-worker" \
+      org.opencontainers.image.description="Headless StructFS surface over the shared ox executor"
+
+USER ox
+ENTRYPOINT ["/usr/local/bin/ox-worker-entrypoint"]

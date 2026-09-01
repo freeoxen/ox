@@ -16,10 +16,10 @@ use structfs_core_store::{Error as StoreError, Path, Record, Value, path};
 
 use crate::placement::{child, decode_record, encoded_item, select_existing, verify_worker};
 use crate::{
-    ApprovalRequest, CancelRequest, CrashInjector, CrashPoint, DeleteNodeManagerRequest,
-    DeleteNodeResult, DeleteVmRequest, MessageRequest, NoCrash, PlacementPolicy, ReconcileItem,
-    RemoteManagerError, StartConversationRequest, StartConversationResult, StorePort, VmSpec,
-    VmStatus, WorkerStoreConnector,
+    ApprovalRequest, CancelRequest, CrashInjector, CrashPoint, CreateNodeRequest, CreateNodeResult,
+    DeleteNodeManagerRequest, DeleteNodeResult, DeleteVmRequest, MessageRequest, NoCrash,
+    NodeDoctorResult, PlacementPolicy, ReconcileItem, RemoteManagerError, StartConversationRequest,
+    StartConversationResult, StorePort, VmSpec, VmStatus, WorkerStoreConnector,
 };
 
 #[derive(Clone, Debug)]
@@ -80,6 +80,133 @@ impl RemoteManagerStore {
         })
     }
 
+    /// Provision a durable empty worker node. This uses the same node intent,
+    /// fenced operation, provider Store, and identity verification as
+    /// conversation-driven fresh placement.
+    pub async fn create_node(
+        &self,
+        request: CreateNodeRequest,
+    ) -> Result<CreateNodeResult, RemoteManagerError> {
+        validate_node_request(&request)?;
+        let node_id = stable_id("n", &request.request_id);
+        let attempt_id = stable_id("a", &request.request_id);
+        let vm_name = format!("ox-{}", digest_prefix(&request.request_id, 20));
+        let intent = RemoteNodeIntent {
+            node_id: node_id.clone(),
+            node_attempt_id: attempt_id.clone(),
+            provider: self.config.provider.clone(),
+            vm_name: vm_name.clone(),
+            ssh_host: None,
+            ssh_port: self.config.ssh_port,
+            ssh_user: None,
+            ssh_dest: None,
+            identity_path: self.config.identity_path.clone(),
+            known_hosts_path: self.config.known_hosts_path.clone(),
+            worker_socket_path: self.config.worker_socket_path.clone(),
+            desired_state: RemoteNodeDesiredState::Active,
+            observed_state: RemoteNodeObservedState::Pending,
+            cleanup_state: RemoteCleanupState::None,
+            image_digest: Some(request.node.image.clone()),
+        };
+        // Re-submit the deterministic intent even on retries. InboxStore keeps
+        // the original request hash after provider observations, so this is an
+        // idempotent no-op for the same request and a conflict for changed
+        // image/resources under the same request ID.
+        self.write_local(&path!("remote/nodes"), &intent, "persist node intent")
+            .await?;
+        self.crash.hit(CrashPoint::NodeIntentPersisted)?;
+        let current = self
+            .read_node(&node_id)
+            .await?
+            .ok_or_else(|| RemoteManagerError::Unavailable("persisted node disappeared".into()))?;
+        if current.node_attempt_id != attempt_id {
+            return Err(RemoteManagerError::IdentityMismatch(format!(
+                "node {node_id} belongs to attempt {}",
+                current.node_attempt_id
+            )));
+        }
+        let operation = RemoteOperationIntent {
+            semantic_key: format!("{}:provision", request.request_id),
+            node_id: Some(node_id.clone()),
+            node_attempt_id: Some(attempt_id.clone()),
+            conversation_id: None,
+            action: RemoteAction::ProvisionNode {
+                cpu: u32::from(request.node.cpu),
+                memory_gb: request.node.memory_mib / 1024,
+                disk_gb: request.node.disk_gib,
+                image: request.node.image.clone(),
+            },
+        };
+        let operation_path = self.accept_operation(&operation).await?;
+        self.crash.hit(CrashPoint::OperationIntentPersisted)?;
+        // A ready projection does not prove the provision operation receipt
+        // was committed: the process may have crashed between those writes.
+        // Always drive the deterministic operation to a terminal state.
+        self.provision_node(&operation_path, &intent, &request.node)
+            .await?;
+        Ok(CreateNodeResult {
+            node_id,
+            node_attempt_id: attempt_id,
+            vm_name,
+        })
+    }
+
+    pub async fn list_nodes(&self) -> Result<Vec<RemoteNodeRecord>, RemoteManagerError> {
+        self.read_typed_list(&path!("remote/nodes"), "node listing")
+            .await
+    }
+
+    pub async fn list_conversations(
+        &self,
+    ) -> Result<Vec<RemoteConversationRecord>, RemoteManagerError> {
+        self.read_typed_list(&path!("remote/conversations"), "conversation listing")
+            .await
+    }
+
+    pub async fn get_node(&self, id: &str) -> Result<Option<RemoteNodeRecord>, RemoteManagerError> {
+        self.read_node(id).await
+    }
+
+    pub async fn get_conversation(
+        &self,
+        id: &str,
+    ) -> Result<Option<RemoteConversationRecord>, RemoteManagerError> {
+        self.read_conversation(id).await
+    }
+
+    pub async fn drain_node(&self, id: &str) -> Result<(), RemoteManagerError> {
+        let node = self
+            .read_node(id)
+            .await?
+            .ok_or_else(|| RemoteManagerError::Invalid("unknown node".into()))?;
+        self.write_local(
+            &child(&encoded_item("nodes", id)?, "state")?,
+            &RemoteNodeUpdate {
+                node_attempt_id: node.node_attempt_id,
+                desired_state: Some(RemoteNodeDesiredState::Draining),
+                observed_state: None,
+                cleanup_state: None,
+            },
+            "drain node",
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn doctor_node(&self, id: &str) -> Result<NodeDoctorResult, RemoteManagerError> {
+        let node = self
+            .read_node(id)
+            .await?
+            .ok_or_else(|| RemoteManagerError::Invalid("unknown node".into()))?;
+        let worker = self
+            .workers
+            .connect(&node)
+            .await
+            .map_err(|error| RemoteManagerError::store("connect worker", error))?;
+        let health = verify_worker(&worker, &node).await?;
+        Ok(NodeDoctorResult { node, health })
+    }
+
     pub async fn start_conversation(
         &self,
         request: StartConversationRequest,
@@ -87,23 +214,47 @@ impl RemoteManagerStore {
         validate_start(&request)?;
         let conversation_id = stable_id("c", &request.request_id);
         if let Some(existing) = self.read_conversation(&conversation_id).await? {
-            if let Some(worker_thread_id) = existing.worker_thread_id {
-                return Ok(StartConversationResult {
-                    conversation_id,
-                    node_id: existing.node_id,
-                    node_attempt_id: existing.node_attempt_id,
-                    worker_thread_id,
-                });
-            }
             // Placement was already durably closed before the first external
             // mutation. A retry must resume that exact node attempt.
             let mut node = self.read_node(&existing.node_id).await?.ok_or_else(|| {
                 RemoteManagerError::Unavailable("persisted placement node is missing".into())
             })?;
             let conversation = conversation_intent_for_node(&request, &conversation_id, &node);
+            self.write_local(
+                &path!("remote/conversations"),
+                &conversation,
+                "verify conversation intent",
+            )
+            .await?;
             let create_path = self
                 .accept_operation(&create_operation(&request, &conversation))
                 .await?;
+            if let Some(worker_thread_id) = existing.worker_thread_id {
+                // The binding can be durable while the create operation is
+                // still pending after a crash. Replay the stable create_id so
+                // the worker and local operation receipt converge.
+                let worker = self
+                    .workers
+                    .connect(&node)
+                    .await
+                    .map_err(|error| RemoteManagerError::store("resume worker", error))?;
+                verify_worker(&worker, &node).await?;
+                let replayed_thread_id = self
+                    .create_worker_conversation(&create_path, &conversation, &worker)
+                    .await?;
+                if replayed_thread_id != worker_thread_id {
+                    return Err(RemoteManagerError::IdentityMismatch(format!(
+                        "conversation {} is bound to worker thread {worker_thread_id}, but create receipt returned {replayed_thread_id}",
+                        existing.conversation_id
+                    )));
+                }
+                return Ok(StartConversationResult {
+                    conversation_id,
+                    node_id: existing.node_id,
+                    node_attempt_id: existing.node_attempt_id,
+                    worker_thread_id: replayed_thread_id,
+                });
+            }
             if node.observed_state != "ready" {
                 let provision = RemoteOperationIntent {
                     semantic_key: format!("{}:provision", request.request_id),
@@ -208,7 +359,7 @@ impl RemoteManagerStore {
             }
             let node_id = stable_id("n", &request.request_id);
             let attempt_id = stable_id("a", &request.request_id);
-            let vm_name = format!("ox{}", digest_prefix(&request.request_id, 20));
+            let vm_name = format!("ox-{}", digest_prefix(&request.request_id, 20));
             let intent = RemoteNodeIntent {
                 node_id: node_id.clone(),
                 node_attempt_id: attempt_id.clone(),
@@ -316,7 +467,8 @@ impl RemoteManagerStore {
             .provider
             .write(&path!("vms"), typed_record(&vm_spec)?)
             .await;
-        let vm_path = Path::parse(&format!("vms/{}", intent.vm_name))?;
+        let vm_path = crate::vm_path(&intent.vm_name)
+            .map_err(|error| RemoteManagerError::store("provider VM path", error))?;
         let vm = match write {
             Ok(_) => self.provider.read(&vm_path).await,
             Err(_) => self.provider.read(&vm_path).await,
@@ -371,10 +523,12 @@ impl RemoteManagerStore {
             ssh_host: vm.ssh_host,
             ssh_user: vm.ssh_user,
             ssh_dest: vm.ssh_dest,
-            observed_state: if current.observed_state == "unavailable" {
-                RemoteNodeObservedState::Unavailable
-            } else {
-                RemoteNodeObservedState::Provisioning
+            observed_state: match current.observed_state.as_str() {
+                "unavailable" => RemoteNodeObservedState::Unavailable,
+                // A crash can leave the health-verified Ready projection
+                // durable while the operation receipt remains pending.
+                "ready" => RemoteNodeObservedState::Ready,
+                _ => RemoteNodeObservedState::Provisioning,
             },
         };
         let path = child(&encoded_item("nodes", &intent.node_id)?, "observation")?;
@@ -425,6 +579,7 @@ impl RemoteManagerStore {
             RemoteNodeObservedState::Ready,
         )
         .await?;
+        self.crash.hit(CrashPoint::ProjectionCommitted)?;
         self.complete_operation(
             operation_path,
             epoch,
@@ -523,6 +678,7 @@ impl RemoteManagerStore {
             RemoteConversationObservedState::Running,
         )
         .await?;
+        self.crash.hit(CrashPoint::ProjectionCommitted)?;
         self.complete_operation(
             operation_path,
             epoch,
@@ -582,10 +738,17 @@ impl RemoteManagerStore {
         semantic_key: String,
         action: RemoteAction,
     ) -> Result<Path, RemoteManagerError> {
+        let is_cancel = matches!(action, RemoteAction::CancelConversation { .. });
         let conversation = self
             .read_conversation(conversation_id)
             .await?
             .ok_or_else(|| RemoteManagerError::Invalid("unknown remote conversation".into()))?;
+        if !is_cancel && conversation.desired_state != "active" {
+            return Err(RemoteManagerError::Invalid(format!(
+                "conversation desired state is {}; messages and approvals require active",
+                conversation.desired_state
+            )));
+        }
         let operation = RemoteOperationIntent {
             semantic_key,
             node_id: Some(conversation.node_id.clone()),
@@ -595,6 +758,20 @@ impl RemoteManagerStore {
         };
         let operation_path = self.accept_operation(&operation).await?;
         self.crash.hit(CrashPoint::OperationIntentPersisted)?;
+        if is_cancel {
+            self.write_local(
+                &child(&encoded_item("conversations", conversation_id)?, "state")?,
+                &RemoteConversationUpdate {
+                    node_attempt_id: conversation.node_attempt_id.clone(),
+                    worker_thread_id: None,
+                    desired_state: Some(RemoteConversationDesiredState::Canceled),
+                    observed_state: None,
+                    cleanup_state: None,
+                },
+                "mark conversation cancel requested",
+            )
+            .await?;
+        }
         if let Some(result) = self.applied_operation(&operation_path).await? {
             return Path::parse(result.result_path.as_deref().unwrap_or("conversations"))
                 .map_err(Into::into);
@@ -669,10 +846,74 @@ impl RemoteManagerStore {
         Ok(receipt)
     }
 
+    /// Refresh lifecycle state from the existing worker conversation record.
+    /// The remote worker remains the authoritative executor; this only updates
+    /// the local orchestration projection.
+    pub async fn refresh_conversation(
+        &self,
+        conversation_id: &str,
+    ) -> Result<RemoteConversationRecord, RemoteManagerError> {
+        #[derive(serde::Deserialize)]
+        struct WorkerConversationSnapshot {
+            id: String,
+            thread_state: ox_types::ThreadState,
+        }
+
+        let conversation = self
+            .read_conversation(conversation_id)
+            .await?
+            .ok_or_else(|| RemoteManagerError::Invalid("unknown remote conversation".into()))?;
+        let node = self
+            .read_node(&conversation.node_id)
+            .await?
+            .ok_or_else(|| RemoteManagerError::Unavailable("conversation node missing".into()))?;
+        let worker = self
+            .workers
+            .connect(&node)
+            .await
+            .map_err(|error| RemoteManagerError::store("connect worker", error))?;
+        verify_worker(&worker, &node).await?;
+        let thread_id = conversation.worker_thread_id.as_deref().ok_or_else(|| {
+            RemoteManagerError::Unavailable("conversation has no worker thread".into())
+        })?;
+        let record = worker
+            .read(&Path::parse(&format!("conversations/{thread_id}"))?)
+            .await
+            .map_err(|error| RemoteManagerError::store("worker conversation", error))?
+            .ok_or_else(|| RemoteManagerError::Unavailable("worker conversation missing".into()))?;
+        let snapshot: WorkerConversationSnapshot = decode_record(record, "worker conversation")?;
+        if snapshot.id != thread_id {
+            return Err(RemoteManagerError::IdentityMismatch(format!(
+                "expected worker thread {thread_id}, got {}",
+                snapshot.id
+            )));
+        }
+        let observed = match snapshot.thread_state {
+            ox_types::ThreadState::Running => RemoteConversationObservedState::Running,
+            ox_types::ThreadState::WaitingForInput => {
+                RemoteConversationObservedState::WaitingForInput
+            }
+            ox_types::ThreadState::BlockedOnApproval => {
+                RemoteConversationObservedState::BlockedOnApproval
+            }
+            ox_types::ThreadState::Completed => RemoteConversationObservedState::Completed,
+            ox_types::ThreadState::Errored => RemoteConversationObservedState::Errored,
+            ox_types::ThreadState::Interrupted if conversation.desired_state == "canceled" => {
+                RemoteConversationObservedState::Canceled
+            }
+            ox_types::ThreadState::Interrupted => RemoteConversationObservedState::Errored,
+        };
+        self.update_conversation_record(&conversation, None, observed)
+            .await?;
+        self.read_conversation(conversation_id)
+            .await?
+            .ok_or_else(|| RemoteManagerError::Unavailable("conversation disappeared".into()))
+    }
+
     pub async fn reconcile_ledger(
         &self,
         conversation_id: &str,
-        request_id: &str,
+        _request_id: &str,
     ) -> Result<(), RemoteManagerError> {
         let conversation = self
             .read_conversation(conversation_id)
@@ -699,7 +940,10 @@ impl RemoteManagerStore {
             _ => None,
         };
         let operation = RemoteOperationIntent {
-            semantic_key: request_id.into(),
+            // One durable operation per cursor position. Empty polls release
+            // this row for reuse; advancing polls apply it and the next cursor
+            // naturally derives a new semantic key.
+            semantic_key: format!("ledger:{conversation_id}:{}", last_seq + 1),
             node_id: Some(conversation.node_id.clone()),
             node_attempt_id: Some(conversation.node_attempt_id.clone()),
             conversation_id: Some(conversation.conversation_id.clone()),
@@ -732,13 +976,21 @@ impl RemoteManagerStore {
                 .await?;
             return Err(error);
         }
-        if let Err(error) =
-            crate::reconcile::reconcile_ledger_batches(&self.local, &worker, &conversation).await
-        {
+        let advanced =
+            match crate::reconcile::reconcile_ledger_batches(&self.local, &worker, &conversation)
+                .await
+            {
+                Ok(advanced) => advanced,
+                Err(error) => {
+                    self.release(&operation_path, epoch).await?;
+                    self.mark_unavailable_or_lost(&node, Some(&conversation))
+                        .await?;
+                    return Err(error);
+                }
+            };
+        if !advanced {
             self.release(&operation_path, epoch).await?;
-            self.mark_unavailable_or_lost(&node, Some(&conversation))
-                .await?;
-            return Err(error);
+            return Ok(());
         }
         self.complete_operation(
             &operation_path,
@@ -977,7 +1229,10 @@ impl RemoteManagerStore {
             let mut affected = self.local_active_references(node_id).await?;
             match self
                 .provider
-                .read(&Path::parse(&format!("vms/{}", node.vm_name))?)
+                .read(
+                    &crate::vm_path(&node.vm_name)
+                        .map_err(|error| RemoteManagerError::store("provider VM path", error))?,
+                )
                 .await
             {
                 Ok(Some(_)) => {
@@ -1043,7 +1298,8 @@ impl RemoteManagerStore {
         // This exact-name query comes before worker access on replay: if the
         // previous process deleted the VM, absence is sufficient to finish the
         // local commit without trying to dial a machine that no longer exists.
-        let provider_path = Path::parse(&format!("vms/{}", node.vm_name))?;
+        let provider_path = crate::vm_path(&node.vm_name)
+            .map_err(|error| RemoteManagerError::store("provider VM path", error))?;
         match self.provider.read(&provider_path).await {
             Ok(None) => {
                 self.finish_deleted_node(&node, &operation_path, epoch, &affected)
@@ -1091,7 +1347,8 @@ impl RemoteManagerStore {
         affected.extend(current);
         affected.sort();
         affected.dedup();
-        let target = Path::parse(&format!("vms/{}/delete", node.vm_name))?;
+        let target = crate::vm_delete_path(&node.vm_name)
+            .map_err(|error| RemoteManagerError::store("provider delete path", error))?;
         let delete = DeleteVmRequest {
             schema_version: 1,
             deletion_id: request.delete_id,
@@ -1105,7 +1362,10 @@ impl RemoteManagerStore {
         self.crash.hit(CrashPoint::ExternalEffectReturned)?;
         let exact = self
             .provider
-            .read(&Path::parse(&format!("vms/{}", node.vm_name))?)
+            .read(
+                &crate::vm_path(&node.vm_name)
+                    .map_err(|error| RemoteManagerError::store("provider VM path", error))?,
+            )
             .await
             .map_err(|error| RemoteManagerError::store("provider delete reconcile", error))?;
         if exact.is_some() {
@@ -1138,7 +1398,7 @@ impl RemoteManagerStore {
         if let Some(Value::Array(items)) = listing.as_value() {
             for item in items {
                 if let Value::Map(map) = item {
-                    let terminal = matches!(map.get("thread_state"), Some(Value::String(state)) if matches!(state.as_str(), "completed" | "canceled" | "errored"));
+                    let terminal = matches!(map.get("thread_state"), Some(Value::String(state)) if matches!(state.as_str(), "completed" | "interrupted" | "errored"));
                     if !terminal {
                         if let Some(Value::String(id)) = map.get("id") {
                             affected.push(format!("worker:{id}"));
@@ -1246,7 +1506,8 @@ impl RemoteManagerStore {
         node: &RemoteNodeRecord,
         conversation: Option<&RemoteConversationRecord>,
     ) -> Result<(), RemoteManagerError> {
-        let provider_path = Path::parse(&format!("vms/{}", node.vm_name))?;
+        let provider_path = crate::vm_path(&node.vm_name)
+            .map_err(|error| RemoteManagerError::store("provider VM path", error))?;
         let (node_state, conversation_state) = match self.provider.read(&provider_path).await {
             Ok(None) => (
                 RemoteNodeObservedState::Absent,
@@ -1417,6 +1678,35 @@ impl RemoteManagerStore {
             .transpose()
     }
 
+    async fn read_typed_list<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &Path,
+        operation: &'static str,
+    ) -> Result<Vec<T>, RemoteManagerError> {
+        let record = self
+            .local
+            .read(path)
+            .await
+            .map_err(|error| RemoteManagerError::store(operation, error))?
+            .ok_or_else(|| RemoteManagerError::Unavailable(format!("{operation} missing")))?;
+        let Value::Array(values) = record
+            .as_value()
+            .cloned()
+            .ok_or_else(|| RemoteManagerError::Invalid(format!("{operation} was not parsed")))?
+        else {
+            return Err(RemoteManagerError::Invalid(format!(
+                "{operation} was not an array"
+            )));
+        };
+        values
+            .into_iter()
+            .map(|value| {
+                structfs_serde_store::from_value(value)
+                    .map_err(|error| RemoteManagerError::store(operation, error))
+            })
+            .collect()
+    }
+
     async fn update_node_state(
         &self,
         id: &str,
@@ -1502,6 +1792,40 @@ impl RemoteManagerStore {
 
 impl AsyncReader for RemoteManagerStore {
     fn read(&mut self, from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
+        let parts: Vec<&str> = from.iter().map(String::as_str).collect();
+        if let ["nodes", id, "doctor"] = parts.as_slice() {
+            let this = self.clone_for_future();
+            let id = (*id).to_owned();
+            return Box::pin(async move {
+                let result = this.doctor_node(&id).await.map_err(manager_store_error)?;
+                Ok(Some(typed_record(&result).map_err(manager_store_error)?))
+            });
+        }
+        if let ["conversations", id, "refresh"] = parts.as_slice() {
+            let this = self.clone_for_future();
+            let id = (*id).to_owned();
+            return Box::pin(async move {
+                let result = this
+                    .refresh_conversation(&id)
+                    .await
+                    .map_err(manager_store_error)?;
+                Ok(Some(typed_record(&result).map_err(manager_store_error)?))
+            });
+        }
+        if parts.as_slice() == ["doctor", "provider"] {
+            let provider = self.provider.clone();
+            return Box::pin(async move {
+                let identity = provider.read(&path!("identity")).await?;
+                let vms = provider.read(&path!("vms")).await?;
+                let value = serde_json::json!({
+                    "identity": identity.and_then(|record| record.as_value().cloned()).map(structfs_serde_store::value_to_json),
+                    "vms": vms.and_then(|record| record.as_value().cloned()).map(structfs_serde_store::value_to_json),
+                });
+                Ok(Some(Record::parsed(structfs_serde_store::json_to_value(
+                    value,
+                ))))
+            });
+        }
         let local = self.local.clone();
         let target = if from.iter().next().is_some_and(|part| part == "remote") {
             from.clone()
@@ -1519,6 +1843,19 @@ impl AsyncWriter for RemoteManagerStore {
         Box::pin(async move {
             let parts: Vec<&str> = to.iter().map(String::as_str).collect();
             let result = match parts.as_slice() {
+                ["nodes"] => {
+                    let request: CreateNodeRequest =
+                        decode_record(data, "create node").map_err(manager_store_error)?;
+                    let result = this
+                        .create_node(request)
+                        .await
+                        .map_err(manager_store_error)?;
+                    Path::parse(&format!("nodes/{}", result.node_id)).map_err(StoreError::from)
+                }
+                ["nodes", id, "drain"] => {
+                    this.drain_node(id).await.map_err(manager_store_error)?;
+                    Path::parse(&format!("nodes/{id}")).map_err(StoreError::from)
+                }
                 ["conversations"] => {
                     let request: StartConversationRequest =
                         decode_record(data, "start conversation").map_err(manager_store_error)?;
@@ -1544,6 +1881,22 @@ impl AsyncWriter for RemoteManagerStore {
                 ["conversations", id, "cancel"] => {
                     let request = decode_record(data, "cancel").map_err(manager_store_error)?;
                     this.cancel(id, request).await.map_err(manager_store_error)
+                }
+                ["conversations", id, "reconcile"] => {
+                    let request: serde_json::Value = decode_record(data, "reconcile conversation")
+                        .map_err(manager_store_error)?;
+                    let request_id = request
+                        .get("request_id")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| {
+                            manager_store_error(RemoteManagerError::Invalid(
+                                "reconcile request_id is required".into(),
+                            ))
+                        })?;
+                    this.reconcile_ledger(id, request_id)
+                        .await
+                        .map_err(manager_store_error)?;
+                    Path::parse(&format!("conversations/{id}/ledger")).map_err(StoreError::from)
                 }
                 ["nodes", id, "delete"] => {
                     let request =
@@ -1608,6 +1961,21 @@ fn validate_start(request: &StartConversationRequest) -> Result<(), RemoteManage
     {
         return Err(RemoteManagerError::Invalid(
             "invalid start conversation request".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_node_request(request: &CreateNodeRequest) -> Result<(), RemoteManagerError> {
+    if request.schema_version != 1
+        || request.request_id.is_empty()
+        || request.node.cpu == 0
+        || request.node.memory_mib < 1024
+        || request.node.memory_mib % 1024 != 0
+        || request.node.disk_gib == 0
+    {
+        return Err(RemoteManagerError::Invalid(
+            "invalid create node request".into(),
         ));
     }
     Ok(())

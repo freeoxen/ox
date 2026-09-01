@@ -4,14 +4,7 @@ use ox_inbox::remote_state::RemoteNodeRecord;
 use serde::Deserialize;
 use structfs_core_store::{Path, Value, path};
 
-use crate::{PlacementPolicy, RemoteManagerError, StorePort, WorkerStoreConnector};
-
-#[derive(Deserialize)]
-struct WorkerHealth {
-    status: String,
-    node_id: String,
-    attempt_id: String,
-}
+use crate::{PlacementPolicy, RemoteManagerError, StorePort, WorkerHealth, WorkerStoreConnector};
 
 #[derive(Deserialize)]
 struct WorkerCapacity {
@@ -102,7 +95,7 @@ pub(crate) async fn select_existing(
 pub(crate) async fn verify_worker(
     worker: &Arc<dyn StorePort>,
     node: &RemoteNodeRecord,
-) -> Result<(), RemoteManagerError> {
+) -> Result<WorkerHealth, RemoteManagerError> {
     let record = worker
         .read(&path!("health"))
         .await
@@ -112,13 +105,16 @@ pub(crate) async fn verify_worker(
     if health.status != "ready"
         || health.node_id != node.node_id
         || health.attempt_id != node.node_attempt_id
+        || health.sandbox_enforcement.mode != "required"
+        || health.sandbox_enforcement.preflight != "passed"
+        || node.image_digest.as_deref() != Some(health.image_digest.as_str())
     {
         return Err(RemoteManagerError::IdentityMismatch(format!(
             "expected {}/{}, got {}/{} ({})",
             node.node_id, node.node_attempt_id, health.node_id, health.attempt_id, health.status
         )));
     }
-    Ok(())
+    Ok(health)
 }
 
 pub(crate) fn decode_record<T: serde::de::DeserializeOwned>(

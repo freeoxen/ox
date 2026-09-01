@@ -4,9 +4,10 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use ox_inbox::InboxStore;
 use ox_remote::{
-    CrashInjector, CrashPoint, DeleteNodeManagerRequest, NodeProvisionSpec, PlacementPolicy,
-    RemoteManagerConfig, RemoteManagerError, RemoteManagerStore, StartConversationRequest,
-    StorePort, SyncStorePort, VmSpec, VmStatus, WorkerStoreConnector,
+    CancelRequest, CrashInjector, CrashPoint, CreateNodeRequest, DeleteNodeManagerRequest,
+    NodeProvisionSpec, PlacementPolicy, RemoteManagerConfig, RemoteManagerError,
+    RemoteManagerStore, StartConversationRequest, StorePort, SyncStorePort, VmSpec, VmStatus,
+    WorkerStoreConnector,
 };
 use structfs_core_store::{Error as StoreError, Path, Record, Value};
 
@@ -34,11 +35,16 @@ impl StorePort for FakeProvider {
         let parts: Vec<&str> = path.iter().map(String::as_str).collect();
         let state = self.0.lock().unwrap();
         match parts.as_slice() {
-            ["vms", name] => Ok(state
-                .vm
-                .as_ref()
-                .filter(|vm| vm.vm_name == *name)
-                .map(parsed)),
+            ["vms", component] => {
+                let name = ox_remote::decode_vm_component(component).map_err(|error| {
+                    StoreError::store("FakeProvider", "decode", error.to_string())
+                })?;
+                Ok(state
+                    .vm
+                    .as_ref()
+                    .filter(|vm| vm.vm_name == name)
+                    .map(parsed))
+            }
             _ => Ok(None),
         }
     }
@@ -60,13 +66,20 @@ impl StorePort for FakeProvider {
                         ssh_user: Some("route".into()),
                     });
                 }
-                Path::parse(&format!("vms/{}", spec.name)).map_err(StoreError::from)
+                ox_remote::vm_path(&spec.name)
+                    .map_err(|error| StoreError::store("FakeProvider", "path", error.to_string()))
             }
-            ["vms", name, "delete"] => {
+            ["vms", component, "delete"] => {
+                let name = ox_remote::decode_vm_component(component).map_err(|error| {
+                    StoreError::store("FakeProvider", "decode", error.to_string())
+                })?;
                 if state.vm.take().is_some() {
                     state.actual_deletes += 1;
                 }
-                Path::parse(&format!("vms/{name}/deleted")).map_err(StoreError::from)
+                let item = ox_remote::vm_path(&name).map_err(|error| {
+                    StoreError::store("FakeProvider", "path", error.to_string())
+                })?;
+                Path::parse(&format!("{item}/deleted")).map_err(StoreError::from)
             }
             _ => Err(StoreError::NoRoute { path: path.clone() }),
         }
@@ -76,19 +89,24 @@ impl StorePort for FakeProvider {
 struct WorkerState {
     node_id: String,
     attempt_id: String,
+    image_digest: String,
     creates: HashMap<String, String>,
     create_effects: usize,
     ledger: Vec<ox_inbox::ledger::LedgerEntry>,
+    thread_states: HashMap<String, String>,
+    cancel_ids: std::collections::HashSet<String>,
+    cancel_effects: usize,
 }
 
 struct FakeWorker(Mutex<WorkerState>);
 
 impl FakeWorker {
-    fn new(node_id: String, attempt_id: String) -> Self {
+    fn new(node_id: String, attempt_id: String, image_digest: String) -> Self {
         let message = serde_json::json!({"type":"user","content":"durable"});
         Self(Mutex::new(WorkerState {
             node_id,
             attempt_id,
+            image_digest,
             creates: HashMap::new(),
             create_effects: 0,
             ledger: vec![ox_inbox::ledger::LedgerEntry {
@@ -97,6 +115,9 @@ impl FakeWorker {
                 parent: None,
                 msg: message,
             }],
+            thread_states: HashMap::new(),
+            cancel_ids: std::collections::HashSet::new(),
+            cancel_effects: 0,
         }))
     }
 }
@@ -108,7 +129,12 @@ impl StorePort for FakeWorker {
         let state = self.0.lock().unwrap();
         match parts.as_slice() {
             ["health"] => Ok(Some(parsed(&serde_json::json!({
-                "status":"ready", "node_id":state.node_id, "attempt_id":state.attempt_id
+                "status":"ready", "node_id":state.node_id, "attempt_id":state.attempt_id,
+                "worker_version":"0.1.0", "wire_version":1,
+                "image_digest":state.image_digest,
+                "agent_wasm_sha256":"agent", "executable_sha256":"executable",
+                "policy_profile":"clash_remote_enforced", "policy_contract_sha256":"policy",
+                "sandbox_enforcement":{"mode":"required","preflight":"passed"}
             })))),
             ["capacity"] => Ok(Some(parsed(&serde_json::json!({
                 "active_turns":0, "total_threads":state.creates.len(),
@@ -121,7 +147,16 @@ impl StorePort for FakeWorker {
                     .map(|id| {
                         let mut map = BTreeMap::new();
                         map.insert("id".into(), Value::String(id.clone()));
-                        map.insert("thread_state".into(), Value::String("running".into()));
+                        map.insert(
+                            "thread_state".into(),
+                            Value::String(
+                                state
+                                    .thread_states
+                                    .get(id)
+                                    .cloned()
+                                    .unwrap_or_else(|| "running".into()),
+                            ),
+                        );
                         Value::Map(map)
                     })
                     .collect();
@@ -143,9 +178,12 @@ impl StorePort for FakeWorker {
                     "has_more": false
                 }))))
             }
-            ["conversations", thread] if state.creates.values().any(|id| id == thread) => Ok(Some(
-                parsed(&serde_json::json!({"id":thread,"thread_state":"running"})),
-            )),
+            ["conversations", thread] if state.creates.values().any(|id| id == thread) => {
+                Ok(Some(parsed(&serde_json::json!({
+                    "id":thread,
+                    "thread_state":state.thread_states.get(*thread).cloned().unwrap_or_else(|| "running".into())
+                }))))
+            }
             _ => Ok(None),
         }
     }
@@ -162,9 +200,23 @@ impl StorePort for FakeWorker {
                     state.create_effects += 1;
                     let thread = format!("t_{}", state.create_effects);
                     state.creates.insert(envelope.create_id, thread.clone());
+                    state.thread_states.insert(thread.clone(), "running".into());
                     thread
                 };
                 Path::parse(&format!("conversations/{thread}")).map_err(StoreError::from)
+            }
+            ["conversations", thread, "control", "cancel"]
+                if state.creates.values().any(|id| id == thread) =>
+            {
+                let envelope: ox_inbox::worker_ingress::CancelEnvelope = decode(record);
+                if state.cancel_ids.insert(envelope.cancel_id.clone()) {
+                    state.cancel_effects += 1;
+                    state
+                        .thread_states
+                        .insert((*thread).to_owned(), "interrupted".into());
+                }
+                Path::parse(&format!("conversations/{thread}/cancellations/cancel_1"))
+                    .map_err(StoreError::from)
             }
             _ => Err(StoreError::NoRoute { path: path.clone() }),
         }
@@ -191,6 +243,7 @@ impl WorkerStoreConnector for FakeConnector {
                 Arc::new(FakeWorker::new(
                     node.node_id.clone(),
                     node.node_attempt_id.clone(),
+                    node.image_digest.clone().unwrap_or_default(),
                 ))
             })
             .clone();
@@ -215,6 +268,7 @@ impl CrashInjector for CrashOnce {
                 CrashPoint::NodeIntentPersisted => "node intent",
                 CrashPoint::OperationIntentPersisted => "operation intent",
                 CrashPoint::ExternalEffectReturned => "external effect",
+                CrashPoint::ProjectionCommitted => "projection commit",
                 CrashPoint::ResultCommitted => "result commit",
             }));
         }
@@ -588,5 +642,287 @@ async fn ledger_reconciliation_advances_only_the_committed_validated_cursor() {
         Some(&Value::String(ox_inbox::ledger::entry_hash(
             &serde_json::json!({"type":"user","content":"durable"})
         )))
+    );
+}
+
+#[tokio::test]
+async fn repeated_ids_reject_changed_node_and_conversation_intents() {
+    let root = tempfile::tempdir().unwrap();
+    let local: Arc<dyn StorePort> =
+        Arc::new(SyncStorePort::new(InboxStore::open(root.path()).unwrap()));
+    let provider = Arc::new(FakeProvider::default());
+    let connector = Arc::new(FakeConnector::new());
+    let manager = RemoteManagerStore::new(local, provider, connector, config("conflicts")).unwrap();
+
+    let node = CreateNodeRequest {
+        schema_version: 1,
+        request_id: "stable-node".into(),
+        node: request().node,
+    };
+    manager.create_node(node.clone()).await.unwrap();
+    let mut changed_node = node;
+    changed_node.node.cpu += 1;
+    assert!(
+        manager
+            .create_node(changed_node)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("conflict")
+    );
+
+    manager.start_conversation(request()).await.unwrap();
+    let mut changed_conversation = request();
+    changed_conversation.prompt = "different work".into();
+    assert!(
+        manager
+            .start_conversation(changed_conversation)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("conflict")
+    );
+}
+
+#[tokio::test]
+async fn ready_node_retry_closes_pending_provision_receipt() {
+    let root = tempfile::tempdir().unwrap();
+    let local: Arc<dyn StorePort> =
+        Arc::new(SyncStorePort::new(InboxStore::open(root.path()).unwrap()));
+    let provider = Arc::new(FakeProvider::default());
+    let connector = Arc::new(FakeConnector::new());
+    let request = CreateNodeRequest {
+        schema_version: 1,
+        request_id: "ready-pending-node".into(),
+        node: request().node,
+    };
+    let manager = RemoteManagerStore::with_crash_injector(
+        local.clone(),
+        provider.clone(),
+        connector.clone(),
+        config("ready-node-crash"),
+        Arc::new(CrashOnce {
+            point: CrashPoint::ProjectionCommitted,
+            occurrence: 1,
+            seen: Mutex::new(0),
+        }),
+    )
+    .unwrap();
+    assert!(manager.create_node(request.clone()).await.is_err());
+    let node = manager.list_nodes().await.unwrap().pop().unwrap();
+    assert_eq!(node.observed_state, "ready");
+
+    tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+    let manager = RemoteManagerStore::new(
+        local.clone(),
+        provider.clone(),
+        connector,
+        config("ready-node-retry"),
+    )
+    .unwrap();
+    manager.create_node(request).await.unwrap();
+    let pending = local
+        .read(&Path::parse("remote/operations/pending").unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(pending.as_value(), Some(&Value::Array(vec![])));
+    assert_eq!(provider.0.lock().unwrap().actual_creates, 1);
+}
+
+#[tokio::test]
+async fn bound_conversation_retry_closes_pending_create_receipt() {
+    let root = tempfile::tempdir().unwrap();
+    let local: Arc<dyn StorePort> =
+        Arc::new(SyncStorePort::new(InboxStore::open(root.path()).unwrap()));
+    let provider = Arc::new(FakeProvider::default());
+    let connector = Arc::new(FakeConnector::new());
+    let manager = RemoteManagerStore::new(
+        local.clone(),
+        provider.clone(),
+        connector.clone(),
+        config("bound-node"),
+    )
+    .unwrap();
+    let node = manager
+        .create_node(CreateNodeRequest {
+            schema_version: 1,
+            request_id: "bound-node".into(),
+            node: request().node,
+        })
+        .await
+        .unwrap();
+    let mut conversation_request = request();
+    conversation_request.request_id = "bound-pending-conversation".into();
+    conversation_request.placement = PlacementPolicy::RequireNode {
+        node_id: node.node_id,
+    };
+    let manager = RemoteManagerStore::with_crash_injector(
+        local.clone(),
+        provider,
+        connector.clone(),
+        config("bound-conversation-crash"),
+        Arc::new(CrashOnce {
+            point: CrashPoint::ProjectionCommitted,
+            occurrence: 1,
+            seen: Mutex::new(0),
+        }),
+    )
+    .unwrap();
+    assert!(
+        manager
+            .start_conversation(conversation_request.clone())
+            .await
+            .is_err()
+    );
+    let bound = manager.list_conversations().await.unwrap().pop().unwrap();
+    assert_eq!(bound.observed_state, "running");
+    assert!(bound.worker_thread_id.is_some());
+
+    tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+    let manager = RemoteManagerStore::new(
+        local.clone(),
+        Arc::new(FakeProvider::default()),
+        connector.clone(),
+        config("bound-conversation-retry"),
+    )
+    .unwrap();
+    manager
+        .start_conversation(conversation_request)
+        .await
+        .unwrap();
+    let pending = local
+        .read(&Path::parse("remote/operations/pending").unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(pending.as_value(), Some(&Value::Array(vec![])));
+    assert_eq!(
+        connector
+            .0
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .0
+            .lock()
+            .unwrap()
+            .create_effects,
+        1
+    );
+}
+
+#[tokio::test]
+async fn idle_ledger_poll_reuses_one_pending_cursor_operation() {
+    let root = tempfile::tempdir().unwrap();
+    let local: Arc<dyn StorePort> =
+        Arc::new(SyncStorePort::new(InboxStore::open(root.path()).unwrap()));
+    let manager = RemoteManagerStore::new(
+        local.clone(),
+        Arc::new(FakeProvider::default()),
+        Arc::new(FakeConnector::new()),
+        config("idle-ledger"),
+    )
+    .unwrap();
+    let started = manager.start_conversation(request()).await.unwrap();
+    manager
+        .reconcile_ledger(&started.conversation_id, "ignored-one")
+        .await
+        .unwrap();
+    for _ in 0..3 {
+        manager
+            .reconcile_ledger(&started.conversation_id, "ignored-retry")
+            .await
+            .unwrap();
+    }
+    let pending = local
+        .read(&Path::parse("remote/operations/pending").unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    let Value::Array(pending) = pending.as_value().unwrap() else {
+        panic!("pending operations was not an array")
+    };
+    assert_eq!(
+        pending.len(),
+        1,
+        "idle polling must reuse the cursor intent"
+    );
+}
+
+#[tokio::test]
+async fn cancel_intent_survives_effect_crash_and_refreshes_interrupted_as_canceled() {
+    let root = tempfile::tempdir().unwrap();
+    let local: Arc<dyn StorePort> =
+        Arc::new(SyncStorePort::new(InboxStore::open(root.path()).unwrap()));
+    let provider = Arc::new(FakeProvider::default());
+    let connector = Arc::new(FakeConnector::new());
+    let manager = RemoteManagerStore::new(
+        local.clone(),
+        provider.clone(),
+        connector.clone(),
+        config("cancel-start"),
+    )
+    .unwrap();
+    let started = manager.start_conversation(request()).await.unwrap();
+    let cancel = CancelRequest {
+        request_id: "stable-cancel-request".into(),
+        cancel_id: "stable-cancel".into(),
+        reason: Some("test".into()),
+    };
+    let crash = Arc::new(CrashOnce {
+        point: CrashPoint::ExternalEffectReturned,
+        occurrence: 1,
+        seen: Mutex::new(0),
+    });
+    let manager = RemoteManagerStore::with_crash_injector(
+        local.clone(),
+        provider.clone(),
+        connector.clone(),
+        config("cancel-crash"),
+        crash,
+    )
+    .unwrap();
+    assert!(
+        manager
+            .cancel(&started.conversation_id, cancel.clone())
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        manager
+            .get_conversation(&started.conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .desired_state,
+        "canceled"
+    );
+
+    tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+    let manager =
+        RemoteManagerStore::new(local, provider, connector.clone(), config("cancel-retry"))
+            .unwrap();
+    manager
+        .cancel(&started.conversation_id, cancel)
+        .await
+        .unwrap();
+    let refreshed = manager
+        .refresh_conversation(&started.conversation_id)
+        .await
+        .unwrap();
+    assert_eq!(refreshed.observed_state, "canceled");
+    assert_eq!(
+        connector
+            .0
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .0
+            .lock()
+            .unwrap()
+            .cancel_effects,
+        1
     );
 }

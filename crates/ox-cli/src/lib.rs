@@ -45,6 +45,7 @@ pub(crate) mod key_encode;
 pub(crate) mod key_handlers;
 pub(crate) mod key_migration;
 pub(crate) mod parse;
+pub mod remote_cli;
 #[allow(dead_code)]
 pub(crate) mod session;
 pub mod settings;

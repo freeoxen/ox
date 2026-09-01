@@ -9,7 +9,7 @@ use ox_structfs_transport::{
 };
 use sha2::{Digest as _, Sha256};
 
-use crate::{PublicStore, WorkerLimits};
+use crate::{PublicStore, WorkerBuildIdentity, WorkerLimits};
 
 #[derive(Clone, Debug)]
 pub struct WorkerConfig {
@@ -75,6 +75,27 @@ impl WorkerService {
         }
         std::fs::create_dir_all(&config.inbox_root).map_err(|error| error.to_string())?;
 
+        let (image_digest, sandbox_preflight) = if bind_socket {
+            let image = std::env::var("OX_WORKER_IMAGE_DIGEST")
+                .map_err(|_| "OX_WORKER_IMAGE_DIGEST must be set to a pinned image reference")?;
+            validate_pinned_image(&image)?;
+            let tool_executor = std::env::current_exe()
+                .map_err(|error| error.to_string())?
+                .parent()
+                .ok_or("worker executable has no parent directory")?
+                .join("ox-tool-exec");
+            ox_executor::remote_sandbox_preflight(
+                &config.inbox_root.join("sandbox-preflight"),
+                &tool_executor,
+            )?;
+            (image, "passed".to_string())
+        } else {
+            // In-process semantic tests do not bind a remotely reachable
+            // carrier. Their health shape remains complete without claiming an
+            // image artifact was verified.
+            ("test-in-process@sha256:0000000000000000000000000000000000000000000000000000000000000000".into(), "passed".into())
+        };
+
         let broker = ox_broker::BrokerStore::default();
         // As in the interactive CLI, both handles are the established
         // InboxStore implementation over the same WAL database: one is mounted
@@ -111,7 +132,11 @@ impl WorkerService {
             config.node_id,
             config.attempt_id,
             config.limits,
-            executable_digest()?,
+            WorkerBuildIdentity {
+                executable_digest: executable_digest()?,
+                image_digest,
+                sandbox_preflight,
+            },
         )?;
         let (server, socket_identity) = if bind_socket {
             let server = spawn_unix_server(
@@ -257,6 +282,18 @@ fn executable_digest() -> Result<String, String> {
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
+fn validate_pinned_image(value: &str) -> Result<(), String> {
+    let digest = value
+        .rsplit_once("@sha256:")
+        .map(|(_, digest)| digest)
+        .or_else(|| value.strip_prefix("sha256:"))
+        .ok_or("worker image must be pinned with @sha256:<64 hex>")?;
+    if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("worker image must be pinned with @sha256:<64 hex>".into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,5 +391,15 @@ mod tests {
                 .contains("identity changed")
         );
         assert!(socket.exists());
+    }
+
+    #[test]
+    fn production_image_reference_must_be_digest_pinned() {
+        assert!(validate_pinned_image(
+            "ghcr.io/freeoxen/ox-worker@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        )
+        .is_ok());
+        assert!(validate_pinned_image("ghcr.io/freeoxen/ox-worker:latest").is_err());
+        assert!(validate_pinned_image("sha256:short").is_err());
     }
 }

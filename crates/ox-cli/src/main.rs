@@ -20,6 +20,7 @@ mod key_encode;
 mod key_handlers;
 mod key_migration;
 mod parse;
+mod remote_cli;
 #[allow(dead_code)]
 mod session;
 #[allow(dead_code)]
@@ -80,11 +81,23 @@ struct Cli {
 enum Commands {
     /// Interactive setup wizard
     Init,
+    /// Run and manage durable conversations on remote ox workers.
+    Remote(Box<remote_cli::RemoteArgs>),
 }
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+
+    // Headless remote commands must not initialize account configuration,
+    // settings subscriptions, the terminal, or the local interactive App.
+    if let Some(Commands::Remote(remote)) = &cli.command {
+        if let Err(error) = remote_cli::run(remote).await {
+            remote_cli::print_error(&error, remote.json);
+            std::process::exit(error.code);
+        }
+        return Ok(());
+    }
 
     let workspace =
         std::fs::canonicalize(&cli.workspace).unwrap_or_else(|_| PathBuf::from(&cli.workspace));

@@ -100,6 +100,7 @@ impl ExeCommand {
                     format!("--comment={}", spec.comment),
                     format!("--env=OX_NODE_ID={}", spec.node_id),
                     format!("--env=OX_NODE_ATTEMPT_ID={}", spec.node_attempt_id),
+                    format!("--env=OX_WORKER_IMAGE_DIGEST={}", spec.image),
                 ];
                 for tag in &spec.tags {
                     args.push(format!("--tag={tag}"));
@@ -394,6 +395,51 @@ impl ExeControlStore {
     }
 }
 
+/// StructFS paths cannot contain provider VM punctuation such as `-`. Keep
+/// the provider name typed and reversible instead of weakening path grammar.
+pub fn vm_path(name: &str) -> Result<Path, ExeError> {
+    validate_vm_name(name)?;
+    Path::parse(&format!("vms/{}", encode_vm_component(name)))
+        .map_err(|error| ExeError::Invalid(error.to_string()))
+}
+
+pub fn vm_delete_path(name: &str) -> Result<Path, ExeError> {
+    let item = vm_path(name)?;
+    Path::parse(&format!("{item}/delete")).map_err(|error| ExeError::Invalid(error.to_string()))
+}
+
+pub fn encode_vm_component(name: &str) -> String {
+    let mut encoded = String::with_capacity(3 + name.len() * 2);
+    encoded.push_str("vm_");
+    for byte in name.bytes() {
+        use std::fmt::Write as _;
+        write!(&mut encoded, "{byte:02x}").expect("String writes do not fail");
+    }
+    encoded
+}
+
+pub fn decode_vm_component(component: &str) -> Result<String, ExeError> {
+    let hex = component
+        .strip_prefix("vm_")
+        .ok_or_else(|| ExeError::Invalid("invalid VM path component".into()))?;
+    if hex.is_empty() || hex.len() % 2 != 0 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(ExeError::Invalid("invalid VM path component".into()));
+    }
+    let mut bytes = Vec::with_capacity(hex.len() / 2);
+    for pair in hex.as_bytes().chunks_exact(2) {
+        let text = std::str::from_utf8(pair)
+            .map_err(|_| ExeError::Invalid("invalid VM path component".into()))?;
+        bytes.push(
+            u8::from_str_radix(text, 16)
+                .map_err(|_| ExeError::Invalid("invalid VM path component".into()))?,
+        );
+    }
+    let name = String::from_utf8(bytes)
+        .map_err(|_| ExeError::Invalid("invalid VM path component".into()))?;
+    validate_vm_name(&name)?;
+    Ok(name)
+}
+
 fn map_command_error(error: CommandError) -> ExeError {
     match error {
         CommandError::Ambiguous(message) | CommandError::Unavailable(message) => {
@@ -419,9 +465,11 @@ impl AsyncReader for ExeControlStore {
                         .await
                         .map_err(|error| Self::store_error("list", error))?,
                 ),
-                [vms, name] if vms == "vms" => {
+                [vms, component] if vms == "vms" => {
+                    let name = decode_vm_component(component)
+                        .map_err(|error| Self::store_error("list", error))?;
                     let Some(vm) = this
-                        .find_exact(name)
+                        .find_exact(&name)
                         .await
                         .map_err(|error| Self::store_error("list", error))?
                     else {
@@ -457,19 +505,24 @@ impl AsyncWriter for ExeControlStore {
                         .create(spec)
                         .await
                         .map_err(|error| Self::store_error("create", error))?;
-                    Path::parse(&format!("vms/{}", vm.vm_name)).map_err(StoreError::from)
+                    vm_path(&vm.vm_name).map_err(|error| Self::store_error("create", error))
                 }
-                [vms, name, delete] if vms == "vms" && delete == "delete" => {
+                [vms, component, delete] if vms == "vms" && delete == "delete" => {
+                    let name = decode_vm_component(component)
+                        .map_err(|error| Self::store_error("delete", error))?;
                     let request: DeleteVmRequest =
                         serde_json::from_value(json).map_err(|error| {
                             StoreError::store("ExeControlStore", "delete", error.to_string())
                         })?;
                     let deletion_id = request.deletion_id.clone();
-                    this.remove(name, request)
+                    this.remove(&name, request)
                         .await
                         .map_err(|error| Self::store_error("delete", error))?;
-                    Path::parse(&format!("vms/{name}/deletions/{deletion_id}"))
-                        .map_err(StoreError::from)
+                    Path::parse(&format!(
+                        "vms/{}/deletions/{deletion_id}",
+                        encode_vm_component(&name)
+                    ))
+                    .map_err(StoreError::from)
                 }
                 _ => Err(StoreError::store(
                     "ExeControlStore",

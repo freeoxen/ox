@@ -38,6 +38,52 @@ pub struct StartConversationRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct CreateNodeRequest {
+    pub schema_version: u32,
+    pub request_id: String,
+    pub node: NodeProvisionSpec,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateNodeResult {
+    pub node_id: String,
+    pub node_attempt_id: String,
+    pub vm_name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeDoctorResult {
+    pub node: ox_inbox::remote_state::RemoteNodeRecord,
+    pub health: WorkerHealth,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerSandboxHealth {
+    pub mode: String,
+    pub preflight: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerHealth {
+    pub status: String,
+    pub node_id: String,
+    pub attempt_id: String,
+    pub worker_version: String,
+    pub wire_version: u64,
+    pub image_digest: String,
+    pub agent_wasm_sha256: String,
+    pub executable_sha256: String,
+    pub policy_profile: String,
+    pub policy_contract_sha256: String,
+    pub sandbox_enforcement: WorkerSandboxHealth,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MessageRequest {
     pub request_id: String,
     pub message_id: String,
@@ -100,6 +146,7 @@ pub enum CrashPoint {
     NodeIntentPersisted,
     OperationIntentPersisted,
     ExternalEffectReturned,
+    ProjectionCommitted,
     ResultCommitted,
 }
 

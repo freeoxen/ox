@@ -1,0 +1,20 @@
+[Unit]
+Description=ox headless worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ox
+Group=ox
+EnvironmentFile=/etc/ox-worker.env
+ExecStart=/usr/local/bin/ox-worker serve --root /var/lib/ox --socket /run/ox/worker.sock --node-id ${OX_NODE_ID} --attempt-id ${OX_NODE_ATTEMPT_ID}
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/ox /run/ox
+
+[Install]
+WantedBy=multi-user.target

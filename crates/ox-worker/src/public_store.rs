@@ -23,6 +23,13 @@ pub struct WorkerLimits {
     pub max_ledger_line_bytes: usize,
 }
 
+#[derive(Clone, Debug)]
+pub struct WorkerBuildIdentity {
+    pub executable_digest: String,
+    pub image_digest: String,
+    pub sandbox_preflight: String,
+}
+
 impl Default for WorkerLimits {
     fn default() -> Self {
         Self {
@@ -68,6 +75,8 @@ pub struct PublicStore {
     message_admissions: Arc<std::sync::Mutex<HashMap<String, std::sync::Weak<Mutex<()>>>>>,
     cursor_admission: Arc<Semaphore>,
     executable_digest: Arc<str>,
+    image_digest: Arc<str>,
+    sandbox_preflight: Arc<str>,
 }
 
 impl PublicStore {
@@ -78,7 +87,7 @@ impl PublicStore {
         node_id: String,
         attempt_id: String,
         limits: WorkerLimits,
-        executable_digest: String,
+        build_identity: WorkerBuildIdentity,
     ) -> Result<Self, String> {
         limits.validate()?;
         Ok(Self {
@@ -91,7 +100,9 @@ impl PublicStore {
             limits,
             create_admission: Arc::new(Mutex::new(())),
             message_admissions: Arc::new(std::sync::Mutex::new(HashMap::new())),
-            executable_digest: executable_digest.into(),
+            executable_digest: build_identity.executable_digest.into(),
+            image_digest: build_identity.image_digest.into(),
+            sandbox_preflight: build_identity.sandbox_preflight.into(),
         })
     }
 
@@ -207,11 +218,12 @@ impl PublicStore {
                 "status": "ready", "node_id": &*self.node_id, "attempt_id": &*self.attempt_id,
                 "worker_version": env!("CARGO_PKG_VERSION"),
                 "wire_version": ox_structfs_transport::WIRE_VERSION,
+                "image_digest": &*self.image_digest,
                 "agent_wasm_sha256": ox_executor::agent_wasm_sha256(),
                 "executable_sha256": &*self.executable_digest,
                 "policy_profile": "clash_remote_enforced",
                 "policy_contract_sha256": format!("{:x}", Sha256::digest(b"clash_remote_enforced_v1")),
-                "sandbox_enforcement": {"mode": "required", "preflight": "pending_worker_image_validation"}
+                "sandbox_enforcement": {"mode": "required", "preflight": &*self.sandbox_preflight}
             }))?)),
             ["capabilities"] => Ok(Some(parsed(serde_json::json!({
                 "protocol": "ox-worker-v1", "wire_version": ox_structfs_transport::WIRE_VERSION,

@@ -16,7 +16,8 @@ pub(crate) async fn reconcile_ledger_batches(
     local: &Arc<dyn StorePort>,
     worker: &Arc<dyn StorePort>,
     conversation: &RemoteConversationRecord,
-) -> Result<(), RemoteManagerError> {
+) -> Result<bool, RemoteManagerError> {
+    let mut advanced = false;
     let thread_id = conversation.worker_thread_id.as_deref().ok_or_else(|| {
         RemoteManagerError::Invalid("conversation has no worker thread id".into())
     })?;
@@ -80,7 +81,7 @@ pub(crate) async fn reconcile_ledger_batches(
                     "worker ledger made no progress".into(),
                 ));
             }
-            return Ok(());
+            return Ok(advanced);
         }
         let commit = CachedLedgerBatch {
             node_attempt_id: conversation.node_attempt_id.clone(),
@@ -97,8 +98,9 @@ pub(crate) async fn reconcile_ledger_batches(
             .write(&target, structfs_core_store::Record::parsed(value))
             .await
             .map_err(|error| RemoteManagerError::store("commit ledger", error))?;
+        advanced = true;
         if !batch.has_more {
-            return Ok(());
+            return Ok(advanced);
         }
     }
 }

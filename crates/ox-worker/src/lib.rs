@@ -4,5 +4,5 @@ pub mod ledger_cursor;
 pub mod public_store;
 pub mod service;
 
-pub use public_store::{PublicStore, WorkerLimits};
+pub use public_store::{PublicStore, WorkerBuildIdentity, WorkerLimits};
 pub use service::{WorkerConfig, WorkerService};

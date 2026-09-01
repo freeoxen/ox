@@ -1038,23 +1038,85 @@ converges without duplicate VM, worker thread, prompt, approval, or cancel.
 
 ## Task 10 — Build the worker image and headless CLI commands
 
+### Prerequisites
+
+- [x] **T10-P1. Remote CLI dispatch can occur before all interactive startup.**
+  Verified with
+  `nl -ba crates/ox-cli/src/main.rs | sed -n '80,120p'`:
+  `Commands::Remote` is declared at `main.rs:85`, and the branch returns at
+  `:94-100` before workspace resolution, tracing, account configuration,
+  broker/UI Stores, settings subscriptions, terminal setup, or `App` creation.
+  If this ordering changes, headless remote commands are blocked for ~1 day to
+  restore a side-effect-free dispatch seam.
+
+- [x] **T10-P2. Production composition uses existing Store adapters end to
+  end.** Verified with
+  `nl -ba crates/ox-cli/src/remote_cli.rs | sed -n '317,430p'` and
+  `nl -ba crates/ox-remote/src/state.rs | sed -n '100,230p'`:
+  the CLI wraps the existing `InboxStore` in `SyncStorePort`, constructs
+  `ExeControlStore`, `SshWorkerConnector`, and `RemoteManagerStore` at
+  `remote_cli.rs:317-430`; the connector opens only the fixed-command
+  `connect_worker_ssh` StructFS carrier at `state.rs:118-146`. No CLI handler
+  receives an arbitrary SSH command or a second executor.
+
+- [x] **T10-P3. Offline recovery reads do not require provider credentials.**
+  Verified with
+  `nl -ba crates/ox-cli/src/remote_cli.rs | sed -n '317,342p;983,1001p'`:
+  local-only commands return after opening `InboxStore` at
+  `remote_cli.rs:317-333`, and node/conversation listings read typed
+  `remote/*` StructFS paths at `:983-1001`. If local inspection begins dialing
+  the provider, recovery UX is blocked for ~1 day to restore lazy composition.
+
+- [x] **T10-P4. Worker readiness is gated on the existing executor and
+  fail-closed sandbox enforcement.** Verified with
+  `nl -ba crates/ox-worker/src/service.rs | sed -n '55,140p'`,
+  `nl -ba crates/ox-executor/src/lib.rs | sed -n '30,188p'`, and
+  `nl -ba crates/ox-worker/src/public_store.rs | sed -n '214,227p'`:
+  production startup requires a digest-pinned image and passes filesystem plus
+  network sandbox probes before constructing the sole `ExecutionCore` at
+  `service.rs:78-140`; health publishes the image, executable, embedded Wasm,
+  wire, and policy digests only with preflight `passed` at
+  `public_store.rs:217-227`. If the probe cannot prove enforcement, the socket
+  is never exposed.
+
+- [x] **T10-P5. The image build packages existing binaries and has deterministic
+  provenance/scanning hooks.** Verified with
+  `nl -ba deploy/ox-worker/Containerfile` and
+  `nl -ba scripts/build-worker-image.sh | sed -n '1,66p'`:
+  the image builds `ox-worker`, its embedded existing agent Wasm, and
+  `ox-tool-exec`; the build script requires digest-pinned bases, enables Buildx
+  provenance/SBOM attestations, records the image ID/registry digest, requires
+  Syft and Trivy for every push, and fails on high/critical findings. The
+  external image build/scans remain a release gate when Docker or registry
+  credentials are unavailable locally.
+
 **Files:** worker image/build script; `ox-cli` remote command modules; typed
 remote config.
 
-- [ ] Build an image containing the same agent Wasm, `ox-executor`,
+- [x] Implement a deterministic image build containing the same agent Wasm, `ox-executor`,
   `ox-tool-exec`, and policy implementation used locally; pin by digest.
-- [ ] Start `ox-worker serve` at boot independently of SSH sessions and verify
+- [x] Start `ox-worker serve` at boot independently of SSH sessions and verify
   fail-closed sandbox capability before reporting ready.
-- [ ] Dispatch CLI `remote` commands before account wizard, terminal/UI Stores,
+- [x] Dispatch CLI `remote` commands before account wizard, terminal/UI Stores,
   settings subscriptions, or local `App` creation.
-- [ ] Add node `new/list/show/drain/delete/doctor` and conversation
+- [x] Add node `new/list/show/drain/delete/doctor` and conversation
   `new/list/show/attach/send/logs/approve/cancel/reconcile` commands.
-- [ ] Add placement flags, JSON output, stable refs, terminal sanitization,
+- [x] Add placement flags, JSON output, stable refs, terminal sanitization,
   documented exit codes, and noninteractive host-key rules.
-- [ ] Ctrl-C during attach/log follow detaches; only explicit cancel mutates the
+- [x] Ctrl-C during attach/log follow detaches; only explicit cancel mutates the
   remote conversation.
-- [ ] Generate SBOM and image vulnerability report; health reports image,
+- [x] Add SBOM and image vulnerability-report gates; health reports image,
   executable, Wasm, wire, and policy digests.
+- [x] Run scoped Rust tests and lint: `cargo test -p ox-remote`,
+  `cargo test -p ox-worker`, `cargo test -p ox-cli remote_cli --lib`, and
+  `cargo clippy -p ox-remote -p ox-worker -p ox-cli --all-targets -- -D warnings`.
+  The manager suite includes crash/retry convergence for a Ready node with a
+  pending provision receipt and a bound conversation with a pending create
+  receipt at `crates/ox-remote/tests/manager_reconcile.rs:687-812`.
+- [ ] Produce and push the release image, SBOM, and vulnerability report in an
+  environment with Docker, scanner tooling, and registry credentials. The
+  deterministic gated script is implemented, but this external release action
+  was not run during repository implementation.
 
 **Success:** A user can start a conversation on exe.dev, exit, and later
 inspect/send/approve/cancel it while the node runs the same executor as local
