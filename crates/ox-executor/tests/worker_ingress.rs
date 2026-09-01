@@ -347,12 +347,21 @@ async fn decision_recovers_after_response_before_applied_mark() {
     )
     .into_handle(8);
     wait_for_pending_approval(&broker, &thread_id).await;
+    assert_eq!(
+        handle.dispatch_worker_ingress().unwrap(),
+        0,
+        "an accepted in-flight prompt is dispatched once per process"
+    );
+    assert_eq!(user_count(root.path(), &thread_id), 1);
+    let approval_id =
+        ox_executor::derive_unresolved_approval_id(&thread_id, &entries(root.path(), &thread_id))
+            .expect("pending approval has durable tool-call evidence");
     ox_inbox::InboxStore::open(root.path())
         .unwrap()
         .accept_worker_decision(
             &thread_id,
             &DecisionEnvelope {
-                approval_id: "approval-restart".into(),
+                approval_id: approval_id.clone(),
                 decision: ox_types::Decision::DenyOnce,
             },
         )
@@ -374,7 +383,7 @@ async fn decision_recovers_after_response_before_applied_mark() {
     assert_eq!(
         ox_inbox::InboxStore::open(root.path())
             .unwrap()
-            .worker_intent(IntentKind::Decision, "approval-restart")
+            .worker_intent(IntentKind::Decision, &approval_id)
             .unwrap()
             .unwrap()
             .state,
@@ -392,13 +401,7 @@ async fn decision_recovers_after_response_before_applied_mark() {
         ExecutorConfig::default(),
     )
     .into_handle(8);
-    wait_for_state(
-        root.path(),
-        IntentKind::Decision,
-        "approval-restart",
-        "applied",
-    )
-    .await;
+    wait_for_state(root.path(), IntentKind::Decision, &approval_id, "applied").await;
     assert_eq!(
         entries(root.path(), &thread_id)
             .iter()

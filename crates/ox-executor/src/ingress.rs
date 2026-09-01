@@ -1,7 +1,52 @@
 //! Durable worker-ingress evidence and applied-mark helpers.
 
 use ox_kernel::{Record, Value, path};
+use sha2::{Digest as _, Sha256};
 use structfs_core_store::Writer as _;
+
+/// Stable identity for the currently unresolved durable approval evidence.
+/// Runtime-only waiter state is deliberately excluded so the identity survives
+/// restart. A post-crash re-request for the same durable `ToolCall.id` keeps
+/// the same identity; a later tool call necessarily has a distinct tool ID.
+pub fn derive_unresolved_approval_id(
+    thread_id: &str,
+    entries: &[ox_kernel::log::LogEntry],
+) -> Option<String> {
+    let request_index = entries
+        .iter()
+        .rposition(|entry| matches!(entry, ox_kernel::log::LogEntry::ApprovalRequested { .. }))?;
+    if entries[request_index + 1..].iter().any(|entry| {
+        matches!(
+            entry,
+            ox_kernel::log::LogEntry::ApprovalResolved { .. }
+                | ox_kernel::log::LogEntry::TurnEnd { .. }
+                | ox_kernel::log::LogEntry::TurnAborted { .. }
+        )
+    }) {
+        return None;
+    }
+    let tool_name = match &entries[request_index] {
+        ox_kernel::log::LogEntry::ApprovalRequested { tool_name, .. } => tool_name,
+        _ => unreachable!(),
+    };
+    let (tool_id, preceding_name) =
+        entries[..request_index]
+            .iter()
+            .rev()
+            .find_map(|entry| match entry {
+                ox_kernel::log::LogEntry::ToolCall { id, name, .. } => Some((id, name)),
+                _ => None,
+            })?;
+    if preceding_name != tool_name {
+        return None;
+    }
+    let mut digest = Sha256::new();
+    for value in ["ox-approval-v1", thread_id, tool_id] {
+        digest.update((value.len() as u64).to_be_bytes());
+        digest.update(value.as_bytes());
+    }
+    Some(format!("a_{:x}", digest.finalize()))
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum IngressPromptState {
@@ -253,9 +298,18 @@ pub(crate) async fn dispatch_worker_decision_task(
                     return;
                 }
             }
+            let conditional_path = match structfs_core_store::Path::parse(&format!(
+                "approval/respond_if/{semantic_id}"
+            )) {
+                Ok(path) => path,
+                Err(error) => {
+                    tracing::error!(%semantic_id, %error, "invalid approval identity path");
+                    return;
+                }
+            };
             if let Err(error) = scoped
                 .write_typed(
-                    &path!("approval/response"),
+                    &conditional_path,
                     &ox_types::ApprovalResponse {
                         decision: envelope.decision,
                     },
@@ -357,4 +411,61 @@ fn encode_ingress_path_id(id: &str) -> String {
         let _ = write!(encoded, "{byte:02x}");
     }
     encoded
+}
+
+#[cfg(test)]
+mod approval_identity_tests {
+    use super::*;
+    use ox_kernel::log::LogEntry;
+
+    fn call(id: &str, name: &str) -> LogEntry {
+        LogEntry::ToolCall {
+            id: id.into(),
+            name: name.into(),
+            input: serde_json::json!({}),
+            scope: None,
+        }
+    }
+    fn request(name: &str, reconfirm: bool) -> LogEntry {
+        LogEntry::ApprovalRequested {
+            tool_name: name.into(),
+            input_preview: String::new(),
+            post_crash_reconfirm: reconfirm,
+        }
+    }
+
+    #[test]
+    fn approval_identity_is_strict_and_stable_across_reconfirm() {
+        let first = vec![call("tool-1", "shell"), request("shell", false)];
+        let reconfirm = vec![
+            call("tool-1", "shell"),
+            request("shell", false),
+            request("shell", true),
+        ];
+        assert_eq!(
+            derive_unresolved_approval_id("t_a", &first),
+            derive_unresolved_approval_id("t_a", &reconfirm)
+        );
+        assert_ne!(
+            derive_unresolved_approval_id("t_a", &first),
+            derive_unresolved_approval_id("t_b", &first)
+        );
+        assert_eq!(
+            derive_unresolved_approval_id("t_a", &[request("shell", false)]),
+            None
+        );
+        assert_eq!(
+            derive_unresolved_approval_id("t_a", &[call("x", "fs"), request("shell", false)]),
+            None
+        );
+        let resolved = vec![
+            call("tool-1", "shell"),
+            request("shell", false),
+            LogEntry::ApprovalResolved {
+                tool_name: "shell".into(),
+                decision: ox_types::Decision::AllowOnce,
+            },
+        ];
+        assert_eq!(derive_unresolved_approval_id("t_a", &resolved), None);
+    }
 }

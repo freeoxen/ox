@@ -2,16 +2,235 @@
 
 use sha2::{Digest, Sha256};
 use std::fs::{self, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
 
 /// A single ledger entry with content-addressed hash and parent chain.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LedgerEntry {
     pub seq: u64,
     pub hash: String,
     pub parent: Option<String>,
     pub msg: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LedgerBatch {
+    pub entries: Vec<LedgerEntry>,
+    pub next_seq: u64,
+    pub has_more: bool,
+}
+
+/// Stream and validate a bounded cursor batch without loading the ledger.
+/// A torn/malformed final line is treated as an uncommitted tail and omitted;
+/// malformed interior data, sequence gaps, hash mismatches, and parent-chain
+/// breaks fail closed. `max_line_bytes` also bounds work before `from_seq`.
+pub fn read_ledger_batch(
+    path: &Path,
+    from_seq: u64,
+    max_entries: usize,
+    max_batch_bytes: usize,
+    max_line_bytes: usize,
+) -> Result<LedgerBatch, String> {
+    if max_entries == 0 || max_batch_bytes == 0 || max_line_bytes == 0 {
+        return Err("ledger cursor limits must be non-zero".into());
+    }
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if from_seq != 0 {
+                return Err(format!(
+                    "ledger cursor {from_seq} is ahead of next sequence 0"
+                ));
+            }
+            return Ok(LedgerBatch {
+                entries: Vec::new(),
+                next_seq: from_seq,
+                has_more: false,
+            });
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
+    let mut previous: Option<LedgerEntry> = None;
+    let mut selected = Vec::new();
+    let mut selected_bytes = 0usize;
+    let mut has_more = false;
+    loop {
+        line.clear();
+        let read = reader
+            .by_ref()
+            .take((max_line_bytes as u64).saturating_add(1))
+            .read_until(b'\n', &mut line)
+            .map_err(|error| error.to_string())?;
+        if read == 0 {
+            break;
+        }
+        if read > max_line_bytes {
+            return Err(format!("ledger line exceeds {max_line_bytes} byte limit"));
+        }
+        let terminated = line.last() == Some(&b'\n');
+        if !terminated {
+            break;
+        }
+        line.pop();
+        if line.last() == Some(&b'\r') {
+            line.pop();
+        }
+        let parsed = serde_json::from_slice::<LedgerEntry>(&line);
+        let entry = match parsed {
+            Ok(entry) => entry,
+            Err(_)
+                if reader
+                    .fill_buf()
+                    .map_err(|error| error.to_string())?
+                    .is_empty() =>
+            {
+                break;
+            }
+            Err(error) => return Err(format!("malformed interior ledger entry: {error}")),
+        };
+        let expected_seq = previous.as_ref().map_or(0, |entry| entry.seq + 1);
+        if entry.seq != expected_seq {
+            return Err(format!(
+                "ledger sequence gap: expected {expected_seq}, got {}",
+                entry.seq
+            ));
+        }
+        let expected_parent = previous.as_ref().map(|entry| entry.hash.as_str());
+        if entry.parent.as_deref() != expected_parent {
+            return Err(format!("ledger parent mismatch at seq {}", entry.seq));
+        }
+        if entry.hash != entry_hash(&entry.msg) {
+            return Err(format!("ledger hash mismatch at seq {}", entry.seq));
+        }
+        previous = Some(entry.clone());
+        if entry.seq < from_seq {
+            continue;
+        }
+        let exceeds_batch = selected_bytes
+            .checked_add(read)
+            .is_none_or(|bytes| bytes > max_batch_bytes);
+        if exceeds_batch && selected.is_empty() {
+            return Err(format!(
+                "ledger entry exceeds {max_batch_bytes} byte batch limit"
+            ));
+        }
+        if selected.len() == max_entries || exceeds_batch {
+            has_more = true;
+            break;
+        }
+        selected_bytes += read;
+        selected.push(entry);
+    }
+    let ledger_next = previous.as_ref().map_or(0, |entry| entry.seq + 1);
+    if from_seq > ledger_next {
+        return Err(format!(
+            "ledger cursor {from_seq} is ahead of next sequence {ledger_next}"
+        ));
+    }
+    let next_seq = selected.last().map_or(from_seq, |entry| entry.seq + 1);
+    Ok(LedgerBatch {
+        entries: selected,
+        next_seq,
+        has_more,
+    })
+}
+
+/// Return the actual durable tail with bounded retained memory. The full file
+/// is streamed to validate the chain; only the configured tail is retained.
+pub fn read_ledger_tail(
+    path: &Path,
+    max_entries: usize,
+    max_batch_bytes: usize,
+    max_line_bytes: usize,
+) -> Result<LedgerBatch, String> {
+    use std::collections::VecDeque;
+    if max_entries == 0 || max_batch_bytes == 0 || max_line_bytes == 0 {
+        return Err("ledger tail limits must be non-zero".into());
+    }
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(LedgerBatch {
+                entries: Vec::new(),
+                next_seq: 0,
+                has_more: false,
+            });
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
+    let mut previous: Option<LedgerEntry> = None;
+    let mut tail: VecDeque<(LedgerEntry, usize)> = VecDeque::new();
+    let mut tail_bytes = 0usize;
+    loop {
+        line.clear();
+        let read = reader
+            .by_ref()
+            .take((max_line_bytes as u64).saturating_add(1))
+            .read_until(b'\n', &mut line)
+            .map_err(|error| error.to_string())?;
+        if read == 0 {
+            break;
+        }
+        if read > max_line_bytes {
+            return Err(format!("ledger line exceeds {max_line_bytes} byte limit"));
+        }
+        if line.last() != Some(&b'\n') {
+            break;
+        }
+        line.pop();
+        if line.last() == Some(&b'\r') {
+            line.pop();
+        }
+        let entry: LedgerEntry = match serde_json::from_slice(&line) {
+            Ok(entry) => entry,
+            Err(_)
+                if reader
+                    .fill_buf()
+                    .map_err(|error| error.to_string())?
+                    .is_empty() =>
+            {
+                break;
+            }
+            Err(error) => return Err(format!("malformed interior ledger entry: {error}")),
+        };
+        let expected_seq = previous.as_ref().map_or(0, |entry| entry.seq + 1);
+        if entry.seq != expected_seq {
+            return Err(format!(
+                "ledger sequence gap: expected {expected_seq}, got {}",
+                entry.seq
+            ));
+        }
+        if entry.parent.as_deref() != previous.as_ref().map(|entry| entry.hash.as_str()) {
+            return Err(format!("ledger parent mismatch at seq {}", entry.seq));
+        }
+        if entry.hash != entry_hash(&entry.msg) {
+            return Err(format!("ledger hash mismatch at seq {}", entry.seq));
+        }
+        previous = Some(entry.clone());
+        if read > max_batch_bytes {
+            return Err(format!(
+                "ledger entry exceeds {max_batch_bytes} byte batch limit"
+            ));
+        }
+        tail.push_back((entry, read));
+        tail_bytes += read;
+        while tail.len() > max_entries || tail_bytes > max_batch_bytes {
+            let (_, removed) = tail.pop_front().expect("nonempty over-limit tail");
+            tail_bytes -= removed;
+        }
+    }
+    let next_seq = previous.as_ref().map_or(0, |entry| entry.seq + 1);
+    let has_more = tail.front().is_some_and(|(entry, _)| entry.seq > 0);
+    Ok(LedgerBatch {
+        entries: tail.into_iter().map(|(entry, _)| entry).collect(),
+        next_seq,
+        has_more,
+    })
 }
 
 /// Terminal mount-time health of a thread's ledger.
@@ -568,5 +787,103 @@ mod tests {
         // truncate helper and assert it errors on a directory.
         let err = super::truncate_to(&bogus, 0).unwrap_err();
         let _ = err; // any error is acceptable; we only need non-Ok.
+    }
+
+    #[test]
+    fn bounded_cursor_enforces_progress_integrity_and_ahead_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ledger.jsonl");
+        let first = append_entry(&path, &serde_json::json!({"n": 0}), None).unwrap();
+        let second = append_entry(&path, &serde_json::json!({"n": 1}), Some(&first)).unwrap();
+        let batch = read_ledger_batch(&path, 0, 1, 4096, 4096).unwrap();
+        assert_eq!(batch.entries, vec![first.clone()]);
+        assert_eq!(batch.next_seq, 1);
+        assert!(batch.has_more);
+        let tail = read_ledger_batch(&path, 1, 2, 4096, 4096).unwrap();
+        assert_eq!(tail.entries, vec![second]);
+        assert!(!tail.has_more);
+        assert!(
+            read_ledger_batch(&path, 3, 2, 4096, 4096)
+                .unwrap_err()
+                .contains("ahead")
+        );
+        let missing = dir.path().join("missing.jsonl");
+        assert!(
+            read_ledger_batch(&missing, 1, 2, 4096, 4096)
+                .unwrap_err()
+                .contains("ahead")
+        );
+        assert!(
+            read_ledger_batch(&path, 0, 2, 1, 4096)
+                .unwrap_err()
+                .contains("batch limit")
+        );
+        assert!(
+            read_ledger_batch(&path, 0, 2, 4096, 4)
+                .unwrap_err()
+                .contains("line exceeds")
+        );
+    }
+
+    #[test]
+    fn bounded_tail_returns_actual_latest_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ledger.jsonl");
+        let mut previous = None;
+        for n in 0..5 {
+            previous =
+                Some(append_entry(&path, &serde_json::json!({"n": n}), previous.as_ref()).unwrap());
+        }
+        let tail = read_ledger_tail(&path, 2, 4096, 4096).unwrap();
+        assert_eq!(
+            tail.entries
+                .iter()
+                .map(|entry| entry.seq)
+                .collect::<Vec<_>>(),
+            vec![3, 4]
+        );
+        assert_eq!(tail.next_seq, 5);
+        assert!(tail.has_more);
+    }
+
+    #[test]
+    fn bounded_cursor_omits_torn_tail_and_rejects_interior_corruption() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ledger.jsonl");
+        let first = append_entry(&path, &serde_json::json!({"n": 0}), None).unwrap();
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(b"{torn").unwrap();
+        let batch = read_ledger_batch(&path, 0, 4, 4096, 4096).unwrap();
+        assert_eq!(batch.entries, vec![first.clone()]);
+        drop(file);
+        let complete_but_uncommitted = serde_json::to_vec(&LedgerEntry {
+            seq: 1,
+            hash: entry_hash(&serde_json::json!({"n": 1})),
+            parent: Some(first.hash.clone()),
+            msg: serde_json::json!({"n": 1}),
+        })
+        .unwrap();
+        let clean = dir.path().join("unterminated.jsonl");
+        let first_line = serde_json::to_string(&first).unwrap();
+        std::fs::write(
+            &clean,
+            [
+                first_line.as_bytes(),
+                b"\n",
+                complete_but_uncommitted.as_slice(),
+            ]
+            .concat(),
+        )
+        .unwrap();
+        assert_eq!(
+            read_ledger_batch(&clean, 0, 4, 4096, 4096).unwrap().entries,
+            vec![first.clone()]
+        );
+        std::fs::write(&path, b"garbage\n{}\n").unwrap();
+        assert!(
+            read_ledger_batch(&path, 0, 4, 4096, 4096)
+                .unwrap_err()
+                .contains("interior")
+        );
     }
 }

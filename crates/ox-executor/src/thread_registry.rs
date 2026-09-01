@@ -720,6 +720,18 @@ impl AsyncWriter for ThreadRegistry {
         if let Some(approval_sub) = Self::is_approval_path(&sub) {
             // Log approval events to the structured log
             let action = approval_sub.iter().next().map(|s| s.as_str());
+            if action == Some("respond_if") {
+                let expected = approval_sub.iter().nth(1).map(String::as_str);
+                let actual =
+                    crate::derive_unresolved_approval_id(&thread_id, &ns.log.shared().entries());
+                if expected.is_none() || actual.as_deref() != expected {
+                    return Box::pin(std::future::ready(Err(StoreError::store(
+                        "ThreadRegistry",
+                        "approval_response",
+                        "stale approval identity",
+                    ))));
+                }
+            }
             match action {
                 Some("request") => {
                     if let Some(val) = data.as_value() {
@@ -769,7 +781,7 @@ impl AsyncWriter for ThreadRegistry {
                         }
                     }
                 }
-                Some("response") => {
+                Some("response") | Some("respond_if") => {
                     if !ns.approval.has_pending() {
                         return Box::pin(std::future::ready(Err(StoreError::store(
                             "ThreadRegistry",
@@ -802,7 +814,12 @@ impl AsyncWriter for ThreadRegistry {
                 }
                 _ => {}
             }
-            ns.approval.write(&approval_sub, data)
+            let approval_route = if action == Some("respond_if") {
+                structfs_core_store::path!("response")
+            } else {
+                approval_sub
+            };
+            ns.approval.write(&approval_route, data)
         } else {
             let result = ns.write(&sub, data);
             Box::pin(std::future::ready(result))
@@ -901,6 +918,44 @@ mod tests {
             LogEntry::ApprovalResolved { decision, .. }
                 if *decision == ox_types::Decision::AllowOnce
         )));
+    }
+
+    #[test]
+    fn conditional_approval_response_cannot_answer_the_next_waiter() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut reg = ThreadRegistry::new(dir.path().to_path_buf());
+        let append = Path::parse("t_race/log/append").unwrap();
+        let request = Path::parse("t_race/approval/request").unwrap();
+        let response = Record::parsed(json_to_value(serde_json::json!({"decision": "allow_once"})));
+        let mut stale_id = None;
+        for tool_id in ["tool-one", "tool-two"] {
+            futures_or_poll(reg.write(
+                &append,
+                Record::parsed(json_to_value(serde_json::json!({
+                    "type": "tool_call", "id": tool_id, "name": "shell", "input": {}, "scope": null
+                }))),
+            ))
+            .unwrap();
+            let deferred = reg.write(
+                &request,
+                Record::parsed(json_to_value(serde_json::json!({
+                    "tool_name": "shell", "tool_input": {"command": "true"}
+                }))),
+            );
+            let entries = reg.threads.get("t_race").unwrap().log.shared().entries();
+            let id = crate::derive_unresolved_approval_id("t_race", &entries).unwrap();
+            if tool_id == "tool-two" {
+                let stale = stale_id.as_ref().unwrap();
+                let stale_path =
+                    Path::parse(&format!("t_race/approval/respond_if/{stale}")).unwrap();
+                assert!(futures_or_poll(reg.write(&stale_path, response.clone())).is_err());
+                assert!(reg.threads.get("t_race").unwrap().approval.has_pending());
+            }
+            let path = Path::parse(&format!("t_race/approval/respond_if/{id}")).unwrap();
+            futures_or_poll(reg.write(&path, response.clone())).unwrap();
+            futures_or_poll(deferred).unwrap();
+            stale_id = Some(id);
+        }
     }
 
     #[test]

@@ -42,7 +42,7 @@ pub struct CancelEnvelope {
     pub reason: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum IntentKind {
     Create,
     Message,
@@ -477,6 +477,33 @@ impl InboxStore {
         Ok(intents)
     }
 
+    pub fn pending_worker_message_count(&self, thread_id: &str) -> Result<usize, StoreError> {
+        let conn = self
+            .db
+            .lock()
+            .map_err(|error| err("worker_pending_count", error))?;
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM worker_inputs WHERE thread_id = ?1 AND state = ?2",
+                params![thread_id, ACCEPTED],
+                |row| row.get(0),
+            )
+            .map_err(|error| err("worker_pending_count", error))?;
+        usize::try_from(count).map_err(|error| err("worker_pending_count", error))
+    }
+
+    pub fn reserved_worker_thread_count(&self) -> Result<usize, StoreError> {
+        let conn = self
+            .db
+            .lock()
+            .map_err(|error| err("worker_reserved_count", error))?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM worker_creates c LEFT JOIN threads t ON t.id = c.thread_id WHERE t.id IS NULL",
+            [], |row| row.get(0),
+        ).map_err(|error| err("worker_reserved_count", error))?;
+        usize::try_from(count).map_err(|error| err("worker_reserved_count", error))
+    }
+
     pub fn mark_worker_intent_applied(
         &self,
         kind: IntentKind,
@@ -557,6 +584,24 @@ impl InboxStore {
                         .into_iter()
                         .map(|intent| intent.to_value())
                         .collect(),
+                ))))
+            }
+            [worker, pending, messages, thread_id]
+                if worker.as_str() == "worker"
+                    && pending.as_str() == "pending"
+                    && messages.as_str() == "messages" =>
+            {
+                Ok(Some(Record::parsed(Value::Integer(
+                    self.pending_worker_message_count(thread_id)? as i64,
+                ))))
+            }
+            [worker, reserved, threads]
+                if worker.as_str() == "worker"
+                    && reserved.as_str() == "reserved"
+                    && threads.as_str() == "threads" =>
+            {
+                Ok(Some(Record::parsed(Value::Integer(
+                    self.reserved_worker_thread_count()? as i64,
                 ))))
             }
             [worker, kind, id] if worker.as_str() == "worker" => Ok(self
@@ -804,6 +849,8 @@ mod tests {
                 },
             )
             .unwrap();
+        assert_eq!(inbox.pending_worker_message_count("t_order").unwrap(), 1);
+        assert_eq!(inbox.pending_worker_message_count("t_other").unwrap(), 0);
         inbox
             .accept_worker_decision(
                 "t_order",
@@ -858,6 +905,10 @@ mod tests {
             second.receipt_path().unwrap()
         );
         assert_eq!(first.accepted_seq, second.accepted_seq);
+        let inbox = InboxStore::open(root.path()).unwrap();
+        assert_eq!(inbox.reserved_worker_thread_count().unwrap(), 1);
+        inbox.apply_worker_create("concurrent-create").unwrap();
+        assert_eq!(inbox.reserved_worker_thread_count().unwrap(), 0);
     }
 
     #[test]

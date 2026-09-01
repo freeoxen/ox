@@ -15,10 +15,17 @@ pub mod test_support;
 mod thread_registry;
 
 pub use agents::{
-    AgentPool, ExecutionCommandError, ExecutionCore, ExecutionHandle, ExecutorConfig,
-    IngressBoundary, IngressFailpoints, PolicyProfile, SYSTEM_PROMPT, ThreadExecutionConfig,
-    write_save_result_to_inbox,
+    AgentPool, ExecutionCommandError, ExecutionCore, ExecutionHandle, ExecutionStats,
+    ExecutorConfig, IngressBoundary, IngressFailpoints, PolicyProfile, SYSTEM_PROMPT,
+    ThreadExecutionConfig, write_save_result_to_inbox,
 };
+pub use ingress::derive_unresolved_approval_id;
+
+/// Digest of the exact embedded agent module used by local and headless hosts.
+pub fn agent_wasm_sha256() -> String {
+    use sha2::{Digest as _, Sha256};
+    format!("{:x}", Sha256::digest(agents::AGENT_WASM))
+}
 pub use broker_mounts::mount_execution_stores;
 pub use policy::{CheckResult, PolicyGuard, PolicyLoadError, PolicyStats};
 pub use thread_registry::{

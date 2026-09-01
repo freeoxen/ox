@@ -31,6 +31,7 @@ allocative = ">=0.3, <0.3.6"
 namecode = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 structfs-core-store = { workspace = true }
 structfs-serde-store = { workspace = true }
 tracing = { workspace = true }

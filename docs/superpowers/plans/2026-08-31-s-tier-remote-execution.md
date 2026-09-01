@@ -384,11 +384,11 @@ Reuse the existing per-thread workers. Add only:
 - cancellation handles for active Wasm calls and sandboxed tool subprocesses;
 - bounded cursor reads and transport frames.
 
-Turn permits gate execution, not status, approval, cancellation, or ledger
-reads. A worker blocked on approval has already yielded its active-turn permit
-or uses a separately accounted waiting state; it cannot consume all control
-capacity. FIFO admission is sufficient for MVP—do not build weighted fair
-queueing without measured need.
+Turn permits gate an entire synchronous Wasm invocation, including time parked
+on an approval response. That wait therefore consumes finite turn capacity, but
+never the executor control queue or the public Store's health/status/cancel
+paths. Capacity reports this explicitly. FIFO admission is sufficient for
+MVP—do not build weighted fair queueing without measured need.
 
 ### Transport
 
@@ -709,23 +709,68 @@ does not introduce a second service lifecycle.
 **Files:** `crates/ox-worker/src/{main,service,public_store,ledger_cursor}.rs` and
 worker integration tests.
 
-- [ ] Construct exactly one `ExecutionCore` using a worker inbox root.
-- [ ] Implement the public Store mapping table from this plan; delegate thread,
+### Task 6 prerequisites — verification manifest
+
+- [x] **W1. One `ExecutionCore` remains the execution owner.** Verified with
+  `rg -n 'pub struct ExecutionCore|pub fn into_handle' crates/ox-executor/src/agents.rs`:
+  the existing core and bounded handle are at `agents.rs:925` and `:1076`.
+  `WorkerService::start_inner` constructs exactly one core. If this seam is
+  removed, Task 6 is blocked for ~1 day to restore shared ownership.
+- [x] **W2. Durable ingress remains in the existing InboxStore schema.**
+  Verified with
+  `rg -n 'pending_worker_message_count|reserved_worker_thread_count|worker_read_path' crates/ox-inbox/src/worker_ingress.rs`:
+  bounded count projections are implemented beside the existing acceptance
+  tables at `worker_ingress.rs:480-509` and exposed only through that Store at
+  `:575-612`. No worker database or journal was added.
+- [x] **W3. Approval identity can be checked atomically at the existing
+  waiter seam.** Verified with
+  `rg -n 'derive_unresolved_approval_id|respond_if' crates/ox-executor/src/{ingress,thread_registry}.rs`:
+  the domain-separated thread/tool-call identity is derived at `ingress.rs:11`
+  and `ThreadRegistry` revalidates it while synchronously checking, logging,
+  and consuming the waiter at `thread_registry.rs:723-823`. If this conditional
+  route disappears, remote approval is blocked because a stale response could
+  answer the next waiter.
+- [x] **W4. Cursor projection is bounded before allocation.** Verified with
+  `nl -ba crates/ox-inbox/src/ledger.rs | sed -n '28,125p'`: the reader caps
+  each line before allocation, batch bytes, entry count, sequence, hash, and
+  parent validation at `ledger.rs:28-220`; regressions are at `:793-878`.
+- [x] **W5. The generic carriers do not own worker lifecycle.** Verified with
+  `rg -n 'spawn_unix_server|bridge_stdio_to_unix' crates/ox-worker/src crates/ox-structfs-transport/src`:
+  `WorkerService` owns the long-lived accept loop at `service.rs:35-159`, while
+  `main.rs:54` delegates stdio to Task 5's stateless bridge.
+- [x] **W6. Public concurrency is partitioned rather than global.** Verified
+  with
+  `rg -n 'create_admission|message_admission|impl AsyncReader|impl AsyncWriter' crates/ox-worker/src/public_store.rs`:
+  create admission is create-only, message admission is per thread
+  (`public_store.rs:67-68,167-180,322,363`), and health/capacity reads never
+  enter either lock (`:206-236`). The two-thread proof is
+  `crates/ox-worker/tests/public_store.rs:16-161`; approval-saturated turn
+  admission with responsive status/cancel plus approval retry/conflict behavior
+  is proven at `:164-292`.
+
+- [x] Construct exactly one `ExecutionCore` using a worker inbox root.
+- [x] Implement the public Store mapping table from this plan; delegate thread,
   approval, history, and execution operations instead of cloning logic.
-- [ ] Derive the public `approval_id` from the currently unresolved durable
+- [x] Derive the public `approval_id` from the currently unresolved durable
   approval evidence and validate it again before dispatching a response. Task
   3 stores `approval_id` as the decision idempotency key, but the existing
   runtime `ApprovalRequest` and `LogEntry::ApprovalRequested` do not carry an
   ID; without this adapter validation, a stale accepted response could answer a
   later approval on the same thread.
-- [ ] Project `ledger/from/<seq>` from existing `LedgerEntry` envelopes in
+- [x] Project `ledger/from/<seq>` from existing `LedgerEntry` envelopes in
   bounded batches. Sequence/hash are the remote cursor.
-- [ ] Expose health/capabilities/capacity including worker, wire, agent Wasm,
+- [x] Expose health/capabilities/capacity including worker, wire, agent Wasm,
   policy, sandbox-enforcement, node, and attempt identity.
-- [ ] Enforce maximum active turns, queued inputs, parked cursors, and total
+- [x] Enforce maximum active turns, queued inputs, parked cursors, and total
   threads through executor/Store configuration.
-- [ ] Ensure a parked cursor for A, approval for B, and running turn for C do not
-  delay status/cancel for D.
+- [x] Ensure an approval-parked resident turn does not delay health, status, or
+  cancel for another thread, while queued work remains bounded and observable.
+  Proven by `approval_saturates_turn_capacity_but_not_public_control` in
+  `crates/ox-worker/tests/public_store.rs`.
+- [ ] Prove the stronger four-way case: a deliberately parked cursor for A,
+  approval for B, and running turn for C simultaneously do not delay
+  status/cancel for D. This deterministic stress fixture remains Task 11 work;
+  Task 6 does not claim it from the narrower integration coverage.
 
 **Success:** Two remote conversation IDs are ordinary existing ox threads in
 one core, with no duplicated runtime or durability layer.

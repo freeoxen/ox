@@ -212,10 +212,11 @@ struct TurnLimiter {
     max: usize,
     active: std::sync::Mutex<usize>,
     available: std::sync::Condvar,
+    metrics: Arc<ExecutionMetrics>,
 }
 
 impl TurnLimiter {
-    fn new(max: usize) -> Result<Arc<Self>, String> {
+    fn new(max: usize, metrics: Arc<ExecutionMetrics>) -> Result<Arc<Self>, String> {
         if max == 0 {
             return Err("max_active_turns must be non-zero".to_string());
         }
@@ -223,6 +224,7 @@ impl TurnLimiter {
             max,
             active: std::sync::Mutex::new(0),
             available: std::sync::Condvar::new(),
+            metrics,
         }))
     }
 
@@ -238,6 +240,9 @@ impl TurnLimiter {
                 .unwrap_or_else(|error| error.into_inner());
         }
         *active += 1;
+        self.metrics
+            .active_turns
+            .store(*active, std::sync::atomic::Ordering::Release);
         TurnPermit {
             limiter: self.clone(),
         }
@@ -256,8 +261,26 @@ impl Drop for TurnPermit {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         *active -= 1;
+        self.limiter
+            .metrics
+            .active_turns
+            .store(*active, std::sync::atomic::Ordering::Release);
         self.limiter.available.notify_one();
     }
+}
+
+#[derive(Default)]
+struct ExecutionMetrics {
+    active_turns: std::sync::atomic::AtomicUsize,
+    resident_threads: std::sync::atomic::AtomicUsize,
+}
+
+/// Lock-free executor counters for headless control planes. `active_turns`
+/// includes synchronous Wasm invocations parked on an approval response.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExecutionStats {
+    pub active_turns: usize,
+    pub resident_threads: usize,
 }
 
 /// Execution settings that belong to one conversation, not to the process.
@@ -298,7 +321,9 @@ pub struct AgentPool {
     tool_injector: Option<crate::test_support::ToolInjector>,
     executor_config: ExecutorConfig,
     turn_limiter: Arc<TurnLimiter>,
+    dispatched_prompts: BTreeSet<(ox_inbox::worker_ingress::IntentKind, String)>,
     dispatching_decisions: Arc<std::sync::Mutex<BTreeSet<String>>>,
+    metrics: Arc<ExecutionMetrics>,
 }
 
 impl AgentPool {
@@ -369,7 +394,8 @@ impl AgentPool {
     ) -> Result<Self, String> {
         let runtime = AgentRuntime::with_config(executor_config.runtime.clone())?;
         let module = runtime.load_module_from_bytes(AGENT_WASM)?;
-        let turn_limiter = TurnLimiter::new(executor_config.max_active_turns)?;
+        let metrics = Arc::new(ExecutionMetrics::default());
+        let turn_limiter = TurnLimiter::new(executor_config.max_active_turns, metrics.clone())?;
         Ok(Self {
             module,
             threads: HashMap::new(),
@@ -389,7 +415,9 @@ impl AgentPool {
             tool_injector,
             executor_config,
             turn_limiter,
+            dispatched_prompts: BTreeSet::new(),
             dispatching_decisions: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
+            metrics,
         })
     }
 
@@ -567,6 +595,9 @@ impl AgentPool {
                 pending_cancel: pending_cancel.clone(),
             },
         );
+        self.metrics
+            .resident_threads
+            .store(self.threads.len(), std::sync::atomic::Ordering::Release);
 
         let module = self.module.clone();
         let workspace = execution.workspace;
@@ -632,6 +663,10 @@ impl AgentPool {
         for intent in pending {
             match intent.kind {
                 IntentKind::Create => {
+                    let dispatch_key = (IntentKind::Create, intent.semantic_id.clone());
+                    if self.dispatched_prompts.contains(&dispatch_key) {
+                        continue;
+                    }
                     let envelope = intent
                         .decode::<ox_inbox::worker_ingress::CreateEnvelope>()
                         .map_err(|error| error.to_string())?;
@@ -668,9 +703,14 @@ impl AgentPool {
                             }),
                         }))
                         .map_err(|_| "thread channel closed".to_string())?;
+                    self.dispatched_prompts.insert(dispatch_key);
                     dispatched += 1;
                 }
                 IntentKind::Message => {
+                    let dispatch_key = (IntentKind::Message, intent.semantic_id.clone());
+                    if self.dispatched_prompts.contains(&dispatch_key) {
+                        continue;
+                    }
                     let envelope = intent
                         .decode::<PromptEnvelope>()
                         .map_err(|error| error.to_string())?;
@@ -684,6 +724,7 @@ impl AgentPool {
                         intent.request_hash,
                         intent.accepted_seq,
                     )?;
+                    self.dispatched_prompts.insert(dispatch_key);
                     dispatched += 1;
                 }
                 IntentKind::Decision => {
@@ -1038,6 +1079,7 @@ impl ExecutionCore {
             "execution command capacity must be non-zero"
         );
         let client = self.pool.broker.client();
+        let metrics = self.pool.metrics.clone();
         let (commands, receiver) = mpsc::sync_channel(command_capacity);
         #[cfg(test)]
         let control_exited = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1054,6 +1096,7 @@ impl ExecutionCore {
         ExecutionHandle {
             commands: Some(commands),
             client,
+            metrics,
             control_thread: Some(control_thread),
             #[cfg(test)]
             control_exited,
@@ -1151,12 +1194,27 @@ impl std::error::Error for ExecutionCommandError {}
 pub struct ExecutionHandle {
     commands: Option<mpsc::SyncSender<ExecutionCommand>>,
     client: ox_broker::ClientHandle,
+    metrics: Arc<ExecutionMetrics>,
     control_thread: Option<thread::JoinHandle<()>>,
     #[cfg(test)]
     control_exited: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ExecutionHandle {
+    /// Return immediately without entering the executor command queue.
+    pub fn stats(&self) -> ExecutionStats {
+        ExecutionStats {
+            active_turns: self
+                .metrics
+                .active_turns
+                .load(std::sync::atomic::Ordering::Acquire),
+            resident_threads: self
+                .metrics
+                .resident_threads
+                .load(std::sync::atomic::Ordering::Acquire),
+        }
+    }
+
     /// Broker access is the inspect/approval surface; it addresses the same
     /// stores used by the interactive CLI and does not mirror their state.
     pub fn client(&self) -> ox_broker::ClientHandle {
@@ -2478,7 +2536,7 @@ mod tests {
 
     #[test]
     fn turn_permit_is_released_on_drop_and_unwind() {
-        let limiter = TurnLimiter::new(1).unwrap();
+        let limiter = TurnLimiter::new(1, Arc::new(ExecutionMetrics::default())).unwrap();
         let first = limiter.acquire();
         drop(first);
         {

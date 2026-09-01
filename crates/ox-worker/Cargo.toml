@@ -1,0 +1,32 @@
+[package]
+name = "ox-worker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Thin headless StructFS surface over the shared ox executor"
+publish = false
+
+[dependencies]
+clap = { workspace = true }
+ox-broker = { workspace = true }
+ox-executor = { workspace = true }
+ox-inbox = { workspace = true }
+ox-kernel = { workspace = true }
+ox-store-util = { workspace = true }
+ox-structfs-transport = { workspace = true }
+ox-types = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+structfs-core-store = { workspace = true }
+structfs-serde-store = { workspace = true }
+tokio = { workspace = true, features = ["io-std", "macros", "net", "rt-multi-thread", "signal"] }
+tracing = { workspace = true }
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = { workspace = true }
