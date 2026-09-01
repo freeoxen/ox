@@ -23,6 +23,7 @@ parking_lot = { workspace = true }
 ox-path = { workspace = true }
 ox-kernel = { workspace = true }
 ox-context = { workspace = true }
+ox-executor = { workspace = true }
 ox-gate = { workspace = true }
 ox-history = { workspace = true }
 ox-runtime = { workspace = true }

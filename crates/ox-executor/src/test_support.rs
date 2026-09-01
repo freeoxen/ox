@@ -1,4 +1,4 @@
-//! Test-support helpers for the crash harness.
+//! Test-support helpers for the executor crash harness.
 //!
 //! Always compiled in (no feature gate) because `tests/crash_harness/` is an
 //! integration test and sees only the `pub` surface of the `ox-cli` library.

@@ -1,10 +1,7 @@
 mod action_executor;
-mod agents;
 mod app;
 mod bindings;
 mod broker_setup;
-mod clash_sandbox;
-mod commit_drain;
 use ox_config::config;
 mod dialogs;
 mod editor;
@@ -23,8 +20,6 @@ mod key_encode;
 mod key_handlers;
 mod key_migration;
 mod parse;
-mod policy;
-mod policy_check;
 #[allow(dead_code)]
 mod session;
 #[allow(dead_code)]
@@ -33,10 +28,7 @@ mod shell;
 mod shell_copy;
 mod simple_input;
 mod tab_bar;
-#[allow(dead_code)]
-mod test_support;
 mod text_input_view;
-pub(crate) mod thread_registry;
 mod thread_shell;
 mod thread_view;
 use ox_config::toml_backing;

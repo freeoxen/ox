@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::agents::AgentPool;
+use ox_executor::ExecutionCore;
 
 /// TUI-side application state — multi-thread aware.
 ///
@@ -8,7 +8,7 @@ use crate::agents::AgentPool;
 /// snapshot built from the broker + App borrows each frame. App retains only
 /// the fields that are mutated by event handling or needed for agent control.
 pub struct App {
-    pub pool: AgentPool,
+    pub pool: ExecutionCore,
     /// Broker client for all store access (inbox, threads, search).
     pub broker_client: ox_broker::ClientHandle,
     /// Offset into input history (0 = at the draft, N = Nth entry from newest).
@@ -17,9 +17,9 @@ pub struct App {
 }
 
 impl App {
-    /// Create the App, initializing the AgentPool.
+    /// Create the App, initializing the shared execution core.
     ///
-    /// `rt_handle` is forwarded to [`AgentPool`] — the sync OS-thread
+    /// `rt_handle` is forwarded to [`ExecutionCore`] — the sync OS-thread
     /// workers it spawns need it to bridge their `block_on` calls
     /// back to the async broker. App itself has no direct need for a
     /// runtime handle: its own broker methods are `async fn`.
@@ -41,7 +41,7 @@ impl App {
         no_policy: bool,
         broker: ox_broker::BrokerStore,
         rt_handle: tokio::runtime::Handle,
-        transport_factory: Option<crate::test_support::TransportFactory>,
+        transport_factory: Option<ox_executor::test_support::TransportFactory>,
     ) -> Result<Self, String> {
         Self::new_with_test_hooks(
             workspace,
@@ -55,7 +55,7 @@ impl App {
     }
 
     /// Test-only constructor that additionally accepts a
-    /// [`crate::test_support::ToolInjector`] so the crash harness can wire
+    /// [`ox_executor::test_support::ToolInjector`] so the crash harness can wire
     /// counter-backed native tools for the Task 3d post-crash-reconfirm
     /// E2E suite. Production callers should use [`App::new`].
     #[allow(clippy::too_many_arguments)]
@@ -65,12 +65,12 @@ impl App {
         no_policy: bool,
         broker: ox_broker::BrokerStore,
         rt_handle: tokio::runtime::Handle,
-        transport_factory: Option<crate::test_support::TransportFactory>,
-        tool_injector: Option<crate::test_support::ToolInjector>,
+        transport_factory: Option<ox_executor::test_support::TransportFactory>,
+        tool_injector: Option<ox_executor::test_support::ToolInjector>,
     ) -> Result<Self, String> {
         let inbox = ox_inbox::InboxStore::open(&inbox_root).map_err(|e| e.to_string())?;
         let broker_client = broker.client();
-        let pool = AgentPool::new_with_test_hooks(
+        let pool = ExecutionCore::new_with_test_hooks(
             workspace,
             no_policy,
             inbox,

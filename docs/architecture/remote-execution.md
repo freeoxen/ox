@@ -24,11 +24,11 @@ node from the first compatible schema and protocol version.
 - [x] **R1. `AgentPool` already owns concurrent per-thread workers and one
   shared compiled module.**
   Verified with
-  `nl -ba crates/ox-cli/src/agents.rs | sed -n '95,301p'`.
+  `nl -ba crates/ox-executor/src/agents.rs | sed -n '95,365p'`.
   `AgentPool` owns `HashMap<String, ThreadHandle>` at
-  `crates/ox-cli/src/agents.rs:103`, loads the agent module once at lines
-  160–162, clones it at line 266, and starts one mailbox and OS worker thread
-  per ox thread at lines 261–299. If this changes before extraction, remote
+  `crates/ox-executor/src/agents.rs:131-145`, loads the agent module once at
+  line 190, clones it at line 338, and starts one mailbox and OS worker thread
+  per ox thread at lines 328–366. If this changes before extraction, remote
   work is blocked for ~2–4 days to re-establish local/remote executor parity.
 
 - [x] **R2. A turn already gets a fresh Wasmtime Store and instance.**
@@ -42,10 +42,10 @@ node from the first compatible schema and protocol version.
 - [x] **R3. `ThreadRegistry` already owns lazy thread namespaces, restore, and
   approval routing.**
   Verified with
-  `nl -ba crates/ox-cli/src/thread_registry.rs | sed -n '200,430p;598,730p'`.
+  `nl -ba crates/ox-executor/src/thread_registry.rs | sed -n '199,430p;598,775p'`.
   Replay precedes durability installation at
-  `crates/ox-cli/src/thread_registry.rs:200-211` and `:393-407`; lazy mount is
-  at `:621-670`; approval paths are routed at `:683-728`. If these ownership
+  `crates/ox-executor/src/thread_registry.rs:199-211` and `:392-407`; lazy mount is
+  at `:620-670`; approval paths are routed at `:682-775`. If these ownership
   seams move, extraction is blocked for ~2–3 days; a second registry is not an
   acceptable workaround.
 
@@ -84,11 +84,11 @@ node from the first compatible schema and protocol version.
   adapter can currently fall back to unsandboxed execution.**
   Verified with
   `nl -ba crates/ox-tools/src/sandbox.rs | sed -n '54,125p'` and
-  `nl -ba crates/ox-cli/src/clash_sandbox.rs | sed -n '142,162p'`.
+  `nl -ba crates/ox-executor/src/clash_sandbox.rs | sed -n '142,162p'`.
   `sandboxed_exec` starts `ox-tool-exec` under a policy at
   `crates/ox-tools/src/sandbox.rs:68-124`; Clash returns the original command
   after policy compilation failure at
-  `crates/ox-cli/src/clash_sandbox.rs:154-160`. Remote deployment is blocked
+  `crates/ox-executor/src/clash_sandbox.rs:154-160`. Remote deployment is blocked
   until that profile fails closed; estimated hardening scope is ~2–4 days.
 
 ## Reuse budget

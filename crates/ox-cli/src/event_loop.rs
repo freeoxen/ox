@@ -403,7 +403,9 @@ pub async fn run_async(
                 // here closes that gap. The worker reads the flag, the
                 // kernel prologue re-requests approval, the modal
                 // appears.
-                app.pool.ensure_worker(id);
+                if let Err(error) = app.pool.ensure_worker(id) {
+                    tracing::error!(thread_id = %id, %error, "failed to ensure agent worker");
+                }
             }
             if let Some(id) = &effects.archive_thread {
                 if let Ok(id_comp) = PathComponent::try_new(id.as_str()) {

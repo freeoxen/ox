@@ -8,8 +8,8 @@ Verified against the repository on 2026-08-31 with:
 
 ```sh
 rg -n "enum LogEntry|trait Durability|with_durability|pub fn append" crates/ox-kernel/src/log.rs
-rg -n "log/append|ApprovalRequested|ApprovalResolved" crates/ox-kernel/src/run.rs crates/ox-cli/src/thread_registry.rs
-rg -n "LedgerWriter::spawn|snapshot::restore|save_config_snapshot|resume_needed" crates/ox-cli/src/thread_registry.rs crates/ox-cli/src/agents.rs
+rg -n "log/append|ApprovalRequested|ApprovalResolved" crates/ox-kernel/src/run.rs crates/ox-executor/src/thread_registry.rs
+rg -n "LedgerWriter::spawn|snapshot::restore|save_config_snapshot|resume_needed" crates/ox-executor/src/thread_registry.rs crates/ox-executor/src/agents.rs
 ```
 
 ## 1. Creation and append routing
@@ -87,7 +87,7 @@ single live-session writer.
 writes thread metadata plus those store snapshots.
 
 `run_one_turn` invokes the wrapper after a run at
-`crates/ox-cli/src/agents.rs:819-829`. This is a turn-boundary snapshot of
+`crates/ox-executor/src/agents.rs:1211-1220`. This is a turn-boundary snapshot of
 configuration. It is not the durability boundary for log entries.
 
 `view.json` bootstrap is also separate:
@@ -110,9 +110,9 @@ thread mount, not after every turn.
    path when a crash preceded the first config snapshot;
 3. reconstruct derived history/session state;
 4. spawn `LedgerWriter` and install its handle only when ledger health is
-   `Ok` (`crates/ox-cli/src/thread_registry.rs:393-429`);
+   `Ok` (`crates/ox-executor/src/thread_registry.rs:392-428`);
 5. classify the restored log tail and durably append any required abort marker
-   (`thread_registry.rs:443-554`).
+   (`crates/ox-executor/src/thread_registry.rs:442-553`).
 
 Missing, unrecoverable, or degraded ledgers mount without a durability writer
 and expose their health through `shell/ledger_health`; they do not silently
@@ -127,8 +127,9 @@ that produced no progress.
 
 The mount lifecycle records `TurnAborted` or `ToolAborted` where needed and sets
 the one-shot `shell/resume_needed` signal for resumable approval shapes
-(`thread_registry.rs:443-554`). The CLI worker consumes and clears that signal
-before its prompt loop (`crates/ox-cli/src/agents.rs:590-635`).
+(`crates/ox-executor/src/thread_registry.rs:442-553`). The executor worker
+consumes and clears that signal before its prompt loop
+(`crates/ox-executor/src/agents.rs:982-1027`).
 
 `run_turn` now has a resume prologue. `inspect_log_for_resume`
 (`crates/ox-kernel/src/run.rs:872-990`) recognizes an unresolved
@@ -138,7 +139,7 @@ Otherwise it follows the normal new-turn path.
 
 One known seam remains documented in current code: appending `ToolAborted` and
 setting the in-memory `resume_needed` flag are not atomic
-(`thread_registry.rs:534-547`). A crash in that window delays the reconfirm
+(`crates/ox-executor/src/thread_registry.rs:533-547`). A crash in that window delays the reconfirm
 surface until the next user prompt; the durable log still prevents data loss.
 
 ## 7. Current write-path diagram

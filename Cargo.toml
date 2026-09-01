@@ -5,6 +5,7 @@ members = [
     "crates/ox-context",
     "crates/ox-dev-server",
     "crates/ox-emscripten",
+    "crates/ox-executor",
     "crates/ox-gate",
     "crates/ox-gateway",
     "crates/ox-history",
@@ -36,6 +37,7 @@ default-members = [
     "crates/ox-context",
     "crates/ox-dev-server",
     "crates/ox-emscripten",
+    "crates/ox-executor",
     "crates/ox-gate",
     "crates/ox-gateway",
     "crates/ox-history",
@@ -76,6 +78,7 @@ horns-ratatui = { path = "crates/horns-ratatui" }
 ox-broker = { path = "crates/ox-broker" }
 ox-context = { path = "crates/ox-context" }
 ox-core = { path = "crates/ox-core" }
+ox-executor = { path = "crates/ox-executor" }
 ox-gate = { path = "crates/ox-gate" }
 ox-config = { path = "crates/ox-config" }
 ox-codec = { path = "crates/ox-codec" }

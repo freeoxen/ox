@@ -15,8 +15,7 @@ use ox_kernel::log::{LogEntry, LogStore, SharedLog, ToolAbortReason, TurnAbortRe
 use ox_ui::ApprovalStore;
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Store, Value, Writer};
 
-use crate::agents::SYSTEM_PROMPT;
-use crate::shell_copy;
+use crate::{POST_CRASH_SKIP_CONTENT, SYSTEM_PROMPT};
 
 // ---------------------------------------------------------------------------
 // ShellConfigStore — shell→kernel config seam
@@ -147,7 +146,7 @@ impl ThreadNamespace {
         // dependency edge from `ox-kernel` back to `ox-cli`.
         shell.set(
             "post_crash_skip_content",
-            Value::String(shell_copy::POST_CRASH_SKIP_CONTENT.to_string()),
+            Value::String(POST_CRASH_SKIP_CONTENT.to_string()),
         );
         Self {
             system: SystemProvider::new(SYSTEM_PROMPT.to_string()),
@@ -387,7 +386,7 @@ impl ThreadNamespace {
         // robust to any future replay-path change.
         ns.shell.set(
             "post_crash_skip_content",
-            Value::String(shell_copy::POST_CRASH_SKIP_CONTENT.to_string()),
+            Value::String(POST_CRASH_SKIP_CONTENT.to_string()),
         );
 
         // Install the durable ledger writer AFTER replay — but only when

@@ -83,30 +83,25 @@ pub async fn setup(
     }));
     servers.push(broker.mount(path!("input"), input).await);
 
-    // Mount InboxStore
-    servers.push(broker.mount(path!("inbox"), inbox).await);
-
-    // Mount ConfigStore with figment-resolved values + TOML file backing.
-    {
-        let toml_path = inbox_root.join("config.toml");
-        let backing = crate::toml_backing::TomlFileBacking::new(toml_path);
-        let config = ox_ui::ConfigStore::with_backing(config_values, Box::new(backing));
-
-        servers.push(broker.mount(path!("config"), config).await);
-    }
-
-    // Mount a separate ConfigStore at `secret/` for API keys, backed by
-    // `keys.json` (chmod 0600). The split is at persistence — same store
-    // implementation, different file. Keys live exclusively under
-    // `secret/keys/{name}: ApiKey` after A0; nothing else lives under
-    // `secret/` yet.
-    {
-        let keys_path = inbox_root.join("keys.json");
-        let backing = crate::json_backing::JsonFileBacking::new(keys_path);
-        let secrets =
-            ox_ui::ConfigStore::with_backing(std::collections::BTreeMap::new(), Box::new(backing));
-        servers.push(broker.mount(path!("secret"), secrets).await);
-    }
+    // Mount the execution namespace shared with headless hosts. The CLI owns
+    // its concrete file backings; ox-executor owns the stable paths and the
+    // ThreadRegistry lifecycle.
+    let config = ox_ui::ConfigStore::with_backing(
+        config_values,
+        Box::new(crate::toml_backing::TomlFileBacking::new(
+            inbox_root.join("config.toml"),
+        )),
+    );
+    let secrets = ox_ui::ConfigStore::with_backing(
+        std::collections::BTreeMap::new(),
+        Box::new(crate::json_backing::JsonFileBacking::new(
+            inbox_root.join("keys.json"),
+        )),
+    );
+    servers.extend(
+        ox_executor::mount_execution_stores(&broker, inbox, inbox_root.clone(), config, secrets)
+            .await,
+    );
 
     // Mount an in-memory store at `settings/` for the index entries
     // (and any future settings-namespace metadata). The renderer's
@@ -137,11 +132,6 @@ pub async fn setup(
         let horns_meta_store = ox_store_util::local_config::LocalConfig::new();
         servers.push(broker.mount(path!("horns"), horns_meta_store).await);
     }
-
-    // Mount ThreadRegistry at threads/ — lazy-mounts per-thread stores from disk
-    let mut registry = crate::thread_registry::ThreadRegistry::new(inbox_root);
-    registry.set_broker_client(broker.client());
-    servers.push(broker.mount_async(path!("threads"), registry).await);
 
     tracing::info!(stores = servers.len(), "broker setup complete");
 
@@ -1161,7 +1151,7 @@ mod tests {
             last_hash: Some("h5".into()),
             message_count: 3,
         };
-        crate::agents::write_save_result_to_inbox(&client, &tid, &result).await;
+        ox_executor::write_save_result_to_inbox(&client, &tid, &result).await;
 
         // Readers see the updated count through the same codepath the
         // inbox view uses.

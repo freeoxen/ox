@@ -15,17 +15,13 @@
 //! the same tree. Items the integration tests actually consume are made
 //! `pub`; everything else is `pub(crate)` to keep the public surface tight.
 
-pub mod agents;
 pub mod app;
 pub mod bindings;
 pub mod broker_setup;
-pub mod test_support;
-pub mod thread_registry;
+pub use ox_executor::test_support;
 
 // Not exposed externally, but referenced from `crate::…` inside lib sources.
 pub(crate) mod action_executor;
-pub(crate) mod clash_sandbox;
-pub(crate) mod commit_drain;
 pub(crate) use ox_config::config;
 pub(crate) mod dialogs;
 /// Test-only key-dispatch shim. Kept on the library surface so the
@@ -49,8 +45,6 @@ pub(crate) mod key_encode;
 pub(crate) mod key_handlers;
 pub(crate) mod key_migration;
 pub(crate) mod parse;
-pub(crate) mod policy;
-pub(crate) mod policy_check;
 #[allow(dead_code)]
 pub(crate) mod session;
 pub mod settings;

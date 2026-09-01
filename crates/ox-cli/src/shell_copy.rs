@@ -24,8 +24,8 @@
 /// prologue (`ox-kernel::run::post_crash_skip_content`) and falls back to a
 /// kernel-neutral `[ox: …]` default when the path is unset — which keeps
 /// `ox-kernel` free of any shell-specific strings.
-pub const POST_CRASH_SKIP_CONTENT: &str = "[ox-cli: skipped by user after crash recovery. \
-    The tool was not re-executed. Do not retry this tool in this turn.]";
+#[allow(unused_imports)]
+pub use ox_executor::POST_CRASH_SKIP_CONTENT;
 
 // ---------------------------------------------------------------------------
 // Ledger-health banners
@@ -37,7 +37,7 @@ pub const POST_CRASH_SKIP_CONTENT: &str = "[ox-cli: skipped by user after crash 
 // `ox-inbox` free of any shell-specific strings (mirrors the
 // `POST_CRASH_SKIP_CONTENT` pattern above).
 //
-// Wire-string keys live in `crate::thread_registry::LEDGER_HEALTH_*`.
+// Wire-string keys live in `ox_executor::LEDGER_HEALTH_*`.
 
 /// Banner shown when `ledger.jsonl` was absent at mount time.
 pub const LEDGER_MISSING_BANNER: &str =
@@ -60,9 +60,9 @@ pub const LEDGER_DEGRADED_BANNER: &str =
 /// `None` for `"ok"` (the no-banner case) and any unknown value.
 pub fn ledger_health_banner(wire: &str) -> Option<&'static str> {
     match wire {
-        crate::thread_registry::LEDGER_HEALTH_MISSING => Some(LEDGER_MISSING_BANNER),
-        crate::thread_registry::LEDGER_HEALTH_REPAIR_FAILED => Some(LEDGER_REPAIR_FAILED_BANNER),
-        crate::thread_registry::LEDGER_HEALTH_DEGRADED => Some(LEDGER_DEGRADED_BANNER),
+        ox_executor::LEDGER_HEALTH_MISSING => Some(LEDGER_MISSING_BANNER),
+        ox_executor::LEDGER_HEALTH_REPAIR_FAILED => Some(LEDGER_REPAIR_FAILED_BANNER),
+        ox_executor::LEDGER_HEALTH_DEGRADED => Some(LEDGER_DEGRADED_BANNER),
         _ => None,
     }
 }

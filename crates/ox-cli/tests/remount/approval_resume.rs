@@ -36,7 +36,9 @@ async fn awaiting_approval_resume_completes_turn_without_second_llm_call() {
     // assertion: resumption must NOT issue a second LLM round-trip.
     let transport = FakeTransport::new();
     transport.push_turn(vec![
-        ox_kernel::StreamEvent::TextDelta { text: "Done.".into() },
+        ox_kernel::StreamEvent::TextDelta {
+            text: "Done.".into(),
+        },
         ox_kernel::StreamEvent::MessageStop,
     ]);
     transport.fail_if_called_more_than(1);
@@ -113,7 +115,11 @@ async fn awaiting_approval_resume_completes_turn_without_second_llm_call() {
     // mount-written `shell/resume_needed = true` flag and drives one
     // `run_turn`; the kernel prologue detects the resume-approval
     // shape and writes a new `ApprovalRequested { post_crash_reconfirm: true }`.
-    harness.app().pool.ensure_worker(&tid);
+    harness
+        .app()
+        .pool
+        .ensure_worker(&tid)
+        .expect("ensure worker");
 
     let client = harness.client();
     let pending = wait_for_pending_approval(&client, &tid, Duration::from_secs(10)).await;

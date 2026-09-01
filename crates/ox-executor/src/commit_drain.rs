@@ -11,7 +11,7 @@
 //!
 //! The drain is the bridge: one tokio task per mounted thread, ticking every
 //! [`DRAIN_POLL_MS`] milliseconds, observing the drain slot, and calling
-//! [`crate::agents::write_save_result_to_inbox`] when the sequence advances.
+//! [`crate::write_save_result_to_inbox`] when the sequence advances.
 //! **Latest-wins semantics hold** — a burst of 1000 commits inside the poll
 //! window produces at most one drain write when the interval next fires,
 //! because we compare against `last_seq_seen`, not an event count.
@@ -106,7 +106,7 @@ impl CommitDrainHandle {
                     _ = ticker.tick() => {
                         if let Some(sr) = writer_handle.latest_save_result() {
                             if sr.last_seq > last_seq_seen {
-                                crate::agents::write_save_result_to_inbox(
+                                crate::write_save_result_to_inbox(
                                     &broker_client,
                                     &thread_id,
                                     &sr,
@@ -171,30 +171,13 @@ mod tests {
     use std::collections::BTreeMap;
     use structfs_core_store::{Value, path};
 
-    /// Spin up a broker + inbox over a tempdir and return (handle, tempdir).
-    /// Mirrors `broker_setup::tests::test_setup`'s wiring but trimmed to the
-    /// pieces this drain-focused test needs: `inbox/` mount + thread
-    /// creation. Keeping the tempdir alive prevents the sqlite file backing
-    /// the inbox from being deleted mid-test.
-    async fn setup_broker_and_inbox() -> (crate::broker_setup::BrokerHandle, tempfile::TempDir) {
+    /// Spin up only the broker mount this drain-focused test needs.
+    async fn setup_broker_and_inbox() -> (ox_broker::BrokerStore, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let inbox = InboxStore::open(dir.path()).unwrap();
-        let bindings = crate::bindings::default_bindings();
-        let mut config = BTreeMap::new();
-        // Seed the primary CompletionRole so the broker config has the
-        // shape production expects. This drain-focused test never reads
-        // it; the entry exists purely to mirror real wiring.
-        let role = ox_types::CompletionRole {
-            account: "anthropic".to_string(),
-            model_id: "claude-sonnet-4-20250514".to_string(),
-        };
-        config.insert(
-            "gate/completions/primary".to_string(),
-            structfs_serde_store::to_value(&role).expect("CompletionRole serializes"),
-        );
-        let handle =
-            crate::broker_setup::setup(inbox, bindings, dir.path().to_path_buf(), config).await;
-        (handle, dir)
+        let broker = ox_broker::BrokerStore::default();
+        broker.mount(path!("inbox"), inbox).await;
+        (broker, dir)
     }
 
     async fn create_thread(client: &ox_broker::ClientHandle) -> String {
@@ -216,10 +199,19 @@ mod tests {
 
     async fn read_inbox_message_count(client: &ox_broker::ClientHandle, tid: &str) -> i64 {
         let rec = client.read(&path!("inbox/threads")).await.unwrap().unwrap();
-        let rows = crate::parse::parse_inbox_threads(rec.as_value().expect("array"));
+        let Value::Array(rows) = rec.as_value().expect("array") else {
+            return 0;
+        };
         rows.iter()
-            .find(|r| r.id == tid)
-            .map(|r| r.message_count)
+            .filter_map(|row| match row {
+                Value::Map(map) => Some(map),
+                _ => None,
+            })
+            .find(|row| row.get("id") == Some(&Value::String(tid.to_string())))
+            .and_then(|row| match row.get("message_count") {
+                Some(Value::Integer(count)) => Some(*count),
+                _ => None,
+            })
             .unwrap_or(0)
     }
 

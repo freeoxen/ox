@@ -1,0 +1,40 @@
+[package]
+name = "ox-executor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Reusable headless execution core for ox conversations"
+publish = false
+
+[dependencies]
+parking_lot = { workspace = true }
+ox-path = { workspace = true }
+ox-context = { workspace = true }
+ox-kernel = { workspace = true }
+ox-gate = { workspace = true }
+ox-history = { workspace = true }
+ox-runtime = { workspace = true }
+ox-store-util = { workspace = true }
+ox-inbox = { workspace = true }
+ox-broker = { workspace = true }
+ox-tools = { workspace = true }
+ox-types = { workspace = true }
+ox-ui = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true, features = ["blocking"] }
+clash = { workspace = true }
+allocative = ">=0.3, <0.3.6"
+namecode = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+structfs-core-store = { workspace = true }
+structfs-serde-store = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time", "rt", "rt-multi-thread", "macros"] }

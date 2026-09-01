@@ -122,7 +122,7 @@ writer. See [`save-and-restore.md`](save-and-restore.md).
 - Signature: synchronous `run_turn(context: &mut dyn Store, emit: &mut dyn
   FnMut(AgentEvent)) -> Result<(), String>`.
 - The CLI invokes the Wasm boundary through `AgentModule::run` at
-  `crates/ox-cli/src/agents.rs:735`.
+  `crates/ox-executor/src/agents.rs:1127`.
 - Approval may block the conversation's execution thread through the async
   Store bridge. This does not preserve a coroutine across process death;
   durable restart decisions come from the log classifier and run-turn resume

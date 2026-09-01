@@ -79,7 +79,7 @@ impl CompletionTransport for CliCompletionTransport {
     }
 }
 
-pub(crate) const SYSTEM_PROMPT: &str = "\
+pub const SYSTEM_PROMPT: &str = "\
 You are an expert software engineer working in a coding CLI. \
 You have tools for reading files, writing files, editing files, \
 and running shell commands. \
@@ -95,14 +95,43 @@ pub(crate) const AGENT_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/a
 /// Per-thread prompt sender.
 struct ThreadHandle {
     prompt_tx: mpsc::Sender<String>,
+    execution: ThreadExecutionConfig,
+}
+
+/// Tool-policy profile selected for one conversation worker.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PolicyProfile {
+    /// Load and enforce the workspace's Clash policy.
+    Enforced,
+    /// Preserve the CLI's `--no-policy` behavior.
+    Permissive,
+}
+
+/// Execution settings that belong to one conversation, not to the process.
+///
+/// The interactive CLI supplies the same workspace for every thread. A
+/// headless host can instead give each thread a conversation-owned workspace
+/// without creating another executor or changing the worker loop.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ThreadExecutionConfig {
+    pub workspace: PathBuf,
+    pub policy_profile: PolicyProfile,
+}
+
+impl ThreadExecutionConfig {
+    pub fn new(workspace: PathBuf, policy_profile: PolicyProfile) -> Self {
+        Self {
+            workspace,
+            policy_profile,
+        }
+    }
 }
 
 /// Manages agent threads — spawns workers and routes prompts.
 pub struct AgentPool {
     module: AgentModule,
     threads: HashMap<String, ThreadHandle>,
-    workspace: PathBuf,
-    no_policy: bool,
+    default_thread_config: ThreadExecutionConfig,
     inbox: ox_inbox::InboxStore,
     inbox_root: PathBuf,
     broker: ox_broker::BrokerStore,
@@ -162,8 +191,14 @@ impl AgentPool {
         Ok(Self {
             module,
             threads: HashMap::new(),
-            workspace,
-            no_policy,
+            default_thread_config: ThreadExecutionConfig::new(
+                workspace,
+                if no_policy {
+                    PolicyProfile::Permissive
+                } else {
+                    PolicyProfile::Enforced
+                },
+            ),
             inbox,
             inbox_root,
             broker,
@@ -176,6 +211,15 @@ impl AgentPool {
     /// Create a new thread in the inbox and spawn its agent worker.
     /// Returns the thread_id.
     pub fn create_thread(&mut self, title: &str) -> Result<String, String> {
+        self.create_thread_with_config(title, self.default_thread_config.clone())
+    }
+
+    /// Create a thread whose tools execute in the supplied workspace.
+    pub fn create_thread_with_config(
+        &mut self,
+        title: &str,
+        execution: ThreadExecutionConfig,
+    ) -> Result<String, String> {
         use structfs_core_store::{Writer, path};
 
         let create = ox_types::CreateThread {
@@ -193,7 +237,7 @@ impl AgentPool {
             .ok_or_else(|| "inbox did not return thread_id".to_string())?
             .clone();
 
-        self.spawn_worker(thread_id.clone(), title.to_string());
+        self.spawn_worker(thread_id.clone(), title.to_string(), execution);
         Ok(thread_id)
     }
 
@@ -208,25 +252,48 @@ impl AgentPool {
     /// without typing — that requires the worker to be alive to read
     /// the resume flag the mount lifecycle wrote, which requires
     /// spawning here even though no prompt has been sent.
-    pub fn ensure_worker(&mut self, thread_id: &str) {
-        if self.threads.contains_key(thread_id) {
-            return;
+    pub fn ensure_worker(&mut self, thread_id: &str) -> Result<(), String> {
+        self.ensure_worker_with_config(thread_id, self.default_thread_config.clone())
+    }
+
+    /// Ensure a worker is running with conversation-specific execution config.
+    pub fn ensure_worker_with_config(
+        &mut self,
+        thread_id: &str,
+        execution: ThreadExecutionConfig,
+    ) -> Result<(), String> {
+        if let Some(handle) = self.threads.get(thread_id) {
+            return validate_execution_config(thread_id, &handle.execution, &execution);
         }
         let title = self
             .read_thread_title(thread_id)
             .unwrap_or_else(|| "Thread".to_string());
-        self.spawn_worker(thread_id.to_string(), title);
+        self.spawn_worker(thread_id.to_string(), title, execution);
+        Ok(())
     }
 
     /// Send a prompt to a thread. Spawns a worker if one doesn't exist
     /// (e.g., for threads from a previous session).
     pub fn send_prompt(&mut self, thread_id: &str, prompt: String) -> Result<(), String> {
-        // Auto-spawn worker for threads from previous sessions
-        if !self.threads.contains_key(thread_id) {
+        self.send_prompt_with_config(thread_id, prompt, self.default_thread_config.clone())
+    }
+
+    /// Send a prompt, using `execution` if this call has to spawn the worker.
+    pub fn send_prompt_with_config(
+        &mut self,
+        thread_id: &str,
+        prompt: String,
+        execution: ThreadExecutionConfig,
+    ) -> Result<(), String> {
+        // Auto-spawn worker for threads from previous sessions. Once spawned,
+        // workspace and policy are pinned for the worker's lifetime.
+        if let Some(handle) = self.threads.get(thread_id) {
+            validate_execution_config(thread_id, &handle.execution, &execution)?;
+        } else {
             let title = self
                 .read_thread_title(thread_id)
                 .unwrap_or_else(|| "Thread".to_string());
-            self.spawn_worker(thread_id.to_string(), title);
+            self.spawn_worker(thread_id.to_string(), title, execution);
         }
         let handle = self
             .threads
@@ -258,14 +325,19 @@ impl AgentPool {
         }
     }
 
-    fn spawn_worker(&mut self, thread_id: String, title: String) {
+    fn spawn_worker(&mut self, thread_id: String, title: String, execution: ThreadExecutionConfig) {
         let (prompt_tx, prompt_rx) = mpsc::channel::<String>();
-        self.threads
-            .insert(thread_id.clone(), ThreadHandle { prompt_tx });
+        self.threads.insert(
+            thread_id.clone(),
+            ThreadHandle {
+                prompt_tx,
+                execution: execution.clone(),
+            },
+        );
 
         let module = self.module.clone();
-        let workspace = self.workspace.clone();
-        let no_policy = self.no_policy;
+        let workspace = execution.workspace;
+        let no_policy = execution.policy_profile == PolicyProfile::Permissive;
         let inbox_root = self.inbox_root.clone();
         let broker = self.broker.clone();
         let rt_handle = self.rt_handle.clone();
@@ -297,6 +369,326 @@ impl AgentPool {
                 tool_injector,
             );
         });
+    }
+}
+
+fn validate_execution_config(
+    thread_id: &str,
+    running: &ThreadExecutionConfig,
+    requested: &ThreadExecutionConfig,
+) -> Result<(), String> {
+    if running == requested {
+        Ok(())
+    } else {
+        Err(format!(
+            "thread {thread_id} is already running with execution config {running:?}; \
+             refusing conflicting config {requested:?}"
+        ))
+    }
+}
+
+/// The reusable execution core. It deliberately contains the existing
+/// [`AgentPool`] rather than layering a second supervisor over it.
+pub struct ExecutionCore {
+    pool: AgentPool,
+}
+
+impl ExecutionCore {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_test_hooks(
+        workspace: PathBuf,
+        no_policy: bool,
+        inbox: ox_inbox::InboxStore,
+        inbox_root: PathBuf,
+        broker: ox_broker::BrokerStore,
+        rt_handle: tokio::runtime::Handle,
+        transport_factory: Option<crate::test_support::TransportFactory>,
+        tool_injector: Option<crate::test_support::ToolInjector>,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            pool: AgentPool::new_with_test_hooks(
+                workspace,
+                no_policy,
+                inbox,
+                inbox_root,
+                broker,
+                rt_handle,
+                transport_factory,
+                tool_injector,
+            )?,
+        })
+    }
+
+    pub fn new_with_transport_factory(
+        workspace: PathBuf,
+        no_policy: bool,
+        inbox: ox_inbox::InboxStore,
+        inbox_root: PathBuf,
+        broker: ox_broker::BrokerStore,
+        rt_handle: tokio::runtime::Handle,
+        transport_factory: Option<crate::test_support::TransportFactory>,
+    ) -> Result<Self, String> {
+        Self::new_with_test_hooks(
+            workspace,
+            no_policy,
+            inbox,
+            inbox_root,
+            broker,
+            rt_handle,
+            transport_factory,
+            None,
+        )
+    }
+
+    pub fn create_thread(&mut self, title: &str) -> Result<String, String> {
+        self.pool.create_thread(title)
+    }
+
+    pub fn create_thread_with_config(
+        &mut self,
+        title: &str,
+        execution: ThreadExecutionConfig,
+    ) -> Result<String, String> {
+        self.pool.create_thread_with_config(title, execution)
+    }
+
+    pub fn ensure_worker(&mut self, thread_id: &str) -> Result<(), String> {
+        self.pool.ensure_worker(thread_id)
+    }
+
+    pub fn ensure_worker_with_config(
+        &mut self,
+        thread_id: &str,
+        execution: ThreadExecutionConfig,
+    ) -> Result<(), String> {
+        self.pool.ensure_worker_with_config(thread_id, execution)
+    }
+
+    pub fn send_prompt(&mut self, thread_id: &str, prompt: String) -> Result<(), String> {
+        self.pool.send_prompt(thread_id, prompt)
+    }
+
+    pub fn send_prompt_with_config(
+        &mut self,
+        thread_id: &str,
+        prompt: String,
+        execution: ThreadExecutionConfig,
+    ) -> Result<(), String> {
+        self.pool
+            .send_prompt_with_config(thread_id, prompt, execution)
+    }
+
+    pub fn inbox_root(&self) -> &std::path::Path {
+        self.pool.inbox_root()
+    }
+
+    /// Move the core onto one control thread behind a bounded queue.
+    pub fn into_handle(self, command_capacity: usize) -> ExecutionHandle {
+        assert!(
+            command_capacity > 0,
+            "execution command capacity must be non-zero"
+        );
+        let client = self.pool.broker.client();
+        let (commands, receiver) = mpsc::sync_channel(command_capacity);
+        #[cfg(test)]
+        let control_exited = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        #[cfg(test)]
+        let exit_signal = control_exited.clone();
+        let control_thread = thread::Builder::new()
+            .name("ox-executor-control".to_string())
+            .spawn(move || {
+                execution_control_loop(self, receiver);
+                #[cfg(test)]
+                exit_signal.store(true, std::sync::atomic::Ordering::Release);
+            })
+            .expect("failed to spawn ox executor control thread");
+        ExecutionHandle {
+            commands: Some(commands),
+            client,
+            control_thread: Some(control_thread),
+            #[cfg(test)]
+            control_exited,
+        }
+    }
+}
+
+enum ExecutionCommand {
+    Create {
+        title: String,
+        execution: ThreadExecutionConfig,
+        reply: mpsc::Sender<Result<String, String>>,
+    },
+    Open {
+        thread_id: String,
+        execution: ThreadExecutionConfig,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
+    Prompt {
+        thread_id: String,
+        prompt: String,
+        execution: ThreadExecutionConfig,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
+    Shutdown,
+}
+
+fn execution_control_loop(mut core: ExecutionCore, receiver: mpsc::Receiver<ExecutionCommand>) {
+    while let Ok(command) = receiver.recv() {
+        match command {
+            ExecutionCommand::Create {
+                title,
+                execution,
+                reply,
+            } => {
+                let _ = reply.send(core.create_thread_with_config(&title, execution));
+            }
+            ExecutionCommand::Open {
+                thread_id,
+                execution,
+                reply,
+            } => {
+                let _ = reply.send(core.ensure_worker_with_config(&thread_id, execution));
+            }
+            ExecutionCommand::Prompt {
+                thread_id,
+                prompt,
+                execution,
+                reply,
+            } => {
+                let _ = reply.send(core.send_prompt_with_config(&thread_id, prompt, execution));
+            }
+            ExecutionCommand::Shutdown => break,
+        }
+    }
+}
+
+/// Failure to enqueue or complete an executor control operation.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum ExecutionCommandError {
+    QueueFull,
+    Stopped,
+    Executor(String),
+}
+
+impl std::fmt::Display for ExecutionCommandError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::QueueFull => f.write_str("execution command queue is full"),
+            Self::Stopped => f.write_str("execution core has stopped"),
+            Self::Executor(error) => f.write_str(error),
+        }
+    }
+}
+
+impl std::error::Error for ExecutionCommandError {}
+
+/// Bounded headless control surface for one [`ExecutionCore`].
+pub struct ExecutionHandle {
+    commands: Option<mpsc::SyncSender<ExecutionCommand>>,
+    client: ox_broker::ClientHandle,
+    control_thread: Option<thread::JoinHandle<()>>,
+    #[cfg(test)]
+    control_exited: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl ExecutionHandle {
+    /// Broker access is the inspect/approval surface; it addresses the same
+    /// stores used by the interactive CLI and does not mirror their state.
+    pub fn client(&self) -> ox_broker::ClientHandle {
+        self.client.clone()
+    }
+
+    pub fn create_thread(
+        &self,
+        title: impl Into<String>,
+        execution: ThreadExecutionConfig,
+    ) -> Result<String, ExecutionCommandError> {
+        let (reply, response) = mpsc::channel();
+        self.enqueue(ExecutionCommand::Create {
+            title: title.into(),
+            execution,
+            reply,
+        })?;
+        response
+            .recv()
+            .map_err(|_| ExecutionCommandError::Stopped)?
+            .map_err(ExecutionCommandError::Executor)
+    }
+
+    pub fn open_thread(
+        &self,
+        thread_id: impl Into<String>,
+        execution: ThreadExecutionConfig,
+    ) -> Result<(), ExecutionCommandError> {
+        let (reply, response) = mpsc::channel();
+        self.enqueue(ExecutionCommand::Open {
+            thread_id: thread_id.into(),
+            execution,
+            reply,
+        })?;
+        response
+            .recv()
+            .map_err(|_| ExecutionCommandError::Stopped)?
+            .map_err(ExecutionCommandError::Executor)
+    }
+
+    pub fn send_prompt(
+        &self,
+        thread_id: impl Into<String>,
+        prompt: impl Into<String>,
+        execution: ThreadExecutionConfig,
+    ) -> Result<(), ExecutionCommandError> {
+        let (reply, response) = mpsc::channel();
+        self.enqueue(ExecutionCommand::Prompt {
+            thread_id: thread_id.into(),
+            prompt: prompt.into(),
+            execution,
+            reply,
+        })?;
+        response
+            .recv()
+            .map_err(|_| ExecutionCommandError::Stopped)?
+            .map_err(ExecutionCommandError::Executor)
+    }
+
+    fn enqueue(&self, command: ExecutionCommand) -> Result<(), ExecutionCommandError> {
+        self.commands
+            .as_ref()
+            .ok_or(ExecutionCommandError::Stopped)?
+            .try_send(command)
+            .map_err(|error| match error {
+                mpsc::TrySendError::Full(_) => ExecutionCommandError::QueueFull,
+                mpsc::TrySendError::Disconnected(_) => ExecutionCommandError::Stopped,
+            })
+    }
+
+    pub fn shutdown(mut self) -> Result<(), ExecutionCommandError> {
+        let send_result = self
+            .commands
+            .take()
+            .ok_or(ExecutionCommandError::Stopped)?
+            .send(ExecutionCommand::Shutdown)
+            .map_err(|_| ExecutionCommandError::Stopped);
+        if let Some(control_thread) = self.control_thread.take() {
+            control_thread
+                .join()
+                .map_err(|_| ExecutionCommandError::Stopped)?;
+        }
+        send_result
+    }
+}
+
+impl Drop for ExecutionHandle {
+    fn drop(&mut self) {
+        if let Some(commands) = self.commands.take() {
+            // If the bounded queue is full, dropping its final sender still
+            // makes the control loop exit after draining queued work.
+            let _ = commands.try_send(ExecutionCommand::Shutdown);
+            drop(commands);
+        }
+        if let Some(control_thread) = self.control_thread.take() {
+            let _ = control_thread.join();
+        }
     }
 }
 
@@ -928,7 +1320,7 @@ fn save_config_snapshot(
 /// and invokes this helper only when the commit sequence advances. The
 /// `broker_setup::tests::write_save_result_to_inbox_updates_live_counts`
 /// test exercises the same helper directly to pin the rollup contract.
-pub(crate) async fn write_save_result_to_inbox(
+pub async fn write_save_result_to_inbox(
     broker_client: &ox_broker::ClientHandle,
     thread_id: &str,
     result: &ox_inbox::snapshot::SaveResult,
@@ -1050,6 +1442,95 @@ mod tests {
             AGENT_WASM[4..8],
             [1, 0, 0, 0],
             "agent.wasm has unexpected wasm version"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn execution_handle_uses_the_existing_inbox_and_thread_registry() {
+        let inbox_root = tempfile::tempdir().expect("inbox tempdir");
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let broker = ox_broker::BrokerStore::default();
+        let mounted_inbox = ox_inbox::InboxStore::open(inbox_root.path()).expect("open inbox");
+        crate::mount_execution_stores(
+            &broker,
+            mounted_inbox,
+            inbox_root.path().to_path_buf(),
+            ox_store_util::LocalConfig::new(),
+            ox_store_util::LocalConfig::new(),
+        )
+        .await;
+
+        let core = ExecutionCore::new_with_test_hooks(
+            workspace.path().to_path_buf(),
+            true,
+            ox_inbox::InboxStore::open(inbox_root.path()).expect("open pool inbox"),
+            inbox_root.path().to_path_buf(),
+            broker.clone(),
+            tokio::runtime::Handle::current(),
+            None,
+            None,
+        )
+        .expect("construct execution core");
+        let handle = core.into_handle(4);
+        let execution =
+            ThreadExecutionConfig::new(workspace.path().to_path_buf(), PolicyProfile::Permissive);
+        let thread_id = handle
+            .create_thread("headless parity", execution.clone())
+            .expect("create thread through bounded handle");
+
+        handle
+            .open_thread(thread_id.clone(), execution.clone())
+            .expect("matching execution config reuses worker");
+
+        let other_workspace = tempfile::tempdir().expect("other workspace tempdir");
+        let workspace_error = handle
+            .open_thread(
+                thread_id.clone(),
+                ThreadExecutionConfig::new(
+                    other_workspace.path().to_path_buf(),
+                    PolicyProfile::Permissive,
+                ),
+            )
+            .expect_err("conflicting workspace must be rejected");
+        assert!(
+            matches!(workspace_error, ExecutionCommandError::Executor(ref message)
+                if message.contains("already running") && message.contains("conflicting config")),
+            "unexpected workspace conflict: {workspace_error}"
+        );
+
+        let policy_error = handle
+            .send_prompt(
+                thread_id.clone(),
+                "must not be delivered",
+                ThreadExecutionConfig::new(workspace.path().to_path_buf(), PolicyProfile::Enforced),
+            )
+            .expect_err("conflicting policy must be rejected");
+        assert!(
+            matches!(policy_error, ExecutionCommandError::Executor(ref message)
+                if message.contains("already running") && message.contains("Enforced")),
+            "unexpected policy conflict: {policy_error}"
+        );
+
+        let rows = handle
+            .client()
+            .read(&path!("inbox/threads"))
+            .await
+            .expect("read inbox")
+            .expect("inbox rows");
+        let contains_thread = match rows.as_value() {
+            Some(Value::Array(rows)) => rows.iter().any(|row| match row {
+                Value::Map(map) => map.get("id") == Some(&Value::String(thread_id.clone())),
+                _ => false,
+            }),
+            _ => false,
+        };
+        assert!(contains_thread, "handle must use the mounted InboxStore");
+
+        let control_exited = handle.control_exited.clone();
+        drop(handle);
+        assert!(
+            control_exited.load(std::sync::atomic::Ordering::Acquire),
+            "ExecutionHandle::drop must join its control thread"
         );
     }
 }

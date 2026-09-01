@@ -11,8 +11,8 @@ Verified against the repository on 2026-08-31 with:
 
 ```sh
 rg -n "save_thread_state|save_config_snapshot|write_default_view_if_missing" crates/
-rg -n "LedgerWriter|with_durability|latest_save_result" crates/ox-inbox crates/ox-cli crates/ox-kernel
-rg -n "pub fn restore|read_ledger_with_repair|resume_needed" crates/ox-inbox/src/snapshot.rs crates/ox-cli/src/thread_registry.rs crates/ox-cli/src/agents.rs
+rg -n "LedgerWriter|with_durability|latest_save_result" crates/ox-inbox crates/ox-executor crates/ox-kernel
+rg -n "pub fn restore|read_ledger_with_repair|resume_needed" crates/ox-inbox/src/snapshot.rs crates/ox-executor/src/thread_registry.rs crates/ox-executor/src/agents.rs
 ```
 
 `rg 'save_thread_state' crates/` returns no matches.
@@ -30,7 +30,7 @@ rg -n "pub fn restore|read_ledger_with_repair|resume_needed" crates/ox-inbox/src
 The writer also publishes cumulative `SaveResult` values. The per-thread
 commit drain forwards advancing sequence/hash/message-count state to the inbox
 index through `write_save_result_to_inbox`
-(`crates/ox-cli/src/agents.rs:922-955`). This keeps listings fresh without
+(`crates/ox-executor/src/agents.rs:1315-1353`). This keeps listings fresh without
 rescanning the ledger on every event.
 
 ### Config snapshot: `save_config_snapshot`
@@ -42,8 +42,8 @@ rescanning the ledger on every event.
 - `gate/snapshot/state`;
 - thread id, title, labels, and timestamps.
 
-The CLI invokes it after `module.run` and per-run bookkeeping
-(`crates/ox-cli/src/agents.rs:681-829`). A failed config snapshot is recorded as
+The executor invokes it after `module.run` and per-run bookkeeping
+(`crates/ox-executor/src/agents.rs:1089-1259`). A failed config snapshot is recorded as
 a warning and an error log entry, but it does not retroactively invalidate log
 entries already committed by `LedgerWriter`.
 
@@ -52,13 +52,13 @@ entries already committed by `LedgerWriter`.
 `snapshot::write_default_view_if_missing`
 (`crates/ox-inbox/src/snapshot.rs:96-104`) creates `view.json` once. It is called
 from `ThreadNamespace::from_thread_dir` before restore
-(`crates/ox-cli/src/thread_registry.rs:219-229`). It is not part of the
+(`crates/ox-executor/src/thread_registry.rs:218-228`). It is not part of the
 per-turn path.
 
 ## Restore lifecycle
 
 `ThreadNamespace::from_thread_dir` owns the restore ordering
-(`crates/ox-cli/src/thread_registry.rs:200-557`):
+(`crates/ox-executor/src/thread_registry.rs:199-556`):
 
 1. Build the namespace without a durability sink.
 2. If `context.json` exists, `snapshot::restore` rehydrates participating
@@ -66,13 +66,13 @@ per-turn path.
    (`crates/ox-inbox/src/snapshot.rs:147-220`).
 3. If only `ledger.jsonl` exists, use the ledger-only repair/replay path. This
    covers a crash before the first config snapshot
-   (`thread_registry.rs:270-313`).
+   (`crates/ox-executor/src/thread_registry.rs:269-312`).
 4. Reconstruct derived session usage and partial-stream projection
-   (`thread_registry.rs:367-380`).
+   (`crates/ox-executor/src/thread_registry.rs:366-379`).
 5. Spawn `LedgerWriter`, seed it from the existing ledger head, and install its
-   durability handle after replay (`thread_registry.rs:393-429`).
+   durability handle after replay (`crates/ox-executor/src/thread_registry.rs:392-428`).
 6. Classify the tail and durably record or signal recovery behavior
-   (`thread_registry.rs:443-554`).
+   (`crates/ox-executor/src/thread_registry.rs:442-553`).
 
 Replay must happen before installing durability. Reversing those steps would
 double-write every restored event.
