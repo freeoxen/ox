@@ -761,15 +761,22 @@ impl AsyncWriter for ThreadRegistry {
                             entry["post_crash_reconfirm"] = serde_json::Value::Bool(true);
                         }
                         let log_val = structfs_serde_store::json_to_value(entry);
-                        ns.log
-                            .write(
-                                &structfs_core_store::path!("append"),
-                                structfs_core_store::Record::parsed(log_val),
-                            )
-                            .ok();
+                        if let Err(error) = ns.log.write(
+                            &structfs_core_store::path!("append"),
+                            structfs_core_store::Record::parsed(log_val),
+                        ) {
+                            return Box::pin(std::future::ready(Err(error)));
+                        }
                     }
                 }
                 Some("response") => {
+                    if !ns.approval.has_pending() {
+                        return Box::pin(std::future::ready(Err(StoreError::store(
+                            "ThreadRegistry",
+                            "approval_response",
+                            "no pending approval",
+                        ))));
+                    }
                     // Read tool_name from pending BEFORE routing (which clears it)
                     let tool_name = ns.approval.pending_tool_name().unwrap_or_default();
                     if let Some(val) = data.as_value() {
@@ -785,12 +792,12 @@ impl AsyncWriter for ThreadRegistry {
                             "decision": decision,
                         });
                         let log_val = structfs_serde_store::json_to_value(entry);
-                        ns.log
-                            .write(
-                                &structfs_core_store::path!("append"),
-                                structfs_core_store::Record::parsed(log_val),
-                            )
-                            .ok();
+                        if let Err(error) = ns.log.write(
+                            &structfs_core_store::path!("append"),
+                            structfs_core_store::Record::parsed(log_val),
+                        ) {
+                            return Box::pin(std::future::ready(Err(error)));
+                        }
                     }
                 }
                 _ => {}
@@ -842,6 +849,58 @@ mod tests {
             Value::String(s) => assert_eq!(s, SYSTEM_PROMPT),
             other => panic!("expected string, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn approval_response_first_writer_wins_without_false_log_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut reg = ThreadRegistry::new(dir.path().to_path_buf());
+        let request_path = Path::parse("t_race/approval/request").unwrap();
+        let response_path = Path::parse("t_race/approval/response").unwrap();
+        let deferred = reg.write(
+            &request_path,
+            Record::parsed(json_to_value(serde_json::json!({
+                "tool_name": "shell",
+                "tool_input": {"command": "true"}
+            }))),
+        );
+
+        futures_or_poll(reg.write(
+            &response_path,
+            Record::parsed(json_to_value(serde_json::json!({
+                "decision": "allow_once"
+            }))),
+        ))
+        .unwrap();
+        let duplicate = futures_or_poll(reg.write(
+            &response_path,
+            Record::parsed(json_to_value(serde_json::json!({
+                "decision": "deny_once"
+            }))),
+        ));
+        assert!(
+            duplicate.is_err(),
+            "a resolved approval cannot be answered twice"
+        );
+        futures_or_poll(deferred).unwrap();
+
+        let record = futures_or_poll(reg.read(&Path::parse("t_race/log/entries").unwrap()))
+            .unwrap()
+            .unwrap();
+        let entries: Vec<LogEntry> =
+            structfs_serde_store::from_value(record.as_value().unwrap().clone()).unwrap();
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| matches!(entry, LogEntry::ApprovalResolved { .. }))
+                .count(),
+            1
+        );
+        assert!(entries.iter().any(|entry| matches!(
+            entry,
+            LogEntry::ApprovalResolved { decision, .. }
+                if *decision == ox_types::Decision::AllowOnce
+        )));
     }
 
     #[test]

@@ -25,6 +25,11 @@ impl ApprovalStore {
     pub fn pending_tool_name(&self) -> Option<String> {
         self.pending.as_ref().map(|r| r.tool_name.clone())
     }
+
+    /// Whether a request still has a live response waiter.
+    pub fn has_pending(&self) -> bool {
+        self.pending.is_some() && self.deferred_tx.is_some()
+    }
 }
 
 impl Default for ApprovalStore {
@@ -122,9 +127,14 @@ impl AsyncWriter for ApprovalStore {
                 let decision = resp.decision;
 
                 // Unblock the deferred request future
-                if let Some(tx) = self.deferred_tx.take() {
-                    let _ = tx.send(decision);
-                }
+                let Some(tx) = self.deferred_tx.take() else {
+                    return Box::pin(std::future::ready(Err(StoreError::store(
+                        "approval",
+                        "response",
+                        "no pending approval",
+                    ))));
+                };
+                let _ = tx.send(decision);
                 self.pending = None;
 
                 let path = to.clone();
@@ -199,6 +209,7 @@ mod tests {
         let mut store = ApprovalStore::new();
         let mut map = BTreeMap::new();
         map.insert("tool_name".to_string(), Value::String("bash".to_string()));
+        map.insert("tool_input".to_string(), Value::Map(BTreeMap::new()));
         let _deferred = store.write(&path!("request"), Record::parsed(Value::Map(map)));
 
         store
@@ -217,6 +228,19 @@ mod tests {
         // Pending is cleared
         let pending = store.read(&path!("pending")).await.unwrap().unwrap();
         assert_eq!(pending.as_value().unwrap(), &Value::Null);
+
+        let duplicate = store
+            .write(
+                &path!("response"),
+                Record::parsed(
+                    structfs_serde_store::to_value(&ox_types::ApprovalResponse {
+                        decision: ox_types::Decision::DenyOnce,
+                    })
+                    .unwrap(),
+                ),
+            )
+            .await;
+        assert!(duplicate.is_err(), "only the first response may win");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

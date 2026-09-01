@@ -7,12 +7,13 @@ and a turn-boundary configuration snapshot. There is no longer one
 > See [`life-of-a-log-entry.md`](life-of-a-log-entry.md) for the event flow and
 > [`data-model.md`](data-model.md) for the participating types.
 
-Verified against the repository on 2026-08-31 with:
+Verified against the repository on 2026-09-01 with:
 
 ```sh
 rg -n "save_thread_state|save_config_snapshot|write_default_view_if_missing" crates/
 rg -n "LedgerWriter|with_durability|latest_save_result" crates/ox-inbox crates/ox-executor crates/ox-kernel
 rg -n "pub fn restore|read_ledger_with_repair|resume_needed" crates/ox-inbox/src/snapshot.rs crates/ox-executor/src/thread_registry.rs crates/ox-executor/src/agents.rs
+rg -n "pending_worker_intents|dispatch_worker_ingress|classify_ingress_prompt" crates/ox-inbox/src/worker_ingress.rs crates/ox-executor/src
 ```
 
 `rg 'save_thread_state' crates/` returns no matches.
@@ -23,42 +24,42 @@ rg -n "pub fn restore|read_ledger_with_repair|resume_needed" crates/ox-inbox/src
 
 `SharedLog::append` commits every live `LogEntry` through a per-thread
 `LedgerWriterHandle` before publishing it in memory
-(`crates/ox-kernel/src/log.rs:266-283`). The dedicated writer thread owns
+(`crates/ox-kernel/src/log.rs:279-296`). The dedicated writer thread owns
 `ledger.jsonl`, serializes the hash chain, and acknowledges only after
 `write_all` plus `sync_data` (`crates/ox-inbox/src/ledger_writer.rs:1-38`).
 
 The writer also publishes cumulative `SaveResult` values. The per-thread
 commit drain forwards advancing sequence/hash/message-count state to the inbox
 index through `write_save_result_to_inbox`
-(`crates/ox-executor/src/agents.rs:1315-1353`). This keeps listings fresh without
+(`crates/ox-executor/src/agents.rs:2262-2292`). This keeps listings fresh without
 rescanning the ledger on every event.
 
 ### Config snapshot: `save_config_snapshot`
 
 `ox_inbox::snapshot::save_config_snapshot`
-(`crates/ox-inbox/src/snapshot.rs:43-94`) writes `context.json` from:
+(`crates/ox-inbox/src/snapshot.rs:50-97`) writes `context.json` from:
 
 - `system/snapshot/state`;
 - `gate/snapshot/state`;
 - thread id, title, labels, and timestamps.
 
 The executor invokes it after `module.run` and per-run bookkeeping
-(`crates/ox-executor/src/agents.rs:1089-1259`). A failed config snapshot is recorded as
+(`crates/ox-executor/src/agents.rs:2023-2199`). A failed config snapshot is recorded as
 a warning and an error log entry, but it does not retroactively invalidate log
 entries already committed by `LedgerWriter`.
 
 ### View bootstrap: mount-time only
 
 `snapshot::write_default_view_if_missing`
-(`crates/ox-inbox/src/snapshot.rs:96-104`) creates `view.json` once. It is called
+(`crates/ox-inbox/src/snapshot.rs:99-107`) creates `view.json` once. It is called
 from `ThreadNamespace::from_thread_dir` before restore
-(`crates/ox-executor/src/thread_registry.rs:218-228`). It is not part of the
+(`crates/ox-executor/src/thread_registry.rs:222-228`). It is not part of the
 per-turn path.
 
 ## Restore lifecycle
 
 `ThreadNamespace::from_thread_dir` owns the restore ordering
-(`crates/ox-executor/src/thread_registry.rs:199-556`):
+(`crates/ox-executor/src/thread_registry.rs:211-557`):
 
 1. Build the namespace without a durability sink.
 2. If `context.json` exists, `snapshot::restore` rehydrates participating
@@ -70,9 +71,9 @@ per-turn path.
 4. Reconstruct derived session usage and partial-stream projection
    (`crates/ox-executor/src/thread_registry.rs:366-379`).
 5. Spawn `LedgerWriter`, seed it from the existing ledger head, and install its
-   durability handle after replay (`crates/ox-executor/src/thread_registry.rs:392-428`).
+   durability handle after replay (`crates/ox-executor/src/thread_registry.rs:400-436`).
 6. Classify the tail and durably record or signal recovery behavior
-   (`crates/ox-executor/src/thread_registry.rs:442-553`).
+   (`crates/ox-executor/src/thread_registry.rs:450-557`).
 
 Replay must happen before installing durability. Reversing those steps would
 double-write every restored event.
@@ -85,9 +86,16 @@ double-write every restored event.
 | `context.json` | `save_config_snapshot` | successful/failed run boundary | non-ledger store state and thread metadata |
 | `view.json` | mount bootstrap | once if absent | UI metadata |
 | `ox.db` thread rollup | commit drain and inbox store | latest committed sequence | listing, counts, search/index coordination |
+| `ox.db` worker ingress rows | inbox ingress store | accept once, mark after durable evidence | retry identity and startup reconciliation |
 
 The ledger envelope contains `seq`, `hash`, `parent`, and the serialized
 `LogEntry` in `msg`. `context.json` does not duplicate the ledger.
+
+Worker ingress rows likewise do not duplicate conversation state. On restart,
+`pending_worker_intents` reads accepted/unapplied rows in global acceptance
+order (`crates/ox-inbox/src/worker_ingress.rs:421-463`), and the executor startup
+drain reconciles each against the existing thread/log/approval evidence
+(`crates/ox-executor/src/agents.rs:625-700`, `:1091-1096`).
 
 ## Failure decisions
 

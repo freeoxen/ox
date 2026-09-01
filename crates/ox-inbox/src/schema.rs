@@ -39,6 +39,42 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_threads_parent_id ON threads(parent_id);
         CREATE INDEX IF NOT EXISTS idx_labels_label ON labels(label);
         CREATE INDEX IF NOT EXISTS idx_tasks_thread_id ON tasks(thread_id);
+
+        CREATE TABLE IF NOT EXISTS worker_creates (
+            create_id TEXT PRIMARY KEY, request_hash TEXT NOT NULL,
+            thread_id TEXT NOT NULL UNIQUE, record_json BLOB NOT NULL,
+            state TEXT NOT NULL DEFAULT 'accepted', result_path TEXT,
+            accepted_seq INTEGER NOT NULL,
+            accepted_at INTEGER NOT NULL, applied_at INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS worker_inputs (
+            message_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL,
+            request_hash TEXT NOT NULL, record_json BLOB NOT NULL,
+            state TEXT NOT NULL DEFAULT 'accepted', result_path TEXT,
+            accepted_seq INTEGER NOT NULL,
+            accepted_at INTEGER NOT NULL, applied_at INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS worker_decisions (
+            approval_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL,
+            request_hash TEXT NOT NULL, record_json BLOB NOT NULL,
+            state TEXT NOT NULL DEFAULT 'accepted', result_path TEXT,
+            accepted_seq INTEGER NOT NULL,
+            accepted_at INTEGER NOT NULL, applied_at INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS worker_cancels (
+            cancel_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL,
+            request_hash TEXT NOT NULL, record_json BLOB NOT NULL,
+            state TEXT NOT NULL DEFAULT 'accepted', result_path TEXT,
+            accepted_seq INTEGER NOT NULL,
+            accepted_at INTEGER NOT NULL, applied_at INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_worker_inputs_state ON worker_inputs(state, accepted_at);
+        CREATE INDEX IF NOT EXISTS idx_worker_decisions_state ON worker_decisions(state, accepted_at);
+        CREATE INDEX IF NOT EXISTS idx_worker_cancels_state ON worker_cancels(state, accepted_at);
+        CREATE INDEX IF NOT EXISTS idx_worker_creates_accepted_seq ON worker_creates(accepted_seq);
+        CREATE INDEX IF NOT EXISTS idx_worker_inputs_accepted_seq ON worker_inputs(accepted_seq);
+        CREATE INDEX IF NOT EXISTS idx_worker_decisions_accepted_seq ON worker_decisions(accepted_seq);
+        CREATE INDEX IF NOT EXISTS idx_worker_cancels_accepted_seq ON worker_cancels(accepted_seq);
         ",
     )?;
 

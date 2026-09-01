@@ -129,22 +129,23 @@ nodes; it does not fork the ox architecture in two.
 Each architectural claim below was verified against current code. If a check
 later fails, stop and revise the dependent task before implementation.
 
-- [x] **P1. `ox-cli` already exposes a library target containing the execution
-  modules.** Verified with `nl -ba crates/ox-cli/src/lib.rs | sed -n '1,30p'`:
-  it exposes `agents`, `app`, `broker_setup`, and `thread_registry` at
-  `lib.rs:18-23`, although the binary still compiles a parallel private module
-  tree. Task 1 extracts shared ownership rather than copying these modules.
-  If removed, scope grows by ~1 day.
+- [x] **P1. Interactive and headless hosts share one execution crate.**
+  Verified with
+  `nl -ba crates/ox-executor/src/lib.rs | sed -n '1,31p'` and
+  `rg -n "ox_executor::(ExecutionCore|mount_execution_stores)|use ox_executor" crates/ox-cli/src`:
+  `ox-executor` exports `ExecutionCore`, `AgentPool`, the thread registry, and
+  common mounts at `lib.rs:17-27`; the CLI delegates to those exports instead
+  of compiling a second execution module tree. If this delegation is removed,
+  the plan is blocked for ~1 day to restore one owner.
 
-- [x] **P2. The current pool already manages many conversations, but currently
-  shares one workspace across them.** Verified with
-  `nl -ba crates/ox-cli/src/agents.rs | sed -n '95,301p'`: `AgentPool` owns a
-  `HashMap<String, ThreadHandle>` at `agents.rs:101-117`; `create_thread`,
-  `ensure_worker`, and `send_prompt` are at `:176-239`; `spawn_worker` gives
-  each thread its own channel and OS worker thread at `:261-299`. The pool's
-  single `workspace: PathBuf` is at `:104`, and `spawn_worker` clones it for
-  every worker at `:267`. Task 1 generalizes only this configuration seam. If
-  the worker model changes, preserve its replacement rather than reviving it.
+- [x] **P2. The current pool manages many conversations with per-thread
+  execution configuration.** Verified with
+  `nl -ba crates/ox-executor/src/agents.rs | sed -n '260,305p;430,590p'`:
+  `AgentPool` owns `HashMap<String, ThreadHandle>` at `agents.rs:283-302`;
+  `ensure_worker_with_config` pins workspace/policy at `:445-465`; and
+  `spawn_worker` gives each thread its own mailbox and OS thread at `:557-590`.
+  If the worker model changes, preserve its replacement rather than reviving a
+  second remote pool.
 
 - [x] **P3. The runtime already shares compiled infrastructure and instantiates
   Wasm per run.** Verified with
@@ -153,10 +154,11 @@ later fails, stop and revise the dependent task before implementation.
   cloneable (`:77-84`), and every `run` constructs a new Wasmtime `Store` and
   instance (`:262-283`). A per-conversation runtime would duplicate this.
 
-- [x] **P4. The existing CLI shares one compiled `AgentModule` across workers.**
-  Verified with `nl -ba crates/ox-cli/src/agents.rs | sed -n '119,173p;261,299p'`:
-  construction loads the Wasm once at `:160-162`, and `spawn_worker` clones the
-  module at `:266`. Task 1 keeps this exact ownership.
+- [x] **P4. The shared executor uses one compiled `AgentModule` across
+  workers.** Verified with
+  `nl -ba crates/ox-executor/src/agents.rs | sed -n '358,390p;557,580p'`:
+  construction loads the Wasm once at `:370-371`, and `spawn_worker` clones the
+  module at `:571`. Remote hosts keep this exact ownership.
 
 - [x] **P5. Tool execution already crosses a sandboxable subprocess boundary.**
   Verified with `nl -ba crates/ox-tools/src/sandbox.rs | sed -n '54,125p'`:
@@ -165,11 +167,12 @@ later fails, stop and revise the dependent task before implementation.
   `OsModule` route through it (`rg -n 'sandboxed_exec' crates/ox-tools/src`).
   Task 2 hardens this seam; it does not add a conversation process.
 
-- [x] **P6. Current Clash policy may fall back to unsandboxed execution.**
-  Verified with
-  `nl -ba crates/ox-cli/src/clash_sandbox.rs | sed -n '142,162p'`:
-  profile compilation error returns the original command at `:154-160`. This
-  is unacceptable for the remote profile and is explicitly fixed in Task 2.
+- [x] **P6. Clash has distinct compatibility and fail-closed enforcement
+  modes.** Verified with
+  `nl -ba crates/ox-executor/src/clash_sandbox.rs | sed -n '257,335p'`:
+  required enforcement wraps through the Clash launcher or errors at
+  `:269-310`; only the explicitly best-effort local mode may retain historical
+  passthrough at `:313-330`. A remote profile selecting best-effort is blocked.
 
 - [x] **P7. Native tools are in-process and unsandboxed by design.** Verified
   with `nl -ba crates/ox-tools/src/native.rs | sed -n '1,29p'`:
@@ -183,15 +186,18 @@ later fails, stop and revise the dependent task before implementation.
   ledger. No remote durability implementation is needed.
 
 - [x] **P9. Existing restore/resume is already per conversation.** Verified with
-  `nl -ba crates/ox-cli/src/thread_registry.rs | sed -n '200,557p'` and
-  `rg -n 'inspect_log_for_resume|resume_needed' crates/ox-kernel/src/run.rs crates/ox-cli/src/{thread_registry,agents}.rs`:
+  `nl -ba crates/ox-executor/src/thread_registry.rs | sed -n '211,557p'` and
+  `rg -n 'inspect_log_for_resume|resume_needed' crates/ox-kernel/src/run.rs crates/ox-executor/src/{thread_registry,agents}.rs`:
   replay precedes writer installation, mount classifies the log tail, and the
   worker consumes the resume signal. Task 1 moves this intact.
 
-- [x] **P10. `ThreadRegistry` is already the async, lazy conversation Store.**
-  Verified with `nl -ba crates/ox-cli/src/thread_registry.rs | sed -n '598,730p'`:
-  it implements `AsyncReader`/`AsyncWriter`; broker setup mounts it with
-  `mount_async` at `crates/ox-cli/src/broker_setup.rs:141-144`.
+- [x] **P10. `ThreadRegistry` is the async, lazy conversation Store.**
+  Verified with
+  `nl -ba crates/ox-executor/src/thread_registry.rs | sed -n '601,810p'` and
+  `nl -ba crates/ox-executor/src/broker_mounts.rs | sed -n '15,35p'`:
+  it lazy-mounts at `thread_registry.rs:620-669`, implements
+  `AsyncReader`/`AsyncWriter` at `:695-810`, and is mounted with `mount_async`
+  at `broker_mounts.rs:31-33`.
 
 - [x] **P11. Broker async requests do not await one another in the server
   loop.** Verified with
@@ -199,12 +205,12 @@ later fails, stop and revise the dependent task before implementation.
   reads and writes are independently spawned at `server.rs:110-138`. The sync
   server is sequential at `:37-61`, so remote cursor Stores must stay async.
 
-- [x] **P12. Current broker setup already separates reusable and UI mounts in
-  identifiable blocks.** Verified with
-  `nl -ba crates/ox-cli/src/broker_setup.rs | sed -n '24,152p'`: inbox,
-  config, secret, and async threads mounts are at `:86-109` and `:141-144`; UI,
-  input, settings, and Horns mounts are separate blocks. Task 1 factors this
-  function rather than recreating mount wiring.
+- [x] **P12. Reusable execution mounts and UI mounts are separated.** Verified
+  with `nl -ba crates/ox-executor/src/broker_mounts.rs | sed -n '9,35p'` and
+  `nl -ba crates/ox-cli/src/broker_setup.rs | sed -n '24,140p'`: inbox,
+  config, secret, and async threads are owned by `mount_execution_stores` at
+  `broker_mounts.rs:15-34`; UI/input/settings/Horns remain CLI-only. A headless
+  host reuses the former without mounting the latter.
 
 - [x] **P13. `InboxStore` owns existing thread IDs and local persistence.**
   Verified with `nl -ba crates/ox-inbox/src/writer.rs | sed -n '22,96p'`:
@@ -217,10 +223,14 @@ later fails, stop and revise the dependent task before implementation.
   initializes schema/WAL, and reconciles thread directories. Worker ingress
   tables must be added here, not to a second node database.
 
-- [x] **P15. The existing prompt path is direct, not idempotent remote ingress.**
-  Verified with `nl -ba crates/ox-cli/src/agents.rs | sed -n '221,239p;637,675p'`:
-  `send_prompt` sends a raw `String`, and the worker appends it after receive.
-  Task 3 adds a durable `PromptEnvelope` ingress without replacing execution.
+- [x] **P15. Local prompts remain direct while remote prompts add ingress
+  metadata around the same mailbox.** Verified with
+  `nl -ba crates/ox-executor/src/agents.rs | sed -n '468,535p;1680,1765p'`:
+  local `send_prompt` sends `WorkerPrompt { ingress: None }` at `:470-501`;
+  remote dispatch sends the same command with `IngressPrompt` at `:504-534`;
+  the worker branches only around durable evidence before sharing the existing
+  turn path. If these paths diverge into separate executors, the plan is
+  blocked for ~2 days to restore parity.
 
 - [x] **P16. The worker-facing remote, RuSSH, and exe.dev layers do not yet
   exist.** Verified with
@@ -334,10 +344,10 @@ The worker uses its normal inbox root and normal `ox.db`. `ox-inbox` adds only
 the ingress metadata that current local calls do not need:
 
 ```sql
-worker_creates(create_id PRIMARY KEY, request_hash, thread_id UNIQUE, state, ...)
-worker_inputs(message_id PRIMARY KEY, thread_id, request_hash, record_cbor, state, ...)
-worker_decisions(approval_id PRIMARY KEY, thread_id, request_hash, state, ...)
-worker_cancels(cancel_id PRIMARY KEY, thread_id, request_hash, state, ...)
+worker_creates(create_id PRIMARY KEY, request_hash, thread_id UNIQUE, record_json, state, accepted_seq, ...)
+worker_inputs(message_id PRIMARY KEY, thread_id, request_hash, record_json, state, accepted_seq, ...)
+worker_decisions(approval_id PRIMARY KEY, thread_id, request_hash, record_json, state, accepted_seq, ...)
+worker_cancels(cancel_id PRIMARY KEY, thread_id, request_hash, record_json, state, accepted_seq, ...)
 ```
 
 These are durable outbox/idempotency rows, not a conversation model. Their
@@ -539,23 +549,34 @@ uses; no new sandbox boundary exists.
 **Files:** `ox-inbox` schema/reader/writer plus `ox-executor` prompt/control
 envelopes and recovery dispatcher.
 
-- [ ] Add the four minimal worker ingress tables and StructFS paths under
-  `inbox/worker/*`.
-- [ ] Define `PromptEnvelope { message_id, content }` and matching create,
-  decision, and cancel envelopes with canonical request hashes.
-- [ ] Persist acceptance before invoking an executor action; record application
-  after the existing durable evidence exists.
-- [ ] On startup, drain accepted-but-unapplied intents idempotently.
-- [ ] Add the smallest source-ID metadata needed to prevent duplicate user-log
+- [x] Add the four minimal worker ingress tables and StructFS paths under
+  `inbox/worker/*` (`schema.rs:36-77`, `worker_ingress.rs:535-611`).
+- [x] Define `PromptEnvelope { message_id, content }` and matching create,
+  decision, and cancel envelopes with canonical request hashes
+  (`worker_ingress.rs:18-43`, `:140-161`, `:294-414`).
+- [x] Persist acceptance before invoking an executor action; record application
+  after the existing durable evidence exists (`worker_ingress.rs:236-288`,
+  `:465-493`; `ingress.rs:116-190`).
+- [x] On startup, drain accepted-but-unapplied intents idempotently
+  (`agents.rs:625-700`, `:1091-1096`).
+- [x] Add the smallest source-ID metadata needed to prevent duplicate user-log
   append across the crash-between-apply-and-mark window. Do not create another
-  message log.
-- [ ] Conflicting reuse of a semantic ID returns `conflict`; identical reuse
-  returns the original path/result.
-- [ ] Add general cancellation to the existing worker loop using Task 2's Wasm
-  and tool interruption handles; record the outcome in the existing log/state.
+  message log (`ingress.rs:56-112`, `agents.rs:1691-1759`).
+- [x] Conflicting reuse of a semantic ID returns `conflict`; identical reuse
+  returns the original path/result (`worker_ingress.rs:236-278`, `:661-691`).
+- [x] Add general cancellation to the existing worker loop using Task 2's Wasm
+  and tool interruption handles; record the outcome in the existing log/state
+  (`agents.rs:756-846`, `:1886-2007`; `log.rs:184-195`).
 
-**Tests:** crash before/after every accept/apply/mark boundary, database reopen,
-duplicate and conflicting IDs, cancellation while Wasm/tool/approval is active.
+**Tests:** `worker_ingress.rs` covers database reopen, duplicate/conflicting IDs,
+stable create reservation, and cross-kind ordering. Executor integration tests
+cover create plus initial-prompt recovery, every message marker/User/turn mark
+boundary, decision response-before-mark recovery, blocked-approval cancellation,
+multiple cancel IDs, cancel terminal-before-mark remount recovery, and terminal
+ordering after an active tool returns
+(`crates/ox-executor/tests/worker_ingress.rs`). Task 2 separately proves pure
+Wasm cancellation (`crates/ox-runtime/src/engine.rs:638-670`) and subprocess
+kill/reap cancellation (`crates/ox-tools/tests/sandbox_limits.rs:81-97`).
 
 **Success:** Transport retries cannot duplicate an existing executor action.
 
@@ -615,6 +636,12 @@ worker integration tests.
 - [ ] Construct exactly one `ExecutionCore` using a worker inbox root.
 - [ ] Implement the public Store mapping table from this plan; delegate thread,
   approval, history, and execution operations instead of cloning logic.
+- [ ] Derive the public `approval_id` from the currently unresolved durable
+  approval evidence and validate it again before dispatching a response. Task
+  3 stores `approval_id` as the decision idempotency key, but the existing
+  runtime `ApprovalRequest` and `LogEntry::ApprovalRequested` do not carry an
+  ID; without this adapter validation, a stale accepted response could answer a
+  later approval on the same thread.
 - [ ] Project `ledger/from/<seq>` from existing `LedgerEntry` envelopes in
   bounded batches. Sequence/hash are the remote cursor.
 - [ ] Expose health/capabilities/capacity including worker, wire, agent Wasm,

@@ -11,6 +11,7 @@ mod schema;
 pub mod search;
 pub mod snapshot;
 pub mod thread_dir;
+pub mod worker_ingress;
 mod writer;
 
 use rusqlite::Connection;
@@ -57,6 +58,8 @@ impl InboxStore {
 
         let conn = Connection::open(&db_path)
             .map_err(|e| StoreError::store("InboxStore", "open", e.to_string()))?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|e| StoreError::store("InboxStore", "open", e.to_string()))?;
         schema::initialize(&conn)
             .map_err(|e| StoreError::store("InboxStore", "open", e.to_string()))?;
 
@@ -89,6 +92,9 @@ impl InboxStore {
 
 impl Reader for InboxStore {
     fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
+        if from.iter().next().is_some_and(|part| part == "worker") {
+            return self.worker_read_path(from);
+        }
         reader::read_dispatch(&self.db, &self.last_search_result, from)
     }
 }
@@ -190,6 +196,15 @@ impl InboxStore {
 impl Writer for InboxStore {
     fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
         let segments: Vec<&String> = to.iter().collect();
+
+        if segments
+            .first()
+            .is_some_and(|part| part.as_str() == "worker")
+        {
+            return self
+                .worker_write_path(to, &data)?
+                .ok_or_else(|| StoreError::NoRoute { path: to.clone() });
+        }
 
         // Search write paths — handled here because they need &mut self for caching
         match segments.as_slice() {

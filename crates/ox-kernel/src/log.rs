@@ -25,12 +25,14 @@ pub struct LogSource {
 /// was ever observed before the crash.
 /// `UserCanceledAfterCrash` — the user explicitly aborted a turn during
 /// the post-crash reconfirm flow (reserved for Task 3).
+/// `UserCanceled` — an external/local control request interrupted the turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TurnAbortReason {
     CrashDuringStream,
     CrashBeforeFirstToken,
     UserCanceledAfterCrash,
+    UserCanceled,
 }
 
 /// Why a tool dispatch was aborted. See [`LogEntry::ToolAborted`].

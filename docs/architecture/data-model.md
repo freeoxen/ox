@@ -3,27 +3,28 @@
 A map of types crossing durability, approval, log, and Store boundaries. Similar
 names here are distinct shapes; plans must not substitute one for another.
 
-Verified against the repository on 2026-08-31 with:
+Verified against the repository on 2026-09-01 with:
 
 ```sh
 rg -n "struct ApprovalRequest|enum Decision|enum LogEntry|struct SharedLog|trait Durability" crates/ox-types crates/ox-kernel
 rg -n "struct LedgerEntry|struct SaveResult|struct ContextFile|enum LedgerHealth" crates/ox-inbox
 rg -n "trait AsyncReader|trait AsyncWriter|pub fn run_turn|enum AgentEvent" crates/ox-broker crates/ox-kernel
+rg -n "CreateEnvelope|PromptEnvelope|DecisionEnvelope|CancelEnvelope|accepted_seq" crates/ox-inbox/src/worker_ingress.rs crates/ox-inbox/src/schema.rs
 ```
 
 ## Approval types
 
 ### `ox_types::ApprovalRequest` — runtime state
 
-- Location: `crates/ox-types/src/approval.rs:3-8`.
+- Location: `crates/ox-types/src/approval.rs:4-9`.
 - Fields: `tool_name` and full `tool_input: serde_json::Value`.
 - Lifetime: held in `ApprovalStore.pending` and paired with a process-local
-  oneshot sender (`crates/ox-ui/src/approval_store.rs:11-20`).
+  oneshot sender (`crates/ox-ui/src/approval_store.rs:11-31`).
 - Persistence: none. Crash recovery reconstructs it from durable log entries.
 
 ### `LogEntry::ApprovalRequested` — durable event
 
-- Location: `crates/ox-kernel/src/log.rs:125-143`.
+- Location: `crates/ox-kernel/src/log.rs:130-148`.
 - Fields: `tool_name`, display-only `input_preview`, and
   `post_crash_reconfirm` (default false and omitted when false).
 - It does not contain the full tool input. Recovery joins it to the nearest
@@ -33,7 +34,7 @@ rg -n "trait AsyncReader|trait AsyncWriter|pub fn run_turn|enum AgentEvent" crat
 
 ### `ApprovalResponse` and `Decision` — user answer
 
-- Location: `crates/ox-types/src/approval.rs:10-73`.
+- Location: `crates/ox-types/src/approval.rs:12-75`.
 - `Decision` variants are `AllowOnce`, `AllowSession`, `AllowAlways`,
   `DenyOnce`, `DenySession`, `DenyAlways`, and `CancelTurn`.
 - `CancelTurn` is neither allow nor deny. Exhaustive callers must handle it
@@ -45,7 +46,7 @@ rg -n "trait AsyncReader|trait AsyncWriter|pub fn run_turn|enum AgentEvent" crat
 
 ### `LogEntry` — structured conversation event
 
-- Location: `crates/ox-kernel/src/log.rs:47-207`.
+- Location: `crates/ox-kernel/src/log.rs:52-211`.
 - Current variants: `User`, `Assistant`, `ToolCall`, `ToolResult`, `Meta`,
   `TurnStart`, `TurnEnd`, `CompletionEnd`, `ApprovalRequested`,
   `ApprovalResolved`, `Error`, `TurnAborted`, `ToolAborted`, and
@@ -56,12 +57,12 @@ rg -n "trait AsyncReader|trait AsyncWriter|pub fn run_turn|enum AgentEvent" crat
 
 ### `SharedLog` and `Durability` — memory plus commit seam
 
-- Location: `crates/ox-kernel/src/log.rs:209-300`.
+- Location: `crates/ox-kernel/src/log.rs:221-313`.
 - `SharedLogInner` contains `entries: Vec<LogEntry>` and an optional
-  `Arc<dyn Durability>` under one mutex (`log.rs:223-237`).
-- `Durability::commit` is synchronous and fallible (`log.rs:209-220`).
+  `Arc<dyn Durability>` under one mutex (`log.rs:232-246`).
+- `Durability::commit` is synchronous and fallible (`log.rs:221-231`).
 - `SharedLog::append` commits while holding the ordering mutex, then publishes
-  the entry only on success (`log.rs:266-283`).
+  the entry only on success (`log.rs:279-296`).
 - Replay runs without a sink; `with_durability` is installed afterward.
 
 ### `LogStore` — StructFS facade
@@ -72,7 +73,7 @@ open a ledger file itself; the installed durability sink owns that I/O.
 
 ### `LedgerEntry` — JSONL disk envelope
 
-- Location: `crates/ox-inbox/src/ledger.rs:8-15`.
+- Location: `crates/ox-inbox/src/ledger.rs:10-17`.
 - Fields: `seq: u64`, truncated SHA-256 `hash`, optional parent hash, and
   `msg: serde_json::Value` containing the serialized `LogEntry`.
 - File format: one JSON object per line in `ledger.jsonl`.
@@ -82,14 +83,14 @@ open a ledger file itself; the installed durability sink owns that I/O.
 
 ### `LedgerHealth` — mount/write health
 
-- Location: `crates/ox-inbox/src/ledger.rs:17-54`.
+- Location: `crates/ox-inbox/src/ledger.rs:25-62`.
 - Variants: `Ok`, `Missing`, `RepairFailed`, `Degraded`.
 - Missing/repair-failed/degraded conversations surface explicit health and do
   not silently claim writable durability.
 
 ### `SaveResult` — cumulative commit projection
 
-- Location: `crates/ox-inbox/src/snapshot.rs:27-41`.
+- Location: `crates/ox-inbox/src/snapshot.rs:33-47`.
 - Fields: `last_seq`, optional `last_hash`, and user/assistant
   `message_count`.
 - It is published through `LedgerWriterHandle::latest_save_result`
@@ -107,9 +108,9 @@ Each `~/.ox/threads/{thread_id}/` directory contains:
 | `context.json` | `snapshot::save_config_snapshot` | `ContextFile` metadata plus `system`/`gate` snapshots; turn boundary |
 | `view.json` | `snapshot::write_default_view_if_missing` | projection metadata; once during mount if absent |
 
-`ContextFile` lives at `crates/ox-inbox/src/thread_dir.rs:7-20`.
-`save_config_snapshot` writes it at `crates/ox-inbox/src/snapshot.rs:43-94`.
-`view.json` bootstrap is at `snapshot.rs:96-104`.
+`ContextFile` lives at `crates/ox-inbox/src/thread_dir.rs:9-22`.
+`save_config_snapshot` writes it at `crates/ox-inbox/src/snapshot.rs:50-97`.
+`view.json` bootstrap is at `snapshot.rs:99-107`.
 
 Restore reads config and ledger with durability disabled, then installs the
 writer. See [`save-and-restore.md`](save-and-restore.md).
@@ -121,8 +122,9 @@ writer. See [`save-and-restore.md`](save-and-restore.md).
 - Location: `crates/ox-kernel/src/run.rs:1142`.
 - Signature: synchronous `run_turn(context: &mut dyn Store, emit: &mut dyn
   FnMut(AgentEvent)) -> Result<(), String>`.
-- The CLI invokes the Wasm boundary through `AgentModule::run` at
-  `crates/ox-executor/src/agents.rs:1127`.
+- The executor invokes the cancellable Wasm boundary through
+  `AgentModule::run_with_cancellation` at
+  `crates/ox-executor/src/agents.rs:2065`.
 - Approval may block the conversation's execution thread through the async
   Store bridge. This does not preserve a coroutine across process death;
   durable restart decisions come from the log classifier and run-turn resume
@@ -158,3 +160,21 @@ The pinned StructFS `Value` and `Record` enums are non-exhaustive. Current
 string-keyed map. `Record` is raw bytes plus format or parsed `Value`. A wire
 codec must preserve all current shapes and reject unsupported future shapes
 explicitly; JSON-only conversion is lossy.
+
+## Worker ingress records
+
+Worker ingress is durable idempotency metadata in the existing `InboxStore`,
+not a second conversation model:
+
+- `CreateEnvelope`, `PromptEnvelope`, `DecisionEnvelope`, and `CancelEnvelope`
+  are defined at `crates/ox-inbox/src/worker_ingress.rs:18-43`.
+- Four `ox.db` tables store typed record bytes, canonical request hashes,
+  accepted/applied state, stable results, and one cross-kind `accepted_seq`
+  (`crates/ox-inbox/src/schema.rs:36-77`).
+- Canonical domain-separated hashes are built at
+  `worker_ingress.rs:140-161`; acceptance and global replay ordering are at
+  `worker_ingress.rs:236-288` and `:421-463`.
+- The existing thread row, per-thread directory, `ledger.jsonl`, approval
+  store, and executor worker remain authoritative. Ingress source markers use
+  the existing open `LogEntry::Meta` payload only to bind semantic IDs and
+  request hashes to following durable log evidence.

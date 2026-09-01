@@ -2,7 +2,7 @@
 
 **Status:** Target architecture for the `ox remote` CLI project
 
-**Date:** 2026-08-31
+**Date:** 2026-09-01
 
 ## Purpose
 
@@ -24,11 +24,11 @@ node from the first compatible schema and protocol version.
 - [x] **R1. `AgentPool` already owns concurrent per-thread workers and one
   shared compiled module.**
   Verified with
-  `nl -ba crates/ox-executor/src/agents.rs | sed -n '95,510p'`.
+  `rg -n "struct ThreadHandle|pub struct AgentPool|load_module_from_bytes|fn spawn_worker|thread::spawn" crates/ox-executor/src/agents.rs`.
   `AgentPool` owns `HashMap<String, ThreadHandle>` at
-  `crates/ox-executor/src/agents.rs:221-239`, loads the agent module once at
-  lines 306–307, clones it at line 460, and starts one mailbox and OS worker
-  thread per ox thread at lines 448–499. If this changes, remote
+  `crates/ox-executor/src/agents.rs:284-305`, loads the agent module once at
+  line 371, and starts one mailbox and OS worker thread per ox thread at
+  lines 557–607. If this changes, remote
   work is blocked for ~2–4 days to re-establish local/remote executor parity.
 
 - [x] **R2. A turn already gets a fresh Wasmtime Store and instance.**
@@ -44,18 +44,18 @@ node from the first compatible schema and protocol version.
   Verified with
   `nl -ba crates/ox-executor/src/thread_registry.rs | sed -n '199,430p;598,775p'`.
   Replay precedes durability installation at
-  `crates/ox-executor/src/thread_registry.rs:199-211` and `:392-407`; lazy mount is
-  at `:620-670`; approval paths are routed at `:682-775`. If these ownership
+  `crates/ox-executor/src/thread_registry.rs:211-399` and `:400-407`; lazy mount is
+  at `:633-683`; approval paths are routed at `:695-820`. If these ownership
   seams move, extraction is blocked for ~2–3 days; a second registry is not an
   acceptable workaround.
 
 - [x] **R4. Existing log publication is commit-before-visibility and the
   ledger writer is already per thread.**
   Verified with
-  `nl -ba crates/ox-kernel/src/log.rs | sed -n '209,285p'` and
+  `nl -ba crates/ox-kernel/src/log.rs | sed -n '221,298p'` and
   `nl -ba crates/ox-inbox/src/ledger_writer.rs | sed -n '1,38p'`.
   `SharedLog::append` commits before publishing at
-  `crates/ox-kernel/src/log.rs:266-283`; `LedgerWriter` owns one ordered,
+  `crates/ox-kernel/src/log.rs:279-296`; `LedgerWriter` owns one ordered,
   hash-chained ledger at `crates/ox-inbox/src/ledger_writer.rs:1-24`. If this
   contract changes, remote cursor work is blocked for ~3–5 days to preserve
   durability and ordering.
@@ -79,6 +79,21 @@ node from the first compatible schema and protocol version.
   `t_...` identity and directory at `crates/ox-inbox/src/writer.rs:62-95`.
   If another owner is introduced, remote persistence is blocked for ~3–5 days
   to restore one-writer ownership.
+
+- [x] **R8. Durable worker ingress now reuses `InboxStore`, the existing
+  executor, and the existing per-thread log rather than creating another
+  conversation store.**
+  Verified with
+  `rg -n "accept_worker_|pending_worker_intents|apply_worker_create|mark_worker_intent_applied" crates/ox-inbox/src/worker_ingress.rs` and
+  `rg -n "dispatch_worker_ingress|classify_ingress_prompt|finalize_pending_cancels" crates/ox-executor/src/{agents,ingress}.rs`.
+  Acceptance and global ordering are at
+  `crates/ox-inbox/src/worker_ingress.rs:236-288` and `:421-463`; stable create
+  materialization is at `:495-534`; startup dispatch is at
+  `crates/ox-executor/src/agents.rs:1091-1096`; prompt evidence classification
+  is at `crates/ox-executor/src/ingress.rs:56-112`; cancellation finalization
+  is at `agents.rs:1886-2007`. If these seams stop using the existing
+  inbox/log/worker owners, remote execution is blocked for ~2–4 days to remove
+  the duplicate state machine.
 
 - [x] **R7. Tool subprocess isolation now has distinct compatibility and
   fail-closed enforcement modes.**
@@ -115,6 +130,16 @@ Remote ingress tables are the one justified durability addition: transport
 retries require stable create, message, approval, and cancel IDs before the
 existing action is invoked. They live in the worker's existing inbox database
 and do not model conversations or duplicate the ledger.
+
+The implemented ingress uses four tables with a transactionally allocated
+cross-kind `accepted_seq` and indexes for ordered recovery
+(`crates/ox-inbox/src/schema.rs:36-77`). Canonical domain-separated request
+hashes and typed envelopes live at
+`crates/ox-inbox/src/worker_ingress.rs:18-43` and `:140-161`. Identical retries
+return the stable receipt/result; the same semantic ID with a different hash is
+a conflict. The execution control loop drains accepted/unapplied rows at
+startup and through a bounded explicit command (`agents.rs:1091-1125`,
+`:1235-1245`).
 
 ## Topology
 
@@ -189,6 +214,14 @@ write conversations/<thread_id>/control/cancel <CancelRequest>
 The returned worker conversation ID is the existing `t_...` thread ID. The
 adapter never exposes arbitrary broker paths, tools, config, secrets,
 filesystem paths, or commands.
+
+`ApprovalStore` and `LogEntry::ApprovalRequested` currently have no intrinsic
+approval ID. The Task 6 public adapter must therefore derive the exposed
+`approval_id` from the currently unresolved durable approval evidence and
+validate that identity again immediately before accepting/dispatching a
+response. Task 3's `worker_decisions.approval_id` is only the durable response
+idempotency key; by itself it must not authorize a stale response against a
+later pending approval on the same thread.
 
 ## Isolation and concurrency
 

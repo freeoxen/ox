@@ -8,6 +8,7 @@ mod agents;
 mod broker_mounts;
 mod clash_sandbox;
 mod commit_drain;
+mod ingress;
 mod policy;
 mod policy_check;
 pub mod test_support;
@@ -15,7 +16,8 @@ mod thread_registry;
 
 pub use agents::{
     AgentPool, ExecutionCommandError, ExecutionCore, ExecutionHandle, ExecutorConfig,
-    PolicyProfile, SYSTEM_PROMPT, ThreadExecutionConfig, write_save_result_to_inbox,
+    IngressBoundary, IngressFailpoints, PolicyProfile, SYSTEM_PROMPT, ThreadExecutionConfig,
+    write_save_result_to_inbox,
 };
 pub use broker_mounts::mount_execution_stores;
 pub use policy::{CheckResult, PolicyGuard, PolicyLoadError, PolicyStats};

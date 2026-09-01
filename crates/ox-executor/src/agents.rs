@@ -8,6 +8,7 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 use structfs_core_store::{Reader as _, Writer as _};
 
+use crate::ingress::*;
 use crate::policy::PolicyStats;
 
 // ---------------------------------------------------------------------------
@@ -94,9 +95,38 @@ pub(crate) const AGENT_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/a
 
 /// Per-thread prompt sender.
 struct ThreadHandle {
-    prompt_tx: mpsc::Sender<String>,
+    prompt_tx: mpsc::Sender<WorkerCommand>,
     execution: ThreadExecutionConfig,
     cancellation: ox_tools::sandbox::ToolCancellation,
+    pending_cancel: Arc<std::sync::Mutex<std::collections::VecDeque<IngressCancel>>>,
+}
+
+enum WorkerCommand {
+    Prompt(WorkerPrompt),
+    CancelWake,
+}
+
+#[derive(Clone, Debug)]
+struct WorkerPrompt {
+    content: String,
+    ingress: Option<IngressPrompt>,
+}
+
+#[derive(Clone, Debug)]
+struct IngressPrompt {
+    kind: ox_inbox::worker_ingress::IntentKind,
+    operation: &'static str,
+    semantic_id: String,
+    request_hash: String,
+    accepted_seq: i64,
+}
+
+#[derive(Clone, Debug)]
+struct IngressCancel {
+    cancel_id: String,
+    request_hash: String,
+    reason: Option<String>,
+    accepted_seq: i64,
 }
 
 /// Tool-policy profile selected for one conversation worker.
@@ -118,6 +148,38 @@ pub struct ExecutorConfig {
     pub remote_tool_execution: ox_tools::sandbox::SandboxedExecOptions,
     pub max_active_turns: usize,
     pub remote_native_tool_allowlist: BTreeSet<String>,
+    pub ingress_failpoints: IngressFailpoints,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum IngressBoundary {
+    AfterCreateActionBeforeMark,
+    AfterMessageMarkerBeforeUser,
+    AfterMessageUserBeforeTurn,
+    AfterMessageTurnBeforeMark,
+    AfterDecisionResponseBeforeMark,
+    AfterCancelAbortBeforeMark,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct IngressFailpoints {
+    armed: Arc<std::sync::Mutex<BTreeSet<IngressBoundary>>>,
+}
+
+impl IngressFailpoints {
+    pub fn arm(&self, boundary: IngressBoundary) {
+        self.armed
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(boundary);
+    }
+
+    pub(crate) fn take(&self, boundary: IngressBoundary) -> bool {
+        self.armed
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&boundary)
+    }
 }
 
 impl Default for ExecutorConfig {
@@ -128,6 +190,7 @@ impl Default for ExecutorConfig {
             remote_tool_execution: ox_tools::sandbox::SandboxedExecOptions::remote(),
             max_active_turns: usize::MAX,
             remote_native_tool_allowlist: BTreeSet::new(),
+            ingress_failpoints: IngressFailpoints::default(),
         }
     }
 }
@@ -235,6 +298,7 @@ pub struct AgentPool {
     tool_injector: Option<crate::test_support::ToolInjector>,
     executor_config: ExecutorConfig,
     turn_limiter: Arc<TurnLimiter>,
+    dispatching_decisions: Arc<std::sync::Mutex<BTreeSet<String>>>,
 }
 
 impl AgentPool {
@@ -325,6 +389,7 @@ impl AgentPool {
             tool_injector,
             executor_config,
             turn_limiter,
+            dispatching_decisions: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
         })
     }
 
@@ -382,6 +447,14 @@ impl AgentPool {
         thread_id: &str,
         execution: ThreadExecutionConfig,
     ) -> Result<(), String> {
+        if execution.policy_profile == PolicyProfile::RemoteEnforced {
+            std::fs::create_dir_all(&execution.workspace).map_err(|error| {
+                format!(
+                    "failed to materialize remote workspace '{}': {error}",
+                    execution.workspace.display()
+                )
+            })?;
+        }
         if let Some(handle) = self.threads.get(thread_id) {
             return validate_execution_config(thread_id, &handle.execution, &execution);
         }
@@ -421,7 +494,43 @@ impl AgentPool {
             .ok_or_else(|| format!("no thread {thread_id}"))?;
         handle
             .prompt_tx
-            .send(prompt)
+            .send(WorkerCommand::Prompt(WorkerPrompt {
+                content: prompt,
+                ingress: None,
+            }))
+            .map_err(|_| "thread channel closed".to_string())
+    }
+
+    fn enqueue_worker_prompt(
+        &mut self,
+        thread_id: &str,
+        envelope: ox_inbox::worker_ingress::PromptEnvelope,
+        request_hash: String,
+        accepted_seq: i64,
+    ) -> Result<(), String> {
+        if !self.threads.contains_key(thread_id) {
+            self.ensure_worker_with_config(
+                thread_id,
+                ThreadExecutionConfig::new(
+                    self.inbox_root.join("workspaces").join(thread_id),
+                    PolicyProfile::RemoteEnforced,
+                ),
+            )?;
+        }
+        self.threads
+            .get(thread_id)
+            .ok_or_else(|| format!("no thread {thread_id}"))?
+            .prompt_tx
+            .send(WorkerCommand::Prompt(WorkerPrompt {
+                content: envelope.content,
+                ingress: Some(IngressPrompt {
+                    kind: ox_inbox::worker_ingress::IntentKind::Message,
+                    operation: "message",
+                    semantic_id: envelope.message_id,
+                    request_hash,
+                    accepted_seq,
+                }),
+            }))
             .map_err(|_| "thread channel closed".to_string())
     }
 
@@ -446,14 +555,16 @@ impl AgentPool {
     }
 
     fn spawn_worker(&mut self, thread_id: String, title: String, execution: ThreadExecutionConfig) {
-        let (prompt_tx, prompt_rx) = mpsc::channel::<String>();
+        let (prompt_tx, prompt_rx) = mpsc::channel::<WorkerCommand>();
         let cancellation = ox_tools::sandbox::ToolCancellation::default();
+        let pending_cancel = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
         self.threads.insert(
             thread_id.clone(),
             ThreadHandle {
                 prompt_tx,
                 execution: execution.clone(),
                 cancellation: cancellation.clone(),
+                pending_cancel: pending_cancel.clone(),
             },
         );
 
@@ -493,6 +604,7 @@ impl AgentPool {
                 tool_injector,
                 executor_config,
                 cancellation,
+                pending_cancel,
                 turn_limiter,
             );
         });
@@ -504,6 +616,250 @@ impl AgentPool {
             .get(thread_id)
             .ok_or_else(|| format!("no running thread {thread_id}"))?;
         handle.cancellation.cancel();
+        Ok(())
+    }
+
+    /// Drain accepted-but-unapplied worker intents through the existing pool.
+    /// Calls are idempotent; startup and every public ingress write may invoke
+    /// this without allocating a second conversation or executor.
+    pub fn dispatch_worker_ingress(&mut self) -> Result<usize, String> {
+        use ox_inbox::worker_ingress::{IntentKind, PromptEnvelope};
+        let pending = self
+            .inbox
+            .pending_worker_intents()
+            .map_err(|error| error.to_string())?;
+        let mut dispatched = 0;
+        for intent in pending {
+            match intent.kind {
+                IntentKind::Create => {
+                    let envelope = intent
+                        .decode::<ox_inbox::worker_ingress::CreateEnvelope>()
+                        .map_err(|error| error.to_string())?;
+                    let thread_id = self
+                        .inbox
+                        .apply_worker_create(&intent.semantic_id)
+                        .map_err(|error| error.to_string())?;
+                    self.ensure_worker_with_config(
+                        &thread_id,
+                        ThreadExecutionConfig::new(
+                            self.inbox_root.join("workspaces").join(&thread_id),
+                            PolicyProfile::RemoteEnforced,
+                        ),
+                    )?;
+                    if self
+                        .executor_config
+                        .ingress_failpoints
+                        .take(IngressBoundary::AfterCreateActionBeforeMark)
+                    {
+                        return Err("injected crash after create action before applied mark".into());
+                    }
+                    self.threads
+                        .get(&thread_id)
+                        .ok_or_else(|| format!("no thread {thread_id}"))?
+                        .prompt_tx
+                        .send(WorkerCommand::Prompt(WorkerPrompt {
+                            content: envelope.prompt,
+                            ingress: Some(IngressPrompt {
+                                kind: IntentKind::Create,
+                                operation: "create",
+                                semantic_id: intent.semantic_id,
+                                request_hash: intent.request_hash,
+                                accepted_seq: intent.accepted_seq,
+                            }),
+                        }))
+                        .map_err(|_| "thread channel closed".to_string())?;
+                    dispatched += 1;
+                }
+                IntentKind::Message => {
+                    let envelope = intent
+                        .decode::<PromptEnvelope>()
+                        .map_err(|error| error.to_string())?;
+                    let thread_id = intent
+                        .thread_id
+                        .as_deref()
+                        .ok_or_else(|| "accepted message has no thread id".to_string())?;
+                    self.enqueue_worker_prompt(
+                        thread_id,
+                        envelope,
+                        intent.request_hash,
+                        intent.accepted_seq,
+                    )?;
+                    dispatched += 1;
+                }
+                IntentKind::Decision => {
+                    if self.dispatch_worker_decision(&intent)? {
+                        dispatched += 1;
+                    }
+                }
+                IntentKind::Cancel => {
+                    self.dispatch_worker_cancel(&intent)?;
+                    dispatched += 1;
+                }
+            }
+        }
+        Ok(dispatched)
+    }
+
+    fn dispatch_worker_decision(
+        &mut self,
+        intent: &ox_inbox::worker_ingress::AcceptedIntent,
+    ) -> Result<bool, String> {
+        use ox_inbox::worker_ingress::DecisionEnvelope;
+        let thread_id = intent
+            .thread_id
+            .as_deref()
+            .ok_or_else(|| "accepted decision has no thread id".to_string())?;
+        let envelope = intent
+            .decode::<DecisionEnvelope>()
+            .map_err(|e| e.to_string())?;
+        if !self.threads.contains_key(thread_id) {
+            self.ensure_worker_with_config(
+                thread_id,
+                ThreadExecutionConfig::new(
+                    self.inbox_root.join("workspaces").join(thread_id),
+                    PolicyProfile::RemoteEnforced,
+                ),
+            )?;
+        }
+        let client = self.broker.client();
+        let thread_id = thread_id.to_string();
+        let semantic_id = intent.semantic_id.clone();
+        let request_hash = intent.request_hash.clone();
+        let ingress_failpoints = self.executor_config.ingress_failpoints.clone();
+        {
+            let mut dispatching = self
+                .dispatching_decisions
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if !dispatching.insert(semantic_id.clone()) {
+                return Ok(false);
+            }
+        }
+        let dispatching_decisions = self.dispatching_decisions.clone();
+        let dispatch_key = semantic_id.clone();
+        self.rt_handle.spawn(async move {
+            dispatch_worker_decision_task(
+                client,
+                thread_id,
+                semantic_id,
+                request_hash,
+                envelope,
+                ingress_failpoints,
+            )
+            .await;
+            dispatching_decisions
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&dispatch_key);
+        });
+        Ok(true)
+    }
+
+    fn dispatch_worker_cancel(
+        &mut self,
+        intent: &ox_inbox::worker_ingress::AcceptedIntent,
+    ) -> Result<(), String> {
+        use ox_inbox::worker_ingress::{CancelEnvelope, IntentKind};
+        let thread_id = intent
+            .thread_id
+            .as_deref()
+            .ok_or_else(|| "accepted cancel has no thread id".to_string())?;
+        let envelope = intent
+            .decode::<CancelEnvelope>()
+            .map_err(|e| e.to_string())?;
+        if !self.threads.contains_key(thread_id) {
+            self.ensure_worker_with_config(
+                thread_id,
+                ThreadExecutionConfig::new(
+                    self.inbox_root.join("workspaces").join(thread_id),
+                    PolicyProfile::RemoteEnforced,
+                ),
+            )?;
+        }
+        let scoped = self.broker.client().scoped(&format!("threads/{thread_id}"));
+        let mut adapter = ox_broker::SyncClientAdapter::new(scoped.clone(), self.rt_handle.clone());
+        let entries = adapter
+            .read_typed::<Vec<ox_kernel::log::LogEntry>>(&path!("log/entries"))
+            .map_err(|error| error.to_string())?
+            .unwrap_or_default();
+        if ingress_cancel_evidence(&entries, &intent.semantic_id, &intent.request_hash)?
+            == IngressControlEvidence::Applied
+        {
+            self.set_thread_interrupted(thread_id)?;
+            self.inbox
+                .mark_worker_intent_applied(
+                    IntentKind::Cancel,
+                    &intent.semantic_id,
+                    &format!(
+                        "conversations/{thread_id}/control/cancel/{}",
+                        intent.semantic_id
+                    ),
+                )
+                .map_err(|error| error.to_string())?;
+            return Ok(());
+        }
+        let handle = self
+            .threads
+            .get(thread_id)
+            .ok_or_else(|| format!("no running thread {thread_id}"))?;
+        let mut cancels = handle
+            .pending_cancel
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if !cancels
+            .iter()
+            .any(|cancel| cancel.cancel_id == envelope.cancel_id)
+        {
+            cancels.push_back(IngressCancel {
+                cancel_id: envelope.cancel_id,
+                request_hash: intent.request_hash.clone(),
+                reason: envelope.reason,
+                accepted_seq: intent.accepted_seq,
+            });
+        }
+        drop(cancels);
+        handle.cancellation.cancel();
+        // A worker parked in ApprovalStore is blocked on its oneshot rather
+        // than polling the runtime cancellation token. Resolve that exact
+        // pending request so Wasm can return and the worker can append the
+        // terminal UserCanceled evidence. If a human decision won the race,
+        // the pending read is null and we do not send a second response.
+        let pending = self
+            .rt_handle
+            .block_on(scoped.read(&path!("approval/pending")))
+            .map_err(|error| error.to_string())?;
+        if pending.as_ref().and_then(Record::as_value) != Some(&Value::Null) && pending.is_some() {
+            self.rt_handle
+                .block_on(scoped.write_typed(
+                    &path!("approval/response"),
+                    &ox_types::ApprovalResponse {
+                        decision: ox_types::Decision::CancelTurn,
+                    },
+                ))
+                .map_err(|error| error.to_string())?;
+        }
+        handle
+            .prompt_tx
+            .send(WorkerCommand::CancelWake)
+            .map_err(|_| "thread channel closed".to_string())?;
+        Ok(())
+    }
+
+    fn set_thread_interrupted(&self, thread_id: &str) -> Result<(), String> {
+        let mut state = std::collections::BTreeMap::new();
+        state.insert(
+            "thread_state".to_string(),
+            Value::String("interrupted".to_string()),
+        );
+        self.rt_handle
+            .block_on(
+                self.broker.client().write(
+                    &structfs_core_store::Path::parse(&format!("inbox/threads/{thread_id}"))
+                        .map_err(|error| error.to_string())?,
+                    Record::parsed(Value::Map(state)),
+                ),
+            )
+            .map_err(|error| error.to_string())?;
         Ok(())
     }
 }
@@ -671,6 +1027,10 @@ impl ExecutionCore {
         self.pool.cancel_thread(thread_id)
     }
 
+    pub fn dispatch_worker_ingress(&mut self) -> Result<usize, String> {
+        self.pool.dispatch_worker_ingress()
+    }
+
     /// Move the core onto one control thread behind a bounded queue.
     pub fn into_handle(self, command_capacity: usize) -> ExecutionHandle {
         assert!(
@@ -722,10 +1082,16 @@ enum ExecutionCommand {
         thread_id: String,
         reply: mpsc::Sender<Result<(), String>>,
     },
+    DispatchWorkerIngress {
+        reply: mpsc::Sender<Result<usize, String>>,
+    },
     Shutdown,
 }
 
 fn execution_control_loop(mut core: ExecutionCore, receiver: mpsc::Receiver<ExecutionCommand>) {
+    if let Err(error) = core.dispatch_worker_ingress() {
+        tracing::error!(%error, "failed to recover accepted worker ingress at startup");
+    }
     while let Ok(command) = receiver.recv() {
         match command {
             ExecutionCommand::Create {
@@ -752,6 +1118,9 @@ fn execution_control_loop(mut core: ExecutionCore, receiver: mpsc::Receiver<Exec
             }
             ExecutionCommand::Cancel { thread_id, reply } => {
                 let _ = reply.send(core.cancel_thread(&thread_id));
+            }
+            ExecutionCommand::DispatchWorkerIngress { reply } => {
+                let _ = reply.send(core.dispatch_worker_ingress());
             }
             ExecutionCommand::Shutdown => break,
         }
@@ -855,6 +1224,17 @@ impl ExecutionHandle {
             thread_id: thread_id.into(),
             reply,
         })?;
+        response
+            .recv()
+            .map_err(|_| ExecutionCommandError::Stopped)?
+            .map_err(ExecutionCommandError::Executor)
+    }
+
+    /// Dispatch all durable accepted ingress rows. Safe to call after every
+    /// acceptance and once during worker startup.
+    pub fn dispatch_worker_ingress(&self) -> Result<usize, ExecutionCommandError> {
+        let (reply, response) = mpsc::channel();
+        self.enqueue(ExecutionCommand::DispatchWorkerIngress { reply })?;
         response
             .recv()
             .map_err(|_| ExecutionCommandError::Stopped)?
@@ -968,13 +1348,14 @@ fn agent_worker(
     workspace: PathBuf,
     policy_profile: PolicyProfile,
     inbox_root: PathBuf,
-    prompt_rx: mpsc::Receiver<String>,
+    prompt_rx: mpsc::Receiver<WorkerCommand>,
     broker: ox_broker::BrokerStore,
     rt_handle: tokio::runtime::Handle,
     transport_factory: Option<crate::test_support::TransportFactory>,
     tool_injector: Option<crate::test_support::ToolInjector>,
     executor_config: ExecutorConfig,
     cancellation: ox_tools::sandbox::ToolCancellation,
+    pending_cancel: Arc<std::sync::Mutex<std::collections::VecDeque<IngressCancel>>>,
     turn_limiter: Arc<TurnLimiter>,
 ) {
     let no_policy = policy_profile == PolicyProfile::Permissive;
@@ -1268,13 +1649,149 @@ fn agent_worker(
         gated_store = ret_gated;
     }
 
-    while let Ok(input) = prompt_rx.recv() {
+    let ingress_failpoints = executor_config.ingress_failpoints.clone();
+
+    while let Ok(command) = prompt_rx.recv() {
+        let WorkerCommand::Prompt(prompt) = command else {
+            if finalize_pending_cancels(
+                &mut adapter,
+                &broker_client,
+                &rt_handle,
+                &thread_id,
+                &pending_cancel,
+                None,
+                &ingress_failpoints,
+            ) {
+                cancellation.reset();
+            }
+            continue;
+        };
+        let prompt_seq = prompt.ingress.as_ref().map(|ingress| ingress.accepted_seq);
+        if finalize_pending_cancels(
+            &mut adapter,
+            &broker_client,
+            &rt_handle,
+            &thread_id,
+            &pending_cancel,
+            prompt_seq,
+            &ingress_failpoints,
+        ) {
+            cancellation.reset();
+        }
+        let input = prompt.content;
         tracing::debug!(thread_id = %thread_id, input_len = input.len(), "prompt received");
 
-        // Write user message to history
-        let user_json = serde_json::json!({"role": "user", "content": input});
-        if let Err(e) = adapter.write_typed(&path!("history/append"), &user_json) {
-            tracing::error!(thread_id = %thread_id, error = %e, "history append failed");
+        if let Some(ingress) = &prompt.ingress {
+            match ingress_prompt_state(
+                &mut adapter,
+                ingress.operation,
+                &ingress.semantic_id,
+                &ingress.request_hash,
+            ) {
+                Ok(IngressPromptState::Terminal) => {
+                    mark_ingress_prompt_applied(
+                        &broker_client,
+                        &rt_handle,
+                        &thread_id,
+                        ingress.kind,
+                        &ingress.semantic_id,
+                    );
+                    continue;
+                }
+                Ok(IngressPromptState::InFlight) => {
+                    // Mount-time recovery runs before this mailbox. If an
+                    // in-flight segment remains, never start a second turn;
+                    // the accepted intent stays available for reconciliation.
+                    tracing::info!(
+                        semantic_id = %ingress.semantic_id,
+                        "worker ingress turn remains in flight after recovery"
+                    );
+                    continue;
+                }
+                Ok(IngressPromptState::MarkerOnly) => {}
+                Ok(IngressPromptState::UserWithoutTurn) => {
+                    // Exact crash boundary: durable User, no TurnStart. Drive
+                    // the existing turn without appending the User again.
+                }
+                Ok(IngressPromptState::Missing) => {
+                    if let Err(error) = append_ingress_marker(
+                        &mut adapter,
+                        ingress.operation,
+                        &ingress.semantic_id,
+                        &ingress.request_hash,
+                    ) {
+                        tracing::error!(semantic_id = %ingress.semantic_id, %error, "ingress marker append failed");
+                        continue;
+                    }
+                    if ingress_failpoints.take(IngressBoundary::AfterMessageMarkerBeforeUser) {
+                        return;
+                    }
+                }
+                Ok(IngressPromptState::Conflict) => {
+                    tracing::error!(
+                        semantic_id = %ingress.semantic_id,
+                        "conflict: durable ingress marker has a different request hash"
+                    );
+                    continue;
+                }
+                Err(error) => {
+                    tracing::error!(semantic_id = %ingress.semantic_id, %error, "ingress evidence read failed");
+                    continue;
+                }
+            }
+
+            if matches!(
+                ingress_prompt_state(
+                    &mut adapter,
+                    ingress.operation,
+                    &ingress.semantic_id,
+                    &ingress.request_hash,
+                ),
+                Ok(IngressPromptState::Missing | IngressPromptState::MarkerOnly)
+            ) {
+                let user_json = serde_json::json!({"role": "user", "content": &input});
+                if let Err(e) = adapter.write_typed(&path!("history/append"), &user_json) {
+                    tracing::error!(thread_id = %thread_id, error = %e, "history append failed");
+                    continue;
+                }
+                if ingress_failpoints.take(IngressBoundary::AfterMessageUserBeforeTurn) {
+                    return;
+                }
+            }
+        } else {
+            // Local CLI prompt path stays unchanged.
+            let user_json = serde_json::json!({"role": "user", "content": &input});
+            if let Err(e) = adapter.write_typed(&path!("history/append"), &user_json) {
+                tracing::error!(thread_id = %thread_id, error = %e, "history append failed");
+                continue;
+            }
+        }
+
+        // A cancel accepted after this prompt but before its turn starts owns
+        // the terminal outcome: preserve the durable User, finalize cancel,
+        // and do not start Wasm. A later prompt (higher accepted_seq) remains
+        // valid new work after that cancellation.
+        if has_pending_cancel_after(&pending_cancel, prompt_seq)
+            && finalize_pending_cancels(
+                &mut adapter,
+                &broker_client,
+                &rt_handle,
+                &thread_id,
+                &pending_cancel,
+                None,
+                &ingress_failpoints,
+            )
+        {
+            cancellation.reset();
+            if let Some(ingress) = &prompt.ingress {
+                mark_ingress_prompt_applied(
+                    &broker_client,
+                    &rt_handle,
+                    &thread_id,
+                    ingress.kind,
+                    &ingress.semantic_id,
+                );
+            }
             continue;
         }
 
@@ -1308,10 +1825,183 @@ fn agent_worker(
         );
         adapter = ret_adapter;
         gated_store = ret_gated;
+
+        // Cancellation is finalized only after Wasm/tool execution has
+        // returned and all ordinary run bookkeeping has completed. The abort
+        // marker and Interrupted state are therefore terminal.
+        if finalize_pending_cancels(
+            &mut adapter,
+            &broker_client,
+            &rt_handle,
+            &thread_id,
+            &pending_cancel,
+            None,
+            &ingress_failpoints,
+        ) {
+            cancellation.reset();
+        }
+
+        if let Some(ingress) = &prompt.ingress {
+            if ingress_failpoints.take(IngressBoundary::AfterMessageTurnBeforeMark) {
+                return;
+            }
+            if matches!(
+                ingress_prompt_state(
+                    &mut adapter,
+                    ingress.operation,
+                    &ingress.semantic_id,
+                    &ingress.request_hash,
+                ),
+                Ok(IngressPromptState::Terminal)
+            ) {
+                mark_ingress_prompt_applied(
+                    &broker_client,
+                    &rt_handle,
+                    &thread_id,
+                    ingress.kind,
+                    &ingress.semantic_id,
+                );
+            }
+        }
     }
 
     // Worker exit — ThreadRegistry retains thread state in memory until process exit.
     // No explicit unmount needed.
+}
+
+fn has_pending_cancel_after(
+    pending_cancel: &Arc<std::sync::Mutex<std::collections::VecDeque<IngressCancel>>>,
+    prompt_seq: Option<i64>,
+) -> bool {
+    let Some(prompt_seq) = prompt_seq else {
+        return false;
+    };
+    pending_cancel
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .iter()
+        .any(|cancel| cancel.accepted_seq > prompt_seq)
+}
+
+fn finalize_pending_cancels(
+    adapter: &mut ox_broker::SyncClientAdapter,
+    broker_client: &ox_broker::ClientHandle,
+    rt_handle: &tokio::runtime::Handle,
+    thread_id: &str,
+    pending_cancel: &Arc<std::sync::Mutex<std::collections::VecDeque<IngressCancel>>>,
+    before_seq: Option<i64>,
+    failpoints: &IngressFailpoints,
+) -> bool {
+    let cancels = {
+        let mut queue = pending_cancel
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut selected = Vec::new();
+        let mut retained = std::collections::VecDeque::new();
+        while let Some(cancel) = queue.pop_front() {
+            if before_seq.is_none_or(|limit| cancel.accepted_seq < limit) {
+                selected.push(cancel);
+            } else {
+                retained.push_back(cancel);
+            }
+        }
+        *queue = retained;
+        selected.sort_by_key(|cancel| cancel.accepted_seq);
+        selected
+    };
+    if cancels.is_empty() {
+        return false;
+    }
+    for cancel in cancels {
+        finalize_one_cancel(
+            adapter,
+            broker_client,
+            rt_handle,
+            thread_id,
+            cancel,
+            failpoints,
+        );
+    }
+    true
+}
+
+fn finalize_one_cancel(
+    adapter: &mut ox_broker::SyncClientAdapter,
+    broker_client: &ox_broker::ClientHandle,
+    rt_handle: &tokio::runtime::Handle,
+    thread_id: &str,
+    cancel: IngressCancel,
+    failpoints: &IngressFailpoints,
+) {
+    let entries = match adapter.read_typed::<Vec<ox_kernel::log::LogEntry>>(&path!("log/entries")) {
+        Ok(Some(entries)) => entries,
+        Ok(None) => Vec::new(),
+        Err(error) => {
+            tracing::error!(cancel_id = %cancel.cancel_id, %error, "cancel evidence read failed");
+            return;
+        }
+    };
+    let evidence = match ingress_cancel_evidence(&entries, &cancel.cancel_id, &cancel.request_hash)
+    {
+        Ok(evidence) => evidence,
+        Err(error) => {
+            tracing::error!(cancel_id = %cancel.cancel_id, %error, "cancel ingress conflict");
+            return;
+        }
+    };
+    if evidence == IngressControlEvidence::Missing
+        && let Err(error) =
+            append_ingress_marker(adapter, "cancel", &cancel.cancel_id, &cancel.request_hash)
+    {
+        tracing::error!(cancel_id = %cancel.cancel_id, %error, "cancel marker append failed");
+        return;
+    }
+    if evidence != IngressControlEvidence::Applied {
+        let outcome = serde_json::json!({
+            "type": "meta",
+            "data": {
+                "kind": "worker_cancel_outcome",
+                "cancel_id": cancel.cancel_id,
+                "outcome": "interrupted",
+                "reason": cancel.reason,
+            }
+        });
+        if let Err(error) = adapter.write_typed(&path!("log/append"), &outcome) {
+            tracing::error!(cancel_id = %cancel.cancel_id, %error, "cancel outcome append failed");
+            return;
+        }
+        let aborted = serde_json::json!({
+            "type": "turn_aborted",
+            "reason": "user_canceled",
+        });
+        if let Err(error) = adapter.write_typed(&path!("log/append"), &aborted) {
+            tracing::error!(cancel_id = %cancel.cancel_id, %error, "cancel abort append failed");
+            return;
+        }
+    }
+    if failpoints.take(IngressBoundary::AfterCancelAbortBeforeMark) {
+        return;
+    }
+    let mut state = std::collections::BTreeMap::new();
+    state.insert(
+        "thread_state".to_string(),
+        Value::String("interrupted".to_string()),
+    );
+    if let Ok(path) = structfs_core_store::Path::parse(&format!("inbox/threads/{thread_id}")) {
+        if let Err(error) =
+            rt_handle.block_on(broker_client.write(&path, Record::parsed(Value::Map(state))))
+        {
+            tracing::error!(cancel_id = %cancel.cancel_id, %error, "cancel state update failed");
+            return;
+        }
+    }
+    rt_handle.block_on(mark_ingress_control_applied(
+        broker_client,
+        "cancels",
+        thread_id,
+        &cancel.cancel_id,
+        "control/cancel",
+    ));
 }
 
 /// Drive one `module.run(host_store)` invocation plus its per-run
@@ -1801,5 +2491,121 @@ mod tests {
             panic!("simulated Wasm trap path");
         });
         let _after_unwind = limiter.acquire();
+    }
+
+    fn ingress_marker(operation: &str, id: &str, hash: &str) -> ox_kernel::log::LogEntry {
+        ox_kernel::log::LogEntry::Meta {
+            data: serde_json::json!({
+                "kind": "worker_ingress",
+                "operation": operation,
+                "semantic_id": id,
+                "request_hash": hash,
+            }),
+        }
+    }
+
+    #[test]
+    fn message_crash_boundaries_are_classified_without_duplicate_user() {
+        use ox_kernel::log::LogEntry;
+        let marker = ingress_marker("message", "message-1", "hash-1");
+        assert_eq!(
+            classify_ingress_prompt(&[], "message", "message-1", "hash-1"),
+            IngressPromptState::Missing
+        );
+        assert_eq!(
+            classify_ingress_prompt(
+                std::slice::from_ref(&marker),
+                "message",
+                "message-1",
+                "hash-1",
+            ),
+            IngressPromptState::MarkerOnly
+        );
+        let user_tail = vec![
+            marker.clone(),
+            LogEntry::User {
+                content: "hello".into(),
+                scope: None,
+            },
+        ];
+        assert_eq!(
+            classify_ingress_prompt(&user_tail, "message", "message-1", "hash-1"),
+            IngressPromptState::UserWithoutTurn,
+            "durable User without TurnStart must run without another User append"
+        );
+        let mut in_flight = user_tail.clone();
+        in_flight.push(LogEntry::TurnStart { scope: None });
+        assert_eq!(
+            classify_ingress_prompt(&in_flight, "message", "message-1", "hash-1"),
+            IngressPromptState::InFlight
+        );
+        in_flight.push(LogEntry::TurnEnd {
+            scope: None,
+            model: None,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        });
+        assert_eq!(
+            classify_ingress_prompt(&in_flight, "message", "message-1", "hash-1"),
+            IngressPromptState::Terminal
+        );
+        assert_eq!(
+            classify_ingress_prompt(&in_flight, "message", "message-1", "different"),
+            IngressPromptState::Conflict
+        );
+    }
+
+    #[test]
+    fn decision_and_cancel_evidence_require_exact_semantics() {
+        use ox_kernel::log::{LogEntry, TurnAbortReason};
+        let decision_log = vec![
+            ingress_marker("decision", "approval-1", "decision-hash"),
+            LogEntry::ApprovalResolved {
+                tool_name: "bash".into(),
+                decision: ox_types::Decision::DenyOnce,
+            },
+        ];
+        assert_eq!(
+            ingress_decision_evidence(
+                &decision_log,
+                "approval-1",
+                "decision-hash",
+                ox_types::Decision::DenyOnce,
+            )
+            .unwrap(),
+            IngressControlEvidence::Applied
+        );
+        assert!(
+            ingress_decision_evidence(
+                &decision_log,
+                "approval-1",
+                "decision-hash",
+                ox_types::Decision::AllowOnce,
+            )
+            .unwrap_err()
+            .contains("different decision")
+        );
+
+        let cancel_log = vec![
+            ingress_marker("cancel", "cancel-1", "cancel-hash"),
+            LogEntry::TurnAborted {
+                reason: TurnAbortReason::UserCanceled,
+            },
+        ];
+        assert_eq!(
+            ingress_cancel_evidence(&cancel_log, "cancel-1", "cancel-hash").unwrap(),
+            IngressControlEvidence::Applied
+        );
+        assert!(ingress_cancel_evidence(&cancel_log, "cancel-1", "wrong").is_err());
+    }
+
+    #[test]
+    fn ingress_failpoints_are_injectable_and_one_shot() {
+        let failpoints = IngressFailpoints::default();
+        failpoints.arm(IngressBoundary::AfterMessageUserBeforeTurn);
+        assert!(failpoints.take(IngressBoundary::AfterMessageUserBeforeTurn));
+        assert!(!failpoints.take(IngressBoundary::AfterMessageUserBeforeTurn));
     }
 }
