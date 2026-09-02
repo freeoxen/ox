@@ -1,12 +1,95 @@
 #![cfg(unix)]
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::{os::unix::fs::PermissionsExt, time::Duration};
 
 use ox_broker::async_store::{AsyncReader, AsyncWriter};
-use ox_executor::test_support::{FakeTransport, factory_for};
+use ox_executor::test_support::{FakeTransport, TransportFactory, factory_for};
 use ox_inbox::worker_ingress::{CancelEnvelope, CreateEnvelope, PromptEnvelope};
 use ox_worker::{WorkerConfig, WorkerLimits, WorkerService};
 use structfs_core_store::{Path, Record, Value, path};
+
+#[derive(Default)]
+struct FourRoleState {
+    b_streaming: AtomicBool,
+    c_active: AtomicBool,
+    d_active: AtomicBool,
+    release_b: AtomicBool,
+    release_c: AtomicBool,
+    release_d: AtomicBool,
+}
+
+#[derive(Clone)]
+struct FourRoleTransport(Arc<FourRoleState>);
+
+impl ox_tools::completion::CompletionTransport for FourRoleTransport {
+    fn send(
+        &self,
+        request: &ox_kernel::CompletionRequest,
+        on_event: &dyn Fn(&ox_kernel::StreamEvent),
+    ) -> Result<ox_tools::completion::CompletionOutput, String> {
+        let prompt = serde_json::to_string(&request.messages).unwrap();
+        if prompt.contains("ROLE_A") {
+            let events = vec![
+                ox_kernel::StreamEvent::ToolUseStart {
+                    id: "role-a-tool".into(),
+                    name: "shell".into(),
+                },
+                ox_kernel::StreamEvent::ToolUseInputDelta {
+                    delta: serde_json::json!({"command": "true"}).to_string(),
+                },
+                ox_kernel::StreamEvent::MessageStop,
+            ];
+            for event in &events {
+                on_event(event);
+            }
+            return Ok(ox_tools::completion::CompletionOutput {
+                events,
+                ..Default::default()
+            });
+        }
+
+        let (active, release, prefix) = if prompt.contains("ROLE_B") {
+            (&self.0.b_streaming, &self.0.release_b, Some("stream"))
+        } else if prompt.contains("ROLE_C") {
+            (&self.0.c_active, &self.0.release_c, None)
+        } else if prompt.contains("ROLE_D") {
+            (&self.0.d_active, &self.0.release_d, None)
+        } else {
+            return Err("unknown four-role prompt".into());
+        };
+        let mut events = Vec::new();
+        if let Some(prefix) = prefix {
+            for index in 0..24 {
+                let event = ox_kernel::StreamEvent::TextDelta {
+                    text: format!("{prefix}-{index} "),
+                };
+                on_event(&event);
+                events.push(event);
+            }
+        }
+        active.store(true, Ordering::Release);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !release.load(Ordering::Acquire) {
+            if std::time::Instant::now() >= deadline {
+                return Err("four-role release timed out".into());
+            }
+            std::thread::yield_now();
+        }
+        let stop = ox_kernel::StreamEvent::MessageStop;
+        on_event(&stop);
+        events.push(stop);
+        Ok(ox_tools::completion::CompletionOutput {
+            events,
+            ..Default::default()
+        })
+    }
+}
+
+fn four_role_factory(state: Arc<FourRoleState>) -> TransportFactory {
+    Arc::new(move || Box::new(FourRoleTransport(state.clone())))
+}
 
 fn record<T: serde::Serialize>(value: &T) -> Record {
     Record::parsed(structfs_serde_store::to_value(value).unwrap())
@@ -136,6 +219,8 @@ async fn one_core_hosts_two_threads_with_bounded_nonblocking_public_control() {
     .unwrap()
     .unwrap();
     let capacity_json = structfs_serde_store::value_to_json(capacity.as_value().unwrap().clone());
+    assert_eq!(capacity_json["resident_threads"], 2);
+    assert_eq!(capacity_json["total_threads"], 2);
     assert_eq!(
         capacity_json["active_turns_include_approval_parked_wasm"],
         true
@@ -294,5 +379,157 @@ async fn approval_saturates_turn_capacity_but_not_public_control() {
         .await
         .unwrap_err();
     assert!(conflict.to_string().contains("conflict"));
+    service.shutdown().await.unwrap();
+}
+
+async fn create_role(store: &mut ox_worker::PublicStore, create_id: &str, prompt: &str) -> String {
+    store
+        .write(
+            &path!("conversations"),
+            record(&CreateEnvelope {
+                create_id: create_id.into(),
+                title: create_id.into(),
+                prompt: prompt.into(),
+                parent_id: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .iter()
+        .nth(1)
+        .unwrap()
+        .clone()
+}
+
+async fn wait_flag(flag: &AtomicBool, label: &str) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !flag.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{label} did not become active"));
+}
+
+async fn wait_terminal_log(root: &std::path::Path, thread_id: &str) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let path = root.join("threads").join(thread_id).join("ledger.jsonl");
+            if path.exists() {
+                let entries = ox_inbox::ledger::read_ledger(&path).unwrap();
+                let matched = entries.iter().any(|entry| {
+                    matches!(
+                        entry.msg["type"].as_str(),
+                        Some("turn_end" | "turn_aborted")
+                    )
+                });
+                if matched {
+                    return;
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("expected log evidence for {thread_id}"));
+}
+
+async fn cancel_role(store: &mut ox_worker::PublicStore, thread_id: &str, cancel_id: &str) {
+    let target = Path::parse(&format!("conversations/{thread_id}/control/cancel")).unwrap();
+    tokio::time::timeout(
+        Duration::from_millis(500),
+        store.write(
+            &target,
+            record(&CancelEnvelope {
+                cancel_id: cancel_id.into(),
+                reason: Some("four-role stress".into()),
+            }),
+        ),
+    )
+    .await
+    .expect("cancel must bypass active turns")
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn four_roles_progress_without_a_shared_logical_lock() {
+    let temp = private_tempdir();
+    let root = temp.path().join("inbox");
+    let state = Arc::new(FourRoleState::default());
+    let service = WorkerService::start_in_process_with_test_hooks(
+        WorkerConfig {
+            inbox_root: root.clone(),
+            socket_path: temp.path().join("unused.sock"),
+            node_id: "node-four-role".into(),
+            attempt_id: "attempt-four-role".into(),
+            command_capacity: 32,
+            limits: WorkerLimits {
+                max_active_turns: 4,
+                max_total_threads: 4,
+                ..WorkerLimits::default()
+            },
+            transport: ox_structfs_transport::ServerConfig::default(),
+        },
+        Some(four_role_factory(state.clone())),
+        None,
+    )
+    .await
+    .unwrap();
+    let mut store = service.public_store.clone();
+
+    // A parks on approval and keeps its own turn permit.
+    let a = create_role(&mut store, "role-a", "ROLE_A request approval").await;
+    let a_pending = Path::parse(&format!("conversations/{a}/approvals/pending")).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let pending = store.read(&a_pending).await.unwrap().unwrap();
+            if pending.as_value() != Some(&Value::Null) {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("A must park on approval");
+
+    // B has emitted streaming events, while C and D remain in independent
+    // long turns. These blocking transports model model/tool waits without a
+    // second executor or a process-per-conversation test double.
+    let b = create_role(&mut store, "role-b", "ROLE_B stream").await;
+    wait_flag(&state.b_streaming, "B").await;
+    let c = create_role(&mut store, "role-c", "ROLE_C long tool-equivalent turn").await;
+    wait_flag(&state.c_active, "C").await;
+    let d = create_role(&mut store, "role-d", "ROLE_D cancel while active").await;
+    wait_flag(&state.d_active, "D").await;
+
+    let capacity = tokio::time::timeout(Duration::from_millis(250), store.read(&path!("capacity")))
+        .await
+        .expect("capacity must bypass four active turns")
+        .unwrap()
+        .unwrap();
+    let capacity = structfs_serde_store::value_to_json(capacity.as_value().unwrap().clone());
+    assert_eq!(capacity["active_turns"], 4);
+    assert_eq!(capacity["resident_threads"], 4);
+    for id in [&a, &b, &c, &d] {
+        let status = Path::parse(&format!("conversations/{id}")).unwrap();
+        tokio::time::timeout(Duration::from_millis(250), store.read(&status))
+            .await
+            .expect("status must bypass unrelated turns")
+            .unwrap();
+    }
+
+    cancel_role(&mut store, &d, "cancel-role-d").await;
+    state.release_d.store(true, Ordering::Release);
+    wait_terminal_log(&root, &d).await;
+
+    // B can finish while A remains parked and C remains blocked.
+    state.release_b.store(true, Ordering::Release);
+    wait_terminal_log(&root, &b).await;
+    assert!(state.c_active.load(Ordering::Acquire));
+
+    state.release_c.store(true, Ordering::Release);
+    wait_terminal_log(&root, &c).await;
+    cancel_role(&mut store, &a, "cancel-role-a").await;
+    wait_terminal_log(&root, &a).await;
     service.shutdown().await.unwrap();
 }

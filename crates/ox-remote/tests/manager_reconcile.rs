@@ -2,14 +2,15 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use ox_broker::async_store::{AsyncReader, AsyncWriter};
 use ox_inbox::InboxStore;
 use ox_remote::{
-    CancelRequest, CrashInjector, CrashPoint, CreateNodeRequest, DeleteNodeManagerRequest,
-    NodeProvisionSpec, PlacementPolicy, RemoteManagerConfig, RemoteManagerError,
-    RemoteManagerStore, StartConversationRequest, StorePort, SyncStorePort, VmSpec, VmStatus,
-    WorkerStoreConnector,
+    ApprovalRequest, CancelRequest, CrashInjector, CrashPoint, CreateNodeRequest,
+    DeleteNodeManagerRequest, MessageRequest, NodeProvisionSpec, PlacementPolicy,
+    RemoteManagerConfig, RemoteManagerError, RemoteManagerStore, StartConversationRequest,
+    StorePort, SyncStorePort, VmSpec, VmStatus, WorkerStoreConnector,
 };
-use structfs_core_store::{Error as StoreError, Path, Record, Value};
+use structfs_core_store::{Error as StoreError, Path, Record, Value, path};
 
 fn parsed<T: serde::Serialize>(value: &T) -> Record {
     Record::parsed(structfs_serde_store::to_value(value).unwrap())
@@ -35,6 +36,11 @@ impl StorePort for FakeProvider {
         let parts: Vec<&str> = path.iter().map(String::as_str).collect();
         let state = self.0.lock().unwrap();
         match parts.as_slice() {
+            ["identity"] => Ok(Some(parsed(&serde_json::json!({
+                "schema_version": 1,
+                "authenticated": true
+            })))),
+            ["vms"] => Ok(Some(parsed(&state.vm.iter().cloned().collect::<Vec<_>>()))),
             ["vms", component] => {
                 let name = ox_remote::decode_vm_component(component).map_err(|error| {
                     StoreError::store("FakeProvider", "decode", error.to_string())
@@ -218,6 +224,23 @@ impl StorePort for FakeWorker {
                 Path::parse(&format!("conversations/{thread}/cancellations/cancel_1"))
                     .map_err(StoreError::from)
             }
+            ["conversations", thread, "messages"]
+                if state.creates.values().any(|id| id == thread) =>
+            {
+                let envelope: ox_inbox::worker_ingress::PromptEnvelope = decode(record);
+                Path::parse(&format!(
+                    "conversations/{thread}/messages/{}",
+                    envelope.message_id
+                ))
+                .map_err(StoreError::from)
+            }
+            ["conversations", thread, "approvals", approval_id]
+                if state.creates.values().any(|id| id == thread) =>
+            {
+                let _: ox_types::ApprovalResponse = decode(record);
+                Path::parse(&format!("conversations/{thread}/approvals/{approval_id}"))
+                    .map_err(StoreError::from)
+            }
             _ => Err(StoreError::NoRoute { path: path.clone() }),
         }
     }
@@ -303,6 +326,161 @@ fn config(owner: &str) -> RemoteManagerConfig {
         known_hosts_path: "/tmp/test-known-hosts".into(),
         worker_socket_path: "/tmp/test-worker.sock".into(),
     }
+}
+
+#[tokio::test]
+async fn manager_structfs_routes_cover_node_conversation_control_and_observation() {
+    let root = tempfile::tempdir().unwrap();
+    let local: Arc<dyn StorePort> =
+        Arc::new(SyncStorePort::new(InboxStore::open(root.path()).unwrap()));
+    let provider = Arc::new(FakeProvider::default());
+    let connector = Arc::new(FakeConnector::new());
+    let mut manager =
+        RemoteManagerStore::new(local, provider, connector, config("store-routes")).unwrap();
+
+    let node_request = CreateNodeRequest {
+        schema_version: 1,
+        request_id: "store_node_request".into(),
+        node: request().node,
+    };
+    let node_path = manager
+        .write(&path!("nodes"), parsed(&node_request))
+        .await
+        .unwrap();
+    let node_id = node_path.iter().nth(1).unwrap().clone();
+    assert!(manager.read(&path!("nodes")).await.unwrap().is_some());
+    let node_storage = ox_inbox::remote_state::remote_item_path("nodes", &node_id).unwrap();
+    assert!(manager.read(&node_storage).await.unwrap().is_some());
+
+    let doctor = Path::parse(&format!("nodes/{node_id}/doctor")).unwrap();
+    assert!(manager.read(&doctor).await.unwrap().is_some());
+    assert!(
+        manager
+            .read(&path!("doctor/provider"))
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    let mut start = request();
+    start.request_id = "store_start_request".into();
+    start.placement = PlacementPolicy::RequireNode {
+        node_id: node_id.clone(),
+    };
+    let conversation_path = manager
+        .write(&path!("conversations"), parsed(&start))
+        .await
+        .unwrap();
+    let conversation_id = conversation_path.iter().nth(1).unwrap().clone();
+    assert!(
+        manager
+            .read(&path!("conversations"))
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let conversation_storage =
+        ox_inbox::remote_state::remote_item_path("conversations", &conversation_id).unwrap();
+    assert!(manager.read(&conversation_storage).await.unwrap().is_some());
+
+    let message_path = Path::parse(&format!("conversations/{conversation_id}/messages")).unwrap();
+    let message_receipt = manager
+        .write(
+            &message_path,
+            parsed(&MessageRequest {
+                request_id: "store_message_request".into(),
+                message_id: "message_route".into(),
+                content: "continue".into(),
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(message_receipt.to_string().contains("message_route"));
+
+    let approval_path = Path::parse(&format!("conversations/{conversation_id}/approvals")).unwrap();
+    let approval_receipt = manager
+        .write(
+            &approval_path,
+            parsed(&ApprovalRequest {
+                request_id: "store_approval_request".into(),
+                approval_id: "approval_route".into(),
+                decision: ox_types::Decision::DenyOnce,
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(approval_receipt.to_string().contains("approval_route"));
+
+    let ledger_path = Path::parse(&format!("conversations/{conversation_id}/reconcile")).unwrap();
+    assert_eq!(
+        manager
+            .write(
+                &ledger_path,
+                parsed(&serde_json::json!({"request_id":"store_ledger_request"})),
+            )
+            .await
+            .unwrap(),
+        Path::parse(&format!("conversations/{conversation_id}/ledger")).unwrap()
+    );
+    assert!(
+        manager
+            .write(&ledger_path, parsed(&serde_json::json!({})))
+            .await
+            .is_err()
+    );
+
+    let refresh = Path::parse(&format!("conversations/{conversation_id}/refresh")).unwrap();
+    assert!(manager.read(&refresh).await.unwrap().is_some());
+    let cancel_path = Path::parse(&format!("conversations/{conversation_id}/cancel")).unwrap();
+    manager
+        .write(
+            &cancel_path,
+            parsed(&CancelRequest {
+                request_id: "store_cancel_request".into(),
+                cancel_id: "cancel_route".into(),
+                reason: None,
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(manager.read(&refresh).await.unwrap().is_some());
+
+    let drain_path = Path::parse(&format!("nodes/{node_id}/drain")).unwrap();
+    assert_eq!(
+        manager
+            .write(&drain_path, Record::parsed(Value::Null))
+            .await
+            .unwrap(),
+        node_path
+    );
+    assert_eq!(
+        manager
+            .write(&path!("reconcile"), Record::parsed(Value::Null))
+            .await
+            .unwrap(),
+        path!("reconcile")
+    );
+    let delete_path = Path::parse(&format!("nodes/{node_id}/delete")).unwrap();
+    assert_eq!(
+        manager
+            .write(
+                &delete_path,
+                parsed(&DeleteNodeManagerRequest {
+                    request_id: "store_delete_request".into(),
+                    delete_id: "store_delete".into(),
+                    force: false,
+                }),
+            )
+            .await
+            .unwrap(),
+        node_path
+    );
+    assert!(
+        manager
+            .write(&path!("unsupported"), Record::parsed(Value::Null))
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -555,6 +733,45 @@ async fn delete_effect_crash_finishes_absent_vm_from_persisted_affected_refs() {
             .any(|value| value == &format!("worker:{}", started.worker_thread_id))
     );
     assert_eq!(provider.0.lock().unwrap().actual_deletes, 1);
+}
+
+#[tokio::test]
+async fn non_force_delete_refuses_active_local_and_worker_references() {
+    let root = tempfile::tempdir().unwrap();
+    let local: Arc<dyn StorePort> =
+        Arc::new(SyncStorePort::new(InboxStore::open(root.path()).unwrap()));
+    let provider = Arc::new(FakeProvider::default());
+    let connector = Arc::new(FakeConnector::new());
+    let manager =
+        RemoteManagerStore::new(local, provider.clone(), connector, config("active-delete"))
+            .unwrap();
+    let started = manager.start_conversation(request()).await.unwrap();
+    let delete = DeleteNodeManagerRequest {
+        request_id: "delete-active-request".into(),
+        delete_id: "delete-active".into(),
+        force: false,
+    };
+
+    let error = manager
+        .delete_node(&started.node_id, delete.clone())
+        .await
+        .unwrap_err();
+    let RemoteManagerError::ActiveReferences(references) = error else {
+        panic!("expected active references refusal, got {error:?}");
+    };
+    assert!(references.contains(&started.conversation_id));
+    assert!(
+        references
+            .iter()
+            .any(|value| value == &format!("worker:{}", started.worker_thread_id))
+    );
+    assert_eq!(provider.0.lock().unwrap().actual_deletes, 0);
+
+    assert!(matches!(
+        manager.delete_node(&started.node_id, delete).await,
+        Err(RemoteManagerError::ActiveReferences(_))
+    ));
+    assert_eq!(provider.0.lock().unwrap().actual_deletes, 0);
 }
 
 #[tokio::test]

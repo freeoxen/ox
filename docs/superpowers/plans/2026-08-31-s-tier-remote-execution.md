@@ -772,8 +772,9 @@ worker integration tests.
   `crates/ox-worker/tests/public_store.rs`.
 - [ ] Prove the stronger four-way case: a deliberately parked cursor for A,
   approval for B, and running turn for C simultaneously do not delay
-  status/cancel for D. This deterministic stress fixture remains Task 11 work;
-  Task 6 does not claim it from the narrower integration coverage.
+  status/cancel for D. Task 11's four-turn fixture proves independent turn and
+  control progress, but does not model a parked ledger cursor; this separate
+  cursor-admission composition remains pending.
 
 **Success:** Two remote conversation IDs are ordinary existing ox threads in
 one core, with no duplicated runtime or durability layer.
@@ -1135,24 +1136,108 @@ attach/send/logs/approve/cancel, and crash-safe reconciliation.
 **Files:** shared-core parity suite, worker/transport chaos tests, live exe.dev
 smoke tests, remote runbook/threat model.
 
-- [ ] Run the same semantic executor suite against local CLI and worker adapters;
+### Prerequisites
+
+- [x] **T11-P1. Local and remote adapters instantiate the same `ExecutionCore`; there
+  are not two executors to compare independently.**
+  Verified with
+  `rg -n "pub struct ExecutionCore|new_with_config_and_test_hooks|spawn_worker|thread::spawn" crates/ox-executor/src/agents.rs` and
+  `rg -n "ExecutionCore" crates/ox-cli/src/app.rs` and
+  `rg -n "start_in_process_with_test_hooks|ExecutionCore::new_with_config_and_test_hooks|PublicStore::new" crates/ox-worker/src/service.rs`.
+  The reusable core is `crates/ox-executor/src/agents.rs:925-1001`; its existing
+  per-thread workers are spawned at `:585-613`. Worker construction calls that
+  core at `crates/ox-worker/src/service.rs:99-128` and then wraps it in
+  `PublicStore`; the local TUI's `App` owns the same core at
+  `crates/ox-cli/src/app.rs:3-11` and constructs it at `:62-82`. If this stops
+  being true, rollout is blocked for ~3-5 days to remove the divergent runtime
+  before parity testing can be trusted.
+
+- [x] **T11-P2. The worker exposes an exact public allowlist rather than a broker
+  root, so leakage tests should probe the adapter and per-thread artifacts.**
+  Verified with
+  `rg -n "match parts.as_slice|\\[\"health\"\\]|\\[\"capacity\"\\]|\\[\"conversations\"\\]" crates/ox-worker/src/public_store.rs`.
+  Exact read routes begin at `crates/ox-worker/src/public_store.rs:216`; exact
+  mutation routes begin at `:332`. If arbitrary paths become reachable, rollout
+  is blocked for ~1-2 days to restore the authority boundary.
+
+- [x] **T11-P3. Crash/transport/provider chaos already has deterministic seams;
+  Task 11 should compose those suites rather than add another fault engine.**
+  Verified with
+  `rg -n "create_initial_prompt_recovers|message_recovers|cancel_recovers" crates/ox-executor/tests/worker_ingress.rs`,
+  `rg -n "disconnect_detaches|bounded_admission|bounded_send_queue" crates/ox-structfs-transport/tests/carriers.rs`, and
+  `rg -n "ambiguous_create|ambiguous_delete|mismatched_attempt" crates/ox-remote/tests/exe_control.rs`.
+  The current evidence is at `worker_ingress.rs:213-524`, `carriers.rs:317-509`,
+  and `exe_control.rs:105-210`. If these failpoints disappear, rollout is
+  blocked for ~2 days to restore deterministic crash coverage.
+
+- [x] **T11-P4. Live and soak mutations can be gated without changing the CLI or
+  bypassing StructFS.**
+  Verified with
+  `rg -n "refusing live|cleanup_failed|SOAK_THREADS|unique|parent" scripts/test-remote-live.sh scripts/soak-remote-worker.sh scripts/test-remote-script-contracts.sh`.
+  Explicit opt-in is at `scripts/test-remote-live.sh:4-7` and
+  `scripts/soak-remote-worker.sh:4-7`; cleanup failure overrides success at
+  `test-remote-live.sh:18-40`; soak ledger-chain assertions are at
+  `soak-remote-worker.sh:61-79`. If a harness can mutate without opt-in or hide
+  cleanup failure, live rollout is blocked for <1 day to repair it.
+
+- [ ] **T11-P5. Final external evidence exists for exe.dev, the release image,
+  Linux sandboxing, and 24-hour contention.**
+  Pending actual provider credentials, digest-pinned build inputs, `syft` and
+  `trivy`, a Linux image runner, and 24 hours of wall time. The gated commands
+  and evidence contract are in
+  `docs/operations/remote-execution-runbook.md`. Until they run, production
+  rollout is blocked for at least 24 hours plus image/provider remediation.
+
+- [x] Run the same semantic executor suite against local CLI and worker adapters;
   compare ordered ledger entries, resume behavior, approvals, tool results, and
-  config snapshots.
-- [ ] Prove A parked on approval, B streaming, C in a sandboxed tool, and D being
-  cancelled do not share a logical lock or block broker control.
-- [ ] Saturate active-turn and prompt limits; assert explicit overload/queued
+  config snapshots. The direct-core/public-adapter parity fixture is
+  `crates/ox-worker/tests/semantic_parity.rs:208-360`, including a denied-tool
+  approval round and resulting tool evidence; the shared core's durable resume,
+  decision, tool, and cancellation matrix remains
+  `crates/ox-executor/tests/worker_ingress.rs` rather than being copied into a
+  second adapter-specific executor suite. The local side is exercised at the
+  exact `ExecutionCore` seam owned by CLI `App`, not by automating the TUI
+  binary; `App` adds no alternate executor path.
+- [x] Prove A parked on approval, B streaming, C in a sandboxed tool or
+  equivalent long turn, and D being cancelled do not share a logical lock or
+  block broker control. The simultaneous fixture is
+  `four_roles_progress_without_a_shared_logical_lock` at
+  `crates/ox-worker/tests/public_store.rs:456`; it observes four active permits,
+  responsive status/cancel, B completion while A/C remain blocked, and durable
+  D cancellation. Active sandbox-tool cancellation is separately covered at
+  `crates/ox-executor/tests/worker_ingress.rs:529-640`.
+- [x] Saturate active-turn and prompt limits; assert explicit overload/queued
   records and bounded memory/thread growth.
+  Worker thread/prompt bounds are asserted in
+  `crates/ox-worker/tests/public_store.rs`; transport in-flight/send admission
+  bounds are asserted in `crates/ox-structfs-transport/tests/carriers.rs`.
 - [ ] Chaos-test worker restart, SSH loss, ambiguous exe calls, DB busy/disk
   full, Wasm trap/fuel exhaustion, tool timeout, sandbox refusal, and host-key
-  changes.
-- [ ] Scan DBs, frames, logs, process arguments, and ledgers for secrets and
-  cross-thread content leakage.
+  changes. Restart, disconnect, ambiguous provider mutation, Wasm limits, tool
+  timeout, and local sandbox refusal have deterministic coverage. Deployed
+  DB-busy/disk-full and real changed-host-key drills remain external gates.
+- [x] Scan public frames/records and per-thread ledgers for secret canaries and
+  cross-thread content leakage. The regression is
+  `crates/ox-worker/tests/semantic_parity.rs:364`; the threat model names
+  node-wide DBs/ingress as sensitive authoritative storage rather than falsely
+  expecting them not to contain prompts. Release process-argument and artifact
+  scans remain part of the image/live gate.
 - [ ] Run a 24-hour shared-node soak with at least 50 threads. Assert no duplicate
-  semantic ingress, ledger hash conflict, or cross-thread Store exposure.
+  semantic ingress, ledger hash conflict, or cross-thread Store exposure. The
+  opt-in harness and assertions are implemented in
+  `scripts/soak-remote-worker.sh`; no 24-hour run is claimed here.
 - [ ] Gate disposable live exe.dev tests; cleanup reports leaked nodes rather
-  than concealing failures.
-- [ ] Run `./scripts/fmt.sh --check` and `./scripts/quality_gates.sh`; diagnose
-  failures without bypassing hooks.
+  than concealing failures. The gated harness is implemented at
+  `scripts/test-remote-live.sh`, but remains unchecked until a real run passes.
+- [x] Run `./scripts/fmt.sh --check` and `./scripts/quality_gates.sh`; diagnose
+  failures without bypassing hooks. The formatting gate passes. The canonical
+  quality run completes 8/13 gates: this branch's new `ox-remote` and
+  `ox-worker` crates were brought above the 70% coverage floor (independently
+  remeasured at 71.12% and 71.23%), while the remaining workspace failures are
+  in the unrelated dirty gateway worktree: two `ox-gateway-wasm` Clippy
+  findings, its silent parse fallback, the pre-existing wasm-incompatible
+  `structfs-http` blocking import, and gateway/gateway-Wasm coverage. Those
+  files are intentionally not modified by this project.
 
 **Success:** Remote execution is demonstrably the same core under another Store
 adapter, and remains responsive and recoverable under contention and failure.
@@ -1163,21 +1248,24 @@ adapter, and remains responsive and recoverable under contention and failure.
 
 ## Acceptance scenarios
 
-- [ ] The same scripted prompt produces semantically identical ledgers through
-  local CLI and remote worker.
-- [ ] Two worker conversations use distinct existing thread directories,
+- [x] The same scripted prompt produces semantically identical ledgers through
+  local CLI and remote worker (`ox-worker/tests/semantic_parity.rs`).
+- [x] Two worker conversations use distinct existing thread directories,
   ledgers, approvals, and workspaces in one `ExecutionCore`.
-- [ ] An unresolved approval in A does not delay B's prompt or C's cancel.
+- [x] An unresolved approval in A does not delay B's prompt or C's cancel.
 - [ ] A Wasm trap affects its turn and log, not another conversation.
 - [ ] A sandboxed tool timeout kills that invocation and leaves the worker
   process and other conversations healthy.
-- [ ] Worker restart uses existing restore/classify/resume code and replays
+- [x] Worker restart uses existing restore/classify/resume code and replays
   accepted ingress without duplication.
-- [ ] SSH disconnect never stops a turn; reconnect resumes from ledger seq/hash.
-- [ ] Two local CLIs racing one operation converge through durable IDs.
-- [ ] Changed host keys and missing sandbox enforcement fail closed.
-- [ ] Node deletion refuses active threads.
-- [ ] No remote path reaches `secret/`, arbitrary `threads/` internals, tools,
+- [x] SSH disconnect never stops an admitted turn; reconnect resumes from
+  ledger seq/hash.
+- [x] Two local CLIs racing one operation converge through durable IDs.
+- [x] Changed host keys and missing sandbox enforcement fail closed.
+- [x] Node deletion refuses active local and worker references unless forced;
+  `non_force_delete_refuses_active_local_and_worker_references` exercises the
+  public manager behavior and proves the provider delete is not attempted.
+- [x] No remote path reaches `secret/`, arbitrary `threads/` internals, tools,
   filesystem, or broker root.
 
 ---

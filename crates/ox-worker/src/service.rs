@@ -402,4 +402,55 @@ mod tests {
         assert!(validate_pinned_image("ghcr.io/freeoxen/ox-worker:latest").is_err());
         assert!(validate_pinned_image("sha256:short").is_err());
     }
+
+    fn in_process_config(root: &Path) -> WorkerConfig {
+        WorkerConfig {
+            inbox_root: root.join("inbox"),
+            socket_path: root.join("unused.sock"),
+            node_id: "node-test".into(),
+            attempt_id: "attempt-test".into(),
+            command_capacity: 8,
+            limits: WorkerLimits::default(),
+            transport: ServerConfig::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_in_process_configuration_fails_before_starting_a_core() {
+        let temp = private_tempdir();
+
+        let mut config = in_process_config(temp.path());
+        config.command_capacity = 0;
+        assert_eq!(
+            WorkerService::start_in_process(config).await.err().unwrap(),
+            "command_capacity must be non-zero"
+        );
+
+        let mut config = in_process_config(temp.path());
+        config.node_id.clear();
+        assert!(
+            WorkerService::start_in_process(config)
+                .await
+                .err()
+                .unwrap()
+                .contains("node_id and attempt_id")
+        );
+
+        let mut config = in_process_config(temp.path());
+        config.attempt_id = "x".repeat(129);
+        assert!(
+            WorkerService::start_in_process(config)
+                .await
+                .err()
+                .unwrap()
+                .contains("1..=128")
+        );
+
+        let mut config = in_process_config(temp.path());
+        config.limits.max_parked_cursors = 0;
+        assert_eq!(
+            WorkerService::start_in_process(config).await.err().unwrap(),
+            "all worker limits must be non-zero"
+        );
+    }
 }

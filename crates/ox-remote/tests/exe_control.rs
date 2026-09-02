@@ -2,10 +2,12 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use ox_broker::async_store::{AsyncReader, AsyncWriter};
 use ox_remote::{
     CommandError, CommandOutput, DeleteVmRequest, ExeCommand, ExeCommandRunner, ExeControlStore,
     ExeError, VmSpec, VmStatus, WorkerIdentityVerifier,
 };
+use structfs_core_store::{Path, Record, Value, path};
 
 #[derive(Clone)]
 struct FakeExe {
@@ -332,4 +334,151 @@ async fn whoami_projects_only_typed_authenticated_fact() {
         .unwrap();
     assert_eq!(identity.schema_version, 1);
     assert!(identity.authenticated);
+}
+
+#[tokio::test]
+async fn structfs_routes_expose_only_typed_provider_operations() {
+    let fake = FakeExe::new(vec![
+        output(r#"{"email":"private@example.test","keys":["secret"]}"#),
+        output(found_list()),
+        output(found_list()),
+    ]);
+    let mut control = store(fake, FakeIdentity::new(true));
+
+    let identity = control.read(&path!("identity")).await.unwrap().unwrap();
+    let identity: ox_remote::ExeIdentity =
+        structfs_serde_store::from_value(identity.as_value().unwrap().clone()).unwrap();
+    assert!(identity.authenticated);
+
+    let listed = control.read(&path!("vms")).await.unwrap().unwrap();
+    let listed: Vec<VmStatus> =
+        structfs_serde_store::from_value(listed.as_value().unwrap().clone()).unwrap();
+    assert_eq!(listed.len(), 1);
+
+    let item = ox_remote::vm_path("ox-deadbeef").unwrap();
+    let exact = control.read(&item).await.unwrap().unwrap();
+    let exact: VmStatus =
+        structfs_serde_store::from_value(exact.as_value().unwrap().clone()).unwrap();
+    assert_eq!(exact.vm_name, "ox-deadbeef");
+    assert!(
+        control
+            .read(&path!("private/value"))
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn structfs_mutation_routes_validate_decode_and_return_stable_paths() {
+    let create_fake = FakeExe::new(vec![
+        output(r#"{"vms":[]}"#),
+        output(r#"{"accepted":true}"#),
+        output(found_list()),
+    ]);
+    let mut create = store(create_fake, FakeIdentity::new(true));
+    let created = create
+        .write(
+            &path!("vms"),
+            Record::parsed(structfs_serde_store::to_value(&spec()).unwrap()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created, ox_remote::vm_path("ox-deadbeef").unwrap());
+    assert!(
+        create
+            .write(&path!("vms"), Record::parsed(Value::Null))
+            .await
+            .is_err()
+    );
+    assert!(
+        create
+            .write(&path!("private"), Record::parsed(Value::Null))
+            .await
+            .is_err()
+    );
+
+    let delete_fake = FakeExe::new(vec![
+        output(found_list()),
+        output(r#"{"accepted":true}"#),
+        output(r#"{"vms":[]}"#),
+    ]);
+    let mut delete = store(delete_fake, FakeIdentity::new(true));
+    let target = ox_remote::vm_delete_path("ox-deadbeef").unwrap();
+    let deleted = delete
+        .write(
+            &target,
+            Record::parsed(
+                structfs_serde_store::to_value(&DeleteVmRequest {
+                    schema_version: 1,
+                    deletion_id: "delete_route".into(),
+                    node_id: "n_123".into(),
+                    node_attempt_id: "na_456".into(),
+                })
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        deleted,
+        Path::parse(&format!(
+            "{}/deletions/delete_route",
+            ox_remote::vm_path("ox-deadbeef").unwrap()
+        ))
+        .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn provider_command_validation_rejects_unsafe_or_invalid_arguments() {
+    let valid = spec();
+
+    let mut cases = Vec::new();
+    let mut invalid = valid.clone();
+    invalid.name = "../escape".into();
+    cases.push(invalid);
+    let mut invalid = valid.clone();
+    invalid.node_id = "node with spaces".into();
+    cases.push(invalid);
+    let mut invalid = valid.clone();
+    invalid.image = "bad image".into();
+    cases.push(invalid);
+    let mut invalid = valid.clone();
+    invalid.cpu = 0;
+    cases.push(invalid);
+    let mut invalid = valid.clone();
+    invalid.comment = "line\nbreak".into();
+    cases.push(invalid);
+    let mut invalid = valid;
+    invalid.tags.push("bad tag".into());
+    cases.push(invalid);
+
+    for invalid in cases {
+        assert!(
+            store(FakeExe::new(Vec::new()), FakeIdentity::new(true))
+                .create(invalid)
+                .await
+                .is_err()
+        );
+    }
+    assert!(
+        store(FakeExe::new(Vec::new()), FakeIdentity::new(true))
+            .remove(
+                "../escape",
+                DeleteVmRequest {
+                    schema_version: 1,
+                    deletion_id: "delete-invalid".into(),
+                    node_id: "n_123".into(),
+                    node_attempt_id: "na_456".into(),
+                },
+            )
+            .await
+            .is_err()
+    );
+    assert!(ox_remote::decode_vm_component("not-encoded").is_err());
+    assert_eq!(
+        ox_remote::decode_vm_component(&ox_remote::encode_vm_component("ox-deadbeef")).unwrap(),
+        "ox-deadbeef"
+    );
 }

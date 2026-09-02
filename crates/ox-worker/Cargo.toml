@@ -29,4 +29,5 @@ tracing = { workspace = true }
 libc = "0.2"
 
 [dev-dependencies]
+ox-tools = { workspace = true }
 tempfile = { workspace = true }
