@@ -114,12 +114,13 @@ impl ThreadShell {
         ui: &UiSnapshot,
         app: &mut crate::app::App,
         client: &ox_broker::ClientHandle,
+        target: crate::action_executor::SendTarget,
     ) {
         use crate::editor::submit_editor_content;
         use ox_path::oxpath;
         use ox_types::UiCommand;
 
-        let new_tid = submit_editor_content(&mut self.input_session, app, client).await;
+        let new_tid = submit_editor_content(&mut self.input_session, app, client, target).await;
         // Only auto-navigate to the new thread if we're already on a thread
         // screen (reply). Compose from inbox stays on the inbox.
         if let Some(tid) = new_tid {

@@ -29,6 +29,8 @@ use crate::parse::parse_inbox_threads;
 pub struct ViewState<'a> {
     // -- Broker-sourced (owned, typed) -----------------------------------
     pub ui: UiSnapshot,
+    /// Transient operation feedback written through `ui/status`.
+    pub status: Option<String>,
 
     /// Inbox threads (only populated on inbox screen).
     pub inbox_threads: Vec<InboxThread>,
@@ -107,6 +109,15 @@ pub async fn fetch_view_state<'a>(
         .ok()
         .flatten()
         .unwrap_or_default();
+    let status = client
+        .read(&path!("ui/status"))
+        .await
+        .ok()
+        .flatten()
+        .and_then(|record| match record.as_value() {
+            Some(Value::String(text)) => Some(text.clone()),
+            _ => None,
+        });
 
     // Conditional reads based on screen variant
     let mut inbox_threads = Vec::new();
@@ -254,6 +265,7 @@ pub async fn fetch_view_state<'a>(
 
     ViewState {
         ui,
+        status,
         inbox_threads,
         messages,
         raw_messages,

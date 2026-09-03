@@ -689,6 +689,21 @@ impl UiStateStore {
                 self.pending.set(PendingAction::SendInput);
                 Ok(path!("pending_action"))
             }
+            InboxCommand::SubmitEditorRemote => {
+                let s = self.inbox_state()?;
+                if !matches!(
+                    s.editor.as_ref().map(|editor| editor.context),
+                    Some(InsertContext::Compose)
+                ) {
+                    return Err(StoreError::store(
+                        "ui",
+                        "send_input_remote",
+                        "remote send requires an active compose buffer",
+                    ));
+                }
+                self.pending.set(PendingAction::SendInputRemote);
+                Ok(path!("pending_action"))
+            }
         }
     }
 
@@ -1301,6 +1316,19 @@ impl UiStateStore {
                     "ui",
                     "path_command",
                     "send_input not supported on history screen",
+                )),
+            },
+            "send_input_remote" => match &self.screen {
+                ActiveScreen::Inbox => Ok(UiCommand::Inbox(InboxCommand::SubmitEditorRemote)),
+                ActiveScreen::Thread(_) => Err(StoreError::store(
+                    "ui",
+                    "path_command",
+                    "remote starts a new conversation and is only available from inbox compose",
+                )),
+                ActiveScreen::Settings(_) | ActiveScreen::History(_) => Err(StoreError::store(
+                    "ui",
+                    "path_command",
+                    "remote is only available from inbox compose",
                 )),
             },
 
@@ -2314,6 +2342,46 @@ mod tests {
             read_val(&mut store, "pending_action"),
             Value::String("send_input".into())
         );
+    }
+
+    #[test]
+    fn remote_submit_requires_and_preserves_compose_context() {
+        let mut store = UiStore::new();
+        let rejected = store.write(
+            &path!(""),
+            typed_cmd(&UiCommand::Inbox(InboxCommand::SubmitEditorRemote)),
+        );
+        assert!(rejected.is_err());
+
+        write_cmd(&mut store, &UiCommand::Inbox(InboxCommand::Compose));
+        write_cmd(
+            &mut store,
+            &UiCommand::Inbox(InboxCommand::SubmitEditorRemote),
+        );
+        assert_eq!(
+            read_val(&mut store, "pending_action"),
+            Value::String("send_input_remote".into())
+        );
+        assert_eq!(
+            read_val(&mut store, "insert_context"),
+            Value::String("compose".into())
+        );
+    }
+
+    #[test]
+    fn remote_path_command_is_rejected_on_thread() {
+        let mut store = UiStore::new();
+        write_cmd(
+            &mut store,
+            &UiCommand::Global(GlobalCommand::Open {
+                thread_id: "t_1".into(),
+            }),
+        );
+        let result = store.write(
+            &path!("send_input_remote"),
+            Record::parsed(Value::Map(BTreeMap::new())),
+        );
+        assert!(result.is_err());
     }
 
     #[test]

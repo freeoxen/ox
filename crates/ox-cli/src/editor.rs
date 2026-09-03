@@ -141,6 +141,7 @@ pub(crate) async fn submit_editor_content(
     session: &mut InputSession,
     app: &mut crate::app::App,
     client: &ox_broker::ClientHandle,
+    target: crate::action_executor::SendTarget,
 ) -> Option<String> {
     flush_pending_edits(session, client).await;
     let text = session.content.clone();
@@ -164,9 +165,13 @@ pub(crate) async fn submit_editor_content(
         _ => None,
     };
 
-    let new_tid = app
-        .send_input_with_text(text, mode, insert_context, active_thread.as_deref())
+    let result = app
+        .send_input_with_text_to(text, mode, insert_context, active_thread.as_deref(), target)
         .await;
+
+    if !result.accepted {
+        return None;
+    }
 
     // Dismiss editor on whichever screen is active
     match &ui.screen {
@@ -190,7 +195,7 @@ pub(crate) async fn submit_editor_content(
     }
     session.reset_after_submit();
 
-    new_tid
+    result.thread_id
 }
 
 /// Write a set_input command to the broker (path-based, applies to active editor).

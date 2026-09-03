@@ -11,6 +11,7 @@ pub struct App {
     pub pool: ExecutionCore,
     /// Broker client for all store access (inbox, threads, search).
     pub broker_client: ox_broker::ClientHandle,
+    inbox_root: PathBuf,
     /// Offset into input history (0 = at the draft, N = Nth entry from newest).
     history_offset: usize,
     input_draft: String,
@@ -74,7 +75,7 @@ impl App {
             workspace,
             no_policy,
             inbox,
-            inbox_root,
+            inbox_root.clone(),
             broker,
             rt_handle,
             transport_factory,
@@ -84,6 +85,7 @@ impl App {
         Ok(Self {
             pool,
             broker_client,
+            inbox_root,
             history_offset: 0,
             input_draft: String::new(),
         })
@@ -92,8 +94,8 @@ impl App {
     // Mode transitions (enter_compose, enter_reply, enter_search, exit_insert,
     // go_to_inbox) are now handled by UiStore commands through the broker.
 
-    /// Send input with explicit context from ViewState.
-    /// Returns Some(thread_id) if a new thread was composed.
+    /// Send input locally with explicit context from ViewState.
+    /// Returns the created thread ID for a new conversation.
     pub async fn send_input_with_text(
         &mut self,
         text: String,
@@ -101,9 +103,55 @@ impl App {
         insert_context: Option<ox_types::InsertContext>,
         active_thread: Option<&str>,
     ) -> Option<String> {
+        self.send_local_input_with_text(text, mode, insert_context, active_thread)
+            .await
+            .thread_id
+    }
+
+    pub(crate) async fn send_input_with_text_to(
+        &mut self,
+        text: String,
+        mode: ox_types::Mode,
+        insert_context: Option<ox_types::InsertContext>,
+        active_thread: Option<&str>,
+        target: crate::action_executor::SendTarget,
+    ) -> SendResult {
+        if target == crate::action_executor::SendTarget::Local {
+            let accepted = input_context_accepts_local(mode, insert_context, active_thread)
+                && !text.is_empty();
+            let thread_id = self
+                .send_input_with_text(text, mode, insert_context, active_thread)
+                .await;
+            return SendResult {
+                accepted,
+                thread_id,
+            };
+        }
+
+        if text.is_empty() {
+            return SendResult::rejected();
+        }
+        match (mode, insert_context) {
+            (ox_types::Mode::Insert, Some(ox_types::InsertContext::Compose))
+            | (ox_types::Mode::Normal, None)
+                if active_thread.is_none() =>
+            {
+                self.do_remote_compose(text).await
+            }
+            _ => SendResult::rejected(),
+        }
+    }
+
+    async fn send_local_input_with_text(
+        &mut self,
+        text: String,
+        mode: ox_types::Mode,
+        insert_context: Option<ox_types::InsertContext>,
+        active_thread: Option<&str>,
+    ) -> SendResult {
         use ox_types::{InsertContext, Mode};
         if text.is_empty() {
-            return None;
+            return SendResult::rejected();
         }
         match (mode, insert_context) {
             (Mode::Insert, Some(InsertContext::Compose)) | (Mode::Normal, None)
@@ -115,13 +163,13 @@ impl App {
                 if active_thread.is_some() =>
             {
                 self.do_reply(text, active_thread.unwrap()).await;
-                None
+                SendResult::accepted(None)
             }
-            _ => None,
+            _ => SendResult::rejected(),
         }
     }
 
-    async fn do_compose(&mut self, input: String) -> Option<String> {
+    async fn do_compose(&mut self, input: String) -> SendResult {
         self.history_offset = 0;
         self.input_draft.clear();
 
@@ -131,13 +179,61 @@ impl App {
                 self.update_thread_state(&tid, ox_types::ThreadState::Running)
                     .await;
                 self.pool.send_prompt(&tid, input).ok();
-                Some(tid)
+                SendResult::accepted(Some(tid))
             }
             Err(e) => {
                 eprintln!("failed to create thread: {e}");
-                None
+                SendResult::rejected()
             }
         }
+    }
+
+    async fn do_remote_compose(&mut self, input: String) -> SendResult {
+        let launcher = match crate::remote_cli::prepare_tui_launcher(&self.inbox_root).await {
+            Ok(launcher) => launcher,
+            Err(error) => {
+                self.set_status(format!("remote: {}", clean_status(&error.to_string())))
+                    .await;
+                return SendResult::rejected();
+            }
+        };
+
+        self.history_offset = 0;
+        self.input_draft.clear();
+        self.set_status("remote: launching a fresh exe.dev conversation…".into())
+            .await;
+
+        let title: String = input.chars().take(40).collect();
+        let client = self.broker_client.clone();
+        tokio::spawn(async move {
+            let text = match launcher.start_conversation(title, input).await {
+                Ok(conversation) => format!(
+                    "remote: {} started on {} — attach with `ox remote conversation attach {}`",
+                    conversation.conversation_id,
+                    conversation.node_id,
+                    conversation.conversation_id,
+                ),
+                Err(error) => format!("remote failed: {}", clean_status(&error.to_string())),
+            };
+            let _ = client
+                .write_typed(
+                    &ox_path::oxpath!("ui"),
+                    &ox_types::UiCommand::Global(ox_types::GlobalCommand::SetStatus { text }),
+                )
+                .await;
+        });
+
+        SendResult::accepted(None)
+    }
+
+    async fn set_status(&self, text: String) {
+        let _ = self
+            .broker_client
+            .write_typed(
+                &ox_path::oxpath!("ui"),
+                &ox_types::UiCommand::Global(ox_types::GlobalCommand::SetStatus { text }),
+            )
+            .await;
     }
 
     async fn do_reply(&mut self, input: String, thread_id: &str) {
@@ -222,6 +318,55 @@ impl App {
             .await
             .ok();
     }
+}
+
+fn input_context_accepts_local(
+    mode: ox_types::Mode,
+    insert_context: Option<ox_types::InsertContext>,
+    active_thread: Option<&str>,
+) -> bool {
+    use ox_types::{InsertContext, Mode};
+    matches!(
+        (mode, insert_context, active_thread.is_some()),
+        (Mode::Insert, Some(InsertContext::Compose), false)
+            | (Mode::Normal, None, false)
+            | (Mode::Insert, Some(InsertContext::Reply), true)
+            | (Mode::Normal, _, true)
+    )
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct SendResult {
+    pub(crate) accepted: bool,
+    pub(crate) thread_id: Option<String>,
+}
+
+impl SendResult {
+    fn accepted(thread_id: Option<String>) -> Self {
+        Self {
+            accepted: true,
+            thread_id,
+        }
+    }
+
+    fn rejected() -> Self {
+        Self {
+            accepted: false,
+            thread_id: None,
+        }
+    }
+}
+
+fn clean_status(text: &str) -> String {
+    text.chars()
+        .map(|character| {
+            if character.is_control() {
+                '\u{fffd}'
+            } else {
+                character
+            }
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

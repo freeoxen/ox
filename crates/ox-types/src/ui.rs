@@ -96,6 +96,7 @@ pub enum InsertContext {
 #[serde(rename_all = "snake_case")]
 pub enum PendingAction {
     SendInput,
+    SendInputRemote,
     Quit,
     OpenSelected,
     ArchiveSelected,

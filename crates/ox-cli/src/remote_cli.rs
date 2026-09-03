@@ -43,6 +43,25 @@ pub struct RemoteArgs {
     pub command: RemoteCommand,
 }
 
+#[derive(Clone, Debug, Default)]
+struct ConnectionOverrides {
+    identity: Option<PathBuf>,
+    connect_timeout: Option<String>,
+    operation_timeout: Option<String>,
+    accept_new_host_key: bool,
+}
+
+impl From<&RemoteArgs> for ConnectionOverrides {
+    fn from(args: &RemoteArgs) -> Self {
+        Self {
+            identity: args.identity.clone(),
+            connect_timeout: args.connect_timeout.clone(),
+            operation_timeout: args.operation_timeout.clone(),
+            accept_new_host_key: args.accept_new_host_key,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Subcommand)]
 pub enum RemoteCommand {
     Node {
@@ -304,8 +323,15 @@ pub fn print_error(error: &CliError, json: bool) {
 
 pub async fn run(args: &RemoteArgs) -> Result<(), CliError> {
     let root = ox_root()?;
-    let config = load_config(&root, args)?;
-    let runtime = build_runtime(&root, config, args, command_needs_remote(&args.command)).await?;
+    let overrides = ConnectionOverrides::from(args);
+    let config = load_config(&root, &overrides)?;
+    let runtime = build_runtime(
+        &root,
+        config,
+        &overrides,
+        command_needs_remote(&args.command),
+    )
+    .await?;
     match &args.command {
         RemoteCommand::Node { command } => run_node(&runtime, command, args.json).await,
         RemoteCommand::Conversation { command } => {
@@ -317,7 +343,7 @@ pub async fn run(args: &RemoteArgs) -> Result<(), CliError> {
 async fn build_runtime(
     root: &FsPath,
     config: RemoteFileConfig,
-    args: &RemoteArgs,
+    overrides: &ConnectionOverrides,
     needs_remote: bool,
 ) -> Result<Runtime, CliError> {
     let local: Arc<dyn StorePort> = Arc::new(SyncStorePort::new(
@@ -331,7 +357,7 @@ async fn build_runtime(
             config,
         });
     }
-    let identity = args
+    let identity = overrides
         .identity
         .clone()
         .or_else(|| config.exe.identity.clone())
@@ -348,18 +374,20 @@ async fn build_runtime(
             ));
         }
     }
-    let enrollment = if args.accept_new_host_key {
+    let enrollment = if overrides.accept_new_host_key {
         HostKeyEnrollment::EnrollNew
     } else {
         HostKeyEnrollment::RefuseUnknown
     };
     let connect_timeout = parse_duration(
-        args.connect_timeout
+        overrides
+            .connect_timeout
             .as_deref()
             .unwrap_or(&config.exe.connect_timeout),
     )?;
     let operation_timeout = parse_duration(
-        args.operation_timeout
+        overrides
+            .operation_timeout
             .as_deref()
             .unwrap_or(&config.exe.operation_timeout),
     )?;
@@ -429,6 +457,63 @@ async fn build_runtime(
         manager: Some(Arc::new(AsyncStorePort::new(manager))),
         local,
         config,
+    })
+}
+
+/// Prepared TUI-side remote runtime. Preparation validates local
+/// configuration and key material but performs no provider mutation.
+pub(crate) struct TuiRemoteLauncher {
+    runtime: Runtime,
+}
+
+/// Prepare the existing remote manager for a send-time TUI launch.
+///
+/// The TUI deliberately has no separate remote configuration surface: it
+/// consumes the same `~/.ox/remote.toml` and environment overrides as
+/// `ox remote`, and keeps unknown-host enrollment explicit in the CLI.
+pub(crate) async fn prepare_tui_launcher(root: &FsPath) -> Result<TuiRemoteLauncher, CliError> {
+    let overrides = ConnectionOverrides::default();
+    let config = load_config(root, &overrides)?;
+    let runtime = build_runtime(root, config, &overrides, true).await?;
+    Ok(TuiRemoteLauncher { runtime })
+}
+
+impl TuiRemoteLauncher {
+    /// Start one fresh-node conversation through the RemoteManagerStore
+    /// StructFS contract and return its durable local projection.
+    pub(crate) async fn start_conversation(
+        &self,
+        title: String,
+        prompt: String,
+    ) -> Result<RemoteConversationRecord, CliError> {
+        let request = tui_start_request(&self.runtime.config, title, prompt)?;
+        let receipt = manager(&self.runtime)?
+            .write(&path!("conversations"), parsed(&request)?)
+            .await
+            .map_err(map_store_error)?;
+        let id = receipt
+            .iter()
+            .last()
+            .cloned()
+            .ok_or_else(|| CliError::persistence("conversation receipt was empty"))?;
+        resolve_conversation(&self.runtime, &id).await
+    }
+}
+
+fn tui_start_request(
+    config: &RemoteFileConfig,
+    title: String,
+    prompt: String,
+) -> Result<StartConversationRequest, CliError> {
+    validate_prompt(&prompt)?;
+    Ok(StartConversationRequest {
+        schema_version: 1,
+        request_id: new_request_id(),
+        title,
+        prompt,
+        parent_thread_id: None,
+        placement: PlacementPolicy::FreshNode,
+        node: provision_spec(config, None, None, None, None)?,
     })
 }
 
@@ -1178,15 +1263,23 @@ fn read_prompt(
             .map_err(|error| CliError::validation(error.to_string()))?;
         prompt
     };
+    validate_prompt(&prompt)?;
+    Ok(prompt)
+}
+
+fn validate_prompt(prompt: &str) -> Result<(), CliError> {
     if prompt.is_empty() || prompt.len() > 4 * 1024 * 1024 {
         return Err(CliError::validation(
             "prompt must contain 1..=4194304 bytes",
         ));
     }
-    Ok(prompt)
+    Ok(())
 }
 
-fn load_config(root: &FsPath, args: &RemoteArgs) -> Result<RemoteFileConfig, CliError> {
+fn load_config(
+    root: &FsPath,
+    overrides: &ConnectionOverrides,
+) -> Result<RemoteFileConfig, CliError> {
     let path = std::env::var_os("OX_REMOTE_CONFIG")
         .map(PathBuf::from)
         .unwrap_or_else(|| root.join("remote.toml"));
@@ -1213,7 +1306,7 @@ fn load_config(root: &FsPath, args: &RemoteArgs) -> Result<RemoteFileConfig, Cli
     if let Ok(value) = std::env::var("OX_REMOTE__EXE__IDENTITY") {
         config.exe.identity = Some(value.into());
     }
-    if let Some(identity) = &args.identity {
+    if let Some(identity) = &overrides.identity {
         config.exe.identity = Some(identity.clone());
     }
     Ok(config)
@@ -1407,6 +1500,27 @@ mod tests {
     }
 
     #[test]
+    fn tui_prompt_uses_the_same_remote_size_limit() {
+        assert!(validate_prompt("launch it").is_ok());
+        assert!(validate_prompt("").is_err());
+        assert!(validate_prompt(&"x".repeat(4 * 1024 * 1024 + 1)).is_err());
+    }
+
+    #[test]
+    fn tui_launch_is_a_fresh_node_structfs_request() {
+        let mut config = RemoteFileConfig::default();
+        config.exe.worker_image = "registry/worker@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into();
+        let request = tui_start_request(&config, "Title".into(), "Prompt".into()).unwrap();
+        assert_eq!(request.schema_version, 1);
+        assert_eq!(request.title, "Title");
+        assert_eq!(request.prompt, "Prompt");
+        assert_eq!(request.parent_thread_id, None);
+        assert_eq!(request.placement, PlacementPolicy::FreshNode);
+        assert_eq!(request.node.cpu, config.defaults.cpu);
+        assert!(request.request_id.starts_with("req_"));
+    }
+
+    #[test]
     fn terminal_text_cannot_emit_escape_controls() {
         assert_eq!(
             sanitize_terminal("ok\u{1b}[31m\n\t\u{7}bad"),
@@ -1448,7 +1562,8 @@ mod tests {
                 command: NodeCommand::List,
             },
         };
-        let runtime = build_runtime(root.path(), RemoteFileConfig::default(), &args, false)
+        let overrides = ConnectionOverrides::from(&args);
+        let runtime = build_runtime(root.path(), RemoteFileConfig::default(), &overrides, false)
             .await
             .unwrap();
         assert!(runtime.manager.is_none());

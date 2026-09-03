@@ -305,7 +305,9 @@ fn draw_status_bar(frame: &mut Frame, vs: &ViewState, theme: &Theme, area: Rect)
         Span::styled(" NORMAL ", theme.title_badge)
     };
 
-    let context_info = if matches!(&vs.ui.screen, ScreenSnapshot::Thread(_)) {
+    let context_info = if let Some(status) = &vs.status {
+        format!(" {status}")
+    } else if matches!(&vs.ui.screen, ScreenSnapshot::Thread(_)) {
         let st = &vs.turn.session_tokens;
         let lr = &vs.turn.last_run_tokens;
 
@@ -401,6 +403,21 @@ fn draw_status_bar(frame: &mut Frame, vs: &ViewState, theme: &Theme, area: Rect)
             }
         }
         s.push_str(" | Esc back");
+        s
+    } else if matches!(
+        vs.ui.editor().map(|editor| editor.context),
+        Some(InsertContext::Compose)
+    ) {
+        let mut s = String::new();
+        for h in &vs.key_hints {
+            if h.status_hint {
+                s.push_str(" | ");
+                s.push_str(&h.key);
+                s.push(' ');
+                s.push_str(&h.description);
+            }
+        }
+        s.push_str(" | Esc then :remote → exe.dev | ? help");
         s
     } else {
         let mut s = String::new();

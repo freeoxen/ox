@@ -13,14 +13,20 @@ use crate::editor::EditorMode;
 use crate::event_loop::{DialogState, HistorySearchState};
 use crate::types::APPROVAL_OPTIONS;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SendTarget {
+    Local,
+    Remote,
+}
+
 /// Side effects to execute after processing a PendingAction.
 pub(crate) struct ActionEffects {
     /// Commands to send to UiStore via the broker.
     pub broker_commands: Vec<UiCommand>,
     /// Whether to quit the application.
     pub quit: bool,
-    /// Whether to trigger send_input handling.
-    pub send_input: bool,
+    /// Where to submit the current compose/reply buffer, if anywhere.
+    pub send_input: Option<SendTarget>,
     /// Approval response to send (thread-scoped).
     pub approval_response: Option<Decision>,
     /// Thread to open by ID.
@@ -34,7 +40,7 @@ impl ActionEffects {
         Self {
             broker_commands: Vec::new(),
             quit: false,
-            send_input: false,
+            send_input: None,
             approval_response: None,
             open_thread: None,
             archive_thread: None,
@@ -62,7 +68,10 @@ pub(crate) fn execute(
             effects.quit = true;
         }
         PendingAction::SendInput => {
-            effects.send_input = true;
+            effects.send_input = Some(SendTarget::Local);
+        }
+        PendingAction::SendInputRemote => {
+            effects.send_input = Some(SendTarget::Remote);
         }
         PendingAction::OpenSelected => {
             if let Some(id) = selected_thread_id {
@@ -225,6 +234,27 @@ mod tests {
             &mut setter,
         );
         assert!(effects.quit);
+    }
+
+    #[test]
+    fn send_actions_preserve_the_destination() {
+        for (action, expected) in [
+            (PendingAction::SendInput, SendTarget::Local),
+            (PendingAction::SendInputRemote, SendTarget::Remote),
+        ] {
+            let mut dialog = empty_dialog();
+            let mut mode = EditorMode::Insert;
+            let mut setter = None;
+            let effects = execute(
+                action,
+                &mut dialog,
+                &mut mode,
+                &inbox_ui(),
+                None,
+                &mut setter,
+            );
+            assert_eq!(effects.send_input, Some(expected));
+        }
     }
 
     #[test]

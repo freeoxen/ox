@@ -375,8 +375,8 @@ pub async fn run_async(
             if effects.quit {
                 return Ok(LegacyExit::Quit);
             }
-            if effects.send_input {
-                thread.handle_send_input(&ui, app, client).await;
+            if let Some(target) = effects.send_input {
+                thread.handle_send_input(&ui, app, client, target).await;
             }
             if let Some(text) = editor_content {
                 thread.input_session.set_content(&text);

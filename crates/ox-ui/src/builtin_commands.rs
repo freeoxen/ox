@@ -218,6 +218,13 @@ static BUILTIN_COMMANDS: &[StaticCommandDef] = &[
         user_facing: true,
     },
     StaticCommandDef {
+        name: "remote",
+        target: "ui/send_input_remote",
+        params: &[],
+        description: "Start an exe.dev conversation with the compose buffer",
+        user_facing: true,
+    },
+    StaticCommandDef {
         name: "clear_input",
         target: "ui/clear_input",
         params: &[],
@@ -631,6 +638,17 @@ mod tests {
         assert_eq!(quit.target, "ui/quit");
         assert!(quit.user_facing);
         assert!(quit.params.is_empty());
+    }
+
+    #[test]
+    fn remote_is_a_parameterless_user_command() {
+        let remote = builtin_commands()
+            .iter()
+            .find(|command| command.name == "remote")
+            .expect("remote command missing");
+        assert_eq!(remote.target, "ui/send_input_remote");
+        assert!(remote.user_facing);
+        assert!(remote.params.is_empty());
     }
 
     #[test]

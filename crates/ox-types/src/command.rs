@@ -43,6 +43,8 @@ pub enum InboxCommand {
     SearchClose,
     DismissEditor,
     SubmitEditor,
+    /// Submit the compose buffer as a new conversation on exe.dev.
+    SubmitEditorRemote,
     SearchInsertChar {
         char: char,
     },

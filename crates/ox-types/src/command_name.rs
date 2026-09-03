@@ -45,6 +45,7 @@ pub enum CommandName {
 
     // -- Text input --
     SendInput,
+    SendInputRemote,
     ClearInput,
 
     // -- Thread actions --
@@ -138,6 +139,7 @@ impl CommandName {
             Self::CloseCommandLine => "close_command_line",
             Self::SubmitCommandLine => "submit_command_line",
             Self::SendInput => "send_input",
+            Self::SendInputRemote => "remote",
             Self::ClearInput => "clear_input",
             Self::ArchiveSelected => "archive_selected",
             Self::SearchClose => "search_close",
@@ -213,6 +215,7 @@ impl CommandName {
             "close_command_line" => Some(Self::CloseCommandLine),
             "submit_command_line" => Some(Self::SubmitCommandLine),
             "send_input" => Some(Self::SendInput),
+            "remote" => Some(Self::SendInputRemote),
             "clear_input" => Some(Self::ClearInput),
             "archive_selected" => Some(Self::ArchiveSelected),
             "search_close" => Some(Self::SearchClose),
