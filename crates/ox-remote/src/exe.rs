@@ -733,38 +733,71 @@ async fn run_control_command(
         .await
         .map_err(|error| CommandError::Unavailable(error.to_string()))?;
 
-    let mut acknowledged = false;
-    let mut exit_status = None;
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    let mut output_bytes = 0_usize;
+    let mut output = ControlOutput::default();
     while let Some(message) = channel.wait().await {
         match message {
-            ChannelMsg::Success => acknowledged = true,
+            ChannelMsg::Success => output.apply(ControlEvent::Acknowledged)?,
             ChannelMsg::Failure => return Err(CommandError::Rejected("exec rejected".into())),
-            ChannelMsg::Data { data } => append_bounded(&mut stdout, &data, &mut output_bytes)?,
-            ChannelMsg::ExtendedData { data, .. } => {
-                append_bounded(&mut stderr, &data, &mut output_bytes)?
-            }
+            ChannelMsg::Data { data } => output.apply(ControlEvent::Stdout(&data))?,
+            ChannelMsg::ExtendedData { data, .. } => output.apply(ControlEvent::Stderr(&data))?,
             ChannelMsg::ExitStatus {
                 exit_status: status,
-            } => exit_status = Some(status),
+            } => output.apply(ControlEvent::Exit(status))?,
             _ => {}
         }
     }
     let _ = session
         .disconnect(Disconnect::ByApplication, "", "en")
         .await;
-    if !acknowledged {
-        return Err(CommandError::Ambiguous("no exec acknowledgement".into()));
+    output.finish()
+}
+
+enum ControlEvent<'a> {
+    Acknowledged,
+    Stdout(&'a [u8]),
+    Stderr(&'a [u8]),
+    Exit(u32),
+}
+
+#[derive(Default)]
+struct ControlOutput {
+    acknowledged: bool,
+    exit_status: Option<u32>,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    output_bytes: usize,
+}
+
+impl ControlOutput {
+    fn apply(&mut self, event: ControlEvent<'_>) -> Result<(), CommandError> {
+        match event {
+            ControlEvent::Acknowledged => self.acknowledged = true,
+            ControlEvent::Stdout(data) => {
+                append_bounded(&mut self.stdout, data, &mut self.output_bytes)?
+            }
+            ControlEvent::Stderr(data) => {
+                append_bounded(&mut self.stderr, data, &mut self.output_bytes)?
+            }
+            ControlEvent::Exit(status) => self.exit_status = Some(status),
+        }
+        Ok(())
     }
-    match exit_status {
-        Some(0) => Ok(CommandOutput { stdout, stderr }),
-        Some(status) => Err(CommandError::Rejected(format!(
-            "exit status {status}: {}",
-            String::from_utf8_lossy(&stderr)
-        ))),
-        None => Err(CommandError::Ambiguous("no exit status".into())),
+
+    fn finish(self) -> Result<CommandOutput, CommandError> {
+        if !self.acknowledged {
+            return Err(CommandError::Ambiguous("no exec acknowledgement".into()));
+        }
+        match self.exit_status {
+            Some(0) => Ok(CommandOutput {
+                stdout: self.stdout,
+                stderr: self.stderr,
+            }),
+            Some(status) => Err(CommandError::Rejected(format!(
+                "exit status {status}: {}",
+                String::from_utf8_lossy(&self.stderr)
+            ))),
+            None => Err(CommandError::Ambiguous("no exit status".into())),
+        }
     }
 }
 
@@ -853,5 +886,129 @@ mod tests {
         let mut candidate = spec();
         candidate.image = "image;id".into();
         assert!(candidate.validate().is_err());
+    }
+
+    fn ssh_config() -> ExeSshConfig {
+        ExeSshConfig {
+            host: "control.exe.test".into(),
+            port: 22,
+            user: "alice".into(),
+            identity_file: PathBuf::from("/definitely/missing/ox-test-identity"),
+            known_hosts: KnownHosts::new(
+                "/tmp/ox-remote-test-known-hosts",
+                ox_structfs_transport::HostKeyEnrollment::RefuseUnknown,
+            ),
+            inactivity_timeout: Duration::from_secs(1),
+            operation_timeout: Duration::from_secs(1),
+        }
+    }
+
+    #[test]
+    fn every_command_shape_has_a_deterministic_shell_encoding() {
+        assert_eq!(ExeCommand::Identity.encode().unwrap(), "whoami --json");
+        assert_eq!(
+            ExeCommand::List { exact_name: None }.encode().unwrap(),
+            "'ls' '--json'"
+        );
+        assert_eq!(
+            ExeCommand::Remove {
+                name: "ox-deadbeef".into(),
+            }
+            .encode()
+            .unwrap(),
+            "'rm' '--json' 'ox-deadbeef'"
+        );
+        assert!(ExeCommand::Remove { name: "bad".into() }.encode().is_err());
+        assert_eq!(
+            encode_argv(&["contains'quote".into()]),
+            "'contains'\"'\"'quote'"
+        );
+    }
+
+    #[test]
+    fn control_configuration_and_output_bounds_fail_closed() {
+        assert!(RusshExeRunner::new(ssh_config()).is_ok());
+        let mut invalid = ssh_config();
+        invalid.host.clear();
+        assert!(RusshExeRunner::new(invalid).is_err());
+        let mut invalid = ssh_config();
+        invalid.port = 0;
+        assert!(RusshExeRunner::new(invalid).is_err());
+        let mut invalid = ssh_config();
+        invalid.host = "bad host".into();
+        assert!(RusshExeRunner::new(invalid).is_err());
+        let mut invalid = ssh_config();
+        invalid.user = "bad user".into();
+        assert!(RusshExeRunner::new(invalid).is_err());
+        let mut invalid = ssh_config();
+        invalid.inactivity_timeout = Duration::ZERO;
+        assert!(RusshExeRunner::new(invalid).is_err());
+        let mut invalid = ssh_config();
+        invalid.operation_timeout = Duration::ZERO;
+        assert!(RusshExeRunner::new(invalid).is_err());
+
+        let mut target = Vec::new();
+        let mut total = 0;
+        append_bounded(&mut target, b"abc", &mut total).unwrap();
+        assert_eq!(target, b"abc");
+        assert_eq!(total, 3);
+        assert!(append_bounded(&mut target, &vec![0; MAX_PROVIDER_OUTPUT], &mut total).is_err());
+    }
+
+    #[test]
+    fn control_output_requires_ack_and_exit_and_preserves_bounded_streams() {
+        let output = ControlOutput::default();
+        assert!(matches!(
+            output.finish(),
+            Err(CommandError::Ambiguous(message)) if message == "no exec acknowledgement"
+        ));
+
+        let mut output = ControlOutput::default();
+        output.apply(ControlEvent::Acknowledged).unwrap();
+        assert!(matches!(
+            output.finish(),
+            Err(CommandError::Ambiguous(message)) if message == "no exit status"
+        ));
+
+        let mut output = ControlOutput::default();
+        output.apply(ControlEvent::Acknowledged).unwrap();
+        output.apply(ControlEvent::Stdout(b"ok")).unwrap();
+        output.apply(ControlEvent::Stderr(b"warning")).unwrap();
+        output.apply(ControlEvent::Exit(0)).unwrap();
+        let output = output.finish().unwrap();
+        assert_eq!(output.stdout, b"ok");
+        assert_eq!(output.stderr, b"warning");
+
+        let mut output = ControlOutput::default();
+        output.apply(ControlEvent::Acknowledged).unwrap();
+        output.apply(ControlEvent::Stderr(b"failed")).unwrap();
+        output.apply(ControlEvent::Exit(17)).unwrap();
+        assert!(matches!(
+            output.finish(),
+            Err(CommandError::Rejected(message))
+                if message == "exit status 17: failed"
+        ));
+
+        let mut output = ControlOutput::default();
+        assert!(
+            output
+                .apply(ControlEvent::Stdout(&vec![0; MAX_PROVIDER_OUTPUT + 1]))
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn production_runner_rejects_bad_commands_and_missing_keys_before_mutation() {
+        let runner = RusshExeRunner::new(ssh_config()).unwrap();
+        let mut invalid = spec();
+        invalid.name = "unsafe".into();
+        assert!(matches!(
+            runner.run(ExeCommand::Create(invalid)).await,
+            Err(CommandError::Rejected(_))
+        ));
+        assert!(matches!(
+            runner.run(ExeCommand::Identity).await,
+            Err(CommandError::Unavailable(_))
+        ));
     }
 }

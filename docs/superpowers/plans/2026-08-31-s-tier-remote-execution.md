@@ -739,17 +739,17 @@ worker integration tests.
   parent validation at `ledger.rs:28-220`; regressions are at `:793-878`.
 - [x] **W5. The generic carriers do not own worker lifecycle.** Verified with
   `rg -n 'spawn_unix_server|bridge_stdio_to_unix' crates/ox-worker/src crates/ox-structfs-transport/src`:
-  `WorkerService` owns the long-lived accept loop at `service.rs:35-159`, while
-  `main.rs:54` delegates stdio to Task 5's stateless bridge.
+  `WorkerService` owns the long-lived accept loop at `service.rs:35-187`, while
+  `main.rs:86` delegates stdio to Task 5's stateless bridge.
 - [x] **W6. Public concurrency is partitioned rather than global.** Verified
   with
   `rg -n 'create_admission|message_admission|impl AsyncReader|impl AsyncWriter' crates/ox-worker/src/public_store.rs`:
   create admission is create-only, message admission is per thread
-  (`public_store.rs:67-68,167-180,322,363`), and health/capacity reads never
-  enter either lock (`:206-236`). The two-thread proof is
-  `crates/ox-worker/tests/public_store.rs:16-161`; approval-saturated turn
-  admission with responsive status/cancel plus approval retry/conflict behavior
-  is proven at `:164-292`.
+  (`public_store.rs:73-74,162-174,345,380`), and health/capacity reads never
+  enter either lock (`:200-261`). The two-thread proof is
+  `crates/ox-worker/tests/cases/public_store.rs:141-296`;
+  approval-saturated turn admission with responsive status/cancel plus approval
+  retry/conflict behavior is proven at `:419-547`.
 
 - [x] Construct exactly one `ExecutionCore` using a worker inbox root.
 - [x] Implement the public Store mapping table from this plan; delegate thread,
@@ -769,7 +769,7 @@ worker integration tests.
 - [x] Ensure an approval-parked resident turn does not delay health, status, or
   cancel for another thread, while queued work remains bounded and observable.
   Proven by `approval_saturates_turn_capacity_but_not_public_control` in
-  `crates/ox-worker/tests/public_store.rs`.
+  `crates/ox-worker/tests/cases/public_store.rs`.
 - [ ] Prove the stronger four-way case: a deliberately parked cursor for A,
   approval for B, and running turn for C simultaneously do not delay
   status/cancel for D. Task 11's four-turn fixture proves independent turn and
@@ -1024,7 +1024,7 @@ with fake provider/worker Stores and crash injection.
 - [x] Use short per-operation advisory leases, not a process-global lock.
 
 Crash and concurrency evidence is in
-`crates/ox-remote/tests/manager_reconcile.rs:255-420` (pre-effect intent,
+`crates/ox-remote/tests/cases/manager_reconcile.rs:661-1038` (pre-effect intent,
 provider and worker ambiguity, pending replay, delete-after-effect recovery,
 same-semantic racing starts, and ledger cursor commit) plus
 `crates/ox-inbox/src/remote_state.rs:2175-2370` (nullable observations,
@@ -1113,7 +1113,7 @@ remote config.
   `cargo clippy -p ox-remote -p ox-worker -p ox-cli --all-targets -- -D warnings`.
   The manager suite includes crash/retry convergence for a Ready node with a
   pending provision receipt and a bound conversation with a pending create
-  receipt at `crates/ox-remote/tests/manager_reconcile.rs:687-812`.
+  receipt at `crates/ox-remote/tests/cases/manager_reconcile.rs:1079-1190`.
 - [ ] Produce and push the release image, SBOM, and vulnerability report in an
   environment with Docker, scanner tooling, and registry credentials. The
   deterministic gated script is implemented, but this external release action
@@ -1156,8 +1156,8 @@ smoke tests, remote runbook/threat model.
   root, so leakage tests should probe the adapter and per-thread artifacts.**
   Verified with
   `rg -n "match parts.as_slice|\\[\"health\"\\]|\\[\"capacity\"\\]|\\[\"conversations\"\\]" crates/ox-worker/src/public_store.rs`.
-  Exact read routes begin at `crates/ox-worker/src/public_store.rs:216`; exact
-  mutation routes begin at `:332`. If arbitrary paths become reachable, rollout
+  Exact read routes begin at `crates/ox-worker/src/public_store.rs:199`; exact
+  mutation routes begin at `:343`. If arbitrary paths become reachable, rollout
   is blocked for ~1-2 days to restore the authority boundary.
 
 - [x] **T11-P3. Crash/transport/provider chaos already has deterministic seams;
@@ -1165,9 +1165,9 @@ smoke tests, remote runbook/threat model.
   Verified with
   `rg -n "create_initial_prompt_recovers|message_recovers|cancel_recovers" crates/ox-executor/tests/worker_ingress.rs`,
   `rg -n "disconnect_detaches|bounded_admission|bounded_send_queue" crates/ox-structfs-transport/tests/carriers.rs`, and
-  `rg -n "ambiguous_create|ambiguous_delete|mismatched_attempt" crates/ox-remote/tests/exe_control.rs`.
+  `rg -n "ambiguous_create|ambiguous_delete|mismatched_attempt" crates/ox-remote/tests/cases/exe_control.rs`.
   The current evidence is at `worker_ingress.rs:213-524`, `carriers.rs:317-509`,
-  and `exe_control.rs:105-210`. If these failpoints disappear, rollout is
+  and `cases/exe_control.rs:358-466`. If these failpoints disappear, rollout is
   blocked for ~2 days to restore deterministic crash coverage.
 
 - [x] **T11-P4. Live and soak mutations can be gated without changing the CLI or
@@ -1191,7 +1191,7 @@ smoke tests, remote runbook/threat model.
 - [x] Run the same semantic executor suite against local CLI and worker adapters;
   compare ordered ledger entries, resume behavior, approvals, tool results, and
   config snapshots. The direct-core/public-adapter parity fixture is
-  `crates/ox-worker/tests/semantic_parity.rs:208-360`, including a denied-tool
+  `crates/ox-worker/tests/cases/semantic_parity.rs:209-363`, including a denied-tool
   approval round and resulting tool evidence; the shared core's durable resume,
   decision, tool, and cancellation matrix remains
   `crates/ox-executor/tests/worker_ingress.rs` rather than being copied into a
@@ -1202,14 +1202,14 @@ smoke tests, remote runbook/threat model.
   equivalent long turn, and D being cancelled do not share a logical lock or
   block broker control. The simultaneous fixture is
   `four_roles_progress_without_a_shared_logical_lock` at
-  `crates/ox-worker/tests/public_store.rs:456`; it observes four active permits,
+  `crates/ox-worker/tests/cases/public_store.rs:619`; it observes four active permits,
   responsive status/cancel, B completion while A/C remain blocked, and durable
   D cancellation. Active sandbox-tool cancellation is separately covered at
   `crates/ox-executor/tests/worker_ingress.rs:529-640`.
 - [x] Saturate active-turn and prompt limits; assert explicit overload/queued
   records and bounded memory/thread growth.
   Worker thread/prompt bounds are asserted in
-  `crates/ox-worker/tests/public_store.rs`; transport in-flight/send admission
+  `crates/ox-worker/tests/cases/public_store.rs`; transport in-flight/send admission
   bounds are asserted in `crates/ox-structfs-transport/tests/carriers.rs`.
 - [ ] Chaos-test worker restart, SSH loss, ambiguous exe calls, DB busy/disk
   full, Wasm trap/fuel exhaustion, tool timeout, sandbox refusal, and host-key
@@ -1218,7 +1218,7 @@ smoke tests, remote runbook/threat model.
   DB-busy/disk-full and real changed-host-key drills remain external gates.
 - [x] Scan public frames/records and per-thread ledgers for secret canaries and
   cross-thread content leakage. The regression is
-  `crates/ox-worker/tests/semantic_parity.rs:364`; the threat model names
+  `crates/ox-worker/tests/cases/semantic_parity.rs:365`; the threat model names
   node-wide DBs/ingress as sensitive authoritative storage rather than falsely
   expecting them not to contain prompts. Release process-argument and artifact
   scans remain part of the image/live gate.
@@ -1232,12 +1232,12 @@ smoke tests, remote runbook/threat model.
 - [x] Run `./scripts/fmt.sh --check` and `./scripts/quality_gates.sh`; diagnose
   failures without bypassing hooks. The formatting gate passes. The canonical
   quality run completes 8/13 gates: this branch's new `ox-remote` and
-  `ox-worker` crates were brought above the 70% coverage floor (independently
-  remeasured at 71.12% and 71.23%), while the remaining workspace failures are
-  in the unrelated dirty gateway worktree: two `ox-gateway-wasm` Clippy
-  findings, its silent parse fallback, the pre-existing wasm-incompatible
-  `structfs-http` blocking import, and gateway/gateway-Wasm coverage. Those
-  files are intentionally not modified by this project.
+  `ox-worker` crates pass explicit 90% region thresholds (canonically measured
+  at 90.1% and 90.6%), while the remaining workspace failures are in the
+  unrelated dirty gateway worktree: two `ox-gateway-wasm` Clippy findings, its
+  silent parse fallback, the pre-existing wasm-incompatible `structfs-http`
+  blocking import, and gateway/gateway-Wasm coverage. Those files are
+  intentionally not modified by this project.
 
 **Success:** Remote execution is demonstrably the same core under another Store
 adapter, and remains responsive and recoverable under contention and failure.

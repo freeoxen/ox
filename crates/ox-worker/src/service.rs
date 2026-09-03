@@ -33,14 +33,14 @@ pub struct WorkerService {
 
 impl WorkerService {
     pub async fn start(config: WorkerConfig) -> Result<Self, String> {
-        Self::start_inner(config, true, None, None).await
+        Self::start_inner(config, true, None, None, None).await
     }
 
     /// Build the identical core/public Store without binding a carrier. Useful
     /// for embedding and semantic parity tests; production service mode uses
     /// [`Self::start`].
     pub async fn start_in_process(config: WorkerConfig) -> Result<Self, String> {
-        Self::start_inner(config, false, None, None).await
+        Self::start_inner(config, false, None, None, None).await
     }
 
     /// Semantic-test constructor using the executor's existing scripted
@@ -50,12 +50,33 @@ impl WorkerService {
         transport_factory: Option<ox_executor::test_support::TransportFactory>,
         tool_injector: Option<ox_executor::test_support::ToolInjector>,
     ) -> Result<Self, String> {
-        Self::start_inner(config, false, transport_factory, tool_injector).await
+        Self::start_inner(config, false, None, transport_factory, tool_injector).await
+    }
+
+    /// Bind the real Unix carrier while using an already-verified build
+    /// identity. This keeps transport lifecycle tests independent of the host's
+    /// sandbox implementation; production callers must use [`Self::start`].
+    #[doc(hidden)]
+    pub async fn start_bound_with_test_hooks(
+        config: WorkerConfig,
+        build_identity: WorkerBuildIdentity,
+        transport_factory: Option<ox_executor::test_support::TransportFactory>,
+        tool_injector: Option<ox_executor::test_support::ToolInjector>,
+    ) -> Result<Self, String> {
+        Self::start_inner(
+            config,
+            true,
+            Some(build_identity),
+            transport_factory,
+            tool_injector,
+        )
+        .await
     }
 
     async fn start_inner(
         config: WorkerConfig,
         bind_socket: bool,
+        build_identity: Option<WorkerBuildIdentity>,
         transport_factory: Option<ox_executor::test_support::TransportFactory>,
         tool_injector: Option<ox_executor::test_support::ToolInjector>,
     ) -> Result<Self, String> {
@@ -73,37 +94,41 @@ impl WorkerService {
         if bind_socket {
             prepare_socket(&config.socket_path).await?;
         }
-        std::fs::create_dir_all(&config.inbox_root).map_err(|error| error.to_string())?;
+        std::fs::create_dir_all(&config.inbox_root)
+            .map_err(|error| format!("create worker inbox root: {error}"))?;
 
-        let (image_digest, sandbox_preflight) = if bind_socket {
+        let build_identity = if let Some(build_identity) = build_identity {
+            build_identity
+        } else if bind_socket {
             let image = std::env::var("OX_WORKER_IMAGE_DIGEST")
                 .map_err(|_| "OX_WORKER_IMAGE_DIGEST must be set to a pinned image reference")?;
             validate_pinned_image(&image)?;
-            let tool_executor = std::env::current_exe()
-                .map_err(|error| error.to_string())?
-                .parent()
-                .ok_or("worker executable has no parent directory")?
-                .join("ox-tool-exec");
+            let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+            let tool_executor = tool_executor_path(&executable)?;
             ox_executor::remote_sandbox_preflight(
                 &config.inbox_root.join("sandbox-preflight"),
                 &tool_executor,
             )?;
-            (image, "passed".to_string())
+            verified_build_identity(image, executable_digest()?)
         } else {
             // In-process semantic tests do not bind a remotely reachable
             // carrier. Their health shape remains complete without claiming an
             // image artifact was verified.
-            ("test-in-process@sha256:0000000000000000000000000000000000000000000000000000000000000000".into(), "passed".into())
+            WorkerBuildIdentity {
+                executable_digest: executable_digest()?,
+                image_digest: "test-in-process@sha256:0000000000000000000000000000000000000000000000000000000000000000".into(),
+                sandbox_preflight: "passed".into(),
+            }
         };
 
         let broker = ox_broker::BrokerStore::default();
         // As in the interactive CLI, both handles are the established
         // InboxStore implementation over the same WAL database: one is mounted
         // for Store ingress and one is owned by the sole ExecutionCore.
-        let mounted_inbox =
-            ox_inbox::InboxStore::open(&config.inbox_root).map_err(|e| e.to_string())?;
-        let core_inbox =
-            ox_inbox::InboxStore::open(&config.inbox_root).map_err(|e| e.to_string())?;
+        let mounted_inbox = ox_inbox::InboxStore::open(&config.inbox_root)
+            .map_err(|error| format!("open mounted worker inbox: {error}"))?;
+        let core_inbox = ox_inbox::InboxStore::open(&config.inbox_root)
+            .map_err(|error| format!("open executor worker inbox: {error}"))?;
         let mounts = ox_executor::mount_execution_stores(
             &broker,
             mounted_inbox,
@@ -123,7 +148,8 @@ impl WorkerService {
             executor_config,
             transport_factory,
             tool_injector,
-        )?;
+        )
+        .map_err(|error| format!("initialize worker execution core: {error}"))?;
         let execution = Arc::new(core.into_handle(config.command_capacity));
         let public_store = PublicStore::new(
             broker.client(),
@@ -132,12 +158,9 @@ impl WorkerService {
             config.node_id,
             config.attempt_id,
             config.limits,
-            WorkerBuildIdentity {
-                executable_digest: executable_digest()?,
-                image_digest,
-                sandbox_preflight,
-            },
-        )?;
+            build_identity,
+        )
+        .map_err(|error| format!("initialize worker public store: {error}"))?;
         let (server, socket_identity) = if bind_socket {
             let server = spawn_unix_server(
                 &config.socket_path,
@@ -147,18 +170,9 @@ impl WorkerService {
                 ),
                 config.transport.with_error_mapper(Arc::new(worker_error)),
             )
-            .map_err(|error| error.to_string())?;
-            std::fs::set_permissions(&config.socket_path, std::fs::Permissions::from_mode(0o600))
-                .map_err(|error| error.to_string())?;
-            let metadata = std::fs::symlink_metadata(&config.socket_path)
-                .map_err(|error| error.to_string())?;
-            if !metadata.file_type().is_socket()
-                || metadata.uid() != unsafe { libc::geteuid() }
-                || metadata.permissions().mode() & 0o777 != 0o600
-            {
-                return Err("worker socket ownership or mode verification failed".into());
-            }
-            (Some(server), Some((metadata.dev(), metadata.ino())))
+            .map_err(|error| format!("bind worker Unix carrier: {error}"))?;
+            let identity = finalize_bound_socket(&config.socket_path)?;
+            (Some(server), Some(identity))
         } else {
             (None, None)
         };
@@ -207,16 +221,13 @@ async fn prepare_socket(path: &Path) -> Result<(), String> {
     let parent = path.parent().ok_or("socket path has no parent")?;
     match std::fs::symlink_metadata(parent) {
         Ok(metadata) => {
-            if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
-                return Err("worker socket parent must be a real directory".into());
-            }
-            if metadata.uid() != unsafe { libc::geteuid() }
-                || metadata.permissions().mode() & 0o077 != 0
-            {
-                return Err(
-                    "worker socket parent must be owned by the current uid and mode 0700".into(),
-                );
-            }
+            validate_socket_parent(
+                metadata.file_type().is_dir(),
+                metadata.file_type().is_symlink(),
+                metadata.uid(),
+                unsafe { libc::geteuid() },
+                metadata.permissions().mode(),
+            )?;
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             std::fs::create_dir(parent).map_err(|error| error.to_string())?;
@@ -230,20 +241,13 @@ async fn prepare_socket(path: &Path) -> Result<(), String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.to_string()),
     };
-    if !metadata.file_type().is_socket() {
-        return Err("refusing to unlink non-socket service path".into());
-    }
-    if metadata.uid() != unsafe { libc::geteuid() } {
-        return Err("refusing to unlink socket owned by another uid".into());
-    }
+    validate_unlink_candidate(metadata.file_type().is_socket(), metadata.uid(), unsafe {
+        libc::geteuid()
+    })?;
     match tokio::net::UnixStream::connect(path).await {
         Ok(_) => Err("worker socket is already live".into()),
-        Err(error)
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
-            ) =>
-        {
+        Err(error) => {
+            validate_connect_error(error)?;
             // Re-read immediately before unlink so a replacement cannot be
             // confused with the stale socket we proved safe above.
             let current = std::fs::symlink_metadata(path).map_err(|error| error.to_string())?;
@@ -252,7 +256,6 @@ async fn prepare_socket(path: &Path) -> Result<(), String> {
             }
             std::fs::remove_file(path).map_err(|error| error.to_string())
         }
-        Err(error) => Err(format!("could not prove worker socket stale: {error}")),
     }
 }
 
@@ -262,10 +265,13 @@ fn remove_owned_socket(path: &Path, identity: (u64, u64)) -> Result<(), String> 
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.to_string()),
     };
-    if metadata.file_type().is_socket()
-        && metadata.uid() == unsafe { libc::geteuid() }
-        && (metadata.dev(), metadata.ino()) == identity
-    {
+    if owns_socket(
+        metadata.file_type().is_socket(),
+        metadata.uid(),
+        unsafe { libc::geteuid() },
+        (metadata.dev(), metadata.ino()),
+        identity,
+    ) {
         std::fs::remove_file(path).map_err(|error| error.to_string())
     } else {
         Err("refusing to remove service path whose identity changed".into())
@@ -273,13 +279,112 @@ fn remove_owned_socket(path: &Path, identity: (u64, u64)) -> Result<(), String> 
 }
 
 fn same_file(left: &Metadata, right: &Metadata) -> bool {
-    left.dev() == right.dev() && left.ino() == right.ino() && right.file_type().is_socket()
+    same_socket_identity(
+        (left.dev(), left.ino()),
+        (right.dev(), right.ino()),
+        right.file_type().is_socket(),
+    )
+}
+
+fn validate_socket_metadata(metadata: &Metadata) -> Result<(), String> {
+    validate_bound_socket(
+        metadata.file_type().is_socket(),
+        metadata.uid(),
+        unsafe { libc::geteuid() },
+        metadata.permissions().mode(),
+    )
+}
+
+fn finalize_bound_socket(path: &Path) -> Result<(u64, u64), String> {
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .map_err(|error| error.to_string())?;
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    validate_socket_metadata(&metadata)?;
+    Ok((metadata.dev(), metadata.ino()))
+}
+
+fn validate_socket_parent(
+    is_dir: bool,
+    is_symlink: bool,
+    uid: u32,
+    current_uid: u32,
+    mode: u32,
+) -> Result<(), String> {
+    if !is_dir || is_symlink {
+        return Err("worker socket parent must be a real directory".into());
+    }
+    if uid != current_uid || mode & 0o077 != 0 {
+        return Err("worker socket parent must be owned by the current uid and mode 0700".into());
+    }
+    Ok(())
+}
+
+fn validate_unlink_candidate(is_socket: bool, uid: u32, current_uid: u32) -> Result<(), String> {
+    if !is_socket {
+        return Err("refusing to unlink non-socket service path".into());
+    }
+    if uid != current_uid {
+        return Err("refusing to unlink socket owned by another uid".into());
+    }
+    Ok(())
+}
+
+fn validate_connect_error(error: std::io::Error) -> Result<(), String> {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+    ) {
+        Ok(())
+    } else {
+        Err(format!("could not prove worker socket stale: {error}"))
+    }
+}
+
+fn owns_socket(
+    is_socket: bool,
+    uid: u32,
+    current_uid: u32,
+    actual: (u64, u64),
+    expected: (u64, u64),
+) -> bool {
+    is_socket && uid == current_uid && actual == expected
+}
+
+fn same_socket_identity(left: (u64, u64), right: (u64, u64), right_is_socket: bool) -> bool {
+    left == right && right_is_socket
+}
+
+fn validate_bound_socket(
+    is_socket: bool,
+    uid: u32,
+    current_uid: u32,
+    mode: u32,
+) -> Result<(), String> {
+    if !is_socket || uid != current_uid || mode & 0o777 != 0o600 {
+        return Err("worker socket ownership or mode verification failed".into());
+    }
+    Ok(())
 }
 
 fn executable_digest() -> Result<String, String> {
     let path = std::env::current_exe().map_err(|error| error.to_string())?;
     let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
     Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+fn tool_executor_path(worker_executable: &Path) -> Result<PathBuf, String> {
+    Ok(worker_executable
+        .parent()
+        .ok_or("worker executable has no parent directory")?
+        .join("ox-tool-exec"))
+}
+
+fn verified_build_identity(image_digest: String, executable_digest: String) -> WorkerBuildIdentity {
+    WorkerBuildIdentity {
+        executable_digest,
+        image_digest,
+        sandbox_preflight: "passed".into(),
+    }
 }
 
 fn validate_pinned_image(value: &str) -> Result<(), String> {
@@ -294,163 +399,111 @@ fn validate_pinned_image(value: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
+/// Narrow hooks for exercising fail-closed boundary behavior without counting
+/// test harness code as worker production coverage.
+#[doc(hidden)]
+pub mod test_support {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
 
-    fn private_tempdir() -> tempfile::TempDir {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        temp
+    pub fn map_error(error: &structfs_core_store::Error) -> WireError {
+        worker_error(error)
     }
 
-    #[test]
-    fn worker_errors_keep_overload_and_conflict_categories() {
-        let overload = structfs_core_store::Error::store(
-            "WorkerPublicStore",
-            "message",
-            "overloaded: queued input limit reached",
-        );
-        let conflict = structfs_core_store::Error::store(
-            "WorkerPublicStore",
-            "approval",
-            "stale approval identity",
-        );
-        assert_eq!(worker_error(&overload).code, WireErrorCode::Overloaded);
-        assert_eq!(worker_error(&conflict).code, WireErrorCode::Conflict);
+    pub async fn prepare_socket(path: &Path) -> Result<(), String> {
+        super::prepare_socket(path).await
     }
 
-    #[tokio::test]
-    async fn socket_parent_and_stale_cleanup_are_fail_closed() {
-        let temp = private_tempdir();
-        let insecure = temp.path().join("insecure");
-        std::fs::create_dir(&insecure).unwrap();
-        std::fs::set_permissions(&insecure, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let socket = insecure.join("worker.sock");
-        assert!(
-            prepare_socket(&socket)
-                .await
-                .unwrap_err()
-                .contains("mode 0700")
-        );
-        assert_eq!(
-            std::fs::metadata(&insecure).unwrap().permissions().mode() & 0o777,
-            0o755
-        );
-
-        let runtime = temp.path().join("runtime");
-        let socket = runtime.join("worker.sock");
-        prepare_socket(&socket).await.unwrap();
-        assert_eq!(
-            std::fs::metadata(&runtime).unwrap().permissions().mode() & 0o777,
-            0o700
-        );
-        std::fs::write(&socket, b"not a socket").unwrap();
-        assert!(
-            prepare_socket(&socket)
-                .await
-                .unwrap_err()
-                .contains("non-socket")
-        );
-        std::fs::remove_file(&socket).unwrap();
-
-        let listener = match tokio::net::UnixListener::bind(&socket) {
-            Ok(listener) => listener,
-            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return,
-            Err(error) => panic!("bind failed: {error}"),
-        };
-        assert!(
-            prepare_socket(&socket)
-                .await
-                .unwrap_err()
-                .contains("already live")
-        );
-        drop(listener);
-        prepare_socket(&socket).await.unwrap();
-        assert!(!socket.exists(), "owned stale socket was removed");
+    pub fn remove_owned_socket(path: &Path, identity: (u64, u64)) -> Result<(), String> {
+        super::remove_owned_socket(path, identity)
     }
 
-    #[test]
-    fn shutdown_cleanup_refuses_identity_swap() {
-        let temp = private_tempdir();
-        let socket = temp.path().join("worker.sock");
-        let listener = match std::os::unix::net::UnixListener::bind(&socket) {
-            Ok(listener) => listener,
-            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return,
-            Err(error) => panic!("bind failed: {error}"),
-        };
-        let metadata = std::fs::symlink_metadata(&socket).unwrap();
-        let identity = (metadata.dev(), metadata.ino());
-        drop(listener);
-        std::fs::remove_file(&socket).unwrap();
-        std::fs::write(&socket, b"replacement").unwrap();
-        assert!(
-            remove_owned_socket(&socket, identity)
-                .unwrap_err()
-                .contains("identity changed")
-        );
-        assert!(socket.exists());
+    pub fn same_file(left: &Metadata, right: &Metadata) -> bool {
+        super::same_file(left, right)
     }
 
-    #[test]
-    fn production_image_reference_must_be_digest_pinned() {
-        assert!(validate_pinned_image(
-            "ghcr.io/freeoxen/ox-worker@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-        )
-        .is_ok());
-        assert!(validate_pinned_image("ghcr.io/freeoxen/ox-worker:latest").is_err());
-        assert!(validate_pinned_image("sha256:short").is_err());
+    pub fn validate_socket_metadata(metadata: &Metadata) -> Result<(), String> {
+        super::validate_socket_metadata(metadata)
     }
 
-    fn in_process_config(root: &Path) -> WorkerConfig {
-        WorkerConfig {
-            inbox_root: root.join("inbox"),
-            socket_path: root.join("unused.sock"),
-            node_id: "node-test".into(),
-            attempt_id: "attempt-test".into(),
-            command_capacity: 8,
-            limits: WorkerLimits::default(),
-            transport: ServerConfig::default(),
-        }
+    pub fn finalize_bound_socket(path: &Path) -> Result<(u64, u64), String> {
+        super::finalize_bound_socket(path)
     }
 
-    #[tokio::test]
-    async fn invalid_in_process_configuration_fails_before_starting_a_core() {
-        let temp = private_tempdir();
+    pub fn validate_socket_parent(
+        is_dir: bool,
+        is_symlink: bool,
+        uid: u32,
+        current_uid: u32,
+        mode: u32,
+    ) -> Result<(), String> {
+        super::validate_socket_parent(is_dir, is_symlink, uid, current_uid, mode)
+    }
 
-        let mut config = in_process_config(temp.path());
-        config.command_capacity = 0;
-        assert_eq!(
-            WorkerService::start_in_process(config).await.err().unwrap(),
-            "command_capacity must be non-zero"
-        );
+    pub fn validate_unlink_candidate(
+        is_socket: bool,
+        uid: u32,
+        current_uid: u32,
+    ) -> Result<(), String> {
+        super::validate_unlink_candidate(is_socket, uid, current_uid)
+    }
 
-        let mut config = in_process_config(temp.path());
-        config.node_id.clear();
-        assert!(
-            WorkerService::start_in_process(config)
-                .await
-                .err()
-                .unwrap()
-                .contains("node_id and attempt_id")
-        );
+    pub fn validate_connect_error(kind: std::io::ErrorKind) -> Result<(), String> {
+        super::validate_connect_error(std::io::Error::from(kind))
+    }
 
-        let mut config = in_process_config(temp.path());
-        config.attempt_id = "x".repeat(129);
-        assert!(
-            WorkerService::start_in_process(config)
-                .await
-                .err()
-                .unwrap()
-                .contains("1..=128")
-        );
+    pub fn owns_socket(
+        is_socket: bool,
+        uid: u32,
+        current_uid: u32,
+        actual: (u64, u64),
+        expected: (u64, u64),
+    ) -> bool {
+        super::owns_socket(is_socket, uid, current_uid, actual, expected)
+    }
 
-        let mut config = in_process_config(temp.path());
-        config.limits.max_parked_cursors = 0;
-        assert_eq!(
-            WorkerService::start_in_process(config).await.err().unwrap(),
-            "all worker limits must be non-zero"
-        );
+    pub fn same_socket_identity(
+        left: (u64, u64),
+        right: (u64, u64),
+        right_is_socket: bool,
+    ) -> bool {
+        super::same_socket_identity(left, right, right_is_socket)
+    }
+
+    pub fn validate_bound_socket(
+        is_socket: bool,
+        uid: u32,
+        current_uid: u32,
+        mode: u32,
+    ) -> Result<(), String> {
+        super::validate_bound_socket(is_socket, uid, current_uid, mode)
+    }
+
+    pub fn executable_digest() -> Result<String, String> {
+        super::executable_digest()
+    }
+
+    pub fn validate_pinned_image(value: &str) -> Result<(), String> {
+        super::validate_pinned_image(value)
+    }
+
+    pub fn tool_executor_path(worker_executable: &Path) -> Result<PathBuf, String> {
+        super::tool_executor_path(worker_executable)
+    }
+
+    pub fn verified_build_identity(
+        image_digest: String,
+        executable_digest: String,
+    ) -> WorkerBuildIdentity {
+        super::verified_build_identity(image_digest, executable_digest)
+    }
+
+    pub fn with_socket_identity(
+        mut service: WorkerService,
+        socket_path: PathBuf,
+        identity: (u64, u64),
+    ) -> WorkerService {
+        service.socket_path = socket_path;
+        service.socket_identity = Some(identity);
+        service
     }
 }

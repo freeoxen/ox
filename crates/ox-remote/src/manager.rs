@@ -352,11 +352,9 @@ impl RemoteManagerStore {
         let (node, worker) = if let Some(selected) = selected {
             selected
         } else {
-            if matches!(request.placement, PlacementPolicy::RequireNode { .. }) {
-                return Err(RemoteManagerError::RequiredNodeUnavailable(
-                    "required node did not pass health/capacity".into(),
-                ));
-            }
+            // `select_existing` returns `RequiredNodeUnavailable` itself for
+            // every unsuccessful `RequireNode` placement, so this arm is only
+            // reachable for policies that permit provisioning.
             let node_id = stable_id("n", &request.request_id);
             let attempt_id = stable_id("a", &request.request_id);
             let vm_name = format!("ox-{}", digest_prefix(&request.request_id, 20));

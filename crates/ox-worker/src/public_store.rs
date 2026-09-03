@@ -5,7 +5,6 @@ use std::sync::Arc;
 use ox_broker::async_store::{AsyncReader, AsyncWriter, BoxFuture};
 use ox_executor::{ExecutionHandle, derive_unresolved_approval_id};
 use ox_inbox::worker_ingress::{CancelEnvelope, CreateEnvelope, DecisionEnvelope, PromptEnvelope};
-use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 use structfs_core_store::{Error as StoreError, Path, Record, Value, path};
 use tokio::sync::{Mutex, Semaphore};
@@ -139,40 +138,25 @@ impl PublicStore {
     }
 
     async fn pending_inputs(&self, thread_id: &str) -> Result<usize, StoreError> {
-        match self
-            .read_value(&Path::parse(&format!(
+        required_count(
+            self.read_value(&Path::parse(&format!(
                 "inbox/worker/pending/messages/{thread_id}"
             ))?)
-            .await?
-        {
-            Some(Value::Integer(count)) => {
-                usize::try_from(count).map_err(|error| Self::error("capacity", error))
-            }
-            _ => Err(Self::error("capacity", "pending message count was missing")),
-        }
+            .await?,
+            "pending message count was missing",
+        )
     }
 
     async fn thread_count(&self) -> Result<usize, StoreError> {
-        match self.read_value(&path!("inbox/threads")).await? {
-            Some(Value::Array(threads)) => Ok(threads.len()),
-            None => Ok(0),
-            _ => Err(Self::error(
-                "capacity",
-                "inbox thread listing was not an array",
-            )),
-        }
+        thread_count_value(self.read_value(&path!("inbox/threads")).await?)
     }
 
     async fn reserved_thread_count(&self) -> Result<usize, StoreError> {
-        match self
-            .read_value(&path!("inbox/worker/reserved/threads"))
-            .await?
-        {
-            Some(Value::Integer(count)) => {
-                usize::try_from(count).map_err(|error| Self::error("capacity", error))
-            }
-            _ => Err(Self::error("capacity", "reserved thread count was missing")),
-        }
+        required_count(
+            self.read_value(&path!("inbox/worker/reserved/threads"))
+                .await?,
+            "reserved thread count was missing",
+        )
     }
 
     fn message_admission(&self, thread_id: &str) -> Arc<Mutex<()>> {
@@ -198,12 +182,11 @@ impl PublicStore {
         }
         let scoped = self.client.scoped(&format!("threads/{thread_id}"));
         let pending = scoped.read(&path!("approval/pending")).await?;
-        let Some(pending_value) = pending.and_then(|record| record.as_value().cloned()) else {
+        let Some(pending_value) =
+            pending_value(pending.and_then(|record| record.as_value().cloned()))
+        else {
             return Ok(None);
         };
-        if pending_value == Value::Null {
-            return Ok(None);
-        }
         let entries = scoped
             .read_typed::<Vec<ox_kernel::log::LogEntry>>(&path!("log/entries"))
             .await?
@@ -214,37 +197,65 @@ impl PublicStore {
     async fn read_impl(self, from: Path) -> Result<Option<Record>, StoreError> {
         let parts: Vec<&str> = from.iter().map(String::as_str).collect();
         match parts.as_slice() {
-            ["health"] => Ok(Some(parsed(serde_json::json!({
-                "status": "ready", "node_id": &*self.node_id, "attempt_id": &*self.attempt_id,
-                "worker_version": env!("CARGO_PKG_VERSION"),
-                "wire_version": ox_structfs_transport::WIRE_VERSION,
-                "image_digest": &*self.image_digest,
-                "agent_wasm_sha256": ox_executor::agent_wasm_sha256(),
-                "executable_sha256": &*self.executable_digest,
-                "policy_profile": "clash_remote_enforced",
-                "policy_contract_sha256": format!("{:x}", Sha256::digest(b"clash_remote_enforced_v1")),
-                "sandbox_enforcement": {"mode": "required", "preflight": &*self.sandbox_preflight}
-            }))?)),
-            ["capabilities"] => Ok(Some(parsed(serde_json::json!({
-                "protocol": "ox-worker-v1", "wire_version": ox_structfs_transport::WIRE_VERSION,
-                "operations": ["create", "message", "ledger", "approval", "cancel"],
-                "multiple_conversations": true
-            }))?)),
+            ["health"] => Ok(Some(parsed(object([
+                ("status", "ready".into()),
+                ("node_id", self.node_id.to_string().into()),
+                ("attempt_id", self.attempt_id.to_string().into()),
+                ("worker_version", env!("CARGO_PKG_VERSION").into()),
+                ("wire_version", ox_structfs_transport::WIRE_VERSION.into()),
+                ("image_digest", self.image_digest.to_string().into()),
+                ("agent_wasm_sha256", ox_executor::agent_wasm_sha256().into()),
+                (
+                    "executable_sha256",
+                    self.executable_digest.to_string().into(),
+                ),
+                ("policy_profile", "clash_remote_enforced".into()),
+                (
+                    "policy_contract_sha256",
+                    format!("{:x}", Sha256::digest(b"clash_remote_enforced_v1")).into(),
+                ),
+                (
+                    "sandbox_enforcement",
+                    object([
+                        ("mode", "required".into()),
+                        ("preflight", self.sandbox_preflight.to_string().into()),
+                    ]),
+                ),
+            ])))),
+            ["capabilities"] => Ok(Some(parsed(object([
+                ("protocol", "ox-worker-v1".into()),
+                ("wire_version", ox_structfs_transport::WIRE_VERSION.into()),
+                (
+                    "operations",
+                    serde_json::Value::Array(
+                        ["create", "message", "ledger", "approval", "cancel"]
+                            .map(|operation| operation.into())
+                            .into(),
+                    ),
+                ),
+                ("multiple_conversations", true.into()),
+            ])))),
             ["capacity"] => {
                 let stats = self.execution.stats();
                 let threads = self.thread_count().await?;
-                Ok(Some(parsed(serde_json::json!({
-                    "active_turns": stats.active_turns,
-                    "active_turns_include_approval_parked_wasm": true,
-                    "resident_threads": stats.resident_threads,
-                    "total_threads": threads,
-                    "limits": {
-                        "active_turns": self.limits.max_active_turns,
-                        "queued_inputs_per_thread": self.limits.max_queued_inputs_per_thread,
-                        "total_threads": self.limits.max_total_threads,
-                        "parked_cursors": self.limits.max_parked_cursors
-                    }
-                }))?))
+                Ok(Some(parsed(object([
+                    ("active_turns", stats.active_turns.into()),
+                    ("active_turns_include_approval_parked_wasm", true.into()),
+                    ("resident_threads", stats.resident_threads.into()),
+                    ("total_threads", threads.into()),
+                    (
+                        "limits",
+                        object([
+                            ("active_turns", self.limits.max_active_turns.into()),
+                            (
+                                "queued_inputs_per_thread",
+                                self.limits.max_queued_inputs_per_thread.into(),
+                            ),
+                            ("total_threads", self.limits.max_total_threads.into()),
+                            ("parked_cursors", self.limits.max_parked_cursors.into()),
+                        ]),
+                    ),
+                ]))))
             }
             ["conversations"] => self.client.read(&path!("inbox/threads")).await,
             ["conversations", thread_id] => {
@@ -280,7 +291,7 @@ impl PublicStore {
                 drop(permit);
                 Ok(Some(parsed(
                     serde_json::json!({"entries": batch.entries, "next_seq": batch.next_seq, "has_more": batch.has_more}),
-                )?))
+                )))
             }
             ["conversations", thread_id, "result"] => {
                 let permit = self
@@ -312,14 +323,14 @@ impl PublicStore {
                     "ledger_tail": batch.entries,
                     "next_seq": batch.next_seq,
                     "projection": "durable_ledger_tail"
-                }))?))
+                }))))
             }
             ["conversations", thread_id, "approvals", "pending"] => {
                 match self.unresolved_approval(thread_id).await? {
                     Some((id, request)) => Ok(Some(parsed(serde_json::json!({
                         "approval_id": id,
                         "request": structfs_serde_store::value_to_json(request)
-                    }))?)),
+                    })))),
                     None => Ok(Some(Record::parsed(Value::Null))),
                 }
             }
@@ -362,13 +373,7 @@ impl PublicStore {
                     .await?
                     .and_then(|record| record.as_value().cloned())
                     .ok_or_else(|| Self::error("create", "missing receipt"))?;
-                let thread_id = match receipt {
-                    Value::Map(map) => match map.get("thread_id") {
-                        Some(Value::String(id)) => id.clone(),
-                        _ => return Err(Self::error("create", "receipt has no thread id")),
-                    },
-                    _ => return Err(Self::error("create", "invalid receipt")),
-                };
+                let thread_id = receipt_thread_id(receipt)?;
                 Path::parse(&format!("conversations/{thread_id}")).map_err(Into::into)
             }
             ["conversations", thread_id, "messages"] => {
@@ -480,10 +485,17 @@ impl AsyncWriter for PublicStore {
     }
 }
 
-fn parsed(value: impl Serialize) -> Result<Record, StoreError> {
-    structfs_serde_store::to_value(&value)
-        .map(Record::parsed)
-        .map_err(|error| PublicStore::error("encode", error))
+fn parsed(value: serde_json::Value) -> Record {
+    Record::parsed(structfs_serde_store::json_to_value(value))
+}
+
+fn object<const N: usize>(entries: [(&str, serde_json::Value); N]) -> serde_json::Value {
+    serde_json::Value::Object(
+        entries
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value))
+            .collect(),
+    )
 }
 
 fn decode<T: serde::de::DeserializeOwned>(
@@ -497,6 +509,43 @@ fn decode<T: serde::de::DeserializeOwned>(
     structfs_serde_store::from_value(value).map_err(|error| PublicStore::error(operation, error))
 }
 
+fn required_count(value: Option<Value>, missing: &'static str) -> Result<usize, StoreError> {
+    match value {
+        Some(Value::Integer(count)) => {
+            usize::try_from(count).map_err(|error| PublicStore::error("capacity", error))
+        }
+        _ => Err(PublicStore::error("capacity", missing)),
+    }
+}
+
+fn thread_count_value(value: Option<Value>) -> Result<usize, StoreError> {
+    match value {
+        Some(Value::Array(threads)) => Ok(threads.len()),
+        None => Ok(0),
+        _ => Err(PublicStore::error(
+            "capacity",
+            "inbox thread listing was not an array",
+        )),
+    }
+}
+
+fn pending_value(value: Option<Value>) -> Option<Value> {
+    match value {
+        None | Some(Value::Null) => None,
+        value => value,
+    }
+}
+
+fn receipt_thread_id(receipt: Value) -> Result<String, StoreError> {
+    match receipt {
+        Value::Map(map) => match map.get("thread_id") {
+            Some(Value::String(id)) => Ok(id.clone()),
+            _ => Err(PublicStore::error("create", "receipt has no thread id")),
+        },
+        _ => Err(PublicStore::error("create", "invalid receipt")),
+    }
+}
+
 fn encode_id(id: &str) -> String {
     let mut encoded = String::with_capacity(1 + id.len() * 2);
     encoded.push('i');
@@ -505,4 +554,52 @@ fn encode_id(id: &str) -> String {
         let _ = write!(encoded, "{byte:02x}");
     }
     encoded
+}
+
+/// Pure adapters used to prove corruption handling without mutating the live
+/// inbox implementation behind the public Store.
+#[doc(hidden)]
+pub mod test_support {
+    use super::*;
+
+    pub fn required_count(value: Option<Value>) -> Result<usize, StoreError> {
+        super::required_count(value, "missing test count")
+    }
+
+    pub fn thread_count(value: Option<Value>) -> Result<usize, StoreError> {
+        super::thread_count_value(value)
+    }
+
+    pub fn pending_value(value: Option<Value>) -> Option<Value> {
+        super::pending_value(value)
+    }
+
+    pub fn receipt_thread_id(receipt: Value) -> Result<String, StoreError> {
+        super::receipt_thread_id(receipt)
+    }
+
+    pub async fn hold_cursor(store: &PublicStore) -> tokio::sync::OwnedSemaphorePermit {
+        store
+            .cursor_admission
+            .clone()
+            .acquire_owned()
+            .await
+            .unwrap()
+    }
+
+    pub fn message_admission_is_reused(store: &PublicStore, thread_id: &str) -> bool {
+        let first = store.message_admission(thread_id);
+        let second = store.message_admission(thread_id);
+        Arc::ptr_eq(&first, &second)
+    }
+
+    pub fn message_admission_recovers_from_poison(store: &PublicStore) -> bool {
+        let locks = store.message_admissions.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = locks.lock().unwrap();
+            panic!("intentional admission-lock poison");
+        })
+        .join();
+        Arc::strong_count(&store.message_admission("after-poison")) == 1
+    }
 }

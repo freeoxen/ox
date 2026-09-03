@@ -7,8 +7,9 @@ use std::{os::unix::fs::PermissionsExt, time::Duration};
 use ox_broker::async_store::{AsyncReader, AsyncWriter};
 use ox_executor::test_support::{FakeTransport, TransportFactory, factory_for};
 use ox_inbox::worker_ingress::{CancelEnvelope, CreateEnvelope, PromptEnvelope};
+use ox_worker::public_store::test_support as public_test_support;
 use ox_worker::{WorkerConfig, WorkerLimits, WorkerService};
-use structfs_core_store::{Path, Record, Value, path};
+use structfs_core_store::{Format, Path, Record, Value, path};
 
 #[derive(Default)]
 struct FourRoleState {
@@ -101,6 +102,41 @@ fn private_tempdir() -> tempfile::TempDir {
     temp
 }
 
+#[test]
+fn defensive_public_value_decoders_reject_corrupt_internal_state() {
+    assert_eq!(
+        public_test_support::required_count(Some(Value::Integer(3))).unwrap(),
+        3
+    );
+    assert!(public_test_support::required_count(Some(Value::Integer(-1))).is_err());
+    assert!(public_test_support::required_count(None).is_err());
+    assert!(public_test_support::required_count(Some(Value::Null)).is_err());
+
+    assert_eq!(public_test_support::thread_count(None).unwrap(), 0);
+    assert_eq!(
+        public_test_support::thread_count(Some(Value::Array(vec![Value::Null, Value::Null])))
+            .unwrap(),
+        2
+    );
+    assert!(public_test_support::thread_count(Some(Value::Integer(1))).is_err());
+
+    assert_eq!(public_test_support::pending_value(None), None);
+    assert_eq!(public_test_support::pending_value(Some(Value::Null)), None);
+    assert_eq!(
+        public_test_support::pending_value(Some(Value::String("request".into()))),
+        Some(Value::String("request".into()))
+    );
+
+    let receipt = structfs_serde_store::json_to_value(serde_json::json!({"thread_id": "t_1"}));
+    assert_eq!(
+        public_test_support::receipt_thread_id(receipt).unwrap(),
+        "t_1"
+    );
+    let missing = structfs_serde_store::json_to_value(serde_json::json!({"status": "created"}));
+    assert!(public_test_support::receipt_thread_id(missing).is_err());
+    assert!(public_test_support::receipt_thread_id(Value::Null).is_err());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_core_hosts_two_threads_with_bounded_nonblocking_public_control() {
     let temp = private_tempdir();
@@ -126,6 +162,13 @@ async fn one_core_hosts_two_threads_with_bounded_nonblocking_public_control() {
     .unwrap();
 
     let mut store = service.public_store.clone();
+    assert!(public_test_support::message_admission_is_reused(
+        &store,
+        "same-thread"
+    ));
+    assert!(public_test_support::message_admission_recovers_from_poison(
+        &store
+    ));
     let first = CreateEnvelope {
         create_id: "create-1".into(),
         title: "one".into(),
@@ -248,6 +291,127 @@ async fn one_core_hosts_two_threads_with_bounded_nonblocking_public_control() {
             .await
             .is_err()
     );
+    service.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn public_surface_is_typed_and_fail_closed_for_bad_or_unknown_mutations() {
+    let temp = private_tempdir();
+    let root = temp.path().join("inbox");
+    let transport = FakeTransport::new();
+    transport.push_turn(vec![ox_kernel::StreamEvent::MessageStop]);
+    let service = WorkerService::start_in_process_with_test_hooks(
+        WorkerConfig {
+            inbox_root: root,
+            socket_path: temp.path().join("unused.sock"),
+            node_id: "surface-node".into(),
+            attempt_id: "surface-attempt".into(),
+            command_capacity: 8,
+            limits: WorkerLimits::default(),
+            transport: ox_structfs_transport::ServerConfig::default(),
+        },
+        Some(factory_for(transport)),
+        None,
+    )
+    .await
+    .unwrap();
+    let mut store = service.public_store.clone();
+
+    let health = store.read(&path!("health")).await.unwrap().unwrap();
+    let health = structfs_serde_store::value_to_json(health.as_value().unwrap().clone());
+    assert_eq!(health["status"], "ready");
+    assert_eq!(health["node_id"], "surface-node");
+    assert_eq!(health["attempt_id"], "surface-attempt");
+    assert_eq!(health["sandbox_enforcement"]["preflight"], "passed");
+    assert!(health["agent_wasm_sha256"].as_str().unwrap().len() >= 64);
+
+    let capabilities = store.read(&path!("capabilities")).await.unwrap().unwrap();
+    let capabilities =
+        structfs_serde_store::value_to_json(capabilities.as_value().unwrap().clone());
+    assert_eq!(capabilities["multiple_conversations"], true);
+    assert_eq!(capabilities["protocol"], "ox-worker-v1");
+    assert_eq!(capabilities["operations"].as_array().unwrap().len(), 5);
+
+    assert!(
+        store
+            .read(&path!("conversations/missing"))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let pending = store
+        .read(&path!("conversations/missing/approvals/pending"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(pending.as_value(), Some(&Value::Null));
+
+    for target in [
+        path!("conversations"),
+        path!("conversations/missing/messages"),
+        path!("conversations/missing/approvals/approval_missing"),
+        path!("conversations/missing/control/cancel"),
+    ] {
+        assert!(
+            store
+                .write(&target, Record::parsed(Value::Null))
+                .await
+                .is_err()
+        );
+    }
+    assert!(
+        store
+            .write(
+                &path!("conversations"),
+                Record::raw(vec![1, 2, 3], Format::OCTET_STREAM),
+            )
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("expected parsed record")
+    );
+
+    let message = store
+        .write(
+            &path!("conversations/missing/messages"),
+            record(&PromptEnvelope {
+                message_id: "unknown-message".into(),
+                content: "no destination".into(),
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert!(message.to_string().contains("unknown conversation"));
+
+    let approval = store
+        .write(
+            &path!("conversations/missing/approvals/approval_missing"),
+            record(&ox_types::ApprovalResponse {
+                decision: ox_types::Decision::DenyOnce,
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert!(approval.to_string().contains("stale or missing"));
+
+    let cancel = store
+        .write(
+            &path!("conversations/missing/control/cancel"),
+            record(&CancelEnvelope {
+                cancel_id: "unknown-cancel".into(),
+                reason: None,
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert!(cancel.to_string().contains("unknown conversation"));
+    assert!(
+        store
+            .write(&path!("health"), Record::parsed(Value::Null))
+            .await
+            .is_err()
+    );
+
     service.shutdown().await.unwrap();
 }
 

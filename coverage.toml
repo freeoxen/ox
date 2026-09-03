@@ -22,6 +22,8 @@ ox-gate = 80
 ox-history = 80
 ox-inbox = 75
 ox-runtime = 65
+ox-remote = 90
+ox-worker = 90
 
 # CLI — mostly TUI rendering, hard to unit test
 ox-cli = 30

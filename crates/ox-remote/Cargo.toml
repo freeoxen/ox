@@ -25,5 +25,6 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "net", "rt-multi-thread"] }
 
 [dev-dependencies]
+rand = "0.10"
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros"] }

@@ -10,6 +10,7 @@ use ox_executor::{ExecutionCore, ExecutorConfig, PolicyProfile, ThreadExecutionC
 use ox_inbox::thread_dir::ContextFile;
 use ox_inbox::worker_ingress::CreateEnvelope;
 use ox_kernel::log::LogEntry;
+use ox_worker::public_store::test_support as public_test_support;
 use ox_worker::{WorkerConfig, WorkerLimits, WorkerService};
 use structfs_core_store::{Path as StorePath, Record, path};
 
@@ -444,6 +445,7 @@ async fn ledger_cursor_and_result_project_the_bounded_durable_chain() {
             command_capacity: 8,
             limits: WorkerLimits {
                 max_ledger_batch_entries: 2,
+                max_parked_cursors: 1,
                 ..WorkerLimits::default()
             },
             transport: ox_structfs_transport::ServerConfig::default(),
@@ -506,6 +508,29 @@ async fn ledger_cursor_and_result_project_the_bounded_durable_chain() {
     assert!(store.read(&missing).await.unwrap().is_none());
     let missing_result = StorePath::parse("conversations/t_missing/result").unwrap();
     assert!(store.read(&missing_result).await.unwrap().is_none());
+
+    std::fs::write(
+        root.join("threads").join(&thread_id).join("ledger.jsonl"),
+        b"malformed-interior\nmalformed-tail\n",
+    )
+    .unwrap();
+    assert!(store.read(&first_path).await.is_err());
+    assert!(store.read(&result_path).await.is_err());
+
+    let permit = public_test_support::hold_cursor(&store).await;
+    let overloaded_ledger = store.read(&first_path).await.unwrap_err();
+    assert!(
+        overloaded_ledger
+            .to_string()
+            .contains("cursor admission is full")
+    );
+    let overloaded_result = store.read(&result_path).await.unwrap_err();
+    assert!(
+        overloaded_result
+            .to_string()
+            .contains("cursor admission is full")
+    );
+    drop(permit);
 
     service.shutdown().await.unwrap();
 }
