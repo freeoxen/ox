@@ -8,6 +8,6 @@ pub mod config;
 pub mod json_backing;
 pub mod toml_backing;
 
-pub use config::{resolve_config, CliOverrides, OxConfig};
+pub use config::{CliOverrides, OxConfig, resolve_config};
 pub use json_backing::JsonFileBacking;
 pub use toml_backing::TomlFileBacking;

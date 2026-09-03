@@ -107,13 +107,13 @@ impl AsyncReader for WireStore {
                         if state.done {
                             // Block exited without writing a head — surface
                             // as an error head rather than parking forever.
-                            return Ok(Some(Record::parsed(
-                                structfs_serde_store::json_to_value(serde_json::json!({
+                            return Ok(Some(Record::parsed(structfs_serde_store::json_to_value(
+                                serde_json::json!({
                                     "mode": "error",
                                     "status": 500,
                                     "body": {"error": {"message": "wire block wrote no head"}},
-                                })),
-                            )));
+                                }),
+                            ))));
                         }
                     }
                     notified.await;
@@ -123,12 +123,11 @@ impl AsyncReader for WireStore {
                     Ok(Some(Record::parsed(Value::Bool(state.done))))
                 }
                 Some(s) if s.starts_with("frames/from/") => {
-                    let seq: usize = s
-                        .trim_start_matches("frames/from/")
-                        .parse()
-                        .map_err(|e: std::num::ParseIntError| {
+                    let seq: usize = s.trim_start_matches("frames/from/").parse().map_err(
+                        |e: std::num::ParseIntError| {
                             StoreError::store("wire", "read", e.to_string())
-                        })?;
+                        },
+                    )?;
                     loop {
                         let notified = inflight.notify.notified();
                         tokio::pin!(notified);
@@ -183,7 +182,11 @@ impl AsyncWriter for WireStore {
                 Some(arc) => arc.clone(),
                 None => {
                     return Box::pin(async move {
-                        Err(StoreError::store("wire", "write", format!("no wire handle {id}")))
+                        Err(StoreError::store(
+                            "wire",
+                            "write",
+                            format!("no wire handle {id}"),
+                        ))
                     });
                 }
             };
@@ -246,7 +249,11 @@ impl AsyncWriter for WireStore {
         // Root: enqueue one HTTP exchange and hand it to the wire runner.
         if !to.is_empty() {
             return Box::pin(async move {
-                Err(StoreError::store("wire", "write", "write the inbound record to the root"))
+                Err(StoreError::store(
+                    "wire",
+                    "write",
+                    "write the inbound record to the root",
+                ))
             });
         }
         let value = match data.as_value() {

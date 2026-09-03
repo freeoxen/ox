@@ -22,13 +22,31 @@ fn meta_json() -> serde_json::Value {
 
 fn event_corpus() -> Vec<StreamEvent> {
     vec![
-        StreamEvent::InputUsage { input_tokens: 12, cache_creation: 3, cache_read: 4 },
-        StreamEvent::TextDelta { text: "Thinking about it. ".into() },
-        StreamEvent::ToolUseStart { id: "toolu_1".into(), name: "read_file".into() },
-        StreamEvent::ToolUseInputDelta { delta: r#"{"path":"#.into() },
-        StreamEvent::ToolUseInputDelta { delta: r#""/etc/hosts"}"#.into() },
-        StreamEvent::ToolUseStart { id: "toolu_2".into(), name: "grep".into() },
-        StreamEvent::ToolUseInputDelta { delta: r#"{"q":"π ünïcode"}"#.into() },
+        StreamEvent::InputUsage {
+            input_tokens: 12,
+            cache_creation: 3,
+            cache_read: 4,
+        },
+        StreamEvent::TextDelta {
+            text: "Thinking about it. ".into(),
+        },
+        StreamEvent::ToolUseStart {
+            id: "toolu_1".into(),
+            name: "read_file".into(),
+        },
+        StreamEvent::ToolUseInputDelta {
+            delta: r#"{"path":"#.into(),
+        },
+        StreamEvent::ToolUseInputDelta {
+            delta: r#""/etc/hosts"}"#.into(),
+        },
+        StreamEvent::ToolUseStart {
+            id: "toolu_2".into(),
+            name: "grep".into(),
+        },
+        StreamEvent::ToolUseInputDelta {
+            delta: r#"{"q":"π ünïcode"}"#.into(),
+        },
         StreamEvent::OutputUsage { output_tokens: 9 },
         StreamEvent::MessageStop,
     ]
@@ -94,7 +112,9 @@ fn decode_request_parity() {
 #[test]
 fn decode_request_error_parity() {
     let bad = serde_json::json!({ "max_tokens": 5, "messages": [] });
-    let native_err = ox_codec::anthropic::decode_request(&bad).unwrap_err().to_string();
+    let native_err = ox_codec::anthropic::decode_request(&bad)
+        .unwrap_err()
+        .to_string();
     let block_err = codec_block::run_job(serde_json::json!({
         "op": "decode_request",
         "dialect": "anthropic",
@@ -143,13 +163,17 @@ fn encode_stream_parity() {
             "meta": meta_json(),
         }))
         .expect("block encode_stream");
-        let block_frames: Vec<String> =
-            serde_json::from_value(block["frames"].clone()).unwrap();
-        let block_finish: Vec<String> =
-            serde_json::from_value(block["finish"].clone()).unwrap();
+        let block_frames: Vec<String> = serde_json::from_value(block["frames"].clone()).unwrap();
+        let block_finish: Vec<String> = serde_json::from_value(block["finish"].clone()).unwrap();
 
-        assert_eq!(native_frames, block_frames, "stream frames diverged for {dialect}");
-        assert_eq!(native_finish, block_finish, "finish frames diverged for {dialect}");
+        assert_eq!(
+            native_frames, block_frames,
+            "stream frames diverged for {dialect}"
+        );
+        assert_eq!(
+            native_finish, block_finish,
+            "finish frames diverged for {dialect}"
+        );
     }
 }
 

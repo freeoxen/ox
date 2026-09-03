@@ -134,11 +134,7 @@ impl Reader for SystemProvider {
 
 impl Writer for SystemProvider {
     fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
-        let key = if to.is_empty() {
-            ""
-        } else {
-            to[0].as_str()
-        };
+        let key = if to.is_empty() { "" } else { to[0].as_str() };
         match key {
             "snapshot" => {
                 let value = match data {

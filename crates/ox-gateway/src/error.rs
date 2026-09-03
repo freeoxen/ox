@@ -69,7 +69,11 @@ mod tests {
 
     #[test]
     fn openai_429_shape() {
-        let (s, body) = openai_error(StatusCode::TOO_MANY_REQUESTS, "slow down", Some("rate_limited"));
+        let (s, body) = openai_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "slow down",
+            Some("rate_limited"),
+        );
         assert_eq!(s, StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(body.0["error"]["type"], "rate_limit_exceeded");
         assert_eq!(body.0["error"]["code"], "rate_limited");

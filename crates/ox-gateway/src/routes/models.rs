@@ -1,17 +1,11 @@
 //! GET /v1/models — aggregated across all accounts in the gate.
 
-use axum::{
-    extract::State,
-    http::HeaderMap,
-    response::IntoResponse,
-    routing::get,
-    Json, Router,
-};
+use axum::{Json, Router, extract::State, http::HeaderMap, response::IntoResponse, routing::get};
 use ox_broker::ClientHandle;
 use ox_kernel::PathComponent;
 use ox_path::oxpath;
 use ox_types::ModelInfo;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub fn router(client: ClientHandle) -> Router {
     Router::new()

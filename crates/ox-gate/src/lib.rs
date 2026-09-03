@@ -40,6 +40,8 @@ pub use account_test_status::AccountTestStatus;
 pub use api_key::ApiKey;
 pub use catalog_refresh_status::CatalogRefreshStatus;
 pub use codec::UsageInfo;
+#[cfg(not(target_arch = "wasm32"))]
+pub use completion_broker::{CompletionBrokerStore, CompletionStatus, RequestId};
 pub use known_family::{KnownFamilyEntry, known_family_metadata};
 pub use ox_types::{CompletionRole, ModelInfo, ModelInfoSource};
 pub use provider::{
@@ -47,12 +49,10 @@ pub use provider::{
     validate_endpoint,
 };
 #[cfg(not(target_arch = "wasm32"))]
-pub use completion_broker::{CompletionBrokerStore, CompletionStatus, RequestId};
-#[cfg(not(target_arch = "wasm32"))]
 pub use transport::{HttpTransport, Transport};
+pub use upstream_store::{UpstreamRequest, UpstreamStatus, UpstreamStore};
 #[cfg(not(target_arch = "wasm32"))]
 pub use usage_store::{TodayProjection, UsageRecord, UsageStore};
-pub use upstream_store::{UpstreamRequest, UpstreamStatus, UpstreamStore};
 
 use ox_kernel::ToolSchema;
 use std::collections::{BTreeMap, HashMap};

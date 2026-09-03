@@ -135,7 +135,9 @@ fn text_then_tool_events(executor: &MockSseExecutor) {
         cache_creation: 0,
         cache_read: 0,
     });
-    executor.push_immediate(StreamEvent::TextDelta { text: "Reading.".into() });
+    executor.push_immediate(StreamEvent::TextDelta {
+        text: "Reading.".into(),
+    });
     executor.push_immediate(StreamEvent::ToolUseStart {
         id: "toolu_1".into(),
         name: "read_file".into(),
@@ -192,7 +194,11 @@ async fn anthropic_stream_deserializes_into_sdk_models() {
     let start_json: serde_json::Value = serde_json::from_str(&start.1).unwrap();
     let msg: AnthropicMessage =
         serde_json::from_value(start_json["message"].clone()).expect("SDK-shape message_start");
-    assert!(msg.id.starts_with("msg_"), "id {:?} lacks msg_ prefix", msg.id);
+    assert!(
+        msg.id.starts_with("msg_"),
+        "id {:?} lacks msg_ prefix",
+        msg.id
+    );
     assert_eq!(msg.kind, "message");
     assert_eq!(msg.role, "assistant");
     assert_eq!(msg.model, "anthropic/claude-sonnet-4-20250514");
@@ -334,7 +340,11 @@ async fn openai_buffered_response_deserializes_into_sdk_model() {
     assert_eq!(choice.finish_reason, "tool_calls");
     assert_eq!(choice.message.role, "assistant");
     assert_eq!(choice.message.content.as_deref(), Some("Reading."));
-    let tool_calls = choice.message.tool_calls.as_ref().expect("tool_calls present");
+    let tool_calls = choice
+        .message
+        .tool_calls
+        .as_ref()
+        .expect("tool_calls present");
     assert_eq!(tool_calls.len(), 1);
     assert_eq!(tool_calls[0]["function"]["name"], "read_file");
 }

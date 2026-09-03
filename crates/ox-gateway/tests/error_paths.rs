@@ -22,7 +22,9 @@ async fn unknown_role_streams_error_frame() {
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
 
     let resp = reqwest::Client::new()
         .post(format!("http://{}/v1/messages", addr))
@@ -66,7 +68,9 @@ async fn upstream_error_propagates_as_sse_error_frame() {
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
 
     let resp = reqwest::Client::new()
         .post(format!("http://{}/v1/messages", addr))

@@ -90,7 +90,9 @@ mod tests {
         exec.push_immediate(StreamEvent::TextDelta { text: "b".into() });
         exec.push_immediate(StreamEvent::MessageStop);
 
-        let mut stream = exec.execute(HttpRequest::default(), "anthropic".into()).await;
+        let mut stream = exec
+            .execute(HttpRequest::default(), "anthropic".into())
+            .await;
         let mut texts = Vec::new();
         while let Some(item) = stream.next().await {
             match item.unwrap() {
@@ -106,7 +108,9 @@ mod tests {
     async fn errors_propagate() {
         let exec = MockSseExecutor::new();
         exec.push_error("boom");
-        let mut stream = exec.execute(HttpRequest::default(), "anthropic".into()).await;
+        let mut stream = exec
+            .execute(HttpRequest::default(), "anthropic".into())
+            .await;
         let first = stream.next().await.unwrap();
         assert!(first.is_err());
         assert_eq!(first.unwrap_err(), "boom");

@@ -28,11 +28,7 @@ use crate::settings::CommandRegistry;
 /// `ox_types::path_serde` (a `Value::Array` of `Value::String` segments).
 /// `Path` itself doesn't implement `Serialize`, so we hand-roll the encoding.
 pub fn path_to_value(p: &Path) -> Value {
-    Value::Array(
-        p.iter()
-            .map(|c| Value::String(c.clone()))
-            .collect(),
-    )
+    Value::Array(p.iter().map(|c| Value::String(c.clone())).collect())
 }
 
 /// Decode a `Value` previously produced by `path_to_value` back into a

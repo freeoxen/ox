@@ -123,7 +123,12 @@ pub fn run_broker(
         client,
         runtime,
     };
-    let host_store = ox_runtime::HostStore::new(backing, NoEffects { tools: EmptyToolStore });
+    let host_store = ox_runtime::HostStore::new(
+        backing,
+        NoEffects {
+            tools: EmptyToolStore,
+        },
+    );
 
     let module = codec_block::module()?;
     let (_store, outcome) = module.run(host_store);
@@ -153,7 +158,12 @@ pub fn run_wire(
         client,
         runtime,
     };
-    let host_store = ox_runtime::HostStore::new(backing, NoEffects { tools: EmptyToolStore });
+    let host_store = ox_runtime::HostStore::new(
+        backing,
+        NoEffects {
+            tools: EmptyToolStore,
+        },
+    );
     let module = codec_block::module()?;
     let (_store, outcome) = module.run(host_store);
     outcome
@@ -179,7 +189,12 @@ pub fn run_stats(
         client,
         runtime,
     };
-    let host_store = ox_runtime::HostStore::new(backing, NoEffects { tools: EmptyToolStore });
+    let host_store = ox_runtime::HostStore::new(
+        backing,
+        NoEffects {
+            tools: EmptyToolStore,
+        },
+    );
     let module = codec_block::module()?;
     let (_store, outcome) = module.run(host_store);
     outcome
@@ -199,7 +214,11 @@ impl Reader for EmptyToolStore {
 
 impl Writer for EmptyToolStore {
     fn write(&mut self, _to: &Path, _data: Record) -> Result<Path, StoreError> {
-        Err(StoreError::store("broker_block", "write", "broker block has no tools"))
+        Err(StoreError::store(
+            "broker_block",
+            "write",
+            "broker block has no tools",
+        ))
     }
 }
 

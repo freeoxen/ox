@@ -158,7 +158,9 @@ pub async fn install_blocks(broker: &BrokerStore, traffic: bool) {
             let dialect = wire_runtime
                 .block_on(async {
                     wire_client
-                        .read(&structfs_core_store::Path::parse(&format!("{path}/inbound")).unwrap())
+                        .read(
+                            &structfs_core_store::Path::parse(&format!("{path}/inbound")).unwrap(),
+                        )
                         .await
                         .ok()
                         .flatten()
@@ -254,8 +256,14 @@ pub async fn build_test_broker_two_accounts() -> BrokerStore {
     // Secrets aren't needed for /v1/models (no upstream call), but populate
     // them so any key-read path that fires doesn't panic on a missing mount.
     let mut secret = LocalConfig::new();
-    secret.set("keys/anthropic", to_value(&ApiKey::new("sk-anth-test")).unwrap());
-    secret.set("keys/openai", to_value(&ApiKey::new("sk-oai-test")).unwrap());
+    secret.set(
+        "keys/anthropic",
+        to_value(&ApiKey::new("sk-anth-test")).unwrap(),
+    );
+    secret.set(
+        "keys/openai",
+        to_value(&ApiKey::new("sk-oai-test")).unwrap(),
+    );
     broker.mount(oxpath!("secret"), secret).await;
 
     broker

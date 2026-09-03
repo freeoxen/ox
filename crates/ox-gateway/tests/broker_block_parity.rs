@@ -8,13 +8,13 @@ mod common;
 
 use common::MemoryBacking;
 use ox_broker::BrokerStore;
-use ox_gate::completion_broker::mock::MockSseExecutor;
 use ox_gate::completion_broker::CompletionBrokerStore;
+use ox_gate::completion_broker::mock::MockSseExecutor;
 use ox_path::oxpath;
 use ox_types::StreamEvent;
 use std::sync::Arc;
 use std::time::Duration;
-use structfs_core_store::{path, Value};
+use structfs_core_store::{Value, path};
 use structfs_serde_store::to_value;
 
 async fn build_block_broker(executor: Arc<MockSseExecutor>, traffic: bool) -> BrokerStore {
@@ -70,7 +70,9 @@ async fn build_block_broker_with(
     if traffic {
         let traffic_store =
             ox_gateway::traffic::TrafficLogStore::new(Box::new(MemoryBacking::new()), None);
-        broker.mount(oxpath!("gateway", "traffic"), traffic_store).await;
+        broker
+            .mount(oxpath!("gateway", "traffic"), traffic_store)
+            .await;
     }
 
     let client = broker.client();
@@ -115,7 +117,9 @@ async fn build_block_broker_with(
             let dialect = wire_runtime
                 .block_on(async {
                     wire_client
-                        .read(&structfs_core_store::Path::parse(&format!("{path}/inbound")).unwrap())
+                        .read(
+                            &structfs_core_store::Path::parse(&format!("{path}/inbound")).unwrap(),
+                        )
                         .await
                         .ok()
                         .flatten()
@@ -157,8 +161,12 @@ fn script(executor: &MockSseExecutor) {
         cache_creation: 0,
         cache_read: 2,
     });
-    executor.push_immediate(StreamEvent::TextDelta { text: "Hello ".into() });
-    executor.push_immediate(StreamEvent::TextDelta { text: "block".into() });
+    executor.push_immediate(StreamEvent::TextDelta {
+        text: "Hello ".into(),
+    });
+    executor.push_immediate(StreamEvent::TextDelta {
+        text: "block".into(),
+    });
     executor.push_immediate(StreamEvent::OutputUsage { output_tokens: 3 });
     executor.push_immediate(StreamEvent::MessageStop);
 }
@@ -323,8 +331,8 @@ async fn manifest_wiring_is_load_bearing() {
     // must lose the ability to read keys, and the request must fail with
     // the namespace refusal — proving the manifest governs the namespace
     // rather than documenting it.
-    let text = include_str!("../gateway.assembly.yaml")
-        .replace("  - \"broker:/secret -> $secret\"\n", "");
+    let text =
+        include_str!("../gateway.assembly.yaml").replace("  - \"broker:/secret -> $secret\"\n", "");
     let manifest = ox_gateway::assembly::Manifest::parse(&text).unwrap();
     let wiring = manifest
         .wiring_for("broker", &ox_gateway::assembly::standard_bindings())

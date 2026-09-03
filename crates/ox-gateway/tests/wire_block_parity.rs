@@ -76,8 +76,12 @@ fn script(executor: &MockSseExecutor) {
         cache_creation: 0,
         cache_read: 0,
     });
-    executor.push_immediate(StreamEvent::TextDelta { text: "wire ".into() });
-    executor.push_immediate(StreamEvent::TextDelta { text: "works".into() });
+    executor.push_immediate(StreamEvent::TextDelta {
+        text: "wire ".into(),
+    });
+    executor.push_immediate(StreamEvent::TextDelta {
+        text: "works".into(),
+    });
     executor.push_immediate(StreamEvent::OutputUsage { output_tokens: 2 });
     executor.push_immediate(StreamEvent::MessageStop);
 }
@@ -126,18 +130,22 @@ async fn wire_streaming_openai() {
         .await
         .unwrap();
     assert!(resp.status().is_success());
-    assert!(resp
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .starts_with("text/event-stream"));
+    assert!(
+        resp.headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .starts_with("text/event-stream")
+    );
     let body = resp.text().await.unwrap();
     assert!(body.contains("\"content\":\"wire \""), "body:\n{body}");
     assert!(body.contains("\"content\":\"works\""));
     assert!(body.contains("\"finish_reason\":\"stop\""));
     assert!(body.contains("\"total_tokens\":10"));
-    assert!(body.trim_end().ends_with("data: [DONE]"), "must end with [DONE]");
+    assert!(
+        body.trim_end().ends_with("data: [DONE]"),
+        "must end with [DONE]"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -161,7 +169,12 @@ async fn wire_decode_error_is_dialect_shaped_400() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["type"], "error");
     assert_eq!(body["error"]["type"], "invalid_request_error");
-    assert!(body["error"]["message"].as_str().unwrap().contains("max_tokens"));
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("max_tokens")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -181,10 +194,12 @@ async fn wire_resolution_failure_buffered_500() {
         .unwrap();
     assert_eq!(resp.status(), 500);
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert!(body["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("nosuchrole"));
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("nosuchrole")
+    );
     assert_eq!(body["error"]["type"], "api_error");
 }
 
@@ -205,7 +220,10 @@ async fn wire_resolution_failure_streaming_error_frame() {
         .send()
         .await
         .unwrap();
-    assert!(resp.status().is_success(), "stream starts before resolution");
+    assert!(
+        resp.status().is_success(),
+        "stream starts before resolution"
+    );
     let body = resp.text().await.unwrap();
     assert!(body.contains("event: error"), "body:\n{body}");
     assert!(body.contains("nosuchrole"));

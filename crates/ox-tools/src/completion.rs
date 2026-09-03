@@ -319,7 +319,11 @@ fn stream_event_to_json(event: &StreamEvent) -> serde_json::Value {
             "type": "error",
             "message": message,
         }),
-        StreamEvent::InputUsage { input_tokens, cache_creation, cache_read } => serde_json::json!({
+        StreamEvent::InputUsage {
+            input_tokens,
+            cache_creation,
+            cache_read,
+        } => serde_json::json!({
             "type": "input_usage",
             "input_tokens": input_tokens,
             "cache_creation": cache_creation,
@@ -483,7 +487,9 @@ mod tests {
 
     #[test]
     fn result_returns_stored_completion() {
-        let events = vec![StreamEvent::TextDelta { text: "response".into() }];
+        let events = vec![StreamEvent::TextDelta {
+            text: "response".into(),
+        }];
         let transport = MockTransport::new(events, 42, 17);
         let mut module =
             CompletionModule::new(GateStore::new()).with_transport(Box::new(transport));
@@ -520,7 +526,9 @@ mod tests {
 
     #[test]
     fn writer_triggers_completion_on_complete_path() {
-        let events = vec![StreamEvent::TextDelta { text: "done".into() }];
+        let events = vec![StreamEvent::TextDelta {
+            text: "done".into(),
+        }];
         let transport = MockTransport::new(events, 8, 3);
         let mut module =
             CompletionModule::new(GateStore::new()).with_transport(Box::new(transport));

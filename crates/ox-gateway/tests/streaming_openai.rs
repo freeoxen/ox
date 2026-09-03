@@ -41,7 +41,16 @@ async fn streaming_openai_chat_completions_endpoint() {
 
     assert!(resp.status().is_success(), "got status {}", resp.status());
     let body = resp.text().await.unwrap();
-    assert!(body.contains("\"role\":\"assistant\""), "missing role: {body}");
-    assert!(body.contains("\"content\":\"Hi\""), "missing content: {body}");
-    assert!(body.contains("data: [DONE]"), "missing [DONE] terminator: {body}");
+    assert!(
+        body.contains("\"role\":\"assistant\""),
+        "missing role: {body}"
+    );
+    assert!(
+        body.contains("\"content\":\"Hi\""),
+        "missing content: {body}"
+    );
+    assert!(
+        body.contains("data: [DONE]"),
+        "missing [DONE] terminator: {body}"
+    );
 }

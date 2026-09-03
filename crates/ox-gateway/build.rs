@@ -39,8 +39,7 @@ fn main() {
         );
     }
 
-    let built = workspace_root
-        .join("target/wasm32-unknown-unknown/release/ox_gateway_wasm.wasm");
+    let built = workspace_root.join("target/wasm32-unknown-unknown/release/ox_gateway_wasm.wasm");
     std::fs::copy(&built, &out_wasm).expect("copying codec_block.wasm");
 
     println!("cargo:rerun-if-changed=../ox-gateway-wasm/src");

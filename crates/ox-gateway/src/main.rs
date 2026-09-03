@@ -86,8 +86,7 @@ async fn main() -> anyhow::Result<()> {
 
     // gateway/usage/ — JsonlFileBacking over ~/.ox/usage.jsonl.
     let usage_backing = Box::new(
-        ox_store_util::JsonlFileBacking::new(&usage_path)
-            .context("opening usage.jsonl backing")?,
+        ox_store_util::JsonlFileBacking::new(&usage_path).context("opening usage.jsonl backing")?,
     );
     let usage = ox_gate::UsageStore::new(usage_backing);
     broker.mount(oxpath!("gateway", "usage"), usage).await;
@@ -130,7 +129,6 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!(path = %jsonl_path.display(), "traffic logging enabled");
     }
 
-
     // upstream/ — the SSE executor behind its own mount. Nothing but this
     // store owns a socket to providers; the broker Block drains events
     // from these paths.
@@ -139,9 +137,10 @@ async fn main() -> anyhow::Result<()> {
             .map_err(anyhow::Error::msg)
             .context("constructing ReqwestSseExecutor")?,
     );
-    let upstream_store =
-        ox_gate::UpstreamStore::new(executor, tokio::runtime::Handle::current());
-    broker.mount_async(oxpath!("upstream"), upstream_store).await;
+    let upstream_store = ox_gate::UpstreamStore::new(executor, tokio::runtime::Handle::current());
+    broker
+        .mount_async(oxpath!("upstream"), upstream_store)
+        .await;
 
     // gateway/completions/ — the inflight substrate. Each queued request
     // runs one broker Block instance (wasm) against the manifest-derived
@@ -174,7 +173,9 @@ async fn main() -> anyhow::Result<()> {
             }),
         )
     };
-    broker.mount_async(oxpath!("gateway", "completions"), completions).await;
+    broker
+        .mount_async(oxpath!("gateway", "completions"), completions)
+        .await;
 
     // Same gate subscriptions ox-cli registers (catalog refresh, account
     // test/delete, config save), then kick a catalog refresh per account so
@@ -191,7 +192,10 @@ async fn main() -> anyhow::Result<()> {
             };
             let path = oxpath!("config", "gate", "accounts", comp, "refresh_now");
             if let Err(e) = client
-                .write(&path, structfs_core_store::Record::parsed(structfs_core_store::Value::Null))
+                .write(
+                    &path,
+                    structfs_core_store::Record::parsed(structfs_core_store::Value::Null),
+                )
                 .await
             {
                 tracing::warn!(account = %name, error = %e, "catalog refresh trigger failed");
@@ -200,8 +204,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // axum
-    let bind_addr =
-        std::env::var("OX_GATEWAY_BIND").unwrap_or_else(|_| "127.0.0.1:11343".into());
+    let bind_addr = std::env::var("OX_GATEWAY_BIND").unwrap_or_else(|_| "127.0.0.1:11343".into());
     let listener = tokio::net::TcpListener::bind(&bind_addr)
         .await
         .with_context(|| format!("binding {bind_addr}"))?;
@@ -221,7 +224,10 @@ async fn main() -> anyhow::Result<()> {
                 let dialect = runtime
                     .block_on(async {
                         runner_client
-                            .read(&structfs_core_store::Path::parse(&format!("{path}/inbound")).unwrap())
+                            .read(
+                                &structfs_core_store::Path::parse(&format!("{path}/inbound"))
+                                    .unwrap(),
+                            )
                             .await
                             .ok()
                             .flatten()
@@ -272,7 +278,9 @@ async fn main() -> anyhow::Result<()> {
                 }
             }),
         );
-        broker.mount_async(oxpath!("gateway", "telemetry"), telemetry).await;
+        broker
+            .mount_async(oxpath!("gateway", "telemetry"), telemetry)
+            .await;
     }
     let mut app = ox_gateway::routes::build_router(broker.client());
     if traffic_enabled.is_some() {
@@ -317,7 +325,6 @@ async fn shutdown_signal() {
 fn ox_dir() -> anyhow::Result<std::path::PathBuf> {
     let home = std::env::var("HOME").map_err(|_| anyhow::anyhow!("HOME is not set"))?;
     let dir = std::path::PathBuf::from(home).join(".ox");
-    std::fs::create_dir_all(&dir)
-        .with_context(|| format!("creating {}", dir.display()))?;
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     Ok(dir)
 }

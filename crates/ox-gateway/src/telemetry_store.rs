@@ -153,7 +153,11 @@ impl AsyncWriter for TelemetryStore {
                 Some(v) => v.clone(),
                 None => {
                     return Box::pin(async move {
-                        Err(StoreError::store("telemetry", "write", "expected parsed record"))
+                        Err(StoreError::store(
+                            "telemetry",
+                            "write",
+                            "expected parsed record",
+                        ))
                     });
                 }
             };
@@ -178,14 +182,22 @@ impl AsyncWriter for TelemetryStore {
         // Root: enqueue one stats request and hand it to the runner.
         if !to.is_empty() {
             return Box::pin(async move {
-                Err(StoreError::store("telemetry", "write", "write params to the root"))
+                Err(StoreError::store(
+                    "telemetry",
+                    "write",
+                    "write params to the root",
+                ))
             });
         }
         let value = match data.as_value() {
             Some(v) => v.clone(),
             None => {
                 return Box::pin(async move {
-                    Err(StoreError::store("telemetry", "write", "expected parsed record"))
+                    Err(StoreError::store(
+                        "telemetry",
+                        "write",
+                        "expected parsed record",
+                    ))
                 });
             }
         };

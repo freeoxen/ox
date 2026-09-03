@@ -32,8 +32,8 @@ impl UsageStore {
     }
 
     fn append(&self, record: &UsageRecord) -> Result<(), StoreError> {
-        let value = to_value(record)
-            .map_err(|e| StoreError::store("usage", "append", e.to_string()))?;
+        let value =
+            to_value(record).map_err(|e| StoreError::store("usage", "append", e.to_string()))?;
         self.backing.append(&value)
     }
 
@@ -141,10 +141,7 @@ mod tests {
         let r = sample_record("a");
         let v = to_value(&r).unwrap();
         store
-            .write(
-                &structfs_core_store::path!("append"),
-                Record::parsed(v),
-            )
+            .write(&structfs_core_store::path!("append"), Record::parsed(v))
             .unwrap();
 
         let read = store
@@ -178,9 +175,11 @@ mod tests {
         let path = dir.path().join("usage.jsonl");
         let backing = Box::new(JsonlFileBacking::new(&path).unwrap());
         let mut store = UsageStore::new(backing);
-        assert!(store
-            .read(&structfs_core_store::path!("bogus"))
-            .unwrap()
-            .is_none());
+        assert!(
+            store
+                .read(&structfs_core_store::path!("bogus"))
+                .unwrap()
+                .is_none()
+        );
     }
 }

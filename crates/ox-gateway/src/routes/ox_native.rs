@@ -4,11 +4,11 @@
 //! translation: clients that already speak ox-types use this directly.
 
 use axum::{
+    Json, Router,
     extract::State,
-    http::{header, StatusCode},
+    http::{StatusCode, header},
     response::{IntoResponse, Response},
     routing::post,
-    Json, Router,
 };
 use bytes::Bytes;
 use futures::stream::Stream;
@@ -36,7 +36,10 @@ async fn post_completions(
     // the inbound dialect, and this route is the "ox" dialect.
     req.extra
         .insert("ox_inbound_dialect".into(), serde_json::json!("ox"));
-    let handle_rel = match client.write_typed(&path!("gateway/completions"), &req).await {
+    let handle_rel = match client
+        .write_typed(&path!("gateway/completions"), &req)
+        .await
+    {
         Ok(p) => p,
         Err(e) => {
             return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
@@ -60,7 +63,10 @@ async fn post_completions(
 
 /// SSE response that yields one frame per StreamEvent, JSON-encoded.
 /// No dialect translation; uses StreamEvent's own serde serialization.
-fn ox_native_sse_response(client: ClientHandle, handle_path: structfs_core_store::Path) -> Response {
+fn ox_native_sse_response(
+    client: ClientHandle,
+    handle_path: structfs_core_store::Path,
+) -> Response {
     let stream = ox_native_sse_stream(client, handle_path);
     let body = axum::body::Body::from_stream(stream);
     Response::builder()

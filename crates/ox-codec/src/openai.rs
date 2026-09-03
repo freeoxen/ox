@@ -235,7 +235,9 @@ pub fn parse_sse_events(body: &str) -> (Vec<StreamEvent>, UsageInfo) {
                 // Text content
                 if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
                     if !content.is_empty() {
-                        events.push(StreamEvent::TextDelta { text: content.to_string() });
+                        events.push(StreamEvent::TextDelta {
+                            text: content.to_string(),
+                        });
                     }
                 }
 
@@ -306,7 +308,11 @@ pub fn encode_response(events: &[StreamEvent], meta: &crate::ResponseMeta) -> se
                     args.push_str(delta);
                 }
             }
-            StreamEvent::InputUsage { input_tokens: it, cache_read: cr, .. } => {
+            StreamEvent::InputUsage {
+                input_tokens: it,
+                cache_read: cr,
+                ..
+            } => {
                 input_tokens = *it;
                 cache_read = *cr;
             }
@@ -329,7 +335,11 @@ pub fn encode_response(events: &[StreamEvent], meta: &crate::ResponseMeta) -> se
         message["tool_calls"] = serde_json::Value::Array(tool_calls);
     }
 
-    let finish_reason = if message.get("tool_calls").is_some() { "tool_calls" } else { "stop" };
+    let finish_reason = if message.get("tool_calls").is_some() {
+        "tool_calls"
+    } else {
+        "stop"
+    };
 
     let mut usage = serde_json::json!({
         "prompt_tokens": input_tokens,
@@ -370,9 +380,17 @@ mod encode_response_tests {
     #[test]
     fn encode_text_only_chat_completion() {
         let events = vec![
-            StreamEvent::TextDelta { text: "Hello".into() },
-            StreamEvent::TextDelta { text: " world".into() },
-            StreamEvent::InputUsage { input_tokens: 10, cache_creation: 0, cache_read: 0 },
+            StreamEvent::TextDelta {
+                text: "Hello".into(),
+            },
+            StreamEvent::TextDelta {
+                text: " world".into(),
+            },
+            StreamEvent::InputUsage {
+                input_tokens: 10,
+                cache_creation: 0,
+                cache_read: 0,
+            },
             StreamEvent::OutputUsage { output_tokens: 2 },
             StreamEvent::MessageStop,
         ];
@@ -394,24 +412,38 @@ mod encode_response_tests {
     #[test]
     fn encode_tool_call_finish_reason() {
         let events = vec![
-            StreamEvent::ToolUseStart { id: "t1".into(), name: "read_file".into() },
-            StreamEvent::ToolUseInputDelta { delta: r#"{"path":"/etc/hosts"}"#.into() },
+            StreamEvent::ToolUseStart {
+                id: "t1".into(),
+                name: "read_file".into(),
+            },
+            StreamEvent::ToolUseInputDelta {
+                delta: r#"{"path":"/etc/hosts"}"#.into(),
+            },
             StreamEvent::MessageStop,
         ];
         let resp = encode_response(&events, &meta());
         assert_eq!(resp["choices"][0]["finish_reason"], "tool_calls");
-        let tool_calls = resp["choices"][0]["message"]["tool_calls"].as_array().unwrap();
+        let tool_calls = resp["choices"][0]["message"]["tool_calls"]
+            .as_array()
+            .unwrap();
         assert_eq!(tool_calls.len(), 1);
         assert_eq!(tool_calls[0]["id"], "t1");
         assert_eq!(tool_calls[0]["type"], "function");
         assert_eq!(tool_calls[0]["function"]["name"], "read_file");
-        assert_eq!(tool_calls[0]["function"]["arguments"], r#"{"path":"/etc/hosts"}"#);
+        assert_eq!(
+            tool_calls[0]["function"]["arguments"],
+            r#"{"path":"/etc/hosts"}"#
+        );
     }
 
     #[test]
     fn encode_cached_tokens_emit_details() {
         let events = vec![
-            StreamEvent::InputUsage { input_tokens: 100, cache_creation: 0, cache_read: 80 },
+            StreamEvent::InputUsage {
+                input_tokens: 100,
+                cache_creation: 0,
+                cache_read: 80,
+            },
             StreamEvent::OutputUsage { output_tokens: 10 },
             StreamEvent::MessageStop,
         ];
@@ -433,12 +465,16 @@ mod encode_response_tests {
 
 use crate::CodecError;
 
-pub fn decode_request(body: &serde_json::Value) -> Result<ox_kernel::CompletionRequest, CodecError> {
-    let obj = body.as_object().ok_or_else(|| {
-        CodecError::InvalidShape("body must be a JSON object".into())
-    })?;
+pub fn decode_request(
+    body: &serde_json::Value,
+) -> Result<ox_kernel::CompletionRequest, CodecError> {
+    let obj = body
+        .as_object()
+        .ok_or_else(|| CodecError::InvalidShape("body must be a JSON object".into()))?;
 
-    let model = obj.get("model").and_then(|v| v.as_str())
+    let model = obj
+        .get("model")
+        .and_then(|v| v.as_str())
         .ok_or(CodecError::MissingField("model"))?
         .to_string();
 
@@ -454,7 +490,9 @@ pub fn decode_request(body: &serde_json::Value) -> Result<ox_kernel::CompletionR
 
     let stream = obj.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
 
-    let raw_messages = obj.get("messages").and_then(|v| v.as_array())
+    let raw_messages = obj
+        .get("messages")
+        .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
 
@@ -488,10 +526,15 @@ pub fn decode_request(body: &serde_json::Value) -> Result<ox_kernel::CompletionR
                     "tools entries require function.name".into(),
                 ));
             };
-            let description = f.get("description")
-                .and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let input_schema = f.get("parameters")
-                .cloned().unwrap_or(serde_json::Value::Null);
+            let description = f
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let input_schema = f
+                .get("parameters")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
             tools.push(ox_kernel::ToolSchema {
                 name: name.to_string(),
                 description,
@@ -536,7 +579,13 @@ pub fn decode_request(body: &serde_json::Value) -> Result<ox_kernel::CompletionR
     }
 
     Ok(ox_kernel::CompletionRequest {
-        model, max_tokens, system, messages, tools, stream, extra,
+        model,
+        max_tokens,
+        system,
+        messages,
+        tools,
+        stream,
+        extra,
     })
 }
 
@@ -632,13 +681,17 @@ mod passthrough_tests {
         let mut req = req;
         // simulate an anthropic-only canonical key arriving cross-dialect
         req.extra.insert("top_k".into(), serde_json::json!(40));
-        req.extra.insert("thinking".into(), serde_json::json!({"type": "enabled"}));
+        req.extra
+            .insert("thinking".into(), serde_json::json!({"type": "enabled"}));
         let wire = translate_request(&req);
         assert_eq!(wire["temperature"], serde_json::json!(0.3));
         assert_eq!(wire["stop"], serde_json::json!(["A", "B"]));
         assert_eq!(wire["tool_choice"], serde_json::json!("auto"));
         assert_eq!(wire["seed"], serde_json::json!(42));
-        assert!(wire.get("top_k").is_none(), "top_k must not reach an openai upstream");
+        assert!(
+            wire.get("top_k").is_none(),
+            "top_k must not reach an openai upstream"
+        );
         assert!(wire.get("thinking").is_none());
         assert!(wire.get("stop_sequences").is_none());
     }
@@ -728,7 +781,10 @@ mod decode_tests {
     #[test]
     fn missing_model_errors() {
         let body = serde_json::json!({"messages": []});
-        assert_eq!(decode_request(&body).unwrap_err(), CodecError::MissingField("model"));
+        assert_eq!(
+            decode_request(&body).unwrap_err(),
+            CodecError::MissingField("model")
+        );
     }
 
     #[test]
@@ -915,8 +971,12 @@ data: [DONE]\n";
         assert!(
             matches!(&events[0], StreamEvent::ToolUseStart { id, name } if id == "tc1" && name == "echo")
         );
-        assert!(matches!(&events[1], StreamEvent::ToolUseInputDelta { delta } if delta == "{\"text\""));
-        assert!(matches!(&events[2], StreamEvent::ToolUseInputDelta { delta } if delta == ": \"hi\"}"));
+        assert!(
+            matches!(&events[1], StreamEvent::ToolUseInputDelta { delta } if delta == "{\"text\"")
+        );
+        assert!(
+            matches!(&events[2], StreamEvent::ToolUseInputDelta { delta } if delta == ": \"hi\"}")
+        );
         assert!(matches!(&events[3], StreamEvent::MessageStop));
     }
 

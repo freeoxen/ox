@@ -235,9 +235,7 @@ fn screen_root_fallback(cursor_path: &Path) -> Vec<BindingScope> {
 /// settings/_compose_form, settings/_compose_form/name]`. Empty paths
 /// yield an empty vec.
 pub fn path_ancestors(path: &Path) -> Vec<Path> {
-    (1..=path.len())
-        .map(|end| path.slice(0, end))
-        .collect()
+    (1..=path.len()).map(|end| path.slice(0, end)).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -273,13 +271,17 @@ mod tests {
 
     impl MapReader {
         fn insert(&mut self, path: &Path, record: Record) {
-            self.records.insert(path.iter().cloned().collect::<Vec<String>>(), record);
+            self.records
+                .insert(path.iter().cloned().collect::<Vec<String>>(), record);
         }
     }
 
     impl Reader for MapReader {
         fn read(&mut self, path: &Path) -> Result<Option<Record>, Error> {
-            Ok(self.records.get(&path.iter().cloned().collect::<Vec<String>>()).cloned())
+            Ok(self
+                .records
+                .get(&path.iter().cloned().collect::<Vec<String>>())
+                .cloned())
         }
     }
 
@@ -289,11 +291,7 @@ mod tests {
     /// `ox-cli::settings::commands::navigation` so the tests exercise the
     /// same encoding the dispatcher reads.
     fn path_to_value(p: &Path) -> Value {
-        Value::Array(
-            p.iter()
-                .map(|c| Value::String(c.clone()))
-                .collect(),
-        )
+        Value::Array(p.iter().map(|c| Value::String(c.clone())).collect())
     }
 
     /// The focus cursor path used by every dispatcher test. Matches the

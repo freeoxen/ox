@@ -96,8 +96,7 @@ pub extern "C" fn run() -> i32 {
 }
 
 fn execute() -> Result<serde_json::Value, String> {
-    let job_str = host_read("codec/job")?
-        .ok_or_else(|| "no job at codec/job".to_string())?;
+    let job_str = host_read("codec/job")?.ok_or_else(|| "no job at codec/job".to_string())?;
     let job: serde_json::Value =
         serde_json::from_str(&job_str).map_err(|e| format!("bad job JSON: {e}"))?;
     let op = job["op"].as_str().ok_or("job missing op")?;
@@ -131,9 +130,8 @@ fn execute() -> Result<serde_json::Value, String> {
             Ok(serde_json::json!({ "frames": frames, "finish": finish }))
         }
         "translate_request" => {
-            let request: CompletionRequest =
-                serde_json::from_value(job["request"].clone())
-                    .map_err(|e| format!("bad request: {e}"))?;
+            let request: CompletionRequest = serde_json::from_value(job["request"].clone())
+                .map_err(|e| format!("bad request: {e}"))?;
             Ok(match dialect {
                 "openai" => ox_codec::openai::translate_request(&request),
                 _ => ox_codec::anthropic::translate_request(&request),
@@ -144,8 +142,8 @@ fn execute() -> Result<serde_json::Value, String> {
 }
 
 fn events_and_meta(job: &serde_json::Value) -> Result<(Vec<StreamEvent>, ResponseMeta), String> {
-    let events: Vec<StreamEvent> = serde_json::from_value(job["events"].clone())
-        .map_err(|e| format!("bad events: {e}"))?;
+    let events: Vec<StreamEvent> =
+        serde_json::from_value(job["events"].clone()).map_err(|e| format!("bad events: {e}"))?;
     let meta = ResponseMeta {
         id: job["meta"]["id"].as_str().unwrap_or("").to_string(),
         model: job["meta"]["model"].as_str().unwrap_or("").to_string(),
@@ -165,9 +163,9 @@ mod broker {
     use super::{host_read, host_write};
     use ox_codec::UsageInfo;
     use ox_kernel::{CompletionRequest, StreamEvent};
+    use ox_types::AccountConfig;
     use ox_types::api_key::ApiKey;
     use ox_types::provider::ProviderConfig;
-    use ox_types::AccountConfig;
 
     pub fn run(cfg_str: &str) -> i32 {
         match drive(cfg_str) {
@@ -190,7 +188,9 @@ mod broker {
 
     fn read_json(path: &str) -> Result<Option<serde_json::Value>, String> {
         Ok(match host_read(path)? {
-            Some(s) => Some(serde_json::from_str(&s).map_err(|e| format!("bad JSON at {path}: {e}"))?),
+            Some(s) => {
+                Some(serde_json::from_str(&s).map_err(|e| format!("bad JSON at {path}: {e}"))?)
+            }
             None => None,
         })
     }
@@ -212,7 +212,10 @@ mod broker {
     fn drive(cfg_str: &str) -> Result<(), String> {
         let cfg: serde_json::Value =
             serde_json::from_str(cfg_str).map_err(|e| format!("bad block/config: {e}"))?;
-        let base = cfg["inflight"].as_str().ok_or("config missing inflight")?.to_string();
+        let base = cfg["inflight"]
+            .as_str()
+            .ok_or("config missing inflight")?
+            .to_string();
         let traffic = cfg["traffic"].as_bool().unwrap_or(false);
 
         let request: CompletionRequest = serde_json::from_value(
@@ -250,8 +253,14 @@ mod broker {
             None => {
                 let role = read_json(&format!("gate/completions/{}", ctx.request.model))?
                     .ok_or_else(|| format!("no role named '{}'", ctx.request.model))?;
-                let account = role["account"].as_str().ok_or("invalid CompletionRole")?.to_string();
-                let model_id = role["model_id"].as_str().ok_or("invalid CompletionRole")?.to_string();
+                let account = role["account"]
+                    .as_str()
+                    .ok_or("invalid CompletionRole")?
+                    .to_string();
+                let model_id = role["model_id"]
+                    .as_str()
+                    .ok_or("invalid CompletionRole")?
+                    .to_string();
                 (account, model_id)
             }
         };
@@ -311,7 +320,8 @@ mod broker {
         let mut in_band_error: Option<String> = None;
         let mut next = 0usize;
         let outcome = loop {
-            let events: Vec<StreamEvent> = match read_json(&format!("{handle}/events/from/{next}")) {
+            let events: Vec<StreamEvent> = match read_json(&format!("{handle}/events/from/{next}"))
+            {
                 Ok(v) => serde_json::from_value(v.unwrap_or(serde_json::json!([])))
                     .map_err(|e| format!("bad events: {e}"))?,
                 Err(e) => break Err(format!("upstream drain failed: {e}")),
@@ -330,14 +340,17 @@ mod broker {
                 Some("complete") | Some("failed") => {
                     // Close-out drain for events racing the terminal flip.
                     if let Ok(Some(tail)) = read_json(&format!("{handle}/events/from/{next}")) {
-                        let tail: Vec<StreamEvent> = serde_json::from_value(tail)
-                            .map_err(|e| format!("bad tail: {e}"))?;
+                        let tail: Vec<StreamEvent> =
+                            serde_json::from_value(tail).map_err(|e| format!("bad tail: {e}"))?;
                         if !tail.is_empty() {
                             push_events(ctx, &tail, &mut in_band_error)?;
                         }
                     }
                     if status["state"] == "failed" {
-                        break Err(status["reason"].as_str().unwrap_or("upstream failed").to_string());
+                        break Err(status["reason"]
+                            .as_str()
+                            .unwrap_or("upstream failed")
+                            .to_string());
                     }
                     break Ok(());
                 }
@@ -531,11 +544,13 @@ mod wire {
     fn drive(cfg_str: &str) -> Result<(), String> {
         let cfg: serde_json::Value =
             serde_json::from_str(cfg_str).map_err(|e| format!("bad wire_config: {e}"))?;
-        let wire = cfg["wire"].as_str().ok_or("wire_config missing wire")?.to_string();
+        let wire = cfg["wire"]
+            .as_str()
+            .ok_or("wire_config missing wire")?
+            .to_string();
         let dialect = cfg["dialect"].as_str().unwrap_or("anthropic").to_string();
 
-        let inbound = read_json(&format!("{wire}/inbound"))?
-            .ok_or("no inbound record")?;
+        let inbound = read_json(&format!("{wire}/inbound"))?.ok_or("no inbound record")?;
         let body = inbound["body"].clone();
 
         // --- decode ------------------------------------------------------
@@ -559,7 +574,11 @@ mod wire {
 
         // --- response identity ------------------------------------------
         let now = now_ms();
-        let prefix = if dialect == "openai" { "chatcmpl-" } else { "msg_" };
+        let prefix = if dialect == "openai" {
+            "chatcmpl-"
+        } else {
+            "msg_"
+        };
         let meta = ResponseMeta {
             id: format!("{prefix}{:x}", now.wrapping_mul(1_000_003) ^ 0x9e37_79b9),
             model: req.model.clone(),
@@ -600,8 +619,7 @@ mod wire {
         sink: &mut Vec<StreamEvent>,
     ) -> Result<Option<serde_json::Value>, String> {
         let events: Vec<StreamEvent> = serde_json::from_value(
-            read_json(&format!("{base}/events/from/{next}"))?
-                .unwrap_or(serde_json::json!([])),
+            read_json(&format!("{base}/events/from/{next}"))?.unwrap_or(serde_json::json!([])),
         )
         .map_err(|e| format!("bad events: {e}"))?;
         *next += events.len();
@@ -611,8 +629,7 @@ mod wire {
         let state = status["state"].as_str().unwrap_or("");
         if state == "complete" || state == "failed" {
             let tail: Vec<StreamEvent> = serde_json::from_value(
-                read_json(&format!("{base}/events/from/{next}"))?
-                    .unwrap_or(serde_json::json!([])),
+                read_json(&format!("{base}/events/from/{next}"))?.unwrap_or(serde_json::json!([])),
             )
             .map_err(|e| format!("bad tail: {e}"))?;
             *next += tail.len();
@@ -628,7 +645,10 @@ mod wire {
         base: &str,
         meta: ResponseMeta,
     ) -> Result<(), String> {
-        write_json(&format!("{wire}/head"), &serde_json::json!({ "mode": "stream" }))?;
+        write_json(
+            &format!("{wire}/head"),
+            &serde_json::json!({ "mode": "stream" }),
+        )?;
         let mut enc = SseEncoder::new(dialect, meta);
         let mut next = 0usize;
         let mut emitted = 0usize;
@@ -654,8 +674,10 @@ mod wire {
                 }
                 Some(status) => {
                     if status["state"] == "failed" {
-                        let reason =
-                            status["reason"].as_str().unwrap_or("upstream failed").to_string();
+                        let reason = status["reason"]
+                            .as_str()
+                            .unwrap_or("upstream failed")
+                            .to_string();
                         for f in enc.encode_sse(&StreamEvent::Error { message: reason }) {
                             frames.push(serde_json::json!(f));
                         }
@@ -862,8 +884,7 @@ mod stats {
         let mut recent = records;
         recent.sort_by(|a, b| b.completed_at_ms.cmp(&a.completed_at_ms));
         recent.truncate(RECENT_LIMIT);
-        let recent =
-            serde_json::to_value(&recent).map_err(|e| format!("recent encode: {e}"))?;
+        let recent = serde_json::to_value(&recent).map_err(|e| format!("recent encode: {e}"))?;
 
         let summary = serde_json::json!({
             "generated_at_ms": now_ms,

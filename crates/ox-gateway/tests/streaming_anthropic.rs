@@ -19,7 +19,9 @@ async fn streaming_anthropic_messages_endpoint() {
         cache_creation: 0,
         cache_read: 0,
     });
-    executor.push_immediate(StreamEvent::TextDelta { text: "Hello".into() });
+    executor.push_immediate(StreamEvent::TextDelta {
+        text: "Hello".into(),
+    });
     executor.push_immediate(StreamEvent::OutputUsage { output_tokens: 1 });
     executor.push_immediate(StreamEvent::MessageStop);
 

@@ -386,12 +386,9 @@ impl Reader for LogStore {
                         "last requires a count: last/{n}",
                     ));
                 }
-                let n: usize =
-                    from[1]
-                        .parse()
-                        .map_err(|e: std::num::ParseIntError| {
-                            StoreError::store("LogStore", "read", e.to_string())
-                        })?;
+                let n: usize = from[1].parse().map_err(|e: std::num::ParseIntError| {
+                    StoreError::store("LogStore", "read", e.to_string())
+                })?;
                 let entries = self.shared.last_n(n);
                 let json = serde_json::to_value(&entries)
                     .map_err(|e| StoreError::store("LogStore", "read", e.to_string()))?;
@@ -439,17 +436,13 @@ impl Reader for LogStore {
                             ));
                         }
                         let offset: usize =
-                            from[3]
-                                .parse()
-                                .map_err(|e: std::num::ParseIntError| {
-                                    StoreError::store("LogStore", "read", e.to_string())
-                                })?;
+                            from[3].parse().map_err(|e: std::num::ParseIntError| {
+                                StoreError::store("LogStore", "read", e.to_string())
+                            })?;
                         let limit: usize =
-                            from[4]
-                                .parse()
-                                .map_err(|e: std::num::ParseIntError| {
-                                    StoreError::store("LogStore", "read", e.to_string())
-                                })?;
+                            from[4].parse().map_err(|e: std::num::ParseIntError| {
+                                StoreError::store("LogStore", "read", e.to_string())
+                            })?;
                         let lines: Vec<&str> = full.lines().collect();
                         let total = lines.len();
                         let start = offset.min(total);

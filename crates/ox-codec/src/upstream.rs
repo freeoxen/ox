@@ -5,7 +5,7 @@
 
 use ox_kernel::CompletionRequest;
 use ox_types::api_key::ApiKey;
-use ox_types::provider::{completion_url, AuthScheme, ProviderConfig};
+use ox_types::provider::{AuthScheme, ProviderConfig, completion_url};
 use std::collections::BTreeMap;
 
 /// Build the full upstream request as JSON in `UpstreamRequest` shape:

@@ -9,11 +9,20 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamEvent {
-    TextDelta { text: String },
-    ToolUseStart { id: String, name: String },
-    ToolUseInputDelta { delta: String },
+    TextDelta {
+        text: String,
+    },
+    ToolUseStart {
+        id: String,
+        name: String,
+    },
+    ToolUseInputDelta {
+        delta: String,
+    },
     MessageStop,
-    Error { message: String },
+    Error {
+        message: String,
+    },
     /// Input-side usage (input tokens, cache creation, cache read).
     /// Emitted by upstream SSE parsers at message_start (Anthropic) or
     /// when prompt_tokens lands (OpenAI).
@@ -24,7 +33,9 @@ pub enum StreamEvent {
     },
     /// Output-side usage (completion tokens). Emitted at message_delta
     /// (Anthropic) or final usage block (OpenAI).
-    OutputUsage { output_tokens: u32 },
+    OutputUsage {
+        output_tokens: u32,
+    },
 }
 
 #[cfg(test)]
@@ -33,7 +44,9 @@ mod tests {
 
     #[test]
     fn text_delta_json_roundtrip() {
-        let ev = StreamEvent::TextDelta { text: "hello".into() };
+        let ev = StreamEvent::TextDelta {
+            text: "hello".into(),
+        };
         let s = serde_json::to_string(&ev).unwrap();
         let back: StreamEvent = serde_json::from_str(&s).unwrap();
         assert_eq!(ev, back);

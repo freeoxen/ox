@@ -16,7 +16,7 @@
 //! Everything here contains complete prompt and completion text; the
 //! feature is off unless explicitly enabled.
 
-use ox_inbox::ledger::{append_entry, read_ledger_with_repair, LedgerEntry};
+use ox_inbox::ledger::{LedgerEntry, append_entry, read_ledger_with_repair};
 use ox_inbox::thread_dir::{self, ContextFile};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -96,7 +96,10 @@ impl LedgerSink {
     fn append_completion(&self, record: &serde_json::Value) -> Result<(), String> {
         let now_s = now_ms() / 1000;
         let day = day_stamp(now_s);
-        let mut guard = self.state.lock().map_err(|_| "sink lock poisoned".to_string())?;
+        let mut guard = self
+            .state
+            .lock()
+            .map_err(|_| "sink lock poisoned".to_string())?;
 
         // Open (or roll to) today's thread.
         if guard.as_ref().map(|(d, ..)| d != &day).unwrap_or(true) {
@@ -126,7 +129,9 @@ impl LedgerSink {
                     let turns = outcome
                         .entries
                         .iter()
-                        .filter(|e| e.msg.get("type").and_then(|t| t.as_str()) == Some("turn_start"))
+                        .filter(|e| {
+                            e.msg.get("type").and_then(|t| t.as_str()) == Some("turn_start")
+                        })
                         .count() as u64;
                     (outcome.entries.into_iter().last(), turns)
                 }
@@ -163,7 +168,10 @@ fn completion_msgs(record: &serde_json::Value, completion_id: u64) -> Vec<serde_
     let events = record["events"].as_array().cloned().unwrap_or_default();
     let usage = &record["usage"];
     // CompletionStatus is internally tagged: {"state": "...", "model_id": ...}.
-    let model = record["status"]["model_id"].as_str().unwrap_or("").to_string();
+    let model = record["status"]["model_id"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
 
     let mut msgs = Vec::new();
     msgs.push(serde_json::json!({
@@ -179,7 +187,10 @@ fn completion_msgs(record: &serde_json::Value, completion_id: u64) -> Vec<serde_
             "cache_creation_input_tokens",
             "cache_read_input_tokens",
         ] {
-            m.insert(key.into(), usage.get(key).cloned().unwrap_or(serde_json::json!(0)));
+            m.insert(
+                key.into(),
+                usage.get(key).cloned().unwrap_or(serde_json::json!(0)),
+            );
         }
         m.insert("model".into(), serde_json::json!(model));
     };
@@ -248,11 +259,14 @@ fn assistant_content(
             blocks.push(serde_json::json!({ "type": "text", "text": std::mem::take(text) }));
         }
     };
-    let flush_tool = |blocks: &mut Vec<serde_json::Value>, tool: &mut Option<(String, String, String)>| {
+    let flush_tool = |blocks: &mut Vec<serde_json::Value>,
+                      tool: &mut Option<(String, String, String)>| {
         if let Some((id, name, input)) = tool.take() {
-            let input = serde_json::from_str::<serde_json::Value>(&input)
-                .unwrap_or(serde_json::json!({}));
-            blocks.push(serde_json::json!({ "type": "tool_use", "id": id, "name": name, "input": input }));
+            let input =
+                serde_json::from_str::<serde_json::Value>(&input).unwrap_or(serde_json::json!({}));
+            blocks.push(
+                serde_json::json!({ "type": "tool_use", "id": id, "name": name, "input": input }),
+            );
         }
     };
 
@@ -268,8 +282,14 @@ fn assistant_content(
                 flush_text(&mut blocks, &mut text);
                 flush_tool(&mut blocks, &mut tool);
                 tool = Some((
-                    ev.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                    ev.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    ev.get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    ev.get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
                     String::new(),
                 ));
             }
@@ -285,7 +305,10 @@ fn assistant_content(
     flush_tool(&mut blocks, &mut tool);
 
     if status.get("state").and_then(|s| s.as_str()) == Some("failed") {
-        let reason = status.get("reason").and_then(|r| r.as_str()).unwrap_or("unknown");
+        let reason = status
+            .get("reason")
+            .and_then(|r| r.as_str())
+            .unwrap_or("unknown");
         blocks.push(serde_json::json!({
             "type": "text",
             "text": format!("[gateway error] {reason}"),

@@ -158,7 +158,9 @@ impl SseParser {
                     match delta.get("type").and_then(|t| t.as_str()).unwrap_or("") {
                         "text_delta" => {
                             if let Some(text) = delta.get("text").and_then(|t| t.as_str()) {
-                                return vec![StreamEvent::TextDelta { text: text.to_string() }];
+                                return vec![StreamEvent::TextDelta {
+                                    text: text.to_string(),
+                                }];
                             }
                         }
                         "input_json_delta" => {
@@ -180,7 +182,9 @@ impl SseParser {
                     .and_then(|e| e.get("message"))
                     .and_then(|m| m.as_str())
                     .unwrap_or("unknown error");
-                vec![StreamEvent::Error { message: msg.to_string() }]
+                vec![StreamEvent::Error {
+                    message: msg.to_string(),
+                }]
             }
             _ => vec![],
         }
@@ -224,7 +228,9 @@ impl SseParser {
             };
             if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
                 if !content.is_empty() {
-                    events.push(StreamEvent::TextDelta { text: content.to_string() });
+                    events.push(StreamEvent::TextDelta {
+                        text: content.to_string(),
+                    });
                 }
             }
             if let Some(tool_calls) = delta.get("tool_calls").and_then(|t| t.as_array()) {

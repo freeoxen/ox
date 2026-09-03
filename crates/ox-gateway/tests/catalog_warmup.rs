@@ -10,7 +10,7 @@ use ox_types::ModelInfo;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
-use structfs_core_store::{path, Record, Value};
+use structfs_core_store::{Record, Value, path};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn refresh_trigger_populates_v1_models() {
@@ -40,10 +40,7 @@ async fn refresh_trigger_populates_v1_models() {
 
     // secret/ — key for the anthropic account.
     let mut secret_base = BTreeMap::new();
-    secret_base.insert(
-        "keys/localbox".to_string(),
-        Value::String("sk-test".into()),
-    );
+    secret_base.insert("keys/localbox".to_string(), Value::String("sk-test".into()));
     broker
         .mount(oxpath!("secret"), ox_ui::ConfigStore::new(secret_base))
         .await;

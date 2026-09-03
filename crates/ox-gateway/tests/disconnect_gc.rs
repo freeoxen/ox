@@ -7,8 +7,8 @@ mod common;
 
 use common::build_test_broker;
 use futures::StreamExt;
-use ox_gate::completion_broker::mock::MockSseExecutor;
 use ox_gate::completion_broker::CompletionStatus;
+use ox_gate::completion_broker::mock::MockSseExecutor;
 use ox_types::StreamEvent;
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,7 +22,9 @@ async fn disconnect_mid_stream_gcs_inflight() {
         cache_creation: 0,
         cache_read: 0,
     });
-    executor.push_immediate(StreamEvent::TextDelta { text: "partial".into() });
+    executor.push_immediate(StreamEvent::TextDelta {
+        text: "partial".into(),
+    });
     // Park the upstream long enough that the client disconnect happens
     // while the request is still in flight.
     executor.push(Duration::from_secs(30), Ok(StreamEvent::MessageStop));

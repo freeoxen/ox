@@ -92,13 +92,7 @@ impl Subscription for AccountDeleteCleanupSubscription {
 
         // Extract the account name. The path's last component is the
         // account identifier; we already validated depth above.
-        let name = ctx
-            .change
-            .path
-            .iter()
-            .last()
-            .cloned()
-            .unwrap_or_default();
+        let name = ctx.change.path.iter().last().cloned().unwrap_or_default();
         if name.is_empty() {
             return vec![];
         }

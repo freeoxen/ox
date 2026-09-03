@@ -22,12 +22,19 @@ pub struct InflightGc {
 
 impl InflightGc {
     pub fn new(client: ClientHandle, handle: Path) -> Self {
-        Self { client, handle, armed: true }
+        Self {
+            client,
+            handle,
+            armed: true,
+        }
     }
 
     pub async fn gc_now(mut self) {
         self.armed = false;
-        let _ = self.client.write(&self.handle, Record::parsed(Value::Null)).await;
+        let _ = self
+            .client
+            .write(&self.handle, Record::parsed(Value::Null))
+            .await;
     }
 }
 
@@ -122,6 +129,9 @@ mod tests {
         // handle = "gateway/completions/outstanding/0", as the drains build it
         let handle = Path::parse("gateway/completions/outstanding/0").unwrap();
         let full = handle.join(&events_from_subpath(7));
-        assert_eq!(full.to_string(), "gateway/completions/outstanding/0/events/from/7");
+        assert_eq!(
+            full.to_string(),
+            "gateway/completions/outstanding/0/events/from/7"
+        );
     }
 }

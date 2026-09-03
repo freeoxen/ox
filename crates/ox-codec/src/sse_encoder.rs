@@ -131,7 +131,11 @@ impl SseEncoder {
 
     fn encode_anthropic(&mut self, event: &StreamEvent) -> Vec<String> {
         match event {
-            StreamEvent::InputUsage { input_tokens, cache_creation, cache_read } => {
+            StreamEvent::InputUsage {
+                input_tokens,
+                cache_creation,
+                cache_read,
+            } => {
                 let usage = (*input_tokens, *cache_creation, *cache_read);
                 if self.anthropic_message_started {
                     self.anthropic_late_input_usage = Some(usage);
@@ -214,7 +218,11 @@ impl SseEncoder {
             StreamEvent::OutputUsage { output_tokens } => {
                 let mut out = Vec::new();
                 self.ensure_anthropic_message_start(&mut out);
-                let stop_reason = if self.saw_tool_use { "tool_use" } else { "end_turn" };
+                let stop_reason = if self.saw_tool_use {
+                    "tool_use"
+                } else {
+                    "end_turn"
+                };
                 let mut usage = serde_json::json!({ "output_tokens": output_tokens });
                 if let Some((it, cc, cr)) = self.anthropic_late_input_usage.take() {
                     usage["input_tokens"] = serde_json::json!(it);
@@ -265,8 +273,11 @@ impl SseEncoder {
     }
 
     fn encode_openai(&mut self, event: &StreamEvent) -> Vec<String> {
-        let (id, model, created) =
-            (self.meta.id.clone(), self.meta.model.clone(), self.meta.created);
+        let (id, model, created) = (
+            self.meta.id.clone(),
+            self.meta.model.clone(),
+            self.meta.created,
+        );
         let chunk = |delta: serde_json::Value, finish_reason: Option<&str>| {
             serde_json::json!({
                 "id": id,
@@ -312,10 +323,21 @@ impl SseEncoder {
                 vec![format!("data: {}\n\n", chunk(payload, None))]
             }
             StreamEvent::MessageStop => {
-                let finish = if self.saw_tool_use { "tool_calls" } else { "stop" };
-                vec![format!("data: {}\n\n", chunk(serde_json::json!({}), Some(finish)))]
+                let finish = if self.saw_tool_use {
+                    "tool_calls"
+                } else {
+                    "stop"
+                };
+                vec![format!(
+                    "data: {}\n\n",
+                    chunk(serde_json::json!({}), Some(finish))
+                )]
             }
-            StreamEvent::InputUsage { input_tokens, cache_read, .. } => {
+            StreamEvent::InputUsage {
+                input_tokens,
+                cache_read,
+                ..
+            } => {
                 self.openai_prompt_usage = Some((*input_tokens, *cache_read));
                 vec![]
             }
@@ -387,7 +409,11 @@ mod tests {
         });
         // Expect text block close + tool block start
         assert!(frames.iter().any(|f| f.contains("content_block_stop")));
-        assert!(frames.iter().any(|f| f.contains("content_block_start") && f.contains("tool_use")));
+        assert!(
+            frames
+                .iter()
+                .any(|f| f.contains("content_block_start") && f.contains("tool_use"))
+        );
     }
 
     #[test]
@@ -408,7 +434,10 @@ mod tests {
     #[test]
     fn anthropic_stop_reason_reflects_tool_use() {
         let mut enc = SseEncoder::new("anthropic", meta());
-        let _ = enc.encode_sse(&StreamEvent::ToolUseStart { id: "t1".into(), name: "x".into() });
+        let _ = enc.encode_sse(&StreamEvent::ToolUseStart {
+            id: "t1".into(),
+            name: "x".into(),
+        });
         let frames = enc.encode_sse(&StreamEvent::OutputUsage { output_tokens: 5 });
         assert!(frames[0].contains("\"stop_reason\":\"tool_use\""));
     }
@@ -475,10 +504,18 @@ mod tests {
     #[test]
     fn anthropic_second_tool_use_closes_first_block() {
         let mut enc = SseEncoder::new("anthropic", meta());
-        let _ = enc.encode_sse(&StreamEvent::ToolUseStart { id: "t1".into(), name: "a".into() });
-        let frames = enc.encode_sse(&StreamEvent::ToolUseStart { id: "t2".into(), name: "b".into() });
+        let _ = enc.encode_sse(&StreamEvent::ToolUseStart {
+            id: "t1".into(),
+            name: "a".into(),
+        });
+        let frames = enc.encode_sse(&StreamEvent::ToolUseStart {
+            id: "t2".into(),
+            name: "b".into(),
+        });
         assert!(
-            frames.iter().any(|f| f.contains("content_block_stop") && f.contains("\"index\":0")),
+            frames
+                .iter()
+                .any(|f| f.contains("content_block_stop") && f.contains("\"index\":0")),
             "first tool block must be closed before the second opens: {frames:?}"
         );
     }
@@ -486,13 +523,19 @@ mod tests {
     #[test]
     fn openai_usage_buffered_into_single_final_chunk() {
         let mut enc = SseEncoder::new("openai", meta());
-        assert!(enc.encode_sse(&StreamEvent::InputUsage {
-            input_tokens: 10,
-            cache_creation: 0,
-            cache_read: 4,
-        }).is_empty());
+        assert!(
+            enc.encode_sse(&StreamEvent::InputUsage {
+                input_tokens: 10,
+                cache_creation: 0,
+                cache_read: 4,
+            })
+            .is_empty()
+        );
         let _ = enc.encode_sse(&StreamEvent::TextDelta { text: "hi".into() });
-        assert!(enc.encode_sse(&StreamEvent::OutputUsage { output_tokens: 7 }).is_empty());
+        assert!(
+            enc.encode_sse(&StreamEvent::OutputUsage { output_tokens: 7 })
+                .is_empty()
+        );
         let _ = enc.encode_sse(&StreamEvent::MessageStop);
         let frames = enc.finish();
         assert_eq!(frames.len(), 2, "usage chunk then [DONE]: {frames:?}");
@@ -508,14 +551,18 @@ mod tests {
         // OpenAI-dialect upstream: content arrives first, usage at the end.
         let mut enc = SseEncoder::new("anthropic", meta());
         let first = enc.encode_sse(&StreamEvent::TextDelta { text: "hi".into() });
-        assert!(first[0].contains("message_start"), "stream must open with message_start");
-        assert!(enc
-            .encode_sse(&StreamEvent::InputUsage {
+        assert!(
+            first[0].contains("message_start"),
+            "stream must open with message_start"
+        );
+        assert!(
+            enc.encode_sse(&StreamEvent::InputUsage {
                 input_tokens: 9,
                 cache_creation: 0,
                 cache_read: 2,
             })
-            .is_empty());
+            .is_empty()
+        );
         let delta = enc.encode_sse(&StreamEvent::OutputUsage { output_tokens: 4 });
         assert!(delta[0].contains("\"output_tokens\":4"));
         assert!(delta[0].contains("\"input_tokens\":9"));
@@ -525,7 +572,10 @@ mod tests {
     #[test]
     fn openai_message_stop_after_tools_emits_tool_calls() {
         let mut enc = SseEncoder::new("openai", meta());
-        let _ = enc.encode_sse(&StreamEvent::ToolUseStart { id: "t1".into(), name: "x".into() });
+        let _ = enc.encode_sse(&StreamEvent::ToolUseStart {
+            id: "t1".into(),
+            name: "x".into(),
+        });
         let frames = enc.encode_sse(&StreamEvent::MessageStop);
         assert!(frames[0].contains("\"finish_reason\":\"tool_calls\""));
     }

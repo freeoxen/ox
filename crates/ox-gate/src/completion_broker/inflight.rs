@@ -20,9 +20,22 @@ use crate::codec::UsageInfo;
 #[serde(tag = "state", rename_all = "lowercase")]
 pub enum CompletionStatus {
     Pending,
-    Streaming { account: String, model_id: String, started_at_ms: u64 },
-    Complete { account: String, model_id: String, completed_at_ms: u64 },
-    Failed { account: String, model_id: String, reason: String, failed_at_ms: u64 },
+    Streaming {
+        account: String,
+        model_id: String,
+        started_at_ms: u64,
+    },
+    Complete {
+        account: String,
+        model_id: String,
+        completed_at_ms: u64,
+    },
+    Failed {
+        account: String,
+        model_id: String,
+        reason: String,
+        failed_at_ms: u64,
+    },
 }
 
 impl CompletionStatus {
@@ -64,22 +77,31 @@ mod tests {
     #[test]
     fn is_terminal_only_for_complete_or_failed() {
         assert!(!CompletionStatus::Pending.is_terminal());
-        assert!(!CompletionStatus::Streaming {
-            account: "a".into(),
-            model_id: "m".into(),
-            started_at_ms: 0,
-        }.is_terminal());
-        assert!(CompletionStatus::Complete {
-            account: "a".into(),
-            model_id: "m".into(),
-            completed_at_ms: 1,
-        }.is_terminal());
-        assert!(CompletionStatus::Failed {
-            account: "a".into(),
-            model_id: "m".into(),
-            reason: "x".into(),
-            failed_at_ms: 1,
-        }.is_terminal());
+        assert!(
+            !CompletionStatus::Streaming {
+                account: "a".into(),
+                model_id: "m".into(),
+                started_at_ms: 0,
+            }
+            .is_terminal()
+        );
+        assert!(
+            CompletionStatus::Complete {
+                account: "a".into(),
+                model_id: "m".into(),
+                completed_at_ms: 1,
+            }
+            .is_terminal()
+        );
+        assert!(
+            CompletionStatus::Failed {
+                account: "a".into(),
+                model_id: "m".into(),
+                reason: "x".into(),
+                failed_at_ms: 1,
+            }
+            .is_terminal()
+        );
     }
 
     #[test]

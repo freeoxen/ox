@@ -61,11 +61,7 @@ impl AsyncReader for ApprovalStore {
 
 impl AsyncWriter for ApprovalStore {
     fn write(&mut self, to: &Path, data: Record) -> BoxFuture<Result<Path, StoreError>> {
-        let action = if to.is_empty() {
-            ""
-        } else {
-            to[0].as_str()
-        };
+        let action = if to.is_empty() { "" } else { to[0].as_str() };
         let value = match data.as_value() {
             Some(v) => v.clone(),
             None => {

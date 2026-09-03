@@ -11,7 +11,7 @@ use ox_path::oxpath;
 use ox_types::StreamEvent;
 use std::sync::Arc;
 use std::time::Duration;
-use structfs_core_store::{path, Value};
+use structfs_core_store::{Value, path};
 use structfs_serde_store::to_value;
 
 async fn build_broker_with_traffic(
@@ -78,8 +78,12 @@ async fn completion_logs_full_record_and_ledger_thread() {
         cache_creation: 0,
         cache_read: 0,
     });
-    executor.push_immediate(StreamEvent::TextDelta { text: "Hello ".into() });
-    executor.push_immediate(StreamEvent::TextDelta { text: "there".into() });
+    executor.push_immediate(StreamEvent::TextDelta {
+        text: "Hello ".into(),
+    });
+    executor.push_immediate(StreamEvent::TextDelta {
+        text: "there".into(),
+    });
     executor.push_immediate(StreamEvent::OutputUsage { output_tokens: 2 });
     executor.push_immediate(StreamEvent::MessageStop);
 
@@ -145,7 +149,13 @@ async fn completion_logs_full_record_and_ledger_thread() {
         .collect();
     assert_eq!(
         ev_types,
-        ["input_usage", "text_delta", "text_delta", "output_usage", "message_stop"]
+        [
+            "input_usage",
+            "text_delta",
+            "text_delta",
+            "output_usage",
+            "message_stop"
+        ]
     );
 
     // Ledger thread: dir, context, chained entries in ox message order.
@@ -158,7 +168,12 @@ async fn completion_logs_full_record_and_ledger_thread() {
         serde_json::from_str(&std::fs::read_to_string(thread.path().join("context.json")).unwrap())
             .unwrap();
     assert_eq!(ctx["version"], 1);
-    assert!(ctx["title"].as_str().unwrap().starts_with("Gateway traffic"));
+    assert!(
+        ctx["title"]
+            .as_str()
+            .unwrap()
+            .starts_with("Gateway traffic")
+    );
     assert!(thread.path().join("view.json").exists());
 
     let ledger = std::fs::read_to_string(thread.path().join("ledger.jsonl")).unwrap();
@@ -172,7 +187,13 @@ async fn completion_logs_full_record_and_ledger_thread() {
         .collect();
     assert_eq!(
         types,
-        ["user", "turn_start", "completion_end", "assistant", "turn_end"]
+        [
+            "user",
+            "turn_start",
+            "completion_end",
+            "assistant",
+            "turn_end"
+        ]
     );
     // Hash chain holds.
     for pair in entries.windows(2) {
@@ -226,10 +247,12 @@ async fn failed_completion_still_logs_with_reason() {
     }
     assert_eq!(records.len(), 1);
     assert_eq!(records[0]["status"]["state"], "failed");
-    assert!(records[0]["status"]["reason"]
-        .as_str()
-        .unwrap()
-        .contains("nosuchrole"));
+    assert!(
+        records[0]["status"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("nosuchrole")
+    );
 
     // Ledger renders the failure as visible assistant text.
     let thread = std::fs::read_dir(tmp.path())
@@ -258,8 +281,16 @@ async fn http_middleware_appends_access_records() {
         axum::serve(listener, app).await.unwrap();
     });
     let http = reqwest::Client::new();
-    let _ = http.get(format!("http://{addr}/v1/models")).send().await.unwrap();
-    let _ = http.get(format!("http://{addr}/stats")).send().await.unwrap();
+    let _ = http
+        .get(format!("http://{addr}/v1/models"))
+        .send()
+        .await
+        .unwrap();
+    let _ = http
+        .get(format!("http://{addr}/stats"))
+        .send()
+        .await
+        .unwrap();
 
     let client = broker.client();
     let mut records: Vec<serde_json::Value> = Vec::new();
@@ -277,7 +308,11 @@ async fn http_middleware_appends_access_records() {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    assert_eq!(records.len(), 1, "models logged, /stats excluded: {records:?}");
+    assert_eq!(
+        records.len(),
+        1,
+        "models logged, /stats excluded: {records:?}"
+    );
     assert_eq!(records[0]["kind"], "http");
     assert_eq!(records[0]["method"], "GET");
     assert_eq!(records[0]["path"], "/v1/models");

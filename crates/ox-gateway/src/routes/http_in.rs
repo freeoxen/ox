@@ -8,14 +8,14 @@
 
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use bytes::Bytes;
 use ox_broker::ClientHandle;
 use serde_json::Value;
-use structfs_core_store::{path, Path, Record};
+use structfs_core_store::{Path, Record, path};
 
 use crate::handle::InflightGc;
 
@@ -135,7 +135,10 @@ fn stream_frames(client: ClientHandle, handle: Path) -> Response {
     };
     Response::builder()
         .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, HeaderValue::from_static("text/event-stream"))
+        .header(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/event-stream"),
+        )
         .header(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"))
         .body(Body::from_stream(stream))
         .expect("building SSE response is infallible")

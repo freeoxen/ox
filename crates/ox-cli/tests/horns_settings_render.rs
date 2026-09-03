@@ -42,7 +42,10 @@ async fn seed_index_entries(client: &ox_broker::ClientHandle) {
         },
     ];
     for entry in &entries {
-        let mut path_components = oxpath!("settings", "index", "entries").iter().cloned().collect::<Vec<String>>();
+        let mut path_components = oxpath!("settings", "index", "entries")
+            .iter()
+            .cloned()
+            .collect::<Vec<String>>();
         path_components.push(entry.id.clone());
         let path = structfs_core_store::Path::try_from_components(path_components)
             .expect("path components");

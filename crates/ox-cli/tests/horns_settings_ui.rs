@@ -359,10 +359,7 @@ async fn pressing_a_opens_compose_new_connection() {
     let cursor = read_cursor(&client)
         .await
         .expect("cursor should be set after pressing a");
-    let components: Vec<String> = cursor
-        .iter()
-        .map(|c| c.as_str().to_string())
-        .collect();
+    let components: Vec<String> = cursor.iter().map(|c| c.as_str().to_string()).collect();
     assert!(
         components.first().map(String::as_str) == Some("settings")
             && components

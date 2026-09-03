@@ -8,13 +8,13 @@
 
 use axum::http::StatusCode;
 use axum::{
+    Json, Router,
     extract::State,
     response::{Html, IntoResponse, Response},
     routing::get,
-    Json, Router,
 };
 use ox_broker::ClientHandle;
-use structfs_core_store::{path, Record};
+use structfs_core_store::{Record, path};
 
 use crate::handle::InflightGc;
 

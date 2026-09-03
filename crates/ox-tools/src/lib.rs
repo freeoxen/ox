@@ -431,7 +431,8 @@ impl Writer for ToolStore {
 
                 // For complete paths, read the response and store as exec handle
                 if !sub.is_empty() && sub[0] == "complete" {
-                    let response_path = sub.join(&Path::from_components(vec!["response".to_string()]));
+                    let response_path =
+                        sub.join(&Path::from_components(vec!["response".to_string()]));
                     if let Some(response) = self.completions.read(&response_path)? {
                         let value = response.as_value().cloned().unwrap_or(Value::Null);
                         return Ok(self.store_exec_result(value));

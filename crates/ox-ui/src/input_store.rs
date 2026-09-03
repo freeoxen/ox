@@ -405,11 +405,7 @@ impl Reader for InputStore {
 
 impl Writer for InputStore {
     fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
-        let action = if to.is_empty() {
-            ""
-        } else {
-            to[0].as_str()
-        };
+        let action = if to.is_empty() { "" } else { to[0].as_str() };
         let value = data.as_value().ok_or_else(|| {
             StoreError::store("input", "write", "write data must contain a value")
         })?;

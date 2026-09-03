@@ -28,7 +28,6 @@ use ox_broker::async_store::{AsyncReader, AsyncWriter, BoxFuture};
 use structfs_core_store::{Error as StoreError, Path, Record, Value};
 use tokio::runtime::Handle as TokioHandle;
 
-
 // Used in the AsyncWriter impl for deserializing the inbound record.
 #[allow(unused_imports)]
 use structfs_serde_store;
@@ -102,7 +101,10 @@ impl AsyncReader for CompletionBrokerStore {
         // Root descriptor map.
         if from.is_empty() {
             let mut map = std::collections::BTreeMap::new();
-            map.insert("outstanding".to_string(), Value::String("outstanding".into()));
+            map.insert(
+                "outstanding".to_string(),
+                Value::String("outstanding".into()),
+            );
             map.insert("docs".to_string(), Value::String("docs".into()));
             return Box::pin(async move { Ok(Some(Record::parsed(Value::Map(map)))) });
         }
@@ -172,7 +174,7 @@ impl AsyncReader for CompletionBrokerStore {
                 Some("events/count") => {
                     let state = inflight.state.lock().await;
                     Ok(Some(Record::parsed(Value::Integer(
-                        state.events.len() as i64,
+                        state.events.len() as i64
                     ))))
                 }
                 // outstanding/{N}/events/from/{S} — blocking drain from index S.
@@ -184,12 +186,11 @@ impl AsyncReader for CompletionBrokerStore {
                 // the await's first poll, and with no later notification the
                 // read hangs forever.
                 Some(s) if s.starts_with("events/from/") => {
-                    let seq: usize = s
-                        .trim_start_matches("events/from/")
-                        .parse()
-                        .map_err(|e: std::num::ParseIntError| {
+                    let seq: usize = s.trim_start_matches("events/from/").parse().map_err(
+                        |e: std::num::ParseIntError| {
                             StoreError::store("completion_broker", "read", e.to_string())
-                        })?;
+                        },
+                    )?;
                     loop {
                         let notified = inflight.notify.notified();
                         tokio::pin!(notified);
@@ -311,11 +312,8 @@ impl AsyncWriter for CompletionBrokerStore {
             let runner = self.runner.clone();
             self.runtime.spawn_blocking(move || runner(id, cancel));
 
-            let path = Path::try_from_components(vec![
-                "outstanding".to_string(),
-                id.to_string(),
-            ])
-            .map_err(|e| StoreError::store("completion_broker", "write", e.to_string()));
+            let path = Path::try_from_components(vec!["outstanding".to_string(), id.to_string()])
+                .map_err(|e| StoreError::store("completion_broker", "write", e.to_string()));
             return Box::pin(async move { path });
         }
 
@@ -411,9 +409,7 @@ mod tests {
     #[test]
     fn parse_handle_path_basic() {
         assert_eq!(
-            CompletionBrokerStore::parse_handle_path(
-                &path!("outstanding/42")
-            ),
+            CompletionBrokerStore::parse_handle_path(&path!("outstanding/42")),
             Some((42, None))
         );
     }
@@ -421,29 +417,20 @@ mod tests {
     #[test]
     fn parse_handle_path_with_subpath() {
         assert_eq!(
-            CompletionBrokerStore::parse_handle_path(
-                &path!("outstanding/7/events/from/3")
-            ),
+            CompletionBrokerStore::parse_handle_path(&path!("outstanding/7/events/from/3")),
             Some((7, Some("events/from/3".into())))
         );
     }
 
     #[test]
     fn parse_handle_path_root_returns_none() {
-        assert_eq!(
-            CompletionBrokerStore::parse_handle_path(
-                &path!("")
-            ),
-            None
-        );
+        assert_eq!(CompletionBrokerStore::parse_handle_path(&path!("")), None);
     }
 
     #[test]
     fn parse_handle_path_outstanding_only_returns_none() {
         assert_eq!(
-            CompletionBrokerStore::parse_handle_path(
-                &path!("outstanding")
-            ),
+            CompletionBrokerStore::parse_handle_path(&path!("outstanding")),
             None
         );
     }
@@ -451,9 +438,7 @@ mod tests {
     #[test]
     fn parse_handle_path_nonnumeric_id_returns_none() {
         assert_eq!(
-            CompletionBrokerStore::parse_handle_path(
-                &path!("outstanding/abc")
-            ),
+            CompletionBrokerStore::parse_handle_path(&path!("outstanding/abc")),
             None
         );
     }
@@ -530,7 +515,9 @@ mod mechanics_tests {
                 });
             }),
         );
-        broker.mount_async(oxpath!("gateway", "completions"), store).await;
+        broker
+            .mount_async(oxpath!("gateway", "completions"), store)
+            .await;
 
         let handle_path = client
             .write_typed(&path!("gateway/completions"), &request())
@@ -564,10 +551,8 @@ mod mechanics_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_null_to_outstanding_gc_removes_handle() {
-        let mut store = CompletionBrokerStore::new(
-            tokio::runtime::Handle::current(),
-            Arc::new(|_, _| {}),
-        );
+        let mut store =
+            CompletionBrokerStore::new(tokio::runtime::Handle::current(), Arc::new(|_, _| {}));
         let value = to_value(&request()).unwrap();
         let handle_path = store
             .write(&path!(""), Record::parsed(value))

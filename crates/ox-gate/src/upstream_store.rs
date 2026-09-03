@@ -117,12 +117,11 @@ impl<E: SseHttpExecutor> AsyncReader for UpstreamStore<E> {
                 // a notification landing between the lock drop and the first
                 // poll and park forever.
                 Some(s) if s.starts_with("events/from/") => {
-                    let seq: usize = s
-                        .trim_start_matches("events/from/")
-                        .parse()
-                        .map_err(|e: std::num::ParseIntError| {
+                    let seq: usize = s.trim_start_matches("events/from/").parse().map_err(
+                        |e: std::num::ParseIntError| {
                             StoreError::store("upstream", "read", e.to_string())
-                        })?;
+                        },
+                    )?;
                     loop {
                         let notified = inflight.notify.notified();
                         tokio::pin!(notified);
@@ -180,7 +179,11 @@ impl<E: SseHttpExecutor> AsyncWriter for UpstreamStore<E> {
             Some(v) => v.clone(),
             None => {
                 return Box::pin(async move {
-                    Err(StoreError::store("upstream", "write", "expected parsed record"))
+                    Err(StoreError::store(
+                        "upstream",
+                        "write",
+                        "expected parsed record",
+                    ))
                 });
             }
         };
@@ -342,7 +345,9 @@ mod tests {
         };
         assert_eq!(
             status,
-            UpstreamStatus::Failed { reason: "boom".into() }
+            UpstreamStatus::Failed {
+                reason: "boom".into()
+            }
         );
     }
 
@@ -360,8 +365,7 @@ mod tests {
 
         // Wait for terminal, then read a stale cursor far past the end.
         loop {
-            let status: UpstreamStatus =
-                client.read_typed(&handle).await.unwrap().unwrap();
+            let status: UpstreamStatus = client.read_typed(&handle).await.unwrap().unwrap();
             if status.is_terminal() {
                 break;
             }

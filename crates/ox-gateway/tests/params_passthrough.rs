@@ -50,7 +50,10 @@ async fn openai_route_forwards_params_to_openai_upstream() {
     assert_eq!(body["stop"], serde_json::json!(["END"]));
     assert_eq!(body["seed"], serde_json::json!(7));
     assert_eq!(body["tool_choice"], serde_json::json!("auto"));
-    assert!(body.get("max_tokens").is_none(), "omitted cap must not be fabricated");
+    assert!(
+        body.get("max_tokens").is_none(),
+        "omitted cap must not be fabricated"
+    );
     assert!(body.get("stop_sequences").is_none());
 }
 
@@ -115,6 +118,9 @@ async fn anthropic_client_params_cross_to_openai_upstream() {
     assert_eq!(body["temperature"], serde_json::json!(0.5));
     assert_eq!(body["stop"], serde_json::json!(["HALT"]));
     assert_eq!(body["tool_choice"], serde_json::json!("required"));
-    assert!(body.get("top_k").is_none(), "anthropic-only param must not cross");
+    assert!(
+        body.get("top_k").is_none(),
+        "anthropic-only param must not cross"
+    );
     assert!(body.get("stop_sequences").is_none());
 }

@@ -9,30 +9,39 @@ use super::{CodecError, UsageInfo};
 /// `system` may be a plain string or an array of `{type:"text", text:"..."}` blocks;
 /// the latter are joined with `\n\n` to produce a flat string.
 pub fn decode_request(body: &serde_json::Value) -> Result<CompletionRequest, CodecError> {
-    let obj = body.as_object().ok_or_else(|| {
-        CodecError::InvalidShape("body must be a JSON object".into())
-    })?;
+    let obj = body
+        .as_object()
+        .ok_or_else(|| CodecError::InvalidShape("body must be a JSON object".into()))?;
 
-    let model = obj.get("model").and_then(|v| v.as_str())
+    let model = obj
+        .get("model")
+        .and_then(|v| v.as_str())
         .ok_or(CodecError::MissingField("model"))?
         .to_string();
 
-    let max_tokens = obj.get("max_tokens").and_then(|v| v.as_u64())
+    let max_tokens = obj
+        .get("max_tokens")
+        .and_then(|v| v.as_u64())
         .ok_or(CodecError::MissingField("max_tokens"))? as u32;
 
     let system = match obj.get("system") {
         None => String::new(),
         Some(serde_json::Value::String(s)) => s.clone(),
-        Some(serde_json::Value::Array(arr)) => arr.iter()
+        Some(serde_json::Value::Array(arr)) => arr
+            .iter()
             .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
             .collect::<Vec<_>>()
             .join("\n\n"),
-        _ => return Err(CodecError::InvalidShape(
-            "system must be string or array of text blocks".into()
-        )),
+        _ => {
+            return Err(CodecError::InvalidShape(
+                "system must be string or array of text blocks".into(),
+            ));
+        }
     };
 
-    let messages = obj.get("messages").and_then(|v| v.as_array())
+    let messages = obj
+        .get("messages")
+        .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
 
@@ -46,11 +55,20 @@ pub fn decode_request(body: &serde_json::Value) -> Result<CompletionRequest, Cod
                     "tools entries require a string `name`".into(),
                 ));
             };
-            let description = t.get("description")
-                .and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let input_schema = t.get("input_schema")
-                .cloned().unwrap_or(serde_json::Value::Null);
-            tools.push(ToolSchema { name: name.to_string(), description, input_schema });
+            let description = t
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let input_schema = t
+                .get("input_schema")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            tools.push(ToolSchema {
+                name: name.to_string(),
+                description,
+                input_schema,
+            });
         }
     }
 
@@ -59,14 +77,29 @@ pub fn decode_request(body: &serde_json::Value) -> Result<CompletionRequest, Cod
     // Everything else the client sent — temperature, top_p, top_k,
     // stop_sequences, tool_choice, thinking, metadata, … — is carried as-is.
     // Anthropic-style names are the canonical extras form, so no renaming.
-    const HANDLED: [&str; 6] = ["model", "max_tokens", "system", "messages", "tools", "stream"];
+    const HANDLED: [&str; 6] = [
+        "model",
+        "max_tokens",
+        "system",
+        "messages",
+        "tools",
+        "stream",
+    ];
     let extra: std::collections::BTreeMap<String, serde_json::Value> = obj
         .iter()
         .filter(|(k, _)| !HANDLED.contains(&k.as_str()))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
 
-    Ok(CompletionRequest { model, max_tokens, system, messages, tools, stream, extra })
+    Ok(CompletionRequest {
+        model,
+        max_tokens,
+        system,
+        messages,
+        tools,
+        stream,
+        extra,
+    })
 }
 
 /// Keys from `extra` that are valid on an Anthropic Messages request.
@@ -163,7 +196,9 @@ pub fn parse_sse_events(body: &str) -> Vec<StreamEvent> {
                     match delta_type {
                         "text_delta" => {
                             if let Some(text) = delta.get("text").and_then(|t| t.as_str()) {
-                                events.push(StreamEvent::TextDelta { text: text.to_string() });
+                                events.push(StreamEvent::TextDelta {
+                                    text: text.to_string(),
+                                });
                             }
                         }
                         "input_json_delta" => {
@@ -188,7 +223,9 @@ pub fn parse_sse_events(body: &str) -> Vec<StreamEvent> {
                     .and_then(|e| e.get("message"))
                     .and_then(|m| m.as_str())
                     .unwrap_or("unknown error");
-                events.push(StreamEvent::Error { message: msg.to_string() });
+                events.push(StreamEvent::Error {
+                    message: msg.to_string(),
+                });
             }
             _ => {
                 // ping, message_start, content_block_stop, message_delta — ignore
@@ -268,7 +305,10 @@ pub fn encode_response(events: &[StreamEvent], meta: &crate::ResponseMeta) -> se
             text.clear();
         }
     }
-    fn flush_tool(blocks: &mut Vec<serde_json::Value>, tool: &mut Option<(String, String, String)>) {
+    fn flush_tool(
+        blocks: &mut Vec<serde_json::Value>,
+        tool: &mut Option<(String, String, String)>,
+    ) {
         if let Some((id, name, input_json)) = tool.take() {
             let input = serde_json::from_str::<serde_json::Value>(&input_json)
                 .unwrap_or(serde_json::Value::Object(Default::default()));
@@ -297,7 +337,11 @@ pub fn encode_response(events: &[StreamEvent], meta: &crate::ResponseMeta) -> se
                     input_json.push_str(delta);
                 }
             }
-            StreamEvent::InputUsage { input_tokens: it, cache_creation: cc, cache_read: cr } => {
+            StreamEvent::InputUsage {
+                input_tokens: it,
+                cache_creation: cc,
+                cache_read: cr,
+            } => {
                 input_tokens = *it;
                 cache_creation = *cc;
                 cache_read = *cr;
@@ -348,9 +392,17 @@ mod encode_response_tests {
     #[test]
     fn encode_text_only_response() {
         let events = vec![
-            StreamEvent::InputUsage { input_tokens: 10, cache_creation: 0, cache_read: 0 },
-            StreamEvent::TextDelta { text: "Hello".into() },
-            StreamEvent::TextDelta { text: " world".into() },
+            StreamEvent::InputUsage {
+                input_tokens: 10,
+                cache_creation: 0,
+                cache_read: 0,
+            },
+            StreamEvent::TextDelta {
+                text: "Hello".into(),
+            },
+            StreamEvent::TextDelta {
+                text: " world".into(),
+            },
             StreamEvent::OutputUsage { output_tokens: 2 },
             StreamEvent::MessageStop,
         ];
@@ -369,9 +421,16 @@ mod encode_response_tests {
     #[test]
     fn encode_response_with_tool_use() {
         let events = vec![
-            StreamEvent::ToolUseStart { id: "t1".into(), name: "read_file".into() },
-            StreamEvent::ToolUseInputDelta { delta: r#"{"path":"#.into() },
-            StreamEvent::ToolUseInputDelta { delta: r#""/etc/hosts"}"#.into() },
+            StreamEvent::ToolUseStart {
+                id: "t1".into(),
+                name: "read_file".into(),
+            },
+            StreamEvent::ToolUseInputDelta {
+                delta: r#"{"path":"#.into(),
+            },
+            StreamEvent::ToolUseInputDelta {
+                delta: r#""/etc/hosts"}"#.into(),
+            },
             StreamEvent::OutputUsage { output_tokens: 5 },
             StreamEvent::MessageStop,
         ];
@@ -387,9 +446,16 @@ mod encode_response_tests {
     #[test]
     fn encode_mixed_text_and_tool_use_preserves_order() {
         let events = vec![
-            StreamEvent::TextDelta { text: "I'll read it.".into() },
-            StreamEvent::ToolUseStart { id: "t1".into(), name: "read_file".into() },
-            StreamEvent::ToolUseInputDelta { delta: r#"{"p":"/a"}"#.into() },
+            StreamEvent::TextDelta {
+                text: "I'll read it.".into(),
+            },
+            StreamEvent::ToolUseStart {
+                id: "t1".into(),
+                name: "read_file".into(),
+            },
+            StreamEvent::ToolUseInputDelta {
+                delta: r#"{"p":"/a"}"#.into(),
+            },
             StreamEvent::MessageStop,
         ];
         let resp = encode_response(&events, &meta());
@@ -429,7 +495,10 @@ mod passthrough_tests {
         assert_eq!(req.extra["top_p"], serde_json::json!(0.9));
         assert_eq!(req.extra["top_k"], serde_json::json!(40));
         assert_eq!(req.extra["stop_sequences"], serde_json::json!(["END"]));
-        assert_eq!(req.extra["thinking"]["budget_tokens"], serde_json::json!(1024));
+        assert_eq!(
+            req.extra["thinking"]["budget_tokens"],
+            serde_json::json!(1024)
+        );
     }
 
     #[test]
@@ -502,13 +571,19 @@ mod decode_tests {
     #[test]
     fn missing_model_errors() {
         let body = serde_json::json!({"max_tokens": 1, "messages": []});
-        assert_eq!(decode_request(&body).unwrap_err(), CodecError::MissingField("model"));
+        assert_eq!(
+            decode_request(&body).unwrap_err(),
+            CodecError::MissingField("model")
+        );
     }
 
     #[test]
     fn missing_max_tokens_errors() {
         let body = serde_json::json!({"model": "m", "messages": []});
-        assert_eq!(decode_request(&body).unwrap_err(), CodecError::MissingField("max_tokens"));
+        assert_eq!(
+            decode_request(&body).unwrap_err(),
+            CodecError::MissingField("max_tokens")
+        );
     }
 
     #[test]
@@ -569,7 +644,9 @@ mod tests {
         let body = "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"loc\\\"\"}}\n";
         let events = parse_sse_events(body);
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], StreamEvent::ToolUseInputDelta { delta } if delta == "{\"loc\""));
+        assert!(
+            matches!(&events[0], StreamEvent::ToolUseInputDelta { delta } if delta == "{\"loc\"")
+        );
     }
 
     #[test]
@@ -593,7 +670,9 @@ mod tests {
         let body = "data: {\"type\":\"error\",\"error\":{\"message\":\"rate limit exceeded\"}}\n";
         let events = parse_sse_events(body);
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], StreamEvent::Error { message } if message == "rate limit exceeded"));
+        assert!(
+            matches!(&events[0], StreamEvent::Error { message } if message == "rate limit exceeded")
+        );
     }
 
     #[test]

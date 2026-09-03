@@ -37,7 +37,11 @@ struct JobStore {
 
 impl Reader for JobStore {
     fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
-        Ok(self.entries.get(&from.to_string()).cloned().map(Record::parsed))
+        Ok(self
+            .entries
+            .get(&from.to_string())
+            .cloned()
+            .map(Record::parsed))
     }
 }
 
@@ -67,7 +71,11 @@ impl Reader for EmptyToolStore {
 
 impl Writer for EmptyToolStore {
     fn write(&mut self, _to: &Path, _data: Record) -> Result<Path, StoreError> {
-        Err(StoreError::store("codec_block", "write", "codec block has no tools"))
+        Err(StoreError::store(
+            "codec_block",
+            "write",
+            "codec block has no tools",
+        ))
     }
 }
 
@@ -89,7 +97,12 @@ pub fn run_job(job: serde_json::Value) -> Result<serde_json::Value, String> {
         structfs_serde_store::json_to_value(job),
     );
     let backing = JobStore { entries };
-    let host_store = ox_runtime::HostStore::new(backing, NoEffects { tools: EmptyToolStore });
+    let host_store = ox_runtime::HostStore::new(
+        backing,
+        NoEffects {
+            tools: EmptyToolStore,
+        },
+    );
 
     let (mut host_store, outcome) = module.run(host_store);
     outcome?;

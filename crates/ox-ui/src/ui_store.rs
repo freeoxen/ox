@@ -1405,11 +1405,7 @@ impl Reader for UiStore {
             "scroll_max" => self.state.scroll_max_value(),
             "viewport_height" => self.state.viewport_height_value(),
             "input" => {
-                let sub = if from.len() > 1 {
-                    from[1].as_str()
-                } else {
-                    ""
-                };
+                let sub = if from.len() > 1 { from[1].as_str() } else { "" };
                 self.state.input_value(sub)
             }
             "cursor" => self.state.input_value("cursor"),

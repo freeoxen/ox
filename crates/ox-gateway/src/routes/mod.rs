@@ -3,9 +3,9 @@
 //! — models, stats, dashboard, ox-native, count_tokens — is native edge:
 //! host-side reads of substrate paths, not gateway logic.
 
+pub mod http_in;
 pub mod models;
 pub mod ox_native;
-pub mod http_in;
 pub mod stats;
 
 use axum::Router;

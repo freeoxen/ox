@@ -252,7 +252,9 @@ mod tests {
             Some("gate/accounts/anthropic")
         );
         assert_eq!(
-            broker.resolve("upstream/outstanding/0/events/from/2").as_deref(),
+            broker
+                .resolve("upstream/outstanding/0/events/from/2")
+                .as_deref(),
             Some("upstream/outstanding/0/events/from/2")
         );
         // Undeclared namespace: the wire mount is not in broker's wiring.
@@ -272,10 +274,15 @@ mod tests {
         // it cannot reach keys, wire handles, or the upstream socket.
         let stats = m.wiring_for("stats", &bindings).unwrap();
         assert_eq!(
-            stats.resolve("gateway/telemetry/outstanding/0/summary").as_deref(),
+            stats
+                .resolve("gateway/telemetry/outstanding/0/summary")
+                .as_deref(),
             Some("gateway/telemetry/outstanding/0/summary")
         );
-        assert_eq!(stats.resolve("gateway/usage").as_deref(), Some("gateway/usage"));
+        assert_eq!(
+            stats.resolve("gateway/usage").as_deref(),
+            Some("gateway/usage")
+        );
         assert_eq!(stats.resolve("secret/keys/anthropic"), None);
         assert_eq!(stats.resolve("wire/outstanding/0"), None);
         assert_eq!(stats.resolve("upstream"), None);
@@ -294,14 +301,16 @@ wiring: ["a:/services/db -> $svc"]
 "#,
         )
         .unwrap();
-        let bindings: BTreeMap<_, _> =
-            [("svc".to_string(), "backend/postgres".to_string())].into();
+        let bindings: BTreeMap<_, _> = [("svc".to_string(), "backend/postgres".to_string())].into();
         let t = m.wiring_for("a", &bindings).unwrap();
         assert_eq!(
             t.resolve("services/db/users/123").as_deref(),
             Some("backend/postgres/users/123")
         );
-        assert_eq!(t.resolve("services/db").as_deref(), Some("backend/postgres"));
+        assert_eq!(
+            t.resolve("services/db").as_deref(),
+            Some("backend/postgres")
+        );
         assert_eq!(
             t.unresolve("backend/postgres/outstanding/7"),
             "services/db/outstanding/7"
@@ -329,7 +338,10 @@ wiring: ["a:/gateway -> $broad", "a:/gateway/usage -> $narrow"]
         ]
         .into();
         let t = m.wiring_for("a", &bindings).unwrap();
-        assert_eq!(t.resolve("gateway/usage/append").as_deref(), Some("tight/append"));
+        assert_eq!(
+            t.resolve("gateway/usage/append").as_deref(),
+            Some("tight/append")
+        );
         assert_eq!(t.resolve("gateway/other").as_deref(), Some("wide/other"));
     }
 
@@ -347,17 +359,25 @@ wiring: [{wiring}]
 "#
             )
         };
-        assert!(Manifest::parse(&base("\"a:/p -> $nope\"", "a"))
-            .unwrap_err()
-            .contains("undeclared import"));
-        assert!(Manifest::parse(&base("\"ghost:/p -> $svc\"", "a"))
-            .unwrap_err()
-            .contains("unknown block"));
-        assert!(Manifest::parse(&base("\"a:/p -> $svc\"", "ghost"))
-            .unwrap_err()
-            .contains("public block"));
-        assert!(Manifest::parse(&base("\"a:/p, $svc\"", "a"))
-            .unwrap_err()
-            .contains("missing '->'"));
+        assert!(
+            Manifest::parse(&base("\"a:/p -> $nope\"", "a"))
+                .unwrap_err()
+                .contains("undeclared import")
+        );
+        assert!(
+            Manifest::parse(&base("\"ghost:/p -> $svc\"", "a"))
+                .unwrap_err()
+                .contains("unknown block")
+        );
+        assert!(
+            Manifest::parse(&base("\"a:/p -> $svc\"", "ghost"))
+                .unwrap_err()
+                .contains("public block")
+        );
+        assert!(
+            Manifest::parse(&base("\"a:/p, $svc\"", "a"))
+                .unwrap_err()
+                .contains("missing '->'")
+        );
     }
 }

@@ -95,7 +95,9 @@ async fn dashboard_serves_html() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    let resp = reqwest::get(format!("http://{addr}/dashboard")).await.unwrap();
+    let resp = reqwest::get(format!("http://{addr}/dashboard"))
+        .await
+        .unwrap();
     assert!(resp.status().is_success());
     let ct = resp
         .headers()
@@ -166,9 +168,14 @@ async fn today_boundary_follows_client_timezone() {
             .unwrap();
         assert_eq!(stats["totals"]["requests"], 1, "offset {offset_min}");
         assert_eq!(
-            stats["today"]["requests"], expect_today,
+            stats["today"]["requests"],
+            expect_today,
             "offset {offset_min} should put the record {} today",
-            if expect_today == 1 { "inside" } else { "outside" }
+            if expect_today == 1 {
+                "inside"
+            } else {
+                "outside"
+            }
         );
     }
 }
