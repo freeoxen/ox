@@ -31,7 +31,7 @@ impl JsonlFileBacking {
     /// Append one record. The caller passes a `Value` (typically produced
     /// by `structfs_serde_store::to_value` from a typed record).
     pub fn append(&self, value: &Value) -> Result<(), StoreError> {
-        let json = value_to_json(value.clone());
+        let json = value_to_json(value.clone())?;
         let mut line = serde_json::to_string(&json)
             .map_err(|e| StoreError::store("jsonl", "append", e.to_string()))?;
         line.push('\n');
@@ -119,6 +119,27 @@ mod tests {
             Value::Array(a) => assert!(a.is_empty()),
             _ => panic!("expected empty array"),
         }
+    }
+
+    #[test]
+    fn rejected_json_append_preserves_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("records.jsonl");
+        let backing = JsonlFileBacking::new(&path).unwrap();
+        backing.append(&Value::String("existing".into())).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        assert_eq!(before, b"\"existing\"\n");
+
+        for value in [
+            Value::Bytes(vec![0, 255]),
+            Value::Float(f64::NAN),
+            Value::Float(f64::INFINITY),
+        ] {
+            assert!(backing.append(&Value::Array(vec![value])).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+        }
+        backing.append(&Value::Integer(42)).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"\"existing\"\n42\n");
     }
 
     #[test]

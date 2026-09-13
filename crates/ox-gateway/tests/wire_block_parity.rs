@@ -9,7 +9,6 @@ mod common;
 use common::MemoryBacking;
 use ox_broker::BrokerStore;
 use ox_gate::completion_broker::mock::MockSseExecutor;
-use ox_path::oxpath;
 use ox_types::StreamEvent;
 use std::sync::Arc;
 use std::time::Duration;
@@ -48,13 +47,13 @@ async fn build_all_wasm_broker(executor: Arc<MockSseExecutor>) -> BrokerStore {
 
     let mut secret = LocalConfig::new();
     secret.set("keys/anthropic", to_value(&ApiKey::new("sk-test")).unwrap());
-    broker.mount(oxpath!("secret"), secret).await;
+    broker.mount(path!("secret"), secret).await;
 
     let usage = ox_gate::UsageStore::new(Box::new(MemoryBacking::new()));
-    broker.mount(oxpath!("gateway", "usage"), usage).await;
+    broker.mount(path!("gateway", "usage"), usage).await;
 
     let upstream = ox_gate::UpstreamStore::new(executor, tokio::runtime::Handle::current());
-    broker.mount_async(oxpath!("upstream"), upstream).await;
+    broker.mount_async(path!("upstream"), upstream).await;
     common::install_blocks(&broker, false).await;
 
     broker

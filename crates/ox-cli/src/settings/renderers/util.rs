@@ -61,21 +61,21 @@ pub(crate) fn subtree_count(data: &mut dyn Reader, prefix_str: &str) -> usize {
 mod tests {
     use super::*;
     use crate::settings::snapshot::SettingsSnapshot;
-    use ox_path::oxpath;
+    use structfs_core_store::path;
 
     #[test]
     fn child_names_under_finds_direct_children() {
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
-            &oxpath!("config", "gate", "accounts", "alpha", "provider"),
+            &path!("config", "gate", "accounts", "alpha", "provider"),
             Value::String("anthropic".into()),
         );
         snap.insert(
-            &oxpath!("config", "gate", "accounts", "beta", "provider"),
+            &path!("config", "gate", "accounts", "beta", "provider"),
             Value::String("openai".into()),
         );
         snap.insert(
-            &oxpath!("config", "gate", "providers", "anthropic", "endpoint"),
+            &path!("config", "gate", "providers", "anthropic", "endpoint"),
             Value::String("https://api.anthropic.com".into()),
         );
         let names = child_names_under(&mut snap, "config/gate/accounts");
@@ -91,7 +91,7 @@ mod tests {
     #[test]
     fn read_typed_returns_none_for_missing() {
         let mut snap = SettingsSnapshot::empty();
-        let v: Option<String> = read_typed(&mut snap, &oxpath!("missing"));
+        let v: Option<String> = read_typed(&mut snap, &path!("missing"));
         assert!(v.is_none());
     }
 
@@ -99,10 +99,10 @@ mod tests {
     fn read_typed_decodes_simple_string() {
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
-            &oxpath!("ui", "global", "mode"),
+            &path!("ui", "global", "mode"),
             Value::String("normal".into()),
         );
-        let v: Option<String> = read_typed(&mut snap, &oxpath!("ui", "global", "mode"));
+        let v: Option<String> = read_typed(&mut snap, &path!("ui", "global", "mode"));
         assert_eq!(v.as_deref(), Some("normal"));
     }
 }

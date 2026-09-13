@@ -199,7 +199,7 @@ impl ToolStore {
             return None;
         }
 
-        let first = path[0].as_str();
+        let first = &path[0];
 
         match first {
             "fs" | "os" | "completions" | "schemas" | "exec" => Some(ResolvedPath::Direct(path)),
@@ -208,8 +208,8 @@ impl ToolStore {
                 if let Some(internal) = self.name_map.to_internal(first) {
                     // internal is like "fs/read" — parse it and append remaining components
                     let parsed = Path::parse(internal).ok()?;
-                    let mut components = parsed.iter().cloned().collect::<Vec<String>>();
-                    components.extend(path.iter().skip(1).cloned());
+                    let mut components = parsed.iter().map(str::to_owned).collect::<Vec<String>>();
+                    components.extend(path.iter().skip(1).map(str::to_owned));
                     Some(ResolvedPath::Resolved(Path::from_components(components)))
                 } else {
                     None
@@ -266,8 +266,12 @@ impl<'a> ResolvedPath<'a> {
 impl Reader for ToolStore {
     fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
         // Exec handle reads — returned by writes, keyed like "exec/0001"
-        if !from.is_empty() && from[0] == "exec" {
-            let key = from.iter().cloned().collect::<Vec<String>>().join("/");
+        if !from.is_empty() && &from[0] == "exec" {
+            let key = from
+                .iter()
+                .map(str::to_owned)
+                .collect::<Vec<String>>()
+                .join("/");
             return Ok(self
                 .exec_results
                 .get(&key)
@@ -276,7 +280,7 @@ impl Reader for ToolStore {
 
         // Check native tools first (keyed by wire name)
         if !from.is_empty() {
-            let first = from[0].as_str();
+            let first = &from[0];
             if self.native_tools.contains_key(first) {
                 let internal = self
                     .name_map
@@ -296,7 +300,7 @@ impl Reader for ToolStore {
         };
 
         let path = resolved.as_path();
-        let first = path[0].as_str();
+        let first = &path[0];
 
         match first {
             "schemas" => {
@@ -324,11 +328,11 @@ impl Reader for ToolStore {
                 if path.len() < 2 {
                     return Ok(None);
                 }
-                let op = path[1].as_str();
+                let op = &path[1];
                 let internal_path = format!("{first}/{op}");
 
                 // Check if reading a result
-                let is_result = path.len() >= 3 && path[2] == "result";
+                let is_result = path.len() >= 3 && &path[2] == "result";
                 if is_result {
                     Ok(self
                         .last_result
@@ -351,7 +355,7 @@ impl Writer for ToolStore {
     fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
         // Check native tools first (before resolve_path), keyed by wire name
         if !to.is_empty() {
-            let wire_name = to[0].as_str().to_string();
+            let wire_name = to[0].to_string();
             if self.native_tools.contains_key(&wire_name) {
                 let value = data
                     .as_value()
@@ -363,7 +367,7 @@ impl Writer for ToolStore {
                         )
                     })?
                     .clone();
-                let input_json = structfs_serde_store::value_to_json(value);
+                let input_json = structfs_serde_store::value_to_json(value)?;
                 let internal = self
                     .name_map
                     .to_internal(&wire_name)
@@ -389,7 +393,7 @@ impl Writer for ToolStore {
 
         // Check redirect tools
         if !to.is_empty() {
-            let wire_name = to[0].as_str();
+            let wire_name = &to[0];
             if let Some(redirect) = self.redirect_tools.get(wire_name) {
                 let value = data
                     .as_value()
@@ -401,7 +405,7 @@ impl Writer for ToolStore {
                         )
                     })?
                     .clone();
-                let input_json = structfs_serde_store::value_to_json(value);
+                let input_json = structfs_serde_store::value_to_json(value)?;
                 let target = (redirect.build_path)(&input_json).map_err(|e| {
                     StoreError::store("ToolStore", "redirect", format!("{wire_name}: {e}"))
                 })?;
@@ -422,7 +426,7 @@ impl Writer for ToolStore {
         };
 
         let path = resolved.as_path().clone();
-        let first = path[0].as_str();
+        let first = &path[0];
 
         match first {
             "completions" => {
@@ -430,7 +434,7 @@ impl Writer for ToolStore {
                 self.completions.write(&sub, data)?;
 
                 // For complete paths, read the response and store as exec handle
-                if !sub.is_empty() && sub[0] == "complete" {
+                if !sub.is_empty() && &sub[0] == "complete" {
                     let response_path =
                         sub.join(&Path::from_components(vec!["response".to_string()]));
                     if let Some(response) = self.completions.read(&response_path)? {
@@ -448,7 +452,7 @@ impl Writer for ToolStore {
                         format!("missing operation in path: {first}/"),
                     ));
                 }
-                let op = path[1].clone();
+                let op = path[1].to_string();
 
                 // Extract the serde_json::Value from the record
                 let value = data
@@ -461,7 +465,7 @@ impl Writer for ToolStore {
                         )
                     })?
                     .clone();
-                let json_input = structfs_serde_store::value_to_json(value);
+                let json_input = structfs_serde_store::value_to_json(value)?;
 
                 let result_value = self.execute_module(first, &op, &json_input)?;
 

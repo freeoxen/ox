@@ -1,7 +1,7 @@
 //! Gateway codec Block — the sans-IO codec core as a Wasm guest.
 //!
-//! Same ABI as agent.wasm: `run()` exported, all I/O through the three
-//! host StructFS imports. The Block's contract is one job per run:
+//! Uses Featherweight's standard core Wasm binding and guest SDK. All I/O
+//! passes through the assembly namespace. The codec contract is one job per run:
 //!
 //!   read  codec/job     — {"op": ..., ...op-specific fields}
 //!   write codec/result  — op-specific output, or {"error": "..."}
@@ -16,71 +16,53 @@
 //! the whole per-request encoder lifecycle happens inside the Block, so
 //! ordering state never crosses the ABI.
 
+use featherweight_guest::sdk;
 use ox_codec::ResponseMeta;
 use ox_kernel::{CompletionRequest, StreamEvent};
 
-#[link(wasm_import_module = "ox")]
-unsafe extern "C" {
-    fn store_read(path_ptr: i32, path_len: i32) -> i32;
-    fn store_write(path_ptr: i32, path_len: i32, data_ptr: i32, data_len: i32) -> i32;
-    fn store_result(buf_ptr: i32);
+const MANIFEST: &str =
+    r#"{"name":"ox-gateway","version":"0.1.0","serialization":"application/json"}"#;
+
+/// Describe the guest before the host wires its capabilities.
+///
+/// # Safety
+/// The host must provide a valid writable core-binding return record.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn manifest(ret_ptr: *mut sdk::Ret) -> i32 {
+    unsafe {
+        (*ret_ptr).ptr = MANIFEST.as_ptr() as u32;
+        (*ret_ptr).len = MANIFEST.len() as u32;
+    }
+    0
 }
 
 fn host_read(path: &str) -> Result<Option<String>, String> {
-    let n = unsafe { store_read(path.as_ptr() as i32, path.len() as i32) };
-    if n > 0 {
-        let mut buf = vec![0u8; n as usize];
-        unsafe { store_result(buf.as_mut_ptr() as i32) };
-        String::from_utf8(buf).map(Some).map_err(|e| e.to_string())
-    } else if n == 0 {
-        Ok(None)
-    } else {
-        let mut buf = vec![0u8; (-n) as usize];
-        unsafe { store_result(buf.as_mut_ptr() as i32) };
-        Err(String::from_utf8(buf).unwrap_or_else(|_| "unknown error".into()))
-    }
+    sdk::read_typed(path)
+        .map_err(|e| e.to_string())?
+        .map(|bytes| String::from_utf8(bytes).map_err(|e| e.to_string()))
+        .transpose()
 }
 
 fn host_write(path: &str, data: &str) -> Result<String, String> {
-    let n = unsafe {
-        store_write(
-            path.as_ptr() as i32,
-            path.len() as i32,
-            data.as_ptr() as i32,
-            data.len() as i32,
-        )
-    };
-    if n >= 0 {
-        if n > 0 {
-            let mut buf = vec![0u8; n as usize];
-            unsafe { store_result(buf.as_mut_ptr() as i32) };
-            String::from_utf8(buf).map_err(|e| e.to_string())
-        } else {
-            Ok(String::new())
-        }
-    } else {
-        let mut buf = vec![0u8; (-n) as usize];
-        unsafe { store_result(buf.as_mut_ptr() as i32) };
-        Err(String::from_utf8(buf).unwrap_or_else(|_| "unknown error".into()))
-    }
+    sdk::write_typed(path, data.as_bytes()).map_err(|e| e.to_string())
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn run() -> i32 {
-    // Wire mode: block/wire_config means this instance owns one HTTP
-    // exchange — decode, dispatch, drain, encode, and error envelopes.
-    if let Ok(Some(cfg)) = host_read("block/wire_config") {
-        return wire::run(&cfg);
-    }
-    // Broker mode: a block/config present in the namespace means this
-    // instance drives one completion end-to-end.
-    if let Ok(Some(cfg)) = host_read("block/config") {
-        return broker::run(&cfg);
-    }
-    // Stats mode: aggregate the usage ledger into one summary. Codec mode
-    // otherwise.
-    if let Ok(Some(cfg)) = host_read("block/stats_config") {
-        return stats::run(&cfg);
+    let cfg = match host_read("config") {
+        Ok(Some(cfg)) => cfg,
+        _ => return 1,
+    };
+    let config: serde_json::Value = match serde_json::from_str(&cfg) {
+        Ok(config) => config,
+        Err(_) => return 1,
+    };
+    match config["mode"].as_str() {
+        Some("wire") => return wire::run(&cfg),
+        Some("broker") => return broker::run(&cfg),
+        Some("stats") => return stats::run(&cfg),
+        Some("codec") => {}
+        _ => return 1,
     }
     let outcome = match execute() {
         Ok(result) => host_write("codec/result", &result.to_string()),
@@ -211,7 +193,7 @@ mod broker {
 
     fn drive(cfg_str: &str) -> Result<(), String> {
         let cfg: serde_json::Value =
-            serde_json::from_str(cfg_str).map_err(|e| format!("bad block/config: {e}"))?;
+            serde_json::from_str(cfg_str).map_err(|e| format!("bad config: {e}"))?;
         let base = cfg["inflight"]
             .as_str()
             .ok_or("config missing inflight")?
@@ -322,15 +304,15 @@ mod broker {
         let outcome = loop {
             let events: Vec<StreamEvent> = match read_json(&format!("{handle}/events/from/{next}"))
             {
-                Ok(v) => serde_json::from_value(v.unwrap_or(serde_json::json!([])))
-                    .map_err(|e| format!("bad events: {e}"))?,
+                Ok(Some(v)) => serde_json::from_value(v).map_err(|e| format!("bad events: {e}"))?,
+                Ok(None) => Vec::new(),
                 Err(e) => break Err(format!("upstream drain failed: {e}")),
             };
             if !events.is_empty() {
                 push_events(ctx, &events, &mut in_band_error)?;
                 next += events.len();
             }
-            let status = match read_json(&format!("{handle}")) {
+            let status = match read_json(&handle) {
                 Ok(Some(s)) => s,
                 Ok(None) => break Err("upstream inflight vanished".to_string()),
                 Err(e) => break Err(format!("upstream status read failed: {e}")),
@@ -543,10 +525,10 @@ mod wire {
 
     fn drive(cfg_str: &str) -> Result<(), String> {
         let cfg: serde_json::Value =
-            serde_json::from_str(cfg_str).map_err(|e| format!("bad wire_config: {e}"))?;
+            serde_json::from_str(cfg_str).map_err(|e| format!("bad wire config: {e}"))?;
         let wire = cfg["wire"]
             .as_str()
-            .ok_or("wire_config missing wire")?
+            .ok_or("wire config missing wire")?
             .to_string();
         let dialect = cfg["dialect"].as_str().unwrap_or("anthropic").to_string();
 
@@ -796,10 +778,10 @@ mod stats {
 
     fn drive(cfg_str: &str) -> Result<(), String> {
         let cfg: serde_json::Value =
-            serde_json::from_str(cfg_str).map_err(|e| format!("bad stats_config: {e}"))?;
+            serde_json::from_str(cfg_str).map_err(|e| format!("bad stats config: {e}"))?;
         let handle = cfg["telemetry"]
             .as_str()
-            .ok_or("stats_config missing telemetry")?
+            .ok_or("stats config missing telemetry")?
             .to_string();
 
         // Absent ledger (nothing recorded yet) is zeros, not an error;
@@ -882,7 +864,7 @@ mod stats {
             .collect();
 
         let mut recent = records;
-        recent.sort_by(|a, b| b.completed_at_ms.cmp(&a.completed_at_ms));
+        recent.sort_by_key(|entry| std::cmp::Reverse(entry.completed_at_ms));
         recent.truncate(RECENT_LIMIT);
         let recent = serde_json::to_value(&recent).map_err(|e| format!("recent encode: {e}"))?;
 

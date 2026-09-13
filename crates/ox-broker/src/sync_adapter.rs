@@ -7,8 +7,9 @@ use crate::ClientHandle;
 /// Synchronous adapter for an async [`ClientHandle`].
 ///
 /// Implements `Reader` and `Writer` by blocking on the handle's async
-/// operations. Must be used from a thread that is NOT inside a tokio
-/// runtime (e.g., a plain OS thread spawned with `std::thread::spawn`).
+/// operations. Calls may run on a plain/blocking thread or inside a multi-thread
+/// Tokio runtime, where `block_in_place` hands worker duties to another thread.
+/// Tokio's current-thread runtime does not support `block_in_place`.
 pub struct SyncClientAdapter {
     client: ClientHandle,
     handle: tokio::runtime::Handle,

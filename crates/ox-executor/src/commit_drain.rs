@@ -104,8 +104,8 @@ impl CommitDrainHandle {
                         break;
                     }
                     _ = ticker.tick() => {
-                        if let Some(sr) = writer_handle.latest_save_result() {
-                            if sr.last_seq > last_seq_seen {
+                        if let Some(sr) = writer_handle.latest_save_result()
+                            && sr.last_seq > last_seq_seen {
                                 crate::write_save_result_to_inbox(
                                     &broker_client,
                                     &thread_id,
@@ -117,7 +117,6 @@ impl CommitDrainHandle {
                                 write_count_task
                                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             }
-                        }
                     }
                 }
             }
@@ -193,7 +192,7 @@ mod tests {
         created_path
             .iter()
             .last()
-            .map(|c| c.as_str().to_string())
+            .map(str::to_owned)
             .expect("create returns the thread id")
     }
 

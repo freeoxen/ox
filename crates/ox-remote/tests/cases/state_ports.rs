@@ -1,21 +1,23 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use ox_broker::async_store::{AsyncReader, AsyncWriter, BoxFuture};
+use ox_broker::async_store::BoxFuture;
 use ox_remote::{
     AsyncStorePort, SshWorkerConnector, SshWorkerIdentityVerifier, StorePort, SyncStorePort,
     VmStatus, WorkerIdentityVerifier, WorkerStoreConnector,
 };
 use ox_structfs_transport::{HostKeyEnrollment, RemoteStoreConfig};
-use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer, path};
+use structfs_core_store::{
+    DetachedReader, DetachedWriter, Error as StoreError, Path, Reader, Record, Value, Writer, path,
+};
 
 #[derive(Clone, Default)]
 struct MemoryAsyncStore {
     writes: Arc<Mutex<Vec<(Path, Record)>>>,
 }
 
-impl AsyncReader for MemoryAsyncStore {
-    fn read(&mut self, from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
+impl DetachedReader for MemoryAsyncStore {
+    fn read_detached(&mut self, from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
         let found = self
             .writes
             .lock()
@@ -28,8 +30,8 @@ impl AsyncReader for MemoryAsyncStore {
     }
 }
 
-impl AsyncWriter for MemoryAsyncStore {
-    fn write(&mut self, to: &Path, data: Record) -> BoxFuture<Result<Path, StoreError>> {
+impl DetachedWriter for MemoryAsyncStore {
+    fn write_detached(&mut self, to: &Path, data: Record) -> BoxFuture<Result<Path, StoreError>> {
         self.writes.lock().unwrap().push((to.clone(), data));
         let to = to.clone();
         Box::pin(async move { Ok(to) })

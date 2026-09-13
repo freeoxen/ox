@@ -25,7 +25,6 @@ members = [
     "crates/ox-store-util",
     "crates/ox-structfs-transport",
     "crates/ox-worker",
-    "crates/ox-path",
     "crates/ox-remote",
     "crates/ox-tools",
     "crates/ox-types",
@@ -59,7 +58,6 @@ default-members = [
     "crates/ox-store-util",
     "crates/ox-structfs-transport",
     "crates/ox-worker",
-    "crates/ox-path",
     "crates/ox-remote",
     "crates/ox-tools",
     "crates/ox-types",
@@ -68,7 +66,7 @@ default-members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.96"
 license = "Apache-2.0"
 repository = "https://github.com/freeoxen/ox"
 homepage = "https://freeoxen.github.io/ox/"
@@ -91,7 +89,6 @@ ox-codec = { path = "crates/ox-codec" }
 ox-history = { path = "crates/ox-history" }
 ox-inbox = { path = "crates/ox-inbox" }
 ox-kernel = { path = "crates/ox-kernel" }
-ox-path = { path = "crates/ox-path" }
 ox-remote = { path = "crates/ox-remote" }
 ox-runtime = { path = "crates/ox-runtime" }
 ox-store-util = { path = "crates/ox-store-util" }
@@ -101,10 +98,12 @@ ox-tools = { path = "crates/ox-tools" }
 ox-types = { path = "crates/ox-types" }
 ox-ui = { path = "crates/ox-ui" }
 
-# StructFS — pinned to the upstream git repo for now.
-structfs-core-store = { git = "https://github.com/StructFS/structfs" }
-structfs-http = { git = "https://github.com/StructFS/structfs" }
-structfs-serde-store = { git = "https://github.com/StructFS/structfs" }
+# StructFS — coordinated published release; keep the shared value types aligned.
+featherweight-runtime = "=0.2.0"
+structfs-service = "=0.2.0"
+structfs-core-store = "=0.2.0"
+structfs-http = "=0.2.0"
+structfs-serde-store = "=0.2.0"
 
 # Async runtime + tracing.
 tokio = { version = "1", features = ["sync", "time", "rt"] }
@@ -130,7 +129,6 @@ serde-wasm-bindgen = "0.6"
 sha2 = "0.10"
 parking_lot = "0.12"
 unicode-width = "0.2"
-unicode-ident = "1"
 uuid = { version = "1", features = ["v4"] }
 
 # Terminal + UI.
@@ -157,11 +155,6 @@ wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 web-sys = "0.3"
-
-# Proc-macro infra.
-syn = { version = "2", features = ["full"] }
-quote = "1"
-proc-macro2 = "1"
 
 # Sandboxing / safety primitives.
 clash = "0.6"

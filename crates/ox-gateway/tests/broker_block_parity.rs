@@ -10,7 +10,6 @@ use common::MemoryBacking;
 use ox_broker::BrokerStore;
 use ox_gate::completion_broker::CompletionBrokerStore;
 use ox_gate::completion_broker::mock::MockSseExecutor;
-use ox_path::oxpath;
 use ox_types::StreamEvent;
 use std::sync::Arc;
 use std::time::Duration;
@@ -62,22 +61,25 @@ async fn build_block_broker_with(
 
     let mut secret = LocalConfig::new();
     secret.set("keys/anthropic", to_value(&ApiKey::new("sk-test")).unwrap());
-    broker.mount(oxpath!("secret"), secret).await;
+    broker.mount(path!("secret"), secret).await;
 
     let usage = ox_gate::UsageStore::new(Box::new(MemoryBacking::new()));
-    broker.mount(oxpath!("gateway", "usage"), usage).await;
+    broker.mount(path!("gateway", "usage"), usage).await;
 
     if traffic {
         let traffic_store =
             ox_gateway::traffic::TrafficLogStore::new(Box::new(MemoryBacking::new()), None);
         broker
-            .mount(oxpath!("gateway", "traffic"), traffic_store)
+            .mount(path!("gateway", "traffic"), traffic_store)
             .await;
     }
 
     let client = broker.client();
     let upstream = ox_gate::UpstreamStore::new(executor, tokio::runtime::Handle::current());
-    broker.mount_async(oxpath!("upstream"), upstream).await;
+    let upstream_prefix =
+        structfs_core_store::Path::parse(&wiring.resolve("upstream").expect("upstream wiring"))
+            .unwrap();
+    broker.mount_async(upstream_prefix, upstream).await;
 
     // Manual completion mount (rather than common::install_blocks) so the
     // enforcement test below can run the broker Block against a stripped
@@ -87,20 +89,24 @@ async fn build_block_broker_with(
     let store = CompletionBrokerStore::new(
         tokio::runtime::Handle::current(),
         Arc::new(move |id, cancel| {
-            if let Err(e) = ox_gateway::broker_block::run_broker(
-                format!("gateway/completions/outstanding/{id}"),
-                traffic,
-                wiring.clone(),
-                cancel,
-                runner_client.clone(),
-                runtime.clone(),
-            ) {
-                eprintln!("BROKER BLOCK ERROR: {e}");
-            }
+            let runner_client = runner_client.clone();
+            let runtime = runtime.clone();
+            let wiring = wiring.clone();
+            Box::pin(async move {
+                ox_gateway::broker_block::run_broker(
+                    format!("gateway/completions/outstanding/{id}"),
+                    traffic,
+                    wiring.clone(),
+                    cancel,
+                    runner_client.clone(),
+                    runtime.clone(),
+                )
+                .await
+            })
         }),
     );
     broker
-        .mount_async(oxpath!("gateway", "completions"), store)
+        .mount_async(path!("gateway", "completions"), store)
         .await;
 
     // The wire edge (standard wiring) fronts every request either way.
@@ -113,34 +119,25 @@ async fn build_block_broker_with(
     let wire = ox_gateway::wire_store::WireStore::new(
         tokio::runtime::Handle::current(),
         Arc::new(move |id, cancel| {
-            let path = format!("wire/outstanding/{id}");
-            let dialect = wire_runtime
-                .block_on(async {
-                    wire_client
-                        .read(
-                            &structfs_core_store::Path::parse(&format!("{path}/inbound")).unwrap(),
-                        )
-                        .await
-                        .ok()
-                        .flatten()
-                        .and_then(|r| r.as_value().cloned())
-                        .map(structfs_serde_store::value_to_json)
-                })
-                .and_then(|j| j["dialect"].as_str().map(|s| s.to_string()))
-                .unwrap_or_else(|| "anthropic".into());
-            if let Err(e) = ox_gateway::broker_block::run_wire(
-                path,
-                dialect,
-                wire_wiring.clone(),
-                cancel,
-                wire_client.clone(),
-                wire_runtime.clone(),
-            ) {
-                eprintln!("WIRE BLOCK ERROR: {e}");
-            }
+            let wire_client = wire_client.clone();
+            let wire_runtime = wire_runtime.clone();
+            let wire_wiring = wire_wiring.clone();
+            Box::pin(async move {
+                let path = format!("wire/outstanding/{id}");
+                let dialect = ox_gateway::broker_block::wire_dialect(&wire_client, &path).await?;
+                ox_gateway::broker_block::run_wire(
+                    path,
+                    dialect,
+                    wire_wiring.clone(),
+                    cancel,
+                    wire_client.clone(),
+                    wire_runtime.clone(),
+                )
+                .await
+            })
         }),
     );
-    broker.mount_async(oxpath!("wire"), wire).await;
+    broker.mount_async(path!("wire"), wire).await;
 
     broker
 }
@@ -202,14 +199,15 @@ async fn block_dispatch_serves_buffered_completion() {
     let usage: serde_json::Value = structfs_serde_store::value_to_json(
         broker
             .client()
-            .read(&oxpath!("gateway", "usage"))
+            .read(&path!("gateway", "usage"))
             .await
             .unwrap()
             .unwrap()
             .as_value()
             .cloned()
             .unwrap(),
-    );
+    )
+    .unwrap();
     let records = usage.as_array().unwrap();
     assert_eq!(records.len(), 1);
     let r = &records[0];
@@ -303,12 +301,12 @@ async fn block_dispatch_writes_traffic_record() {
     let mut records: Vec<serde_json::Value> = Vec::new();
     for _ in 0..50 {
         let raw = client
-            .read(&oxpath!("gateway", "traffic"))
+            .read(&path!("gateway", "traffic"))
             .await
             .unwrap()
             .and_then(|r| r.as_value().cloned())
             .unwrap_or(Value::Array(vec![]));
-        let json = structfs_serde_store::value_to_json(raw);
+        let json = structfs_serde_store::value_to_json(raw).unwrap();
         records = json.as_array().cloned().unwrap_or_default();
         if !records.is_empty() {
             break;
@@ -401,11 +399,11 @@ async fn keyless_account_with_auth_none_completes() {
         .unwrap(),
     );
     broker.mount(path!(""), gate_config).await;
-    broker.mount(oxpath!("secret"), LocalConfig::new()).await;
+    broker.mount(path!("secret"), LocalConfig::new()).await;
     let usage = ox_gate::UsageStore::new(Box::new(MemoryBacking::new()));
-    broker.mount(oxpath!("gateway", "usage"), usage).await;
+    broker.mount(path!("gateway", "usage"), usage).await;
     let upstream = ox_gate::UpstreamStore::new(executor, tokio::runtime::Handle::current());
-    broker.mount_async(oxpath!("upstream"), upstream).await;
+    broker.mount_async(path!("upstream"), upstream).await;
     common::install_blocks(&broker, false).await;
 
     let addr = serve(&broker).await;
@@ -422,4 +420,45 @@ async fn keyless_account_with_auth_none_completes() {
     assert!(resp.status().is_success(), "keyless account must complete");
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["content"][0]["text"], "Hello block");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn aliased_upstream_binding_returns_handles_in_guest_namespace() {
+    let executor = Arc::new(MockSseExecutor::new());
+    script(&executor);
+    let mut bindings = ox_gateway::assembly::standard_bindings();
+    bindings.insert("http-out".into(), "custom/http".into());
+    let wiring = ox_gateway::assembly::Manifest::embedded()
+        .unwrap()
+        .wiring_for("broker", &bindings)
+        .unwrap();
+    let broker = build_block_broker_with(executor, false, wiring).await;
+    let addr = serve(&broker).await;
+    let response = reqwest::Client::new()
+        .post(format!("http://{addr}/v1/messages"))
+        .json(&serde_json::json!({
+            "model":"primary", "max_tokens":40, "messages":[{"role":"user","content":"hi"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["content"][0]["text"], "Hello block");
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if broker
+                .client()
+                .read(&path!("custom/http/outstanding/0"))
+                .await
+                .unwrap()
+                .is_none()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("aliased downstream handle must be GC'd");
 }

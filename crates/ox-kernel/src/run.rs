@@ -7,7 +7,6 @@ use crate::log::{LogEntry, TurnAbortReason};
 use crate::{
     AgentEvent, CompletionRequest, ContentBlock, StreamEvent, ToolCall, ToolResult, ToolSchema,
 };
-use ox_path::oxpath;
 use serde::{Deserialize, Serialize};
 use structfs_core_store::{Path, Reader, Record, Store, Value, Writer, path};
 
@@ -95,7 +94,9 @@ pub fn resolve_refs(
             ContextRef::History { path, last } => {
                 let p = Path::parse(path).map_err(|e| e.to_string())?;
                 let json = match context.read(&p).map_err(|e| e.to_string())? {
-                    Some(Record::Parsed(v)) => structfs_serde_store::value_to_json(v),
+                    Some(Record::Parsed(v)) => {
+                        structfs_serde_store::value_to_json(v).map_err(|e| e.to_string())?
+                    }
                     _ => return Err(format!("expected parsed record at {path}")),
                 };
                 let mut messages: Vec<serde_json::Value> =
@@ -109,7 +110,9 @@ pub fn resolve_refs(
             ContextRef::Tools { path, only, except } => {
                 let p = Path::parse(path).map_err(|e| e.to_string())?;
                 let json = match context.read(&p).map_err(|e| e.to_string())? {
-                    Some(Record::Parsed(v)) => structfs_serde_store::value_to_json(v),
+                    Some(Record::Parsed(v)) => {
+                        structfs_serde_store::value_to_json(v).map_err(|e| e.to_string())?
+                    }
                     _ => return Err(format!("expected parsed record at {path}")),
                 };
                 let mut tools: Vec<ToolSchema> =
@@ -297,7 +300,7 @@ pub fn deserialize_events(record: Record) -> Result<Vec<StreamEvent>, String> {
         Record::Parsed(v) => v,
         _ => return Err("expected parsed record".into()),
     };
-    let json = structfs_serde_store::value_to_json(value);
+    let json = structfs_serde_store::value_to_json(value).map_err(|e| e.to_string())?;
     let arr = json.as_array().ok_or("expected JSON array of events")?;
     arr.iter().map(json_to_stream_event).collect()
 }
@@ -640,7 +643,8 @@ pub fn execute_tools(
             Ok(handle) => match context.read(&handle).map_err(|e| e.to_string())? {
                 Some(record) => {
                     let val = record.as_value().cloned().unwrap_or(Value::Null);
-                    let json = structfs_serde_store::value_to_json(val);
+                    let json =
+                        structfs_serde_store::value_to_json(val).map_err(|e| e.to_string())?;
                     json_to_result_string(&json)
                 }
                 None => format!("error: no result at handle {}", handle),
@@ -757,7 +761,7 @@ pub fn read_model_config(context: &mut dyn Reader) -> Result<(String, u32), Stri
     };
 
     let account_comp = ox_kernel_path_component(&role.account)?;
-    let catalog_path = oxpath!("gate", "accounts", account_comp, "models");
+    let catalog_path = path!("gate", "accounts", account_comp, "models");
     let catalog: Vec<ModelInfo> = read_typed(context, &catalog_path)?.unwrap_or_default();
 
     // The catalog is informational; the dialect makes the actual request.
@@ -913,7 +917,7 @@ fn inspect_log_for_resume(context: &mut dyn Reader) -> Result<ResumeAction, Stri
         .map_err(|e| e.to_string())?
     {
         Some(Record::Parsed(v)) => {
-            let json = structfs_serde_store::value_to_json(v);
+            let json = structfs_serde_store::value_to_json(v).map_err(|e| e.to_string())?;
             match serde_json::from_value::<Vec<LogEntry>>(json) {
                 Ok(v) => v,
                 Err(_) => return Ok(ResumeAction::Normal),
@@ -1049,19 +1053,18 @@ fn tool_call_input_for(
         if let LogEntry::ToolCall {
             id, name, input, ..
         } = entry
+            && id == tool_use_id
         {
-            if id == tool_use_id {
-                return Some((name.clone(), input.clone()));
-            }
+            return Some((name.clone(), input.clone()));
         }
     }
     for entry in entries {
         if let LogEntry::Assistant { content, .. } = entry {
             for block in content {
-                if let ContentBlock::ToolUse(tc) = block {
-                    if tc.id == tool_use_id {
-                        return Some((tc.name.clone(), tc.input.clone()));
-                    }
+                if let ContentBlock::ToolUse(tc) = block
+                    && tc.id == tool_use_id
+                {
+                    return Some((tc.name.clone(), tc.input.clone()));
                 }
             }
         }
@@ -1113,7 +1116,7 @@ fn submit_approval_and_wait(
             "approval/request returned malformed path (expected 2+ components): {returned}"
         ));
     }
-    let decision_str = returned[1].clone();
+    let decision_str = returned[1].to_string();
     serde_json::from_value::<ox_types::Decision>(serde_json::Value::String(decision_str.clone()))
         .map_err(|e| format!("decode approval decision '{decision_str}': {e}"))
 }
@@ -1779,7 +1782,7 @@ mod tests {
                     // Default deny; tests that care script a decision.
                     ox_types::Decision::DenyOnce,
                 );
-                let json = structfs_serde_store::value_to_json(value.clone());
+                let json = structfs_serde_store::value_to_json(value.clone()).unwrap();
                 let tool_name = json
                     .get("tool_name")
                     .and_then(|v| v.as_str())
@@ -1826,7 +1829,7 @@ mod tests {
             // subsequent reads of `log/entries` see them — the
             // prologue cares about ordering.
             if key == "log/append" {
-                let json = structfs_serde_store::value_to_json(value.clone());
+                let json = structfs_serde_store::value_to_json(value.clone()).unwrap();
                 self.log_entries.push(json);
             }
 
@@ -2190,7 +2193,7 @@ mod tests {
             .iter()
             .filter(|(p, _)| p == "log/append")
             .filter(|(_, v)| {
-                let j = structfs_serde_store::value_to_json(v.clone());
+                let j = structfs_serde_store::value_to_json(v.clone()).unwrap();
                 j.get("type").and_then(|t| t.as_str()) == Some("assistant_progress")
             })
             .collect();
@@ -2204,7 +2207,7 @@ mod tests {
                 .map(|(p, _)| p.as_str())
                 .collect::<Vec<_>>(),
         );
-        let json = structfs_serde_store::value_to_json(progress[0].1.clone());
+        let json = structfs_serde_store::value_to_json(progress[0].1.clone()).unwrap();
         assert_eq!(json["type"], "assistant_progress");
         assert_eq!(json["accumulated"], "Let me check");
         assert_eq!(json["epoch"], 7);
@@ -2235,7 +2238,7 @@ mod tests {
             .iter()
             .filter(|(p, _)| p == "log/append")
             .filter(|(_, v)| {
-                let j = structfs_serde_store::value_to_json(v.clone());
+                let j = structfs_serde_store::value_to_json(v.clone()).unwrap();
                 j.get("type").and_then(|t| t.as_str()) == Some("assistant_progress")
             })
             .count();
@@ -2269,7 +2272,7 @@ mod tests {
             .iter()
             .filter(|(p, _)| p == "log/append")
             .filter(|(_, v)| {
-                let j = structfs_serde_store::value_to_json(v.clone());
+                let j = structfs_serde_store::value_to_json(v.clone()).unwrap();
                 j.get("type").and_then(|t| t.as_str()) == Some("assistant_progress")
             })
             .count();
@@ -2842,7 +2845,7 @@ mod tests {
             .iter()
             .find(|(p, _)| p.contains("completions/complete"));
         assert!(written.is_some());
-        let request_json = structfs_serde_store::value_to_json(written.unwrap().1.clone());
+        let request_json = structfs_serde_store::value_to_json(written.unwrap().1.clone()).unwrap();
         let system = request_json.get("system").and_then(|v| v.as_str()).unwrap();
         assert!(system.contains("Base prompt."));
         assert!(system.contains("Extra instruction."));
@@ -3001,7 +3004,7 @@ mod tests {
             .iter()
             .find(|(k, _)| k == "approval/request")
             .expect("prologue must write approval/request");
-        let json = structfs_serde_store::value_to_json(approval_req.1.clone());
+        let json = structfs_serde_store::value_to_json(approval_req.1.clone()).unwrap();
         assert_eq!(json["tool_name"], "shell");
         assert_eq!(json["post_crash_reconfirm"], true);
         assert_eq!(json["tool_input"]["command"], "ls");
@@ -3016,7 +3019,7 @@ mod tests {
         assert!(
             store.appended.iter().any(|(k, v)| {
                 k == "log/append" && {
-                    let j = structfs_serde_store::value_to_json(v.clone());
+                    let j = structfs_serde_store::value_to_json(v.clone()).unwrap();
                     j["type"] == "tool_result" && j["id"] == "tu-1"
                 }
             }),
@@ -3085,7 +3088,7 @@ mod tests {
             .iter()
             .find(|(k, _)| k == "approval/request")
             .expect("prologue must write approval/request on ToolAborted tail");
-        let json = structfs_serde_store::value_to_json(approval_req.1.clone());
+        let json = structfs_serde_store::value_to_json(approval_req.1.clone()).unwrap();
         assert_eq!(json["tool_name"], "shell");
         assert_eq!(json["tool_input"]["command"], "rm foo");
         assert_eq!(json["post_crash_reconfirm"], true);
@@ -3103,12 +3106,12 @@ mod tests {
             .iter()
             .find(|(k, v)| {
                 k == "log/append" && {
-                    let j = structfs_serde_store::value_to_json(v.clone());
+                    let j = structfs_serde_store::value_to_json(v.clone()).unwrap();
                     j["type"] == "tool_result" && j["id"] == "tu-2"
                 }
             })
             .expect("deny decision must record a synthetic ToolResult");
-        let tr_json = structfs_serde_store::value_to_json(tool_result.1.clone());
+        let tr_json = structfs_serde_store::value_to_json(tool_result.1.clone()).unwrap();
         assert_eq!(tr_json["is_error"], false);
         assert_eq!(
             tr_json["output"].as_str().expect("output is a string"),
@@ -3182,12 +3185,12 @@ mod tests {
             .iter()
             .find(|(k, v)| {
                 k == "log/append" && {
-                    let j = structfs_serde_store::value_to_json(v.clone());
+                    let j = structfs_serde_store::value_to_json(v.clone()).unwrap();
                     j["type"] == "tool_result" && j["id"] == "tu-4"
                 }
             })
             .expect("deny decision must record a synthetic ToolResult");
-        let tr_json = structfs_serde_store::value_to_json(tool_result.1.clone());
+        let tr_json = structfs_serde_store::value_to_json(tool_result.1.clone()).unwrap();
         assert_eq!(
             tr_json["output"].as_str().unwrap(),
             "[ox-cli: TEST OVERRIDE]",
@@ -3239,7 +3242,7 @@ mod tests {
         assert!(
             store.appended.iter().any(|(k, v)| {
                 k == "log/append" && {
-                    let j = structfs_serde_store::value_to_json(v.clone());
+                    let j = structfs_serde_store::value_to_json(v.clone()).unwrap();
                     j["type"] == "turn_aborted" && j["reason"] == "user_canceled_after_crash"
                 }
             }),

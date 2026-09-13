@@ -19,8 +19,8 @@
 
 use horns_core::Dispatcher;
 use ox_broker::ClientHandle;
-use ox_path::oxpath;
 use ox_types::{ClientModalFlags, InputKeyEvent, Mode, Screen};
+use structfs_core_store::path;
 use structfs_core_store::{Path, Reader};
 
 /// Re-export of `parse_key_str` under the historical module path:
@@ -60,35 +60,34 @@ pub async fn send_key(
     commands: Option<&CommandRegistry>,
     renderers: Option<&RendererRegistry>,
 ) -> KeyDispatchOutcome {
-    if screen == Screen::Settings {
-        if let (Some(_cursor), Some(snapshot), Some(bindings), Some(commands), Some(renderers)) =
+    if screen == Screen::Settings
+        && let (Some(_cursor), Some(snapshot), Some(bindings), Some(commands), Some(renderers)) =
             (cursor, snapshot, bindings, commands, renderers)
-        {
-            let Some(chord) = parse_key_str(key) else {
-                return send_via_input_store(client, key, screen, flags).await;
-            };
-            let dispatcher = Dispatcher::new(oxpath!("ui", "settings", "focused"));
-            let writes = dispatcher.dispatch(snapshot, &chord, bindings, commands, renderers);
-            if writes.is_empty() {
-                return send_via_input_store(client, key, screen, flags).await;
-            }
-            let mut first_failure: Option<(Path, String)> = None;
-            for write in writes {
-                let path = write.path.clone();
-                if let Err(e) = client.write(&write.path, write.record).await {
-                    if first_failure.is_none() {
-                        first_failure = Some((path, e.to_string()));
-                    }
-                }
-            }
-            if let Some((path, err)) = first_failure {
-                tracing::error!(
-                    error = %err, key = %key, path = %path,
-                    "settings dispatch: substrate rejected a write",
-                );
-            }
-            return KeyDispatchOutcome::Handled;
+    {
+        let Some(chord) = parse_key_str(key) else {
+            return send_via_input_store(client, key, screen, flags).await;
+        };
+        let dispatcher = Dispatcher::new(path!("ui", "settings", "focused"));
+        let writes = dispatcher.dispatch(snapshot, &chord, bindings, commands, renderers);
+        if writes.is_empty() {
+            return send_via_input_store(client, key, screen, flags).await;
         }
+        let mut first_failure: Option<(Path, String)> = None;
+        for write in writes {
+            let path = write.path.clone();
+            if let Err(e) = client.write(&write.path, write.record).await
+                && first_failure.is_none()
+            {
+                first_failure = Some((path, e.to_string()));
+            }
+        }
+        if let Some((path, err)) = first_failure {
+            tracing::error!(
+                error = %err, key = %key, path = %path,
+                "settings dispatch: substrate rejected a write",
+            );
+        }
+        return KeyDispatchOutcome::Handled;
     }
     send_via_input_store(client, key, screen, flags).await
 }
@@ -105,13 +104,13 @@ async fn send_via_input_store(
         screen,
         flags,
     };
-    let result = client.write_typed(&oxpath!("input", "key"), &event).await;
+    let result = client.write_typed(&path!("input", "key"), &event).await;
     match result {
-        Ok(p) if p.iter().next().map(|c| c.as_str()) == Some("unbound") => {
+        Ok(p) if p.iter().next() == Some("unbound") => {
             let mode = p
                 .iter()
                 .nth(1)
-                .and_then(|c| Mode::parse(c.as_str()))
+                .and_then(Mode::parse)
                 .unwrap_or(Mode::Normal);
             KeyDispatchOutcome::Unbound { mode }
         }

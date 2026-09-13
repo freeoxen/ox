@@ -13,50 +13,41 @@ pub fn read_dispatch(
     last_search_result: &Option<crate::SearchCache>,
     from: &Path,
 ) -> Result<Option<Record>, StoreError> {
-    let segments: Vec<&String> = from.iter().collect();
+    let segments: Vec<&str> = from.iter().collect();
     match segments.as_slice() {
-        [root] if root.as_str() == "threads" => list_threads(db, "inbox"),
-        [root] if root.as_str() == "done" => list_threads(db, "done"),
-        [root] if root.as_str() == "labels" => list_all_labels(db),
-        [root, id] if root.as_str() == "threads" => get_thread(db, id),
-        [root, name] if root.as_str() == "labels" => threads_by_label(db, name),
-        [root, state] if root.as_str() == "by_state" => threads_by_state(db, state),
-        [root, query] if root.as_str() == "search" => search_threads(db, query),
-        [root, id, sub] if root.as_str() == "threads" && sub.as_str() == "children" => {
-            list_children(db, id)
-        }
-        [root, id, sub] if root.as_str() == "threads" && sub.as_str() == "tasks" => {
-            list_tasks(db, id)
-        }
+        [root] if *root == "threads" => list_threads(db, "inbox"),
+        [root] if *root == "done" => list_threads(db, "done"),
+        [root] if *root == "labels" => list_all_labels(db),
+        [root, id] if *root == "threads" => get_thread(db, id),
+        [root, name] if *root == "labels" => threads_by_label(db, name),
+        [root, state] if *root == "by_state" => threads_by_state(db, state),
+        [root, query] if *root == "search" => search_threads(db, query),
+        [root, id, sub] if *root == "threads" && *sub == "children" => list_children(db, id),
+        [root, id, sub] if *root == "threads" && *sub == "tasks" => list_tasks(db, id),
         // --- Paginated search results (StructFS pagination protocol) ---
         // search/results/{handle}
-        [a, b, id] if a.as_str() == "search" && b.as_str() == "results" => {
+        [a, b, id] if *a == "search" && *b == "results" => {
             paginate_search_results(last_search_result, id, None, 20)
         }
         // search/results/{handle}/limit/{n}
-        [a, b, id, c, lim]
-            if a.as_str() == "search" && b.as_str() == "results" && c.as_str() == "limit" =>
-        {
+        [a, b, id, c, lim] if *a == "search" && *b == "results" && *c == "limit" => {
             let limit: usize = lim.parse().unwrap_or(20); // allow(silent_parse_fallback): path-component limit; standard page size
             paginate_search_results(last_search_result, id, None, limit)
         }
         // search/results/{handle}/after/{cursor}/limit/{n}
         [a, b, id, c, cursor, d, lim]
-            if a.as_str() == "search"
-                && b.as_str() == "results"
-                && c.as_str() == "after"
-                && d.as_str() == "limit" =>
+            if *a == "search" && *b == "results" && *c == "after" && *d == "limit" =>
         {
             let limit: usize = lim.parse().unwrap_or(20); // allow(silent_parse_fallback): same as above
-            paginate_search_results(last_search_result, id, Some(cursor.as_str()), limit)
+            paginate_search_results(last_search_result, id, Some(*cursor), limit)
         }
         // Recent inputs: inputs/recent or inputs/recent/{limit}
-        [a, b] if a.as_str() == "inputs" && b.as_str() == "recent" => {
+        [a, b] if *a == "inputs" && *b == "recent" => {
             let conn = db.lock().map_err(|e| err("read", e))?;
             let results = crate::search::recent_inputs(&conn, 50).map_err(|e| err("read", e))?;
             Ok(Some(Record::parsed(Value::Array(results))))
         }
-        [a, b, lim] if a.as_str() == "inputs" && b.as_str() == "recent" => {
+        [a, b, lim] if *a == "inputs" && *b == "recent" => {
             let limit: usize = lim.parse().unwrap_or(50); // allow(silent_parse_fallback): matches the no-limit arm above
             let conn = db.lock().map_err(|e| err("read", e))?;
             let results = crate::search::recent_inputs(&conn, limit).map_err(|e| err("read", e))?;

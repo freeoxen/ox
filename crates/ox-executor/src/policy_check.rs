@@ -51,14 +51,18 @@ impl CliPolicyCheck {
         // "fs/read", the ToolStore resolves wire→internal before dispatching,
         // but PolicyStore sits in front, so we see the raw path which uses
         // wire names (e.g. "read_file", "shell").
-        path[0].clone()
+        path[0].to_string()
     }
 
     /// Convert a StructFS Record to a serde_json::Value for PolicyGuard.
-    fn record_to_json(data: &Record) -> serde_json::Value {
+    fn record_to_json(data: &Record) -> Result<serde_json::Value, structfs_core_store::Error> {
         match data.as_value() {
             Some(v) => structfs_serde_store::value_to_json(v.clone()),
-            None => serde_json::Value::Null,
+            None => Err(structfs_core_store::Error::store(
+                "policy",
+                "decode",
+                "expected parsed record",
+            )),
         }
     }
 
@@ -72,10 +76,10 @@ impl CliPolicyCheck {
                 updated_at: None,
             };
             self.rt_handle
-                .block_on(
-                    self.broker_client
-                        .write_typed(&ox_path::oxpath!("inbox", "threads", tid_comp), &update),
-                )
+                .block_on(self.broker_client.write_typed(
+                    &structfs_core_store::path!("inbox", "threads", tid_comp),
+                    &update,
+                ))
                 .ok();
         }
     }
@@ -105,7 +109,7 @@ impl CliPolicyCheck {
             Ok(returned_path) => {
                 // Decision encoded in path: "request/{decision}"
                 if returned_path.len() >= 2 {
-                    returned_path[1].clone()
+                    returned_path[1].to_string()
                 } else {
                     "deny_once".to_string()
                 }
@@ -192,7 +196,10 @@ impl PolicyCheck for CliPolicyCheck {
             _ => {}
         }
 
-        let input = Self::record_to_json(data);
+        let input = match Self::record_to_json(data) {
+            Ok(input) => input,
+            Err(error) => return PolicyDecision::Deny(format!("invalid tool input: {error}")),
+        };
 
         match self.guard.check(&tool_name, &input) {
             CheckResult::Allow => PolicyDecision::Allow,

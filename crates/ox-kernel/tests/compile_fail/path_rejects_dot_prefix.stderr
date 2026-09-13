@@ -1,0 +1,5 @@
+error: invalid path component '.hidden': must start with a letter or underscore followed by letter/digit
+ --> tests/compile_fail/path_rejects_dot_prefix.rs:4:20
+  |
+4 |     let _p = path!(".hidden");
+  |                    ^^^^^^^^^

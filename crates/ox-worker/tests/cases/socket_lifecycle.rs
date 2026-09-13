@@ -2,9 +2,9 @@
 
 use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
 
-use ox_broker::async_store::AsyncReader as _;
 use ox_worker::service::test_support;
 use ox_worker::{WorkerBuildIdentity, WorkerConfig, WorkerLimits, WorkerService};
+use structfs_core_store::DetachedReader as _;
 
 #[tokio::test]
 async fn private_unix_carrier_is_live_and_identity_safe() {
@@ -50,11 +50,11 @@ async fn private_unix_carrier_is_live_and_identity_safe() {
     .await
     .unwrap();
     let health = remote
-        .read(&structfs_core_store::path!("health"))
+        .read_detached(&structfs_core_store::path!("health"))
         .await
         .unwrap()
         .unwrap();
-    let health = structfs_serde_store::value_to_json(health.as_value().unwrap().clone());
+    let health = structfs_serde_store::value_to_json(health.as_value().unwrap().clone()).unwrap();
     assert_eq!(health["sandbox_enforcement"]["preflight"], "test-verified");
 
     service.shutdown().await.unwrap();

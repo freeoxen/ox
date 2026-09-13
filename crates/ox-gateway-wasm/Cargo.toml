@@ -2,7 +2,7 @@
 name = "ox-gateway-wasm"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version.workspace = true
 license = "Apache-2.0"
 description = "Gateway codec Block — dialect codecs as a Wasm guest over host StructFS imports"
 publish = false
@@ -12,6 +12,7 @@ ox-codec = { workspace = true }
 ox-kernel = { workspace = true }
 ox-types = { workspace = true }
 serde_json = { workspace = true }
+featherweight-guest = { version = "=0.2.0", default-features = false }
 
 [lib]
 crate-type = ["cdylib"]

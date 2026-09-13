@@ -2,13 +2,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ox_gate::GateStore;
-use ox_path::oxpath;
 use ox_tools::ToolStore;
 use ox_tools::completion::CompletionModule;
 use ox_tools::fs::FsModule;
 use ox_tools::native::FnTool;
 use ox_tools::os::OsModule;
 use ox_tools::sandbox::PermissivePolicy;
+use structfs_core_store::path;
 use structfs_core_store::{Reader, Record, Value, Writer};
 
 fn make_tool_store(dir: &Path) -> ToolStore {
@@ -32,11 +32,11 @@ fn routes_fs_read() {
     // Write (execute) a read operation via the StructFS path
     let input = structfs_serde_store::json_to_value(serde_json::json!({"path": "hello.txt"}));
     store
-        .write(&oxpath!("fs", "read"), Record::parsed(input))
+        .write(&path!("fs", "read"), Record::parsed(input))
         .unwrap();
 
     // Read the result back
-    let result = store.read(&oxpath!("fs", "read", "result")).unwrap();
+    let result = store.read(&path!("fs", "read", "result")).unwrap();
     assert!(result.is_some(), "expected Some result for fs/read/result");
     let value = result.unwrap().as_value().unwrap().clone();
     // The result should be the file content as a string
@@ -55,7 +55,7 @@ fn routes_completions_primary_role() {
     // when no config handle is attached. Pre-O2 this test exercised the
     // retired `completions/defaults/account` shape.
     let result = store
-        .read(&oxpath!("completions", "completions", "primary"))
+        .read(&path!("completions", "completions", "primary"))
         .unwrap();
     assert!(
         result.is_some(),
@@ -90,14 +90,14 @@ fn routes_os_shell() {
 
     let input = structfs_serde_store::json_to_value(serde_json::json!({"command": "echo hi"}));
     store
-        .write(&oxpath!("os", "shell"), Record::parsed(input))
+        .write(&path!("os", "shell"), Record::parsed(input))
         .unwrap();
 
-    let result = store.read(&oxpath!("os", "shell", "result")).unwrap();
+    let result = store.read(&path!("os", "shell", "result")).unwrap();
     assert!(result.is_some(), "expected Some result for os/shell/result");
     let value = result.unwrap().as_value().unwrap().clone();
     // The shell result should contain the output "hi"
-    let json = structfs_serde_store::value_to_json(value);
+    let json = structfs_serde_store::value_to_json(value).unwrap();
     let output_str = format!("{json}");
     assert!(
         output_str.contains("hi"),
@@ -117,11 +117,11 @@ fn wire_name_resolution() {
     // Writing to just the wire name should route through to fs/read
     let input = structfs_serde_store::json_to_value(serde_json::json!({"path": "wire.txt"}));
     store
-        .write(&oxpath!("fs_read"), Record::parsed(input))
+        .write(&path!("fs_read"), Record::parsed(input))
         .unwrap();
 
     // Read via internal path should have the result
-    let result = store.read(&oxpath!("fs", "read", "result")).unwrap();
+    let result = store.read(&path!("fs", "read", "result")).unwrap();
     assert!(result.is_some(), "expected result after wire-name write");
     let value = result.unwrap().as_value().unwrap().clone();
     match value {
@@ -135,7 +135,7 @@ fn schemas_read_returns_json_array() {
     let tmp = tempfile::tempdir().unwrap();
     let mut store = make_tool_store(tmp.path());
 
-    let result = store.read(&oxpath!("schemas")).unwrap();
+    let result = store.read(&path!("schemas")).unwrap();
     assert!(result.is_some(), "expected Some for schemas path");
     let value = result.unwrap().as_value().unwrap().clone();
     match value {
@@ -201,15 +201,15 @@ fn native_tool_executes_in_process() {
     store.register_native(Box::new(tool));
 
     // Execute via wire name
-    let path = oxpath!("reverse");
+    let path = path!("reverse");
     let input = structfs_serde_store::json_to_value(serde_json::json!({"text": "hello"}));
     store.write(&path, Record::parsed(input)).unwrap();
 
     // Read result via wire name
-    let record = store.read(&oxpath!("reverse")).unwrap();
+    let record = store.read(&path!("reverse")).unwrap();
     assert!(record.is_some(), "expected Some result for native tool");
     let value = record.unwrap().as_value().unwrap().clone();
-    let json = structfs_serde_store::value_to_json(value);
+    let json = structfs_serde_store::value_to_json(value).unwrap();
     let result_str = json
         .get("result")
         .and_then(|v| v.as_str())
@@ -252,7 +252,7 @@ fn native_tool_error_returns_store_error() {
     );
     store.register_native(Box::new(tool));
 
-    let path = oxpath!("fail_tool");
+    let path = path!("fail_tool");
     let input = structfs_serde_store::json_to_value(serde_json::json!({}));
     let result = store.write(&path, Record::parsed(input));
     assert!(result.is_err(), "expected error from failing native tool");

@@ -40,7 +40,7 @@ impl ox_store_util::StoreBacking for TomlFileBacking {
         let mut root = toml::Table::new();
         for (path_key, val) in flat {
             let parts: Vec<&str> = path_key.split('/').collect();
-            insert_nested(&mut root, &parts, val);
+            insert_nested(&mut root, &parts, val)?;
         }
         let content = toml::to_string_pretty(&root)
             .map_err(|e| StoreError::store("toml_backing", "save", e.to_string()))?;
@@ -82,9 +82,9 @@ fn flatten_toml(prefix: &str, value: &toml::Value, out: &mut BTreeMap<String, Va
     }
 }
 
-fn insert_nested(table: &mut toml::Table, parts: &[&str], value: &Value) {
+fn insert_nested(table: &mut toml::Table, parts: &[&str], value: &Value) -> Result<(), StoreError> {
     if parts.is_empty() {
-        return;
+        return Ok(());
     }
     if parts.len() == 1 {
         match value {
@@ -94,19 +94,30 @@ fn insert_nested(table: &mut toml::Table, parts: &[&str], value: &Value) {
             Value::Integer(n) => {
                 table.insert(parts[0].to_string(), toml::Value::Integer(*n));
             }
+            Value::Unsigned(n) => {
+                let n = i64::try_from(*n).map_err(|_| {
+                    StoreError::store(
+                        "toml_backing",
+                        "save",
+                        "unsigned integer exceeds TOML signed integer range",
+                    )
+                })?;
+                table.insert(parts[0].to_string(), toml::Value::Integer(n));
+            }
             Value::Bool(b) => {
                 table.insert(parts[0].to_string(), toml::Value::Boolean(*b));
             }
             _ => {}
         }
-        return;
+        return Ok(());
     }
     let sub = table
         .entry(parts[0].to_string())
         .or_insert_with(|| toml::Value::Table(toml::Table::new()));
     if let toml::Value::Table(sub_table) = sub {
-        insert_nested(sub_table, &parts[1..], value);
+        insert_nested(sub_table, &parts[1..], value)?;
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -180,5 +191,28 @@ mod tests {
             "expected [gate.providers.openai] section, got:\n{content}"
         );
         assert!(content.contains("api.openai.com"));
+    }
+
+    #[test]
+    fn unsigned_values_preserve_toml_range_and_failed_save_keeps_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let backing = TomlFileBacking::new(path.clone());
+        let value = Value::Map(BTreeMap::from([("count".into(), Value::Unsigned(42))]));
+        backing.save(&value).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        assert_eq!(
+            backing.load().unwrap(),
+            Some(Value::Map(BTreeMap::from([(
+                "count".into(),
+                Value::Integer(42)
+            )])))
+        );
+        let too_large = Value::Map(BTreeMap::from([(
+            "count".into(),
+            Value::Unsigned(u64::MAX),
+        )]));
+        assert!(backing.save(&too_large).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
     }
 }

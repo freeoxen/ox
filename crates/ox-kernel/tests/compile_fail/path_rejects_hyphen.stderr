@@ -1,0 +1,5 @@
+error: invalid path component 'bad-name': invalid character '-' in identifier
+ --> tests/compile_fail/path_rejects_hyphen.rs:4:28
+  |
+4 |     let _p = path!("gate", "bad-name", "model");
+  |                            ^^^^^^^^^^

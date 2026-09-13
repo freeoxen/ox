@@ -230,7 +230,7 @@ fn render(&self, ctx: &mut RenderCtx<'_>) -> View {
     let mut rows = self.real_account_rows(ctx);
     if let Some(buffer) = read_typed::<String>(
         ctx.data,
-        &oxpath!("ui", "settings", "new_account", "buffer"),
+        &path!("ui", "settings", "new_account", "buffer"),
     ) {
         // Composing a new connection — render an inline name prompt
         // at the top of the section, decorated with the live buffer.

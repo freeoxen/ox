@@ -13,9 +13,9 @@
 use std::time::Duration;
 
 use ox_broker::BrokerStore;
-use ox_path::oxpath;
 use ox_store_util::local_config::LocalConfig;
 use ox_types::settings::{BadgeSource, SettingsIndexEntry};
+use structfs_core_store::path;
 use structfs_core_store::{Record, Value};
 
 use ox_cli::settings;
@@ -42,9 +42,9 @@ async fn seed_index_entries(client: &ox_broker::ClientHandle) {
         },
     ];
     for entry in &entries {
-        let mut path_components = oxpath!("settings", "index", "entries")
+        let mut path_components = path!("settings", "index", "entries")
             .iter()
-            .cloned()
+            .map(str::to_owned)
             .collect::<Vec<String>>();
         path_components.push(entry.id.clone());
         let path = structfs_core_store::Path::try_from_components(path_components)
@@ -57,16 +57,16 @@ async fn seed_index_entries(client: &ox_broker::ClientHandle) {
 async fn render_subscription_writes_non_empty_view_for_settings_index() {
     let broker = BrokerStore::new(Duration::from_secs(5));
     // Mount the broker substores that `settings::install` writes to.
-    let _settings_mount = broker.mount(oxpath!("settings"), LocalConfig::new()).await;
-    let _config_mount = broker.mount(oxpath!("config"), LocalConfig::new()).await;
-    let _secret_mount = broker.mount(oxpath!("secret"), LocalConfig::new()).await;
+    let _settings_mount = broker.mount(path!("settings"), LocalConfig::new()).await;
+    let _config_mount = broker.mount(path!("config"), LocalConfig::new()).await;
+    let _secret_mount = broker.mount(path!("secret"), LocalConfig::new()).await;
     // Generic substore for `ui/_horns/*` (input/area, render/tick, theme).
     // `settings::install` writes the theme record to `ui/_horns/theme`
     // and the bootstrap path is `ui/settings/focused` etc., so a
     // single `ui/` LocalConfig captures both.
-    let _ui_mount = broker.mount(oxpath!("ui"), LocalConfig::new()).await;
+    let _ui_mount = broker.mount(path!("ui"), LocalConfig::new()).await;
     // Bindings + commands metadata land here.
-    let _horns_mount = broker.mount(oxpath!("horns"), LocalConfig::new()).await;
+    let _horns_mount = broker.mount(path!("horns"), LocalConfig::new()).await;
 
     let client = broker.client();
     seed_index_entries(&client).await;
@@ -80,7 +80,7 @@ async fn render_subscription_writes_non_empty_view_for_settings_index() {
     client
         .write(
             &settings::cursor_path(),
-            Record::parsed(path_to_value(&oxpath!("settings", "index"))),
+            Record::parsed(path_to_value(&path!("settings", "index"))),
         )
         .await
         .expect("seed cursor");

@@ -1,45 +1,12 @@
-//! Cascade<A, B> — layered read with fallback.
-//!
-//! Reads try A first; if A returns None, falls back to B.
-//! Writes go to A (the overlay). B is read-only from Cascade's perspective.
+//! Re-export the upstream StructFS store combinator.
 
-use structfs_core_store::{Error as StoreError, Path, Reader, Record, Writer};
-
-/// Layered store: reads try `primary` first, fall back to `fallback`.
-/// Writes always go to `primary`.
-pub struct Cascade<A, B> {
-    pub primary: A,
-    pub fallback: B,
-}
-
-impl<A, B> Cascade<A, B> {
-    pub fn new(primary: A, fallback: B) -> Self {
-        Self { primary, fallback }
-    }
-}
-
-impl<A: Reader, B: Reader> Reader for Cascade<A, B> {
-    fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
-        match self.primary.read(from)? {
-            Some(record) => Ok(Some(record)),
-            None => self.fallback.read(from),
-        }
-    }
-}
-
-impl<A: Writer, B: Send + Sync> Writer for Cascade<A, B> {
-    fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
-        self.primary.write(to, data)
-    }
-}
-
-unsafe impl<A: Send, B: Send> Send for Cascade<A, B> {}
-unsafe impl<A: Sync, B: Sync> Sync for Cascade<A, B> {}
+pub use structfs_core_store::Cascade;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::LocalConfig;
+    use structfs_core_store::{Reader, Record, Writer};
     use structfs_core_store::{Value, path};
 
     #[test]
@@ -101,11 +68,8 @@ mod tests {
                 Record::parsed(Value::String("override".into())),
             )
             .unwrap();
-        let record = cascade
-            .fallback
-            .read(&path!("gate/model"))
-            .unwrap()
-            .unwrap();
+        let (_, mut fallback) = cascade.into_inner();
+        let record = fallback.read(&path!("gate/model")).unwrap().unwrap();
         assert_eq!(
             record.as_value().unwrap(),
             &Value::String("original".into())

@@ -19,14 +19,16 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use ox_broker::async_store::{AsyncReader, AsyncWriter, BoxFuture};
+use ox_broker::async_store::BoxFuture;
 use ox_gate::completion_broker::CancelHandle;
-use structfs_core_store::{Error as StoreError, Path, Record, Value};
+use structfs_core_store::{
+    DetachedReader, DetachedWriter, Error as StoreError, Path, Record, Value,
+};
 use tokio::sync::{Mutex, Notify};
 
 /// Per-exchange wire Block entry point: (handle id, cancellation for the
 /// run — triggered when the edge GC's the handle, e.g. client disconnect).
-pub type WireRunner = Arc<dyn Fn(u64, CancelHandle) + Send + Sync>;
+pub type WireRunner = Arc<dyn Fn(u64, CancelHandle) -> BoxFuture<Result<(), String>> + Send + Sync>;
 
 struct WireInflight {
     state: Mutex<WireState>,
@@ -60,14 +62,14 @@ impl WireStore {
     }
 
     fn parse(path: &Path) -> Option<(u64, Option<String>)> {
-        if path.len() < 2 || path[0].as_str() != "outstanding" {
+        if path.len() < 2 || &path[0] != "outstanding" {
             return None;
         }
-        let id: u64 = path[1].as_str().parse().ok()?;
+        let id: u64 = path[1].parse().ok()?;
         let sub = if path.len() > 2 {
             Some(
                 (2..path.len())
-                    .map(|i| path[i].as_str())
+                    .map(|i| &path[i])
                     .collect::<Vec<_>>()
                     .join("/"),
             )
@@ -78,8 +80,8 @@ impl WireStore {
     }
 }
 
-impl AsyncReader for WireStore {
-    fn read(&mut self, from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
+impl DetachedReader for WireStore {
+    fn read_detached(&mut self, from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
         let Some((id, sub)) = Self::parse(from) else {
             return Box::pin(async move { Ok(None) });
         };
@@ -152,8 +154,8 @@ impl AsyncReader for WireStore {
     }
 }
 
-impl AsyncWriter for WireStore {
-    fn write(&mut self, to: &Path, data: Record) -> BoxFuture<Result<Path, StoreError>> {
+impl DetachedWriter for WireStore {
+    fn write_detached(&mut self, to: &Path, data: Record) -> BoxFuture<Result<Path, StoreError>> {
         let to = to.clone();
 
         // GC
@@ -275,10 +277,15 @@ impl AsyncWriter for WireStore {
             notify: Notify::new(),
             cancel: cancel.clone(),
         });
-        self.handles.insert(id, inflight);
+        self.handles.insert(id, inflight.clone());
 
         let runner = self.runner.clone();
-        self.runtime.spawn_blocking(move || runner(id, cancel));
+        self.runtime.spawn(async move { let outcome = runner(id, cancel).await;
+            let mut state = inflight.state.lock().await;
+            if state.head.is_none() { state.head = Some(structfs_serde_store::json_to_value(serde_json::json!({"mode":"error", "status":500, "body":{"error":{"message":outcome.err().unwrap_or_else(|| "wire exited without a head".into())}}}))); }
+            state.done = true;
+            drop(state);
+            inflight.notify.notify_waiters(); });
 
         Box::pin(async move {
             Path::try_from_components(vec!["outstanding".to_string(), id.to_string()])

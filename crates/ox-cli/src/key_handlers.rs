@@ -15,7 +15,7 @@ pub(crate) async fn send_approval_response(
                 return;
             }
         };
-        let path = ox_path::oxpath!("threads", tid_comp, "approval", "response");
+        let path = structfs_core_store::path!("threads", tid_comp, "approval", "response");
         let _ = client
             .write_typed(&path, &ox_types::ApprovalResponse { decision })
             .await;

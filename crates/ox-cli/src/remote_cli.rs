@@ -494,7 +494,7 @@ impl TuiRemoteLauncher {
         let id = receipt
             .iter()
             .last()
-            .cloned()
+            .map(str::to_owned)
             .ok_or_else(|| CliError::persistence("conversation receipt was empty"))?;
         resolve_conversation(&self.runtime, &id).await
     }
@@ -538,7 +538,7 @@ async fn run_node(runtime: &Runtime, command: &NodeCommand, json: bool) -> Resul
             let id = receipt
                 .iter()
                 .last()
-                .cloned()
+                .map(str::to_owned)
                 .ok_or_else(|| CliError::persistence("node receipt was empty"))?;
             let node = resolve_node(runtime, &id).await?;
             print_node(&node, json)
@@ -717,7 +717,7 @@ async fn run_conversation(
             let id = receipt
                 .iter()
                 .last()
-                .cloned()
+                .map(str::to_owned)
                 .ok_or_else(|| CliError::persistence("conversation receipt was empty"))?;
             let conversation = resolve_conversation(runtime, &id).await?;
             print_conversation(runtime, &conversation, json).await?;
@@ -1232,7 +1232,7 @@ fn provision_spec(
     if spec.cpu == 0
         || spec.cpu > 128
         || spec.memory_mib < 1024
-        || spec.memory_mib % 1024 != 0
+        || !spec.memory_mib.is_multiple_of(1024)
         || spec.disk_gib == 0
     {
         return Err(CliError::validation("invalid node resources"));
@@ -1394,6 +1394,8 @@ fn record_json(record: Record) -> Result<serde_json::Value, CliError> {
         .as_value()
         .cloned()
         .map(structfs_serde_store::value_to_json)
+        .transpose()
+        .map_err(|e| CliError::persistence(e.to_string()))?
         .ok_or_else(|| CliError::persistence("record was not parsed"))
 }
 

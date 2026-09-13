@@ -303,14 +303,14 @@ async fn build_broker(inbox_root: &Path, config: BTreeMap<String, Value>) -> Bro
 /// Mirrors the pattern production uses to render history: `threads/{tid}/log/entries`.
 pub async fn read_shared_log(client: &ClientHandle, thread_id: &str) -> Vec<LogEntry> {
     let tid = ox_kernel::PathComponent::try_new(thread_id).expect("valid thread id");
-    let log_path = ox_path::oxpath!("threads", tid, "log", "entries");
+    let log_path = structfs_core_store::path!("threads", tid, "log", "entries");
     let Some(record) = client.read(&log_path).await.expect("read log/entries") else {
         return Vec::new();
     };
     let Some(value) = record.as_value() else {
         return Vec::new();
     };
-    let json = structfs_serde_store::value_to_json(value.clone());
+    let json = structfs_serde_store::value_to_json(value.clone()).unwrap();
     let Some(arr) = json.as_array() else {
         return Vec::new();
     };
@@ -323,7 +323,7 @@ pub async fn read_shared_log(client: &ClientHandle, thread_id: &str) -> Vec<LogE
 /// Append a `LogEntry` to a thread's structured log via the broker.
 pub async fn append_log_entry(client: &ClientHandle, thread_id: &str, entry: LogEntry) {
     let tid = ox_kernel::PathComponent::try_new(thread_id).expect("valid thread id");
-    let log_path = ox_path::oxpath!("threads", tid, "log", "append");
+    let log_path = structfs_core_store::path!("threads", tid, "log", "append");
     client
         .write_typed(&log_path, &entry)
         .await
@@ -342,7 +342,6 @@ pub async fn create_thread(client: &ClientHandle, title: &str) -> String {
         .iter()
         .last()
         .expect("new thread path carries id")
-        .as_str()
         .to_string()
 }
 
@@ -470,14 +469,14 @@ pub async fn wait_for_pending_approval(
     timeout: std::time::Duration,
 ) -> ox_types::ApprovalRequest {
     let tid = ox_kernel::PathComponent::try_new(thread_id).expect("valid thread id");
-    let pending_path = ox_path::oxpath!("threads", tid, "approval", "pending");
+    let pending_path = structfs_core_store::path!("threads", tid, "approval", "pending");
     tokio::time::timeout(timeout, async {
         loop {
             if let Ok(Some(record)) = client.read(&pending_path).await {
                 if let Some(value) = record.as_value() {
                     // Null means "no pending" — keep polling.
                     if !matches!(value, structfs_core_store::Value::Null) {
-                        let json = structfs_serde_store::value_to_json(value.clone());
+                        let json = structfs_serde_store::value_to_json(value.clone()).unwrap();
                         if let Ok(req) = serde_json::from_value::<ox_types::ApprovalRequest>(json) {
                             return req;
                         }
@@ -522,7 +521,7 @@ pub async fn respond_to_approval(
     decision: ox_types::Decision,
 ) {
     let tid = ox_kernel::PathComponent::try_new(thread_id).expect("valid thread id");
-    let resp_path = ox_path::oxpath!("threads", tid, "approval", "response");
+    let resp_path = structfs_core_store::path!("threads", tid, "approval", "response");
     let response = ox_types::ApprovalResponse { decision };
     client
         .write_typed(&resp_path, &response)

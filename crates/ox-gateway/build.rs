@@ -43,5 +43,7 @@ fn main() {
     std::fs::copy(&built, &out_wasm).expect("copying codec_block.wasm");
 
     println!("cargo:rerun-if-changed=../ox-gateway-wasm/src");
+    println!("cargo:rerun-if-changed=../ox-gateway-wasm/Cargo.toml");
     println!("cargo:rerun-if-changed=../ox-codec/src");
+    println!("cargo:rerun-if-changed=../../Cargo.toml");
 }

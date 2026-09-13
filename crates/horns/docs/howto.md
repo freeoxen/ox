@@ -75,7 +75,7 @@ Worked example: an "Appearance" page with a theme selector.
 ### 1. Pick a cursor path
 
 ```rust
-oxpath!("settings", "appearance")
+path!("settings", "appearance")
 ```
 
 ### 2. Write the renderer
@@ -83,7 +83,7 @@ oxpath!("settings", "appearance")
 `crates/ox-cli/src/settings/renderers/appearance.rs`:
 
 ```rust
-use ox_path::oxpath;
+use structfs_core_store::path;
 use ox_view::{ListItem, View};
 
 use crate::settings::registry::{
@@ -97,7 +97,7 @@ impl Renderer for AppearanceRenderer {
     fn render(&self, ctx: &mut RenderCtx<'_>) -> View {
         let theme: Option<String> = read_typed(
             ctx.data,
-            &oxpath!("config", "ui", "theme"),
+            &path!("config", "ui", "theme"),
         );
         let items = vec![
             ListItem {
@@ -130,7 +130,7 @@ impl Renderer for AppearanceRenderer {
 
 pub fn register(reg: &mut RendererRegistry) {
     reg.register(
-        oxpath!("settings", "appearance"),
+        path!("settings", "appearance"),
         Box::new(AppearanceRenderer),
     );
 }
@@ -158,11 +158,11 @@ let appearance_entry = SettingsIndexEntry {
     id: "appearance".to_string(),
     label: "Appearance".to_string(),
     description: "Theme + display preferences.".to_string(),
-    target_cursor: oxpath!("settings", "appearance"),
+    target_cursor: path!("settings", "appearance"),
     badge: BadgeSource::None,
 };
 client.write_typed(
-    &oxpath!("settings", "index", "entries", "appearance"),
+    &path!("settings", "index", "entries", "appearance"),
     &appearance_entry,
 ).await?;
 ```
@@ -189,7 +189,7 @@ You'll likely want at minimum:
 fn appearance_renders_two_themes() {
     let mut snap = SettingsSnapshot::empty();
     snap.insert(
-        &oxpath!("config", "ui", "theme"),
+        &path!("config", "ui", "theme"),
         Value::String("dark".into()),
     );
     let view = render(&mut snap);
@@ -219,14 +219,14 @@ command! {
     id: "appearance.toggle_something",
     title: "Toggle Something",
     description: "Flip the something flag.",
-    cursor: Some(oxpath!("settings", "appearance")),
+    cursor: Some(path!("settings", "appearance")),
     run: |snap, _ctx| {
         let current: bool = read_typed(
             snap,
-            &oxpath!("config", "ui", "something"),
+            &path!("config", "ui", "something"),
         ).unwrap_or(false);
         vec![Write {
-            path: oxpath!("config", "ui", "something"),
+            path: path!("config", "ui", "something"),
             record: Record::parsed(Value::Bool(!current)),
         }]
     },
@@ -254,7 +254,7 @@ input-store path so global handlers still see the key.
 run: |snap, _ctx| {
     let Some(name) = read_typed::<String>(
         snap,
-        &oxpath!("ui", "settings", "accounts", "selected"),
+        &path!("ui", "settings", "accounts", "selected"),
     ) else {
         return vec![];  // inert
     };
@@ -286,7 +286,7 @@ literal `BindingEntry { ... }`:
 
 ```rust
 reg.register(BindingEntry {
-    scope:      BindingScope::Exact(oxpath!("settings", "appearance")),
+    scope:      BindingScope::Exact(path!("settings", "appearance")),
     phase:      Phase::Bubble,
     key:        KeyChord {
         modifiers: KeyModifierSet::default(),
@@ -338,10 +338,10 @@ example uses `TextInputHandler` at the `_edit` scope:
 ```rust
 let handler_id = HandlerId("settings.edit.text_input".into());
 handlers.insert(handler_id.clone(), Arc::new(TextInputHandler::new(
-    oxpath!("ui", "settings", "edit", "buffer"),
+    path!("ui", "settings", "edit", "buffer"),
 )));
 handler_metadata.push((handler_id, HandlerMetadata {
-    scope: BindingScope::Exact(oxpath!("settings", "_edit")),
+    scope: BindingScope::Exact(path!("settings", "_edit")),
     phase: Phase::Target,
     class: "printable_ascii".into(),
 }));
@@ -371,7 +371,7 @@ Worked example: when a new account appears, fetch its model catalog.
 
 ```rust
 use ox_broker::subscription::{Subscription, SubCtx};
-use ox_path::oxpath;
+use structfs_core_store::path;
 use ox_types::subscription::{PathPattern, SubscriptionId, Write};
 
 pub struct CatalogFetchOnCreate {
@@ -389,7 +389,7 @@ impl CatalogFetchOnCreate {
             // is a new entry (change.before.is_none()), not an
             // update.
             watches:   vec![PathPattern::Prefix(
-                oxpath!("config", "gate", "accounts"),
+                path!("config", "gate", "accounts"),
             )],
             transport,
         }
@@ -407,7 +407,7 @@ impl Subscription for CatalogFetchOnCreate {
         }
         // Skip nested writes (we want the account record itself,
         // not its children at .../models, .../test_status, etc.).
-        let prefix = oxpath!("config", "gate", "accounts");
+        let prefix = path!("config", "gate", "accounts");
         if ctx.change.path.len() != prefix.len() + 1 {
             return vec![];
         }
@@ -429,7 +429,7 @@ The CLI does the create:
 
 ```rust
 client.write_typed(
-    &oxpath!("config", "gate", "accounts", &name),
+    &path!("config", "gate", "accounts", &name),
     &AccountConfig::default(),
 ).await?;
 ```
@@ -453,18 +453,18 @@ command! {
     id: "account.test",
     title: "Test Connection",
     description: "Test the account's API connectivity.",
-    cursor: Some(oxpath!("settings", "accounts")),
+    cursor: Some(path!("settings", "accounts")),
     run: |snap, _ctx| {
         let Some(name) = read_typed::<String>(
             snap,
-            &oxpath!("ui", "settings", "accounts", "selected"),
+            &path!("ui", "settings", "accounts", "selected"),
         ) else { return vec![]; };
         let comp = match PathComponent::try_new(&name) {
             Ok(c) => c,
             Err(_) => return vec![],
         };
         vec![Write {
-            path: oxpath!("config", "gate", "accounts", comp, "test_now"),
+            path: path!("config", "gate", "accounts", comp, "test_now"),
             record: Record::parsed(Value::Null),
         }]
     },
@@ -477,16 +477,16 @@ impl Subscription for AccountTestSubscription {
         // PrefixSuffix matches per-instance triggers without
         // hard-coding account names.
         &[PathPattern::PrefixSuffix {
-            prefix: oxpath!("config", "gate", "accounts"),
-            suffix: oxpath!("test_now"),
+            prefix: path!("config", "gate", "accounts"),
+            suffix: path!("test_now"),
         }]
     }
 
     fn handle(&self, ctx: SubCtx<'_>) -> Vec<Write> {
         let name = instance_segment(
             &ctx.change.path,
-            &oxpath!("config", "gate", "accounts"),
-            &oxpath!("test_now"),
+            &path!("config", "gate", "accounts"),
+            &path!("test_now"),
         ).expect("PrefixSuffix matched but couldn't extract segment");
 
         let writer = ctx.writer.clone();
@@ -494,7 +494,7 @@ impl Subscription for AccountTestSubscription {
 
         // Synchronous: write the in-progress status.
         let synchronous = vec![Write {
-            path: oxpath!("config", "gate", "accounts", &name, "test_status"),
+            path: path!("config", "gate", "accounts", &name, "test_status"),
             record: Record::parsed(/* Testing { started_at_ms } */),
         }];
 
@@ -581,23 +581,23 @@ command! {
     id: "accounts.add",
     title: "Add Connection",
     description: "Open the inline name prompt.",
-    cursor: Some(oxpath!("settings", "accounts")),
+    cursor: Some(path!("settings", "accounts")),
     run: |snap, _ctx| {
         // Save the current focus so cancel/commit can restore it.
-        let saved = read_path(snap, &oxpath!("ui", "settings", "focused"))
-            .unwrap_or_else(|| oxpath!("settings", "index"));
+        let saved = read_path(snap, &path!("ui", "settings", "focused"))
+            .unwrap_or_else(|| path!("settings", "index"));
         vec![
             Write {
-                path: oxpath!("ui", "settings", "new_account", "buffer"),
+                path: path!("ui", "settings", "new_account", "buffer"),
                 record: Record::parsed(Value::String(String::new())),
             },
             Write {
-                path: oxpath!("ui", "settings", "new_account", "cursor_saved"),
+                path: path!("ui", "settings", "new_account", "cursor_saved"),
                 record: Record::parsed(path_to_value(&saved)),
             },
             Write {
-                path: oxpath!("ui", "settings", "focused"),
-                record: Record::parsed(path_to_value(&oxpath!(
+                path: path!("ui", "settings", "focused"),
+                record: Record::parsed(path_to_value(&path!(
                     "settings", "_compose_form", "name"
                 ))),
             },
@@ -618,7 +618,7 @@ cursor (for active-field decoration):
 ```rust
 let buffer: Option<String> = read_typed(
     ctx.data,
-    &oxpath!("ui", "settings", "new_account", "buffer"),
+    &path!("ui", "settings", "new_account", "buffer"),
 );
 let header = match buffer {
     Some(b) => inline_name_prompt(&b),
@@ -654,7 +654,7 @@ them.
 fn commit_create(snap: &mut dyn Reader) -> Vec<Write> {
     let buffer: String = read_typed(
         snap,
-        &oxpath!("ui", "settings", "new_account", "buffer"),
+        &path!("ui", "settings", "new_account", "buffer"),
     ).unwrap_or_default();
     let trimmed = buffer.trim();
     if trimmed.is_empty() { return vec![]; }
@@ -665,17 +665,17 @@ fn commit_create(snap: &mut dyn Reader) -> Vec<Write> {
     vec![
         // The actual create — direct write, no sentinel.
         write_typed(
-            &oxpath!("config", "gate", "accounts", name.as_path_component()),
+            &path!("config", "gate", "accounts", name.as_path_component()),
             &AccountConfig::default(),
         ),
         // UI cascade — focus the new row, cascade-clear the compose
         // widget's working state subtree.
         Write {
-            path: oxpath!("ui", "settings", "focused"),
+            path: path!("ui", "settings", "focused"),
             record: Record::parsed(path_to_value(&row_path_for(&name))),
         },
         Write {
-            path: oxpath!("ui", "settings", "new_account"),
+            path: path!("ui", "settings", "new_account"),
             record: Record::parsed(Value::Null),
         },
     ]
@@ -716,26 +716,26 @@ command! {
     id: "accounts.delete_confirm",
     title: "Delete Connection",
     description: "Show the delete confirmation banner.",
-    cursor: Some(oxpath!("settings", "accounts")),
+    cursor: Some(path!("settings", "accounts")),
     run: |snap, _ctx| {
         let Some(name) = read_typed::<String>(
             snap,
-            &oxpath!("ui", "settings", "accounts", "selected"),
+            &path!("ui", "settings", "accounts", "selected"),
         ) else { return vec![]; };
-        let Some(saved) = read_path(snap, &oxpath!("ui", "settings", "focused"))
+        let Some(saved) = read_path(snap, &path!("ui", "settings", "focused"))
             else { return vec![]; };
         vec![
             Write {
-                path: oxpath!("ui", "settings", "pending_delete", "target_account"),
+                path: path!("ui", "settings", "pending_delete", "target_account"),
                 record: Record::parsed(Value::String(name)),
             },
             Write {
-                path: oxpath!("ui", "settings", "pending_delete", "cursor_saved"),
+                path: path!("ui", "settings", "pending_delete", "cursor_saved"),
                 record: Record::parsed(path_to_value(&saved)),
             },
             Write {
-                path: oxpath!("ui", "settings", "focused"),
-                record: Record::parsed(path_to_value(&oxpath!("settings", "_confirm_delete"))),
+                path: path!("ui", "settings", "focused"),
+                record: Record::parsed(path_to_value(&path!("settings", "_confirm_delete"))),
             },
         ]
     },
@@ -747,7 +747,7 @@ command! {
 ```rust
 let target: Option<String> = read_typed(
     ctx.data,
-    &oxpath!("ui", "settings", "pending_delete", "target_account"),
+    &path!("ui", "settings", "pending_delete", "target_account"),
 );
 if let Some(name) = target {
     // Render an inline confirmation banner above the accounts list:
@@ -772,26 +772,26 @@ case in the dispatcher's command bodies.
 ```rust
 fn commit_delete(snap: &mut dyn Reader) -> Vec<Write> {
     let target = read_typed::<String>(
-        snap, &oxpath!("ui", "settings", "pending_delete", "target_account"),
+        snap, &path!("ui", "settings", "pending_delete", "target_account"),
     ).expect("widget invariant: set on open");
     let saved = read_path(
-        snap, &oxpath!("ui", "settings", "pending_delete", "cursor_saved"),
+        snap, &path!("ui", "settings", "pending_delete", "cursor_saved"),
     ).expect("widget invariant: set on open");
     let comp = PathComponent::try_new(&target).expect("validated on entry");
     vec![
         // The actual delete — Null write to the data path.
         Write {
-            path: oxpath!("config", "gate", "accounts", comp),
+            path: path!("config", "gate", "accounts", comp),
             record: Record::parsed(Value::Null),
         },
         // Restore the pre-open cursor.
         Write {
-            path: oxpath!("ui", "settings", "focused"),
+            path: path!("ui", "settings", "focused"),
             record: Record::parsed(path_to_value(&saved)),
         },
         // Cascade-clear the widget's working state subtree.
         Write {
-            path: oxpath!("ui", "settings", "pending_delete"),
+            path: path!("ui", "settings", "pending_delete"),
             record: Record::parsed(Value::Null),
         },
     ]
@@ -799,15 +799,15 @@ fn commit_delete(snap: &mut dyn Reader) -> Vec<Write> {
 
 fn cancel_pending(snap: &mut dyn Reader) -> Vec<Write> {
     let saved = read_path(
-        snap, &oxpath!("ui", "settings", "pending_delete", "cursor_saved"),
+        snap, &path!("ui", "settings", "pending_delete", "cursor_saved"),
     ).expect("widget invariant: set on open");
     vec![
         Write {
-            path: oxpath!("ui", "settings", "focused"),
+            path: path!("ui", "settings", "focused"),
             record: Record::parsed(path_to_value(&saved)),
         },
         Write {
-            path: oxpath!("ui", "settings", "pending_delete"),
+            path: path!("ui", "settings", "pending_delete"),
             record: Record::parsed(Value::Null),
         },
     ]
@@ -831,7 +831,7 @@ use crate::settings::renderers::util::read_typed;
 
 let role: Option<CompletionRole> = read_typed(
     ctx.data,
-    &oxpath!("config", "gate", "completions", "primary"),
+    &path!("config", "gate", "completions", "primary"),
 );
 ```
 
@@ -878,8 +878,8 @@ For `Path` values (which don't implement `Serialize`), use the
 use crate::settings::commands::navigation::path_to_value;
 
 client.write(
-    &oxpath!("ui", "settings", "focused"),
-    Record::parsed(path_to_value(&oxpath!("settings", "appearance"))),
+    &path!("ui", "settings", "focused"),
+    Record::parsed(path_to_value(&path!("settings", "appearance"))),
 ).await?;
 ```
 
@@ -887,7 +887,7 @@ For `Null` writes (delete sentinel, or to fire a subscription):
 
 ```rust
 client.write(
-    &oxpath!("config", "save"),
+    &path!("config", "save"),
     Record::parsed(Value::Null),
 ).await?;
 ```
@@ -904,11 +904,11 @@ use crate::settings::commands::navigation::{
     path_to_value, path_from_value,
 };
 
-let v = path_to_value(&oxpath!("settings", "accounts"));
+let v = path_to_value(&path!("settings", "accounts"));
 // v = Value::Array([Value::String("settings"), Value::String("accounts")])
 
 let p: Option<Path> = path_from_value(&v);
-// p = Some(oxpath!("settings", "accounts"))
+// p = Some(path!("settings", "accounts"))
 ```
 
 Used by:
@@ -937,7 +937,7 @@ Build a `SettingsSnapshot` fixture, render, `assert_eq!` against the
 expected View.
 
 ```rust
-use ox_path::oxpath;
+use structfs_core_store::path;
 use ox_view::{ListItem, View};
 use ratatui::layout::Rect;
 use structfs_serde_store::to_value;
@@ -962,7 +962,7 @@ fn render(snap: &mut SettingsSnapshot) -> View {
 fn appearance_with_dark_theme() {
     let mut snap = SettingsSnapshot::empty();
     snap.insert(
-        &oxpath!("config", "ui", "theme"),
+        &path!("config", "ui", "theme"),
         Value::String("dark".into()),
     );
     let view = render(&mut snap);
@@ -983,7 +983,7 @@ let role = CompletionRole {
     model_id: "claude-sonnet-4-20250514".into(),
 };
 snap.insert(
-    &oxpath!("config", "gate", "completions", "primary"),
+    &path!("config", "gate", "completions", "primary"),
     to_value(&role).unwrap(),
 );
 ```
@@ -1010,12 +1010,12 @@ fn run<C: Command>(cmd: &C, snap: &mut SettingsSnapshot) -> Vec<Write> {
 fn toggle_flips_the_flag() {
     let mut snap = SettingsSnapshot::empty();
     snap.insert(
-        &oxpath!("config", "ui", "something"),
+        &path!("config", "ui", "something"),
         Value::Bool(false),
     );
     let writes = run(&ToggleSomething::new(), &mut snap);
     assert_eq!(writes.len(), 1);
-    assert_eq!(writes[0].path, oxpath!("config", "ui", "something"));
+    assert_eq!(writes[0].path, path!("config", "ui", "something"));
     match &writes[0].record {
         Record::Parsed(Value::Bool(b)) => assert!(b),
         other => panic!("unexpected: {other:?}"),
@@ -1102,7 +1102,7 @@ h.dispatch("P").await;              // set primary
 h.dispatch("Esc").await;           // ascend
 let cursor = h.current_cursor().await;
 let primary: CompletionRole = h.client
-    .read_typed(&oxpath!("config", "gate", "completions", "primary"))
+    .read_typed(&path!("config", "gate", "completions", "primary"))
     .await.expect("read").expect("present");
 ```
 

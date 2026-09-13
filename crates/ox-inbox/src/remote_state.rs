@@ -1277,13 +1277,12 @@ impl InboxStore {
                 create_id: action_create_id,
                 ..
             } = &intent.action
+                && action_create_id != &create_id
             {
-                if action_create_id != &create_id {
-                    return Err(err(
-                        "remote_operation",
-                        "create action id does not match durable conversation intent",
-                    ));
-                }
+                return Err(err(
+                    "remote_operation",
+                    "create action id does not match durable conversation intent",
+                ));
             }
         }
         let inserted = tx.execute(
@@ -1471,26 +1470,26 @@ impl InboxStore {
     }
 
     pub(crate) fn remote_read_path(&self, from: &Path) -> Result<Option<Record>, StoreError> {
-        let segments: Vec<&String> = from.iter().collect();
+        let segments: Vec<&str> = from.iter().collect();
         let conn = self.db.lock().map_err(|error| err("remote_read", error))?;
         let value = match segments.as_slice() {
-            [remote, nodes] if remote.as_str()=="remote" && nodes.as_str()=="nodes" => {
+            [remote, nodes] if *remote=="remote" && *nodes=="nodes" => {
                 let mut statement = conn.prepare(&format!("{NODE_SELECT} ORDER BY created_at, node_id")).map_err(|error| err("remote_read", error))?;
                 let rows = statement.query_map([], node_value).map_err(|error| err("remote_read", error))?;
                 Some(Value::Array(rows.collect::<Result<Vec<_>, _>>().map_err(|error| err("remote_read", error))?))
             }
-            [remote, nodes, id] if remote.as_str()=="remote" && nodes.as_str()=="nodes" => conn.query_row(
+            [remote, nodes, id] if *remote=="remote" && *nodes=="nodes" => conn.query_row(
                 &format!("{NODE_SELECT} WHERE node_id=?1"), [decode_id(id)?], node_value,
             ).optional().map_err(|error| err("remote_read", error))?,
-            [remote, conversations] if remote.as_str()=="remote" && conversations.as_str()=="conversations" => {
+            [remote, conversations] if *remote=="remote" && *conversations=="conversations" => {
                 let mut statement = conn.prepare(&format!("{CONVERSATION_SELECT} ORDER BY created_at, conversation_id")).map_err(|error| err("remote_read", error))?;
                 let rows = statement.query_map([], conversation_value).map_err(|error| err("remote_read", error))?;
                 Some(Value::Array(rows.collect::<Result<Vec<_>, _>>().map_err(|error| err("remote_read", error))?))
             }
-            [remote, conversations, id] if remote.as_str()=="remote" && conversations.as_str()=="conversations" => conn.query_row(
+            [remote, conversations, id] if *remote=="remote" && *conversations=="conversations" => conn.query_row(
                 &format!("{CONVERSATION_SELECT} WHERE conversation_id=?1"), [decode_id(id)?], conversation_value,
             ).optional().map_err(|error| err("remote_read", error))?,
-            [remote, conversations, id, ledger, cursor] if remote.as_str()=="remote" && conversations.as_str()=="conversations" && ledger.as_str()=="ledger" && cursor.as_str()=="cursor" => {
+            [remote, conversations, id, ledger, cursor] if *remote=="remote" && *conversations=="conversations" && *ledger=="ledger" && *cursor=="cursor" => {
                 let id = decode_id(id)?;
                 conn.query_row("SELECT last_seq, last_hash FROM remote_ledger_cursors WHERE conversation_id=?1", [id], |row| {
                     let mut map=std::collections::BTreeMap::new();
@@ -1499,7 +1498,7 @@ impl InboxStore {
                     Ok(Value::Map(map))
                 }).optional().map_err(|error| err("remote_read", error))?
             }
-            [remote, conversations, id, ledger, from_part, seq] if remote.as_str()=="remote" && conversations.as_str()=="conversations" && ledger.as_str()=="ledger" && from_part.as_str()=="from" => {
+            [remote, conversations, id, ledger, from_part, seq] if *remote=="remote" && *conversations=="conversations" && *ledger=="ledger" && *from_part=="from" => {
                 let id=decode_id(id)?;
                 let seq: i64=seq.parse().map_err(|error| err("remote_read", error))?;
                 if seq < 0 { return Err(err("remote_read", "ledger from cursor must be non-negative")); }
@@ -1512,12 +1511,12 @@ impl InboxStore {
                 let entries=rows.collect::<Result<Vec<_>,_>>().map_err(|error| err("remote_read", error))?;
                 Some(structfs_serde_store::to_value(&entries).map_err(|error| err("remote_read", error))?)
             }
-            [remote, operations, pending] if remote.as_str()=="remote" && operations.as_str()=="operations" && pending.as_str()=="pending" => {
+            [remote, operations, pending] if *remote=="remote" && *operations=="operations" && *pending=="pending" => {
                 let mut statement=conn.prepare("SELECT operation_id, operation_kind, node_id, node_attempt_id, conversation_id, request_hash, intent_json, state, result_json, lease_owner, lease_until, lease_epoch FROM remote_operations WHERE state='pending' OR (state='running' AND (lease_until IS NULL OR lease_until<=?1)) ORDER BY created_at, operation_id").map_err(|error| err("remote_read", error))?;
                 let rows=statement.query_map([now_epoch()], operation_value).map_err(|error| err("remote_read", error))?;
                 Some(Value::Array(rows.collect::<Result<Vec<_>,_>>().map_err(|error| err("remote_read", error))?))
             }
-            [remote, operations, id] if remote.as_str()=="remote" && operations.as_str()=="operations" => conn.query_row(
+            [remote, operations, id] if *remote=="remote" && *operations=="operations" => conn.query_row(
                 "SELECT operation_id, operation_kind, node_id, node_attempt_id, conversation_id, request_hash, intent_json, state, result_json, lease_owner, lease_until, lease_epoch FROM remote_operations WHERE operation_id=?1",
                 [decode_id(id)?], operation_value,
             ).optional().map_err(|error| err("remote_read", error))?,
@@ -1531,19 +1530,17 @@ impl InboxStore {
         to: &Path,
         data: &Record,
     ) -> Result<Option<Path>, StoreError> {
-        let segments: Vec<&String> = to.iter().collect();
+        let segments: Vec<&str> = to.iter().collect();
         let value = data
             .as_value()
             .cloned()
             .ok_or_else(|| err("remote_write", "expected parsed record"))?;
         let path = match segments.as_slice() {
-            [remote, nodes] if remote.as_str() == "remote" && nodes.as_str() == "nodes" => {
+            [remote, nodes] if *remote == "remote" && *nodes == "nodes" => {
                 self.put_remote_node(&decode(value, "remote_node")?)?
             }
             [remote, nodes, id, attempt]
-                if remote.as_str() == "remote"
-                    && nodes.as_str() == "nodes"
-                    && attempt.as_str() == "attempt" =>
+                if *remote == "remote" && *nodes == "nodes" && *attempt == "attempt" =>
             {
                 self.replace_remote_node_attempt(
                     &decode_id(id)?,
@@ -1551,31 +1548,25 @@ impl InboxStore {
                 )?
             }
             [remote, nodes, id, state]
-                if remote.as_str() == "remote"
-                    && nodes.as_str() == "nodes"
-                    && state.as_str() == "state" =>
+                if *remote == "remote" && *nodes == "nodes" && *state == "state" =>
             {
                 self.update_remote_node(&decode_id(id)?, &decode(value, "remote_node_update")?)?
             }
             [remote, nodes, id, observation]
-                if remote.as_str() == "remote"
-                    && nodes.as_str() == "nodes"
-                    && observation.as_str() == "observation" =>
+                if *remote == "remote" && *nodes == "nodes" && *observation == "observation" =>
             {
                 self.observe_remote_node(
                     &decode_id(id)?,
                     &decode(value, "remote_node_observation")?,
                 )?
             }
-            [remote, conversations]
-                if remote.as_str() == "remote" && conversations.as_str() == "conversations" =>
-            {
+            [remote, conversations] if *remote == "remote" && *conversations == "conversations" => {
                 self.put_remote_conversation(&decode(value, "remote_conversation")?)?
             }
             [remote, conversations, id, state]
-                if remote.as_str() == "remote"
-                    && conversations.as_str() == "conversations"
-                    && state.as_str() == "state" =>
+                if *remote == "remote"
+                    && *conversations == "conversations"
+                    && *state == "state" =>
             {
                 self.update_remote_conversation(
                     &decode_id(id)?,
@@ -1583,21 +1574,17 @@ impl InboxStore {
                 )?
             }
             [remote, conversations, id, ledger]
-                if remote.as_str() == "remote"
-                    && conversations.as_str() == "conversations"
-                    && ledger.as_str() == "ledger" =>
+                if *remote == "remote"
+                    && *conversations == "conversations"
+                    && *ledger == "ledger" =>
             {
                 self.commit_cached_ledger(&decode_id(id)?, &decode(value, "remote_ledger")?)?
             }
-            [remote, operations]
-                if remote.as_str() == "remote" && operations.as_str() == "operations" =>
-            {
+            [remote, operations] if *remote == "remote" && *operations == "operations" => {
                 self.accept_remote_operation(&decode(value, "remote_operation")?)?
             }
             [remote, operations, id, state]
-                if remote.as_str() == "remote"
-                    && operations.as_str() == "operations"
-                    && state.as_str() == "state" =>
+                if *remote == "remote" && *operations == "operations" && *state == "state" =>
             {
                 self.update_remote_operation(
                     &decode_id(id)?,
@@ -1605,9 +1592,7 @@ impl InboxStore {
                 )?
             }
             [remote, operations, id, lease]
-                if remote.as_str() == "remote"
-                    && operations.as_str() == "operations"
-                    && lease.as_str() == "lease" =>
+                if *remote == "remote" && *operations == "operations" && *lease == "lease" =>
             {
                 self.claim_remote_operation(
                     &decode_id(id)?,
@@ -1615,10 +1600,10 @@ impl InboxStore {
                 )?
             }
             [remote, operations, id, lease, release]
-                if remote.as_str() == "remote"
-                    && operations.as_str() == "operations"
-                    && lease.as_str() == "lease"
-                    && release.as_str() == "release" =>
+                if *remote == "remote"
+                    && *operations == "operations"
+                    && *lease == "lease"
+                    && *release == "release" =>
             {
                 self.release_remote_operation(
                     &decode_id(id)?,
@@ -2249,7 +2234,7 @@ mod tests {
                 }),
             )
             .unwrap();
-        assert_eq!(first.iter().last().map(String::as_str), Some("1"));
+        assert_eq!(first.iter().last(), Some("1"));
         store
             .db
             .lock()
@@ -2268,7 +2253,7 @@ mod tests {
                 }),
             )
             .unwrap();
-        assert_eq!(second.iter().last().map(String::as_str), Some("2"));
+        assert_eq!(second.iter().last(), Some("2"));
 
         let release_path = Path::parse(&format!("{lease_path}/release")).unwrap();
         assert!(

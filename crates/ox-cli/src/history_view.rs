@@ -622,10 +622,10 @@ fn render_content(
 /// Try to parse as JSON and pretty-print; return original text if not JSON.
 fn try_pretty_json(text: &str) -> String {
     // Try parsing as JSON value for pretty-printing
-    if let Ok(val) = serde_json::from_str::<serde_json::Value>(text) {
-        if let Ok(pretty) = serde_json::to_string_pretty(&val) {
-            return pretty;
-        }
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(text)
+        && let Ok(pretty) = serde_json::to_string_pretty(&val)
+    {
+        return pretty;
     }
     text.to_string()
 }

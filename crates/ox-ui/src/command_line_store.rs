@@ -36,7 +36,7 @@
 
 use std::collections::BTreeMap;
 
-use ox_path::oxpath;
+use structfs_core_store::path;
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer};
 
 use crate::text_input_store::TextInputStore;
@@ -103,13 +103,13 @@ impl CommandLineStore {
     fn do_open(&mut self) -> Result<Path, StoreError> {
         self.open = true;
         self.buffer.clear();
-        Ok(oxpath!("open"))
+        Ok(path!("open"))
     }
 
     fn do_close(&mut self) -> Result<Path, StoreError> {
         self.open = false;
         self.buffer.clear();
-        Ok(oxpath!("open"))
+        Ok(path!("open"))
     }
 
     fn do_submit(&mut self) -> Result<Path, StoreError> {
@@ -118,17 +118,17 @@ impl CommandLineStore {
             // Empty submit: vim behavior — silently close, no pending.
             self.open = false;
             self.buffer.clear();
-            return Ok(oxpath!("open"));
+            return Ok(path!("open"));
         }
         self.pending_submit = Some(content);
         self.open = false;
         self.buffer.clear();
-        Ok(oxpath!("pending_submit"))
+        Ok(path!("pending_submit"))
     }
 
     fn do_clear_pending_submit(&mut self) -> Result<Path, StoreError> {
         self.pending_submit = None;
-        Ok(oxpath!("pending_submit"))
+        Ok(path!("pending_submit"))
     }
 }
 
@@ -147,7 +147,7 @@ impl Reader for CommandLineStore {
         if from.is_empty() {
             return Ok(Some(Record::parsed(self.snapshot())));
         }
-        match from[0].as_str() {
+        match &from[0] {
             "open" => Ok(Some(Record::parsed(Value::Bool(self.open)))),
             "content" | "cursor" => self.buffer.read(from),
             "pending_submit" => Ok(Some(Record::parsed(
@@ -174,7 +174,7 @@ impl Writer for CommandLineStore {
                 "write to root not supported",
             ));
         }
-        match to[0].as_str() {
+        match &to[0] {
             "open" => self.do_open(),
             "close" => self.do_close(),
             "submit" => self.do_submit(),

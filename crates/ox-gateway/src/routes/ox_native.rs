@@ -36,8 +36,13 @@ async fn post_completions(
     // the inbound dialect, and this route is the "ox" dialect.
     req.extra
         .insert("ox_inbound_dialect".into(), serde_json::json!("ox"));
-    let handle_rel = match client
-        .write_typed(&path!("gateway/completions"), &req)
+    let record = match structfs_serde_store::to_value(&req) {
+        Ok(value) => structfs_core_store::Record::parsed(value),
+        Err(error) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response();
+        }
+    };
+    let gc = match handle::InflightGc::open(client.clone(), path!("gateway/completions"), record)
         .await
     {
         Ok(p) => p,
@@ -45,10 +50,10 @@ async fn post_completions(
             return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
         }
     };
-    let handle_path = path!("gateway/completions").join(&handle_rel);
+    let handle_path = gc.path().clone();
 
     if streaming {
-        ox_native_sse_response(client, handle_path).into_response()
+        ox_native_sse_response(client, handle_path, gc).into_response()
     } else {
         match handle::buffer_response(client, handle_path).await {
             Ok((status, events)) => Json(serde_json::json!({
@@ -66,8 +71,9 @@ async fn post_completions(
 fn ox_native_sse_response(
     client: ClientHandle,
     handle_path: structfs_core_store::Path,
+    gc: handle::InflightGc,
 ) -> Response {
-    let stream = ox_native_sse_stream(client, handle_path);
+    let stream = ox_native_sse_stream(client, handle_path, gc);
     let body = axum::body::Body::from_stream(stream);
     Response::builder()
         .status(StatusCode::OK)
@@ -80,11 +86,12 @@ fn ox_native_sse_response(
 fn ox_native_sse_stream(
     client: ClientHandle,
     handle_path: structfs_core_store::Path,
+    gc: handle::InflightGc,
 ) -> impl Stream<Item = Result<Bytes, Infallible>> + Send + 'static {
     async_stream::stream! {
         // Same Drop-guard as the dialect routes: axum drops this stream on
         // client disconnect, so GC must not rely on code after the loop.
-        let gc = handle::InflightGc::new(client.clone(), handle_path.clone());
+        let gc = gc;
         let mut next: usize = 0;
         loop {
             let events_path = handle_path.join(&handle::events_from_subpath(next));

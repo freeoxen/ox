@@ -220,9 +220,9 @@ impl CompletionModule {
 impl Reader for CompletionModule {
     fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
         // complete/{account}/response → return stored stream events as JSON array
-        if from.len() >= 2 && from[0] == "complete" {
-            let account = from[1].as_str();
-            if from.len() >= 3 && from[2] == "response" {
+        if from.len() >= 2 && &from[0] == "complete" {
+            let account = &from[1];
+            if from.len() >= 3 && &from[2] == "response" {
                 return Ok(self.results.get(account).map(|r| {
                     let json_events: Vec<serde_json::Value> =
                         r.events.iter().map(stream_event_to_json).collect();
@@ -266,8 +266,8 @@ impl Reader for CompletionModule {
 impl Writer for CompletionModule {
     fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
         // complete/{account} → execute completion via transport
-        if to.len() >= 2 && to[0] == "complete" {
-            let account = to[1].clone();
+        if to.len() >= 2 && &to[0] == "complete" {
+            let account = to[1].to_string();
 
             // The written data must be a CompletionRequest serialized as a Value
             let value = data.as_value().ok_or_else(|| {
@@ -277,7 +277,7 @@ impl Writer for CompletionModule {
                     "expected Parsed record for completion request",
                 )
             })?;
-            let json = structfs_serde_store::value_to_json(value.clone());
+            let json = structfs_serde_store::value_to_json(value.clone())?;
             let request: CompletionRequest = serde_json::from_value(json).map_err(|e| {
                 StoreError::store(
                     "CompletionModule",
@@ -563,7 +563,7 @@ mod tests {
         let path = structfs_core_store::path!("complete/myaccount/response");
         let record = module.read(&path).unwrap().unwrap();
         let value = record.as_value().unwrap();
-        let json = structfs_serde_store::value_to_json(value.clone());
+        let json = structfs_serde_store::value_to_json(value.clone()).unwrap();
         let arr = json.as_array().expect("expected JSON array of events");
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["type"], "text_delta");

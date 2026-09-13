@@ -33,13 +33,12 @@ ox-types = 0
 
 # Cross-compiled / untestable via llvm-cov
 ox-wasm = 0
+# Executed by gateway parity tests as an uninstrumented wasm32 guest.
+ox-gateway-wasm = 0
 ox-web = 0
 ox-core = 0
 ox-dev-server = 0
 ox-emscripten = 0
-
-# Proc macro — runs at compile time, not during tests
-ox-path = 0
 
 [typescript]
 # Longest matching prefix wins.

@@ -4,7 +4,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::time::Duration;
 
-use ox_broker::async_store::{AsyncReader, AsyncWriter};
+use structfs_core_store::{DetachedReader, DetachedWriter};
+
 use ox_executor::test_support::{FakeTransport, factory_for};
 use ox_executor::{ExecutionCore, ExecutorConfig, PolicyProfile, ThreadExecutionConfig};
 use ox_inbox::thread_dir::ContextFile;
@@ -113,7 +114,7 @@ async fn worker_adapter(root: &Path) -> (String, WorkerService) {
     .unwrap();
     let mut store = service.public_store.clone();
     let result = store
-        .write(
+        .write_detached(
             &path!("conversations"),
             Record::parsed(
                 structfs_serde_store::to_value(&CreateEnvelope {
@@ -127,7 +128,7 @@ async fn worker_adapter(root: &Path) -> (String, WorkerService) {
         )
         .await
         .unwrap();
-    let thread_id = result.iter().nth(1).unwrap().clone();
+    let thread_id = result.iter().nth(1).unwrap().to_string();
     wait_for_turn(root, &thread_id).await;
     (thread_id, service)
 }
@@ -295,7 +296,7 @@ async fn approval_and_denied_tool_result_have_adapter_parity() {
     .unwrap();
     let mut store = service.public_store.clone();
     let created = store
-        .write(
+        .write_detached(
             &path!("conversations"),
             Record::parsed(
                 structfs_serde_store::to_value(&CreateEnvelope {
@@ -309,13 +310,14 @@ async fn approval_and_denied_tool_result_have_adapter_parity() {
         )
         .await
         .unwrap();
-    let remote_id = created.iter().nth(1).unwrap().clone();
+    let remote_id = created.iter().nth(1).unwrap().to_string();
     let pending_path =
         StorePath::parse(&format!("conversations/{remote_id}/approvals/pending")).unwrap();
     let approval_id = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            let pending = store.read(&pending_path).await.unwrap().unwrap();
-            let pending = structfs_serde_store::value_to_json(pending.as_value().unwrap().clone());
+            let pending = store.read_detached(&pending_path).await.unwrap().unwrap();
+            let pending =
+                structfs_serde_store::value_to_json(pending.as_value().unwrap().clone()).unwrap();
             if let Some(id) = pending["approval_id"].as_str() {
                 return id.to_string();
             }
@@ -329,7 +331,7 @@ async fn approval_and_denied_tool_result_have_adapter_parity() {
     ))
     .unwrap();
     store
-        .write(
+        .write_detached(
             &response_path,
             Record::parsed(
                 structfs_serde_store::to_value(&ox_types::ApprovalResponse {
@@ -390,7 +392,7 @@ async fn public_records_and_thread_ledgers_do_not_cross_contaminate_canaries() {
         ("leak-create-b", "thread-b", "CANARY_B_a789d2"),
     ] {
         let result = store
-            .write(
+            .write_detached(
                 &path!("conversations"),
                 Record::parsed(
                     structfs_serde_store::to_value(&CreateEnvelope {
@@ -404,7 +406,7 @@ async fn public_records_and_thread_ledgers_do_not_cross_contaminate_canaries() {
             )
             .await
             .unwrap();
-        ids.push(result.iter().nth(1).unwrap().clone());
+        ids.push(result.iter().nth(1).unwrap().to_string());
     }
     for id in &ids {
         wait_for_turn(&root, id).await;
@@ -421,7 +423,7 @@ async fn public_records_and_thread_ledgers_do_not_cross_contaminate_canaries() {
 
     for public_path in ["health", "capabilities", "capacity", "conversations"] {
         let record = store
-            .read(&StorePath::parse(public_path).unwrap())
+            .read_detached(&StorePath::parse(public_path).unwrap())
             .await
             .unwrap();
         let encoded = format!("{record:?}");
@@ -457,7 +459,7 @@ async fn ledger_cursor_and_result_project_the_bounded_durable_chain() {
     .unwrap();
     let mut store = service.public_store.clone();
     let created = store
-        .write(
+        .write_detached(
             &path!("conversations"),
             Record::parsed(
                 structfs_serde_store::to_value(&CreateEnvelope {
@@ -471,25 +473,25 @@ async fn ledger_cursor_and_result_project_the_bounded_durable_chain() {
         )
         .await
         .unwrap();
-    let thread_id = created.iter().nth(1).unwrap().clone();
+    let thread_id = created.iter().nth(1).unwrap().to_string();
     wait_for_turn(&root, &thread_id).await;
 
     let first_path = StorePath::parse(&format!("conversations/{thread_id}/ledger/from/0")).unwrap();
-    let first = store.read(&first_path).await.unwrap().unwrap();
-    let first = structfs_serde_store::value_to_json(first.as_value().unwrap().clone());
+    let first = store.read_detached(&first_path).await.unwrap().unwrap();
+    let first = structfs_serde_store::value_to_json(first.as_value().unwrap().clone()).unwrap();
     assert_eq!(first["entries"].as_array().unwrap().len(), 2);
     assert_eq!(first["next_seq"], 2);
     assert_eq!(first["has_more"], true);
 
     let second_path =
         StorePath::parse(&format!("conversations/{thread_id}/ledger/from/2")).unwrap();
-    let second = store.read(&second_path).await.unwrap().unwrap();
-    let second = structfs_serde_store::value_to_json(second.as_value().unwrap().clone());
+    let second = store.read_detached(&second_path).await.unwrap().unwrap();
+    let second = structfs_serde_store::value_to_json(second.as_value().unwrap().clone()).unwrap();
     assert_eq!(second["entries"][0]["seq"], 2);
 
     let result_path = StorePath::parse(&format!("conversations/{thread_id}/result")).unwrap();
-    let result = store.read(&result_path).await.unwrap().unwrap();
-    let result = structfs_serde_store::value_to_json(result.as_value().unwrap().clone());
+    let result = store.read_detached(&result_path).await.unwrap().unwrap();
+    let result = structfs_serde_store::value_to_json(result.as_value().unwrap().clone()).unwrap();
     assert_eq!(result["projection"], "durable_ledger_tail");
     assert!(result["ledger_tail"].as_array().unwrap().len() <= 2);
     assert!(result["next_seq"].as_u64().unwrap() > 2);
@@ -498,33 +500,39 @@ async fn ledger_cursor_and_result_project_the_bounded_durable_chain() {
         StorePath::parse(&format!("conversations/{thread_id}/ledger/from/notseq")).unwrap();
     assert!(
         store
-            .read(&invalid)
+            .read_detached(&invalid)
             .await
             .unwrap_err()
             .to_string()
             .contains("invalid sequence")
     );
     let missing = StorePath::parse("conversations/t_missing/ledger/from/0").unwrap();
-    assert!(store.read(&missing).await.unwrap().is_none());
+    assert!(store.read_detached(&missing).await.unwrap().is_none());
     let missing_result = StorePath::parse("conversations/t_missing/result").unwrap();
-    assert!(store.read(&missing_result).await.unwrap().is_none());
+    assert!(
+        store
+            .read_detached(&missing_result)
+            .await
+            .unwrap()
+            .is_none()
+    );
 
     std::fs::write(
         root.join("threads").join(&thread_id).join("ledger.jsonl"),
         b"malformed-interior\nmalformed-tail\n",
     )
     .unwrap();
-    assert!(store.read(&first_path).await.is_err());
-    assert!(store.read(&result_path).await.is_err());
+    assert!(store.read_detached(&first_path).await.is_err());
+    assert!(store.read_detached(&result_path).await.is_err());
 
     let permit = public_test_support::hold_cursor(&store).await;
-    let overloaded_ledger = store.read(&first_path).await.unwrap_err();
+    let overloaded_ledger = store.read_detached(&first_path).await.unwrap_err();
     assert!(
         overloaded_ledger
             .to_string()
             .contains("cursor admission is full")
     );
-    let overloaded_result = store.read(&result_path).await.unwrap_err();
+    let overloaded_result = store.read_detached(&result_path).await.unwrap_err();
     assert!(
         overloaded_result
             .to_string()

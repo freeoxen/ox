@@ -17,9 +17,9 @@ use std::time::Duration;
 
 use crossterm::event::{self, Event};
 use ox_broker::{BrokerStore, ClientHandle};
-use ox_path::oxpath;
 use parking_lot::Mutex;
 use ratatui::DefaultTerminal;
+use structfs_core_store::path;
 use structfs_core_store::{Path, Record, Value};
 
 use crate::key_chord_canonical::parse_key_str;
@@ -64,12 +64,12 @@ pub async fn run_horns_settings_loop(
         if event::poll(Duration::from_millis(50))? {
             match event::read()? {
                 Event::Key(key) => {
-                    if let Some(key_str) = encode_key(key.modifiers, key.code) {
-                        if let Some(chord) = parse_key_str(&key_str) {
-                            let _ = client
-                                .write_typed(&crate::settings::input_key_path(), &chord)
-                                .await;
-                        }
+                    if let Some(key_str) = encode_key(key.modifiers, key.code)
+                        && let Some(chord) = parse_key_str(&key_str)
+                    {
+                        let _ = client
+                            .write_typed(&crate::settings::input_key_path(), &chord)
+                            .await;
                     }
                 }
                 Event::Resize(w, h) => {
@@ -83,7 +83,7 @@ pub async fn run_horns_settings_loop(
         }
 
         // Exit signal — `nav.ascend` writes this at the index page.
-        let exit_path: Path = oxpath!("ui", "settings", "_request_exit");
+        let exit_path: Path = path!("ui", "settings", "_request_exit");
         let want_exit = client
             .read_typed::<bool>(&exit_path)
             .await
@@ -98,7 +98,7 @@ pub async fn run_horns_settings_loop(
             // back into the horns loop.
             use ox_types::{GlobalCommand, UiCommand};
             let _ = client
-                .write_typed(&oxpath!("ui"), &UiCommand::Global(GlobalCommand::GoToInbox))
+                .write_typed(&path!("ui"), &UiCommand::Global(GlobalCommand::GoToInbox))
                 .await;
             break HornsExit::ToLegacy;
         }
@@ -129,7 +129,7 @@ async fn seed_initial_state(
             .write(
                 &focus_path,
                 Record::parsed(crate::settings::commands::navigation::path_to_value(
-                    &oxpath!("settings", "index"),
+                    &path!("settings", "index"),
                 )),
             )
             .await;

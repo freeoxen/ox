@@ -909,10 +909,10 @@ impl UiStateStore {
             }
             SettingsCommand::EditFocusPrev => {
                 let s = self.settings_state()?;
-                if let Some(ref mut e) = s.editing {
-                    if e.focus > 0 {
-                        e.focus -= 1;
-                    }
+                if let Some(ref mut e) = s.editing
+                    && e.focus > 0
+                {
+                    e.focus -= 1;
                 }
                 Ok(path!("editing"))
             }
@@ -932,10 +932,10 @@ impl UiStateStore {
             }
             SettingsCommand::EditDialectPrev => {
                 let s = self.settings_state()?;
-                if let Some(ref mut e) = s.editing {
-                    if e.dialect > 0 {
-                        e.dialect -= 1;
-                    }
+                if let Some(ref mut e) = s.editing
+                    && e.dialect > 0
+                {
+                    e.dialect -= 1;
                 }
                 Ok(path!("editing"))
             }
@@ -1398,11 +1398,7 @@ fn strip_first_component(p: &Path) -> Path {
 
 impl Reader for UiStore {
     fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
-        let key = if from.is_empty() {
-            ""
-        } else {
-            from[0].as_str()
-        };
+        let key = if from.is_empty() { "" } else { &from[0] };
         // Delegate command_line/* reads to the embedded sub-store.
         if key == "command_line" {
             let sub = strip_first_component(from);
@@ -1433,7 +1429,7 @@ impl Reader for UiStore {
             "scroll_max" => self.state.scroll_max_value(),
             "viewport_height" => self.state.viewport_height_value(),
             "input" => {
-                let sub = if from.len() > 1 { from[1].as_str() } else { "" };
+                let sub = if from.len() > 1 { &from[1] } else { "" };
                 self.state.input_value(sub)
             }
             "cursor" => self.state.input_value("cursor"),
@@ -1455,7 +1451,7 @@ impl Reader for UiStore {
 impl Writer for UiStore {
     fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
         // Delegate command_line/* writes to the embedded sub-store.
-        if !to.is_empty() && to[0] == "command_line" {
+        if !to.is_empty() && &to[0] == "command_line" {
             let sub = strip_first_component(to);
             return self.state.command_line.write(&sub, data);
         }
@@ -1464,14 +1460,14 @@ impl Writer for UiStore {
         // no verb matching. Without this arm a write to e.g.
         // `ui/settings/focused` falls into the verb-resolution path
         // below, which has no `settings` arm and rejects it.
-        if !to.is_empty() && to[0] == "settings" {
+        if !to.is_empty() && &to[0] == "settings" {
             let sub = strip_first_component(to);
             return self.state.settings.write(&sub, data);
         }
         // Delegate input/* writes to the active editor
-        if !to.is_empty() && to[0] == "input" {
+        if !to.is_empty() && &to[0] == "input" {
             let action = if to.len() > 1 {
-                to[1].as_str()
+                &to[1]
             } else {
                 return Err(StoreError::store(
                     "ui",
@@ -1567,7 +1563,7 @@ impl Writer for UiStore {
                 return Ok(path!("pending_action"));
             }
             // Modal and dialog commands — all route through PendingAction
-            let pending = match cmd_name.as_str() {
+            let pending = match cmd_name {
                 "toggle_shortcuts" => Some(PendingAction::ToggleShortcuts),
                 "dismiss_shortcuts" => Some(PendingAction::DismissShortcuts),
                 "dismiss_usage" => Some(PendingAction::DismissUsage),
@@ -1686,7 +1682,7 @@ mod tests {
     }
 
     fn read_val(store: &mut UiStore, key: &str) -> Value {
-        let p = path!(key);
+        let p = Path::parse(key).unwrap();
         store.read(&p).unwrap().unwrap().as_value().unwrap().clone()
     }
 

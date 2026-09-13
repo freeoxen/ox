@@ -162,10 +162,10 @@ impl InboxStore {
         let cache_key = format!("{scope}:{query}");
 
         // Dedup: if same query, return existing handle
-        if let Some(ref cached) = self.last_search_result {
-            if cached.cache_key == cache_key {
-                return Ok(Path::parse(&format!("search/results/{}", cached.handle)).unwrap());
-            }
+        if let Some(ref cached) = self.last_search_result
+            && cached.cache_key == cache_key
+        {
+            return Ok(Path::parse(&format!("search/results/{}", cached.handle)).unwrap());
         }
 
         let results = {
@@ -201,21 +201,15 @@ impl InboxStore {
 
 impl Writer for InboxStore {
     fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
-        let segments: Vec<&String> = to.iter().collect();
+        let segments: Vec<&str> = to.iter().collect();
 
-        if segments
-            .first()
-            .is_some_and(|part| part.as_str() == "worker")
-        {
+        if segments.first().is_some_and(|part| *part == "worker") {
             return self
                 .worker_write_path(to, &data)?
                 .ok_or_else(|| StoreError::NoRoute { path: to.clone() });
         }
 
-        if segments
-            .first()
-            .is_some_and(|part| part.as_str() == "remote")
-        {
+        if segments.first().is_some_and(|part| *part == "remote") {
             return self
                 .remote_write_path(to, &data)?
                 .ok_or_else(|| StoreError::NoRoute { path: to.clone() });
@@ -224,7 +218,7 @@ impl Writer for InboxStore {
         // Search write paths — handled here because they need &mut self for caching
         match segments.as_slice() {
             // Record a user input
-            [root] if root.as_str() == "inputs" => {
+            [root] if *root == "inputs" => {
                 let map = match data.as_value() {
                     Some(Value::Map(m)) => m,
                     _ => {
@@ -263,22 +257,16 @@ impl Writer for InboxStore {
             }
             // Unified search: write query document, get handle back
             // Accepts: search (unified), search/inputs (legacy), search/messages (legacy)
-            [a] if a.as_str() == "search" => {
+            [a] if *a == "search" => {
                 return self.execute_search(data, None);
             }
-            [a, b]
-                if a.as_str() == "search"
-                    && (b.as_str() == "inputs" || b.as_str() == "messages") =>
-            {
+            [a, b] if *a == "search" && (*b == "inputs" || *b == "messages") => {
                 // Legacy path: translate to unified format
-                return self.execute_search(data, Some(b.as_str()));
+                return self.execute_search(data, Some(*b));
             }
             // Trigger ledger indexing for a thread
-            [a, thread_id] if a.as_str() == "index" => {
-                let ledger_path = self
-                    .threads_dir
-                    .join(thread_id.as_str())
-                    .join("ledger.jsonl");
+            [a, thread_id] if *a == "index" => {
+                let ledger_path = self.threads_dir.join(*thread_id).join("ledger.jsonl");
                 if ledger_path.exists() {
                     let conn = self
                         .db
@@ -349,7 +337,7 @@ mod tests {
             .unwrap();
         assert_eq!(path.len(), 2);
         assert_eq!(path.iter().next().unwrap(), "threads");
-        let thread_id = path.iter().nth(1).unwrap().clone();
+        let thread_id = path.iter().nth(1).unwrap().to_string();
         let db = store.db.lock().unwrap();
         let title: String = db
             .query_row(
@@ -379,7 +367,7 @@ mod tests {
                 Record::parsed(Value::Map(map)),
             )
             .unwrap();
-        let thread_id = path.iter().nth(1).unwrap().clone();
+        let thread_id = path.iter().nth(1).unwrap().to_string();
         let db = store.db.lock().unwrap();
         let labels: Vec<String> = db
             .prepare("SELECT label FROM labels WHERE thread_id = ?1 ORDER BY label")
@@ -402,7 +390,7 @@ mod tests {
                 Record::parsed(Value::Map(map)),
             )
             .unwrap();
-        let parent_id = path.iter().nth(1).unwrap().clone();
+        let parent_id = path.iter().nth(1).unwrap().to_string();
 
         let mut map = std::collections::BTreeMap::new();
         map.insert("title".to_string(), Value::String("Child".to_string()));
@@ -413,7 +401,7 @@ mod tests {
                 Record::parsed(Value::Map(map)),
             )
             .unwrap();
-        let child_id = child_path.iter().nth(1).unwrap().clone();
+        let child_id = child_path.iter().nth(1).unwrap().to_string();
 
         let db = store.db.lock().unwrap();
         let found_parent: String = db
@@ -437,7 +425,7 @@ mod tests {
                 Record::parsed(Value::Map(map)),
             )
             .unwrap();
-        let id = path.iter().nth(1).unwrap().clone();
+        let id = path.iter().nth(1).unwrap().to_string();
 
         let mut update = std::collections::BTreeMap::new();
         update.insert("title".to_string(), Value::String("Updated".to_string()));
@@ -475,7 +463,7 @@ mod tests {
                 Record::parsed(Value::Map(map)),
             )
             .unwrap();
-        let id = path.iter().nth(1).unwrap().clone();
+        let id = path.iter().nth(1).unwrap().to_string();
 
         let mut update = std::collections::BTreeMap::new();
         update.insert(
@@ -502,7 +490,7 @@ mod tests {
                 Record::parsed(Value::Map(map)),
             )
             .unwrap();
-        let id = path.iter().nth(1).unwrap().clone();
+        let id = path.iter().nth(1).unwrap().to_string();
 
         let labels_path = Path::parse(&format!("threads/{}/labels", id)).unwrap();
         store
@@ -560,7 +548,7 @@ mod tests {
                 Record::parsed(Value::Map(map)),
             )
             .unwrap();
-        let id = path.iter().nth(1).unwrap().clone();
+        let id = path.iter().nth(1).unwrap().to_string();
         let read_path = Path::parse(&format!("threads/{}", id)).unwrap();
         let result = store.read(&read_path).unwrap().unwrap();
         let value = result.as_value().unwrap();
@@ -586,7 +574,7 @@ mod tests {
                 Record::parsed(Value::Map(map)),
             )
             .unwrap();
-        let id = path.iter().nth(1).unwrap().clone();
+        let id = path.iter().nth(1).unwrap().to_string();
         let mut update = std::collections::BTreeMap::new();
         update.insert("inbox_state".to_string(), Value::String("done".to_string()));
         store
@@ -688,7 +676,7 @@ mod tests {
                 Record::parsed(Value::Map(map)),
             )
             .unwrap();
-        let id = path.iter().nth(1).unwrap().clone();
+        let id = path.iter().nth(1).unwrap().to_string();
         let mut update = std::collections::BTreeMap::new();
         update.insert(
             "thread_state".to_string(),
@@ -753,7 +741,7 @@ mod tests {
                 Record::parsed(Value::Map(map)),
             )
             .unwrap();
-        let parent_id = path.iter().nth(1).unwrap().clone();
+        let parent_id = path.iter().nth(1).unwrap().to_string();
         for title in ["Child A", "Child B"] {
             let mut map = std::collections::BTreeMap::new();
             map.insert("title".to_string(), Value::String(title.to_string()));
@@ -784,7 +772,7 @@ mod tests {
                 Record::parsed(Value::Map(map)),
             )
             .unwrap();
-        let thread_id = path.iter().nth(1).unwrap().clone();
+        let thread_id = path.iter().nth(1).unwrap().to_string();
         let tasks_path = Path::parse(&format!("threads/{}/tasks", thread_id)).unwrap();
         for title in ["Read file", "Edit code"] {
             let mut map = std::collections::BTreeMap::new();
@@ -811,14 +799,14 @@ mod tests {
                 Record::parsed(Value::Map(map)),
             )
             .unwrap();
-        let thread_id = path.iter().nth(1).unwrap().clone();
+        let thread_id = path.iter().nth(1).unwrap().to_string();
         let tasks_path = Path::parse(&format!("threads/{}/tasks", thread_id)).unwrap();
         let mut task_map = std::collections::BTreeMap::new();
         task_map.insert("title".to_string(), Value::String("My task".to_string()));
         let task_path = store
             .write(&tasks_path, Record::parsed(Value::Map(task_map)))
             .unwrap();
-        let task_id = task_path.iter().nth(3).unwrap().clone();
+        let task_id = task_path.iter().nth(3).unwrap().to_string();
 
         let update_path = Path::parse(&format!("threads/{}/tasks/{}", thread_id, task_id)).unwrap();
         let mut update = std::collections::BTreeMap::new();
@@ -861,7 +849,7 @@ mod tests {
                 Record::parsed(Value::Map(map)),
             )
             .unwrap();
-        let id = path.iter().nth(1).unwrap().clone();
+        let id = path.iter().nth(1).unwrap().to_string();
 
         // 2. Create task
         let tasks_path = Path::parse(&format!("threads/{}/tasks", id)).unwrap();
@@ -936,7 +924,7 @@ mod tests {
                 Record::parsed(Value::Map(map)),
             )
             .unwrap();
-        let id = path.iter().nth(1).unwrap().clone();
+        let id = path.iter().nth(1).unwrap().to_string();
 
         let db = store.db.lock().unwrap();
         let (last_seq, last_hash): (i64, Option<String>) = db
@@ -995,7 +983,7 @@ mod tests {
                 Record::parsed(Value::Map(map)),
             )
             .unwrap();
-        let id = path.iter().nth(1).unwrap().clone();
+        let id = path.iter().nth(1).unwrap().to_string();
 
         // Try to update with a non-map value
         let update_path = Path::parse(&format!("threads/{}", id)).unwrap();
@@ -1017,7 +1005,7 @@ mod tests {
                 Record::parsed(Value::Map(map)),
             )
             .unwrap();
-        let id = path.iter().nth(1).unwrap().clone();
+        let id = path.iter().nth(1).unwrap().to_string();
 
         let mut update = std::collections::BTreeMap::new();
         update.insert(
@@ -1040,7 +1028,7 @@ mod tests {
                 Record::parsed(Value::Map(map)),
             )
             .unwrap();
-        let id = path.iter().nth(1).unwrap().clone();
+        let id = path.iter().nth(1).unwrap().to_string();
 
         let mut update = std::collections::BTreeMap::new();
         update.insert("token_count".to_string(), Value::Integer(999));
@@ -1075,7 +1063,7 @@ mod tests {
                 Record::parsed(Value::Map(map)),
             )
             .unwrap();
-        let id = path.iter().nth(1).unwrap().clone();
+        let id = path.iter().nth(1).unwrap().to_string();
 
         // First set a hash
         let mut update = std::collections::BTreeMap::new();
@@ -1114,7 +1102,7 @@ mod tests {
                 Record::parsed(Value::Map(map)),
             )
             .unwrap();
-        let id = path.iter().nth(1).unwrap().clone();
+        let id = path.iter().nth(1).unwrap().to_string();
 
         let labels_path = Path::parse(&format!("threads/{}/labels", id)).unwrap();
         let result = store.write(
@@ -1135,7 +1123,7 @@ mod tests {
                 Record::parsed(Value::Map(map)),
             )
             .unwrap();
-        let id = path.iter().nth(1).unwrap().clone();
+        let id = path.iter().nth(1).unwrap().to_string();
 
         let tasks_path = Path::parse(&format!("threads/{}/tasks", id)).unwrap();
         let task_map = std::collections::BTreeMap::new();
@@ -1154,7 +1142,7 @@ mod tests {
                 Record::parsed(Value::Map(map)),
             )
             .unwrap();
-        let id = path.iter().nth(1).unwrap().clone();
+        let id = path.iter().nth(1).unwrap().to_string();
 
         let tasks_path = Path::parse(&format!("threads/{}/tasks", id)).unwrap();
         let result = store.write(
@@ -1175,7 +1163,7 @@ mod tests {
                 Record::parsed(Value::Map(map)),
             )
             .unwrap();
-        let thread_id = path.iter().nth(1).unwrap().clone();
+        let thread_id = path.iter().nth(1).unwrap().to_string();
 
         // Create task
         let tasks_path = Path::parse(&format!("threads/{}/tasks", thread_id)).unwrap();
@@ -1184,7 +1172,7 @@ mod tests {
         let task_path = store
             .write(&tasks_path, Record::parsed(Value::Map(task_map)))
             .unwrap();
-        let task_id = task_path.iter().nth(3).unwrap().clone();
+        let task_id = task_path.iter().nth(3).unwrap().to_string();
 
         // Try to update with non-map
         let update_path = Path::parse(&format!("threads/{}/tasks/{}", thread_id, task_id)).unwrap();
@@ -1207,7 +1195,7 @@ mod tests {
                 Record::parsed(Value::Map(map)),
             )
             .unwrap();
-        let thread_a = path_a.iter().nth(1).unwrap().clone();
+        let thread_a = path_a.iter().nth(1).unwrap().to_string();
 
         let mut map = std::collections::BTreeMap::new();
         map.insert("title".to_string(), Value::String("Thread B".to_string()));
@@ -1217,7 +1205,7 @@ mod tests {
                 Record::parsed(Value::Map(map)),
             )
             .unwrap();
-        let thread_b = path_b.iter().nth(1).unwrap().clone();
+        let thread_b = path_b.iter().nth(1).unwrap().to_string();
 
         // Create task under thread A
         let tasks_path = Path::parse(&format!("threads/{}/tasks", thread_a)).unwrap();
@@ -1226,7 +1214,7 @@ mod tests {
         let task_path = store
             .write(&tasks_path, Record::parsed(Value::Map(task_map)))
             .unwrap();
-        let task_id = task_path.iter().nth(3).unwrap().clone();
+        let task_id = task_path.iter().nth(3).unwrap().to_string();
 
         // Try to update task using thread B's path
         let wrong_path = Path::parse(&format!("threads/{}/tasks/{}", thread_b, task_id)).unwrap();
@@ -1381,7 +1369,7 @@ mod tests {
                 Record::parsed(Value::Map(map)),
             )
             .unwrap();
-        let id = path.iter().nth(1).unwrap().clone();
+        let id = path.iter().nth(1).unwrap().to_string();
 
         let tasks_path = Path::parse(&format!("threads/{}/tasks", id)).unwrap();
         let result = store.read(&tasks_path).unwrap().unwrap();
@@ -1402,7 +1390,7 @@ mod tests {
                 Record::parsed(Value::Map(map)),
             )
             .unwrap();
-        let id = path.iter().nth(1).unwrap().clone();
+        let id = path.iter().nth(1).unwrap().to_string();
 
         let children_path = Path::parse(&format!("threads/{}/children", id)).unwrap();
         let result = store.read(&children_path).unwrap().unwrap();
@@ -1430,7 +1418,7 @@ mod tests {
                 Record::parsed(Value::Map(map)),
             )
             .unwrap();
-        let id = path.iter().nth(1).unwrap().clone();
+        let id = path.iter().nth(1).unwrap().to_string();
 
         let read_path = Path::parse(&format!("threads/{}", id)).unwrap();
         let result = store.read(&read_path).unwrap().unwrap();
@@ -1454,7 +1442,7 @@ mod tests {
                 Record::parsed(Value::Map(map)),
             )
             .unwrap();
-        let thread_id = path.iter().nth(1).unwrap().clone();
+        let thread_id = path.iter().nth(1).unwrap().to_string();
 
         let tasks_path = Path::parse(&format!("threads/{}/tasks", thread_id)).unwrap();
         let mut task_map = std::collections::BTreeMap::new();
@@ -1462,7 +1450,7 @@ mod tests {
         let task_path = store
             .write(&tasks_path, Record::parsed(Value::Map(task_map)))
             .unwrap();
-        let task_id = task_path.iter().nth(3).unwrap().clone();
+        let task_id = task_path.iter().nth(3).unwrap().to_string();
 
         // Update title
         let update_path = Path::parse(&format!("threads/{}/tasks/{}", thread_id, task_id)).unwrap();
@@ -1517,7 +1505,7 @@ mod tests {
                 Record::parsed(Value::Map(map)),
             )
             .unwrap();
-        let id = path.iter().nth(1).unwrap().clone();
+        let id = path.iter().nth(1).unwrap().to_string();
         let mut update = std::collections::BTreeMap::new();
         update.insert("inbox_state".to_string(), Value::String("done".to_string()));
         store
@@ -1563,7 +1551,7 @@ mod tests {
                 Record::parsed(Value::Map(map)),
             )
             .unwrap();
-        let id = path.iter().nth(1).unwrap().clone();
+        let id = path.iter().nth(1).unwrap().to_string();
 
         let labels_path = Path::parse(&format!("threads/{}/labels", id)).unwrap();
         store
@@ -1592,7 +1580,7 @@ mod tests {
                 Record::parsed(Value::Map(map)),
             )
             .unwrap();
-        let id = path.iter().nth(1).unwrap().clone();
+        let id = path.iter().nth(1).unwrap().to_string();
 
         let mut update = std::collections::BTreeMap::new();
         update.insert(

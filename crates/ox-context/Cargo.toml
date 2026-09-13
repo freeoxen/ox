@@ -13,7 +13,6 @@ keywords = ["agent", "ai", "namespace", "structfs", "routing"]
 categories = ["data-structures"]
 
 [dependencies]
-ox-path = { workspace = true }
 tracing = { workspace = true }
 ox-kernel = { workspace = true }
 serde = { workspace = true }

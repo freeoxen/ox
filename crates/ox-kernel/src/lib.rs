@@ -24,8 +24,6 @@ pub use structfs_core_store::{
     self as structfs, Error as StoreError, Path, Reader, Record, Store, Value, Writer, path,
 };
 
-pub use ox_path::oxpath;
-
 mod path_component;
 pub use path_component::PathComponent;
 

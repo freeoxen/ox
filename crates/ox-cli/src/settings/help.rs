@@ -194,7 +194,7 @@ fn path_append(prefix: &Path, segment: &str) -> Option<Path> {
     if segment.is_empty() {
         return Some(prefix.clone());
     }
-    let mut components = prefix.iter().cloned().collect::<Vec<String>>();
+    let mut components = prefix.iter().map(str::to_owned).collect::<Vec<String>>();
     components.push(segment.to_string());
     Path::try_from_components(components).ok()
 }
@@ -287,7 +287,7 @@ pub async fn key_hints_for_context_from_broker(
             let Some(id_component) = path.iter().last() else {
                 continue;
             };
-            let id = id_component.as_str().to_string();
+            let id = id_component.to_string();
             let Some(value) = rec.as_value().cloned() else {
                 continue;
             };
@@ -338,9 +338,9 @@ pub async fn key_hints_for_context_from_broker(
 mod tests {
     use super::*;
 
-    use ox_path::oxpath;
     use ox_types::key_chord::{KeyCodeRepr, KeyModifierSet};
     use ox_types::{BindingEntry, BindingScope, CommandId, KeyChord, Phase};
+    use structfs_core_store::path;
 
     use crate::settings::commands::register_all as register_all_commands;
 
@@ -362,7 +362,7 @@ mod tests {
     #[test]
     fn cursor_specific_and_whole_screen_both_appear_for_index() {
         let (bindings, commands) = populated_registries();
-        let hints = key_hints_for_cursor(&bindings, &commands, &oxpath!("settings", "index"));
+        let hints = key_hints_for_cursor(&bindings, &commands, &path!("settings", "index"));
 
         // The index page binds j/k/Enter/Esc at cursor scope.
         assert!(
@@ -395,7 +395,7 @@ mod tests {
         // specificity and registration order.
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            scope: BindingScope::Exact(oxpath!("settings", "index")),
+            scope: BindingScope::Exact(path!("settings", "index")),
             key: key('?'),
             command_id: CommandId(String::from("highlight.index.next")),
             phase: Phase::Target,
@@ -411,7 +411,7 @@ mod tests {
         let mut commands = CommandRegistry::new();
         register_all_commands(&mut commands);
 
-        let hints = key_hints_for_cursor(&bindings, &commands, &oxpath!("settings", "index"));
+        let hints = key_hints_for_cursor(&bindings, &commands, &path!("settings", "index"));
         let q = hints.iter().filter(|h| h.key == "?").count();
         assert_eq!(q, 1, "duplicate keys must dedupe to one row");
         let qhint = hints.iter().find(|h| h.key == "?").unwrap();
@@ -423,7 +423,7 @@ mod tests {
         let (bindings, commands) = populated_registries();
         // Models page binds `r` (account.refresh); it must NOT appear
         // when the cursor is on the index.
-        let hints = key_hints_for_cursor(&bindings, &commands, &oxpath!("settings", "index"));
+        let hints = key_hints_for_cursor(&bindings, &commands, &path!("settings", "index"));
         assert!(
             hints.iter().all(|h| h.key != "r"),
             "models-only `r` should not show on the index hint list"

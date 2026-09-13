@@ -137,10 +137,10 @@ pub async fn fetch_view_state<'a>(
                 inbox_threads = fetch_search_results(client, &snap.search).await;
             } else {
                 // No search — read all inbox threads
-                if let Ok(Some(record)) = client.read(&path!("inbox/threads")).await {
-                    if let Some(val) = record.as_value() {
-                        inbox_threads = parse_inbox_threads(val);
-                    }
+                if let Ok(Some(record)) = client.read(&path!("inbox/threads")).await
+                    && let Some(val) = record.as_value()
+                {
+                    inbox_threads = parse_inbox_threads(val);
                 }
             }
         }
@@ -148,21 +148,23 @@ pub async fn fetch_view_state<'a>(
             if let Ok(tid) = ox_kernel::PathComponent::try_new(snap.thread_id.as_str()) {
                 // Build thread view from log entries (single source of truth).
                 // Includes CompletionMeta linked by completion_id — no stitching.
-                let log_path = ox_path::oxpath!("threads", tid.clone(), "log", "entries");
-                if let Ok(Some(record)) = client.read(&log_path).await {
-                    if let Some(Value::Array(arr)) = record.as_value() {
-                        messages = build_thread_from_log(arr);
-                    }
+                let log_path = structfs_core_store::path!("threads", tid.clone(), "log", "entries");
+                if let Ok(Some(record)) = client.read(&log_path).await
+                    && let Some(Value::Array(arr)) = record.as_value()
+                {
+                    messages = build_thread_from_log(arr);
                 }
 
                 // Read turn state (typed)
-                let turn_path = ox_path::oxpath!("threads", tid.clone(), "history", "turn");
+                let turn_path =
+                    structfs_core_store::path!("threads", tid.clone(), "history", "turn");
                 if let Ok(Some(t)) = client.read_typed::<ox_history::TurnState>(&turn_path).await {
                     turn = t;
                 }
 
                 // Read approval/pending (typed)
-                let approval_path = ox_path::oxpath!("threads", tid.clone(), "approval", "pending");
+                let approval_path =
+                    structfs_core_store::path!("threads", tid.clone(), "approval", "pending");
                 if let Ok(Some(ap)) = client.read_typed::<ApprovalRequest>(&approval_path).await {
                     // Only treat as pending if the tool_name is non-empty
                     if !ap.tool_name.is_empty() {
@@ -177,33 +179,33 @@ pub async fn fetch_view_state<'a>(
         ScreenSnapshot::History(snap) => {
             if let Ok(tid) = ox_kernel::PathComponent::try_new(snap.thread_id.as_str()) {
                 ledger_banner = read_ledger_banner(client, &tid).await;
-                let log_path = ox_path::oxpath!("threads", tid.clone(), "log", "entries");
-                if let Ok(Some(record)) = client.read(&log_path).await {
-                    if let Some(Value::Array(arr)) = record.as_value() {
-                        raw_messages = arr.clone();
-                    }
+                let log_path = structfs_core_store::path!("threads", tid.clone(), "log", "entries");
+                if let Ok(Some(record)) = client.read(&log_path).await
+                    && let Some(Value::Array(arr)) = record.as_value()
+                {
+                    raw_messages = arr.clone();
                 }
-                let turn_path = ox_path::oxpath!("threads", tid, "history", "turn");
+                let turn_path = structfs_core_store::path!("threads", tid, "history", "turn");
                 if let Ok(Some(t)) = client.read_typed::<ox_history::TurnState>(&turn_path).await {
                     turn = t;
                 }
             }
             // Read pretty/full sets from UiStore (not serialized in snapshot)
-            if let Ok(Some(record)) = client.read(&path!("ui/pretty")).await {
-                if let Some(Value::Array(arr)) = record.as_value() {
-                    for v in arr {
-                        if let Value::Integer(n) = v {
-                            history_pretty.insert(*n as usize);
-                        }
+            if let Ok(Some(record)) = client.read(&path!("ui/pretty")).await
+                && let Some(Value::Array(arr)) = record.as_value()
+            {
+                for v in arr {
+                    if let Value::Integer(n) = v {
+                        history_pretty.insert(*n as usize);
                     }
                 }
             }
-            if let Ok(Some(record)) = client.read(&path!("ui/full")).await {
-                if let Some(Value::Array(arr)) = record.as_value() {
-                    for v in arr {
-                        if let Value::Integer(n) = v {
-                            history_full.insert(*n as usize);
-                        }
+            if let Ok(Some(record)) = client.read(&path!("ui/full")).await
+                && let Some(Value::Array(arr)) = record.as_value()
+            {
+                for v in arr {
+                    if let Value::Integer(n) = v {
+                        history_full.insert(*n as usize);
                     }
                 }
             }
@@ -300,7 +302,7 @@ async fn read_ledger_banner(
     client: &ClientHandle,
     tid: &ox_kernel::PathComponent,
 ) -> Option<&'static str> {
-    let path = ox_path::oxpath!("threads", tid.clone(), "shell", "ledger_health");
+    let path = structfs_core_store::path!("threads", tid.clone(), "shell", "ledger_health");
     let wire = client.read_typed::<String>(&path).await.ok().flatten()?;
     crate::shell_copy::ledger_health_banner(&wire)
 }
@@ -465,10 +467,10 @@ fn parse_assistant_content_into(content: &Value, out: &mut Vec<ChatMessage>) {
                 };
                 match block_type {
                     "text" => {
-                        if let Some(Value::String(text)) = block_map.get("text") {
-                            if !text.is_empty() {
-                                out.push(ChatMessage::AssistantChunk(text.clone()));
-                            }
+                        if let Some(Value::String(text)) = block_map.get("text")
+                            && !text.is_empty()
+                        {
+                            out.push(ChatMessage::AssistantChunk(text.clone()));
                         }
                     }
                     "tool_use" => {
@@ -549,7 +551,7 @@ pub(crate) async fn fetch_thread_info(
     // Typed read of the thread log — same source the thread view uses.
     // Routing through the typed schema means counts and model names
     // stay consistent with the display layer.
-    let log_path = ox_path::oxpath!("threads", tid.clone(), "log", "entries");
+    let log_path = structfs_core_store::path!("threads", tid.clone(), "log", "entries");
     let entries: Vec<LogEntry> = match client.read_typed::<Vec<LogEntry>>(&log_path).await {
         Ok(Some(v)) => v,
         Ok(None) => Vec::new(),
@@ -565,7 +567,7 @@ pub(crate) async fn fetch_thread_info(
     let mut stats = aggregate_thread_stats(&entries);
 
     // Per-model usage + session tokens from the turn state.
-    let turn_path = ox_path::oxpath!("threads", tid, "history", "turn");
+    let turn_path = structfs_core_store::path!("threads", tid, "history", "turn");
     match client.read_typed::<ox_history::TurnState>(&turn_path).await {
         Ok(Some(t)) => {
             stats.session_tokens = t.session_tokens;

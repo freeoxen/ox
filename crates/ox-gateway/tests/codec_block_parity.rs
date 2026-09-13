@@ -88,8 +88,8 @@ fn request_corpus() -> Vec<(&'static str, serde_json::Value)> {
     ]
 }
 
-#[test]
-fn decode_request_parity() {
+#[tokio::test]
+async fn decode_request_parity() {
     for (dialect, body) in request_corpus() {
         let native = match dialect {
             "openai" => ox_codec::openai::decode_request(&body),
@@ -103,14 +103,15 @@ fn decode_request_parity() {
             "dialect": dialect,
             "body": body,
         }))
+        .await
         .expect("block decode");
 
         assert_eq!(native_json, block, "decode_request diverged for {dialect}");
     }
 }
 
-#[test]
-fn decode_request_error_parity() {
+#[tokio::test]
+async fn decode_request_error_parity() {
     let bad = serde_json::json!({ "max_tokens": 5, "messages": [] });
     let native_err = ox_codec::anthropic::decode_request(&bad)
         .unwrap_err()
@@ -120,12 +121,13 @@ fn decode_request_error_parity() {
         "dialect": "anthropic",
         "body": bad,
     }))
+    .await
     .unwrap_err();
     assert_eq!(native_err, block_err);
 }
 
-#[test]
-fn encode_response_parity() {
+#[tokio::test]
+async fn encode_response_parity() {
     let events = event_corpus();
     let events_json = serde_json::to_value(&events).unwrap();
     for dialect in ["anthropic", "openai"] {
@@ -139,13 +141,14 @@ fn encode_response_parity() {
             "events": events_json,
             "meta": meta_json(),
         }))
+        .await
         .expect("block encode_response");
         assert_eq!(native, block, "encode_response diverged for {dialect}");
     }
 }
 
-#[test]
-fn encode_stream_parity() {
+#[tokio::test]
+async fn encode_stream_parity() {
     let events = event_corpus();
     let events_json = serde_json::to_value(&events).unwrap();
     for dialect in ["anthropic", "openai"] {
@@ -162,6 +165,7 @@ fn encode_stream_parity() {
             "events": events_json,
             "meta": meta_json(),
         }))
+        .await
         .expect("block encode_stream");
         let block_frames: Vec<String> = serde_json::from_value(block["frames"].clone()).unwrap();
         let block_finish: Vec<String> = serde_json::from_value(block["finish"].clone()).unwrap();
@@ -177,8 +181,8 @@ fn encode_stream_parity() {
     }
 }
 
-#[test]
-fn translate_request_parity() {
+#[tokio::test]
+async fn translate_request_parity() {
     for (dialect, body) in request_corpus() {
         let decoded = match dialect {
             "openai" => ox_codec::openai::decode_request(&body),
@@ -196,6 +200,7 @@ fn translate_request_parity() {
                 "dialect": upstream,
                 "request": serde_json::to_value(&decoded).unwrap(),
             }))
+            .await
             .expect("block translate");
             assert_eq!(
                 native, block,

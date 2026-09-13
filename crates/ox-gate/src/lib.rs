@@ -24,10 +24,11 @@ pub mod subscriptions;
 // providers directly via `fetch`/wasm-bindgen and don't need this module.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod transport;
-// `usage_store` writes to disk via `JsonlFileBacking`; wasm builds have no
-// file I/O and no need for this module.
+// The upstream handle store uses the native SSE executor and broker.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod upstream_store;
+// `usage_store` uses native persistence backings.
+#[cfg(not(target_arch = "wasm32"))]
 pub mod usage_store;
 // `completion_broker` requires ox-broker (tokio rt-multi-thread) and the
 // async executor — neither available on wasm.
@@ -50,6 +51,7 @@ pub use provider::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use transport::{HttpTransport, Transport};
+#[cfg(not(target_arch = "wasm32"))]
 pub use upstream_store::{UpstreamRequest, UpstreamStatus, UpstreamStore};
 #[cfg(not(target_arch = "wasm32"))]
 pub use usage_store::{TodayProjection, UsageRecord, UsageStore};
@@ -165,15 +167,13 @@ impl GateStore {
     fn resolve_account(&mut self, name: &str) -> Option<AccountConfig> {
         if let Some(config) = self.config.as_mut() {
             let map_path = format!("gate/accounts/{name}");
-            if let Ok(path) = Path::parse(&map_path) {
-                if let Ok(Some(record)) = config.read(&path) {
-                    if let Some(value) = record.as_value() {
-                        if let Ok(parsed) = from_value::<AccountConfig>(value.clone()) {
-                            tracing::debug!(name, "account resolved from config handle");
-                            return Some(parsed);
-                        }
-                    }
-                }
+            if let Ok(path) = Path::parse(&map_path)
+                && let Ok(Some(record)) = config.read(&path)
+                && let Some(value) = record.as_value()
+                && let Ok(parsed) = from_value::<AccountConfig>(value.clone())
+            {
+                tracing::debug!(name, "account resolved from config handle");
+                return Some(parsed);
             }
             if let Some(provider) = self.config_string(&format!("gate/accounts/{name}/provider")) {
                 tracing::debug!(name, "account resolved from config-handle leaf");
@@ -195,15 +195,13 @@ impl GateStore {
     fn resolve_provider(&mut self, name: &str) -> Option<ProviderConfig> {
         if let Some(config) = self.config.as_mut() {
             let map_path = format!("gate/providers/{name}");
-            if let Ok(path) = Path::parse(&map_path) {
-                if let Ok(Some(record)) = config.read(&path) {
-                    if let Some(value) = record.as_value() {
-                        if let Ok(parsed) = from_value::<ProviderConfig>(value.clone()) {
-                            tracing::debug!(name, "provider resolved from config handle");
-                            return Some(parsed);
-                        }
-                    }
-                }
+            if let Ok(path) = Path::parse(&map_path)
+                && let Ok(Some(record)) = config.read(&path)
+                && let Some(value) = record.as_value()
+                && let Ok(parsed) = from_value::<ProviderConfig>(value.clone())
+            {
+                tracing::debug!(name, "provider resolved from config handle");
+                return Some(parsed);
             }
             let dialect = self.config_string(&format!("gate/providers/{name}/dialect"));
             let endpoint = self.config_string(&format!("gate/providers/{name}/endpoint"));
@@ -312,10 +310,10 @@ impl GateStore {
             providers_map.insert(name.clone(), v);
         }
         for (name, value) in self.config_children("gate/providers") {
-            if let Ok(parsed) = from_value::<ProviderConfig>(value) {
-                if let Ok(v) = to_value(&parsed) {
-                    providers_map.insert(name, v);
-                }
+            if let Ok(parsed) = from_value::<ProviderConfig>(value)
+                && let Ok(v) = to_value(&parsed)
+            {
+                providers_map.insert(name, v);
             }
         }
         state.insert("providers".to_string(), Value::Map(providers_map));
@@ -387,7 +385,7 @@ impl GateStore {
         // config store, which has its own ledger entries and snapshot path.
 
         if let Some(providers_val) = state_map.get("providers") {
-            let providers_json = structfs_serde_store::value_to_json(providers_val.clone());
+            let providers_json = structfs_serde_store::value_to_json(providers_val.clone())?;
             let providers: HashMap<String, ProviderConfig> = serde_json::from_value(providers_json)
                 .map_err(|e| StoreError::store("gate", "write", e.to_string()))?;
             self.providers = providers;
@@ -398,7 +396,7 @@ impl GateStore {
             match accounts_val {
                 Value::Map(accts) => {
                     for (name, acct_val) in accts {
-                        let acct_json = structfs_serde_store::value_to_json(acct_val.clone());
+                        let acct_json = structfs_serde_store::value_to_json(acct_val.clone())?;
                         let provider = acct_json
                             .get("provider")
                             .and_then(|v| v.as_str())
@@ -434,13 +432,13 @@ impl Reader for GateStore {
             return Ok(None);
         }
 
-        let first = from[0].as_str();
+        let first = &from[0];
         match first {
             "providers" => {
                 if from.len() < 2 {
                     return Ok(None);
                 }
-                let name = from[1].as_str().to_string();
+                let name = from[1].to_string();
 
                 // Resolve provider config: prefer config handle (user-defined
                 // providers seeded from OxConfig/TOML), fall back to local
@@ -456,7 +454,7 @@ impl Reader for GateStore {
                     return Ok(Some(Record::parsed(value)));
                 }
 
-                let field = from[2].as_str();
+                let field = &from[2];
                 match field {
                     "dialect" => Ok(Some(Record::parsed(Value::String(config.dialect)))),
                     "endpoint" => Ok(Some(Record::parsed(Value::String(config.endpoint)))),
@@ -475,14 +473,14 @@ impl Reader for GateStore {
                 if from.len() < 2 {
                     return Ok(None);
                 }
-                let name = from[1].as_str().to_string();
+                let name = from[1].to_string();
 
                 // Keys come from the secrets handle (`secret/keys/{name}: ApiKey`).
                 // Synthetic read shape — the underlying storage is a typed
                 // `ApiKey` record at a path that has nothing to do with the
                 // gate's namespace; the gate just exposes it under the
                 // `accounts/{name}/key` shape callers already know.
-                if from.len() > 2 && from[2].as_str() == "key" {
+                if from.len() > 2 && &from[2] == "key" {
                     let key = self.account_key(&name).unwrap_or_default();
                     return Ok(Some(Record::parsed(Value::String(key))));
                 }
@@ -503,7 +501,7 @@ impl Reader for GateStore {
                     return Ok(Some(Record::parsed(value)));
                 }
 
-                let field = from[2].as_str();
+                let field = &from[2];
                 match field {
                     "provider" => Ok(Some(Record::parsed(Value::String(config.provider)))),
                     _ => Ok(None),
@@ -511,7 +509,7 @@ impl Reader for GateStore {
             }
 
             "tools" => {
-                if from.len() >= 2 && from[1].as_str() == "schemas" {
+                if from.len() >= 2 && &from[1] == "schemas" {
                     let schemas = self.completion_tool_schemas();
                     let value = to_value(&schemas)
                         .map_err(|e| StoreError::store("gate", "read", e.to_string()))?;
@@ -524,9 +522,9 @@ impl Reader for GateStore {
             "snapshot" => {
                 let state = self.snapshot_state();
                 if from.len() >= 2 {
-                    match from[1].as_str() {
+                    match &from[1] {
                         "hash" => {
-                            let hash = ox_kernel::snapshot::snapshot_hash(&state);
+                            let hash = ox_kernel::snapshot::snapshot_hash(&state)?;
                             Ok(Some(Record::parsed(Value::String(hash))))
                         }
                         "state" => Ok(Some(Record::parsed(state))),
@@ -535,7 +533,7 @@ impl Reader for GateStore {
                 } else {
                     Ok(Some(Record::parsed(ox_kernel::snapshot::snapshot_record(
                         state,
-                    ))))
+                    )?)))
                 }
             }
 
@@ -555,14 +553,14 @@ impl Reader for GateStore {
             "completions" => {
                 if let Some(handle) = self.config.as_mut() {
                     let mut full = vec!["gate".to_string()];
-                    full.extend(from.iter().cloned());
-                    if let Ok(prefixed) = Path::try_from_components(full) {
-                        if let Some(record) = handle.read(&prefixed)? {
-                            return Ok(Some(record));
-                        }
+                    full.extend(from.iter().map(str::to_owned));
+                    if let Ok(prefixed) = Path::try_from_components(full)
+                        && let Some(record) = handle.read(&prefixed)?
+                    {
+                        return Ok(Some(record));
                     }
                 }
-                if from.len() == 2 && from[1].as_str() == "primary" {
+                if from.len() == 2 && &from[1] == "primary" {
                     let role = ox_types::CompletionRole {
                         account: FALLBACK_ACCOUNT.to_string(),
                         model_id: FALLBACK_MODEL.to_string(),
@@ -585,7 +583,7 @@ impl Writer for GateStore {
             return Err(StoreError::store("gate", "write", "empty path"));
         }
 
-        let first = to[0].as_str();
+        let first = &to[0];
         match first {
             "providers" => {
                 if to.len() < 2 {
@@ -595,7 +593,7 @@ impl Writer for GateStore {
                         "providers requires a name",
                     ));
                 }
-                let name = to[1].as_str().to_string();
+                let name = to[1].to_string();
 
                 if to.len() == 2 {
                     // Write full ProviderConfig
@@ -615,7 +613,7 @@ impl Writer for GateStore {
                     return Ok(to.clone());
                 }
 
-                let field = to[2].as_str();
+                let field = &to[2];
                 match field {
                     "models" => {
                         let value = match data {
@@ -649,7 +647,7 @@ impl Writer for GateStore {
                         "accounts requires a name",
                     ));
                 }
-                let name = to[1].as_str().to_string();
+                let name = to[1].to_string();
 
                 if to.len() == 2 {
                     // Write full AccountConfig
@@ -669,7 +667,7 @@ impl Writer for GateStore {
                     return Ok(to.clone());
                 }
 
-                let field = to[2].as_str();
+                let field = &to[2];
                 match field {
                     "provider" => match data {
                         Record::Parsed(Value::String(s)) => {
@@ -703,7 +701,7 @@ impl Writer for GateStore {
                     Record::Parsed(v) => v,
                     _ => return Err(StoreError::store("gate", "write", "expected parsed record")),
                 };
-                let state = if to.len() >= 2 && to[1].as_str() == "state" {
+                let state = if to.len() >= 2 && &to[1] == "state" {
                     value
                 } else {
                     ox_kernel::snapshot::extract_snapshot_state(value)
@@ -739,7 +737,7 @@ mod tests {
         // Anthropic provider exists
         let record = gate.read(&path!("providers/anthropic")).unwrap().unwrap();
         let json = match record {
-            Record::Parsed(v) => value_to_json(v),
+            Record::Parsed(v) => value_to_json(v).unwrap(),
             _ => panic!("expected parsed"),
         };
         assert_eq!(json["dialect"], "anthropic");
@@ -748,7 +746,7 @@ mod tests {
         // OpenAI provider exists
         let record = gate.read(&path!("providers/openai")).unwrap().unwrap();
         let json = match record {
-            Record::Parsed(v) => value_to_json(v),
+            Record::Parsed(v) => value_to_json(v).unwrap(),
             _ => panic!("expected parsed"),
         };
         assert_eq!(json["dialect"], "openai");
@@ -852,7 +850,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let json = match record {
-            Record::Parsed(v) => value_to_json(v),
+            Record::Parsed(v) => value_to_json(v).unwrap(),
             _ => panic!("expected parsed"),
         };
         let arr = json.as_array().unwrap();
@@ -886,7 +884,7 @@ mod tests {
         let mut gate = GateStore::new();
         let record = gate.read(&path!("tools/schemas")).unwrap().unwrap();
         let json = match record {
-            Record::Parsed(v) => value_to_json(v),
+            Record::Parsed(v) => value_to_json(v).unwrap(),
             _ => panic!("expected parsed"),
         };
         assert_eq!(json, serde_json::json!([]));
@@ -899,7 +897,7 @@ mod tests {
 
         let record = gate.read(&path!("tools/schemas")).unwrap().unwrap();
         let json = match record {
-            Record::Parsed(v) => value_to_json(v),
+            Record::Parsed(v) => value_to_json(v).unwrap(),
             _ => panic!("expected parsed"),
         };
         let arr = json.as_array().unwrap();
@@ -940,7 +938,7 @@ mod tests {
                             _ => panic!("expected map"),
                         };
                         for acct in accounts.values() {
-                            let acct_json = value_to_json(acct.clone());
+                            let acct_json = value_to_json(acct.clone()).unwrap();
                             assert!(
                                 acct_json.get("key").is_none(),
                                 "API keys must be excluded from snapshot"
@@ -986,7 +984,7 @@ mod tests {
         let mut gate = GateStore::new().with_secrets(Box::new(secrets));
 
         let val = unwrap_value(gate.read(&path!("snapshot/state")).unwrap().unwrap());
-        let json = value_to_json(val);
+        let json = value_to_json(val).unwrap();
         let accounts = &json["accounts"];
         for (_name, acct) in accounts.as_object().unwrap() {
             assert!(

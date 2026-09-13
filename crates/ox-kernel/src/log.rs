@@ -307,10 +307,10 @@ impl SharedLog {
     pub fn tool_result_output(&self, tool_use_id: &str) -> Option<serde_json::Value> {
         let inner = self.inner.lock().unwrap();
         for entry in inner.entries.iter().rev() {
-            if let LogEntry::ToolResult { id, output, .. } = entry {
-                if id == tool_use_id {
-                    return Some(output.clone());
-                }
+            if let LogEntry::ToolResult { id, output, .. } = entry
+                && id == tool_use_id
+            {
+                return Some(output.clone());
             }
         }
         None
@@ -360,11 +360,7 @@ impl Default for LogStore {
 
 impl Reader for LogStore {
     fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
-        let key = if from.is_empty() {
-            "entries"
-        } else {
-            from[0].as_str()
-        };
+        let key = if from.is_empty() { "entries" } else { &from[0] };
 
         match key {
             "entries" => {
@@ -421,7 +417,7 @@ impl Reader for LogStore {
                     return Ok(Some(Record::parsed(Value::String(full))));
                 }
 
-                let sub = from[2].as_str();
+                let sub = &from[2];
                 match sub {
                     "line_count" => {
                         let count = full.lines().count() as i64;
@@ -470,18 +466,14 @@ impl Reader for LogStore {
 
 impl Writer for LogStore {
     fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
-        let key = if to.is_empty() {
-            "append"
-        } else {
-            to[0].as_str()
-        };
+        let key = if to.is_empty() { "append" } else { &to[0] };
 
         match key {
             "append" => {
                 let value = data.as_value().ok_or_else(|| {
                     StoreError::store("LogStore", "write", "expected Parsed record")
                 })?;
-                let json = structfs_serde_store::value_to_json(value.clone());
+                let json = structfs_serde_store::value_to_json(value.clone())?;
                 let entry: LogEntry = serde_json::from_value(json).map_err(|e| {
                     StoreError::store("LogStore", "write", format!("invalid LogEntry: {e}"))
                 })?;
@@ -513,7 +505,7 @@ mod tests {
         )
         .unwrap();
         let record = log.read(&path!("entries")).unwrap().unwrap();
-        let json = structfs_serde_store::value_to_json(record.as_value().unwrap().clone());
+        let json = structfs_serde_store::value_to_json(record.as_value().unwrap().clone()).unwrap();
         let arr = json.as_array().unwrap();
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["type"], "user");
@@ -552,7 +544,7 @@ mod tests {
             .unwrap();
         }
         let record = log.read(&Path::parse("last/2").unwrap()).unwrap().unwrap();
-        let json = structfs_serde_store::value_to_json(record.as_value().unwrap().clone());
+        let json = structfs_serde_store::value_to_json(record.as_value().unwrap().clone()).unwrap();
         let arr = json.as_array().unwrap();
         assert_eq!(arr.len(), 2);
         assert_eq!(arr[0]["content"], "msg3");
@@ -563,7 +555,7 @@ mod tests {
     fn empty_read_returns_empty_array() {
         let mut log = LogStore::new();
         let record = log.read(&path!("entries")).unwrap().unwrap();
-        let json = structfs_serde_store::value_to_json(record.as_value().unwrap().clone());
+        let json = structfs_serde_store::value_to_json(record.as_value().unwrap().clone()).unwrap();
         assert_eq!(json, serde_json::json!([]));
     }
 
@@ -580,7 +572,7 @@ mod tests {
         )
         .unwrap();
         let record = log.read(&path!("entries")).unwrap().unwrap();
-        let json = structfs_serde_store::value_to_json(record.as_value().unwrap().clone());
+        let json = structfs_serde_store::value_to_json(record.as_value().unwrap().clone()).unwrap();
         let entry = &json.as_array().unwrap()[0];
         assert_eq!(entry["source"]["account"], "anthropic");
     }
@@ -723,7 +715,7 @@ mod tests {
         )
         .unwrap();
         let record = log.read(&path!("entries")).unwrap().unwrap();
-        let json = structfs_serde_store::value_to_json(record.as_value().unwrap().clone());
+        let json = structfs_serde_store::value_to_json(record.as_value().unwrap().clone()).unwrap();
         let arr = json.as_array().unwrap();
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["type"], "turn_start");
@@ -741,7 +733,7 @@ mod tests {
         )
         .unwrap();
         let record = log.read(&path!("entries")).unwrap().unwrap();
-        let json = structfs_serde_store::value_to_json(record.as_value().unwrap().clone());
+        let json = structfs_serde_store::value_to_json(record.as_value().unwrap().clone()).unwrap();
         let entry = &json.as_array().unwrap()[0];
         assert_eq!(entry["type"], "turn_end");
         assert_eq!(entry["input_tokens"], 100);
@@ -766,7 +758,7 @@ mod tests {
         )
         .unwrap();
         let record = log.read(&path!("entries")).unwrap().unwrap();
-        let json = structfs_serde_store::value_to_json(record.as_value().unwrap().clone());
+        let json = structfs_serde_store::value_to_json(record.as_value().unwrap().clone()).unwrap();
         let arr = json.as_array().unwrap();
         assert_eq!(arr.len(), 2);
         assert_eq!(arr[0]["type"], "approval_requested");
@@ -856,7 +848,7 @@ mod tests {
         )
         .unwrap();
         let record = log.read(&path!("entries")).unwrap().unwrap();
-        let json = structfs_serde_store::value_to_json(record.as_value().unwrap().clone());
+        let json = structfs_serde_store::value_to_json(record.as_value().unwrap().clone()).unwrap();
         let entry = &json.as_array().unwrap()[0];
         assert_eq!(entry["type"], "error");
         assert_eq!(entry["message"], "connection failed");
@@ -887,7 +879,7 @@ mod tests {
         )
         .unwrap();
         let record = log.read(&path!("entries")).unwrap().unwrap();
-        let json = structfs_serde_store::value_to_json(record.as_value().unwrap().clone());
+        let json = structfs_serde_store::value_to_json(record.as_value().unwrap().clone()).unwrap();
         let arr = json.as_array().unwrap();
         assert_eq!(arr.len(), 3);
         assert_eq!(arr[0]["type"], "turn_aborted");
@@ -909,7 +901,7 @@ mod tests {
         )
         .unwrap();
         let record = log.read(&path!("entries")).unwrap().unwrap();
-        let json = structfs_serde_store::value_to_json(record.as_value().unwrap().clone());
+        let json = structfs_serde_store::value_to_json(record.as_value().unwrap().clone()).unwrap();
         let entry = &json.as_array().unwrap()[0];
         assert_eq!(entry["type"], "tool_aborted");
         assert_eq!(entry["tool_use_id"], "tc_xyz");
@@ -929,7 +921,7 @@ mod tests {
         )
         .unwrap();
         let record = log.read(&path!("entries")).unwrap().unwrap();
-        let json = structfs_serde_store::value_to_json(record.as_value().unwrap().clone());
+        let json = structfs_serde_store::value_to_json(record.as_value().unwrap().clone()).unwrap();
         let entry = &json.as_array().unwrap()[0];
         assert_eq!(entry["type"], "assistant_progress");
         assert_eq!(entry["accumulated"], "Hello wor");

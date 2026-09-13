@@ -39,7 +39,7 @@ async fn edge(client: ClientHandle, dialect: &'static str, body: Value) -> Respo
         "dialect": dialect,
         "body": body,
     }));
-    let rel = match client.write(&path!("wire"), Record::parsed(inbound)).await {
+    let gc = match InflightGc::open(client.clone(), path!("wire"), Record::parsed(inbound)).await {
         Ok(p) => p,
         Err(e) => {
             // The one error the edge must shape itself: the wire mount was
@@ -51,14 +51,23 @@ async fn edge(client: ClientHandle, dialect: &'static str, body: Value) -> Respo
                 .into_response();
         }
     };
-    let handle = path!("wire").join(&rel);
+    let handle = gc.path().clone();
 
     let head: Value = match client.read(&handle.join(&path!("head"))).await {
-        Ok(Some(rec)) => rec
+        Ok(Some(rec)) => match rec
             .as_value()
             .cloned()
             .map(structfs_serde_store::value_to_json)
-            .unwrap_or_default(),
+            .transpose()
+        {
+            Ok(Some(value)) => value,
+            result => {
+                let _ = client
+                    .write(&handle, Record::parsed(structfs_core_store::Value::Null))
+                    .await;
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": {"message": format!("invalid wire head: {result:?}")}}))).into_response();
+            }
+        },
         other => {
             let _ = client
                 .write(&handle, Record::parsed(structfs_core_store::Value::Null))
@@ -81,7 +90,7 @@ async fn edge(client: ClientHandle, dialect: &'static str, body: Value) -> Respo
                 .await;
             (status, Json(body)).into_response()
         }
-        Some("stream") => stream_frames(client, handle),
+        Some("stream") => stream_frames(client, handle, gc),
         other => {
             let _ = client
                 .write(&handle, Record::parsed(structfs_core_store::Value::Null))
@@ -98,9 +107,9 @@ async fn edge(client: ClientHandle, dialect: &'static str, body: Value) -> Respo
 /// Drain wire frames into the SSE response body. The frames are already
 /// complete wire SSE blocks — the edge writes them verbatim. The GC guard
 /// covers client disconnects, same as the completion drains.
-fn stream_frames(client: ClientHandle, handle: Path) -> Response {
+fn stream_frames(client: ClientHandle, handle: Path, gc: InflightGc) -> Response {
     let stream = async_stream::stream! {
-        let gc = InflightGc::new(client.clone(), handle.clone());
+        let gc = gc;
         let mut next = 0usize;
         loop {
             let sub = Path::parse(&format!("frames/from/{next}"))

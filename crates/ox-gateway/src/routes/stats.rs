@@ -36,28 +36,35 @@ async fn get_stats(
         .unwrap_or(0);
     let params =
         structfs_serde_store::json_to_value(serde_json::json!({ "tz_offset_min": tz_offset_min }));
-    let rel = match client
-        .write(&path!("gateway/telemetry"), Record::parsed(params))
-        .await
+    let gc = match InflightGc::open(
+        client.clone(),
+        path!("gateway/telemetry"),
+        Record::parsed(params),
+    )
+    .await
     {
         Ok(p) => p,
         Err(e) => return stats_error(e.to_string()),
     };
-    let handle = path!("gateway/telemetry").join(&rel);
+    let handle = gc.path().clone();
 
     // The GC guard covers client disconnects while parked on the blocking
     // read — same lifecycle as the completion drains.
-    let gc = InflightGc::new(client.clone(), handle.clone());
     let summary = client.read(&handle.join(&path!("summary"))).await;
     gc.gc_now().await;
 
     match summary {
         Ok(Some(rec)) => {
-            let json = rec
+            let json = match rec
                 .as_value()
                 .cloned()
                 .map(structfs_serde_store::value_to_json)
-                .unwrap_or(serde_json::Value::Null);
+                .transpose()
+            {
+                Ok(Some(value)) => value,
+                Ok(None) => return stats_error("stats block wrote a raw summary".into()),
+                Err(error) => return stats_error(error.to_string()),
+            };
             Json(json).into_response()
         }
         Ok(None) => stats_error("stats block wrote no summary".into()),

@@ -21,8 +21,8 @@
 //! sees the post-delete world atomically.
 
 use ox_broker::subscription::{SubCtx, Subscription};
-use ox_path::oxpath;
 use ox_types::subscription::{PathPattern, SubscriptionId, Write};
+use structfs_core_store::path;
 
 use crate::subscriptions::util::{
     null_write, provider_path, read_typed_via_reader, secret_key_path,
@@ -45,7 +45,7 @@ impl AccountDeleteCleanupSubscription {
     pub fn new() -> Self {
         Self {
             id: SubscriptionId(ID.to_string()),
-            watches: vec![PathPattern::Prefix(oxpath!("config", "gate", "accounts"))],
+            watches: vec![PathPattern::Prefix(path!("config", "gate", "accounts"))],
         }
     }
 }
@@ -62,7 +62,7 @@ impl Subscription for AccountDeleteCleanupSubscription {
     fn handle(&self, ctx: SubCtx<'_>) -> Vec<Write> {
         use structfs_core_store::Value;
 
-        let prefix = oxpath!("config", "gate", "accounts");
+        let prefix = path!("config", "gate", "accounts");
 
         // Filter 1: only react at account-record depth (prefix + 1 component).
         // Writes to children (`.../models`, `.../test_status`, etc.) get
@@ -92,7 +92,13 @@ impl Subscription for AccountDeleteCleanupSubscription {
 
         // Extract the account name. The path's last component is the
         // account identifier; we already validated depth above.
-        let name = ctx.change.path.iter().last().cloned().unwrap_or_default();
+        let name = ctx
+            .change
+            .path
+            .iter()
+            .last()
+            .map(str::to_owned)
+            .unwrap_or_default();
         if name.is_empty() {
             return vec![];
         }
@@ -113,7 +119,7 @@ impl Subscription for AccountDeleteCleanupSubscription {
         }
 
         // Clear selection if it pointed at the deleted account.
-        let selected_path = oxpath!("ui", "settings", "accounts", "selected");
+        let selected_path = path!("ui", "settings", "accounts", "selected");
         let selected: Option<String> = read_typed_via_reader(ctx.snapshot, &selected_path);
         if selected.as_deref() == Some(name.as_str()) {
             // Null write deletes the selection. The renderer treats a
@@ -130,8 +136,8 @@ mod tests {
     use std::sync::Arc;
 
     use ox_broker::subscription::{AsyncWriter, SubCtx, Subscription};
-    use ox_path::oxpath;
     use ox_types::subscription::PathChange;
+    use structfs_core_store::path;
     use structfs_core_store::{Path, Record, Value};
 
     use super::*;
@@ -142,7 +148,7 @@ mod tests {
     fn trigger_path(name: &str) -> Path {
         let comp = ox_kernel::PathComponent::try_new(name).unwrap();
         // Canonical account path; the user's null-write here IS the delete.
-        oxpath!("config", "gate", "accounts", comp)
+        path!("config", "gate", "accounts", comp)
     }
 
     fn drive(reader: &mut InMemoryReader, name: &str) -> Vec<Write> {
@@ -247,7 +253,7 @@ mod tests {
         assert!(
             !writes
                 .iter()
-                .any(|w| w.path == oxpath!("ui", "settings", "focused")),
+                .any(|w| w.path == path!("ui", "settings", "focused")),
             "cleanup must not touch the focus cursor; got {writes:?}"
         );
     }
@@ -261,7 +267,7 @@ mod tests {
         // record, even though it matches the Prefix watch.
         let sub = AccountDeleteCleanupSubscription::new();
         let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
-        let path = oxpath!("config", "gate", "accounts", comp, "models");
+        let path = path!("config", "gate", "accounts", comp, "models");
         let change = PathChange {
             path,
             before: None,
@@ -290,7 +296,7 @@ mod tests {
         // trigger the cleanup body — the account isn't being deleted.
         let sub = AccountDeleteCleanupSubscription::new();
         let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
-        let path = oxpath!("config", "gate", "accounts", comp);
+        let path = path!("config", "gate", "accounts", comp);
         let cfg = crate::AccountConfig {
             provider: "anthropic".into(),
             ..Default::default()

@@ -154,7 +154,7 @@ mod tests {
 
     fn seed_user_message(ns: &mut Namespace, text: &str) {
         ns.write(
-            &ox_kernel::path!("history/append"),
+            &ox_kernel::Path::parse("history/append").unwrap(),
             ox_kernel::Record::parsed(structfs_serde_store::json_to_value(
                 serde_json::json!({"role": "user", "content": text}),
             )),

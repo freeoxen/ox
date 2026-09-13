@@ -3,7 +3,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use ox_broker::async_store::{AsyncReader, AsyncWriter};
+use structfs_core_store::{DetachedReader, DetachedWriter};
+
 use ox_remote::{
     CommandError, CommandOutput, DeleteVmRequest, ExeCommand, ExeCommandRunner, ExeControlStore,
     ExeError, ExeSshConfig, RusshExeRunner, SshWorkerConnector, SshWorkerIdentityVerifier, VmSpec,
@@ -596,24 +597,28 @@ async fn structfs_routes_expose_only_typed_provider_operations() {
     ]);
     let mut control = store(fake, FakeIdentity::new(true));
 
-    let identity = control.read(&path!("identity")).await.unwrap().unwrap();
+    let identity = control
+        .read_detached(&path!("identity"))
+        .await
+        .unwrap()
+        .unwrap();
     let identity: ox_remote::ExeIdentity =
         structfs_serde_store::from_value(identity.as_value().unwrap().clone()).unwrap();
     assert!(identity.authenticated);
 
-    let listed = control.read(&path!("vms")).await.unwrap().unwrap();
+    let listed = control.read_detached(&path!("vms")).await.unwrap().unwrap();
     let listed: Vec<VmStatus> =
         structfs_serde_store::from_value(listed.as_value().unwrap().clone()).unwrap();
     assert_eq!(listed.len(), 1);
 
     let item = ox_remote::vm_path("ox-deadbeef").unwrap();
-    let exact = control.read(&item).await.unwrap().unwrap();
+    let exact = control.read_detached(&item).await.unwrap().unwrap();
     let exact: VmStatus =
         structfs_serde_store::from_value(exact.as_value().unwrap().clone()).unwrap();
     assert_eq!(exact.vm_name, "ox-deadbeef");
     assert!(
         control
-            .read(&path!("private/value"))
+            .read_detached(&path!("private/value"))
             .await
             .unwrap()
             .is_none()
@@ -629,7 +634,7 @@ async fn structfs_mutation_routes_validate_decode_and_return_stable_paths() {
     ]);
     let mut create = store(create_fake, FakeIdentity::new(true));
     let created = create
-        .write(
+        .write_detached(
             &path!("vms"),
             Record::parsed(structfs_serde_store::to_value(&spec()).unwrap()),
         )
@@ -638,13 +643,13 @@ async fn structfs_mutation_routes_validate_decode_and_return_stable_paths() {
     assert_eq!(created, ox_remote::vm_path("ox-deadbeef").unwrap());
     assert!(
         create
-            .write(&path!("vms"), Record::parsed(Value::Null))
+            .write_detached(&path!("vms"), Record::parsed(Value::Null))
             .await
             .is_err()
     );
     assert!(
         create
-            .write(&path!("private"), Record::parsed(Value::Null))
+            .write_detached(&path!("private"), Record::parsed(Value::Null))
             .await
             .is_err()
     );
@@ -657,7 +662,7 @@ async fn structfs_mutation_routes_validate_decode_and_return_stable_paths() {
     let mut delete = store(delete_fake, FakeIdentity::new(true));
     let target = ox_remote::vm_delete_path("ox-deadbeef").unwrap();
     let deleted = delete
-        .write(
+        .write_detached(
             &target,
             Record::parsed(
                 structfs_serde_store::to_value(&DeleteVmRequest {
@@ -868,13 +873,13 @@ async fn structfs_routes_fail_closed_for_missing_and_unparsed_records() {
         FakeIdentity::new(true),
     );
     let item = ox_remote::vm_path("ox-deadbeef").unwrap();
-    assert!(reader.read(&item).await.unwrap().is_none());
-    assert!(reader.read(&path!("vms/not_hex")).await.is_err());
+    assert!(reader.read_detached(&item).await.unwrap().is_none());
+    assert!(reader.read_detached(&path!("vms/not_hex")).await.is_err());
 
     let mut writer = store(FakeExe::new(vec![]), FakeIdentity::new(true));
     assert!(
         writer
-            .write(
+            .write_detached(
                 &path!("vms"),
                 Record::raw(vec![1, 2, 3], Format::OCTET_STREAM),
             )
@@ -883,7 +888,7 @@ async fn structfs_routes_fail_closed_for_missing_and_unparsed_records() {
     );
     assert!(
         writer
-            .write(
+            .write_detached(
                 &ox_remote::vm_delete_path("ox-deadbeef").unwrap(),
                 Record::parsed(Value::Null),
             )

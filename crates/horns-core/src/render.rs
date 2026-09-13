@@ -207,7 +207,7 @@ impl Default for RendererRegistry {
 
 #[cfg(test)]
 mod tests {
-    use ox_path::oxpath;
+    use structfs_core_store::path;
     use structfs_core_store::{Error, Record};
 
     use super::*;
@@ -252,25 +252,25 @@ mod tests {
     #[test]
     fn ascend_exit_screen_returns_none() {
         let mut reg = RendererRegistry::new();
-        reg.register(oxpath!("settings", "index"), fake(AscendRule::ExitScreen));
+        reg.register(path!("settings", "index"), fake(AscendRule::ExitScreen));
 
-        assert_eq!(reg.ascend(&oxpath!("settings", "index")), None);
+        assert_eq!(reg.ascend(&path!("settings", "index")), None);
     }
 
     #[test]
     fn ascend_nearest_registered_walks_to_parent() {
         let mut reg = RendererRegistry::new();
         reg.register(
-            oxpath!("settings", "accounts"),
+            path!("settings", "accounts"),
             fake(AscendRule::NearestRegistered),
         );
         reg.register(
-            oxpath!("settings", "accounts", "_detail"),
+            path!("settings", "accounts", "_detail"),
             fake(AscendRule::NearestRegistered),
         );
 
-        let parent = reg.ascend(&oxpath!("settings", "accounts", "_detail"));
-        assert_eq!(parent, Some(oxpath!("settings", "accounts")));
+        let parent = reg.ascend(&path!("settings", "accounts", "_detail"));
+        assert_eq!(parent, Some(path!("settings", "accounts")));
     }
 
     #[test]
@@ -278,14 +278,14 @@ mod tests {
         let mut reg = RendererRegistry::new();
         // Register at the root and at the deep leaf, but NOT at the
         // intermediate `settings/models`. Ascend should skip past it.
-        reg.register(oxpath!("settings"), fake(AscendRule::NearestRegistered));
+        reg.register(path!("settings"), fake(AscendRule::NearestRegistered));
         reg.register(
-            oxpath!("settings", "models", "_detail"),
+            path!("settings", "models", "_detail"),
             fake(AscendRule::NearestRegistered),
         );
 
-        let parent = reg.ascend(&oxpath!("settings", "models", "_detail"));
-        assert_eq!(parent, Some(oxpath!("settings")));
+        let parent = reg.ascend(&path!("settings", "models", "_detail"));
+        assert_eq!(parent, Some(path!("settings")));
     }
 
     #[test]
@@ -294,18 +294,18 @@ mod tests {
         // ancestor must not loop forever — it should return None.
         let mut reg = RendererRegistry::new();
         reg.register(
-            oxpath!("settings", "orphan"),
+            path!("settings", "orphan"),
             fake(AscendRule::NearestRegistered),
         );
 
-        assert_eq!(reg.ascend(&oxpath!("settings", "orphan")), None);
+        assert_eq!(reg.ascend(&path!("settings", "orphan")), None);
     }
 
     #[test]
     fn ascend_unknown_cursor_returns_none() {
         // Cursor with no registered renderer at all → None (no rule to apply).
         let reg = RendererRegistry::new();
-        assert_eq!(reg.ascend(&oxpath!("settings", "ghost")), None);
+        assert_eq!(reg.ascend(&path!("settings", "ghost")), None);
     }
 
     #[test]
@@ -313,14 +313,14 @@ mod tests {
         // Top-level page declares Fallback to settings/index — registry
         // returns the named target (no strict-ancestor walk).
         let mut reg = RendererRegistry::new();
-        reg.register(oxpath!("settings", "index"), fake(AscendRule::ExitScreen));
+        reg.register(path!("settings", "index"), fake(AscendRule::ExitScreen));
         reg.register(
-            oxpath!("settings", "accounts"),
-            fake_with_fallback(oxpath!("settings", "index")),
+            path!("settings", "accounts"),
+            fake_with_fallback(path!("settings", "index")),
         );
         assert_eq!(
-            reg.ascend(&oxpath!("settings", "accounts")),
-            Some(oxpath!("settings", "index")),
+            reg.ascend(&path!("settings", "accounts")),
+            Some(path!("settings", "index")),
         );
     }
 
@@ -330,27 +330,27 @@ mod tests {
         // cursor falls through to None (dispatcher then signals _request_exit).
         let mut reg = RendererRegistry::new();
         reg.register(
-            oxpath!("settings", "accounts"),
-            fake_with_fallback(oxpath!("settings", "ghost")),
+            path!("settings", "accounts"),
+            fake_with_fallback(path!("settings", "ghost")),
         );
-        assert_eq!(reg.ascend(&oxpath!("settings", "accounts")), None);
+        assert_eq!(reg.ascend(&path!("settings", "accounts")), None);
     }
 
     #[test]
     fn lookup_misses_return_none() {
         let reg = RendererRegistry::new();
-        assert!(reg.lookup(&oxpath!("settings", "accounts")).is_none());
+        assert!(reg.lookup(&path!("settings", "accounts")).is_none());
     }
 
     #[test]
     fn lookup_hits_return_renderer() {
         let mut reg = RendererRegistry::new();
         reg.register(
-            oxpath!("settings", "accounts"),
+            path!("settings", "accounts"),
             fake(AscendRule::NearestRegistered),
         );
 
-        let r = reg.lookup(&oxpath!("settings", "accounts"));
+        let r = reg.lookup(&path!("settings", "accounts"));
         assert!(r.is_some());
         assert_eq!(r.unwrap().ascend_to(), AscendRule::NearestRegistered);
     }
@@ -362,7 +362,7 @@ mod tests {
         let theme: () = ();
         let mut reader = EmptyReader;
 
-        let cursor = oxpath!("settings", "accounts");
+        let cursor = path!("settings", "accounts");
         let mut ctx = RenderCtx {
             area: Rect::new(0, 0, 80, 24),
             data: &mut reader,
@@ -381,13 +381,13 @@ mod tests {
         // and run its renderer rather than falling back to "unknown".
         let mut reg = RendererRegistry::new();
         reg.register(
-            oxpath!("settings", "accounts"),
+            path!("settings", "accounts"),
             fake(AscendRule::NearestRegistered),
         );
         let theme: () = ();
         let mut reader = EmptyReader;
 
-        let cursor = oxpath!("settings", "accounts", "_detail", "alpha");
+        let cursor = path!("settings", "accounts", "_detail", "alpha");
         let mut ctx = RenderCtx {
             area: Rect::new(0, 0, 80, 24),
             data: &mut reader,
@@ -405,12 +405,12 @@ mod tests {
     fn registered_ancestor_or_self_returns_self_when_registered() {
         let mut reg = RendererRegistry::new();
         reg.register(
-            oxpath!("settings", "accounts"),
+            path!("settings", "accounts"),
             fake(AscendRule::NearestRegistered),
         );
         assert_eq!(
-            reg.registered_ancestor_or_self(&oxpath!("settings", "accounts")),
-            Some(oxpath!("settings", "accounts")),
+            reg.registered_ancestor_or_self(&path!("settings", "accounts")),
+            Some(path!("settings", "accounts")),
         );
     }
 
@@ -418,12 +418,12 @@ mod tests {
     fn registered_ancestor_or_self_walks_when_descendant() {
         let mut reg = RendererRegistry::new();
         reg.register(
-            oxpath!("settings", "accounts"),
+            path!("settings", "accounts"),
             fake(AscendRule::NearestRegistered),
         );
         assert_eq!(
-            reg.registered_ancestor_or_self(&oxpath!("settings", "accounts", "_detail", "alpha")),
-            Some(oxpath!("settings", "accounts")),
+            reg.registered_ancestor_or_self(&path!("settings", "accounts", "_detail", "alpha")),
+            Some(path!("settings", "accounts")),
         );
     }
 
@@ -431,7 +431,7 @@ mod tests {
     fn render_hit_invokes_registered_renderer() {
         let mut reg = RendererRegistry::new();
         reg.register(
-            oxpath!("settings", "accounts"),
+            path!("settings", "accounts"),
             fake(AscendRule::NearestRegistered),
         );
         let theme: () = ();
@@ -444,7 +444,7 @@ mod tests {
             theme: &theme as &dyn std::any::Any,
         };
 
-        let view = reg.render(&oxpath!("settings", "accounts"), &mut ctx);
+        let view = reg.render(&path!("settings", "accounts"), &mut ctx);
         // FakeRenderer always returns View::Empty.
         assert_eq!(view, View::Empty);
     }
@@ -452,12 +452,12 @@ mod tests {
     #[test]
     fn register_replaces_existing_entry() {
         let mut reg = RendererRegistry::new();
-        reg.register(oxpath!("settings"), fake(AscendRule::NearestRegistered));
+        reg.register(path!("settings"), fake(AscendRule::NearestRegistered));
         // Re-register at the same cursor with a different rule.
-        reg.register(oxpath!("settings"), fake(AscendRule::ExitScreen));
+        reg.register(path!("settings"), fake(AscendRule::ExitScreen));
 
         assert_eq!(
-            reg.lookup(&oxpath!("settings")).unwrap().ascend_to(),
+            reg.lookup(&path!("settings")).unwrap().ascend_to(),
             AscendRule::ExitScreen,
         );
     }

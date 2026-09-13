@@ -1,0 +1,5 @@
+error: invalid path component 'my account': invalid character ' ' in identifier
+ --> tests/compile_fail/path_rejects_space.rs:4:20
+  |
+4 |     let _p = path!("my account");
+  |                    ^^^^^^^^^^^^

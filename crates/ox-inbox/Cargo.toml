@@ -2,12 +2,11 @@
 name = "ox-inbox"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version.workspace = true
 license = "Apache-2.0"
 description = "StructFS-backed inbox store for ox agent thread management"
 
 [dependencies]
-ox-path = { workspace = true }
 tracing = { workspace = true }
 ox-kernel = { workspace = true }
 ox-types = { workspace = true }

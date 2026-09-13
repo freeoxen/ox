@@ -29,9 +29,9 @@
 //! with the live buffer plus a visible cursor block, so the user
 //! sees what they're typing.
 
-use ox_path::oxpath;
 use ox_types::settings::{AccountField, ModelField, ModelKey};
 use ox_types::subscription::Write;
+use structfs_core_store::path;
 use structfs_core_store::{Path, Reader, Record, Value};
 use structfs_serde_store::to_value;
 
@@ -149,7 +149,7 @@ fn focused_visible_row(data: &mut dyn Reader) -> Option<visible_rows::VisibleRow
 
 fn read_focused_path(data: &mut dyn Reader) -> Option<Path> {
     let r = data
-        .read(&oxpath!("ui", "settings", "focused"))
+        .read(&path!("ui", "settings", "focused"))
         .ok()
         .flatten()?;
     path_from_value(r.as_value()?)
@@ -252,20 +252,20 @@ fn enter_edit_mode(field_path: Path, buffer: String) -> Vec<Write> {
     // mode's data half.
     vec![
         Write {
-            path: oxpath!("ui", "settings", "edit", "target_path"),
+            path: path!("ui", "settings", "edit", "target_path"),
             record: Record::parsed(path_to_value(&field_path)),
         },
         Write {
-            path: oxpath!("ui", "settings", "edit", "buffer"),
+            path: path!("ui", "settings", "edit", "buffer"),
             record: Record::parsed(Value::String(buffer)),
         },
         Write {
-            path: oxpath!("ui", "settings", "edit", "cursor_saved"),
+            path: path!("ui", "settings", "edit", "cursor_saved"),
             record: Record::parsed(path_to_value(&field_path)),
         },
         Write {
-            path: oxpath!("ui", "settings", "focused"),
-            record: Record::parsed(path_to_value(&oxpath!("settings", "_edit"))),
+            path: path!("ui", "settings", "focused"),
+            record: Record::parsed(path_to_value(&path!("settings", "_edit"))),
         },
     ]
 }
@@ -274,7 +274,7 @@ fn enter_edit_mode(field_path: Path, buffer: String) -> Vec<Write> {
 /// root. Clears target_path + buffer + cursor_saved.
 fn clear_edit_subtree() -> Write {
     Write {
-        path: oxpath!("ui", "settings", "edit"),
+        path: path!("ui", "settings", "edit"),
         record: Record::parsed(Value::Null),
     }
 }
@@ -292,8 +292,8 @@ fn insert_char(data: &mut dyn Reader, ctx: &crate::settings::CommandCtx<'_>) -> 
     };
     insert_char_into_edit_buffer(
         data,
-        &oxpath!("ui", "settings", "edit", "buffer"),
-        &oxpath!("ui", "settings", "edit", "target_path"),
+        &path!("ui", "settings", "edit", "buffer"),
+        &path!("ui", "settings", "edit", "target_path"),
         ch,
     )
 }
@@ -399,12 +399,12 @@ impl horns_core::KeyHandler for TextInputHandler {
 
 fn delete_back(data: &mut dyn Reader) -> Vec<Write> {
     let mut current =
-        read_string(data, &oxpath!("ui", "settings", "edit", "buffer")).unwrap_or_default();
+        read_string(data, &path!("ui", "settings", "edit", "buffer")).unwrap_or_default();
     if current.pop().is_none() {
         return Vec::new();
     }
     vec![Write {
-        path: oxpath!("ui", "settings", "edit", "buffer"),
+        path: path!("ui", "settings", "edit", "buffer"),
         record: Record::parsed(Value::String(current)),
     }]
 }
@@ -413,11 +413,11 @@ fn delete_back(data: &mut dyn Reader) -> Vec<Write> {
 /// edit subtree. Falls back to `settings/accounts` when no save is
 /// present (pathological seed).
 fn cancel(data: &mut dyn Reader) -> Vec<Write> {
-    let saved = read_path(data, &oxpath!("ui", "settings", "edit", "cursor_saved"))
-        .unwrap_or_else(|| oxpath!("settings", "accounts"));
+    let saved = read_path(data, &path!("ui", "settings", "edit", "cursor_saved"))
+        .unwrap_or_else(|| path!("settings", "accounts"));
     vec![
         Write {
-            path: oxpath!("ui", "settings", "focused"),
+            path: path!("ui", "settings", "focused"),
             record: Record::parsed(path_to_value(&saved)),
         },
         clear_edit_subtree(),
@@ -428,15 +428,14 @@ fn cancel(data: &mut dyn Reader) -> Vec<Write> {
 /// the cursor to the target field row, and cascade-clears the edit
 /// subtree.
 fn commit(data: &mut dyn Reader) -> Vec<Write> {
-    let field_path = match read_path(data, &oxpath!("ui", "settings", "edit", "target_path")) {
+    let field_path = match read_path(data, &path!("ui", "settings", "edit", "target_path")) {
         Some(p) => p,
         None => {
             // No target — fall back to the saved cursor, then clear.
             return cancel(data);
         }
     };
-    let buffer =
-        read_string(data, &oxpath!("ui", "settings", "edit", "buffer")).unwrap_or_default();
+    let buffer = read_string(data, &path!("ui", "settings", "edit", "buffer")).unwrap_or_default();
     let row = visible_rows::enumerate(data)
         .into_iter()
         .find(|r| r.path == field_path);
@@ -458,7 +457,7 @@ fn commit(data: &mut dyn Reader) -> Vec<Write> {
     };
     // Restore cursor to the field row — the row the user just edited.
     writes.push(Write {
-        path: oxpath!("ui", "settings", "focused"),
+        path: path!("ui", "settings", "focused"),
         record: Record::parsed(path_to_value(&field_path)),
     });
     writes.push(clear_edit_subtree());
@@ -473,7 +472,7 @@ fn current_display_name(data: &mut dyn Reader, account: &str) -> Option<String> 
     let acct_comp = ox_kernel::PathComponent::try_new(account).ok()?;
     let acct: ox_gate::AccountConfig = super::super::renderers::util::read_typed(
         data,
-        &oxpath!("config", "gate", "accounts", acct_comp),
+        &path!("config", "gate", "accounts", acct_comp),
     )?;
     acct.display_name
 }
@@ -482,7 +481,7 @@ fn current_endpoint(data: &mut dyn Reader, account: &str) -> Option<String> {
     let acct_comp = ox_kernel::PathComponent::try_new(account).ok()?;
     let acct: ox_gate::AccountConfig = super::super::renderers::util::read_typed(
         data,
-        &oxpath!("config", "gate", "accounts", acct_comp),
+        &path!("config", "gate", "accounts", acct_comp),
     )
     .or_else(|| {
         // TOML-loaded accounts have no parent leaf; synthesize a
@@ -497,7 +496,7 @@ fn current_endpoint(data: &mut dyn Reader, account: &str) -> Option<String> {
     let provider_comp = ox_kernel::PathComponent::try_new(&acct.provider).ok()?;
     let provider: ox_gate::ProviderConfig = super::super::renderers::util::read_typed(
         data,
-        &oxpath!("config", "gate", "providers", provider_comp),
+        &path!("config", "gate", "providers", provider_comp),
     )?;
     Some(provider.endpoint)
 }
@@ -505,7 +504,7 @@ fn current_endpoint(data: &mut dyn Reader, account: &str) -> Option<String> {
 fn current_api_key(data: &mut dyn Reader, account: &str) -> Option<String> {
     let acct_comp = ox_kernel::PathComponent::try_new(account).ok()?;
     let key: ox_gate::ApiKey =
-        super::super::renderers::util::read_typed(data, &oxpath!("secret", "keys", acct_comp))?;
+        super::super::renderers::util::read_typed(data, &path!("secret", "keys", acct_comp))?;
     Some(key.expose().to_string())
 }
 
@@ -518,7 +517,7 @@ fn current_model_override(
     let acct_comp = ox_kernel::PathComponent::try_new(account).ok()?;
     let models: Vec<ox_gate::ModelInfo> = super::super::renderers::util::read_typed(
         data,
-        &oxpath!("config", "gate", "accounts", acct_comp, "models"),
+        &path!("config", "gate", "accounts", acct_comp, "models"),
     )?;
     let model = models.into_iter().find(|m| m.id == model_id)?;
     let value = match field {
@@ -532,9 +531,7 @@ fn read_child_string(data: &mut dyn Reader, account: &str, child: &str) -> Optio
     let acct_comp = ox_kernel::PathComponent::try_new(account).ok()?;
     let child_comp = ox_kernel::PathComponent::try_new(child).ok()?;
     let r = data
-        .read(&oxpath!(
-            "config", "gate", "accounts", acct_comp, child_comp
-        ))
+        .read(&path!("config", "gate", "accounts", acct_comp, child_comp))
         .ok()
         .flatten()?;
     match r.as_value()? {
@@ -563,7 +560,7 @@ fn commit_account_field(
             let trimmed = buffer.trim();
             let mut acct: ox_gate::AccountConfig = super::super::renderers::util::read_typed(
                 data,
-                &oxpath!("config", "gate", "accounts", acct_comp.clone()),
+                &path!("config", "gate", "accounts", acct_comp.clone()),
             )
             .unwrap_or_else(|| ox_gate::AccountConfig {
                 provider: account.to_string(),
@@ -579,7 +576,7 @@ fn commit_account_field(
                 Err(_) => return Vec::new(),
             };
             vec![Write {
-                path: oxpath!("config", "gate", "accounts", acct_comp),
+                path: path!("config", "gate", "accounts", acct_comp),
                 record: Record::parsed(value),
             }]
         }
@@ -588,7 +585,7 @@ fn commit_account_field(
             // no parent leaf exists yet.
             let acct: ox_gate::AccountConfig = super::super::renderers::util::read_typed(
                 data,
-                &oxpath!("config", "gate", "accounts", acct_comp.clone()),
+                &path!("config", "gate", "accounts", acct_comp.clone()),
             )
             .or_else(|| {
                 read_child_string(data, account, "provider").map(|p| ox_gate::AccountConfig {
@@ -604,7 +601,7 @@ fn commit_account_field(
                 Ok(c) => c,
                 Err(_) => return Vec::new(),
             };
-            let provider_path = oxpath!("config", "gate", "providers", provider_comp);
+            let provider_path = path!("config", "gate", "providers", provider_comp);
             let mut provider: ox_gate::ProviderConfig =
                 super::super::renderers::util::read_typed(data, &provider_path).unwrap_or_else(
                     || ox_gate::ProviderConfig {
@@ -625,7 +622,7 @@ fn commit_account_field(
             }]
         }
         AccountField::Key => {
-            let key_path = oxpath!("secret", "keys", acct_comp);
+            let key_path = path!("secret", "keys", acct_comp);
             let api_key = ox_gate::ApiKey::new(buffer.to_string());
             let value = match to_value(&api_key) {
                 Ok(v) => v,
@@ -652,7 +649,7 @@ fn commit_model_field(
         Ok(c) => c,
         Err(_) => return Vec::new(),
     };
-    let models_path = oxpath!("config", "gate", "accounts", acct_comp, "models");
+    let models_path = path!("config", "gate", "accounts", acct_comp, "models");
     let mut models: Vec<ox_gate::ModelInfo> =
         match super::super::renderers::util::read_typed(data, &models_path) {
             Some(m) => m,
@@ -703,9 +700,8 @@ pub fn read_edit_state(data: &mut dyn Reader) -> Option<EditState> {
     if !cursor_is_at_edit(data) {
         return None;
     }
-    let field_path = read_path(data, &oxpath!("ui", "settings", "edit", "target_path"))?;
-    let buffer =
-        read_string(data, &oxpath!("ui", "settings", "edit", "buffer")).unwrap_or_default();
+    let field_path = read_path(data, &path!("ui", "settings", "edit", "target_path"))?;
+    let buffer = read_string(data, &path!("ui", "settings", "edit", "buffer")).unwrap_or_default();
     Some(EditState { field_path, buffer })
 }
 
@@ -715,7 +711,7 @@ pub fn read_edit_state(data: &mut dyn Reader) -> Option<EditState> {
 pub fn cursor_is_at_edit(data: &mut dyn Reader) -> bool {
     read_focused_path(data)
         .as_ref()
-        .is_some_and(|p| p == &oxpath!("settings", "_edit"))
+        .is_some_and(|p| p == &path!("settings", "_edit"))
 }
 
 #[allow(dead_code)] // re-exported via `read_edit_state`'s field_path; placeholder
@@ -759,7 +755,7 @@ mod tests {
 
     fn write_index_with_account(snap: &mut SettingsSnapshot, name: &str, provider: &str) {
         snap.insert(
-            &oxpath!("settings", "index", "entries", "accounts"),
+            &path!("settings", "index", "entries", "accounts"),
             to_value(&SettingsIndexEntry {
                 id: "accounts".to_string(),
                 label: "Accounts".to_string(),
@@ -771,7 +767,7 @@ mod tests {
         );
         let comp = ox_kernel::PathComponent::try_new(name).unwrap();
         snap.insert(
-            &oxpath!("config", "gate", "accounts", comp),
+            &path!("config", "gate", "accounts", comp),
             to_value(&AccountConfig {
                 provider: provider.to_string(),
                 ..Default::default()
@@ -779,7 +775,7 @@ mod tests {
             .unwrap(),
         );
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&[
                 "settings/accounts".to_string(),
                 format!("settings/accounts/{name}"),
@@ -798,19 +794,19 @@ mod tests {
     /// `ui/settings/edit/{target_path,buffer,cursor_saved}`.
     fn seed_edit_active(snap: &mut SettingsSnapshot, target: &Path, buffer: &str) {
         snap.insert(
-            &oxpath!("ui", "settings", "focused"),
-            path_to_value(&oxpath!("settings", "_edit")),
+            &path!("ui", "settings", "focused"),
+            path_to_value(&path!("settings", "_edit")),
         );
         snap.insert(
-            &oxpath!("ui", "settings", "edit", "target_path"),
+            &path!("ui", "settings", "edit", "target_path"),
             path_to_value(target),
         );
         snap.insert(
-            &oxpath!("ui", "settings", "edit", "buffer"),
+            &path!("ui", "settings", "edit", "buffer"),
             Value::String(buffer.into()),
         );
         snap.insert(
-            &oxpath!("ui", "settings", "edit", "cursor_saved"),
+            &path!("ui", "settings", "edit", "cursor_saved"),
             path_to_value(target),
         );
     }
@@ -821,7 +817,7 @@ mod tests {
         write_index_with_account(&mut snap, "alpha", "anthropic");
         let provider_comp = ox_kernel::PathComponent::try_new("anthropic").unwrap();
         snap.insert(
-            &oxpath!("config", "gate", "providers", provider_comp),
+            &path!("config", "gate", "providers", provider_comp),
             to_value(&ox_gate::ProviderConfig {
                 dialect: "anthropic".into(),
                 endpoint: "https://api.anthropic.com".into(),
@@ -830,20 +826,17 @@ mod tests {
             })
             .unwrap(),
         );
-        let target = oxpath!("settings", "accounts", "alpha", "endpoint");
-        snap.insert(
-            &oxpath!("ui", "settings", "focused"),
-            path_to_value(&target),
-        );
+        let target = path!("settings", "accounts", "alpha", "endpoint");
+        snap.insert(&path!("ui", "settings", "focused"), path_to_value(&target));
 
         let writes = run(&BeginEditAccountEndpoint::new(), &mut snap);
         // target_path + buffer + cursor_saved + cursor (focused) = 4 writes
         assert_eq!(writes.len(), 4);
         assert_eq!(
             writes[0].path,
-            oxpath!("ui", "settings", "edit", "target_path")
+            path!("ui", "settings", "edit", "target_path")
         );
-        assert_eq!(writes[1].path, oxpath!("ui", "settings", "edit", "buffer"));
+        assert_eq!(writes[1].path, path!("ui", "settings", "edit", "buffer"));
         match &writes[1].record {
             Record::Parsed(Value::String(s)) => {
                 assert_eq!(s, "https://api.anthropic.com");
@@ -852,11 +845,11 @@ mod tests {
         }
         assert_eq!(
             writes[2].path,
-            oxpath!("ui", "settings", "edit", "cursor_saved")
+            path!("ui", "settings", "edit", "cursor_saved")
         );
         // Final write moves the cursor to `settings/_edit` — the
         // dispatcher's "edit scope is engaged" condition.
-        assert_eq!(writes[3].path, oxpath!("ui", "settings", "focused"));
+        assert_eq!(writes[3].path, path!("ui", "settings", "focused"));
     }
 
     #[test]
@@ -869,7 +862,7 @@ mod tests {
         write_index_with_account(&mut snap, "alpha", "anthropic");
         let provider_comp = ox_kernel::PathComponent::try_new("anthropic").unwrap();
         snap.insert(
-            &oxpath!("config", "gate", "providers", provider_comp),
+            &path!("config", "gate", "providers", provider_comp),
             to_value(&ox_gate::ProviderConfig {
                 dialect: "anthropic".into(),
                 endpoint: String::new(),
@@ -879,15 +872,15 @@ mod tests {
             .unwrap(),
         );
         snap.insert(
-            &oxpath!("ui", "settings", "focused"),
-            path_to_value(&oxpath!("settings", "accounts", "alpha", "endpoint")),
+            &path!("ui", "settings", "focused"),
+            path_to_value(&path!("settings", "accounts", "alpha", "endpoint")),
         );
 
         let writes = run(&BeginEditAccountEndpoint::new(), &mut snap);
         // Apply and verify the focused cursor is now at settings/_edit.
         apply_writes(&mut snap, &writes);
         let focused = read_focused_path(&mut snap).unwrap();
-        assert_eq!(focused, oxpath!("settings", "_edit"));
+        assert_eq!(focused, path!("settings", "_edit"));
     }
 
     #[test]
@@ -900,7 +893,7 @@ mod tests {
         write_index_with_account(&mut snap, "alpha", "anthropic");
         let provider_comp = ox_kernel::PathComponent::try_new("anthropic").unwrap();
         snap.insert(
-            &oxpath!("config", "gate", "providers", provider_comp),
+            &path!("config", "gate", "providers", provider_comp),
             to_value(&ox_gate::ProviderConfig {
                 dialect: "anthropic".into(),
                 endpoint: "seed".into(),
@@ -909,28 +902,21 @@ mod tests {
             })
             .unwrap(),
         );
-        let target = oxpath!("settings", "accounts", "alpha", "endpoint");
-        snap.insert(
-            &oxpath!("ui", "settings", "focused"),
-            path_to_value(&target),
-        );
+        let target = path!("settings", "accounts", "alpha", "endpoint");
+        snap.insert(&path!("ui", "settings", "focused"), path_to_value(&target));
 
         let writes = run(&BeginEditAccountEndpoint::new(), &mut snap);
         apply_writes(&mut snap, &writes);
         assert_eq!(
-            read_path(&mut snap, &oxpath!("ui", "settings", "edit", "target_path")).unwrap(),
+            read_path(&mut snap, &path!("ui", "settings", "edit", "target_path")).unwrap(),
             target
         );
         assert_eq!(
-            read_string(&mut snap, &oxpath!("ui", "settings", "edit", "buffer")).unwrap(),
+            read_string(&mut snap, &path!("ui", "settings", "edit", "buffer")).unwrap(),
             "seed",
         );
         assert_eq!(
-            read_path(
-                &mut snap,
-                &oxpath!("ui", "settings", "edit", "cursor_saved")
-            )
-            .unwrap(),
+            read_path(&mut snap, &path!("ui", "settings", "edit", "cursor_saved")).unwrap(),
             target,
         );
     }
@@ -941,13 +927,13 @@ mod tests {
         write_index_with_account(&mut snap, "alpha", "anthropic");
         seed_edit_active(
             &mut snap,
-            &oxpath!("settings", "accounts", "alpha", "endpoint"),
+            &path!("settings", "accounts", "alpha", "endpoint"),
             "hello",
         );
 
         let writes = run_with_key(&InsertChar::new(), &mut snap, '!');
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "settings", "edit", "buffer"));
+        assert_eq!(writes[0].path, path!("ui", "settings", "edit", "buffer"));
         match &writes[0].record {
             Record::Parsed(Value::String(s)) => assert_eq!(s, "hello!"),
             other => panic!("unexpected: {other:?}"),
@@ -958,7 +944,7 @@ mod tests {
     fn insert_char_rejects_non_digit_for_model_field() {
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
-            &oxpath!("settings", "index", "entries", "models"),
+            &path!("settings", "index", "entries", "models"),
             to_value(&SettingsIndexEntry {
                 id: "models".to_string(),
                 label: "Models".to_string(),
@@ -970,11 +956,11 @@ mod tests {
         );
         let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
         snap.insert(
-            &oxpath!("config", "gate", "accounts", comp.clone(), "provider"),
+            &path!("config", "gate", "accounts", comp.clone(), "provider"),
             Value::String("alpha".into()),
         );
         snap.insert(
-            &oxpath!("config", "gate", "accounts", comp, "models"),
+            &path!("config", "gate", "accounts", comp, "models"),
             to_value(&vec![ModelInfo {
                 id: "m1".into(),
                 display_name: "m1".into(),
@@ -985,13 +971,13 @@ mod tests {
             .unwrap(),
         );
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&[
                 "settings/models".to_string(),
                 "settings/models/alpha/m1".to_string(),
             ]),
         );
-        let field_path = oxpath!("settings", "models", "alpha", "m1", "max_context_size");
+        let field_path = path!("settings", "models", "alpha", "m1", "max_context_size");
         seed_edit_active(&mut snap, &field_path, "100");
 
         let writes = run_with_key(&InsertChar::new(), &mut snap, 'x');
@@ -1012,12 +998,12 @@ mod tests {
     fn delete_back_pops_from_buffer() {
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
-            &oxpath!("ui", "settings", "edit", "buffer"),
+            &path!("ui", "settings", "edit", "buffer"),
             Value::String("hello".into()),
         );
         let writes = run(&DeleteBack::new(), &mut snap);
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "settings", "edit", "buffer"));
+        assert_eq!(writes[0].path, path!("ui", "settings", "edit", "buffer"));
         match &writes[0].record {
             Record::Parsed(Value::String(s)) => assert_eq!(s, "hell"),
             other => panic!("unexpected: {other:?}"),
@@ -1028,7 +1014,7 @@ mod tests {
     fn delete_back_on_empty_buffer_is_inert() {
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
-            &oxpath!("ui", "settings", "edit", "buffer"),
+            &path!("ui", "settings", "edit", "buffer"),
             Value::String(String::new()),
         );
         let writes = run(&DeleteBack::new(), &mut snap);
@@ -1040,13 +1026,13 @@ mod tests {
         // CF-4 invariant: cancel reads `cursor_saved` and writes
         // `focused = saved`, then cascade-clears the edit subtree.
         let mut snap = SettingsSnapshot::empty();
-        let target = oxpath!("settings", "accounts", "alpha", "endpoint");
+        let target = path!("settings", "accounts", "alpha", "endpoint");
         seed_edit_active(&mut snap, &target, "in-progress");
 
         let writes = run(&Cancel::new(), &mut snap);
         // cursor restore + subtree cascade-null = 2 writes
         assert_eq!(writes.len(), 2);
-        assert_eq!(writes[0].path, oxpath!("ui", "settings", "focused"));
+        assert_eq!(writes[0].path, path!("ui", "settings", "focused"));
         // Restored cursor matches the saved value (= target for edit).
         match &writes[0].record {
             Record::Parsed(v) => {
@@ -1055,7 +1041,7 @@ mod tests {
             }
             other => panic!("unexpected: {other:?}"),
         }
-        assert_eq!(writes[1].path, oxpath!("ui", "settings", "edit"));
+        assert_eq!(writes[1].path, path!("ui", "settings", "edit"));
         match &writes[1].record {
             Record::Parsed(Value::Null) => {}
             other => panic!("expected Null cascade clear, got {other:?}"),
@@ -1071,7 +1057,7 @@ mod tests {
         write_index_with_account(&mut snap, "alpha", "anthropic");
         let provider_comp = ox_kernel::PathComponent::try_new("anthropic").unwrap();
         snap.insert(
-            &oxpath!("config", "gate", "providers", provider_comp.clone()),
+            &path!("config", "gate", "providers", provider_comp.clone()),
             to_value(&ox_gate::ProviderConfig {
                 dialect: "anthropic".into(),
                 endpoint: "old".into(),
@@ -1080,7 +1066,7 @@ mod tests {
             })
             .unwrap(),
         );
-        let target = oxpath!("settings", "accounts", "alpha", "endpoint");
+        let target = path!("settings", "accounts", "alpha", "endpoint");
         seed_edit_active(&mut snap, &target, "https://new.example");
 
         let writes = run(&Commit::new(), &mut snap);
@@ -1088,13 +1074,13 @@ mod tests {
         assert_eq!(writes.len(), 3);
         assert_eq!(
             writes[0].path,
-            oxpath!("config", "gate", "providers", provider_comp)
+            path!("config", "gate", "providers", provider_comp)
         );
         // Apply and verify the endpoint changed.
         apply_writes(&mut snap, &writes);
         let provider: ox_gate::ProviderConfig = super::super::super::renderers::util::read_typed(
             &mut snap,
-            &oxpath!(
+            &path!(
                 "config",
                 "gate",
                 "providers",
@@ -1116,20 +1102,20 @@ mod tests {
         // settings/accounts) and cascade-clear.
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
-            &oxpath!("ui", "settings", "focused"),
-            path_to_value(&oxpath!("settings", "_edit")),
+            &path!("ui", "settings", "focused"),
+            path_to_value(&path!("settings", "_edit")),
         );
         let writes = run(&Commit::new(), &mut snap);
         // No data write; cursor-restore + cascade-null = 2 writes
         assert_eq!(writes.len(), 2);
-        assert_eq!(writes[0].path, oxpath!("ui", "settings", "focused"));
-        assert_eq!(writes[1].path, oxpath!("ui", "settings", "edit"));
+        assert_eq!(writes[0].path, path!("ui", "settings", "focused"));
+        assert_eq!(writes[1].path, path!("ui", "settings", "edit"));
     }
 
     #[test]
     fn read_edit_state_reflects_active_edit() {
         let mut snap = SettingsSnapshot::empty();
-        let field_path = oxpath!("settings", "accounts", "alpha", "endpoint");
+        let field_path = path!("settings", "accounts", "alpha", "endpoint");
         seed_edit_active(&mut snap, &field_path, "typing");
         let state = read_edit_state(&mut snap).unwrap();
         assert_eq!(state.field_path, field_path);
@@ -1142,8 +1128,8 @@ mod tests {
         // Cursor anywhere but `settings/_edit` means edit mode is not
         // active — the cursor IS the discriminator.
         snap.insert(
-            &oxpath!("ui", "settings", "focused"),
-            path_to_value(&oxpath!("settings", "accounts")),
+            &path!("ui", "settings", "focused"),
+            path_to_value(&path!("settings", "accounts")),
         );
         assert!(read_edit_state(&mut snap).is_none());
     }
@@ -1155,8 +1141,8 @@ mod tests {
 
     fn handler() -> TextInputHandler {
         TextInputHandler::new(
-            oxpath!("ui", "settings", "edit", "buffer"),
-            oxpath!("ui", "settings", "edit", "target_path"),
+            path!("ui", "settings", "edit", "buffer"),
+            path!("ui", "settings", "edit", "target_path"),
         )
     }
 
@@ -1186,7 +1172,7 @@ mod tests {
         write_index_with_account(&mut snap, "alpha", "anthropic");
         seed_edit_active(
             &mut snap,
-            &oxpath!("settings", "accounts", "alpha", "endpoint"),
+            &path!("settings", "accounts", "alpha", "endpoint"),
             "hello",
         );
 
@@ -1200,7 +1186,7 @@ mod tests {
         // Exactly the same write shape as EditInsertChar emits today —
         // one buffer write with the appended char.
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "settings", "edit", "buffer"));
+        assert_eq!(writes[0].path, path!("ui", "settings", "edit", "buffer"));
         match &writes[0].record {
             Record::Parsed(Value::String(s)) => assert_eq!(s, "hello!"),
             other => panic!("unexpected record: {other:?}"),
@@ -1257,7 +1243,7 @@ mod tests {
         write_index_with_account(&mut snap, "alpha", "anthropic");
         seed_edit_active(
             &mut snap,
-            &oxpath!("settings", "accounts", "alpha", "endpoint"),
+            &path!("settings", "accounts", "alpha", "endpoint"),
             "ab",
         );
 
@@ -1284,7 +1270,7 @@ mod tests {
         let mut snap = SettingsSnapshot::empty();
         // Account with a display_name distinct from its path id.
         snap.insert(
-            &oxpath!("settings", "index", "entries", "accounts"),
+            &path!("settings", "index", "entries", "accounts"),
             to_value(&SettingsIndexEntry {
                 id: "accounts".to_string(),
                 label: "Accounts".to_string(),
@@ -1296,7 +1282,7 @@ mod tests {
         );
         let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
         snap.insert(
-            &oxpath!("config", "gate", "accounts", comp),
+            &path!("config", "gate", "accounts", comp),
             to_value(&AccountConfig {
                 provider: "alpha".to_string(),
                 display_name: Some("My Local LM".to_string()),
@@ -1304,22 +1290,19 @@ mod tests {
             .unwrap(),
         );
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&[
                 "settings/accounts".to_string(),
                 "settings/accounts/alpha".to_string(),
             ]),
         );
-        let target = oxpath!("settings", "accounts", "alpha", "name");
-        snap.insert(
-            &oxpath!("ui", "settings", "focused"),
-            path_to_value(&target),
-        );
+        let target = path!("settings", "accounts", "alpha", "name");
+        snap.insert(&path!("ui", "settings", "focused"), path_to_value(&target));
 
         let writes = run(&BeginEditAccountName::new(), &mut snap);
         assert_eq!(writes.len(), 4, "expected target+buffer+saved+focused");
         // Buffer holds the existing display_name.
-        assert_eq!(writes[1].path, oxpath!("ui", "settings", "edit", "buffer"));
+        assert_eq!(writes[1].path, path!("ui", "settings", "edit", "buffer"));
         match &writes[1].record {
             Record::Parsed(Value::String(s)) => assert_eq!(s, "My Local LM"),
             other => panic!("buffer is not a String: {other:?}"),
@@ -1331,11 +1314,8 @@ mod tests {
         let mut snap = SettingsSnapshot::empty();
         // No display_name set — fall back to the account's path id.
         write_index_with_account(&mut snap, "alpha", "alpha");
-        let target = oxpath!("settings", "accounts", "alpha", "name");
-        snap.insert(
-            &oxpath!("ui", "settings", "focused"),
-            path_to_value(&target),
-        );
+        let target = path!("settings", "accounts", "alpha", "name");
+        snap.insert(&path!("ui", "settings", "focused"), path_to_value(&target));
 
         let writes = run(&BeginEditAccountName::new(), &mut snap);
         match &writes[1].record {
@@ -1353,14 +1333,14 @@ mod tests {
         write_index_with_account(&mut snap, "alpha", "alpha");
         let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
         snap.insert(
-            &oxpath!("config", "gate", "accounts", comp.clone()),
+            &path!("config", "gate", "accounts", comp.clone()),
             to_value(&AccountConfig {
                 provider: "alpha".to_string(),
                 display_name: Some("old".to_string()),
             })
             .unwrap(),
         );
-        let target = oxpath!("settings", "accounts", "alpha", "name");
+        let target = path!("settings", "accounts", "alpha", "name");
         seed_edit_active(&mut snap, &target, "Renamed Connection");
 
         let writes = run(&Commit::new(), &mut snap);
@@ -1370,7 +1350,7 @@ mod tests {
         // display_name; the path itself is unchanged.
         let acct: AccountConfig = crate::settings::renderers::util::read_typed(
             &mut snap,
-            &oxpath!("config", "gate", "accounts", comp),
+            &path!("config", "gate", "accounts", comp),
         )
         .expect("account record persists at original id");
         assert_eq!(acct.display_name.as_deref(), Some("Renamed Connection"));
@@ -1386,14 +1366,14 @@ mod tests {
         write_index_with_account(&mut snap, "alpha", "alpha");
         let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
         snap.insert(
-            &oxpath!("config", "gate", "accounts", comp.clone()),
+            &path!("config", "gate", "accounts", comp.clone()),
             to_value(&AccountConfig {
                 provider: "alpha".to_string(),
                 display_name: Some("old".to_string()),
             })
             .unwrap(),
         );
-        let target = oxpath!("settings", "accounts", "alpha", "name");
+        let target = path!("settings", "accounts", "alpha", "name");
         seed_edit_active(&mut snap, &target, "");
 
         let writes = run(&Commit::new(), &mut snap);
@@ -1401,7 +1381,7 @@ mod tests {
 
         let acct: AccountConfig = crate::settings::renderers::util::read_typed(
             &mut snap,
-            &oxpath!("config", "gate", "accounts", comp),
+            &path!("config", "gate", "accounts", comp),
         )
         .unwrap();
         assert!(

@@ -114,7 +114,7 @@ impl Default for CommandRegistry {
 
 #[cfg(test)]
 mod tests {
-    use ox_path::oxpath;
+    use structfs_core_store::path;
 
     use super::*;
 
@@ -156,7 +156,7 @@ mod tests {
     #[test]
     fn command_scope_with_cursor_roundtrip() {
         json_roundtrip(CommandScope {
-            cursor_path: Some(oxpath!("settings", "accounts")),
+            cursor_path: Some(path!("settings", "accounts")),
         });
     }
 
@@ -168,7 +168,7 @@ mod tests {
                 description: "Persist edits".to_string(),
             },
             scope: CommandScope {
-                cursor_path: Some(oxpath!("settings", "accounts")),
+                cursor_path: Some(path!("settings", "accounts")),
             },
         });
     }
@@ -222,7 +222,7 @@ mod tests {
         }
         fn run(&self, _snapshot: &mut dyn Reader, _ctx: &CommandCtx<'_>) -> Vec<Write> {
             vec![Write {
-                path: oxpath!("ui", "x"),
+                path: path!("ui", "x"),
                 record: Record::parsed(Value::String("hello".into())),
             }]
         }
@@ -264,9 +264,9 @@ mod tests {
             // The empty registry must miss for any cursor; that's the
             // observable signal we're verifying — that the command can
             // *call* the registry through ctx.
-            let hit = ctx.registry.lookup(&oxpath!("settings", "ghost")).is_some();
+            let hit = ctx.registry.lookup(&path!("settings", "ghost")).is_some();
             vec![Write {
-                path: oxpath!("ui", "registry_hit"),
+                path: path!("ui", "registry_hit"),
                 record: Record::parsed(Value::Bool(hit)),
             }]
         }
@@ -305,7 +305,7 @@ mod tests {
         }
         fn run(&self, _snapshot: &mut dyn Reader, ctx: &CommandCtx<'_>) -> Vec<Write> {
             vec![Write {
-                path: oxpath!("ui", "seen_key"),
+                path: path!("ui", "seen_key"),
                 record: Record::parsed(Value::Bool(ctx.last_keystroke.is_some())),
             }]
         }
@@ -335,7 +335,7 @@ mod tests {
         let writes = cmd.run(&mut reader, &ctx);
 
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "x"));
+        assert_eq!(writes[0].path, path!("ui", "x"));
         match &writes[0].record {
             Record::Parsed(Value::String(s)) => assert_eq!(s, "hello"),
             other => panic!("unexpected record: {other:?}"),
@@ -359,7 +359,7 @@ mod tests {
         let writes = cmd.run(&mut reader, &ctx);
 
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "registry_hit"));
+        assert_eq!(writes[0].path, path!("ui", "registry_hit"));
         // Empty renderer registry must miss → the command observed `false`.
         match &writes[0].record {
             Record::Parsed(Value::Bool(b)) => assert!(!*b),

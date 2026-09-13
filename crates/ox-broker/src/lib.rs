@@ -336,9 +336,11 @@ impl BrokerStore {
 
     /// Mount an async store at the given prefix and spawn its server task.
     ///
-    /// Reads are resolved inline; writes are spawned as independent tasks so a
-    /// deferred write does not block the store from handling subsequent requests.
-    pub async fn mount_async<S: async_store::AsyncReader + async_store::AsyncWriter>(
+    /// Reads and writes resolve in independent tasks; producing each detached
+    /// future briefly borrows the store, while waiting never holds that borrow.
+    pub async fn mount_async<
+        S: structfs_core_store::DetachedReader + structfs_core_store::DetachedWriter + 'static,
+    >(
         &self,
         prefix: structfs_core_store::Path,
         store: S,
@@ -669,9 +671,10 @@ mod integration_tests {
         assert!(entries.is_empty());
     }
 
-    // ---- AsyncReader / AsyncWriter tests ----
+    // ---- DetachedReader / DetachedWriter tests ----
 
-    use crate::async_store::{AsyncReader, AsyncWriter, BoxFuture};
+    use crate::async_store::BoxFuture;
+    use structfs_core_store::{DetachedReader, DetachedWriter};
 
     /// A simple async store backed by a BTreeMap — all operations resolve immediately.
     struct AsyncMemoryStore {
@@ -691,8 +694,8 @@ mod integration_tests {
         }
     }
 
-    impl AsyncReader for AsyncMemoryStore {
-        fn read(&mut self, from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
+    impl DetachedReader for AsyncMemoryStore {
+        fn read_detached(&mut self, from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
             let result = Ok(self
                 .data
                 .get(&from.to_string())
@@ -701,8 +704,12 @@ mod integration_tests {
         }
     }
 
-    impl AsyncWriter for AsyncMemoryStore {
-        fn write(&mut self, to: &Path, data: Record) -> BoxFuture<Result<Path, StoreError>> {
+    impl DetachedWriter for AsyncMemoryStore {
+        fn write_detached(
+            &mut self,
+            to: &Path,
+            data: Record,
+        ) -> BoxFuture<Result<Path, StoreError>> {
             if let Some(value) = data.as_value() {
                 self.data.insert(to.to_string(), value.clone());
             }
@@ -764,14 +771,18 @@ mod integration_tests {
         }
     }
 
-    impl AsyncReader for DeferredWriteStore {
-        fn read(&mut self, _from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
+    impl DetachedReader for DeferredWriteStore {
+        fn read_detached(&mut self, _from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
             Box::pin(async move { Ok(None) })
         }
     }
 
-    impl AsyncWriter for DeferredWriteStore {
-        fn write(&mut self, to: &Path, _data: Record) -> BoxFuture<Result<Path, StoreError>> {
+    impl DetachedWriter for DeferredWriteStore {
+        fn write_detached(
+            &mut self,
+            to: &Path,
+            _data: Record,
+        ) -> BoxFuture<Result<Path, StoreError>> {
             let key = to.to_string();
             let blocker = self.blocker.clone();
             let path = to.clone();
@@ -890,6 +901,16 @@ mod integration_tests {
             *fired.lock().unwrap(),
             1,
             "subscription handler should have fired once"
+        );
+
+        client
+            .write_owned(&path!("trigger"), Record::parsed(Value::Integer(2)))
+            .await
+            .unwrap();
+        assert_eq!(
+            *fired.lock().unwrap(),
+            2,
+            "owned writes must retain subscription dispatch"
         );
 
         // The status path should now hold "ok".

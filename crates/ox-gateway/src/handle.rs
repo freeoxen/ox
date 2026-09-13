@@ -21,6 +21,29 @@ pub struct InflightGc {
 }
 
 impl InflightGc {
+    /// Supervise allocation before returning its guard. If the caller drops
+    /// this future, the eventual accepted handle is still received and GC'd.
+    pub async fn open(
+        client: ClientHandle,
+        base: Path,
+        data: Record,
+    ) -> Result<Self, structfs_core_store::Error> {
+        let (send, recv) = tokio::sync::oneshot::channel();
+        crate::codec_block::executor().spawn(async move {
+            let result = client
+                .write_owned(&base, data)
+                .await
+                .map(|relative| Self::new(client.clone(), base.join(&relative)));
+            let _ = send.send(result);
+        });
+        recv.await.map_err(|_| {
+            structfs_core_store::Error::store("gateway", "open", "handle opener stopped")
+        })?
+    }
+    pub fn path(&self) -> &Path {
+        &self.handle
+    }
+
     pub fn new(client: ClientHandle, handle: Path) -> Self {
         Self {
             client,
@@ -30,11 +53,11 @@ impl InflightGc {
     }
 
     pub async fn gc_now(mut self) {
-        self.armed = false;
-        let _ = self
+        let result = self
             .client
-            .write(&self.handle, Record::parsed(Value::Null))
+            .write_owned(&self.handle, Record::parsed(Value::Null))
             .await;
+        self.armed = result.is_err();
     }
 }
 
@@ -45,11 +68,14 @@ impl Drop for InflightGc {
         }
         let client = self.client.clone();
         let handle = self.handle.clone();
-        if let Ok(rt) = tokio::runtime::Handle::try_current() {
-            rt.spawn(async move {
-                let _ = client.write(&handle, Record::parsed(Value::Null)).await;
-            });
-        }
+        crate::codec_block::executor().spawn(async move {
+            if let Err(error) = client
+                .write_owned(&handle, Record::parsed(Value::Null))
+                .await
+            {
+                tracing::error!(%error, %handle, "gateway handle cleanup failed");
+            }
+        });
     }
 }
 
@@ -119,9 +145,9 @@ mod tests {
     fn events_from_subpath_produces_three_components() {
         let p = events_from_subpath(42);
         assert_eq!(p.len(), 3);
-        assert_eq!(p[0].as_str(), "events");
-        assert_eq!(p[1].as_str(), "from");
-        assert_eq!(p[2].as_str(), "42");
+        assert_eq!(&p[0], "events");
+        assert_eq!(&p[1], "from");
+        assert_eq!(&p[2], "42");
     }
 
     #[test]

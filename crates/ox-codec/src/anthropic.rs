@@ -273,10 +273,10 @@ pub fn extract_usage(body: &str) -> UsageInfo {
                 }
             }
             "message_delta" => {
-                if let Some(usage) = json.get("usage") {
-                    if let Some(ot) = usage.get("output_tokens").and_then(|v| v.as_u64()) {
-                        info.output_tokens = ot as u32;
-                    }
+                if let Some(usage) = json.get("usage")
+                    && let Some(ot) = usage.get("output_tokens").and_then(|v| v.as_u64())
+                {
+                    info.output_tokens = ot as u32;
                 }
             }
             _ => {}

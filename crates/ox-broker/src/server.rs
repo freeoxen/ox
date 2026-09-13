@@ -87,12 +87,11 @@ where
     })
 }
 
-/// Spawn a server task that wraps an async store (AsyncReader + AsyncWriter).
+/// Spawn a server task that wraps an async store (DetachedReader + DetachedWriter).
 ///
-/// Reads are resolved inline; writes are spawned as independent tasks so a
-/// deferred write does not block the store from handling subsequent requests.
+/// Reads and writes resolve independently; waiting never borrows the store.
 pub(crate) async fn spawn_async_server<
-    S: crate::async_store::AsyncReader + crate::async_store::AsyncWriter,
+    S: structfs_core_store::DetachedReader + structfs_core_store::DetachedWriter + 'static,
 >(
     inner: Arc<Mutex<BrokerInner>>,
     prefix: structfs_core_store::Path,
@@ -109,26 +108,30 @@ pub(crate) async fn spawn_async_server<
 
 /// The async server loop: reads and writes both spawn as independent tasks.
 ///
-/// `AsyncReader::read` returns a `'static` future that does not borrow the
-/// store (the trait's `BoxFuture` has no lifetime parameter), so the loop
+/// `structfs_core_store::DetachedReader::read_detached` returns a `'static` future that does not borrow the
+/// store, so the loop
 /// only builds the future inline and never awaits it. Awaiting reads inline
 /// would let one long-parked read — e.g. a blocking `events/from` drain —
 /// stall every other request on the mount.
-async fn async_server_loop<S: crate::async_store::AsyncReader + crate::async_store::AsyncWriter>(
+async fn async_server_loop<
+    S: structfs_core_store::DetachedReader + structfs_core_store::DetachedWriter + 'static,
+>(
     mut store: S,
     mut rx: tokio::sync::mpsc::Receiver<Request>,
 ) {
     while let Some(request) = rx.recv().await {
         match request {
-            Request::Read { path, reply } => {
-                let fut = store.read(&path);
+            Request::Read { path, mut reply } => {
+                let fut = store.read_detached(&path);
                 tokio::spawn(async move {
-                    let result = fut.await;
-                    let _ = reply.send(result);
+                    tokio::select! {
+                        _ = reply.closed() => {},
+                        result = fut => { let _ = reply.send(result); }
+                    }
                 });
             }
             Request::Write { path, data, reply } => {
-                let fut = store.write(&path, data);
+                let fut = store.write_detached(&path, data);
                 tokio::spawn(async move {
                     let result = fut.await;
                     let _ = reply.send(result);

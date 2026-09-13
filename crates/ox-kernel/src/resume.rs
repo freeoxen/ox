@@ -248,10 +248,10 @@ fn last_unresolved_tool_use(
     entries: &[LogEntry],
 ) -> Option<String> {
     for block in content.iter().rev() {
-        if let crate::ContentBlock::ToolUse(tc) = block {
-            if !has_terminal_for_tool(entries, &tc.id) {
-                return Some(tc.id.clone());
-            }
+        if let crate::ContentBlock::ToolUse(tc) = block
+            && !has_terminal_for_tool(entries, &tc.id)
+        {
+            return Some(tc.id.clone());
         }
     }
     None
@@ -283,10 +283,10 @@ fn resolves_allow_for(entries: &[LogEntry], tool_use_id: &str) -> bool {
         .rposition(|e| matches!(e, LogEntry::ToolCall { id, .. } if id == tool_use_id));
     let start = tool_call_pos.unwrap_or(0);
     for e in entries[start..].iter() {
-        if let LogEntry::ApprovalResolved { decision, .. } = e {
-            if decision.is_allow() {
-                return true;
-            }
+        if let LogEntry::ApprovalResolved { decision, .. } = e
+            && decision.is_allow()
+        {
+            return true;
         }
     }
     false

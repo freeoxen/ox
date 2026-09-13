@@ -7,8 +7,8 @@
 //! (which walk j/k between rows) consult this enumeration so the
 //! visible-row order can never disagree between them.
 
-use ox_path::oxpath;
 use ox_types::{AccountField, ModelField, SettingsIndexEntry};
+use structfs_core_store::path;
 use structfs_core_store::{Path, Reader, Value};
 
 use super::renderers::util::{child_names_under, read_typed};
@@ -64,7 +64,7 @@ pub struct VisibleRow {
 /// `Vec<String>` of cursor-path-strings; absent / wrong-shape reads
 /// return empty (nothing expanded).
 pub fn read_expanded_set(data: &mut dyn Reader) -> Vec<String> {
-    read_typed::<Vec<String>>(data, &oxpath!("ui", "settings", "expanded")).unwrap_or_default()
+    read_typed::<Vec<String>>(data, &path!("ui", "settings", "expanded")).unwrap_or_default()
 }
 
 /// Encode an expanded set back to a `Value` for writing.
@@ -89,7 +89,7 @@ pub fn enumerate(data: &mut dyn Reader) -> Vec<VisibleRow> {
             Err(_) => continue,
         };
         let entry: SettingsIndexEntry =
-            match read_typed(data, &oxpath!("settings", "index", "entries", comp)) {
+            match read_typed(data, &path!("settings", "index", "entries", comp)) {
                 Some(e) => e,
                 None => continue,
             };
@@ -143,7 +143,7 @@ fn append_account_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, expand
     for n in &names {
         let provider = if let Ok(comp) = ox_kernel::PathComponent::try_new(n) {
             let acct: Option<AccountConfig> =
-                read_typed(data, &oxpath!("config", "gate", "accounts", comp));
+                read_typed(data, &path!("config", "gate", "accounts", comp));
             acct.map(|a| a.provider)
                 .or_else(|| read_account_child_string_in_visible_rows(data, n, "provider"))
         } else {
@@ -247,9 +247,7 @@ fn read_account_child_string_in_visible_rows(
     let acct_comp = ox_kernel::PathComponent::try_new(account).ok()?;
     let child_comp = ox_kernel::PathComponent::try_new(child).ok()?;
     let r = data
-        .read(&oxpath!(
-            "config", "gate", "accounts", acct_comp, child_comp
-        ))
+        .read(&path!("config", "gate", "accounts", acct_comp, child_comp))
         .ok()
         .flatten()?;
     match r.as_value()? {
@@ -276,7 +274,7 @@ pub(crate) fn read_account_assembling_flat(
 ) -> Option<ox_gate::AccountConfig> {
     let comp = ox_kernel::PathComponent::try_new(name).ok()?;
     if let Some(a) =
-        read_typed::<ox_gate::AccountConfig>(data, &oxpath!("config", "gate", "accounts", comp))
+        read_typed::<ox_gate::AccountConfig>(data, &path!("config", "gate", "accounts", comp))
     {
         return Some(a);
     }
@@ -320,26 +318,26 @@ pub(crate) fn read_provider_assembling_flat(
     let comp = ox_kernel::PathComponent::try_new(provider_name).ok()?;
     if let Some(p) = read_typed::<ox_gate::ProviderConfig>(
         data,
-        &oxpath!("config", "gate", "providers", comp.clone()),
+        &path!("config", "gate", "providers", comp.clone()),
     ) {
         return Some(p);
     }
     let dialect: String = read_typed(
         data,
-        &oxpath!("config", "gate", "providers", comp.clone(), "dialect"),
+        &path!("config", "gate", "providers", comp.clone(), "dialect"),
     )?;
     let endpoint: String = read_typed(
         data,
-        &oxpath!("config", "gate", "providers", comp.clone(), "endpoint"),
+        &path!("config", "gate", "providers", comp.clone(), "endpoint"),
     )
     .unwrap_or_default();
     let version: String = read_typed(
         data,
-        &oxpath!("config", "gate", "providers", comp.clone(), "version"),
+        &path!("config", "gate", "providers", comp.clone(), "version"),
     )
     .unwrap_or_default();
     let auth: Option<ox_gate::AuthScheme> =
-        read_typed::<String>(data, &oxpath!("config", "gate", "providers", comp, "auth")).and_then(
+        read_typed::<String>(data, &path!("config", "gate", "providers", comp, "auth")).and_then(
             |s| match s.as_str() {
                 "x-api-key" => Some(ox_gate::AuthScheme::XApiKey),
                 "bearer-token" => Some(ox_gate::AuthScheme::BearerToken),
@@ -373,15 +371,15 @@ fn append_model_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, expanded
     // installs both render the badge against whichever path holds the
     // user's choice.
     let bootstrap: Option<ox_gate::CompletionRole> =
-        read_typed(data, &oxpath!("config", "gate", "completions", "bootstrap"))
-            .or_else(|| read_typed(data, &oxpath!("config", "gate", "completions", "primary")));
+        read_typed(data, &path!("config", "gate", "completions", "bootstrap"))
+            .or_else(|| read_typed(data, &path!("config", "gate", "completions", "primary")));
     // Same one-shot read for the default-available set: each row tests
     // membership locally instead of re-reading the record per pair.
     // Absent record collapses to an empty vec — no rows badge with D
     // until the user explicitly opts a subset in.
     let default_set: Vec<ModelKey> = read_typed(
         data,
-        &oxpath!("config", "gate", "completions", "default_available"),
+        &path!("config", "gate", "completions", "default_available"),
     )
     .unwrap_or_default();
 
@@ -524,7 +522,7 @@ fn append_account_field_rows(rows: &mut Vec<VisibleRow>, data: &mut dyn Reader, 
         }
     };
     let provider = read_provider_assembling_flat(data, &acct.provider);
-    let key: Option<ApiKey> = read_typed(data, &oxpath!("secret", "keys", comp.clone()));
+    let key: Option<ApiKey> = read_typed(data, &path!("secret", "keys", comp.clone()));
 
     for field in [
         AccountField::Name,
@@ -730,23 +728,25 @@ fn resolve_badge(data: &mut dyn Reader, source: &ox_types::BadgeSource) -> Optio
         BadgeSource::Static(s) => Some(s.clone()),
         BadgeSource::SubtreeCount(p) => Some(subtree_count(data, &p.to_string()).to_string()),
         BadgeSource::PrimaryReference => {
-            read_typed::<CompletionRole>(data, &oxpath!("config", "gate", "completions", "primary"))
+            read_typed::<CompletionRole>(data, &path!("config", "gate", "completions", "primary"))
                 .map(|role| format!("{} / {}", role.account, role.model_id))
         }
-        BadgeSource::BootstrapReference => read_typed::<CompletionRole>(
-            data,
-            &oxpath!("config", "gate", "completions", "bootstrap"),
-        )
-        .or_else(|| {
-            read_typed::<CompletionRole>(data, &oxpath!("config", "gate", "completions", "primary"))
-        })
-        .map(|role| format!("{} / {}", role.account, role.model_id)),
+        BadgeSource::BootstrapReference => {
+            read_typed::<CompletionRole>(data, &path!("config", "gate", "completions", "bootstrap"))
+                .or_else(|| {
+                    read_typed::<CompletionRole>(
+                        data,
+                        &path!("config", "gate", "completions", "primary"),
+                    )
+                })
+                .map(|role| format!("{} / {}", role.account, role.model_id))
+        }
     }
 }
 
 /// Stringify a `Path` for storage in the expanded set. The set is a
-/// `Vec<String>` because `Path` doesn't implement `Serialize`; we
-/// project to its slash-joined wire form, which round-trips through
+/// `Vec<String>` retains the existing slash-joined representation,
+/// which round-trips through
 /// `Path::parse`.
 pub fn path_to_string(p: &Path) -> String {
     p.to_string()
@@ -838,7 +838,7 @@ mod tests {
     fn write_account_with_provider(snap: &mut SettingsSnapshot, name: &str, provider: &str) {
         let comp = ox_kernel::PathComponent::try_new(name).unwrap();
         snap.insert(
-            &oxpath!("config", "gate", "accounts", comp, "provider"),
+            &path!("config", "gate", "accounts", comp, "provider"),
             Value::String(provider.into()),
         );
     }
@@ -857,14 +857,14 @@ mod tests {
             })
             .collect();
         snap.insert(
-            &oxpath!("config", "gate", "accounts", comp, "models"),
+            &path!("config", "gate", "accounts", comp, "models"),
             to_value(&models).unwrap(),
         );
     }
 
     fn write_index_entries(snap: &mut SettingsSnapshot) {
         snap.insert(
-            &oxpath!("settings", "index", "entries", "accounts"),
+            &path!("settings", "index", "entries", "accounts"),
             to_value(&entry(
                 "accounts",
                 "Accounts",
@@ -874,7 +874,7 @@ mod tests {
             .unwrap(),
         );
         snap.insert(
-            &oxpath!("settings", "index", "entries", "models"),
+            &path!("settings", "index", "entries", "models"),
             to_value(&entry(
                 "models",
                 "Models",
@@ -904,7 +904,7 @@ mod tests {
         write_account(&mut snap, "alpha");
         write_account(&mut snap, "beta");
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&["settings/accounts".to_string()]),
         );
         let rows = enumerate(&mut snap);
@@ -933,7 +933,7 @@ mod tests {
         write_account_with_provider(&mut snap, "lab", "openai");
         let anth = ox_kernel::PathComponent::try_new("anthropic").unwrap();
         snap.insert(
-            &oxpath!("config", "gate", "providers", anth),
+            &path!("config", "gate", "providers", anth),
             to_value(&ProviderConfig {
                 dialect: "anthropic".into(),
                 endpoint: "https://api.anthropic.com".into(),
@@ -944,7 +944,7 @@ mod tests {
         );
         let openai_p = ox_kernel::PathComponent::try_new("openai").unwrap();
         snap.insert(
-            &oxpath!("config", "gate", "providers", openai_p),
+            &path!("config", "gate", "providers", openai_p),
             to_value(&ProviderConfig {
                 dialect: "openai".into(),
                 endpoint: "http://127.0.0.1:1234".into(),
@@ -954,7 +954,7 @@ mod tests {
             .unwrap(),
         );
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&["settings/accounts".to_string()]),
         );
         let rows = enumerate(&mut snap);
@@ -985,7 +985,7 @@ mod tests {
         write_index_entries(&mut snap);
         write_account_with_models(&mut snap, "alpha", &["m1", "m2"]);
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&["settings/models".to_string()]),
         );
         let rows = enumerate(&mut snap);
@@ -1008,7 +1008,7 @@ mod tests {
         write_index_entries(&mut snap);
         write_account_with_models(&mut snap, "alpha", &["claude-sonnet-4", "claude-opus-4"]);
         snap.insert(
-            &oxpath!("config", "gate", "completions", "bootstrap"),
+            &path!("config", "gate", "completions", "bootstrap"),
             to_value(&CompletionRole {
                 account: "alpha".into(),
                 model_id: "claude-sonnet-4".into(),
@@ -1016,7 +1016,7 @@ mod tests {
             .unwrap(),
         );
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&["settings/models".to_string()]),
         );
         let rows = enumerate(&mut snap);
@@ -1056,7 +1056,7 @@ mod tests {
         // valid entry still surfaces alongside the invalid sibling.
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
-            &oxpath!("settings", "index", "entries", "accounts"),
+            &path!("settings", "index", "entries", "accounts"),
             to_value(&entry(
                 "accounts",
                 "Accounts",
@@ -1074,7 +1074,7 @@ mod tests {
     fn entry_with_unparseable_payload_is_skipped() {
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
-            &oxpath!("settings", "index", "entries", "accounts"),
+            &path!("settings", "index", "entries", "accounts"),
             to_value(&entry(
                 "accounts",
                 "Accounts",
@@ -1086,7 +1086,7 @@ mod tests {
         // Garbage shape at a valid id — read_typed returns None and the
         // entry is skipped without panicking.
         snap.insert(
-            &oxpath!("settings", "index", "entries", "garbled"),
+            &path!("settings", "index", "entries", "garbled"),
             Value::String("not a SettingsIndexEntry".into()),
         );
         let rows = enumerate(&mut snap);
@@ -1100,7 +1100,7 @@ mod tests {
         // through the catch-all match arm — no children appear under it.
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
-            &oxpath!("settings", "index", "entries", "appearance"),
+            &path!("settings", "index", "entries", "appearance"),
             to_value(&entry(
                 "appearance",
                 "Appearance",
@@ -1110,7 +1110,7 @@ mod tests {
             .unwrap(),
         );
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&["settings/appearance".to_string()]),
         );
         let rows = enumerate(&mut snap);
@@ -1134,7 +1134,7 @@ mod tests {
     fn resolve_badge_static_returns_string() {
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
-            &oxpath!("settings", "index", "entries", "models"),
+            &path!("settings", "index", "entries", "models"),
             to_value(&entry(
                 "models",
                 "Models",
@@ -1151,7 +1151,7 @@ mod tests {
     fn resolve_badge_none_yields_none() {
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
-            &oxpath!("settings", "index", "entries", "models"),
+            &path!("settings", "index", "entries", "models"),
             to_value(&entry(
                 "models",
                 "Models",
@@ -1168,7 +1168,7 @@ mod tests {
     fn resolve_badge_primary_reference_with_no_role_yields_none() {
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
-            &oxpath!("settings", "index", "entries", "models"),
+            &path!("settings", "index", "entries", "models"),
             to_value(&entry(
                 "models",
                 "Models",
@@ -1186,7 +1186,7 @@ mod tests {
         use ox_gate::CompletionRole;
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
-            &oxpath!("config", "gate", "completions", "bootstrap"),
+            &path!("config", "gate", "completions", "bootstrap"),
             to_value(&CompletionRole {
                 account: "alpha".into(),
                 model_id: "claude-sonnet-4".into(),
@@ -1205,7 +1205,7 @@ mod tests {
         // choice on the Models row.
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
-            &oxpath!("config", "gate", "completions", "primary"),
+            &path!("config", "gate", "completions", "primary"),
             to_value(&CompletionRole {
                 account: "legacy".into(),
                 model_id: "claude-3".into(),
@@ -1221,7 +1221,7 @@ mod tests {
         use ox_gate::CompletionRole;
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
-            &oxpath!("config", "gate", "completions", "primary"),
+            &path!("config", "gate", "completions", "primary"),
             to_value(&CompletionRole {
                 account: "legacy".into(),
                 model_id: "old-model".into(),
@@ -1229,7 +1229,7 @@ mod tests {
             .unwrap(),
         );
         snap.insert(
-            &oxpath!("config", "gate", "completions", "bootstrap"),
+            &path!("config", "gate", "completions", "bootstrap"),
             to_value(&CompletionRole {
                 account: "current".into(),
                 model_id: "new-model".into(),
@@ -1247,7 +1247,7 @@ mod tests {
         write_index_entries(&mut snap);
         write_account_with_models(&mut snap, "alpha", &["m1", "m2"]);
         snap.insert(
-            &oxpath!("config", "gate", "completions", "default_available"),
+            &path!("config", "gate", "completions", "default_available"),
             to_value(&vec![ModelKey {
                 account: "alpha".into(),
                 model_id: "m1".into(),
@@ -1255,7 +1255,7 @@ mod tests {
             .unwrap(),
         );
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&["settings/models".to_string()]),
         );
         let rows = enumerate(&mut snap);
@@ -1291,7 +1291,7 @@ mod tests {
         write_index_entries(&mut snap);
         write_account_with_models(&mut snap, "alpha", &["m1"]);
         snap.insert(
-            &oxpath!("config", "gate", "completions", "default_available"),
+            &path!("config", "gate", "completions", "default_available"),
             to_value(&vec![ModelKey {
                 account: "alpha".into(),
                 model_id: "m1".into(),
@@ -1299,7 +1299,7 @@ mod tests {
             .unwrap(),
         );
         snap.insert(
-            &oxpath!("config", "gate", "completions", "bootstrap"),
+            &path!("config", "gate", "completions", "bootstrap"),
             to_value(&CompletionRole {
                 account: "alpha".into(),
                 model_id: "m1".into(),
@@ -1307,7 +1307,7 @@ mod tests {
             .unwrap(),
         );
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&["settings/models".to_string()]),
         );
         let rows = enumerate(&mut snap);
@@ -1330,7 +1330,7 @@ mod tests {
         write_account_with_models(&mut snap, "alpha", &["m1"]);
         write_account(&mut snap, "beta"); // no models written
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&["settings/models".to_string()]),
         );
         let rows = enumerate(&mut snap);
@@ -1383,11 +1383,11 @@ mod tests {
         write_index_entries(&mut snap);
         let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
         snap.insert(
-            &oxpath!("config", "gate", "accounts", comp.clone(), "provider"),
+            &path!("config", "gate", "accounts", comp.clone(), "provider"),
             Value::String("anthropic".into()),
         );
         snap.insert(
-            &oxpath!("config", "gate", "accounts", comp, "models"),
+            &path!("config", "gate", "accounts", comp, "models"),
             to_value(&vec![ModelInfo {
                 id: "claude-sonnet-4".into(),
                 display_name: "Claude Sonnet 4".into(),
@@ -1398,7 +1398,7 @@ mod tests {
             .unwrap(),
         );
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&["settings/models".to_string()]),
         );
         let rows = enumerate(&mut snap);
@@ -1420,11 +1420,11 @@ mod tests {
         write_index_entries(&mut snap);
         let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
         snap.insert(
-            &oxpath!("config", "gate", "accounts", comp.clone(), "provider"),
+            &path!("config", "gate", "accounts", comp.clone(), "provider"),
             Value::String("anthropic".into()),
         );
         snap.insert(
-            &oxpath!("config", "gate", "accounts", comp, "models"),
+            &path!("config", "gate", "accounts", comp, "models"),
             to_value(&vec![ModelInfo {
                 id: "mystery-model".into(),
                 display_name: "Mystery".into(),
@@ -1435,7 +1435,7 @@ mod tests {
             .unwrap(),
         );
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&["settings/models".to_string()]),
         );
         let rows = enumerate(&mut snap);
@@ -1452,22 +1452,19 @@ mod tests {
         write_index_entries(&mut snap);
         write_account(&mut snap, "alpha");
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&["settings/accounts".to_string()]),
         );
         let rows = enumerate(&mut snap);
-        let alpha_path = oxpath!(
+        let alpha_path = path!(
             "settings",
             "accounts",
             ox_kernel::PathComponent::try_new("alpha").unwrap()
         );
         // Accounts header (0), alpha (1).
         assert_eq!(position_of(&rows, &alpha_path), Some(1));
-        assert_eq!(
-            position_of(&rows, &oxpath!("settings", "accounts")),
-            Some(0)
-        );
-        assert_eq!(position_of(&rows, &oxpath!("nonexistent")), None);
+        assert_eq!(position_of(&rows, &path!("settings", "accounts")), Some(0));
+        assert_eq!(position_of(&rows, &path!("nonexistent")), None);
     }
 
     #[test]
@@ -1480,7 +1477,7 @@ mod tests {
         write_index_entries(&mut snap);
         let comp = ox_kernel::PathComponent::try_new("personal").unwrap();
         snap.insert(
-            &oxpath!("config", "gate", "accounts", comp),
+            &path!("config", "gate", "accounts", comp),
             to_value(&AccountConfig {
                 provider: "personal".into(),
                 display_name: Some("My Personal".into()),
@@ -1488,7 +1485,7 @@ mod tests {
             .unwrap(),
         );
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&["settings/accounts".to_string()]),
         );
         let rows = enumerate(&mut snap);
@@ -1505,7 +1502,7 @@ mod tests {
         write_index_entries(&mut snap);
         let comp = ox_kernel::PathComponent::try_new("anthropic").unwrap();
         snap.insert(
-            &oxpath!("config", "gate", "accounts", comp),
+            &path!("config", "gate", "accounts", comp),
             to_value(&AccountConfig {
                 provider: "anthropic".into(),
                 display_name: None,
@@ -1513,7 +1510,7 @@ mod tests {
             .unwrap(),
         );
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&["settings/accounts".to_string()]),
         );
         let rows = enumerate(&mut snap);
@@ -1531,7 +1528,7 @@ mod tests {
         write_account(&mut snap, "alpha");
         write_account(&mut snap, "beta");
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&["settings/accounts".to_string()]),
         );
 

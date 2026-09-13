@@ -19,9 +19,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use ox_broker::subscription::{SubCtx, Subscription};
-use ox_path::oxpath;
 use ox_types::subscription::{PathPattern, SubscriptionId, Write};
 use structfs_core_store::Record;
+use structfs_core_store::path;
 use tokio::task::AbortHandle;
 
 use crate::known_family::known_family_metadata;
@@ -49,8 +49,8 @@ impl CatalogRefreshSubscription {
         Self {
             id: SubscriptionId(ID.to_string()),
             watches: vec![PathPattern::PrefixSuffix {
-                prefix: oxpath!("config", "gate", "accounts"),
-                suffix: oxpath!("refresh_now"),
+                prefix: path!("config", "gate", "accounts"),
+                suffix: path!("refresh_now"),
             }],
             transport,
             in_flight: Mutex::new(HashMap::new()),
@@ -128,8 +128,8 @@ impl Subscription for CatalogRefreshSubscription {
     }
 
     fn handle(&self, ctx: SubCtx<'_>) -> Vec<Write> {
-        let prefix = oxpath!("config", "gate", "accounts");
-        let suffix = oxpath!("refresh_now");
+        let prefix = path!("config", "gate", "accounts");
+        let suffix = path!("refresh_now");
         let Some(name) = instance_segment(&ctx.change.path, &prefix, &suffix) else {
             tracing::debug!(path = %ctx.change.path, "catalog_refresh: change path doesn't match");
             return vec![];
@@ -211,10 +211,10 @@ impl Subscription for CatalogRefreshSubscription {
                     let (added, updated) = diff_catalog(&new_models, &old_models);
 
                     // Write the catalog itself.
-                    if let Ok(mp) = models_path(&name_for_task) {
-                        if let Ok(v) = structfs_serde_store::to_value(&new_models) {
-                            let _ = writer.write(mp, Record::parsed(v)).await;
-                        }
+                    if let Ok(mp) = models_path(&name_for_task)
+                        && let Ok(v) = structfs_serde_store::to_value(&new_models)
+                    {
+                        let _ = writer.write(mp, Record::parsed(v)).await;
                     }
                     // Then the success status.
                     if let Ok(rsp) = refresh_status_path(&name_for_task) {
@@ -256,8 +256,8 @@ mod tests {
     use std::time::Duration;
 
     use ox_broker::subscription::{AsyncWriter, SubCtx, Subscription};
-    use ox_path::oxpath;
     use ox_types::subscription::PathChange;
+    use structfs_core_store::path;
     use structfs_core_store::{Path, Record, Value};
 
     use super::*;
@@ -267,7 +267,7 @@ mod tests {
 
     fn trigger_path(name: &str) -> Path {
         let comp = ox_kernel::PathComponent::try_new(name).unwrap();
-        oxpath!("config", "gate", "accounts", comp, "refresh_now")
+        path!("config", "gate", "accounts", comp, "refresh_now")
     }
 
     async fn drive(

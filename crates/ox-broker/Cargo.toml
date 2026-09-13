@@ -15,9 +15,8 @@ categories = ["data-structures", "asynchronous"]
 [dependencies]
 tracing = { workspace = true }
 horns-core = { workspace = true }
-ox-path = { workspace = true }
 serde = { workspace = true }
-structfs-core-store = { workspace = true }
+structfs-core-store = { workspace = true, features = ["async"] }
 structfs-serde-store = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 

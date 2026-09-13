@@ -98,7 +98,18 @@ impl DispatchingStore {
     /// Apply `record` at `path`, then dispatch matching subscriptions.
     /// Public entry point — depth 0.
     pub async fn write(self: &Arc<Self>, path: &Path, record: Record) -> Result<Path, StoreError> {
-        self.write_at_depth(path.clone(), record, 0).await
+        self.write_at_depth(path.clone(), record, 0, None).await
+    }
+
+    /// Dispatch subscriptions around an independently supervised substrate write.
+    pub async fn write_owned(
+        self: &Arc<Self>,
+        path: &Path,
+        record: Record,
+        pending: BoxFuture<Result<Path, StoreError>>,
+    ) -> Result<Path, StoreError> {
+        self.write_at_depth(path.clone(), record, 0, Some(pending))
+            .await
     }
 
     /// Recursive core. `depth` is the cascade depth; root entries are 0.
@@ -107,6 +118,7 @@ impl DispatchingStore {
         path: Path,
         record: Record,
         depth: usize,
+        pending: Option<BoxFuture<Result<Path, StoreError>>>,
     ) -> BoxFuture<Result<Path, StoreError>> {
         let me = self.clone();
         Box::pin(async move {
@@ -138,14 +150,20 @@ impl DispatchingStore {
 
             if matched.is_empty() {
                 // Fast path: just apply the substrate write and return.
-                return me.substrate.write(path, record).await;
+                return match pending {
+                    Some(write) => write.await,
+                    None => me.substrate.write(path, record).await,
+                };
             }
 
             // Read `before` (best-effort — surface read errors as None).
             let before = me.reader.read_path(&path).ok().flatten();
 
             // Apply the substrate write. Errors here propagate.
-            let written_path = me.substrate.write(path.clone(), record).await?;
+            let written_path = match pending {
+                Some(write) => write.await,
+                None => me.substrate.write(path.clone(), record).await,
+            }?;
 
             // Read `after` for the PathChange.
             let after = me.reader.read_path(&path).ok().flatten();
@@ -211,7 +229,7 @@ impl DispatchingStore {
                 // Sibling failure: log and continue. Original `write`
                 // still returns Ok per spec line 147.
                 if let Err(e) = me
-                    .write_at_depth(write.path.clone(), write.record, depth + 1)
+                    .write_at_depth(write.path.clone(), write.record, depth + 1, None)
                     .await
                 {
                     error!(path = %write.path, "cascade write failed: {}", e);
@@ -254,8 +272,8 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Mutex;
 
-    use ox_path::oxpath;
     use structfs_core_store::Value;
+    use structfs_core_store::path;
 
     use crate::subscription::{
         AsyncWriter as SubAsyncWriter, PathPattern, SpawnHandle, SubscriptionId, Write,
@@ -469,17 +487,17 @@ mod tests {
         let mut reg = SubscriptionRegistry::new();
         reg.register(closure_sub(
             "A",
-            vec![PathPattern::Exact(oxpath!("p"))],
+            vec![PathPattern::Exact(path!("p"))],
             Box::new(|_change, _writer, _spawn| {
                 vec![Write {
-                    path: oxpath!("p2"),
+                    path: path!("p2"),
                     record: Record::parsed(Value::Integer(99)),
                 }]
             }),
         ));
         let (disp, data, _spawn) = build(reg, 64);
 
-        disp.write(&oxpath!("p"), Record::parsed(Value::Integer(1)))
+        disp.write(&path!("p"), Record::parsed(Value::Integer(1)))
             .await
             .unwrap();
 
@@ -507,20 +525,20 @@ mod tests {
         let mut reg = SubscriptionRegistry::new();
         reg.register(closure_sub(
             "self-cascade",
-            vec![PathPattern::Exact(oxpath!("p"))],
+            vec![PathPattern::Exact(path!("p"))],
             Box::new(move |_change, _writer, _spawn| {
                 let mut c = counter2.lock().unwrap();
                 *c += 1;
                 let next = *c;
                 vec![Write {
-                    path: oxpath!("p"),
+                    path: path!("p"),
                     record: Record::parsed(Value::Integer(next as i64)),
                 }]
             }),
         ));
         let (disp, data, _spawn) = build(reg, 4);
 
-        disp.write(&oxpath!("p"), Record::parsed(Value::Integer(0)))
+        disp.write(&path!("p"), Record::parsed(Value::Integer(0)))
             .await
             .unwrap();
 
@@ -538,7 +556,7 @@ mod tests {
         // First sub panics.
         reg.register(closure_sub(
             "panicker",
-            vec![PathPattern::Exact(oxpath!("p"))],
+            vec![PathPattern::Exact(path!("p"))],
             Box::new(|_c, _w, _s| {
                 panic!("intentional panic in handler");
             }),
@@ -546,10 +564,10 @@ mod tests {
         // Second sub writes p2.
         reg.register(closure_sub(
             "writer",
-            vec![PathPattern::Exact(oxpath!("p"))],
+            vec![PathPattern::Exact(path!("p"))],
             Box::new(|_c, _w, _s| {
                 vec![Write {
-                    path: oxpath!("p2"),
+                    path: path!("p2"),
                     record: Record::parsed(Value::Integer(99)),
                 }]
             }),
@@ -557,7 +575,7 @@ mod tests {
         let (disp, data, _spawn) = build(reg, 64);
 
         let result = disp
-            .write(&oxpath!("p"), Record::parsed(Value::Integer(1)))
+            .write(&path!("p"), Record::parsed(Value::Integer(1)))
             .await;
         assert!(result.is_ok(), "panicking sub must not fail original write");
 
@@ -573,15 +591,15 @@ mod tests {
         let mut reg = SubscriptionRegistry::new();
         reg.register(closure_sub(
             "A-then-B",
-            vec![PathPattern::Exact(oxpath!("trigger"))],
+            vec![PathPattern::Exact(path!("trigger"))],
             Box::new(|_c, _w, _s| {
                 vec![
                     Write {
-                        path: oxpath!("shared"),
+                        path: path!("shared"),
                         record: Record::parsed(Value::String("A".to_string())),
                     },
                     Write {
-                        path: oxpath!("shared"),
+                        path: path!("shared"),
                         record: Record::parsed(Value::String("B".to_string())),
                     },
                 ]
@@ -589,7 +607,7 @@ mod tests {
         ));
         let (disp, data, _spawn) = build(reg, 64);
 
-        disp.write(&oxpath!("trigger"), Record::parsed(Value::Integer(0)))
+        disp.write(&path!("trigger"), Record::parsed(Value::Integer(0)))
             .await
             .unwrap();
 
@@ -611,10 +629,10 @@ mod tests {
         reg.register(closure_sub(
             "multi-pattern",
             vec![
-                PathPattern::Prefix(oxpath!("p")),
+                PathPattern::Prefix(path!("p")),
                 PathPattern::PrefixSuffix {
-                    prefix: oxpath!("p"),
-                    suffix: oxpath!("suffix"),
+                    prefix: path!("p"),
+                    suffix: path!("suffix"),
                 },
             ],
             Box::new(move |_c, _w, _s| {
@@ -626,7 +644,7 @@ mod tests {
 
         // Path matches BOTH patterns.
         disp.write(
-            &oxpath!("p", "x", "suffix"),
+            &path!("p", "x", "suffix"),
             Record::parsed(Value::Integer(1)),
         )
         .await
@@ -647,7 +665,7 @@ mod tests {
         let mut reg = SubscriptionRegistry::new();
         reg.register(closure_sub(
             "boundary",
-            vec![PathPattern::Prefix(oxpath!("config", "gate", "accounts"))],
+            vec![PathPattern::Prefix(path!("config", "gate", "accounts"))],
             Box::new(move |_c, _w, _s| {
                 *fired2.lock().unwrap() += 1;
                 vec![]
@@ -656,7 +674,7 @@ mod tests {
         let (disp, _data, _spawn) = build(reg, 64);
 
         disp.write(
-            &oxpath!("config", "gate", "accounts_other", "foo"),
+            &path!("config", "gate", "accounts_other", "foo"),
             Record::parsed(Value::Integer(1)),
         )
         .await
@@ -678,13 +696,13 @@ mod tests {
         let mut reg = SubscriptionRegistry::new();
         reg.register(closure_sub(
             "spawner",
-            vec![PathPattern::Exact(oxpath!("trigger"))],
+            vec![PathPattern::Exact(path!("trigger"))],
             Box::new(|_change, writer, spawn| {
                 let writer = writer.clone();
                 let _h = spawn.spawn(Box::pin(async move {
                     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                     let _ = writer
-                        .write(oxpath!("delayed"), Record::parsed(Value::Integer(42)))
+                        .write(path!("delayed"), Record::parsed(Value::Integer(42)))
                         .await;
                 }));
                 vec![] // no synchronous writes
@@ -693,7 +711,7 @@ mod tests {
         let (disp, data, _spawn) = build(reg, 64);
 
         let t0 = std::time::Instant::now();
-        disp.write(&oxpath!("trigger"), Record::parsed(Value::Integer(0)))
+        disp.write(&path!("trigger"), Record::parsed(Value::Integer(0)))
             .await
             .unwrap();
         let elapsed = t0.elapsed();
@@ -722,20 +740,20 @@ mod tests {
         let mut reg = SubscriptionRegistry::new();
         reg.register(closure_sub(
             "bad",
-            vec![PathPattern::Exact(oxpath!("trigger"))],
+            vec![PathPattern::Exact(path!("trigger"))],
             Box::new(|_c, _w, _s| {
                 vec![Write {
-                    path: oxpath!("rejected"),
+                    path: path!("rejected"),
                     record: Record::parsed(Value::Integer(1)),
                 }]
             }),
         ));
         reg.register(closure_sub(
             "good",
-            vec![PathPattern::Exact(oxpath!("trigger"))],
+            vec![PathPattern::Exact(path!("trigger"))],
             Box::new(|_c, _w, _s| {
                 vec![Write {
-                    path: oxpath!("ok"),
+                    path: path!("ok"),
                     record: Record::parsed(Value::Integer(2)),
                 }]
             }),
@@ -743,7 +761,7 @@ mod tests {
         let (disp, data, _spawn) = build_with_reject(reg, 64, "rejected");
 
         let result = disp
-            .write(&oxpath!("trigger"), Record::parsed(Value::Integer(0)))
+            .write(&path!("trigger"), Record::parsed(Value::Integer(0)))
             .await;
         assert!(result.is_ok(), "sibling failure must not fail original");
         let map = data.lock().unwrap();

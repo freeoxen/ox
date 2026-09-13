@@ -323,8 +323,10 @@ fn parse_content_blocks(_role: &str, content: &Value) -> (Vec<HistoryBlock>, Str
                             _ => None,
                         };
                         let input_json = block_map.get("input").map(|v| {
-                            let json = structfs_serde_store::value_to_json(v.clone());
-                            serde_json::to_string(&json).unwrap_or_else(|_| format_value(v))
+                            structfs_serde_store::value_to_json(v.clone())
+                                .ok()
+                                .and_then(|json| serde_json::to_string(&json).ok())
+                                .unwrap_or_else(|| format_value(v))
                         });
                         if first_summary.is_none() {
                             let label = name.as_deref().unwrap_or("unknown");
@@ -396,6 +398,7 @@ fn format_value(val: &Value) -> String {
     match val {
         Value::String(s) => format!("{s:?}"),
         Value::Integer(n) => n.to_string(),
+        Value::Unsigned(n) => n.to_string(),
         Value::Float(f) => f.to_string(),
         Value::Bool(b) => b.to_string(),
         Value::Null => "null".to_string(),
@@ -542,8 +545,10 @@ pub fn parse_log_entries(values: &[Value]) -> Vec<LogDisplayEntry> {
                     let name = get_string(map, "name").unwrap_or_default();
                     let id = get_string(map, "id");
                     let input_json = map.get("input").map(|v| {
-                        let json = structfs_serde_store::value_to_json(v.clone());
-                        serde_json::to_string(&json).unwrap_or_else(|_| format_value(v))
+                        structfs_serde_store::value_to_json(v.clone())
+                            .ok()
+                            .and_then(|json| serde_json::to_string(&json).ok())
+                            .unwrap_or_else(|| format_value(v))
                     });
                     let summary = format!("tool_call: {name}");
                     Some(LogDisplayEntry {

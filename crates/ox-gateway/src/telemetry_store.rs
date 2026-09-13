@@ -14,12 +14,15 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use ox_broker::async_store::{AsyncReader, AsyncWriter, BoxFuture};
+use ox_broker::async_store::BoxFuture;
 use ox_gate::completion_broker::CancelHandle;
-use structfs_core_store::{Error as StoreError, Path, Record, Value};
+use structfs_core_store::{
+    DetachedReader, DetachedWriter, Error as StoreError, Path, Record, Value,
+};
 use tokio::sync::{Mutex, Notify};
 
-pub type TelemetryRunner = Arc<dyn Fn(u64, CancelHandle) + Send + Sync>;
+pub type TelemetryRunner =
+    Arc<dyn Fn(u64, CancelHandle) -> BoxFuture<Result<(), String>> + Send + Sync>;
 
 struct TelemetryInflight {
     state: Mutex<TelemetryState>,
@@ -31,6 +34,7 @@ struct TelemetryInflight {
 struct TelemetryState {
     params: Option<Value>,
     summary: Option<Value>,
+    error: Option<String>,
 }
 
 pub struct TelemetryStore {
@@ -51,14 +55,14 @@ impl TelemetryStore {
     }
 
     fn parse(path: &Path) -> Option<(u64, Option<String>)> {
-        if path.len() < 2 || path[0].as_str() != "outstanding" {
+        if path.len() < 2 || &path[0] != "outstanding" {
             return None;
         }
-        let id: u64 = path[1].as_str().parse().ok()?;
+        let id: u64 = path[1].parse().ok()?;
         let sub = if path.len() > 2 {
             Some(
                 (2..path.len())
-                    .map(|i| path[i].as_str())
+                    .map(|i| &path[i])
                     .collect::<Vec<_>>()
                     .join("/"),
             )
@@ -69,8 +73,8 @@ impl TelemetryStore {
     }
 }
 
-impl AsyncReader for TelemetryStore {
-    fn read(&mut self, from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
+impl DetachedReader for TelemetryStore {
+    fn read_detached(&mut self, from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
         let Some((id, sub)) = Self::parse(from) else {
             return Box::pin(async move { Ok(None) });
         };
@@ -92,6 +96,9 @@ impl AsyncReader for TelemetryStore {
                     notified.as_mut().enable();
                     {
                         let state = inflight.state.lock().await;
+                        if let Some(error) = &state.error {
+                            return Err(StoreError::store("telemetry", "read", error.clone()));
+                        }
                         if let Some(summary) = &state.summary {
                             return Ok(Some(Record::parsed(summary.clone())));
                         }
@@ -111,8 +118,8 @@ impl AsyncReader for TelemetryStore {
     }
 }
 
-impl AsyncWriter for TelemetryStore {
-    fn write(&mut self, to: &Path, data: Record) -> BoxFuture<Result<Path, StoreError>> {
+impl DetachedWriter for TelemetryStore {
+    fn write_detached(&mut self, to: &Path, data: Record) -> BoxFuture<Result<Path, StoreError>> {
         let to = to.clone();
 
         // GC
@@ -212,10 +219,22 @@ impl AsyncWriter for TelemetryStore {
             notify: Notify::new(),
             cancel: cancel.clone(),
         });
-        self.handles.insert(id, inflight);
+        self.handles.insert(id, inflight.clone());
 
         let runner = self.runner.clone();
-        self.runtime.spawn_blocking(move || runner(id, cancel));
+        self.runtime.spawn(async move {
+            let outcome = runner(id, cancel).await;
+            let mut state = inflight.state.lock().await;
+            if state.summary.is_none() {
+                state.error = Some(
+                    outcome
+                        .err()
+                        .unwrap_or_else(|| "stats exited without a summary".into()),
+                );
+            }
+            drop(state);
+            inflight.notify.notify_waiters();
+        });
 
         Box::pin(async move {
             Path::try_from_components(vec!["outstanding".to_string(), id.to_string()])

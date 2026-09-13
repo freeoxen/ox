@@ -18,18 +18,13 @@
 //!   `NearestRegistered` at the root) write `true` to
 //!   `ui/settings/_request_exit`.
 
-use ox_path::oxpath;
 use ox_types::subscription::Write;
+use structfs_core_store::path;
 use structfs_core_store::{Path, Reader, Record, Value};
 
 use crate::settings::CommandRegistry;
 
-/// Encode a `Path` as a `Value` matching the wire shape used by
-/// `ox_types::path_serde` (a `Value::Array` of `Value::String` segments).
-/// `Path` itself doesn't implement `Serialize`, so we hand-roll the encoding.
-pub fn path_to_value(p: &Path) -> Value {
-    Value::Array(p.iter().map(|c| Value::String(c.clone())).collect())
-}
+pub use ox_types::path_serde::to_value as path_to_value;
 
 /// Decode a `Value` previously produced by `path_to_value` back into a
 /// `Path`. Returns `None` on any shape mismatch.
@@ -50,7 +45,7 @@ pub fn path_from_value(v: &Value) -> Option<Path> {
 }
 
 /// Read a `Path` previously written via `path_to_value`. Mirrors
-/// `read_typed` but for Paths (which lack a Serialize impl).
+/// `read_typed` but preserves the existing component-array representation.
 fn read_path(data: &mut dyn Reader, path: &Path) -> Option<Path> {
     let record = match data.read(path) {
         Ok(Some(r)) => r,
@@ -73,7 +68,7 @@ command! {
 }
 
 fn ascend(data: &mut dyn Reader, ctx: &crate::settings::CommandCtx<'_>) -> Vec<Write> {
-    let focused = match read_path(data, &oxpath!("ui", "settings", "focused")) {
+    let focused = match read_path(data, &path!("ui", "settings", "focused")) {
         Some(c) => c,
         None => return Vec::new(),
     };
@@ -87,11 +82,11 @@ fn ascend(data: &mut dyn Reader, ctx: &crate::settings::CommandCtx<'_>) -> Vec<W
     };
     match ctx.registry.ascend(&page) {
         Some(parent) => vec![Write {
-            path: oxpath!("ui", "settings", "focused"),
+            path: path!("ui", "settings", "focused"),
             record: Record::parsed(path_to_value(&parent)),
         }],
         None => vec![Write {
-            path: oxpath!("ui", "settings", "_request_exit"),
+            path: path!("ui", "settings", "_request_exit"),
             record: Record::parsed(Value::Bool(true)),
         }],
     }
@@ -108,7 +103,7 @@ command! {
 
 fn exit_screen() -> Vec<Write> {
     vec![Write {
-        path: oxpath!("ui", "settings", "_request_exit"),
+        path: path!("ui", "settings", "_request_exit"),
         record: Record::parsed(Value::Bool(true)),
     }]
 }
@@ -173,25 +168,25 @@ mod tests {
     fn ascend_at_nearest_registered_writes_parent() {
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
-            &oxpath!("ui", "settings", "focused"),
-            super::path_to_value(&oxpath!("settings", "accounts", "_detail")),
+            &path!("ui", "settings", "focused"),
+            super::path_to_value(&path!("settings", "accounts", "_detail")),
         );
 
         let mut registry = RendererRegistry::new();
         registry.register(
-            oxpath!("settings", "accounts"),
+            path!("settings", "accounts"),
             Box::new(FakeRenderer(AscendRule::NearestRegistered)),
         );
         registry.register(
-            oxpath!("settings", "accounts", "_detail"),
+            path!("settings", "accounts", "_detail"),
             Box::new(FakeRenderer(AscendRule::NearestRegistered)),
         );
 
         let writes = run_with_registry(&NavAscend::new(), &mut snap, &registry);
         assert_path_write(
             &writes,
-            oxpath!("ui", "settings", "focused"),
-            oxpath!("settings", "accounts"),
+            path!("ui", "settings", "focused"),
+            path!("settings", "accounts"),
         );
     }
 
@@ -202,19 +197,19 @@ mod tests {
         // page's AscendRule, not the sub-widget's missing one.
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
-            &oxpath!("ui", "settings", "focused"),
-            super::path_to_value(&oxpath!("settings", "index", "_compose_form", "name")),
+            &path!("ui", "settings", "focused"),
+            super::path_to_value(&path!("settings", "index", "_compose_form", "name")),
         );
 
         let mut registry = RendererRegistry::new();
         registry.register(
-            oxpath!("settings", "index"),
+            path!("settings", "index"),
             Box::new(FakeRenderer(AscendRule::ExitScreen)),
         );
 
         let writes = run_with_registry(&NavAscend::new(), &mut snap, &registry);
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "settings", "_request_exit"));
+        assert_eq!(writes[0].path, path!("ui", "settings", "_request_exit"));
     }
 
     #[test]
@@ -224,18 +219,18 @@ mod tests {
         // `settings/index`, not exit the screen.
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
-            &oxpath!("ui", "settings", "focused"),
-            super::path_to_value(&oxpath!("settings", "accounts")),
+            &path!("ui", "settings", "focused"),
+            super::path_to_value(&path!("settings", "accounts")),
         );
 
         let mut registry = RendererRegistry::new();
         registry.register(
-            oxpath!("settings", "index"),
+            path!("settings", "index"),
             Box::new(FakeRenderer(AscendRule::ExitScreen)),
         );
         registry.register(
-            oxpath!("settings", "accounts"),
-            Box::new(FakeRenderer(AscendRule::Fallback(oxpath!(
+            path!("settings", "accounts"),
+            Box::new(FakeRenderer(AscendRule::Fallback(path!(
                 "settings", "index"
             )))),
         );
@@ -243,8 +238,8 @@ mod tests {
         let writes = run_with_registry(&NavAscend::new(), &mut snap, &registry);
         assert_path_write(
             &writes,
-            oxpath!("ui", "settings", "focused"),
-            oxpath!("settings", "index"),
+            path!("ui", "settings", "focused"),
+            path!("settings", "index"),
         );
     }
 
@@ -252,19 +247,19 @@ mod tests {
     fn ascend_at_exit_screen_writes_request_exit() {
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
-            &oxpath!("ui", "settings", "focused"),
-            super::path_to_value(&oxpath!("settings", "index")),
+            &path!("ui", "settings", "focused"),
+            super::path_to_value(&path!("settings", "index")),
         );
 
         let mut registry = RendererRegistry::new();
         registry.register(
-            oxpath!("settings", "index"),
+            path!("settings", "index"),
             Box::new(FakeRenderer(AscendRule::ExitScreen)),
         );
 
         let writes = run_with_registry(&NavAscend::new(), &mut snap, &registry);
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "settings", "_request_exit"));
+        assert_eq!(writes[0].path, path!("ui", "settings", "_request_exit"));
         match &writes[0].record {
             Record::Parsed(Value::Bool(b)) => assert!(*b),
             other => panic!("unexpected record: {other:?}"),

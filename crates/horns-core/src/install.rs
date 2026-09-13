@@ -533,7 +533,7 @@ fn path_join(prefix: &Path, segment: &str) -> Path {
     if segment.is_empty() {
         return prefix.clone();
     }
-    let mut components: Vec<String> = prefix.iter().cloned().collect();
+    let mut components: Vec<String> = prefix.iter().map(str::to_owned).collect();
     components.push(segment.to_string());
     Path::try_from_components(components).unwrap_or_else(|_| prefix.clone())
 }

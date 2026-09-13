@@ -52,7 +52,7 @@ impl Reader for TrafficLogStore {
 
 impl Writer for TrafficLogStore {
     fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
-        if to.is_empty() || to[0].as_str() != "append" {
+        if to.is_empty() || &to[0] != "append" {
             return Err(StoreError::store(
                 "traffic",
                 "write",
@@ -65,7 +65,7 @@ impl Writer for TrafficLogStore {
         self.jsonl.append(value)?;
 
         if let Some(sink) = &self.ledger {
-            let json = structfs_serde_store::value_to_json(value.clone());
+            let json = structfs_serde_store::value_to_json(value.clone())?;
             if json.get("kind").and_then(|k| k.as_str()) == Some("completion") {
                 // Ledger emission is best-effort: a bad thread dir must not
                 // fail the completion path that triggered the log write.
@@ -78,11 +78,13 @@ impl Writer for TrafficLogStore {
     }
 }
 
+/// (day-stamp, ledger path, last entry, next completion_id).
+type LedgerState = (String, PathBuf, Option<LedgerEntry>, u64);
+
 /// Daily gateway thread in ox's conversation-ledger format.
 struct LedgerSink {
     threads_dir: PathBuf,
-    /// (day-stamp, ledger path, last entry, next completion_id).
-    state: Mutex<Option<(String, PathBuf, Option<LedgerEntry>, u64)>>,
+    state: Mutex<Option<LedgerState>>,
 }
 
 impl LedgerSink {
@@ -107,7 +109,7 @@ impl LedgerSink {
             let dir = self.threads_dir.join(&thread_id);
             let ledger_path = dir.join("ledger.jsonl");
 
-            if thread_dir::read_context(&dir).map_err(|e| e)?.is_none() {
+            if thread_dir::read_context(&dir)?.is_none() {
                 thread_dir::write_context(
                     &dir,
                     &ContextFile {
@@ -151,11 +153,11 @@ impl LedgerSink {
         }
 
         // Touch updated_at so the thread sorts correctly in the inbox.
-        if let Some(dir) = ledger_path.parent() {
-            if let Ok(Some(mut ctx)) = thread_dir::read_context(dir) {
-                ctx.updated_at = now_s as i64;
-                let _ = thread_dir::write_context(dir, &ctx);
-            }
+        if let Some(dir) = ledger_path.parent()
+            && let Ok(Some(mut ctx)) = thread_dir::read_context(dir)
+        {
+            ctx.updated_at = now_s as i64;
+            let _ = thread_dir::write_context(dir, &ctx);
         }
         Ok(())
     }
@@ -344,7 +346,7 @@ pub async fn http_log_middleware(
         tokio::spawn(async move {
             let _ = client
                 .write(
-                    &ox_path::oxpath!("gateway", "traffic", "append"),
+                    &structfs_core_store::path!("gateway", "traffic", "append"),
                     Record::parsed(value),
                 )
                 .await;

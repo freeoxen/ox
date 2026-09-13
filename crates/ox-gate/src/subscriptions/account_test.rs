@@ -23,9 +23,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use ox_broker::subscription::{SubCtx, Subscription};
-use ox_path::oxpath;
 use ox_types::subscription::{PathPattern, SubscriptionId, Write};
 use structfs_core_store::Record;
+use structfs_core_store::path;
 use tokio::task::AbortHandle;
 
 use crate::subscriptions::util::{
@@ -60,8 +60,8 @@ impl AccountTestSubscription {
         Self {
             id: SubscriptionId(ID.to_string()),
             watches: vec![PathPattern::PrefixSuffix {
-                prefix: oxpath!("config", "gate", "accounts"),
-                suffix: oxpath!("test_now"),
+                prefix: path!("config", "gate", "accounts"),
+                suffix: path!("test_now"),
             }],
             transport,
             in_flight: Mutex::new(HashMap::new()),
@@ -79,8 +79,8 @@ impl Subscription for AccountTestSubscription {
     }
 
     fn handle(&self, ctx: SubCtx<'_>) -> Vec<Write> {
-        let prefix = oxpath!("config", "gate", "accounts");
-        let suffix = oxpath!("test_now");
+        let prefix = path!("config", "gate", "accounts");
+        let suffix = path!("test_now");
         let Some(name) = instance_segment(&ctx.change.path, &prefix, &suffix) else {
             tracing::debug!(path = %ctx.change.path, "account_test: change path doesn't match prefix/suffix shape");
             return vec![];
@@ -198,8 +198,8 @@ mod tests {
     use std::time::Duration;
 
     use ox_broker::subscription::{AsyncWriter, SubCtx, Subscription};
-    use ox_path::oxpath;
     use ox_types::subscription::PathChange;
+    use structfs_core_store::path;
     use structfs_core_store::{Path, Record};
 
     use super::*;
@@ -209,7 +209,7 @@ mod tests {
 
     fn trigger_path(name: &str) -> Path {
         let comp = ox_kernel::PathComponent::try_new(name).unwrap();
-        oxpath!("config", "gate", "accounts", comp, "test_now")
+        path!("config", "gate", "accounts", comp, "test_now")
     }
 
     /// Drive a single subscription invocation against the given fixtures

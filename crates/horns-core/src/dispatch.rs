@@ -93,19 +93,19 @@ impl Dispatcher {
 
         // Target (leaf only): the innermost scope claims the key.
         // Discrete first, then handler.
-        if cmd_id_opt.is_none() {
-            if let Some(leaf) = scope_path.last().and_then(BindingScope::keyed_path) {
-                cmd_id_opt = bindings.lookup(leaf, key, Phase::Target);
-                if cmd_id_opt.is_none() {
-                    if let Some(h) = bindings.lookup_handler(leaf, key, Phase::Target) {
-                        let ctx = CommandCtx {
-                            registry: renderers,
-                            last_keystroke: Some(key.clone()),
-                        };
-                        if let Some(writes) = h.handle(snapshot, key, &ctx) {
-                            return writes;
-                        }
-                    }
+        if cmd_id_opt.is_none()
+            && let Some(leaf) = scope_path.last().and_then(BindingScope::keyed_path)
+        {
+            cmd_id_opt = bindings.lookup(leaf, key, Phase::Target);
+            if cmd_id_opt.is_none()
+                && let Some(h) = bindings.lookup_handler(leaf, key, Phase::Target)
+            {
+                let ctx = CommandCtx {
+                    registry: renderers,
+                    last_keystroke: Some(key.clone()),
+                };
+                if let Some(writes) = h.handle(snapshot, key, &ctx) {
+                    return writes;
                 }
             }
         }
@@ -224,7 +224,7 @@ fn screen_root_fallback(cursor_path: &Path) -> Vec<BindingScope> {
         return Vec::new();
     }
     let screen = &cursor_path[cursor_path.len() - 2];
-    match Path::try_from_components(vec![screen.clone()]) {
+    match Path::try_from_components(vec![screen.to_string()]) {
         Ok(p) => vec![BindingScope::Exact(p)],
         Err(_) => Vec::new(),
     }
@@ -248,7 +248,7 @@ mod tests {
 
     use std::collections::HashMap;
 
-    use ox_path::oxpath;
+    use structfs_core_store::path;
     use structfs_core_store::{Error, Record, Value};
 
     use crate::binding::{BindingEntry, BindingScope, Phase};
@@ -271,8 +271,10 @@ mod tests {
 
     impl MapReader {
         fn insert(&mut self, path: &Path, record: Record) {
-            self.records
-                .insert(path.iter().cloned().collect::<Vec<String>>(), record);
+            self.records.insert(
+                path.iter().map(str::to_owned).collect::<Vec<String>>(),
+                record,
+            );
         }
     }
 
@@ -280,7 +282,7 @@ mod tests {
         fn read(&mut self, path: &Path) -> Result<Option<Record>, Error> {
             Ok(self
                 .records
-                .get(&path.iter().cloned().collect::<Vec<String>>())
+                .get(&path.iter().map(str::to_owned).collect::<Vec<String>>())
                 .cloned())
         }
     }
@@ -291,14 +293,14 @@ mod tests {
     /// `ox-cli::settings::commands::navigation` so the tests exercise the
     /// same encoding the dispatcher reads.
     fn path_to_value(p: &Path) -> Value {
-        Value::Array(p.iter().map(|c| Value::String(c.clone())).collect())
+        Value::Array(p.iter().map(|c| Value::String(c.to_string())).collect())
     }
 
     /// The focus cursor path used by every dispatcher test. Matches the
     /// settings screen's `ui/settings/focused` so the screen-root
     /// fallback resolves to `settings`.
     fn focus_path() -> Path {
-        oxpath!("ui", "settings", "focused")
+        path!("ui", "settings", "focused")
     }
 
     fn dispatcher() -> Dispatcher {
@@ -352,7 +354,7 @@ mod tests {
         }
         fn run(&self, _snapshot: &mut dyn Reader, _ctx: &CommandCtx<'_>) -> Vec<Write> {
             vec![Write {
-                path: oxpath!("ui", "sentinel"),
+                path: path!("ui", "sentinel"),
                 record: Record::parsed(Value::String("ran".into())),
             }]
         }
@@ -399,7 +401,7 @@ mod tests {
                 None => "none".to_string(),
             };
             vec![Write {
-                path: oxpath!("ui", "last_key"),
+                path: path!("ui", "last_key"),
                 record: Record::parsed(Value::String(s)),
             }]
         }
@@ -428,13 +430,13 @@ mod tests {
         // Seed a cursor under cursor-as-focus: scope_path is empty when
         // no cursor is set, so even an `Anywhere` binding needs at least
         // one scope on the path to be checked at lookup time.
-        seed_focused(&mut reader, &oxpath!("settings"));
+        seed_focused(&mut reader, &path!("settings"));
 
         let writes =
             dispatcher().dispatch(&mut reader, &key_char('a'), &bindings, &cmds, &renderers);
 
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "sentinel"));
+        assert_eq!(writes[0].path, path!("ui", "sentinel"));
         match &writes[0].record {
             Record::Parsed(Value::String(s)) => assert_eq!(s, "ran"),
             other => panic!("unexpected record: {other:?}"),
@@ -487,7 +489,7 @@ mod tests {
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            scope: BindingScope::Exact(oxpath!("settings", "_compose_form", "name")),
+            scope: BindingScope::Exact(path!("settings", "_compose_form", "name")),
             key: key_char('a'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Target,
@@ -496,13 +498,13 @@ mod tests {
 
         let renderers = RendererRegistry::new();
         let mut reader = MapReader::default();
-        seed_focused(&mut reader, &oxpath!("settings", "_compose_form", "name"));
+        seed_focused(&mut reader, &path!("settings", "_compose_form", "name"));
 
         let writes =
             dispatcher().dispatch(&mut reader, &key_char('a'), &bindings, &cmds, &renderers);
 
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "sentinel"));
+        assert_eq!(writes[0].path, path!("ui", "sentinel"));
     }
 
     #[test]
@@ -515,7 +517,7 @@ mod tests {
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            scope: BindingScope::Exact(oxpath!("settings", "_compose_form", "name")),
+            scope: BindingScope::Exact(path!("settings", "_compose_form", "name")),
             key: key_char('a'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Target,
@@ -541,7 +543,7 @@ mod tests {
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            scope: BindingScope::Exact(oxpath!("settings", "_compose_form", "name")),
+            scope: BindingScope::Exact(path!("settings", "_compose_form", "name")),
             key: key_char('a'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Target,
@@ -551,7 +553,7 @@ mod tests {
         let renderers = RendererRegistry::new();
         let mut reader = MapReader::default();
         reader.insert(
-            &oxpath!("ui", "settings", "new_account", "buffer"),
+            &path!("ui", "settings", "new_account", "buffer"),
             Record::parsed(Value::String("partial".into())),
         );
 
@@ -571,7 +573,7 @@ mod tests {
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            scope: BindingScope::Exact(oxpath!("settings", "_confirm_delete")),
+            scope: BindingScope::Exact(path!("settings", "_confirm_delete")),
             key: key_char('y'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Target,
@@ -580,13 +582,13 @@ mod tests {
 
         let renderers = RendererRegistry::new();
         let mut reader = MapReader::default();
-        seed_focused(&mut reader, &oxpath!("settings", "_confirm_delete"));
+        seed_focused(&mut reader, &path!("settings", "_confirm_delete"));
 
         let writes =
             dispatcher().dispatch(&mut reader, &key_char('y'), &bindings, &cmds, &renderers);
 
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "sentinel"));
+        assert_eq!(writes[0].path, path!("ui", "sentinel"));
     }
 
     #[test]
@@ -598,7 +600,7 @@ mod tests {
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            scope: BindingScope::Exact(oxpath!("settings", "_confirm_delete")),
+            scope: BindingScope::Exact(path!("settings", "_confirm_delete")),
             key: KeyChord {
                 modifiers: KeyModifierSet::default(),
                 code: KeyCodeRepr::Esc,
@@ -610,7 +612,7 @@ mod tests {
 
         let renderers = RendererRegistry::new();
         let mut reader = MapReader::default();
-        seed_focused(&mut reader, &oxpath!("settings", "_confirm_delete"));
+        seed_focused(&mut reader, &path!("settings", "_confirm_delete"));
 
         let writes = dispatcher().dispatch(
             &mut reader,
@@ -624,7 +626,7 @@ mod tests {
         );
 
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "sentinel"));
+        assert_eq!(writes[0].path, path!("ui", "sentinel"));
     }
 
     #[test]
@@ -636,7 +638,7 @@ mod tests {
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            scope: BindingScope::Exact(oxpath!("settings", "_confirm_delete")),
+            scope: BindingScope::Exact(path!("settings", "_confirm_delete")),
             key: key_char('y'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Target,
@@ -645,13 +647,13 @@ mod tests {
 
         let renderers = RendererRegistry::new();
         let mut reader = MapReader::default();
-        seed_focused(&mut reader, &oxpath!("settings", "_confirm_delete"));
+        seed_focused(&mut reader, &path!("settings", "_confirm_delete"));
 
         let writes =
             dispatcher().dispatch(&mut reader, &key_char('y'), &bindings, &cmds, &renderers);
 
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "sentinel"));
+        assert_eq!(writes[0].path, path!("ui", "sentinel"));
     }
 
     #[test]
@@ -670,13 +672,13 @@ mod tests {
 
         let renderers = RendererRegistry::new();
         let mut reader = MapReader::default();
-        seed_focused(&mut reader, &oxpath!("settings"));
+        seed_focused(&mut reader, &path!("settings"));
 
         let writes =
             dispatcher().dispatch(&mut reader, &key_char('z'), &bindings, &cmds, &renderers);
 
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "last_key"));
+        assert_eq!(writes[0].path, path!("ui", "last_key"));
         match &writes[0].record {
             Record::Parsed(Value::String(s)) => assert_eq!(s, "z"),
             other => panic!("unexpected record: {other:?}"),
@@ -693,7 +695,7 @@ mod tests {
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            scope: BindingScope::Exact(oxpath!("settings", "_manual_model")),
+            scope: BindingScope::Exact(path!("settings", "_manual_model")),
             key: key_char('a'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Bubble,
@@ -702,13 +704,13 @@ mod tests {
 
         let renderers = RendererRegistry::new();
         let mut reader = MapReader::default();
-        seed_focused(&mut reader, &oxpath!("settings", "_manual_model", "id"));
+        seed_focused(&mut reader, &path!("settings", "_manual_model", "id"));
 
         let writes =
             dispatcher().dispatch(&mut reader, &key_char('a'), &bindings, &cmds, &renderers);
 
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "sentinel"));
+        assert_eq!(writes[0].path, path!("ui", "sentinel"));
     }
 
     #[test]
@@ -720,7 +722,7 @@ mod tests {
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            scope: BindingScope::Exact(oxpath!("settings", "_manual_model")),
+            scope: BindingScope::Exact(path!("settings", "_manual_model")),
             key: KeyChord {
                 modifiers: KeyModifierSet::default(),
                 code: KeyCodeRepr::Esc,
@@ -732,7 +734,7 @@ mod tests {
 
         let renderers = RendererRegistry::new();
         let mut reader = MapReader::default();
-        seed_focused(&mut reader, &oxpath!("settings", "_manual_model", "id"));
+        seed_focused(&mut reader, &path!("settings", "_manual_model", "id"));
 
         let writes = dispatcher().dispatch(
             &mut reader,
@@ -746,7 +748,7 @@ mod tests {
         );
 
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "sentinel"));
+        assert_eq!(writes[0].path, path!("ui", "sentinel"));
     }
 
     #[test]
@@ -757,7 +759,7 @@ mod tests {
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            scope: BindingScope::Exact(oxpath!("settings", "_manual_model")),
+            scope: BindingScope::Exact(path!("settings", "_manual_model")),
             key: KeyChord {
                 modifiers: KeyModifierSet::default(),
                 code: KeyCodeRepr::Enter,
@@ -769,7 +771,7 @@ mod tests {
 
         let renderers = RendererRegistry::new();
         let mut reader = MapReader::default();
-        seed_focused(&mut reader, &oxpath!("settings", "_manual_model", "id"));
+        seed_focused(&mut reader, &path!("settings", "_manual_model", "id"));
 
         let writes = dispatcher().dispatch(
             &mut reader,
@@ -783,7 +785,7 @@ mod tests {
         );
 
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "sentinel"));
+        assert_eq!(writes[0].path, path!("ui", "sentinel"));
     }
 
     #[test]
@@ -796,7 +798,7 @@ mod tests {
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            scope: BindingScope::Exact(oxpath!("settings", "_manual_model", "id")),
+            scope: BindingScope::Exact(path!("settings", "_manual_model", "id")),
             key: key_char('x'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Target,
@@ -805,13 +807,13 @@ mod tests {
 
         let renderers = RendererRegistry::new();
         let mut reader = MapReader::default();
-        seed_focused(&mut reader, &oxpath!("settings", "_manual_model", "id"));
+        seed_focused(&mut reader, &path!("settings", "_manual_model", "id"));
 
         let writes =
             dispatcher().dispatch(&mut reader, &key_char('x'), &bindings, &cmds, &renderers);
 
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "sentinel"));
+        assert_eq!(writes[0].path, path!("ui", "sentinel"));
     }
 
     #[test]
@@ -823,7 +825,7 @@ mod tests {
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            scope: BindingScope::Exact(oxpath!("settings", "_manual_model", "id")),
+            scope: BindingScope::Exact(path!("settings", "_manual_model", "id")),
             key: key_char('a'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Target,
@@ -857,7 +859,7 @@ mod tests {
             ) -> Option<Vec<Write>> {
                 match k.code {
                     KeyCodeRepr::Char(c) => Some(vec![Write {
-                        path: oxpath!("ui", "handler_seen"),
+                        path: path!("ui", "handler_seen"),
                         record: Record::parsed(Value::String(c.to_string())),
                     }]),
                     _ => None,
@@ -868,20 +870,20 @@ mod tests {
         let cmds = CommandRegistry::new();
         let mut bindings = BindingRegistry::new();
         bindings.register_handler(HandlerEntry {
-            scope: BindingScope::Exact(oxpath!("settings", "_edit")),
+            scope: BindingScope::Exact(path!("settings", "_edit")),
             phase: Phase::Target,
             handler: Arc::new(EatChar),
         });
 
         let renderers = RendererRegistry::new();
         let mut reader = MapReader::default();
-        seed_focused(&mut reader, &oxpath!("settings", "_edit"));
+        seed_focused(&mut reader, &path!("settings", "_edit"));
 
         let writes =
             dispatcher().dispatch(&mut reader, &key_char('x'), &bindings, &cmds, &renderers);
 
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "handler_seen"));
+        assert_eq!(writes[0].path, path!("ui", "handler_seen"));
         match &writes[0].record {
             Record::Parsed(Value::String(s)) => assert_eq!(s, "x"),
             other => panic!("unexpected record: {other:?}"),
@@ -916,21 +918,21 @@ mod tests {
         // A Bubble binding at the outer scope that would fire if the
         // Target handler didn't claim.
         bindings.register(BindingEntry {
-            scope: BindingScope::Exact(oxpath!("settings")),
+            scope: BindingScope::Exact(path!("settings")),
             key: key_char('x'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Bubble,
             priority: 200,
         });
         bindings.register_handler(HandlerEntry {
-            scope: BindingScope::Exact(oxpath!("settings", "_edit")),
+            scope: BindingScope::Exact(path!("settings", "_edit")),
             phase: Phase::Target,
             handler: Arc::new(SwallowAll),
         });
 
         let renderers = RendererRegistry::new();
         let mut reader = MapReader::default();
-        seed_focused(&mut reader, &oxpath!("settings", "_edit"));
+        seed_focused(&mut reader, &path!("settings", "_edit"));
 
         let writes =
             dispatcher().dispatch(&mut reader, &key_char('x'), &bindings, &cmds, &renderers);
@@ -966,28 +968,28 @@ mod tests {
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            scope: BindingScope::Exact(oxpath!("settings")),
+            scope: BindingScope::Exact(path!("settings")),
             key: key_char('x'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Bubble,
             priority: 200,
         });
         bindings.register_handler(HandlerEntry {
-            scope: BindingScope::Exact(oxpath!("settings", "_edit")),
+            scope: BindingScope::Exact(path!("settings", "_edit")),
             phase: Phase::Target,
             handler: Arc::new(PassAll),
         });
 
         let renderers = RendererRegistry::new();
         let mut reader = MapReader::default();
-        seed_focused(&mut reader, &oxpath!("settings", "_edit"));
+        seed_focused(&mut reader, &path!("settings", "_edit"));
 
         let writes =
             dispatcher().dispatch(&mut reader, &key_char('x'), &bindings, &cmds, &renderers);
 
         // Handler passed; bubble binding at `settings` fired the sentinel.
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "sentinel"));
+        assert_eq!(writes[0].path, path!("ui", "sentinel"));
     }
 
     #[test]
@@ -1011,7 +1013,7 @@ mod tests {
                 // Returning a distinguishable sentinel write so a test
                 // failure would surface here rather than silently agree.
                 Some(vec![Write {
-                    path: oxpath!("ui", "handler_should_not_have_fired"),
+                    path: path!("ui", "handler_should_not_have_fired"),
                     record: Record::parsed(Value::Bool(true)),
                 }])
             }
@@ -1022,28 +1024,28 @@ mod tests {
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            scope: BindingScope::Exact(oxpath!("settings", "_edit")),
+            scope: BindingScope::Exact(path!("settings", "_edit")),
             key: key_char('x'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Target,
             priority: 200,
         });
         bindings.register_handler(HandlerEntry {
-            scope: BindingScope::Exact(oxpath!("settings", "_edit")),
+            scope: BindingScope::Exact(path!("settings", "_edit")),
             phase: Phase::Target,
             handler: Arc::new(ShouldNotFire),
         });
 
         let renderers = RendererRegistry::new();
         let mut reader = MapReader::default();
-        seed_focused(&mut reader, &oxpath!("settings", "_edit"));
+        seed_focused(&mut reader, &path!("settings", "_edit"));
 
         let writes =
             dispatcher().dispatch(&mut reader, &key_char('x'), &bindings, &cmds, &renderers);
 
         // Discrete tier fired — sentinel write, not the handler's marker.
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "sentinel"));
+        assert_eq!(writes[0].path, path!("ui", "sentinel"));
     }
 
     #[test]
@@ -1057,7 +1059,7 @@ mod tests {
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            scope: BindingScope::Exact(oxpath!("settings")),
+            scope: BindingScope::Exact(path!("settings")),
             key: key_char('j'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Bubble,
@@ -1066,21 +1068,21 @@ mod tests {
 
         let renderers = RendererRegistry::new();
         let mut reader = MapReader::default();
-        seed_focused(&mut reader, &oxpath!("settings", "accounts"));
+        seed_focused(&mut reader, &path!("settings", "accounts"));
 
         let writes =
             dispatcher().dispatch(&mut reader, &key_char('j'), &bindings, &cmds, &renderers);
 
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "sentinel"));
+        assert_eq!(writes[0].path, path!("ui", "sentinel"));
     }
 
     /// Seed `<focus_path> = settings/_edit` (plus the target field path)
     /// so the dispatcher's `compute_scope_path` builds the `_edit` leaf.
     fn seed_edit_mode(reader: &mut MapReader, field_path: Path) {
-        seed_focused(reader, &oxpath!("settings", "_edit"));
+        seed_focused(reader, &path!("settings", "_edit"));
         reader.insert(
-            &oxpath!("ui", "settings", "edit", "target_path"),
+            &path!("ui", "settings", "edit", "target_path"),
             Record::parsed(path_to_value(&field_path)),
         );
     }
@@ -1094,7 +1096,7 @@ mod tests {
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            scope: BindingScope::Exact(oxpath!("settings", "_edit")),
+            scope: BindingScope::Exact(path!("settings", "_edit")),
             key: KeyChord {
                 modifiers: KeyModifierSet::default(),
                 code: KeyCodeRepr::Esc,
@@ -1108,7 +1110,7 @@ mod tests {
         let mut reader = MapReader::default();
         seed_edit_mode(
             &mut reader,
-            oxpath!("config", "gate", "providers", "alpha", "endpoint"),
+            path!("config", "gate", "providers", "alpha", "endpoint"),
         );
 
         let writes = dispatcher().dispatch(
@@ -1123,7 +1125,7 @@ mod tests {
         );
 
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "sentinel"));
+        assert_eq!(writes[0].path, path!("ui", "sentinel"));
     }
 
     #[test]
@@ -1134,7 +1136,7 @@ mod tests {
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            scope: BindingScope::Exact(oxpath!("settings", "_edit")),
+            scope: BindingScope::Exact(path!("settings", "_edit")),
             key: KeyChord {
                 modifiers: KeyModifierSet::default(),
                 code: KeyCodeRepr::Enter,
@@ -1148,7 +1150,7 @@ mod tests {
         let mut reader = MapReader::default();
         seed_edit_mode(
             &mut reader,
-            oxpath!("config", "gate", "providers", "alpha", "endpoint"),
+            path!("config", "gate", "providers", "alpha", "endpoint"),
         );
 
         let writes = dispatcher().dispatch(
@@ -1163,7 +1165,7 @@ mod tests {
         );
 
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "sentinel"));
+        assert_eq!(writes[0].path, path!("ui", "sentinel"));
     }
 
     #[test]
@@ -1175,7 +1177,7 @@ mod tests {
 
         let mut bindings = BindingRegistry::new();
         bindings.register(BindingEntry {
-            scope: BindingScope::Exact(oxpath!("settings", "_edit")),
+            scope: BindingScope::Exact(path!("settings", "_edit")),
             key: key_char('x'),
             command_id: cmd_id("test.sentinel"),
             phase: Phase::Target,
@@ -1186,14 +1188,14 @@ mod tests {
         let mut reader = MapReader::default();
         seed_edit_mode(
             &mut reader,
-            oxpath!("config", "gate", "providers", "alpha", "endpoint"),
+            path!("config", "gate", "providers", "alpha", "endpoint"),
         );
 
         let writes =
             dispatcher().dispatch(&mut reader, &key_char('x'), &bindings, &cmds, &renderers);
 
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "sentinel"));
+        assert_eq!(writes[0].path, path!("ui", "sentinel"));
     }
 
     // -----------------------------------------------------------------
@@ -1209,7 +1211,7 @@ mod tests {
         let path = dispatcher().compute_scope_path(&mut reader);
         assert_eq!(
             path,
-            vec![BindingScope::Exact(oxpath!("settings"))],
+            vec![BindingScope::Exact(path!("settings"))],
             "no-cursor fallback should be the screen-root scope",
         );
     }
@@ -1219,19 +1221,16 @@ mod tests {
         // Cursor at a row path → scope path is the cursor's ancestor
         // chain (each progressively-longer prefix, outer → inner).
         let mut reader = MapReader::default();
-        seed_focused(&mut reader, &oxpath!("settings", "accounts", "alpha"));
+        seed_focused(&mut reader, &path!("settings", "accounts", "alpha"));
 
         let path = dispatcher().compute_scope_path(&mut reader);
 
         assert_eq!(path.len(), 3);
-        assert_eq!(path[0], BindingScope::Exact(oxpath!("settings")));
-        assert_eq!(
-            path[1],
-            BindingScope::Exact(oxpath!("settings", "accounts"))
-        );
+        assert_eq!(path[0], BindingScope::Exact(path!("settings")));
+        assert_eq!(path[1], BindingScope::Exact(path!("settings", "accounts")));
         assert_eq!(
             path[2],
-            BindingScope::Exact(oxpath!("settings", "accounts", "alpha"))
+            BindingScope::Exact(path!("settings", "accounts", "alpha"))
         );
     }
 
@@ -1240,16 +1239,13 @@ mod tests {
         // Cursor at the section header (`settings/accounts`) → ancestor
         // chain is [settings, settings/accounts].
         let mut reader = MapReader::default();
-        seed_focused(&mut reader, &oxpath!("settings", "accounts"));
+        seed_focused(&mut reader, &path!("settings", "accounts"));
 
         let path = dispatcher().compute_scope_path(&mut reader);
 
         assert_eq!(path.len(), 2);
-        assert_eq!(path[0], BindingScope::Exact(oxpath!("settings")));
-        assert_eq!(
-            path[1],
-            BindingScope::Exact(oxpath!("settings", "accounts"))
-        );
+        assert_eq!(path[0], BindingScope::Exact(path!("settings")));
+        assert_eq!(path[1], BindingScope::Exact(path!("settings", "accounts")));
     }
 
     #[test]
@@ -1257,19 +1253,19 @@ mod tests {
         // Compose mode with the Name field focused: ancestor chain is
         // [settings, settings/_compose_form, settings/_compose_form/name].
         let mut reader = MapReader::default();
-        seed_focused(&mut reader, &oxpath!("settings", "_compose_form", "name"));
+        seed_focused(&mut reader, &path!("settings", "_compose_form", "name"));
 
         let path = dispatcher().compute_scope_path(&mut reader);
 
         assert_eq!(path.len(), 3);
-        assert_eq!(path[0], BindingScope::Exact(oxpath!("settings")));
+        assert_eq!(path[0], BindingScope::Exact(path!("settings")));
         assert_eq!(
             path[1],
-            BindingScope::Exact(oxpath!("settings", "_compose_form"))
+            BindingScope::Exact(path!("settings", "_compose_form"))
         );
         assert_eq!(
             path[2],
-            BindingScope::Exact(oxpath!("settings", "_compose_form", "name"))
+            BindingScope::Exact(path!("settings", "_compose_form", "name"))
         );
     }
 
@@ -1277,32 +1273,29 @@ mod tests {
     fn scope_path_for_compose_selector_focus_uses_per_field_leaf() {
         // Same shape with the Protocol field focused — leaf flips.
         let mut reader = MapReader::default();
-        seed_focused(
-            &mut reader,
-            &oxpath!("settings", "_compose_form", "protocol"),
-        );
+        seed_focused(&mut reader, &path!("settings", "_compose_form", "protocol"));
 
         let path = dispatcher().compute_scope_path(&mut reader);
 
         assert_eq!(path.len(), 3);
-        assert_eq!(path[0], BindingScope::Exact(oxpath!("settings")));
+        assert_eq!(path[0], BindingScope::Exact(path!("settings")));
         assert_eq!(
             path[1],
-            BindingScope::Exact(oxpath!("settings", "_compose_form"))
+            BindingScope::Exact(path!("settings", "_compose_form"))
         );
         assert_eq!(
             path[2],
-            BindingScope::Exact(oxpath!("settings", "_compose_form", "protocol"))
+            BindingScope::Exact(path!("settings", "_compose_form", "protocol"))
         );
     }
 
     #[test]
     fn compute_scope_path_includes_compose_form_when_cursor_at_field() {
         let mut reader = MapReader::default();
-        seed_focused(&mut reader, &oxpath!("settings", "_compose_form", "name"));
+        seed_focused(&mut reader, &path!("settings", "_compose_form", "name"));
         let path = dispatcher().compute_scope_path(&mut reader);
-        assert!(path.contains(&BindingScope::Exact(oxpath!("settings", "_compose_form"))));
-        assert!(path.contains(&BindingScope::Exact(oxpath!(
+        assert!(path.contains(&BindingScope::Exact(path!("settings", "_compose_form"))));
+        assert!(path.contains(&BindingScope::Exact(path!(
             "settings",
             "_compose_form",
             "name"
@@ -1312,10 +1305,10 @@ mod tests {
     #[test]
     fn cursor_at_account_row_does_not_include_compose_form_scope() {
         let mut reader = MapReader::default();
-        seed_focused(&mut reader, &oxpath!("settings", "accounts", "alpha"));
+        seed_focused(&mut reader, &path!("settings", "accounts", "alpha"));
         let path = dispatcher().compute_scope_path(&mut reader);
         assert!(
-            !path.contains(&BindingScope::Exact(oxpath!("settings", "_compose_form"))),
+            !path.contains(&BindingScope::Exact(path!("settings", "_compose_form"))),
             "no compose form scope when cursor is on an account row: {path:?}",
         );
     }
@@ -1323,46 +1316,46 @@ mod tests {
     #[test]
     fn scope_path_for_manual_model_is_settings_then_form_then_stage_leaf() {
         let mut reader = MapReader::default();
-        seed_focused(&mut reader, &oxpath!("settings", "_manual_model", "ctx"));
+        seed_focused(&mut reader, &path!("settings", "_manual_model", "ctx"));
 
         let path = dispatcher().compute_scope_path(&mut reader);
 
         assert_eq!(path.len(), 3);
-        assert_eq!(path[0], BindingScope::Exact(oxpath!("settings")));
+        assert_eq!(path[0], BindingScope::Exact(path!("settings")));
         assert_eq!(
             path[1],
-            BindingScope::Exact(oxpath!("settings", "_manual_model"))
+            BindingScope::Exact(path!("settings", "_manual_model"))
         );
         assert_eq!(
             path[2],
-            BindingScope::Exact(oxpath!("settings", "_manual_model", "ctx"))
+            BindingScope::Exact(path!("settings", "_manual_model", "ctx"))
         );
     }
 
     #[test]
     fn scope_path_for_manual_model_id_stage_uses_id_leaf() {
         let mut reader = MapReader::default();
-        seed_focused(&mut reader, &oxpath!("settings", "_manual_model", "id"));
+        seed_focused(&mut reader, &path!("settings", "_manual_model", "id"));
 
         let path = dispatcher().compute_scope_path(&mut reader);
 
         assert_eq!(
             path.last().unwrap(),
-            &BindingScope::Exact(oxpath!("settings", "_manual_model", "id"))
+            &BindingScope::Exact(path!("settings", "_manual_model", "id"))
         );
     }
 
     #[test]
     fn compute_scope_path_includes_manual_model_when_cursor_at_stage() {
         let mut reader = MapReader::default();
-        seed_focused(&mut reader, &oxpath!("settings", "_manual_model", "id"));
+        seed_focused(&mut reader, &path!("settings", "_manual_model", "id"));
         let path = dispatcher().compute_scope_path(&mut reader);
         assert!(
-            path.contains(&BindingScope::Exact(oxpath!("settings", "_manual_model"))),
+            path.contains(&BindingScope::Exact(path!("settings", "_manual_model"))),
             "expected form scope on path: {path:?}",
         );
         assert!(
-            path.contains(&BindingScope::Exact(oxpath!(
+            path.contains(&BindingScope::Exact(path!(
                 "settings",
                 "_manual_model",
                 "id"
@@ -1374,25 +1367,25 @@ mod tests {
     #[test]
     fn scope_path_for_confirm_delete_ends_at_confirm_delete_scope() {
         let mut reader = MapReader::default();
-        seed_focused(&mut reader, &oxpath!("settings", "_confirm_delete"));
+        seed_focused(&mut reader, &path!("settings", "_confirm_delete"));
 
         let path = dispatcher().compute_scope_path(&mut reader);
 
         assert_eq!(path.len(), 2);
-        assert_eq!(path[0], BindingScope::Exact(oxpath!("settings")));
+        assert_eq!(path[0], BindingScope::Exact(path!("settings")));
         assert_eq!(
             path[1],
-            BindingScope::Exact(oxpath!("settings", "_confirm_delete"))
+            BindingScope::Exact(path!("settings", "_confirm_delete"))
         );
     }
 
     #[test]
     fn compute_scope_path_includes_confirm_delete_when_cursor_at_it() {
         let mut reader = MapReader::default();
-        seed_focused(&mut reader, &oxpath!("settings", "_confirm_delete"));
+        seed_focused(&mut reader, &path!("settings", "_confirm_delete"));
         let path = dispatcher().compute_scope_path(&mut reader);
         assert!(
-            path.contains(&BindingScope::Exact(oxpath!("settings", "_confirm_delete"))),
+            path.contains(&BindingScope::Exact(path!("settings", "_confirm_delete"))),
             "expected confirm-delete leaf on path: {path:?}",
         );
     }
@@ -1402,14 +1395,14 @@ mod tests {
         let mut reader = MapReader::default();
         seed_edit_mode(
             &mut reader,
-            oxpath!("config", "gate", "providers", "alpha", "endpoint"),
+            path!("config", "gate", "providers", "alpha", "endpoint"),
         );
 
         let path = dispatcher().compute_scope_path(&mut reader);
 
         assert_eq!(path.len(), 2);
-        assert_eq!(path[0], BindingScope::Exact(oxpath!("settings")));
-        assert_eq!(path[1], BindingScope::Exact(oxpath!("settings", "_edit")));
+        assert_eq!(path[0], BindingScope::Exact(path!("settings")));
+        assert_eq!(path[1], BindingScope::Exact(path!("settings", "_edit")));
     }
 
     #[test]
@@ -1417,11 +1410,11 @@ mod tests {
         let mut reader = MapReader::default();
         seed_edit_mode(
             &mut reader,
-            oxpath!("settings", "accounts", "alpha", "endpoint"),
+            path!("settings", "accounts", "alpha", "endpoint"),
         );
         let path = dispatcher().compute_scope_path(&mut reader);
         assert!(
-            path.contains(&BindingScope::Exact(oxpath!("settings", "_edit"))),
+            path.contains(&BindingScope::Exact(path!("settings", "_edit"))),
             "expected edit leaf on path: {path:?}",
         );
     }
@@ -1432,27 +1425,27 @@ mod tests {
 
     #[test]
     fn path_ancestors_empty_path_returns_empty_vec() {
-        let ancestors = path_ancestors(&oxpath!());
+        let ancestors = path_ancestors(&path!());
         assert!(ancestors.is_empty(), "expected empty vec: {ancestors:?}");
     }
 
     #[test]
     fn path_ancestors_single_segment_returns_self() {
-        let p = oxpath!("settings");
+        let p = path!("settings");
         let ancestors = path_ancestors(&p);
         assert_eq!(ancestors, vec![p]);
     }
 
     #[test]
     fn path_ancestors_multi_segment_returns_progressively_longer_prefixes() {
-        let p = oxpath!("settings", "_compose_form", "name");
+        let p = path!("settings", "_compose_form", "name");
         let ancestors = path_ancestors(&p);
         assert_eq!(
             ancestors,
             vec![
-                oxpath!("settings"),
-                oxpath!("settings", "_compose_form"),
-                oxpath!("settings", "_compose_form", "name"),
+                path!("settings"),
+                path!("settings", "_compose_form"),
+                path!("settings", "_compose_form", "name"),
             ],
         );
     }

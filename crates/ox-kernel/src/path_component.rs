@@ -1,7 +1,7 @@
 //! A validated path component — can only be constructed from a string that
 //! passes UAX#31 validation (or is pure numeric).
 //!
-//! Use [`PathComponent::try_new`] for runtime validation, or the [`oxpath!`]
+//! Use [`PathComponent::try_new`] for runtime validation, or the [`path!`]
 //! macro for compile-time validated literals.
 
 use crate::{Path, StoreError};
@@ -33,7 +33,7 @@ impl PathComponent {
         &self.0
     }
 
-    /// Borrow the validated string — used by the `oxpath!` macro to enforce
+    /// Borrow the validated string — used by the `path!` macro to enforce
     /// that only `PathComponent` values (not bare `String`/`&str`) are accepted
     /// as runtime path components. Named distinctly so no standard type matches.
     pub fn validated_str(&self) -> &str {
@@ -111,42 +111,47 @@ mod tests {
         assert!(PathComponent::try_new("_").is_err());
     }
 
-    // -- oxpath! macro tests --
+    // -- path! macro tests --
 
     #[test]
-    fn oxpath_all_literals() {
-        let p = crate::oxpath!("gate", "defaults", "model");
+    fn path_all_literals() {
+        let p = crate::path!("gate", "defaults", "model");
         assert_eq!(p.to_string(), "gate/defaults/model");
     }
 
     #[test]
-    fn oxpath_single_literal() {
-        let p = crate::oxpath!("system");
+    fn path_single_literal() {
+        let p = crate::path!("system");
         assert_eq!(p.to_string(), "system");
     }
 
     #[test]
-    fn oxpath_with_runtime_component() {
+    fn path_with_runtime_component() {
         let name = PathComponent::try_new("personal").unwrap();
-        let p = crate::oxpath!("gate", "accounts", name, "provider");
+        let p = crate::path!("gate", "accounts", name, "provider");
         assert_eq!(p.to_string(), "gate/accounts/personal/provider");
+        assert_eq!(
+            crate::path!("gate/accounts", name).to_string(),
+            "gate/accounts/personal"
+        );
     }
 
     #[test]
-    fn oxpath_numeric_literal() {
-        let p = crate::oxpath!("items", "0", "name");
+    fn path_numeric_literal() {
+        let p = crate::path!("items", 0, "name");
         assert_eq!(p.to_string(), "items/0/name");
     }
 
     #[test]
-    fn oxpath_unicode_literal() {
-        let p = crate::oxpath!("données", "utilisateur");
+    fn path_unicode_literal() {
+        let p = crate::path!("données", "utilisateur");
         assert_eq!(p.to_string(), "données/utilisateur");
     }
 
     #[test]
-    fn oxpath_empty() {
-        let p = crate::oxpath!();
+    fn path_empty() {
+        let p = crate::path!();
         assert!(p.is_empty());
+        assert!(crate::path!("").is_empty());
     }
 }

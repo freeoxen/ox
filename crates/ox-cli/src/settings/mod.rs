@@ -30,7 +30,7 @@ pub use horns_core::{
 use horns_core::SubscriptionId;
 use horns_core::install::{InstallPaths, build_install_bundle_from_registries};
 use ox_broker::BrokerStore;
-use ox_path::oxpath;
+use structfs_core_store::path;
 use structfs_core_store::{Error as StoreError, Path};
 
 /// Path the settings install reads the focus cursor from.
@@ -40,21 +40,21 @@ use structfs_core_store::{Error as StoreError, Path};
 /// write that fires the focus-change re-render is the same write
 /// existing code emits — no new authoring convention needed.
 pub fn cursor_path() -> Path {
-    oxpath!("ui", "settings", "focused")
+    path!("ui", "settings", "focused")
 }
 
 /// Broker path the event loop writes a `KeyChord` to to drive
 /// settings-screen dispatch. The horns `KeyDispatchSubscription`
 /// installed by [`install`] watches `<input_path>/key` and reacts.
 pub fn input_path() -> Path {
-    oxpath!("ui", "_horns", "settings", "input")
+    path!("ui", "_horns", "settings", "input")
 }
 
 /// The exact broker path the event loop writes a `KeyChord` to.
 /// Centralizes the `key` suffix so the producer (event loop) and the
 /// consumer (KeyDispatchSubscription) cannot silently desync.
 pub fn input_key_path() -> Path {
-    oxpath!("ui", "_horns", "settings", "input", "key")
+    path!("ui", "_horns", "settings", "input", "key")
 }
 
 /// The exact broker path the event loop writes the terminal `Rect` to.
@@ -62,21 +62,21 @@ pub fn input_key_path() -> Path {
 /// size, so the host writes this on startup and on every terminal
 /// resize.
 pub fn input_area_path() -> Path {
-    oxpath!("ui", "_horns", "settings", "input", "area")
+    path!("ui", "_horns", "settings", "input", "area")
 }
 
 /// Broker path the horns render pipeline writes its serialized
 /// `View` to. The event loop reads this on every frame and composes
 /// it into the overall TUI frame in `tui::draw`.
 pub fn render_output_path() -> Path {
-    oxpath!("ui", "_horns", "settings", "render", "output")
+    path!("ui", "_horns", "settings", "render", "output")
 }
 
 /// Broker path the dispatcher bumps to wake the render subscription.
 /// Also bumped on initial install so the subscription fires at least
 /// once and produces a View for the first frame.
 pub fn render_tick_path() -> Path {
-    oxpath!("ui", "_horns", "settings", "render", "tick")
+    path!("ui", "_horns", "settings", "render", "tick")
 }
 
 /// Path the install writes the (JSON-encoded) theme to. Writes here
@@ -88,19 +88,19 @@ pub fn render_tick_path() -> Path {
 /// isn't one. Putting theme inside the horns subtree keeps the install
 /// writes routable without inventing a new top-level mount.
 pub fn theme_path() -> Path {
-    oxpath!("ui", "_horns", "theme")
+    path!("ui", "_horns", "theme")
 }
 
 /// Broker prefix the install writes `BindingEntry` rows to. The event
 /// loop's hint projection reads from this subtree per frame.
 pub fn bindings_prefix() -> Path {
-    oxpath!("horns", "settings", "bindings")
+    path!("horns", "settings", "bindings")
 }
 
 /// Broker prefix the install writes `CommandMetadata` rows to. The
 /// event loop's hint projection reads from this subtree per frame.
 pub fn commands_prefix() -> Path {
-    oxpath!("horns", "settings", "commands")
+    path!("horns", "settings", "commands")
 }
 
 /// Handle returned from [`install`]. Holds the subscription ids the

@@ -8,7 +8,9 @@
 
 use serde::{Deserialize, Serialize};
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer};
-use structfs_serde_store::{from_value, to_value};
+#[cfg(test)]
+use structfs_serde_store::from_value;
+use structfs_serde_store::{to_value, value_to_json};
 
 pub use ox_types::UsageRecord;
 
@@ -43,7 +45,16 @@ impl UsageStore {
             Value::Array(a) => a,
             _ => return Ok(vec![]),
         };
-        Ok(arr.into_iter().filter_map(|v| from_value(v).ok()).collect())
+        // The persisted schema is JSON; legacy files may spell a cost as `0`
+        // rather than `0.0`. Decode with the JSON numeric contract.
+        Ok(arr
+            .into_iter()
+            .filter_map(|v| {
+                value_to_json(v)
+                    .ok()
+                    .and_then(|json| serde_json::from_value(json).ok())
+            })
+            .collect())
     }
 }
 
@@ -55,7 +66,7 @@ impl Reader for UsageStore {
                 .map_err(|e| StoreError::store("usage", "read", e.to_string()))?;
             return Ok(Some(Record::parsed(value)));
         }
-        match from[0].as_str() {
+        match &from[0] {
             "today" => {
                 let records = self.load_all()?;
                 let start_of_today_ms = start_of_today_ms();
@@ -82,7 +93,7 @@ impl Reader for UsageStore {
 
 impl Writer for UsageStore {
     fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
-        if to.is_empty() || to[0].as_str() != "append" {
+        if to.is_empty() || &to[0] != "append" {
             return Err(StoreError::store(
                 "usage",
                 "write",
@@ -92,7 +103,7 @@ impl Writer for UsageStore {
         let value = data
             .as_value()
             .ok_or_else(|| StoreError::store("usage", "write", "expected parsed record"))?;
-        let record: UsageRecord = from_value(value.clone())
+        let record: UsageRecord = serde_json::from_value(value_to_json(value.clone())?)
             .map_err(|e| StoreError::store("usage", "write", e.to_string()))?;
         self.append(&record)?;
         Ok(to.clone())
@@ -181,5 +192,29 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn integer_cost_json_remains_readable_and_writable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("usage.jsonl");
+        let mut json = serde_json::to_value(sample_record("legacy")).unwrap();
+        json["estimated_cost_usd"] = serde_json::json!(0);
+        std::fs::write(&path, format!("{json}\n")).unwrap();
+        let mut store = UsageStore::new(Box::new(JsonlFileBacking::new(&path).unwrap()));
+        let records = store.load_all().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].estimated_cost_usd, Some(0.0));
+        json["id"] = serde_json::json!("new");
+        json["estimated_cost_usd"] = serde_json::json!(1);
+        store
+            .write(
+                &structfs_core_store::path!("append"),
+                Record::parsed(structfs_serde_store::json_to_value(json)),
+            )
+            .unwrap();
+        let records = store.load_all().unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[1].estimated_cost_usd, Some(1.0));
     }
 }

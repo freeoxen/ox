@@ -52,7 +52,7 @@ impl AccountName {
 
     /// Convert to a [`PathComponent`]. The validation rule is the same, so
     /// this conversion always succeeds — it is provided as a convenience
-    /// for callers that need to feed a `PathComponent` into `oxpath!`.
+    /// for callers that need to feed a `PathComponent` into `path!`.
     pub fn to_path_component(&self) -> PathComponent {
         // Re-running validation here is the most defensive way to
         // produce a PathComponent without `unsafe`; since AccountName's

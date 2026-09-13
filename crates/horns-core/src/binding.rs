@@ -289,7 +289,7 @@ fn specificity_class(e: &BindingEntry) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use ox_path::oxpath;
+    use structfs_core_store::path;
 
     use super::*;
     use crate::key::{KeyCodeRepr, KeyModifierSet};
@@ -297,35 +297,35 @@ mod tests {
     #[test]
     fn scope_anywhere_admits_any_cursor() {
         let s = BindingScope::Anywhere;
-        assert!(s.matches(&oxpath!()));
-        assert!(s.matches(&oxpath!("settings", "accounts", "alpha")));
+        assert!(s.matches(&path!()));
+        assert!(s.matches(&path!("settings", "accounts", "alpha")));
     }
 
     #[test]
     fn scope_exact_matches_only_identical_cursor() {
-        let s = BindingScope::Exact(oxpath!("settings", "accounts"));
-        assert!(s.matches(&oxpath!("settings", "accounts")));
-        assert!(!s.matches(&oxpath!("settings", "accounts", "alpha")));
-        assert!(!s.matches(&oxpath!("settings")));
+        let s = BindingScope::Exact(path!("settings", "accounts"));
+        assert!(s.matches(&path!("settings", "accounts")));
+        assert!(!s.matches(&path!("settings", "accounts", "alpha")));
+        assert!(!s.matches(&path!("settings")));
     }
 
     #[test]
     fn scope_prefix_matches_descendants_at_component_boundary() {
-        let s = BindingScope::Prefix(oxpath!("settings", "accounts"));
+        let s = BindingScope::Prefix(path!("settings", "accounts"));
         // Same path is its own prefix.
-        assert!(s.matches(&oxpath!("settings", "accounts")));
+        assert!(s.matches(&path!("settings", "accounts")));
         // Deeper component matches.
-        assert!(s.matches(&oxpath!("settings", "accounts", "alpha")));
-        assert!(s.matches(&oxpath!("settings", "accounts", "alpha", "key")));
+        assert!(s.matches(&path!("settings", "accounts", "alpha")));
+        assert!(s.matches(&path!("settings", "accounts", "alpha", "key")));
         // Sibling does NOT match (component boundary, not byte).
-        assert!(!s.matches(&oxpath!("settings", "models")));
+        assert!(!s.matches(&path!("settings", "models")));
         // Shallower path is not a descendant.
-        assert!(!s.matches(&oxpath!("settings")));
+        assert!(!s.matches(&path!("settings")));
     }
 
     #[test]
     fn keyed_path_returns_inner_for_exact_and_prefix() {
-        let p = oxpath!("settings", "accounts");
+        let p = path!("settings", "accounts");
         assert_eq!(BindingScope::Exact(p.clone()).keyed_path(), Some(&p));
         assert_eq!(BindingScope::Prefix(p.clone()).keyed_path(), Some(&p));
         assert_eq!(BindingScope::Anywhere.keyed_path(), None);
@@ -345,7 +345,7 @@ mod tests {
     #[test]
     fn cursor_specific_beats_whole_screen() {
         let mut reg = BindingRegistry::new();
-        let p = oxpath!("settings", "accounts");
+        let p = path!("settings", "accounts");
 
         // Register the *less* specific one first to prove ordering is
         // not just "registration order."
@@ -385,7 +385,7 @@ mod tests {
         // whole-screen one wins.
         let hit = reg
             .lookup(
-                &oxpath!("settings", "anywhere"),
+                &path!("settings", "anywhere"),
                 &key_char('q'),
                 Phase::Target,
             )
@@ -393,7 +393,7 @@ mod tests {
         assert_eq!(hit, &cmd("quit"));
 
         let hit = reg
-            .lookup(&oxpath!(), &key_char('q'), Phase::Target)
+            .lookup(&path!(), &key_char('q'), Phase::Target)
             .expect("should match");
         assert_eq!(hit, &cmd("quit"));
     }
@@ -419,7 +419,7 @@ mod tests {
         });
 
         let hit = reg
-            .lookup(&oxpath!("settings"), &key_char('x'), Phase::Target)
+            .lookup(&path!("settings"), &key_char('x'), Phase::Target)
             .expect("should match");
         assert_eq!(hit, &cmd("first"));
     }
@@ -435,14 +435,14 @@ mod tests {
             priority: 200,
         });
 
-        let hit = reg.lookup(&oxpath!(), &key_char('k'), Phase::Target);
+        let hit = reg.lookup(&path!(), &key_char('k'), Phase::Target);
         assert!(hit.is_none());
     }
 
     #[test]
     fn empty_registry_returns_none() {
         let reg = BindingRegistry::new();
-        let hit = reg.lookup(&oxpath!(), &key_char('a'), Phase::Target);
+        let hit = reg.lookup(&path!(), &key_char('a'), Phase::Target);
         assert!(hit.is_none());
     }
 
@@ -460,12 +460,12 @@ mod tests {
         });
 
         // Target lookup misses the Capture entry.
-        let hit = reg.lookup(&oxpath!(), &key_char('a'), Phase::Target);
+        let hit = reg.lookup(&path!(), &key_char('a'), Phase::Target);
         assert!(hit.is_none());
 
         // Capture lookup finds it.
         let hit = reg
-            .lookup(&oxpath!(), &key_char('a'), Phase::Capture)
+            .lookup(&path!(), &key_char('a'), Phase::Capture)
             .expect("should match");
         assert_eq!(hit, &cmd("capture_only"));
     }
@@ -476,7 +476,7 @@ mod tests {
         // entries differing only by scope specificity must resolve to
         // the more-specific one.
         let mut reg = BindingRegistry::new();
-        let p = oxpath!("settings", "accounts");
+        let p = path!("settings", "accounts");
 
         // Less-specific (Anywhere) registered first to prove it's not
         // just registration order.
@@ -506,7 +506,7 @@ mod tests {
         // Same (scope, key) under two different phases must coexist and
         // route independently per the lookup phase.
         let mut reg = BindingRegistry::new();
-        let p = oxpath!("settings", "accounts");
+        let p = path!("settings", "accounts");
 
         reg.register(BindingEntry {
             scope: BindingScope::Exact(p.clone()),

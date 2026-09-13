@@ -13,10 +13,10 @@
 use crate::ledger;
 use crate::thread_dir::{self, ContextFile};
 use ox_kernel::PathComponent;
-use ox_path::oxpath;
 use std::collections::BTreeMap;
 use std::path::Path;
 use structfs_core_store::Record;
+use structfs_core_store::path;
 use structfs_serde_store::{json_to_value, value_to_json};
 
 /// Mounts that participate in context.json snapshots.
@@ -63,11 +63,14 @@ pub fn save_config_snapshot(
     let mut stores = BTreeMap::new();
     for &mount in mounts {
         let mount_comp = PathComponent::try_new(mount.to_string()).map_err(|e| e.to_string())?;
-        let path = oxpath!(mount_comp, "snapshot", "state");
-        if let Ok(Some(record)) = namespace.read(&path) {
-            if let Some(value) = record.as_value() {
-                stores.insert(mount.to_string(), value_to_json(value.clone()));
-            }
+        let path = path!(mount_comp, "snapshot", "state");
+        if let Ok(Some(record)) = namespace.read(&path)
+            && let Some(value) = record.as_value()
+        {
+            stores.insert(
+                mount.to_string(),
+                value_to_json(value.clone()).map_err(|e| e.to_string())?,
+            );
         }
     }
 
@@ -158,7 +161,7 @@ pub fn restore(
         if let Some(state_json) = ctx.stores.get(mount) {
             let mount_comp =
                 PathComponent::try_new(mount.to_string()).map_err(|e| e.to_string())?;
-            let path = oxpath!(mount_comp, "snapshot", "state");
+            let path = path!(mount_comp, "snapshot", "state");
             let value = json_to_value(state_json.clone());
             namespace
                 .write(&path, Record::parsed(value))

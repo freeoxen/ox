@@ -46,7 +46,7 @@ pub async fn migrate_legacy_keys(
                 continue;
             }
         };
-        let path = ox_path::oxpath!("secret", "keys", name_comp);
+        let path = structfs_core_store::path!("secret", "keys", name_comp);
         match client
             .write_typed(&path, &ox_gate::ApiKey::new(key.clone()))
             .await
@@ -107,7 +107,7 @@ async fn secrets_keys_already_populated(client: &ox_broker::ClientHandle) -> boo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ox_path::oxpath;
+    use structfs_core_store::path;
 
     /// Build a broker with the same shape main.rs uses — `config/` mounted
     /// to a TOML backing under `inbox_root` and `secret/` mounted to a
@@ -155,7 +155,7 @@ mod tests {
         // ApiKey lands at secret/keys/{name}.
         let comp = ox_kernel::PathComponent::try_new("anthropic").unwrap();
         let key: Option<ox_gate::ApiKey> = client
-            .read_typed(&oxpath!("secret", "keys", comp))
+            .read_typed(&path!("secret", "keys", comp))
             .await
             .unwrap();
         assert_eq!(key.unwrap().expose(), "sk-ant-test");
@@ -185,7 +185,7 @@ mod tests {
         let comp = ox_kernel::PathComponent::try_new("anthropic").unwrap();
         client
             .write_typed(
-                &oxpath!("secret", "keys", comp.clone()),
+                &path!("secret", "keys", comp.clone()),
                 &ox_gate::ApiKey::new("from-broker"),
             )
             .await
@@ -195,7 +195,7 @@ mod tests {
         assert_eq!(n, 0, "must skip when secret/keys is already populated");
 
         let key: ox_gate::ApiKey = client
-            .read_typed(&oxpath!("secret", "keys", comp))
+            .read_typed(&path!("secret", "keys", comp))
             .await
             .unwrap()
             .unwrap();

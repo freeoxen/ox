@@ -3,9 +3,9 @@
 use axum::{Json, Router, extract::State, http::HeaderMap, response::IntoResponse, routing::get};
 use ox_broker::ClientHandle;
 use ox_kernel::PathComponent;
-use ox_path::oxpath;
 use ox_types::ModelInfo;
 use serde_json::{Value, json};
+use structfs_core_store::path;
 
 pub fn router(client: ClientHandle) -> Router {
     Router::new()
@@ -15,7 +15,7 @@ pub fn router(client: ClientHandle) -> Router {
 
 async fn list_models(headers: HeaderMap, State(client): State<ClientHandle>) -> impl IntoResponse {
     // Read the gate's snapshot for the accounts + providers list.
-    let snapshot_record = match client.read(&oxpath!("gate", "snapshot", "state")).await {
+    let snapshot_record = match client.read(&path!("gate", "snapshot", "state")).await {
         Ok(Some(r)) => r,
         _ => return Json(empty_list_for_dialect(&headers)).into_response(),
     };
@@ -23,7 +23,16 @@ async fn list_models(headers: HeaderMap, State(client): State<ClientHandle>) -> 
         Some(v) => v.clone(),
         None => return Json(empty_list_for_dialect(&headers)).into_response(),
     };
-    let json_val = structfs_serde_store::value_to_json(snapshot_value);
+    let json_val = match structfs_serde_store::value_to_json(snapshot_value) {
+        Ok(value) => value,
+        Err(error) => {
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": error.to_string()})),
+            )
+                .into_response();
+        }
+    };
 
     let accounts = match json_val.get("accounts").and_then(|v| v.as_object()) {
         Some(a) => a.clone(),
@@ -52,8 +61,8 @@ async fn list_models(headers: HeaderMap, State(client): State<ClientHandle>) -> 
         // config/gate/accounts/{name}/models; gate/providers/{p}/models only
         // holds catalogs written directly into the GateStore instance.
         // Prefer the refreshed per-account catalog, fall back to the gate's.
-        let account_models_path = oxpath!("config", "gate", "accounts", account_comp, "models");
-        let provider_models_path = oxpath!("gate", "providers", provider_comp, "models");
+        let account_models_path = path!("config", "gate", "accounts", account_comp, "models");
+        let provider_models_path = path!("gate", "providers", provider_comp, "models");
         let models: Vec<ModelInfo> = match client.read_typed(&account_models_path).await {
             Ok(Some(m)) if !Vec::is_empty(&m) => m,
             _ => match client.read_typed(&provider_models_path).await {

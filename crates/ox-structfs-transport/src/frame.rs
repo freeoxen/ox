@@ -783,11 +783,7 @@ fn encoded_wire_error_size(error: &WireError) -> usize {
 }
 
 fn encoded_path_size(path: &Path) -> usize {
-    major_argument_size(path.len() as u64)
-        + path
-            .iter()
-            .map(|component| encoded_text_size(component))
-            .sum::<usize>()
+    major_argument_size(path.len() as u64) + path.iter().map(encoded_text_size).sum::<usize>()
 }
 
 fn encoded_record_size(record: &Record) -> Result<usize, CodecError> {
@@ -816,6 +812,7 @@ fn encoded_record_size(record: &Record) -> Result<usize, CodecError> {
 fn encoded_value_size(value: &Value) -> Result<usize, CodecError> {
     match value {
         Value::Null | Value::Bool(_) => Ok(1),
+        Value::Unsigned(value) if *value <= i64::MAX as u64 => Ok(major_argument_size(*value)),
         Value::Integer(value) if *value >= 0 => Ok(major_argument_size(*value as u64)),
         Value::Integer(value) => Ok(major_argument_size((-1_i128 - *value as i128) as u64)),
         Value::Float(value) if value.is_nan() || exact_f16_bits(*value).is_some() => Ok(3),
@@ -982,6 +979,7 @@ fn encode_value(value: &Value, output: &mut Vec<u8>) -> Result<(), CodecError> {
         Value::Null => output.push(0xf6),
         Value::Bool(false) => output.push(0xf4),
         Value::Bool(true) => output.push(0xf5),
+        Value::Unsigned(value) if *value <= i64::MAX as u64 => encode_uint(*value, output),
         Value::Integer(value) if *value >= 0 => encode_uint(*value as u64, output),
         Value::Integer(value) => encode_negative(*value, output),
         Value::Float(value) => encode_float(*value, output),
@@ -1275,6 +1273,7 @@ fn validate_value(
 ) -> Result<(), CodecError> {
     validate_depth(depth, budget)?;
     match value {
+        Value::Unsigned(value) if *value <= i64::MAX as u64 => Ok(()),
         Value::Null | Value::Bool(_) | Value::Integer(_) | Value::Float(_) => Ok(()),
         Value::String(value) => validate_string(value, budget),
         Value::Bytes(value) => {

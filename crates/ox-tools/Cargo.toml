@@ -16,7 +16,6 @@ path = "src/bin/ox-tool-exec.rs"
 [dependencies]
 ox-kernel = { workspace = true }
 ox-gate = { workspace = true }
-ox-path = { workspace = true }
 structfs-core-store = { workspace = true }
 structfs-serde-store = { workspace = true }
 serde = { workspace = true }

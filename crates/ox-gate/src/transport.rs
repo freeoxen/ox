@@ -126,30 +126,30 @@ impl SseParser {
             }
             "message_delta" => {
                 let mut out = Vec::new();
-                if let Some(usage) = json.get("usage") {
-                    if let Some(ot) = usage.get("output_tokens").and_then(|v| v.as_u64()) {
-                        out.push(StreamEvent::OutputUsage {
-                            output_tokens: ot as u32,
-                        });
-                    }
+                if let Some(usage) = json.get("usage")
+                    && let Some(ot) = usage.get("output_tokens").and_then(|v| v.as_u64())
+                {
+                    out.push(StreamEvent::OutputUsage {
+                        output_tokens: ot as u32,
+                    });
                 }
                 out
             }
             "content_block_start" => {
-                if let Some(cb) = json.get("content_block") {
-                    if cb.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
-                        let id = cb
-                            .get("id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let name = cb
-                            .get("name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        return vec![StreamEvent::ToolUseStart { id, name }];
-                    }
+                if let Some(cb) = json.get("content_block")
+                    && cb.get("type").and_then(|t| t.as_str()) == Some("tool_use")
+                {
+                    let id = cb
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let name = cb
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    return vec![StreamEvent::ToolUseStart { id, name }];
                 }
                 vec![]
             }
@@ -226,12 +226,12 @@ impl SseParser {
             let Some(delta) = choice.get("delta") else {
                 continue;
             };
-            if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
-                if !content.is_empty() {
-                    events.push(StreamEvent::TextDelta {
-                        text: content.to_string(),
-                    });
-                }
+            if let Some(content) = delta.get("content").and_then(|c| c.as_str())
+                && !content.is_empty()
+            {
+                events.push(StreamEvent::TextDelta {
+                    text: content.to_string(),
+                });
             }
             if let Some(tool_calls) = delta.get("tool_calls").and_then(|t| t.as_array()) {
                 for tc in tool_calls {
@@ -253,12 +253,11 @@ impl SseParser {
                     if let Some(args) = function
                         .and_then(|f| f.get("arguments"))
                         .and_then(|a| a.as_str())
+                        && !args.is_empty()
                     {
-                        if !args.is_empty() {
-                            events.push(StreamEvent::ToolUseInputDelta {
-                                delta: args.to_string(),
-                            });
-                        }
+                        events.push(StreamEvent::ToolUseInputDelta {
+                            delta: args.to_string(),
+                        });
                     }
                 }
             }

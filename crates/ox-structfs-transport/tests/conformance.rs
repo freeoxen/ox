@@ -31,6 +31,32 @@ fn read_request() -> WireMessage {
 }
 
 #[test]
+fn unsigned_values_preserve_the_closed_v1_integer_range() {
+    let codec = WireCodec::default();
+    let message = |value| {
+        WireMessage::Request(Request {
+            request_id: 7,
+            operation: RequestOperation::Write(Record::parsed(Value::Array(vec![value]))),
+            path: Path::parse("data").unwrap(),
+            deadline_unix_ms: None,
+        })
+    };
+    for n in [0, 23, 24, u32::MAX as u64, i64::MAX as u64] {
+        let unsigned = codec.encode(&message(Value::Unsigned(n))).unwrap();
+        let signed = codec.encode(&message(Value::Integer(n as i64))).unwrap();
+        assert_eq!(unsigned, signed, "wire v1 must keep its original encoding");
+        let decoded = codec.decode(&unsigned).unwrap();
+        assert_eq!(codec.encode(&decoded).unwrap(), signed);
+    }
+    for n in [i64::MAX as u64 + 1, u64::MAX] {
+        assert!(matches!(
+            codec.encode(&message(Value::Unsigned(n))),
+            Err(CodecError::UnsupportedStructFsVariant)
+        ));
+    }
+}
+
+#[test]
 fn canonical_frames_match_committed_byte_fixtures() {
     let codec = WireCodec::default();
     let cases = [

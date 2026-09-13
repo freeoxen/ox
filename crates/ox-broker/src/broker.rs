@@ -5,35 +5,27 @@
 //! server to client via the reply channel embedded in each request.
 //!
 //! Routing uses StructFS `Path` component matching — no string
-//! conversion in the hot path. Servers are sorted by prefix length
-//! descending so the first `has_prefix` hit is the longest match.
+//! conversion in the hot path. Upstream PathTrie finds the deepest mounted
+//! ancestor in time proportional to the path depth.
 
-use ox_path::oxpath;
-use structfs_core_store::{Error as StoreError, Path, Record};
+use structfs_core_store::{Error as StoreError, Path, PathTrie, Record};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::types::Request;
 
-/// A mounted server: its prefix and channel sender.
-struct MountEntry {
-    prefix: Path,
-    tx: mpsc::Sender<Request>,
-}
-
 /// The core routing state machine.
 ///
-/// Servers are kept sorted by prefix component count descending.
-/// Routing iterates until the first `has_prefix` match — which is
-/// the longest prefix by construction.
+/// A trie node retains registrations in order so duplicate mounts preserve
+/// the existing first-registration-wins behavior until explicitly unmounted.
 pub(crate) struct BrokerInner {
-    servers: Vec<MountEntry>,
+    servers: PathTrie<Vec<mpsc::Sender<Request>>>,
     shut_down: bool,
 }
 
 impl BrokerInner {
     pub fn new() -> Self {
         BrokerInner {
-            servers: Vec::new(),
+            servers: PathTrie::new(),
             shut_down: false,
         }
     }
@@ -42,38 +34,38 @@ impl BrokerInner {
     /// requests routed to that prefix.
     pub fn mount(&mut self, prefix: Path) -> mpsc::Receiver<Request> {
         let (tx, rx) = mpsc::channel(64);
-        self.servers.push(MountEntry { prefix, tx });
-        self.servers
-            .sort_by_key(|entry| std::cmp::Reverse(entry.prefix.len()));
+        match self.servers.get_mut(&prefix) {
+            Some(registrations) => registrations.push(tx),
+            None => {
+                self.servers.insert(&prefix, vec![tx]);
+            }
+        }
         rx
     }
 
     /// Remove a server at the given prefix.
     pub fn unmount(&mut self, prefix: &Path) {
-        self.servers.retain(|entry| entry.prefix != *prefix);
+        self.servers.remove(prefix);
+        // Exact removal leaves trie nodes behind. Prune empty branches so
+        // repeated mounting of transient conversations does not retain paths.
+        let mut branch = prefix.clone();
+        while self
+            .servers
+            .get_subtrie(&branch)
+            .is_some_and(PathTrie::is_empty)
+        {
+            self.servers.remove_subtree(&branch);
+            if branch.is_empty() {
+                break;
+            }
+            branch = branch.slice(0, branch.len() - 1);
+        }
     }
 
-    /// Find the server with the longest matching prefix for the given path.
-    ///
-    /// Returns a clone of the server sender and the sub-path with prefix
-    /// stripped. Because servers are sorted longest-first, the first match
-    /// is the longest prefix.
-    ///
-    /// Cloning the `mpsc::Sender` is an `Arc` refcount bump — the cost
-    /// of decoupling the route lookup from the mutable submit that follows.
+    /// Find the deepest mounted ancestor and return its mount-relative suffix.
     fn route(&self, path: &Path) -> Option<(mpsc::Sender<Request>, Path)> {
-        for entry in &self.servers {
-            if entry.prefix.is_empty() || path.has_prefix(&entry.prefix) {
-                let sub_path = if entry.prefix.is_empty() {
-                    path.clone()
-                } else {
-                    path.strip_prefix(&entry.prefix)
-                        .unwrap_or_else(|| oxpath!())
-                };
-                return Some((entry.tx.clone(), sub_path));
-            }
-        }
-        None
+        let (registrations, suffix) = self.servers.find_ancestor(path)?;
+        Some((registrations.first()?.clone(), suffix))
     }
 
     /// Submit a read request, routing it to the appropriate server.
@@ -136,7 +128,7 @@ impl BrokerInner {
     /// Shut down the broker, rejecting all future requests.
     pub fn shut_down(&mut self) {
         self.shut_down = true;
-        self.servers.clear();
+        self.servers = PathTrie::new();
     }
 }
 
@@ -145,6 +137,34 @@ mod tests {
     use super::*;
     use structfs_core_store::path;
 
+    #[test]
+    fn duplicate_mount_precedence_and_exact_unmount_are_preserved() {
+        let mut broker = BrokerInner::new();
+        let _root = broker.mount(path!());
+        let _first = broker.mount(path!("a"));
+        let (first, _) = broker.route(&path!("a/key")).unwrap();
+        let _second = broker.mount(path!("a"));
+        let _child = broker.mount(path!("a/b"));
+        let (selected, suffix) = broker.route(&path!("a/key")).unwrap();
+        assert!(first.same_channel(&selected));
+        assert_eq!(suffix, path!("key"));
+        let (child, _) = broker.route(&path!("a/b/key")).unwrap();
+        broker.unmount(&path!("a"));
+        let (selected, suffix) = broker.route(&path!("a/b/key")).unwrap();
+        assert!(
+            child.same_channel(&selected),
+            "exact unmount retains child mounts"
+        );
+        assert_eq!(suffix, path!("key"));
+        let (selected, suffix) = broker.route(&path!("a/key")).unwrap();
+        assert!(!first.same_channel(&selected), "parent falls back to root");
+        assert_eq!(suffix, path!("a/key"));
+        broker.unmount(&path!("a/b"));
+        assert!(
+            broker.servers.get_subtrie(&path!("a")).is_none(),
+            "transient mount paths must not accumulate empty trie nodes"
+        );
+    }
     #[test]
     fn mount_and_route() {
         let mut inner = BrokerInner::new();

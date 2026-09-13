@@ -1,11 +1,11 @@
 use crate::model::{InboxState, ThreadState};
 use ox_kernel::PathComponent;
-use ox_path::oxpath;
 use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::path::Path as FsPath;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
+use structfs_core_store::path;
 use structfs_core_store::{Error as StoreError, Path, Record, Value};
 
 fn now_epoch() -> i64 {
@@ -25,17 +25,13 @@ pub fn write_dispatch(
     to: &Path,
     data: Record,
 ) -> Result<Path, StoreError> {
-    let segments: Vec<&String> = to.iter().collect();
+    let segments: Vec<&str> = to.iter().collect();
     match segments.as_slice() {
-        [root] if root.as_str() == "threads" => create_thread(db, threads_dir, &data),
-        [root, id] if root.as_str() == "threads" => update_thread(db, id, &data),
-        [root, id, sub] if root.as_str() == "threads" && sub.as_str() == "labels" => {
-            set_labels(db, id, &data)
-        }
-        [root, id, sub] if root.as_str() == "threads" && sub.as_str() == "tasks" => {
-            create_task(db, id, &data)
-        }
-        [root, id, sub, task_id] if root.as_str() == "threads" && sub.as_str() == "tasks" => {
+        [root] if *root == "threads" => create_thread(db, threads_dir, &data),
+        [root, id] if *root == "threads" => update_thread(db, id, &data),
+        [root, id, sub] if *root == "threads" && *sub == "labels" => set_labels(db, id, &data),
+        [root, id, sub] if *root == "threads" && *sub == "tasks" => create_task(db, id, &data),
+        [root, id, sub, task_id] if *root == "threads" && *sub == "tasks" => {
             update_task(db, id, task_id, &data)
         }
         _ => Err(err("write", format!("unrecognized path: {}", to))),
@@ -92,7 +88,7 @@ fn create_thread(
     std::fs::create_dir_all(&thread_dir).map_err(|e| err("create_thread", e))?;
 
     let id_comp = PathComponent::try_new(id)?;
-    Ok(oxpath!("threads", id_comp))
+    Ok(path!("threads", id_comp))
 }
 
 fn insert_labels(conn: &Connection, thread_id: &str, labels: &[Value]) -> Result<(), StoreError> {
@@ -112,15 +108,15 @@ fn update_thread(db: &Mutex<Connection>, id: &str, data: &Record) -> Result<Path
     let map = require_map(data, "update_thread")?;
 
     // Validate state values before touching the database
-    if let Some(Value::String(s)) = map.get("inbox_state") {
-        if InboxState::parse(s.as_str()).is_none() {
-            return Err(err("update_thread", format!("invalid inbox_state: {}", s)));
-        }
+    if let Some(Value::String(s)) = map.get("inbox_state")
+        && InboxState::parse(s.as_str()).is_none()
+    {
+        return Err(err("update_thread", format!("invalid inbox_state: {}", s)));
     }
-    if let Some(Value::String(s)) = map.get("thread_state") {
-        if ThreadState::parse(s.as_str()).is_none() {
-            return Err(err("update_thread", format!("invalid thread_state: {}", s)));
-        }
+    if let Some(Value::String(s)) = map.get("thread_state")
+        && ThreadState::parse(s.as_str()).is_none()
+    {
+        return Err(err("update_thread", format!("invalid thread_state: {}", s)));
     }
 
     // Build a single UPDATE with all provided fields
@@ -174,7 +170,7 @@ fn update_thread(db: &Mutex<Connection>, id: &str, data: &Record) -> Result<Path
         .map_err(|e| err("update_thread", e))?;
 
     let id_comp = PathComponent::try_new(id)?;
-    Ok(oxpath!("threads", id_comp))
+    Ok(path!("threads", id_comp))
 }
 
 fn set_labels(db: &Mutex<Connection>, id: &str, data: &Record) -> Result<Path, StoreError> {
@@ -206,7 +202,7 @@ fn set_labels(db: &Mutex<Connection>, id: &str, data: &Record) -> Result<Path, S
     tx.commit().map_err(|e| err("set_labels", e))?;
 
     let id_comp = PathComponent::try_new(id)?;
-    Ok(oxpath!("threads", id_comp, "labels"))
+    Ok(path!("threads", id_comp, "labels"))
 }
 
 fn create_task(db: &Mutex<Connection>, thread_id: &str, data: &Record) -> Result<Path, StoreError> {
@@ -224,7 +220,7 @@ fn create_task(db: &Mutex<Connection>, thread_id: &str, data: &Record) -> Result
 
     let thread_comp = PathComponent::try_new(thread_id)?;
     let id_comp = PathComponent::try_new(id)?;
-    Ok(oxpath!("threads", thread_comp, "tasks", id_comp))
+    Ok(path!("threads", thread_comp, "tasks", id_comp))
 }
 
 fn update_task(
@@ -275,5 +271,5 @@ fn update_task(
 
     let thread_comp = PathComponent::try_new(thread_id)?;
     let task_comp = PathComponent::try_new(task_id)?;
-    Ok(oxpath!("threads", thread_comp, "tasks", task_comp))
+    Ok(path!("threads", thread_comp, "tasks", task_comp))
 }

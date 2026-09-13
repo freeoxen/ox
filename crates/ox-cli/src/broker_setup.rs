@@ -217,7 +217,7 @@ mod tests {
             .unwrap();
         path.iter()
             .last()
-            .map(|c| c.as_str().to_string())
+            .map(str::to_owned)
             .expect("created path must carry the thread id")
     }
 
@@ -227,13 +227,13 @@ mod tests {
         entry: ox_kernel::log::LogEntry,
     ) {
         let id_comp = ox_kernel::PathComponent::try_new(tid).unwrap();
-        let log_path = ox_path::oxpath!("threads", id_comp, "log", "append");
+        let log_path = structfs_core_store::path!("threads", id_comp, "log", "append");
         client.write_typed(&log_path, &entry).await.unwrap();
     }
 
     async fn fetch_log_count(client: &ox_broker::ClientHandle, tid: &str) -> i64 {
         let id_comp = ox_kernel::PathComponent::try_new(tid).unwrap();
-        let count_path = ox_path::oxpath!("threads", id_comp, "log", "count");
+        let count_path = structfs_core_store::path!("threads", id_comp, "log", "count");
         let rec = client.read(&count_path).await.unwrap().unwrap();
         match rec.as_value().unwrap() {
             Value::Integer(n) => *n,
@@ -247,7 +247,7 @@ mod tests {
     ) -> crate::parse::InboxThread {
         let id_comp = ox_kernel::PathComponent::try_new(tid).unwrap();
         let rec = client
-            .read(&ox_path::oxpath!("inbox", "threads", id_comp))
+            .read(&structfs_core_store::path!("inbox", "threads", id_comp))
             .await
             .unwrap()
             .unwrap();
@@ -708,7 +708,7 @@ mod tests {
         // `threads/{tid}/gate/accounts/anthropic/key`.
         client
             .write_typed(
-                &ox_path::oxpath!("secret", "keys", "anthropic"),
+                &structfs_core_store::path!("secret", "keys", "anthropic"),
                 &ox_gate::ApiKey::new("test-key"),
             )
             .await
@@ -911,7 +911,7 @@ mod tests {
         let tid = created_path
             .iter()
             .last()
-            .map(|c| c.as_str().to_string())
+            .map(str::to_owned)
             .expect("created path should carry the thread id");
 
         // Drive UiStore to ScreenSnapshot::Thread.
@@ -1142,7 +1142,7 @@ mod tests {
         let tid = created_path
             .iter()
             .last()
-            .map(|c| c.as_str().to_string())
+            .map(str::to_owned)
             .expect("created path should carry the thread id");
 
         // Call the real helper with a synthesized SaveResult.
@@ -1868,10 +1868,9 @@ mod tests {
             .await
             .expect("unbound key is Ok with `unbound/<mode>` path");
         assert_eq!(path.len(), 2);
-        assert_eq!(path[0].as_str(), "unbound");
+        assert_eq!(&path[0], "unbound");
         assert_eq!(
-            path[1].as_str(),
-            "normal",
+            &path[1], "normal",
             "unbound key on plain inbox must resolve to Mode::Normal"
         );
     }
@@ -1915,10 +1914,9 @@ mod tests {
             .write_typed(&path!("input/key"), &event)
             .await
             .expect("unbound key is Ok with `unbound/<mode>` path");
-        assert_eq!(path[0].as_str(), "unbound");
+        assert_eq!(&path[0], "unbound");
         assert_eq!(
-            path[1].as_str(),
-            "insert",
+            &path[1], "insert",
             "unbound key with editor open must resolve to Mode::Insert"
         );
     }

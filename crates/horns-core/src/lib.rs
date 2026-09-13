@@ -7,7 +7,7 @@ pub mod command;
 pub mod dispatch;
 pub mod install;
 pub mod key;
-pub(crate) mod path_serde;
+pub mod path_serde;
 pub mod render;
 pub mod subscription;
 pub mod view;

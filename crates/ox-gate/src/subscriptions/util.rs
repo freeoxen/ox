@@ -15,8 +15,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ox_kernel::PathComponent;
-use ox_path::oxpath;
 use ox_types::subscription::Write;
+use structfs_core_store::path;
 use structfs_core_store::{Path, Reader, Record};
 use structfs_serde_store::{from_value, to_value};
 
@@ -43,47 +43,47 @@ pub fn instance_segment(change_path: &Path, prefix: &Path, suffix: &Path) -> Opt
     if !(tail_start..change_path.len()).all(|i| change_path[i] == suffix[i - tail_start]) {
         return None;
     }
-    Some(change_path[prefix.len()].clone())
+    Some(change_path[prefix.len()].to_string())
 }
 
 /// `config/gate/accounts/{name}` — the account record path.
 pub fn account_path(name: &str) -> Result<Path, String> {
     let comp = PathComponent::try_new(name).map_err(|e| e.to_string())?;
-    Ok(oxpath!("config", "gate", "accounts", comp))
+    Ok(path!("config", "gate", "accounts", comp))
 }
 
 /// `config/gate/providers/{name}` — the per-account synthetic provider entry.
 pub fn provider_path(name: &str) -> Result<Path, String> {
     let comp = PathComponent::try_new(name).map_err(|e| e.to_string())?;
-    Ok(oxpath!("config", "gate", "providers", comp))
+    Ok(path!("config", "gate", "providers", comp))
 }
 
 /// `secret/keys/{name}` — the API-key secret path.
 pub fn secret_key_path(name: &str) -> Result<Path, String> {
     let comp = PathComponent::try_new(name).map_err(|e| e.to_string())?;
-    Ok(oxpath!("secret", "keys", comp))
+    Ok(path!("secret", "keys", comp))
 }
 
 /// `config/gate/accounts/{name}/test_status` — the test-connection
 /// lifecycle record.
 pub fn test_status_path(name: &str) -> Result<Path, String> {
-    Ok(account_path(name)?.join(&oxpath!("test_status")))
+    Ok(account_path(name)?.join(&path!("test_status")))
 }
 
 /// `config/gate/accounts/{name}/refresh_status` — the catalog-refresh
 /// lifecycle record.
 pub fn refresh_status_path(name: &str) -> Result<Path, String> {
-    Ok(account_path(name)?.join(&oxpath!("refresh_status")))
+    Ok(account_path(name)?.join(&path!("refresh_status")))
 }
 
 /// `config/gate/accounts/{name}/models` — the per-account model catalog.
 pub fn models_path(name: &str) -> Result<Path, String> {
-    Ok(account_path(name)?.join(&oxpath!("models")))
+    Ok(account_path(name)?.join(&path!("models")))
 }
 
 /// `config/gate/accounts/{name}/validation` — per-field validation diagnostics.
 pub fn validation_path(name: &str) -> Result<Path, String> {
-    Ok(account_path(name)?.join(&oxpath!("validation")))
+    Ok(account_path(name)?.join(&path!("validation")))
 }
 
 // ---------------------------------------------------------------------------
@@ -129,18 +129,7 @@ pub fn null_write(path: Path) -> Write {
     }
 }
 
-/// Encode a `Path` as a `Value::Array` of `Value::String` segments — the
-/// wire shape used by `ox_types::path_serde` and by the existing CLI
-/// command helpers (see `crates/ox-cli/src/settings/commands/navigation.rs`).
-/// Path itself doesn't implement `Serialize`, so callers writing `Path`
-/// values into the broker go through this encoder.
-pub fn path_to_value(p: &Path) -> structfs_core_store::Value {
-    structfs_core_store::Value::Array(
-        p.iter()
-            .map(|c| structfs_core_store::Value::String(c.clone()))
-            .collect(),
-    )
-}
+pub use ox_types::path_serde::to_value as path_to_value;
 
 /// Build a `Write` that puts the encoded `Path` at `at`. Pairs with
 /// `path_to_value` for the cursor / target_cursor shape.

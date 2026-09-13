@@ -8,8 +8,8 @@
 //!
 //! - [`SystemProvider`] — holds the system prompt string
 
-use ox_path::oxpath;
 use std::collections::BTreeMap;
+use structfs_core_store::path;
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Store, Value, Writer};
 
 // ---------------------------------------------------------------------------
@@ -68,7 +68,7 @@ impl Writer for Namespace {
             Some(store) => {
                 let sub_path = store.write(&sub, data)?;
                 let mut components = vec![prefix.to_string()];
-                components.extend(sub_path.iter().cloned());
+                components.extend(sub_path.iter().map(str::to_owned));
                 Ok(Path::from_components(components))
             }
             None => Err(StoreError::NoRoute { path: to.clone() }),
@@ -79,9 +79,9 @@ impl Writer for Namespace {
 /// Split a path into the first component (prefix) and the remaining sub-path.
 fn split_path(path: &Path) -> (&str, Path) {
     if path.is_empty() {
-        return ("", oxpath!());
+        return ("", path!());
     }
-    let prefix = path[0].as_str();
+    let prefix = &path[0];
     let sub = path.slice(1, path.len());
     (prefix, sub)
 }
@@ -104,18 +104,14 @@ impl SystemProvider {
 
 impl Reader for SystemProvider {
     fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
-        let key = if from.is_empty() {
-            ""
-        } else {
-            from[0].as_str()
-        };
+        let key = if from.is_empty() { "" } else { &from[0] };
         match key {
             "snapshot" => {
                 let state = Value::String(self.prompt.clone());
                 if from.len() >= 2 {
-                    match from[1].as_str() {
+                    match &from[1] {
                         "hash" => {
-                            let hash = ox_kernel::snapshot::snapshot_hash(&state);
+                            let hash = ox_kernel::snapshot::snapshot_hash(&state)?;
                             Ok(Some(Record::parsed(Value::String(hash))))
                         }
                         "state" => Ok(Some(Record::parsed(state))),
@@ -124,7 +120,7 @@ impl Reader for SystemProvider {
                 } else {
                     Ok(Some(Record::parsed(ox_kernel::snapshot::snapshot_record(
                         state,
-                    ))))
+                    )?)))
                 }
             }
             _ => Ok(Some(Record::parsed(Value::String(self.prompt.clone())))),
@@ -134,7 +130,7 @@ impl Reader for SystemProvider {
 
 impl Writer for SystemProvider {
     fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
-        let key = if to.is_empty() { "" } else { to[0].as_str() };
+        let key = if to.is_empty() { "" } else { &to[0] };
         match key {
             "snapshot" => {
                 let value = match data {
@@ -147,7 +143,7 @@ impl Writer for SystemProvider {
                         ));
                     }
                 };
-                let state = if to.len() >= 2 && to[1].as_str() == "state" {
+                let state = if to.len() >= 2 && &to[1] == "state" {
                     value
                 } else {
                     ox_kernel::snapshot::extract_snapshot_state(value)
@@ -168,7 +164,7 @@ impl Writer for SystemProvider {
             _ => match data {
                 Record::Parsed(Value::String(s)) => {
                     self.prompt = s;
-                    Ok(oxpath!())
+                    Ok(path!())
                 }
                 _ => Err(StoreError::store(
                     "system",

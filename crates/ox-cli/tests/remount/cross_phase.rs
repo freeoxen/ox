@@ -126,7 +126,7 @@ async fn s1_crash_mid_stream_no_approval() {
     // (1) `history/messages` carries the partial assistant text via the
     // `reconstruct_turn_streaming` projection. The latest snapshot wins.
     let tid_comp = ox_kernel::PathComponent::try_new(&tid).expect("valid thread id");
-    let msgs_path = ox_path::oxpath!("threads", tid_comp, "history", "messages");
+    let msgs_path = structfs_core_store::path!("threads", tid_comp, "history", "messages");
     let record = client
         .read(&msgs_path)
         .await
@@ -136,7 +136,7 @@ async fn s1_crash_mid_stream_no_approval() {
         .as_value()
         .expect("history/messages parsed value")
         .clone();
-    let json = structfs_serde_store::value_to_json(value);
+    let json = structfs_serde_store::value_to_json(value).unwrap();
     let arr = json.as_array().expect("messages is an array").clone();
     let last_msg = arr.last().expect("at least one projected message");
     assert_eq!(

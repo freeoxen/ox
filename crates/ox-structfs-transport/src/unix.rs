@@ -2,7 +2,8 @@ use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path as FsPath;
 
-use ox_broker::async_store::{AsyncReader as BrokerAsyncReader, AsyncWriter as BrokerAsyncWriter};
+use structfs_core_store::{DetachedReader, DetachedWriter};
+
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::task::JoinHandle;
@@ -48,7 +49,7 @@ pub fn spawn_unix_server<P, S>(
 ) -> io::Result<UnixServer>
 where
     P: AsRef<FsPath>,
-    S: BrokerAsyncReader + BrokerAsyncWriter + Send + 'static,
+    S: DetachedReader + DetachedWriter + Send + 'static,
 {
     let socket_path = socket_path.as_ref();
     let listener = UnixListener::bind(socket_path)?;

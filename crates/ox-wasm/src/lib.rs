@@ -97,7 +97,7 @@ impl Writer for HostBridge {
         let value = data
             .as_value()
             .ok_or_else(|| Error::store("HostBridge", "write", "expected parsed record"))?;
-        let json = structfs_serde_store::value_to_json(value.clone());
+        let json = structfs_serde_store::value_to_json(value.clone())?;
         let json_str = serde_json::to_string(&json)
             .map_err(|e| Error::store("HostBridge", "write", e.to_string()))?;
 

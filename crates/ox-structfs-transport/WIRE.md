@@ -64,6 +64,12 @@ Parsed values map directly to CBOR null, boolean, signed i64, preferred-width
 float, text, bytes, array, and text-keyed map types. Text-keyed maps reject a
 duplicate before insertion into the destination `BTreeMap`.
 
+StructFS 0.2 also has `Value::Unsigned`. Wire v1 preserves its original integer
+range: unsigned values at or below `i64::MAX` use the existing integer encoding
+and decode as `Value::Integer`; larger values are rejected as unsupported.
+Extending the wire range requires an explicit protocol version change rather
+than silently emitting values that existing v1 peers reject.
+
 Ordinary finite `f64` values, infinities, and signed zero round-trip exactly.
 Deterministic CBOR requires every NaN to use canonical `f97e00`, so NaN payload
 and sign bits are intentionally normalized rather than preserved.
@@ -84,6 +90,12 @@ An error response places `{0: <code>, 1: <diagnostic message>}` at envelope key
 
 The category drives behavior; the message is diagnostic and must not be parsed
 as a protocol discriminator.
+
+The default adapter maps StructFS 0.2's typed not-found, permission, conflict,
+overload, deadline and resource-limit errors to these existing codes. Store
+trait clients reconstruct the corresponding typed errors, with not-found paths
+expressed in their own namespace. Categories without a v1 equivalent (including
+cancellation) remain generic Store errors; no discriminants were added.
 
 ## Versioning
 

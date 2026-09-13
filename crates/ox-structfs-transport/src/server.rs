@@ -1,8 +1,7 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use ox_broker::async_store::{AsyncReader as BrokerAsyncReader, AsyncWriter as BrokerAsyncWriter};
-use structfs_core_store::{Error as StoreError, Path};
+use structfs_core_store::{DetachedReader, DetachedWriter, Error as StoreError, Path};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{Semaphore, mpsc};
 
@@ -69,7 +68,7 @@ pub async fn serve_stream<T, S>(
 ) -> Result<(), String>
 where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    S: BrokerAsyncReader + BrokerAsyncWriter + Send + 'static,
+    S: DetachedReader + DetachedWriter + Send + 'static,
 {
     assert!(
         config.response_queue_capacity > 0,
@@ -169,7 +168,7 @@ pub fn connect_in_process<S>(
     stream_capacity: usize,
 ) -> RemoteStore
 where
-    S: BrokerAsyncReader + BrokerAsyncWriter + Send + 'static,
+    S: DetachedReader + DetachedWriter + Send + 'static,
 {
     let (client, server) = tokio::io::duplex(stream_capacity);
     tokio::spawn(async move {
@@ -184,7 +183,7 @@ async fn execute<S>(
     path: Path,
 ) -> Result<ResponseBody, StoreError>
 where
-    S: BrokerAsyncReader + BrokerAsyncWriter + Send + 'static,
+    S: DetachedReader + DetachedWriter + Send + 'static,
 {
     match operation {
         RequestOperation::Read => root.read(path).await.map(ResponseBody::Read),
@@ -219,11 +218,17 @@ fn error_response(request_id: u64, code: WireErrorCode, message: &str) -> Respon
 
 fn default_error_mapper(error: &StoreError) -> WireError {
     let code = match error {
+        StoreError::PermissionDenied { .. } => WireErrorCode::PermissionDenied,
         StoreError::Path(_) => WireErrorCode::InvalidRequest,
-        StoreError::NoRoute { .. } => WireErrorCode::NotFound,
+        StoreError::NoRoute { .. } | StoreError::NotFound { .. } => WireErrorCode::NotFound,
+        StoreError::Conflict { .. } => WireErrorCode::Conflict,
+        StoreError::Overloaded { .. } => WireErrorCode::Overloaded,
+        StoreError::DeadlineExceeded { .. } => WireErrorCode::DeadlineExceeded,
+        StoreError::ResourceLimit { .. } => WireErrorCode::ResourceLimit,
         StoreError::UnsupportedFormat(_) => WireErrorCode::Unsupported,
         StoreError::Codec { .. } => WireErrorCode::InvalidRequest,
         StoreError::Ll(_) | StoreError::Io(_) | StoreError::Store { .. } => WireErrorCode::Store,
+        _ => WireErrorCode::Store,
     };
     WireError {
         code,

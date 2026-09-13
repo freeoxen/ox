@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use ox_path::oxpath;
+use structfs_core_store::path;
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer};
 
 use crate::command::Dispatcher;
@@ -85,7 +85,7 @@ impl Reader for CommandStore {
                     .collect();
                 Ok(Some(Record::parsed(Value::Array(defs))))
             }
-            1 if from[0] == "commands" => {
+            1 if &from[0] == "commands" => {
                 let defs: Vec<Value> = self
                     .registry
                     .iter()
@@ -93,7 +93,7 @@ impl Reader for CommandStore {
                     .collect();
                 Ok(Some(Record::parsed(Value::Array(defs))))
             }
-            1 if from[0] == "user_facing" => {
+            1 if &from[0] == "user_facing" => {
                 let defs: Vec<Value> = self
                     .registry
                     .user_facing()
@@ -101,7 +101,7 @@ impl Reader for CommandStore {
                     .collect();
                 Ok(Some(Record::parsed(Value::Array(defs))))
             }
-            2 if from[0] == "commands" => match self.registry.get(&from[1]) {
+            2 if &from[0] == "commands" => match self.registry.get(&from[1]) {
                 Some(def) => {
                     let value = structfs_serde_store::to_value(def).unwrap();
                     Ok(Some(Record::parsed(value)))
@@ -115,7 +115,7 @@ impl Reader for CommandStore {
 
 impl Writer for CommandStore {
     fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
-        let action = if to.is_empty() { "" } else { to[0].as_str() };
+        let action = if to.is_empty() { "" } else { &to[0] };
         let value = data.as_value().ok_or_else(|| {
             StoreError::store("command", "write", "write data must contain a value")
         })?;
@@ -150,7 +150,7 @@ impl Writer for CommandStore {
                 };
                 let trimmed = text.trim();
                 if trimmed.is_empty() {
-                    return Ok(oxpath!("commands"));
+                    return Ok(path!("commands"));
                 }
                 let invocation = parse_command_text(trimmed, &self.registry);
                 let (path, record) = self
@@ -170,7 +170,7 @@ impl Writer for CommandStore {
                 self.registry
                     .register(def)
                     .map_err(|e| StoreError::store("command", "register", e.to_string()))?;
-                Ok(oxpath!("commands"))
+                Ok(path!("commands"))
             }
             "unregister" => {
                 let name = match value {
@@ -185,7 +185,7 @@ impl Writer for CommandStore {
                 self.registry
                     .unregister(&name)
                     .map_err(|e| StoreError::store("command", "unregister", e.to_string()))?;
-                Ok(oxpath!("commands"))
+                Ok(path!("commands"))
             }
             _ => Err(StoreError::store(
                 "command",

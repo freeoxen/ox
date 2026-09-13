@@ -22,10 +22,10 @@ ox-broker = { workspace = true }
 ox-gate = { workspace = true }
 ox-config = { workspace = true }
 ox-inbox = { workspace = true }
-ox-runtime = { workspace = true }
+featherweight-runtime = { workspace = true }
+structfs-service = { workspace = true }
 ox-codec = { workspace = true }
 ox-store-util = { workspace = true }
-ox-path = { workspace = true }
 ox-ui = { workspace = true }
 structfs-core-store = { workspace = true }
 structfs-serde-store = { workspace = true }

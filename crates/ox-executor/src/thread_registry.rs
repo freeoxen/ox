@@ -6,14 +6,16 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
-use ox_broker::async_store::{AsyncReader, AsyncWriter, BoxFuture};
+use ox_broker::async_store::BoxFuture;
 use ox_context::SystemProvider;
 use ox_gate::GateStore;
 use ox_history::HistoryView;
 use ox_kernel::ThreadResumeState;
 use ox_kernel::log::{LogEntry, LogStore, SharedLog, ToolAbortReason, TurnAbortReason};
 use ox_ui::ApprovalStore;
-use structfs_core_store::{Error as StoreError, Path, Reader, Record, Store, Value, Writer};
+use structfs_core_store::{
+    DetachedReader, DetachedWriter, Error as StoreError, Path, Reader, Record, Store, Value, Writer,
+};
 
 use crate::{POST_CRASH_SKIP_CONTENT, SYSTEM_PROMPT};
 
@@ -316,29 +318,30 @@ impl ThreadNamespace {
             if let Ok(entries) = std::fs::read_dir(thread_dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if path.extension().is_some_and(|e| e == "jsonl") && path != ledger_path {
-                        if let Ok(content) = std::fs::read_to_string(&path) {
-                            for line in content.lines() {
-                                if line.is_empty() {
-                                    continue;
-                                }
-                                if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
-                                    loaded = true;
-                                    let value = structfs_serde_store::json_to_value(json);
-                                    let append_path = ox_path::oxpath!("history", "append");
-                                    if let Err(e) = ns.write(&append_path, Record::parsed(value)) {
-                                        // Migration failure: one entry from a
-                                        // legacy .jsonl couldn't be re-appended
-                                        // through the broker. Keep migrating the
-                                        // rest (don't bail mid-file), but record
-                                        // the loss so the operator sees what
-                                        // didn't make it across.
-                                        tracing::error!(
-                                            file = %path.display(),
-                                            error = %e,
-                                            "legacy history entry failed to re-append during migration; entry will be missing from the migrated thread",
-                                        );
-                                    }
+                    if path.extension().is_some_and(|e| e == "jsonl")
+                        && path != ledger_path
+                        && let Ok(content) = std::fs::read_to_string(&path)
+                    {
+                        for line in content.lines() {
+                            if line.is_empty() {
+                                continue;
+                            }
+                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
+                                loaded = true;
+                                let value = structfs_serde_store::json_to_value(json);
+                                let append_path = structfs_core_store::path!("history", "append");
+                                if let Err(e) = ns.write(&append_path, Record::parsed(value)) {
+                                    // Migration failure: one entry from a
+                                    // legacy .jsonl couldn't be re-appended
+                                    // through the broker. Keep migrating the
+                                    // rest (don't bail mid-file), but record
+                                    // the loss so the operator sees what
+                                    // didn't make it across.
+                                    tracing::error!(
+                                        file = %path.display(),
+                                        error = %e,
+                                        "legacy history entry failed to re-append during migration; entry will be missing from the migrated thread",
+                                    );
                                 }
                             }
                         }
@@ -561,7 +564,7 @@ impl ThreadNamespace {
         if path.is_empty() {
             return None;
         }
-        let prefix = path[0].as_str();
+        let prefix = &path[0];
         let sub = path.slice(1, path.len());
         match prefix {
             "system" => Some((&mut self.system as &mut dyn Store, sub)),
@@ -594,7 +597,7 @@ impl Writer for ThreadNamespace {
 }
 
 // ---------------------------------------------------------------------------
-// ThreadRegistry — AsyncReader + AsyncWriter, routes by thread ID
+// ThreadRegistry — DetachedReader + DetachedWriter, routes by thread ID
 // ---------------------------------------------------------------------------
 
 /// Registry of per-thread namespaces with lazy mount from disk.
@@ -674,7 +677,7 @@ impl ThreadRegistry {
         if path.is_empty() {
             return None;
         }
-        let thread_id = path[0].clone();
+        let thread_id = path[0].to_string();
         let sub = path.slice(1, path.len());
         Some((thread_id, sub))
     }
@@ -684,7 +687,7 @@ impl ThreadRegistry {
         if sub.is_empty() {
             return None;
         }
-        if sub[0] == "approval" {
+        if &sub[0] == "approval" {
             Some(sub.slice(1, sub.len()))
         } else {
             None
@@ -692,15 +695,15 @@ impl ThreadRegistry {
     }
 }
 
-impl AsyncReader for ThreadRegistry {
-    fn read(&mut self, from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
+impl DetachedReader for ThreadRegistry {
+    fn read_detached(&mut self, from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
         let Some((thread_id, sub)) = Self::split_thread_path(from) else {
             return Box::pin(std::future::ready(Ok(None)));
         };
         let ns = self.ensure_mounted(&thread_id);
 
         if let Some(approval_sub) = Self::is_approval_path(&sub) {
-            ns.approval.read(&approval_sub)
+            ns.approval.read_detached(&approval_sub)
         } else {
             let result = ns.read(&sub);
             Box::pin(std::future::ready(result))
@@ -708,8 +711,8 @@ impl AsyncReader for ThreadRegistry {
     }
 }
 
-impl AsyncWriter for ThreadRegistry {
-    fn write(&mut self, to: &Path, data: Record) -> BoxFuture<Result<Path, StoreError>> {
+impl DetachedWriter for ThreadRegistry {
+    fn write_detached(&mut self, to: &Path, data: Record) -> BoxFuture<Result<Path, StoreError>> {
         let Some((thread_id, sub)) = Self::split_thread_path(to) else {
             return Box::pin(std::future::ready(Err(StoreError::NoRoute {
                 path: to.clone(),
@@ -719,9 +722,9 @@ impl AsyncWriter for ThreadRegistry {
 
         if let Some(approval_sub) = Self::is_approval_path(&sub) {
             // Log approval events to the structured log
-            let action = approval_sub.iter().next().map(|s| s.as_str());
+            let action = approval_sub.iter().next();
             if action == Some("respond_if") {
-                let expected = approval_sub.iter().nth(1).map(String::as_str);
+                let expected = approval_sub.iter().nth(1);
                 let actual =
                     crate::derive_unresolved_approval_id(&thread_id, &ns.log.shared().entries());
                 if expected.is_none() || actual.as_deref() != expected {
@@ -735,7 +738,10 @@ impl AsyncWriter for ThreadRegistry {
             match action {
                 Some("request") => {
                     if let Some(val) = data.as_value() {
-                        let json = structfs_serde_store::value_to_json(val.clone());
+                        let json = match structfs_serde_store::value_to_json(val.clone()) {
+                            Ok(json) => json,
+                            Err(error) => return Box::pin(std::future::ready(Err(error))),
+                        };
                         let tool_name = json
                             .get("tool_name")
                             .and_then(|v| v.as_str())
@@ -792,7 +798,10 @@ impl AsyncWriter for ThreadRegistry {
                     // Read tool_name from pending BEFORE routing (which clears it)
                     let tool_name = ns.approval.pending_tool_name().unwrap_or_default();
                     if let Some(val) = data.as_value() {
-                        let json = structfs_serde_store::value_to_json(val.clone());
+                        let json = match structfs_serde_store::value_to_json(val.clone()) {
+                            Ok(json) => json,
+                            Err(error) => return Box::pin(std::future::ready(Err(error))),
+                        };
                         let decision = json
                             .get("decision")
                             .and_then(|v| v.as_str())
@@ -819,7 +828,7 @@ impl AsyncWriter for ThreadRegistry {
             } else {
                 approval_sub
             };
-            ns.approval.write(&approval_route, data)
+            ns.approval.write_detached(&approval_route, data)
         } else {
             let result = ns.write(&sub, data);
             Box::pin(std::future::ready(result))
@@ -860,7 +869,7 @@ mod tests {
 
         // Reading from a nonexistent thread creates a default namespace
         let path = Path::parse("t_new/system").unwrap();
-        let result = futures_or_poll(reg.read(&path)).unwrap();
+        let result = futures_or_poll(reg.read_detached(&path)).unwrap();
         let record = result.expect("should return system prompt");
         match record.as_value().unwrap() {
             Value::String(s) => assert_eq!(s, SYSTEM_PROMPT),
@@ -874,7 +883,7 @@ mod tests {
         let mut reg = ThreadRegistry::new(dir.path().to_path_buf());
         let request_path = Path::parse("t_race/approval/request").unwrap();
         let response_path = Path::parse("t_race/approval/response").unwrap();
-        let deferred = reg.write(
+        let deferred = reg.write_detached(
             &request_path,
             Record::parsed(json_to_value(serde_json::json!({
                 "tool_name": "shell",
@@ -882,14 +891,14 @@ mod tests {
             }))),
         );
 
-        futures_or_poll(reg.write(
+        futures_or_poll(reg.write_detached(
             &response_path,
             Record::parsed(json_to_value(serde_json::json!({
                 "decision": "allow_once"
             }))),
         ))
         .unwrap();
-        let duplicate = futures_or_poll(reg.write(
+        let duplicate = futures_or_poll(reg.write_detached(
             &response_path,
             Record::parsed(json_to_value(serde_json::json!({
                 "decision": "deny_once"
@@ -901,9 +910,10 @@ mod tests {
         );
         futures_or_poll(deferred).unwrap();
 
-        let record = futures_or_poll(reg.read(&Path::parse("t_race/log/entries").unwrap()))
-            .unwrap()
-            .unwrap();
+        let record =
+            futures_or_poll(reg.read_detached(&Path::parse("t_race/log/entries").unwrap()))
+                .unwrap()
+                .unwrap();
         let entries: Vec<LogEntry> =
             structfs_serde_store::from_value(record.as_value().unwrap().clone()).unwrap();
         assert_eq!(
@@ -929,14 +939,14 @@ mod tests {
         let response = Record::parsed(json_to_value(serde_json::json!({"decision": "allow_once"})));
         let mut stale_id = None;
         for tool_id in ["tool-one", "tool-two"] {
-            futures_or_poll(reg.write(
+            futures_or_poll(reg.write_detached(
                 &append,
                 Record::parsed(json_to_value(serde_json::json!({
                     "type": "tool_call", "id": tool_id, "name": "shell", "input": {}, "scope": null
                 }))),
             ))
             .unwrap();
-            let deferred = reg.write(
+            let deferred = reg.write_detached(
                 &request,
                 Record::parsed(json_to_value(serde_json::json!({
                     "tool_name": "shell", "tool_input": {"command": "true"}
@@ -948,11 +958,13 @@ mod tests {
                 let stale = stale_id.as_ref().unwrap();
                 let stale_path =
                     Path::parse(&format!("t_race/approval/respond_if/{stale}")).unwrap();
-                assert!(futures_or_poll(reg.write(&stale_path, response.clone())).is_err());
+                assert!(
+                    futures_or_poll(reg.write_detached(&stale_path, response.clone())).is_err()
+                );
                 assert!(reg.threads.get("t_race").unwrap().approval.has_pending());
             }
             let path = Path::parse(&format!("t_race/approval/respond_if/{id}")).unwrap();
-            futures_or_poll(reg.write(&path, response.clone())).unwrap();
+            futures_or_poll(reg.write_detached(&path, response.clone())).unwrap();
             futures_or_poll(deferred).unwrap();
             stale_id = Some(id);
         }
@@ -1001,7 +1013,7 @@ mod tests {
         // Fresh registry — should lazy-mount from disk
         let mut reg = ThreadRegistry::new(inbox_root);
         let count_path = Path::parse("t_snap/history/count").unwrap();
-        let result = futures_or_poll(reg.read(&count_path)).unwrap();
+        let result = futures_or_poll(reg.read_detached(&count_path)).unwrap();
         let record = result.expect("should return count");
         match record.as_value().unwrap() {
             Value::Integer(n) => assert_eq!(*n, 1),
@@ -1017,11 +1029,12 @@ mod tests {
         // Write a message to history
         let append_path = Path::parse("t_a/history/append").unwrap();
         let msg = serde_json::json!({"role": "user", "content": "test msg"});
-        futures_or_poll(reg.write(&append_path, Record::parsed(json_to_value(msg)))).unwrap();
+        futures_or_poll(reg.write_detached(&append_path, Record::parsed(json_to_value(msg))))
+            .unwrap();
 
         // Read history count
         let count_path = Path::parse("t_a/history/count").unwrap();
-        let result = futures_or_poll(reg.read(&count_path)).unwrap();
+        let result = futures_or_poll(reg.read_detached(&count_path)).unwrap();
         match result.unwrap().as_value().unwrap() {
             Value::Integer(n) => assert_eq!(*n, 1),
             other => panic!("expected integer 1, got {:?}", other),
@@ -1032,7 +1045,7 @@ mod tests {
         // (FALLBACK_ACCOUNT, FALLBACK_MODEL) pair — this is what the test
         // pinned via `gate/defaults/model` pre-O2.
         let role_path = Path::parse("t_a/gate/completions/primary").unwrap();
-        let result = futures_or_poll(reg.read(&role_path)).unwrap();
+        let result = futures_or_poll(reg.read_detached(&role_path)).unwrap();
         let role: ox_types::CompletionRole =
             structfs_serde_store::from_value(result.unwrap().as_value().unwrap().clone()).unwrap();
         assert_eq!(role.account, "anthropic");
@@ -1048,26 +1061,28 @@ mod tests {
         for i in 0..2 {
             let path = Path::parse("t_a/history/append").unwrap();
             let msg = serde_json::json!({"role": "user", "content": format!("msg {i}")});
-            futures_or_poll(reg.write(&path, Record::parsed(json_to_value(msg)))).unwrap();
+            futures_or_poll(reg.write_detached(&path, Record::parsed(json_to_value(msg)))).unwrap();
         }
 
         // Write 1 message to t_b
         let path = Path::parse("t_b/history/append").unwrap();
         let msg = serde_json::json!({"role": "user", "content": "only one"});
-        futures_or_poll(reg.write(&path, Record::parsed(json_to_value(msg)))).unwrap();
+        futures_or_poll(reg.write_detached(&path, Record::parsed(json_to_value(msg)))).unwrap();
 
         // Verify counts are separate
-        let count_a = futures_or_poll(reg.read(&Path::parse("t_a/history/count").unwrap()))
-            .unwrap()
-            .unwrap();
+        let count_a =
+            futures_or_poll(reg.read_detached(&Path::parse("t_a/history/count").unwrap()))
+                .unwrap()
+                .unwrap();
         match count_a.as_value().unwrap() {
             Value::Integer(n) => assert_eq!(*n, 2),
             other => panic!("expected 2, got {:?}", other),
         }
 
-        let count_b = futures_or_poll(reg.read(&Path::parse("t_b/history/count").unwrap()))
-            .unwrap()
-            .unwrap();
+        let count_b =
+            futures_or_poll(reg.read_detached(&Path::parse("t_b/history/count").unwrap()))
+                .unwrap()
+                .unwrap();
         match count_b.as_value().unwrap() {
             Value::Integer(n) => assert_eq!(*n, 1),
             other => panic!("expected 1, got {:?}", other),
@@ -1080,7 +1095,7 @@ mod tests {
         let mut reg = ThreadRegistry::new(dir.path().to_path_buf());
 
         let empty = Path::from_components(vec![]);
-        let result = futures_or_poll(reg.read(&empty)).unwrap();
+        let result = futures_or_poll(reg.read_detached(&empty)).unwrap();
         assert!(result.is_none());
     }
 }

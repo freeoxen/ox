@@ -198,10 +198,10 @@ pub fn paginate(
     let next = if end < total {
         // Cursor is the last item's ID
         items.last().and_then(|item| {
-            if let Value::Map(m) = item {
-                if let Some(Value::String(id)) = m.get(cursor_field) {
-                    return Some(format!("{base_path}/after/{id}/limit/{limit}"));
-                }
+            if let Value::Map(m) = item
+                && let Some(Value::String(id)) = m.get(cursor_field)
+            {
+                return Some(format!("{base_path}/after/{id}/limit/{limit}"));
             }
             None
         })
@@ -212,10 +212,10 @@ pub fn paginate(
     // Build prev link (absent on first page)
     let prev = if start > 0 {
         items.first().and_then(|item| {
-            if let Value::Map(m) = item {
-                if let Some(Value::String(id)) = m.get(cursor_field) {
-                    return Some(format!("{base_path}/before/{id}/limit/{limit}"));
-                }
+            if let Value::Map(m) = item
+                && let Some(Value::String(id)) = m.get(cursor_field)
+            {
+                return Some(format!("{base_path}/before/{id}/limit/{limit}"));
             }
             None
         })

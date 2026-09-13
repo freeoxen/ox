@@ -234,7 +234,7 @@ impl Reader for HistoryView {
         let key = if from.is_empty() {
             "messages"
         } else {
-            from[0].as_str()
+            &from[0]
         };
         match key {
             "messages" | "" => {
@@ -256,7 +256,7 @@ impl Reader for HistoryView {
             }
             "turn" => {
                 if from.len() >= 2 {
-                    let sub = from[1].as_str();
+                    let sub = &from[1];
                     Ok(self.turn.read(sub).map(Record::parsed))
                 } else {
                     // Bare "turn" read — return the full TurnState as a serialized value.
@@ -272,50 +272,45 @@ impl Reader for HistoryView {
 
 impl Writer for HistoryView {
     fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
-        let key = if to.is_empty() {
-            "append"
-        } else {
-            to[0].as_str()
-        };
+        let key = if to.is_empty() { "append" } else { &to[0] };
         match key {
             "append" => {
                 let value = data.as_value().ok_or_else(|| {
                     StoreError::store("HistoryView", "write", "expected Parsed record")
                 })?;
-                let json = value_to_json(value.clone());
+                let json = value_to_json(value.clone())?;
                 // Parse wire-format message and convert to LogEntry
                 let role = json.get("role").and_then(|v| v.as_str()).unwrap_or("");
                 match role {
                     "user" => {
                         let content_val = json.get("content").cloned().unwrap_or_default();
                         // Check if it's a tool_result message
-                        if let Some(arr) = content_val.as_array() {
-                            if arr
+                        if let Some(arr) = content_val.as_array()
+                            && arr
                                 .first()
                                 .and_then(|v| v.get("type"))
                                 .and_then(|v| v.as_str())
                                 == Some("tool_result")
-                            {
-                                // Tool results
-                                for item in arr {
-                                    let id = item
-                                        .get("tool_use_id")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string();
-                                    let output = item
-                                        .get("content")
-                                        .cloned()
-                                        .unwrap_or(serde_json::Value::Null);
-                                    self.shared.append(LogEntry::ToolResult {
-                                        id,
-                                        output,
-                                        is_error: false,
-                                        scope: None,
-                                    })?;
-                                }
-                                return Ok(to.clone());
+                        {
+                            // Tool results
+                            for item in arr {
+                                let id = item
+                                    .get("tool_use_id")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let output = item
+                                    .get("content")
+                                    .cloned()
+                                    .unwrap_or(serde_json::Value::Null);
+                                self.shared.append(LogEntry::ToolResult {
+                                    id,
+                                    output,
+                                    is_error: false,
+                                    scope: None,
+                                })?;
                             }
+                            return Ok(to.clone());
                         }
                         // Regular user message
                         let content = match content_val {
@@ -352,7 +347,7 @@ impl Writer for HistoryView {
             }
             "turn" => {
                 if to.len() >= 2 {
-                    let sub = to[1].as_str();
+                    let sub = &to[1];
                     match sub {
                         "clear" => {
                             // Reset all ephemeral turn state for the next turn.
@@ -491,7 +486,7 @@ mod tests {
             .unwrap();
         let mut hv = HistoryView::new(shared);
         let messages = hv.read(&path!("messages")).unwrap().unwrap();
-        let json = value_to_json(unwrap_value(messages));
+        let json = value_to_json(unwrap_value(messages)).unwrap();
         let arr = json.as_array().unwrap();
         assert_eq!(arr.len(), 2);
         assert_eq!(arr[0]["role"], "user");
@@ -520,7 +515,7 @@ mod tests {
             .unwrap();
         let mut hv = HistoryView::new(shared);
         let messages = hv.read(&path!("messages")).unwrap().unwrap();
-        let json = value_to_json(unwrap_value(messages));
+        let json = value_to_json(unwrap_value(messages)).unwrap();
         let arr = json.as_array().unwrap();
         // Two tool results should be grouped into one user message
         assert_eq!(arr.len(), 1);
@@ -555,7 +550,7 @@ mod tests {
             .unwrap();
         let mut hv = HistoryView::new(shared);
         let messages = hv.read(&path!("messages")).unwrap().unwrap();
-        let json = value_to_json(unwrap_value(messages));
+        let json = value_to_json(unwrap_value(messages)).unwrap();
         let arr = json.as_array().unwrap();
         // Only the user message should appear
         assert_eq!(arr.len(), 1);
@@ -717,7 +712,7 @@ mod tests {
         )
         .unwrap();
         let messages = hv.read(&path!("messages")).unwrap().unwrap();
-        let json = value_to_json(unwrap_value(messages));
+        let json = value_to_json(unwrap_value(messages)).unwrap();
         let arr = json.as_array().unwrap();
         // User message + partial assistant message
         assert_eq!(arr.len(), 2);
@@ -732,7 +727,7 @@ mod tests {
         hv.write(&path!("turn/thinking"), Record::parsed(Value::Bool(true)))
             .unwrap();
         let record = hv.read(&path!("turn")).unwrap().unwrap();
-        let json = value_to_json(unwrap_value(record));
+        let json = value_to_json(unwrap_value(record)).unwrap();
         assert_eq!(json["thinking"], true);
         assert_eq!(json["streaming"], "");
     }
@@ -762,7 +757,7 @@ mod tests {
             .unwrap();
         let mut hv = HistoryView::new(shared);
         let messages = hv.read(&path!("messages")).unwrap().unwrap();
-        let json = value_to_json(unwrap_value(messages));
+        let json = value_to_json(unwrap_value(messages)).unwrap();
         let arr = json.as_array().unwrap();
         let content = arr[0]["content"].as_array().unwrap();
         let result_str = content[0]["content"].as_str().unwrap();
@@ -833,7 +828,7 @@ mod tests {
             .unwrap();
         let mut hv = HistoryView::new(shared);
         let messages = hv.read(&path!("messages")).unwrap().unwrap();
-        let json = value_to_json(unwrap_value(messages));
+        let json = value_to_json(unwrap_value(messages)).unwrap();
         let arr = json.as_array().unwrap();
         let content = arr[0]["content"].as_array().unwrap();
         let result_str = content[0]["content"].as_str().unwrap();

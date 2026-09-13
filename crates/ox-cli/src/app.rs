@@ -217,7 +217,7 @@ impl App {
             };
             let _ = client
                 .write_typed(
-                    &ox_path::oxpath!("ui"),
+                    &structfs_core_store::path!("ui"),
                     &ox_types::UiCommand::Global(ox_types::GlobalCommand::SetStatus { text }),
                 )
                 .await;
@@ -230,7 +230,7 @@ impl App {
         let _ = self
             .broker_client
             .write_typed(
-                &ox_path::oxpath!("ui"),
+                &structfs_core_store::path!("ui"),
                 &ox_types::UiCommand::Global(ox_types::GlobalCommand::SetStatus { text }),
             )
             .await;
@@ -305,7 +305,7 @@ impl App {
                 return;
             }
         };
-        let update_path = ox_path::oxpath!("inbox", "threads", tid);
+        let update_path = structfs_core_store::path!("inbox", "threads", tid);
         let update = ox_types::UpdateThread {
             id: None,
             thread_state: Some(state),

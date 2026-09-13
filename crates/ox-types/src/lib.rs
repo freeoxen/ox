@@ -10,7 +10,7 @@ pub mod input;
 pub mod key_chord;
 pub mod key_hint;
 pub mod model_info;
-pub(crate) mod path_serde;
+pub mod path_serde;
 pub mod pricing;
 pub mod provider;
 pub mod settings;

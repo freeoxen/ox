@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use ox_broker::async_store::{AsyncReader, AsyncWriter, BoxFuture};
+use ox_broker::async_store::BoxFuture;
 use ox_inbox::remote_state::{
     RemoteAction, RemoteCleanupState, RemoteConversationDesiredState, RemoteConversationIntent,
     RemoteConversationObservedState, RemoteConversationRecord, RemoteConversationUpdate,
@@ -12,7 +12,9 @@ use ox_inbox::remote_state::{
 use ox_inbox::worker_ingress::{CancelEnvelope, CreateEnvelope, PromptEnvelope};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use structfs_core_store::{Error as StoreError, Path, Record, Value, path};
+use structfs_core_store::{
+    DetachedReader, DetachedWriter, Error as StoreError, Path, Record, Value, path,
+};
 
 use crate::placement::{child, decode_record, encoded_item, select_existing, verify_worker};
 use crate::{
@@ -601,14 +603,14 @@ impl RemoteManagerStore {
         conversation: &RemoteConversationIntent,
         worker: &Arc<dyn StorePort>,
     ) -> Result<String, RemoteManagerError> {
-        if let Some(result) = self.applied_operation(operation_path).await? {
-            if let Some(path) = result.result_path {
-                return path
-                    .split('/')
-                    .next_back()
-                    .map(str::to_owned)
-                    .ok_or_else(|| RemoteManagerError::Invalid("empty create receipt".into()));
-            }
+        if let Some(result) = self.applied_operation(operation_path).await?
+            && let Some(path) = result.result_path
+        {
+            return path
+                .split('/')
+                .next_back()
+                .map(str::to_owned)
+                .ok_or_else(|| RemoteManagerError::Invalid("empty create receipt".into()));
         }
         let node = self
             .read_node(&conversation.node_id)
@@ -656,7 +658,7 @@ impl RemoteManagerStore {
         let thread_id = receipt
             .iter()
             .last()
-            .cloned()
+            .map(str::to_owned)
             .ok_or_else(|| RemoteManagerError::Invalid("empty worker create path".into()))?;
         let thread_path = Path::parse(&format!("conversations/{thread_id}"))?;
         if worker
@@ -1397,10 +1399,8 @@ impl RemoteManagerStore {
             for item in items {
                 if let Value::Map(map) = item {
                     let terminal = matches!(map.get("thread_state"), Some(Value::String(state)) if matches!(state.as_str(), "completed" | "interrupted" | "errored"));
-                    if !terminal {
-                        if let Some(Value::String(id)) = map.get("id") {
-                            affected.push(format!("worker:{id}"));
-                        }
+                    if !terminal && let Some(Value::String(id)) = map.get("id") {
+                        affected.push(format!("worker:{id}"));
                     }
                 }
             }
@@ -1788,9 +1788,9 @@ impl RemoteManagerStore {
     }
 }
 
-impl AsyncReader for RemoteManagerStore {
-    fn read(&mut self, from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
-        let parts: Vec<&str> = from.iter().map(String::as_str).collect();
+impl DetachedReader for RemoteManagerStore {
+    fn read_detached(&mut self, from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
+        let parts: Vec<&str> = from.iter().collect();
         if let ["nodes", id, "doctor"] = parts.as_slice() {
             let this = self.clone_for_future();
             let id = (*id).to_owned();
@@ -1816,8 +1816,8 @@ impl AsyncReader for RemoteManagerStore {
                 let identity = provider.read(&path!("identity")).await?;
                 let vms = provider.read(&path!("vms")).await?;
                 let value = serde_json::json!({
-                    "identity": identity.and_then(|record| record.as_value().cloned()).map(structfs_serde_store::value_to_json),
-                    "vms": vms.and_then(|record| record.as_value().cloned()).map(structfs_serde_store::value_to_json),
+                    "identity": identity.and_then(|record| record.as_value().cloned()).map(structfs_serde_store::value_to_json).transpose()?,
+                    "vms": vms.and_then(|record| record.as_value().cloned()).map(structfs_serde_store::value_to_json).transpose()?,
                 });
                 Ok(Some(Record::parsed(structfs_serde_store::json_to_value(
                     value,
@@ -1834,12 +1834,12 @@ impl AsyncReader for RemoteManagerStore {
     }
 }
 
-impl AsyncWriter for RemoteManagerStore {
-    fn write(&mut self, to: &Path, data: Record) -> BoxFuture<Result<Path, StoreError>> {
+impl DetachedWriter for RemoteManagerStore {
+    fn write_detached(&mut self, to: &Path, data: Record) -> BoxFuture<Result<Path, StoreError>> {
         let this = self.clone_for_future();
         let to = to.clone();
         Box::pin(async move {
-            let parts: Vec<&str> = to.iter().map(String::as_str).collect();
+            let parts: Vec<&str> = to.iter().collect();
             let result = match parts.as_slice() {
                 ["nodes"] => {
                     let request: CreateNodeRequest =
@@ -1954,7 +1954,7 @@ fn validate_start(request: &StartConversationRequest) -> Result<(), RemoteManage
         || request.title.is_empty()
         || request.node.cpu == 0
         || request.node.memory_mib < 1024
-        || request.node.memory_mib % 1024 != 0
+        || !request.node.memory_mib.is_multiple_of(1024)
         || request.node.disk_gib == 0
     {
         return Err(RemoteManagerError::Invalid(
@@ -1969,7 +1969,7 @@ fn validate_node_request(request: &CreateNodeRequest) -> Result<(), RemoteManage
         || request.request_id.is_empty()
         || request.node.cpu == 0
         || request.node.memory_mib < 1024
-        || request.node.memory_mib % 1024 != 0
+        || !request.node.memory_mib.is_multiple_of(1024)
         || request.node.disk_gib == 0
     {
         return Err(RemoteManagerError::Invalid(

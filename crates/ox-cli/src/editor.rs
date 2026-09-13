@@ -1,7 +1,7 @@
 use crossterm::event::{KeyCode, KeyModifiers};
-use ox_path::oxpath;
 use ox_types::{ScreenSnapshot, ThreadCommand, UiCommand};
 use ox_ui::text_input_store::{Edit, EditOp, EditSequence, EditSource};
+use structfs_core_store::path;
 
 // ---------------------------------------------------------------------------
 // InputSession — optimistic local input state
@@ -178,7 +178,7 @@ pub(crate) async fn submit_editor_content(
         ScreenSnapshot::Thread(_) => {
             let _ = client
                 .write_typed(
-                    &oxpath!("ui"),
+                    &path!("ui"),
                     &UiCommand::Thread(ThreadCommand::DismissEditor),
                 )
                 .await;
@@ -186,7 +186,7 @@ pub(crate) async fn submit_editor_content(
         ScreenSnapshot::Inbox(_) => {
             let _ = client
                 .write_typed(
-                    &oxpath!("ui"),
+                    &path!("ui"),
                     &UiCommand::Inbox(ox_types::InboxCommand::DismissEditor),
                 )
                 .await;
@@ -204,9 +204,7 @@ async fn write_set_input(client: &ox_broker::ClientHandle, text: &str, cursor: u
         text: text.to_string(),
         cursor,
     };
-    let _ = client
-        .write_typed(&oxpath!("ui", "set_input"), &input)
-        .await;
+    let _ = client.write_typed(&path!("ui", "set_input"), &input).await;
 }
 
 /// Flush pending edits to the broker as a single EditSequence write.
@@ -220,7 +218,7 @@ pub(crate) async fn flush_pending_edits(
             generation: input_session.generation,
         };
         let _ = client
-            .write_typed(&oxpath!("ui", "input", "edit"), &seq)
+            .write_typed(&path!("ui", "input", "edit"), &seq)
             .await;
     }
 }
@@ -438,7 +436,7 @@ pub(crate) async fn handle_editor_normal_key(
         KeyCode::Char(':') | KeyCode::Char(';') => {
             let _ = client
                 .write(
-                    &oxpath!("ui", "command_line", "open"),
+                    &path!("ui", "command_line", "open"),
                     structfs_core_store::Record::parsed(structfs_core_store::Value::Null),
                 )
                 .await;

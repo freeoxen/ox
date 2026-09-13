@@ -161,7 +161,7 @@ impl FocusInputs {
         let has_approval_pending = if let ScreenSnapshot::Thread(snap) = &ui.screen {
             match ox_kernel::PathComponent::try_new(snap.thread_id.as_str()) {
                 Ok(tid) => {
-                    let path = ox_path::oxpath!("threads", tid, "approval", "pending");
+                    let path = structfs_core_store::path!("threads", tid, "approval", "pending");
                     client
                         .read_typed::<ox_types::ApprovalRequest>(&path)
                         .await

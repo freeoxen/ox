@@ -16,9 +16,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use futures::StreamExt;
-use ox_broker::async_store::{AsyncReader, AsyncWriter, BoxFuture};
+use ox_broker::async_store::BoxFuture;
 use serde::{Deserialize, Serialize};
-use structfs_core_store::{Error as StoreError, Path, Record, Value};
+use structfs_core_store::{
+    DetachedReader, DetachedWriter, Error as StoreError, Path, Record, Value,
+};
 use structfs_http::types::HttpRequest;
 use tokio::runtime::Handle as TokioHandle;
 use tokio::sync::{Mutex, Notify};
@@ -60,8 +62,17 @@ struct UpstreamState {
 pub struct UpstreamStore<E: SseHttpExecutor> {
     executor: Arc<E>,
     handles: HashMap<u64, Arc<UpstreamInflight>>,
+    tasks: HashMap<u64, tokio::task::JoinHandle<()>>,
     next_id: u64,
     runtime: TokioHandle,
+}
+
+impl<E: SseHttpExecutor> Drop for UpstreamStore<E> {
+    fn drop(&mut self) {
+        for task in self.tasks.values() {
+            task.abort();
+        }
+    }
 }
 
 impl<E: SseHttpExecutor> UpstreamStore<E> {
@@ -69,20 +80,21 @@ impl<E: SseHttpExecutor> UpstreamStore<E> {
         Self {
             executor,
             handles: HashMap::new(),
+            tasks: HashMap::new(),
             next_id: 0,
             runtime,
         }
     }
 
     fn parse_handle_path(path: &Path) -> Option<(u64, Option<String>)> {
-        if path.len() < 2 || path[0].as_str() != "outstanding" {
+        if path.len() < 2 || &path[0] != "outstanding" {
             return None;
         }
-        let id: u64 = path[1].as_str().parse().ok()?;
+        let id: u64 = path[1].parse().ok()?;
         let sub = if path.len() > 2 {
             Some(
                 (2..path.len())
-                    .map(|i| path[i].as_str())
+                    .map(|i| &path[i])
                     .collect::<Vec<_>>()
                     .join("/"),
             )
@@ -93,8 +105,8 @@ impl<E: SseHttpExecutor> UpstreamStore<E> {
     }
 }
 
-impl<E: SseHttpExecutor> AsyncReader for UpstreamStore<E> {
-    fn read(&mut self, from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
+impl<E: SseHttpExecutor> DetachedReader for UpstreamStore<E> {
+    fn read_detached(&mut self, from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
         let Some((id, sub)) = Self::parse_handle_path(from) else {
             return Box::pin(async move { Ok(None) });
         };
@@ -146,15 +158,34 @@ impl<E: SseHttpExecutor> AsyncReader for UpstreamStore<E> {
     }
 }
 
-impl<E: SseHttpExecutor> AsyncWriter for UpstreamStore<E> {
-    fn write(&mut self, to: &Path, data: Record) -> BoxFuture<Result<Path, StoreError>> {
+impl<E: SseHttpExecutor> DetachedWriter for UpstreamStore<E> {
+    fn write_detached(&mut self, to: &Path, data: Record) -> BoxFuture<Result<Path, StoreError>> {
         let to = to.clone();
 
         // GC
         if let Some((id, None)) = Self::parse_handle_path(&to) {
             if matches!(data.as_value(), Some(Value::Null)) {
-                self.handles.remove(&id);
-                return Box::pin(async move { Ok(to) });
+                let inflight = self.handles.remove(&id);
+                let task = self.tasks.remove(&id);
+                if let Some(task) = &task {
+                    task.abort();
+                }
+                return Box::pin(async move {
+                    let join_error = match task {
+                        Some(task) => task.await.err().filter(|error| !error.is_cancelled()),
+                        None => None,
+                    };
+                    if let Some(inflight) = inflight {
+                        inflight.state.lock().await.status = UpstreamStatus::Failed {
+                            reason: "upstream handle cancelled".into(),
+                        };
+                        inflight.notify.notify_waiters();
+                    }
+                    match join_error {
+                        Some(error) => Err(StoreError::store("upstream", "gc", error.to_string())),
+                        None => Ok(to),
+                    }
+                });
             }
             return Box::pin(async move {
                 Err(StoreError::store(
@@ -212,7 +243,7 @@ impl<E: SseHttpExecutor> AsyncWriter for UpstreamStore<E> {
         self.handles.insert(id, inflight.clone());
 
         let executor = self.executor.clone();
-        self.runtime.spawn(async move {
+        let task = self.runtime.spawn(async move {
             let mut stream = executor.execute(req.request, req.dialect).await;
             while let Some(item) = stream.next().await {
                 match item {
@@ -236,6 +267,7 @@ impl<E: SseHttpExecutor> AsyncWriter for UpstreamStore<E> {
             drop(state);
             inflight.notify.notify_waiters();
         });
+        self.tasks.insert(id, task);
 
         Box::pin(async move {
             Path::try_from_components(vec!["outstanding".to_string(), id.to_string()])
@@ -249,14 +281,13 @@ mod tests {
     use super::*;
     use crate::completion_broker::mock::MockSseExecutor;
     use ox_broker::BrokerStore;
-    use ox_path::oxpath;
     use std::time::Duration;
     use structfs_core_store::path;
 
     async fn mount(executor: Arc<MockSseExecutor>) -> ox_broker::ClientHandle {
         let broker = BrokerStore::new(Duration::from_secs(5));
         let store = UpstreamStore::new(executor, tokio::runtime::Handle::current());
-        broker.mount_async(oxpath!("upstream"), store).await;
+        broker.mount_async(path!("upstream"), store).await;
         // Keep the broker alive for the test's duration by leaking its
         // client-side handle scope; the returned handle owns the channels.
         broker.client()
@@ -378,5 +409,78 @@ mod tests {
             .expect("clamped read")
             .unwrap_or_default();
         assert!(tail.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod cancellation_regressions {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+    use structfs_core_store::path;
+
+    struct PendingExecutor {
+        entered: Arc<Notify>,
+        dropped: Arc<AtomicBool>,
+    }
+    struct DropProbe(Arc<AtomicBool>);
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    #[async_trait::async_trait]
+    impl SseHttpExecutor for PendingExecutor {
+        async fn execute(
+            &self,
+            _: HttpRequest,
+            _: String,
+        ) -> futures::stream::BoxStream<'static, Result<StreamEvent, String>> {
+            let entered = self.entered.clone();
+            let probe = DropProbe(self.dropped.clone());
+            Box::pin(futures::stream::once(async move {
+                let _probe = probe;
+                entered.notify_one();
+                std::future::pending().await
+            }))
+        }
+    }
+    #[tokio::test]
+    async fn gc_joins_upstream_producer_and_wakes_parked_read() {
+        let entered = Arc::new(Notify::new());
+        let dropped = Arc::new(AtomicBool::new(false));
+        let executor = Arc::new(PendingExecutor {
+            entered: entered.clone(),
+            dropped: dropped.clone(),
+        });
+        let mut store = UpstreamStore::new(executor, TokioHandle::current());
+        let req = UpstreamRequest {
+            dialect: "anthropic".into(),
+            request: HttpRequest::post("https://example.test"),
+        };
+        let handle = store
+            .write_detached(
+                &path!(""),
+                Record::parsed(structfs_serde_store::to_value(&req).unwrap()),
+            )
+            .await
+            .unwrap();
+        entered.notified().await;
+        let parked = store.read_detached(&handle.join(&path!("events/from/0")));
+        store
+            .write_detached(&handle, Record::parsed(Value::Null))
+            .await
+            .unwrap();
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "GC must join producer, not just remove its lookup entry"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), parked)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_some()
+        );
     }
 }

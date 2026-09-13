@@ -5,7 +5,6 @@
 
 use ox_broker::{BrokerStore, SyncClientAdapter};
 use ox_gate::subscriptions::util::testing::MockTransport;
-use ox_path::oxpath;
 use ox_types::ModelInfo;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -35,14 +34,14 @@ async fn refresh_trigger_populates_v1_models() {
         Value::String("localbox".into()),
     );
     broker
-        .mount(oxpath!("config"), ox_ui::ConfigStore::new(base))
+        .mount(path!("config"), ox_ui::ConfigStore::new(base))
         .await;
 
     // secret/ — key for the anthropic account.
     let mut secret_base = BTreeMap::new();
     secret_base.insert("keys/localbox".to_string(), Value::String("sk-test".into()));
     broker
-        .mount(oxpath!("secret"), ox_ui::ConfigStore::new(secret_base))
+        .mount(path!("secret"), ox_ui::ConfigStore::new(secret_base))
         .await;
 
     // gate/ — wired to config + secret exactly like main.rs.
@@ -52,7 +51,7 @@ async fn refresh_trigger_populates_v1_models() {
     let gate = ox_gate::GateStore::new()
         .with_config(Box::new(config_adapter))
         .with_secrets(Box::new(secret_adapter));
-    broker.mount(oxpath!("gate"), gate).await;
+    broker.mount(path!("gate"), gate).await;
 
     // Subscriptions with a mock transport serving one model.
     let catalog = vec![ModelInfo {

@@ -199,7 +199,7 @@ binds `h` at neither phase.
 4. **All async lives in subscriptions.** A user-triggered async
    action becomes a write to a `…/<verb>_now` trigger path; the
    subscription does the network call.
-5. **All paths are constructed via `oxpath!` or
+5. **All paths are constructed via `path!` or
    `PathComponent::try_new`.** Never hand-format path strings.
 6. **No synthetic identifier paths in the visible-rows
    projection.** Real data rows (`<page>/<row>`) and UI affordances

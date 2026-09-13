@@ -8,8 +8,8 @@
 use std::path::Path as FsPath;
 
 use ox_broker::ClientHandle;
-use ox_path::oxpath;
 use ox_types::{BadgeSource, SettingsIndexEntry};
+use structfs_core_store::path;
 use structfs_core_store::{Error as StoreError, Record};
 
 use super::commands::navigation::path_to_value;
@@ -22,25 +22,25 @@ pub async fn populate_index_entries(client: &ClientHandle) -> Result<(), StoreEr
         id: "accounts".to_string(),
         label: "Connections".to_string(),
         description: "Manage connections (provider + account + key).".to_string(),
-        target_cursor: oxpath!("settings", "accounts"),
-        badge: BadgeSource::SubtreeCount(oxpath!("config", "gate", "accounts")),
+        target_cursor: path!("settings", "accounts"),
+        badge: BadgeSource::SubtreeCount(path!("config", "gate", "accounts")),
     };
     let models_entry = SettingsIndexEntry {
         id: "models".to_string(),
         label: "Models".to_string(),
         description: "Browse model catalogs and tag the bootstrap model.".to_string(),
-        target_cursor: oxpath!("settings", "models"),
+        target_cursor: path!("settings", "models"),
         badge: BadgeSource::BootstrapReference,
     };
     client
         .write_typed(
-            &oxpath!("settings", "index", "entries", "accounts"),
+            &path!("settings", "index", "entries", "accounts"),
             &accounts_entry,
         )
         .await?;
     client
         .write_typed(
-            &oxpath!("settings", "index", "entries", "models"),
+            &path!("settings", "index", "entries", "models"),
             &models_entry,
         )
         .await?;
@@ -57,7 +57,7 @@ pub async fn populate_index_entries(client: &ClientHandle) -> Result<(), StoreEr
 pub async fn maybe_first_run_cursor(client: &ClientHandle) -> Result<bool, StoreError> {
     use structfs_core_store::Value;
 
-    let focus_path = oxpath!("ui", "settings", "focused");
+    let focus_path = path!("ui", "settings", "focused");
     if client.read(&focus_path).await?.is_some() {
         return Ok(false);
     }
@@ -66,7 +66,7 @@ pub async fn maybe_first_run_cursor(client: &ClientHandle) -> Result<bool, Store
     // an exact-match store. Use `read_subtree` (which knows to walk the
     // mount root and filter) — same path the snapshot fetcher uses.
     let subtree = client
-        .read_subtree(&oxpath!("config", "gate", "accounts"))
+        .read_subtree(&path!("config", "gate", "accounts"))
         .await
         .unwrap_or_default();
     if !subtree.is_empty() {
@@ -79,12 +79,12 @@ pub async fn maybe_first_run_cursor(client: &ClientHandle) -> Result<bool, Store
     client
         .write(
             &focus_path,
-            Record::parsed(path_to_value(&oxpath!("settings", "accounts"))),
+            Record::parsed(path_to_value(&path!("settings", "accounts"))),
         )
         .await?;
     client
         .write(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             Record::parsed(super::visible_rows::expanded_set_to_value(&[
                 "settings/accounts".to_string(),
             ])),
@@ -92,7 +92,7 @@ pub async fn maybe_first_run_cursor(client: &ClientHandle) -> Result<bool, Store
         .await?;
     client
         .write(
-            &oxpath!("ui", "settings", "new_account", "buffer"),
+            &path!("ui", "settings", "new_account", "buffer"),
             Record::parsed(Value::String(String::new())),
         )
         .await?;
@@ -117,11 +117,11 @@ pub fn detect_legacy_settings(inbox_root: &FsPath) -> Vec<&'static str> {
         }
         if let Some(toml::Value::Table(providers)) = gate.get("providers") {
             for (_name, prov) in providers {
-                if let toml::Value::Table(prov) = prov {
-                    if prov.contains_key("models") {
-                        detected.push("gate/providers/*/models");
-                        break;
-                    }
+                if let toml::Value::Table(prov) = prov
+                    && prov.contains_key("models")
+                {
+                    detected.push("gate/providers/*/models");
+                    break;
                 }
             }
         }
@@ -177,20 +177,20 @@ mod tests {
         let client = broker.client();
         populate_index_entries(&client).await.unwrap();
         let accounts: SettingsIndexEntry = client
-            .read_typed(&oxpath!("settings", "index", "entries", "accounts"))
+            .read_typed(&path!("settings", "index", "entries", "accounts"))
             .await
             .unwrap()
             .unwrap();
         assert_eq!(accounts.id, "accounts");
-        assert_eq!(accounts.target_cursor, oxpath!("settings", "accounts"));
+        assert_eq!(accounts.target_cursor, path!("settings", "accounts"));
         match accounts.badge {
             BadgeSource::SubtreeCount(p) => {
-                assert_eq!(p, oxpath!("config", "gate", "accounts"))
+                assert_eq!(p, path!("config", "gate", "accounts"))
             }
             other => panic!("unexpected badge: {:?}", other),
         }
         let models: SettingsIndexEntry = client
-            .read_typed(&oxpath!("settings", "index", "entries", "models"))
+            .read_typed(&path!("settings", "index", "entries", "models"))
             .await
             .unwrap()
             .unwrap();
@@ -210,7 +210,7 @@ mod tests {
         // ancestor chain. Compose mode is signalled by the buffer
         // write, not a synthetic cursor identifier.
         let focused = client
-            .read(&oxpath!("ui", "settings", "focused"))
+            .read(&path!("ui", "settings", "focused"))
             .await
             .unwrap()
             .expect("focused written");
@@ -231,7 +231,7 @@ mod tests {
         // The Accounts section is expanded so the inline name prompt
         // is visible directly under the section header.
         let expanded = client
-            .read(&oxpath!("ui", "settings", "expanded"))
+            .read(&path!("ui", "settings", "expanded"))
             .await
             .unwrap()
             .expect("expanded set written");
@@ -252,7 +252,7 @@ mod tests {
         // Compose buffer armed → dispatcher's compose-mode pass routes
         // printable keys to accounts.compose.insert_char.
         let buffer = client
-            .read(&oxpath!("ui", "settings", "new_account", "buffer"))
+            .read(&path!("ui", "settings", "new_account", "buffer"))
             .await
             .unwrap()
             .expect("buffer written");
@@ -267,10 +267,10 @@ mod tests {
         let broker = fresh_broker().await;
         let client = broker.client();
         // Pre-write the focus cursor.
-        let preset = oxpath!("settings", "index");
+        let preset = path!("settings", "index");
         client
             .write(
-                &oxpath!("ui", "settings", "focused"),
+                &path!("ui", "settings", "focused"),
                 Record::parsed(path_to_value(&preset)),
             )
             .await
@@ -287,7 +287,7 @@ mod tests {
         let name = PathComponent::try_new("anthropic_personal").unwrap();
         client
             .write(
-                &oxpath!("config", "gate", "accounts", name, "provider"),
+                &path!("config", "gate", "accounts", name, "provider"),
                 Record::parsed(Value::String("anthropic".into())),
             )
             .await
@@ -295,7 +295,7 @@ mod tests {
         let fired = maybe_first_run_cursor(&client).await.unwrap();
         assert!(!fired);
         let focused = client
-            .read(&oxpath!("ui", "settings", "focused"))
+            .read(&path!("ui", "settings", "focused"))
             .await
             .unwrap();
         assert!(focused.is_none());

@@ -178,10 +178,10 @@ pub fn translate_request(request: &CompletionRequest) -> serde_json::Value {
     if let Some(stop) = request.extra.get("stop_sequences") {
         body["stop"] = stop.clone();
     }
-    if let Some(tc) = request.extra.get("tool_choice") {
-        if let Some(openai_tc) = tool_choice_to_openai(tc) {
-            body["tool_choice"] = openai_tc;
-        }
+    if let Some(tc) = request.extra.get("tool_choice")
+        && let Some(openai_tc) = tool_choice_to_openai(tc)
+    {
+        body["tool_choice"] = openai_tc;
     }
 
     body
@@ -233,12 +233,12 @@ pub fn parse_sse_events(body: &str) -> (Vec<StreamEvent>, UsageInfo) {
                 };
 
                 // Text content
-                if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
-                    if !content.is_empty() {
-                        events.push(StreamEvent::TextDelta {
-                            text: content.to_string(),
-                        });
-                    }
+                if let Some(content) = delta.get("content").and_then(|c| c.as_str())
+                    && !content.is_empty()
+                {
+                    events.push(StreamEvent::TextDelta {
+                        text: content.to_string(),
+                    });
                 }
 
                 // Tool calls
@@ -266,12 +266,11 @@ pub fn parse_sse_events(body: &str) -> (Vec<StreamEvent>, UsageInfo) {
                         if let Some(args) = function
                             .and_then(|f| f.get("arguments"))
                             .and_then(|a| a.as_str())
+                            && !args.is_empty()
                         {
-                            if !args.is_empty() {
-                                events.push(StreamEvent::ToolUseInputDelta {
-                                    delta: args.to_string(),
-                                });
-                            }
+                            events.push(StreamEvent::ToolUseInputDelta {
+                                delta: args.to_string(),
+                            });
                         }
                     }
                 }
@@ -572,10 +571,10 @@ pub fn decode_request(
         }
         _ => {}
     }
-    if let Some(tc) = obj.get("tool_choice") {
-        if let Some(canonical) = tool_choice_to_canonical(tc) {
-            extra.insert("tool_choice".into(), canonical);
-        }
+    if let Some(tc) = obj.get("tool_choice")
+        && let Some(canonical) = tool_choice_to_canonical(tc)
+    {
+        extra.insert("tool_choice".into(), canonical);
     }
 
     Ok(ox_kernel::CompletionRequest {

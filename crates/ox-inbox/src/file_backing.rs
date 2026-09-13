@@ -41,7 +41,7 @@ impl StoreBacking for JsonFileBacking {
     }
 
     fn save(&self, value: &Value) -> Result<(), StoreError> {
-        let json = value_to_json(value.clone());
+        let json = value_to_json(value.clone())?;
         let bytes = serde_json::to_vec_pretty(&json)
             .map_err(|e| StoreError::store("JsonFileBacking", "save", e.to_string()))?;
 

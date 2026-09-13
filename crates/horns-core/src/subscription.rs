@@ -13,8 +13,7 @@
 //! means horns-core stays broker-agnostic while `ox-broker` depends on
 //! horns-core for the trait definitions it dispatches against.
 //!
-//! `PathChange` and `Write` carry a `Record`, which has no serde impl.
-//! These two records are intentionally **in-process only** — they are
+//! `PathChange` and `Write` are intentionally **in-process only** — they are
 //! never round-tripped through a wire format — so they only derive
 //! `Clone, Debug`. `SubscriptionId` and `PathPattern` are persistable
 //! and derive serde.
@@ -28,9 +27,8 @@ use structfs_core_store::{Error as StoreError, Path, Reader, Record};
 
 use crate::path_serde;
 
-/// A boxed, Send, 'static future. Mirrors `ox_broker::async_store::BoxFuture`
-/// so the subscription protocol can be defined without depending on the
-/// broker crate.
+/// A boxed, Send, 'static future. Defined here so the subscription protocol
+/// does not depend on the broker; reexported by `ox_broker::async_store`.
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
 /// Stable identifier for a registered subscription. Newtype around String
@@ -98,7 +96,7 @@ impl PathPattern {
 
 /// An observed change at a path. `before == None` means the path was
 /// previously unset (creation); `after == None` means deletion. Carries
-/// `Record`, which has no serde impl — `PathChange` is **in-process only**.
+/// `Record`; this change-notification protocol remains **in-process only**.
 #[derive(Clone, Debug)]
 pub struct PathChange {
     pub path: Path,
@@ -175,12 +173,11 @@ pub trait SpawnHandle: Send + Sync {
 /// they need for the call. This avoids a borrow on `&self` outliving the
 /// scope of the spawned task.
 ///
-/// Distinct from the `AsyncWriter` in `ox_broker::async_store`, which is
+/// Distinct from StructFS `DetachedWriter`, which is
 /// the *server-side* trait used by `mount_async` with `&mut self` and a
 /// `'static` future. This one is a *shareable handle* trait: `&self`,
 /// `Send + Sync`, designed to be held as `Arc<dyn AsyncWriter>` by
-/// spawned tasks. The two cannot be unified — different self-types,
-/// different lifetimes, different intended usage.
+/// spawned tasks. The receiver types and sharing contracts differ.
 pub trait AsyncWriter: Send + Sync {
     fn write(&self, path: Path, record: Record) -> BoxFuture<Result<Path, StoreError>>;
 }
@@ -248,7 +245,7 @@ impl SubscriptionRegistry {
 
 #[cfg(test)]
 mod tests {
-    use ox_path::oxpath;
+    use structfs_core_store::path;
 
     use super::*;
     use crate::write::Write;
@@ -281,48 +278,48 @@ mod tests {
 
     #[test]
     fn exact_matches_identical_path() {
-        let pat = PathPattern::Exact(oxpath!("config", "gate", "accounts"));
-        assert!(pat.matches(&oxpath!("config", "gate", "accounts")));
+        let pat = PathPattern::Exact(path!("config", "gate", "accounts"));
+        assert!(pat.matches(&path!("config", "gate", "accounts")));
     }
 
     #[test]
     fn exact_does_not_match_different_path() {
-        let pat = PathPattern::Exact(oxpath!("config", "gate", "accounts"));
-        assert!(!pat.matches(&oxpath!("config", "gate", "defaults")));
+        let pat = PathPattern::Exact(path!("config", "gate", "accounts"));
+        assert!(!pat.matches(&path!("config", "gate", "defaults")));
     }
 
     #[test]
     fn exact_does_not_match_longer_with_same_prefix() {
-        let pat = PathPattern::Exact(oxpath!("config", "gate", "accounts"));
-        assert!(!pat.matches(&oxpath!("config", "gate", "accounts", "foo")));
+        let pat = PathPattern::Exact(path!("config", "gate", "accounts"));
+        assert!(!pat.matches(&path!("config", "gate", "accounts", "foo")));
     }
 
     // ----- Prefix -----
 
     #[test]
     fn prefix_matches_descendant() {
-        let pat = PathPattern::Prefix(oxpath!("config", "gate", "accounts"));
-        assert!(pat.matches(&oxpath!("config", "gate", "accounts", "foo")));
+        let pat = PathPattern::Prefix(path!("config", "gate", "accounts"));
+        assert!(pat.matches(&path!("config", "gate", "accounts", "foo")));
     }
 
     #[test]
     fn prefix_matches_self() {
-        let pat = PathPattern::Prefix(oxpath!("config", "gate", "accounts"));
-        assert!(pat.matches(&oxpath!("config", "gate", "accounts")));
+        let pat = PathPattern::Prefix(path!("config", "gate", "accounts"));
+        assert!(pat.matches(&path!("config", "gate", "accounts")));
     }
 
     #[test]
     fn prefix_component_boundary_not_byte() {
         // `accounts_other` shares a byte prefix with `accounts` but is a
         // distinct component — must not match.
-        let pat = PathPattern::Prefix(oxpath!("config", "gate", "accounts"));
-        assert!(!pat.matches(&oxpath!("config", "gate", "accounts_other", "foo")));
+        let pat = PathPattern::Prefix(path!("config", "gate", "accounts"));
+        assert!(!pat.matches(&path!("config", "gate", "accounts_other", "foo")));
     }
 
     #[test]
     fn prefix_does_not_match_shorter_path() {
-        let pat = PathPattern::Prefix(oxpath!("config", "gate", "accounts"));
-        assert!(!pat.matches(&oxpath!("config", "gate")));
+        let pat = PathPattern::Prefix(path!("config", "gate", "accounts"));
+        assert!(!pat.matches(&path!("config", "gate")));
     }
 
     // ----- PrefixSuffix -----
@@ -330,19 +327,19 @@ mod tests {
     #[test]
     fn prefix_suffix_matches_single_segment_instance() {
         let pat = PathPattern::PrefixSuffix {
-            prefix: oxpath!("config", "gate", "accounts"),
-            suffix: oxpath!("test_now"),
+            prefix: path!("config", "gate", "accounts"),
+            suffix: path!("test_now"),
         };
-        assert!(pat.matches(&oxpath!("config", "gate", "accounts", "foo", "test_now")));
+        assert!(pat.matches(&path!("config", "gate", "accounts", "foo", "test_now")));
     }
 
     #[test]
     fn prefix_suffix_matches_named_account_instance() {
         let pat = PathPattern::PrefixSuffix {
-            prefix: oxpath!("config", "gate", "accounts"),
-            suffix: oxpath!("test_now"),
+            prefix: path!("config", "gate", "accounts"),
+            suffix: path!("test_now"),
         };
-        assert!(pat.matches(&oxpath!(
+        assert!(pat.matches(&path!(
             "config",
             "gate",
             "accounts",
@@ -354,12 +351,12 @@ mod tests {
     #[test]
     fn prefix_suffix_matches_multi_segment_instance() {
         let pat = PathPattern::PrefixSuffix {
-            prefix: oxpath!("config", "gate", "accounts"),
-            suffix: oxpath!("test_now"),
+            prefix: path!("config", "gate", "accounts"),
+            suffix: path!("test_now"),
         };
         // gap is `foo/bar` (2 segments) — also valid; the spec says
         // "at least one component between," so >= 1 not == 1.
-        assert!(pat.matches(&oxpath!(
+        assert!(pat.matches(&path!(
             "config", "gate", "accounts", "foo", "bar", "test_now"
         )));
     }
@@ -367,51 +364,51 @@ mod tests {
     #[test]
     fn prefix_suffix_does_not_match_with_no_instance_segment() {
         let pat = PathPattern::PrefixSuffix {
-            prefix: oxpath!("config", "gate", "accounts"),
-            suffix: oxpath!("test_now"),
+            prefix: path!("config", "gate", "accounts"),
+            suffix: path!("test_now"),
         };
         // No segment between `accounts` and `test_now` — must not match.
-        assert!(!pat.matches(&oxpath!("config", "gate", "accounts", "test_now")));
+        assert!(!pat.matches(&path!("config", "gate", "accounts", "test_now")));
     }
 
     #[test]
     fn prefix_suffix_does_not_match_wrong_suffix() {
         let pat = PathPattern::PrefixSuffix {
-            prefix: oxpath!("config", "gate", "accounts"),
-            suffix: oxpath!("test_now"),
+            prefix: path!("config", "gate", "accounts"),
+            suffix: path!("test_now"),
         };
-        assert!(!pat.matches(&oxpath!("config", "gate", "accounts", "foo", "refresh_now")));
+        assert!(!pat.matches(&path!("config", "gate", "accounts", "foo", "refresh_now")));
     }
 
     #[test]
     fn prefix_suffix_does_not_match_missing_suffix() {
         let pat = PathPattern::PrefixSuffix {
-            prefix: oxpath!("config", "gate", "accounts"),
-            suffix: oxpath!("test_now"),
+            prefix: path!("config", "gate", "accounts"),
+            suffix: path!("test_now"),
         };
-        assert!(!pat.matches(&oxpath!("config", "gate", "accounts", "foo")));
+        assert!(!pat.matches(&path!("config", "gate", "accounts", "foo")));
     }
 
     // ----- Empty-path edge cases -----
 
     #[test]
     fn exact_empty_matches_empty() {
-        let pat = PathPattern::Exact(oxpath!());
-        assert!(pat.matches(&oxpath!()));
+        let pat = PathPattern::Exact(path!());
+        assert!(pat.matches(&path!()));
     }
 
     #[test]
     fn exact_empty_does_not_match_nonempty() {
-        let pat = PathPattern::Exact(oxpath!());
-        assert!(!pat.matches(&oxpath!("foo")));
+        let pat = PathPattern::Exact(path!());
+        assert!(!pat.matches(&path!("foo")));
     }
 
     #[test]
     fn prefix_empty_matches_every_path() {
-        let pat = PathPattern::Prefix(oxpath!());
-        assert!(pat.matches(&oxpath!()));
-        assert!(pat.matches(&oxpath!("foo")));
-        assert!(pat.matches(&oxpath!("foo", "bar", "baz")));
+        let pat = PathPattern::Prefix(path!());
+        assert!(pat.matches(&path!()));
+        assert!(pat.matches(&path!("foo")));
+        assert!(pat.matches(&path!("foo", "bar", "baz")));
     }
 
     #[test]
@@ -422,31 +419,31 @@ mod tests {
         // does. This is the spec-specified surprising-but-consistent
         // behavior.
         let pat = PathPattern::PrefixSuffix {
-            prefix: oxpath!(),
-            suffix: oxpath!("x"),
+            prefix: path!(),
+            suffix: path!("x"),
         };
-        assert!(!pat.matches(&oxpath!("x")));
-        assert!(pat.matches(&oxpath!("foo", "x")));
-        assert!(pat.matches(&oxpath!("foo", "bar", "x")));
+        assert!(!pat.matches(&path!("x")));
+        assert!(pat.matches(&path!("foo", "x")));
+        assert!(pat.matches(&path!("foo", "bar", "x")));
     }
 
     // ----- Serde round-trip per variant -----
 
     #[test]
     fn path_pattern_exact_roundtrip() {
-        json_roundtrip(PathPattern::Exact(oxpath!("config", "gate", "accounts")));
+        json_roundtrip(PathPattern::Exact(path!("config", "gate", "accounts")));
     }
 
     #[test]
     fn path_pattern_prefix_roundtrip() {
-        json_roundtrip(PathPattern::Prefix(oxpath!("config", "gate", "accounts")));
+        json_roundtrip(PathPattern::Prefix(path!("config", "gate", "accounts")));
     }
 
     #[test]
     fn path_pattern_prefix_suffix_roundtrip() {
         json_roundtrip(PathPattern::PrefixSuffix {
-            prefix: oxpath!("config", "gate", "accounts"),
-            suffix: oxpath!("test_now"),
+            prefix: path!("config", "gate", "accounts"),
+            suffix: path!("test_now"),
         });
     }
 
@@ -494,8 +491,8 @@ mod tests {
         let s = sub(
             "two-pattern",
             vec![
-                PathPattern::Exact(oxpath!("a")),
-                PathPattern::Prefix(oxpath!("b")),
+                PathPattern::Exact(path!("a")),
+                PathPattern::Prefix(path!("b")),
             ],
         );
         reg.register(s);
@@ -505,20 +502,20 @@ mod tests {
     #[test]
     fn matching_returns_subs_whose_pattern_matches() {
         let mut reg = SubscriptionRegistry::new();
-        let a = sub("A", vec![PathPattern::Exact(oxpath!("p"))]);
-        let b = sub("B", vec![PathPattern::Prefix(oxpath!("q"))]);
+        let a = sub("A", vec![PathPattern::Exact(path!("p"))]);
+        let b = sub("B", vec![PathPattern::Prefix(path!("q"))]);
         reg.register(a);
         reg.register(b);
 
-        let m = reg.matching(&oxpath!("p"));
+        let m = reg.matching(&path!("p"));
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].id().0, "A");
 
-        let m = reg.matching(&oxpath!("q", "x"));
+        let m = reg.matching(&path!("q", "x"));
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].id().0, "B");
 
-        let m = reg.matching(&oxpath!("unrelated"));
+        let m = reg.matching(&path!("unrelated"));
         assert!(m.is_empty());
     }
 
@@ -526,12 +523,12 @@ mod tests {
     fn registration_order_is_stable() {
         let mut reg = SubscriptionRegistry::new();
         // Both subs match `p/x` via Prefix(p).
-        let a = sub("A", vec![PathPattern::Prefix(oxpath!("p"))]);
-        let b = sub("B", vec![PathPattern::Prefix(oxpath!("p"))]);
+        let a = sub("A", vec![PathPattern::Prefix(path!("p"))]);
+        let b = sub("B", vec![PathPattern::Prefix(path!("p"))]);
         reg.register(a);
         reg.register(b);
 
-        let m = reg.matching(&oxpath!("p", "x"));
+        let m = reg.matching(&path!("p", "x"));
         assert_eq!(m.len(), 2);
         assert_eq!(m[0].id().0, "A");
         assert_eq!(m[1].id().0, "B");
@@ -546,17 +543,17 @@ mod tests {
         let s = sub(
             "multi",
             vec![
-                PathPattern::Prefix(oxpath!("p")),
+                PathPattern::Prefix(path!("p")),
                 PathPattern::PrefixSuffix {
-                    prefix: oxpath!("p"),
-                    suffix: oxpath!("suffix"),
+                    prefix: path!("p"),
+                    suffix: path!("suffix"),
                 },
             ],
         );
         reg.register(s);
 
         // Path matches both Prefix(p) AND PrefixSuffix{p, suffix}.
-        let m = reg.matching(&oxpath!("p", "x", "suffix"));
+        let m = reg.matching(&path!("p", "x", "suffix"));
         assert_eq!(m.len(), 2, "two patterns match → two entries");
         assert_eq!(m[0].id().0, "multi");
         assert_eq!(m[1].id().0, "multi");

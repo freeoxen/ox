@@ -63,7 +63,7 @@ impl Renderer for IndexRenderer {
         // account's AddModelManual row.
         let manual_account: Option<String> = crate::settings::renderers::util::read_typed(
             ctx.data,
-            &ox_path::oxpath!("ui", "settings", "manual_model", "account"),
+            &structfs_core_store::path!("ui", "settings", "manual_model", "account"),
         );
 
         let ctx_state = SectionCtx {
@@ -88,7 +88,7 @@ impl Renderer for IndexRenderer {
         let pending: Option<String> = if confirm_delete_active {
             crate::settings::renderers::util::read_typed(
                 ctx.data,
-                &ox_path::oxpath!("ui", "settings", "pending_delete", "target_account"),
+                &structfs_core_store::path!("ui", "settings", "pending_delete", "target_account"),
             )
         } else {
             None
@@ -158,7 +158,7 @@ impl Renderer for IndexRenderer {
         // pulls from and project the whole thing through `View::Modal`.
         let show_shortcuts: bool = crate::settings::renderers::util::read_typed(
             ctx.data,
-            &ox_path::oxpath!("ui", "dialog", "show_shortcuts"),
+            &structfs_core_store::path!("ui", "dialog", "show_shortcuts"),
         )
         .unwrap_or(false);
         if show_shortcuts {
@@ -638,22 +638,22 @@ fn rows_to_list_items(rows: &[visible_rows::VisibleRow], ctx: &SectionCtx<'_>) -
             // `cursor` happens once per row, locally; no global "selected
             // index" needs to be threaded.
             let is_focused = ctx.cursor.map(|c| c == &row.path).unwrap_or(false);
-            if is_focused {
-                if let Some(spans) = selector_carousel_spans(
+            if is_focused
+                && let Some(spans) = selector_carousel_spans(
                     row,
                     &indent,
                     glyph,
                     ctx.protocol_options,
                     ctx.auth_current,
-                ) {
-                    return ListItem {
-                        primary: format!("{indent}{glyph}{}", row.label),
-                        primary_spans: Some(spans),
-                        secondary: row.secondary.clone(),
-                        badge: row.badge.clone(),
-                        focus: Some(FocusId(row.path.clone())),
-                    };
-                }
+                )
+            {
+                return ListItem {
+                    primary: format!("{indent}{glyph}{}", row.label),
+                    primary_spans: Some(spans),
+                    secondary: row.secondary.clone(),
+                    badge: row.badge.clone(),
+                    focus: Some(FocusId(row.path.clone())),
+                };
             }
             let label = decorate_row_label(row, ctx.edit_state);
             ListItem {
@@ -901,13 +901,13 @@ fn resolve_account_auth(
 
 fn read_cursor(data: &mut dyn structfs_core_store::Reader) -> Option<structfs_core_store::Path> {
     use crate::settings::commands::navigation::path_from_value;
-    use ox_path::oxpath;
+    use structfs_core_store::path;
 
     // Reads the focus cursor — the single cursor source of truth. The
     // renderer registry walks the focus cursor's ancestor chain to
     // find the page renderer (settings/index for the accordion).
     let r = data
-        .read(&oxpath!("ui", "settings", "focused"))
+        .read(&path!("ui", "settings", "focused"))
         .ok()
         .flatten()?;
     path_from_value(r.as_value()?)
@@ -918,10 +918,10 @@ fn read_cursor(data: &mut dyn structfs_core_store::Reader) -> Option<structfs_co
 /// persisted state, `None` otherwise. Reads the `config/_dirty`
 /// sentinel that ConfigStore exposes via its Reader impl.
 fn read_dirty_indicator(data: &mut dyn structfs_core_store::Reader) -> Option<String> {
-    use ox_path::oxpath;
     use structfs_core_store::Value;
+    use structfs_core_store::path;
     let dirty = data
-        .read(&oxpath!("config", "_dirty"))
+        .read(&path!("config", "_dirty"))
         .ok()
         .flatten()
         .and_then(|r| match r.as_value() {
@@ -942,7 +942,10 @@ pub fn register(reg: &mut RendererRegistry) {
     // from any focus value under `settings/*` — including the index
     // (`settings/index`), top-level rows (`settings/accounts`), and
     // compound widgets like `settings/_compose_form/name`.
-    reg.register(ox_path::oxpath!("settings"), Box::new(IndexRenderer));
+    reg.register(
+        structfs_core_store::path!("settings"),
+        Box::new(IndexRenderer),
+    );
 }
 
 #[cfg(test)]
@@ -951,8 +954,8 @@ mod tests {
 
     use horns_core::Rect;
     use ox_gate::AccountConfig;
-    use ox_path::oxpath;
     use ox_types::{BadgeSource, SettingsIndexEntry};
+    use structfs_core_store::path;
     use structfs_core_store::{Path, Value};
     use structfs_serde_store::to_value;
 
@@ -985,7 +988,7 @@ mod tests {
 
     fn write_index(snap: &mut SettingsSnapshot) {
         snap.insert(
-            &oxpath!("settings", "index", "entries", "accounts"),
+            &path!("settings", "index", "entries", "accounts"),
             to_value(&entry(
                 "accounts",
                 "Accounts",
@@ -995,7 +998,7 @@ mod tests {
             .unwrap(),
         );
         snap.insert(
-            &oxpath!("settings", "index", "entries", "models"),
+            &path!("settings", "index", "entries", "models"),
             to_value(&entry(
                 "models",
                 "Models",
@@ -1013,7 +1016,7 @@ mod tests {
     fn write_account(snap: &mut SettingsSnapshot, name: &str) {
         let comp = ox_kernel::PathComponent::try_new(name).unwrap();
         snap.insert(
-            &oxpath!("config", "gate", "accounts", comp, "provider"),
+            &path!("config", "gate", "accounts", comp, "provider"),
             Value::String(name.into()),
         );
     }
@@ -1155,7 +1158,7 @@ mod tests {
         write_account(&mut snap, "alpha");
         write_account(&mut snap, "beta");
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&["settings/accounts".to_string()]),
         );
         let (_title, items, _selected) = assert_list(render(&mut snap));
@@ -1191,7 +1194,7 @@ mod tests {
         write_index(&mut snap);
         write_account(&mut snap, "alpha");
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&[
                 "settings/accounts".to_string(),
                 "settings/accounts/alpha".to_string(),
@@ -1212,7 +1215,7 @@ mod tests {
         let mut snap = SettingsSnapshot::empty();
         write_index(&mut snap);
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&["settings/accounts".to_string()]),
         );
         let (_title, items, _selected) = assert_list(render(&mut snap));
@@ -1230,8 +1233,8 @@ mod tests {
         let mut snap = SettingsSnapshot::empty();
         write_index(&mut snap);
         snap.insert(
-            &oxpath!("ui", "settings", "focused"),
-            path_to_value(&oxpath!("settings", "models")),
+            &path!("ui", "settings", "focused"),
+            path_to_value(&path!("settings", "models")),
         );
         let (_title, _items, selected) = assert_list(render(&mut snap));
         assert_eq!(selected, Some(1));
@@ -1242,8 +1245,8 @@ mod tests {
         let mut snap = SettingsSnapshot::empty();
         write_index(&mut snap);
         snap.insert(
-            &oxpath!("ui", "settings", "focused"),
-            path_to_value(&oxpath!("nonsense")),
+            &path!("ui", "settings", "focused"),
+            path_to_value(&path!("nonsense")),
         );
         let (_title, _items, selected) = assert_list(render(&mut snap));
         assert_eq!(selected, None);
@@ -1276,7 +1279,7 @@ mod tests {
             registry: &reg,
             theme: &theme as &dyn std::any::Any,
         };
-        let view = reg.render(&oxpath!("settings", "index"), &mut ctx);
+        let view = reg.render(&path!("settings", "index"), &mut ctx);
         // Registry dispatches to IndexRenderer which now emits a
         // section-stack. Flatten to count the rendered rows the way
         // the old assertion did.
@@ -1293,7 +1296,7 @@ mod tests {
         use ox_types::ModelInfoSource;
         let comp = ox_kernel::PathComponent::try_new(name).unwrap();
         snap.insert(
-            &oxpath!("config", "gate", "accounts", comp.clone(), "provider"),
+            &path!("config", "gate", "accounts", comp.clone(), "provider"),
             Value::String(name.into()),
         );
         let models: Vec<ModelInfo> = ids
@@ -1307,7 +1310,7 @@ mod tests {
             })
             .collect();
         snap.insert(
-            &oxpath!("config", "gate", "accounts", comp, "models"),
+            &path!("config", "gate", "accounts", comp, "models"),
             to_value(&models).unwrap(),
         );
     }
@@ -1322,7 +1325,7 @@ mod tests {
         write_index(&mut snap);
         write_account(&mut snap, "alpha");
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&["settings/models".to_string()]),
         );
         let (_title, items, _selected) = assert_list(render(&mut snap));
@@ -1361,7 +1364,7 @@ mod tests {
         write_account_with_models(&mut snap, "alpha", &["m1"]);
         write_account(&mut snap, "beta");
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&["settings/models".to_string()]),
         );
         let (_title, items, _selected) = assert_list(render(&mut snap));
@@ -1390,7 +1393,7 @@ mod tests {
         write_account(&mut snap, "aaa");
         write_account_with_models(&mut snap, "bbb", &["m1"]);
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&[
                 "settings/accounts".to_string(),
                 "settings/models".to_string(),
@@ -1426,27 +1429,27 @@ mod tests {
         write_index(&mut snap);
         write_account(&mut snap, "alpha");
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&["settings/models".to_string()]),
         );
         snap.insert(
-            &oxpath!("ui", "settings", "manual_model", "account"),
+            &path!("ui", "settings", "manual_model", "account"),
             Value::String("alpha".into()),
         );
         snap.insert(
-            &oxpath!("ui", "settings", "focused"),
-            path_to_value(&oxpath!("settings", "_manual_model", "id")),
+            &path!("ui", "settings", "focused"),
+            path_to_value(&path!("settings", "_manual_model", "id")),
         );
         snap.insert(
-            &oxpath!("ui", "settings", "manual_model", "id"),
+            &path!("ui", "settings", "manual_model", "id"),
             Value::String("custom".into()),
         );
         snap.insert(
-            &oxpath!("ui", "settings", "manual_model", "ctx"),
+            &path!("ui", "settings", "manual_model", "ctx"),
             Value::String(String::new()),
         );
         snap.insert(
-            &oxpath!("ui", "settings", "manual_model", "out"),
+            &path!("ui", "settings", "manual_model", "out"),
             Value::String(String::new()),
         );
 
@@ -1487,7 +1490,7 @@ mod tests {
         write_index(&mut snap);
         let comp = ox_kernel::PathComponent::try_new("local").unwrap();
         snap.insert(
-            &oxpath!("config", "gate", "accounts", comp.clone()),
+            &path!("config", "gate", "accounts", comp.clone()),
             to_value(&AccountConfig {
                 provider: "LMStudio".into(),
                 ..Default::default()
@@ -1495,15 +1498,15 @@ mod tests {
             .unwrap(),
         );
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&[
                 "settings/accounts".to_string(),
                 "settings/accounts/local".to_string(),
             ]),
         );
         snap.insert(
-            &oxpath!("ui", "settings", "focused"),
-            path_to_value(&oxpath!("settings", "accounts", comp, "protocol")),
+            &path!("ui", "settings", "focused"),
+            path_to_value(&path!("settings", "accounts", comp, "protocol")),
         );
 
         let view = render(&mut snap);
@@ -1529,7 +1532,7 @@ mod tests {
         let mut snap = SettingsSnapshot::empty();
         write_index(&mut snap);
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&["settings/accounts".to_string()]),
         );
         snap
@@ -1542,19 +1545,19 @@ mod tests {
     fn snap_with_compose_active() -> SettingsSnapshot {
         let mut snap = snap_at_accounts_page();
         snap.insert(
-            &oxpath!("ui", "settings", "focused"),
-            path_to_value(&oxpath!("settings", "_compose_form", "name")),
+            &path!("ui", "settings", "focused"),
+            path_to_value(&path!("settings", "_compose_form", "name")),
         );
         for sub in ["name", "endpoint", "key"] {
             let comp = ox_kernel::PathComponent::try_new(sub).unwrap();
             snap.insert(
-                &oxpath!("ui", "settings", "new_account", comp),
+                &path!("ui", "settings", "new_account", comp),
                 Value::String(String::new()),
             );
         }
         for sub in ["protocol", "auth"] {
             let comp = ox_kernel::PathComponent::try_new(sub).unwrap();
-            snap.insert(&oxpath!("ui", "settings", "new_account", comp), Value::Null);
+            snap.insert(&path!("ui", "settings", "new_account", comp), Value::Null);
         }
         snap
     }
@@ -1651,7 +1654,7 @@ mod tests {
         let mut snap = SettingsSnapshot::empty();
         write_index(&mut snap);
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&["settings/accounts".to_string()]),
         );
         write_account(&mut snap, "alpha");
@@ -1712,7 +1715,7 @@ mod tests {
         write_index(&mut snap);
         write_account(&mut snap, "alpha"); // empty catalog
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&["settings/models".to_string()]),
         );
 
@@ -1747,12 +1750,12 @@ mod tests {
         write_index(&mut snap);
         write_account(&mut snap, "alpha");
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&["settings/accounts".to_string()]),
         );
         snap.insert(
-            &oxpath!("ui", "settings", "focused"),
-            path_to_value(&oxpath!("settings", "accounts", "alpha")),
+            &path!("ui", "settings", "focused"),
+            path_to_value(&path!("settings", "accounts", "alpha")),
         );
 
         let view = render(&mut snap);
@@ -1813,7 +1816,7 @@ mod tests {
         write_account(&mut snap, "aaa");
         write_account_with_models(&mut snap, "bbb", &["m1"]);
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&[
                 "settings/accounts".to_string(),
                 "settings/models".to_string(),
@@ -1888,8 +1891,8 @@ mod tests {
             };
             let comp = ox_kernel::PathComponent::try_new(subpath).unwrap();
             snap.insert(
-                &oxpath!("ui", "settings", "focused"),
-                path_to_value(&oxpath!("settings", "_compose_form", comp)),
+                &path!("ui", "settings", "focused"),
+                path_to_value(&path!("settings", "_compose_form", comp)),
             );
             let view = render(&mut snap);
             let (_rows, focused) = extract_form(view).expect("Form present");
@@ -1908,7 +1911,7 @@ mod tests {
             ..Default::default()
         };
         snap.insert(
-            &oxpath!("ui", "settings", "new_account", "errors"),
+            &path!("ui", "settings", "new_account", "errors"),
             to_value(&errors).unwrap(),
         );
         let view = render(&mut snap);
@@ -1940,7 +1943,7 @@ mod tests {
         use horns_core::view::FormValue;
         let mut snap = snap_with_compose_active();
         snap.insert(
-            &oxpath!("ui", "settings", "new_account", "key"),
+            &path!("ui", "settings", "new_account", "key"),
             Value::String("sk-secret".into()),
         );
         let view = render(&mut snap);
@@ -2018,7 +2021,7 @@ mod tests {
         let mut snap = SettingsSnapshot::empty();
         write_index(&mut snap);
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&["settings/accounts".to_string()]),
         );
         write_account(&mut snap, "alpha");
@@ -2045,7 +2048,7 @@ mod tests {
         use horns_core::view::FormValue;
         let mut snap = snap_with_compose_active();
         snap.insert(
-            &oxpath!("ui", "settings", "new_account", "protocol"),
+            &path!("ui", "settings", "new_account", "protocol"),
             Value::String("anthropic".into()),
         );
         let view = render(&mut snap);

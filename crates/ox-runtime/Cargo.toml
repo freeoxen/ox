@@ -2,14 +2,13 @@
 name = "ox-runtime"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version.workspace = true
 license = "Apache-2.0"
 description = "Wasmtime-based agent runtime for ox"
 
 [dependencies]
 tracing = { workspace = true }
 ox-kernel = { workspace = true }
-ox-path = { workspace = true }
 ox-context = { workspace = true }
 ox-history = { workspace = true }
 ox-gate = { workspace = true }

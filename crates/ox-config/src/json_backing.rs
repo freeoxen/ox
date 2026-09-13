@@ -43,7 +43,7 @@ impl ox_store_util::StoreBacking for JsonFileBacking {
                 "expected Value::Map",
             ));
         };
-        let json = structfs_serde_store::value_to_json(value.clone());
+        let json = structfs_serde_store::value_to_json(value.clone())?;
         let content = serde_json::to_string_pretty(&json)
             .map_err(|e| StoreError::store("json_backing", "save", e.to_string()))?;
 

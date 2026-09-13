@@ -3,14 +3,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use ox_broker::async_store::{AsyncReader, AsyncWriter, BoxFuture};
+use ox_broker::async_store::BoxFuture;
 use ox_structfs_transport::{KnownHosts, load_private_identity};
 use russh::client;
 use russh::keys::{PrivateKeyWithHashAlg, PublicKeyOrCertificate};
 use russh::{ChannelMsg, Disconnect};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use structfs_core_store::{Error as StoreError, Path, Record};
+use structfs_core_store::{DetachedReader, DetachedWriter, Error as StoreError, Path, Record};
 use thiserror::Error;
 
 const MAX_PROVIDER_OUTPUT: usize = 1024 * 1024;
@@ -127,7 +127,7 @@ impl VmSpec {
             || self.cpu > 128
             || self.memory_mib < 256
             || self.memory_mib > 1_048_576
-            || self.memory_mib % 1024 != 0
+            || !self.memory_mib.is_multiple_of(1024)
             || self.disk_gib == 0
             || self.disk_gib > 65_536
         {
@@ -449,10 +449,10 @@ fn map_command_error(error: CommandError) -> ExeError {
     }
 }
 
-impl AsyncReader for ExeControlStore {
-    fn read(&mut self, from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
+impl DetachedReader for ExeControlStore {
+    fn read_detached(&mut self, from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
         let this = self.clone();
-        let components: Vec<String> = from.iter().cloned().collect();
+        let components: Vec<String> = from.iter().map(str::to_owned).collect();
         Box::pin(async move {
             let value = match components.as_slice() {
                 [identity] if identity == "identity" => serde_json::to_value(
@@ -489,13 +489,13 @@ impl AsyncReader for ExeControlStore {
     }
 }
 
-impl AsyncWriter for ExeControlStore {
-    fn write(&mut self, to: &Path, data: Record) -> BoxFuture<Result<Path, StoreError>> {
+impl DetachedWriter for ExeControlStore {
+    fn write_detached(&mut self, to: &Path, data: Record) -> BoxFuture<Result<Path, StoreError>> {
         let this = self.clone();
         let target = to.clone();
         Box::pin(async move {
             let json = record_json(data)?;
-            let components: Vec<String> = target.iter().cloned().collect();
+            let components: Vec<String> = target.iter().map(str::to_owned).collect();
             match components.as_slice() {
                 [vms] if vms == "vms" => {
                     let spec: VmSpec = serde_json::from_value(json).map_err(|error| {
@@ -539,7 +539,7 @@ fn record_json(record: Record) -> Result<JsonValue, StoreError> {
         .as_value()
         .cloned()
         .ok_or_else(|| StoreError::store("ExeControlStore", "decode", "expected parsed record"))?;
-    Ok(structfs_serde_store::value_to_json(value))
+    structfs_serde_store::value_to_json(value)
 }
 
 #[derive(Deserialize)]

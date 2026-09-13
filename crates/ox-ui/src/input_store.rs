@@ -13,9 +13,9 @@
 
 use std::collections::BTreeMap;
 
-use ox_path::oxpath;
 use ox_types::CommandName;
 use ox_types::ui::{Mode, Screen};
+use structfs_core_store::path;
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer};
 
 // ---------------------------------------------------------------------------
@@ -153,14 +153,14 @@ impl InputStore {
                         format!("failed to serialize invocation: {e}"),
                     )
                 })?;
-                let target = oxpath!("command", "invoke");
+                let target = path!("command", "invoke");
                 let dispatcher = self.dispatcher.as_mut().ok_or_else(|| {
                     StoreError::store("input", "dispatch", "no dispatcher configured")
                 })?;
                 dispatcher(&target, Record::parsed(inv_value))
             }
             Action::Macro(steps) => {
-                let mut last_result = oxpath!();
+                let mut last_result = path!();
                 for step in steps {
                     last_result = self.execute_action(step, event_context)?;
                 }
@@ -255,8 +255,8 @@ impl InputStore {
         let args = match map.get("args") {
             Some(Value::Map(m)) => m
                 .iter()
-                .map(|(k, v)| (k.clone(), structfs_serde_store::value_to_json(v.clone())))
-                .collect(),
+                .map(|(k, v)| Ok((k.clone(), structfs_serde_store::value_to_json(v.clone())?)))
+                .collect::<Result<_, StoreError>>()?,
             _ => BTreeMap::new(),
         };
 
@@ -266,7 +266,7 @@ impl InputStore {
             description,
             status_hint: false,
         });
-        Ok(oxpath!("bindings"))
+        Ok(path!("bindings"))
     }
 
     fn handle_unbind(&mut self, value: &Value) -> Result<Path, StoreError> {
@@ -289,7 +289,7 @@ impl InputStore {
         if self.bindings.len() == before {
             return Err(StoreError::store("input", "unbind", "binding not found"));
         }
-        Ok(oxpath!("bindings"))
+        Ok(path!("bindings"))
     }
 
     fn handle_macro_bind(&mut self, value: &Value) -> Result<Path, StoreError> {
@@ -341,8 +341,8 @@ impl InputStore {
             let args = match step_map.get("args") {
                 Some(Value::Map(m)) => m
                     .iter()
-                    .map(|(k, v)| (k.clone(), structfs_serde_store::value_to_json(v.clone())))
-                    .collect(),
+                    .map(|(k, v)| Ok((k.clone(), structfs_serde_store::value_to_json(v.clone())?)))
+                    .collect::<Result<_, StoreError>>()?,
                 _ => BTreeMap::new(),
             };
             steps.push(Action::Invoke { command, args });
@@ -356,7 +356,7 @@ impl InputStore {
             description,
             status_hint: false,
         });
-        Ok(oxpath!("bindings"))
+        Ok(path!("bindings"))
     }
 }
 
@@ -383,15 +383,15 @@ impl Reader for InputStore {
                 self.bindings_matching(None, None),
             )))),
             // "bindings" → all bindings
-            1 if from[0] == "bindings" => Ok(Some(Record::parsed(Value::Array(
+            1 if &from[0] == "bindings" => Ok(Some(Record::parsed(Value::Array(
                 self.bindings_matching(None, None),
             )))),
             // "bindings/{mode}" → bindings for mode
-            2 if from[0] == "bindings" => Ok(Some(Record::parsed(Value::Array(
+            2 if &from[0] == "bindings" => Ok(Some(Record::parsed(Value::Array(
                 self.bindings_matching(Some(&from[1]), None),
             )))),
             // "bindings/{mode}/{screen}" → bindings for mode+screen
-            3 if from[0] == "bindings" => Ok(Some(Record::parsed(Value::Array(
+            3 if &from[0] == "bindings" => Ok(Some(Record::parsed(Value::Array(
                 self.bindings_matching(Some(&from[1]), Some(&from[2])),
             )))),
             _ => Ok(None),
@@ -405,7 +405,7 @@ impl Reader for InputStore {
 
 impl Writer for InputStore {
     fn write(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
-        let action = if to.is_empty() { "" } else { to[0].as_str() };
+        let action = if to.is_empty() { "" } else { &to[0] };
         let value = data.as_value().ok_or_else(|| {
             StoreError::store("input", "write", "write data must contain a value")
         })?;
@@ -666,8 +666,8 @@ mod tests {
             .write(&path!("key"), key_event("normal", "z", "inbox"))
             .expect("unbound is Ok with an `unbound/<mode>` path");
         assert_eq!(path.len(), 2);
-        assert_eq!(path[0].as_str(), "unbound");
-        assert_eq!(path[1].as_str(), "normal");
+        assert_eq!(&path[0], "unbound");
+        assert_eq!(&path[1], "normal");
     }
 
     // -- Macro tests --

@@ -117,21 +117,21 @@ impl ThreadShell {
         target: crate::action_executor::SendTarget,
     ) {
         use crate::editor::submit_editor_content;
-        use ox_path::oxpath;
         use ox_types::UiCommand;
+        use structfs_core_store::path;
 
         let new_tid = submit_editor_content(&mut self.input_session, app, client, target).await;
         // Only auto-navigate to the new thread if we're already on a thread
         // screen (reply). Compose from inbox stays on the inbox.
-        if let Some(tid) = new_tid {
-            if matches!(&ui.screen, ScreenSnapshot::Thread(_)) {
-                let _ = client
-                    .write_typed(
-                        &oxpath!("ui"),
-                        &UiCommand::Global(ox_types::GlobalCommand::Open { thread_id: tid }),
-                    )
-                    .await;
-            }
+        if let Some(tid) = new_tid
+            && matches!(&ui.screen, ScreenSnapshot::Thread(_))
+        {
+            let _ = client
+                .write_typed(
+                    &path!("ui"),
+                    &UiCommand::Global(ox_types::GlobalCommand::Open { thread_id: tid }),
+                )
+                .await;
         }
     }
 }
@@ -177,8 +177,8 @@ pub(crate) async fn dispatch_global_mouse(
     kind: MouseEventKind,
     scroll_lines: u16,
 ) {
-    use ox_path::oxpath;
     use ox_types::{InboxCommand, ThreadCommand, UiCommand};
+    use structfs_core_store::path;
 
     // Pending approval no longer blocks scroll — the approval card is
     // inline and the user is expected to be able to scroll the
@@ -194,12 +194,12 @@ pub(crate) async fn dispatch_global_mouse(
             if has_active_thread {
                 for _ in 0..scroll_lines {
                     let _ = client
-                        .write_typed(&oxpath!("ui"), &UiCommand::Thread(ThreadCommand::ScrollUp))
+                        .write_typed(&path!("ui"), &UiCommand::Thread(ThreadCommand::ScrollUp))
                         .await;
                 }
             } else {
                 let _ = client
-                    .write_typed(&oxpath!("ui"), &UiCommand::Inbox(InboxCommand::SelectPrev))
+                    .write_typed(&path!("ui"), &UiCommand::Inbox(InboxCommand::SelectPrev))
                     .await;
             }
         }
@@ -207,15 +207,12 @@ pub(crate) async fn dispatch_global_mouse(
             if has_active_thread {
                 for _ in 0..scroll_lines {
                     let _ = client
-                        .write_typed(
-                            &oxpath!("ui"),
-                            &UiCommand::Thread(ThreadCommand::ScrollDown),
-                        )
+                        .write_typed(&path!("ui"), &UiCommand::Thread(ThreadCommand::ScrollDown))
                         .await;
                 }
             } else {
                 let _ = client
-                    .write_typed(&oxpath!("ui"), &UiCommand::Inbox(InboxCommand::SelectNext))
+                    .write_typed(&path!("ui"), &UiCommand::Inbox(InboxCommand::SelectNext))
                     .await;
             }
         }

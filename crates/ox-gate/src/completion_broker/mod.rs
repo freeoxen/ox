@@ -24,11 +24,13 @@ pub(crate) use inflight::{Inflight, InflightState};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use ox_broker::async_store::{AsyncReader, AsyncWriter, BoxFuture};
-use structfs_core_store::{Error as StoreError, Path, Record, Value};
+use ox_broker::async_store::BoxFuture;
+use structfs_core_store::{
+    DetachedReader, DetachedWriter, Error as StoreError, Path, Record, Value,
+};
 use tokio::runtime::Handle as TokioHandle;
 
-// Used in the AsyncWriter impl for deserializing the inbound record.
+// Used in the DetachedWriter impl for deserializing the inbound record.
 #[allow(unused_imports)]
 use structfs_serde_store;
 
@@ -39,7 +41,7 @@ pub type RequestId = u64;
 /// the broker Block the runner spawns; this store is only the mechanics.
 pub struct CompletionBrokerStore {
     /// In-memory in-flight tracker. Per-request state has its own Notify.
-    /// No outer Mutex needed — AsyncReader/AsyncWriter give us &mut self.
+    /// No outer Mutex needed — DetachedReader/DetachedWriter give us &mut self.
     pub(crate) handles: HashMap<RequestId, Arc<Inflight>>,
 
     /// Cancellation for each request's Block run; GC triggers it so a
@@ -59,7 +61,8 @@ pub struct CompletionBrokerStore {
 }
 
 /// Per-request Block entry point: (inflight id, cancellation for the run).
-pub type BlockRunner = Arc<dyn Fn(RequestId, CancelHandle) + Send + Sync>;
+pub type BlockRunner =
+    Arc<dyn Fn(RequestId, CancelHandle) -> BoxFuture<Result<(), String>> + Send + Sync>;
 
 impl CompletionBrokerStore {
     pub fn new(runtime: TokioHandle, runner: BlockRunner) -> Self {
@@ -75,17 +78,17 @@ impl CompletionBrokerStore {
     /// Parse `outstanding/{id}[/sub/...]` path. Returns the request id
     /// and any sub-path as a `/`-joined string.
     pub(crate) fn parse_handle_path(path: &Path) -> Option<(RequestId, Option<String>)> {
-        if path.is_empty() || path[0].as_str() != "outstanding" {
+        if path.is_empty() || &path[0] != "outstanding" {
             return None;
         }
         if path.len() == 1 {
             return None;
         }
-        let id: RequestId = path[1].as_str().parse().ok()?;
+        let id: RequestId = path[1].parse().ok()?;
         let sub = if path.len() > 2 {
             Some(
                 (2..path.len())
-                    .map(|i| path[i].as_str())
+                    .map(|i| &path[i])
                     .collect::<Vec<_>>()
                     .join("/"),
             )
@@ -96,8 +99,8 @@ impl CompletionBrokerStore {
     }
 }
 
-impl AsyncReader for CompletionBrokerStore {
-    fn read(&mut self, from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
+impl DetachedReader for CompletionBrokerStore {
+    fn read_detached(&mut self, from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
         // Root descriptor map.
         if from.is_empty() {
             let mut map = std::collections::BTreeMap::new();
@@ -110,12 +113,12 @@ impl AsyncReader for CompletionBrokerStore {
         }
 
         // /docs
-        if from.len() == 1 && from[0].as_str() == "docs" {
+        if from.len() == 1 && &from[0] == "docs" {
             return Box::pin(async move { Ok(Some(Record::parsed(docs_value()))) });
         }
 
         // /outstanding listing
-        if from.len() == 1 && from[0].as_str() == "outstanding" {
+        if from.len() == 1 && &from[0] == "outstanding" {
             let items: Vec<Value> = self
                 .handles
                 .keys()
@@ -234,7 +237,7 @@ fn docs_value() -> Value {
     structfs_serde_store::json_to_value(json)
 }
 
-/// `AsyncWriter` for `CompletionBrokerStore`.
+/// `DetachedWriter` for `CompletionBrokerStore`.
 ///
 /// Two legal write shapes:
 ///
@@ -245,8 +248,8 @@ fn docs_value() -> Value {
 ///    returns the same path.
 ///
 /// All other paths and non-null writes to existing handles are errors.
-impl AsyncWriter for CompletionBrokerStore {
-    fn write(&mut self, to: &Path, data: Record) -> BoxFuture<Result<Path, StoreError>> {
+impl DetachedWriter for CompletionBrokerStore {
+    fn write_detached(&mut self, to: &Path, data: Record) -> BoxFuture<Result<Path, StoreError>> {
         let to = to.clone();
 
         // GC: write null to outstanding/{N}
@@ -310,7 +313,23 @@ impl AsyncWriter for CompletionBrokerStore {
             // pool — wasm execution plus blocking substrate reads must
             // not park an async worker.
             let runner = self.runner.clone();
-            self.runtime.spawn_blocking(move || runner(id, cancel));
+            let inflight = self.handles[&id].clone();
+            self.runtime.spawn(async move {
+                let outcome = runner(id, cancel).await;
+                let mut state = inflight.state.lock().await;
+                if !state.status.is_terminal() {
+                    state.status = CompletionStatus::Failed {
+                        account: String::new(),
+                        model_id: String::new(),
+                        reason: outcome
+                            .err()
+                            .unwrap_or_else(|| "broker exited without terminal status".into()),
+                        failed_at_ms: 0,
+                    };
+                    drop(state);
+                    inflight.notify.notify_waiters();
+                }
+            });
 
             let path = Path::try_from_components(vec!["outstanding".to_string(), id.to_string()])
                 .map_err(|e| StoreError::store("completion_broker", "write", e.to_string()));
@@ -452,7 +471,6 @@ mod mechanics_tests {
     use super::*;
     use ox_broker::BrokerStore;
     use ox_kernel::CompletionRequest;
-    use ox_path::oxpath;
     use ox_types::StreamEvent;
     use std::time::Duration;
     use structfs_core_store::path;
@@ -483,40 +501,44 @@ mod mechanics_tests {
         let store = CompletionBrokerStore::new(
             runtime.clone(),
             Arc::new(move |id, _cancel| {
-                let base = format!("gateway/completions/outstanding/{id}");
-                runtime.block_on(async {
-                    let req: CompletionRequest = runner_client
-                        .read_typed(&Path::parse(&format!("{base}/request")).unwrap())
-                        .await
-                        .unwrap()
-                        .expect("queued request must be readable");
-                    assert_eq!(req.max_tokens, 10);
-                    runner_client
-                        .write_typed(
-                            &Path::parse(&format!("{base}/push")).unwrap(),
-                            &vec![
-                                StreamEvent::TextDelta { text: "hi".into() },
-                                StreamEvent::MessageStop,
-                            ],
-                        )
-                        .await
-                        .unwrap();
-                    runner_client
-                        .write_typed(
-                            &Path::parse(&format!("{base}/status")).unwrap(),
-                            &CompletionStatus::Complete {
-                                account: "anthropic".into(),
-                                model_id: "claude-sonnet-4-20250514".into(),
-                                completed_at_ms: 0,
-                            },
-                        )
-                        .await
-                        .unwrap();
-                });
+                let runner_client = runner_client.clone();
+                Box::pin(async move {
+                    let base = format!("gateway/completions/outstanding/{id}");
+                    {
+                        let req: CompletionRequest = runner_client
+                            .read_typed(&Path::parse(&format!("{base}/request")).unwrap())
+                            .await
+                            .unwrap()
+                            .expect("queued request must be readable");
+                        assert_eq!(req.max_tokens, 10);
+                        runner_client
+                            .write_typed(
+                                &Path::parse(&format!("{base}/push")).unwrap(),
+                                &vec![
+                                    StreamEvent::TextDelta { text: "hi".into() },
+                                    StreamEvent::MessageStop,
+                                ],
+                            )
+                            .await
+                            .unwrap();
+                        runner_client
+                            .write_typed(
+                                &Path::parse(&format!("{base}/status")).unwrap(),
+                                &CompletionStatus::Complete {
+                                    account: "anthropic".into(),
+                                    model_id: "claude-sonnet-4-20250514".into(),
+                                    completed_at_ms: 0,
+                                },
+                            )
+                            .await
+                            .unwrap();
+                    }
+                    Ok(())
+                })
             }),
         );
         broker
-            .mount_async(oxpath!("gateway", "completions"), store)
+            .mount_async(path!("gateway", "completions"), store)
             .await;
 
         let handle_path = client
@@ -551,17 +573,19 @@ mod mechanics_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_null_to_outstanding_gc_removes_handle() {
-        let mut store =
-            CompletionBrokerStore::new(tokio::runtime::Handle::current(), Arc::new(|_, _| {}));
+        let mut store = CompletionBrokerStore::new(
+            tokio::runtime::Handle::current(),
+            Arc::new(|_, _| Box::pin(async { Ok(()) })),
+        );
         let value = to_value(&request()).unwrap();
         let handle_path = store
-            .write(&path!(""), Record::parsed(value))
+            .write_detached(&path!(""), Record::parsed(value))
             .await
             .unwrap();
         assert_eq!(store.handles.len(), 1);
 
         let gc_result = store
-            .write(&handle_path, Record::parsed(Value::Null))
+            .write_detached(&handle_path, Record::parsed(Value::Null))
             .await
             .unwrap();
         assert_eq!(gc_result, handle_path);

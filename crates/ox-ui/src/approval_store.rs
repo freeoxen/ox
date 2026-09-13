@@ -4,9 +4,11 @@
 //! future blocks until the TUI writes to "response" with a decision.
 //! The TUI reads "pending" to discover the current request.
 
-use ox_broker::async_store::{AsyncReader, AsyncWriter, BoxFuture};
+use ox_broker::async_store::BoxFuture;
 use ox_types::ApprovalRequest;
-use structfs_core_store::{Error as StoreError, Path, Record, Value};
+use structfs_core_store::{
+    DetachedReader, DetachedWriter, Error as StoreError, Path, Record, Value,
+};
 
 pub struct ApprovalStore {
     pending: Option<ApprovalRequest>,
@@ -38,13 +40,9 @@ impl Default for ApprovalStore {
     }
 }
 
-impl AsyncReader for ApprovalStore {
-    fn read(&mut self, from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
-        let key = if from.is_empty() {
-            ""
-        } else {
-            from[0].as_str()
-        };
+impl DetachedReader for ApprovalStore {
+    fn read_detached(&mut self, from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
+        let key = if from.is_empty() { "" } else { &from[0] };
         let result = match key {
             "pending" => match &self.pending {
                 Some(req) => match structfs_serde_store::to_value(req) {
@@ -59,9 +57,9 @@ impl AsyncReader for ApprovalStore {
     }
 }
 
-impl AsyncWriter for ApprovalStore {
-    fn write(&mut self, to: &Path, data: Record) -> BoxFuture<Result<Path, StoreError>> {
-        let action = if to.is_empty() { "" } else { to[0].as_str() };
+impl DetachedWriter for ApprovalStore {
+    fn write_detached(&mut self, to: &Path, data: Record) -> BoxFuture<Result<Path, StoreError>> {
+        let action = if to.is_empty() { "" } else { &to[0] };
         let value = match data.as_value() {
             Some(v) => v.clone(),
             None => {
@@ -154,7 +152,11 @@ mod tests {
     #[tokio::test]
     async fn initial_state_has_no_pending() {
         let mut store = ApprovalStore::new();
-        let pending = store.read(&path!("pending")).await.unwrap().unwrap();
+        let pending = store
+            .read_detached(&path!("pending"))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(pending.as_value().unwrap(), &Value::Null);
     }
 
@@ -168,10 +170,14 @@ mod tests {
         map.insert("tool_input".to_string(), Value::Map(input_map));
 
         // Write request — capture the deferred future but don't await yet
-        let deferred = store.write(&path!("request"), Record::parsed(Value::Map(map)));
+        let deferred = store.write_detached(&path!("request"), Record::parsed(Value::Map(map)));
 
         // Pending should be set
-        let pending = store.read(&path!("pending")).await.unwrap().unwrap();
+        let pending = store
+            .read_detached(&path!("pending"))
+            .await
+            .unwrap()
+            .unwrap();
         let m = match pending.as_value().unwrap() {
             Value::Map(m) => m,
             _ => panic!("expected map"),
@@ -183,7 +189,7 @@ mod tests {
 
         // Write response to unblock
         store
-            .write(
+            .write_detached(
                 &path!("response"),
                 Record::parsed(
                     structfs_serde_store::to_value(&ox_types::ApprovalResponse {
@@ -206,10 +212,10 @@ mod tests {
         let mut map = BTreeMap::new();
         map.insert("tool_name".to_string(), Value::String("bash".to_string()));
         map.insert("tool_input".to_string(), Value::Map(BTreeMap::new()));
-        let _deferred = store.write(&path!("request"), Record::parsed(Value::Map(map)));
+        let _deferred = store.write_detached(&path!("request"), Record::parsed(Value::Map(map)));
 
         store
-            .write(
+            .write_detached(
                 &path!("response"),
                 Record::parsed(
                     structfs_serde_store::to_value(&ox_types::ApprovalResponse {
@@ -222,11 +228,15 @@ mod tests {
             .unwrap();
 
         // Pending is cleared
-        let pending = store.read(&path!("pending")).await.unwrap().unwrap();
+        let pending = store
+            .read_detached(&path!("pending"))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(pending.as_value().unwrap(), &Value::Null);
 
         let duplicate = store
-            .write(
+            .write_detached(
                 &path!("response"),
                 Record::parsed(
                     structfs_serde_store::to_value(&ox_types::ApprovalResponse {
@@ -247,13 +257,15 @@ mod tests {
         let mut map = BTreeMap::new();
         map.insert("tool_name".to_string(), Value::String("bash".to_string()));
         map.insert("tool_input".to_string(), Value::Map(BTreeMap::new()));
-        let first_deferred = store.write(&path!("request"), Record::parsed(Value::Map(map)));
+        let first_deferred =
+            store.write_detached(&path!("request"), Record::parsed(Value::Map(map)));
 
         // Second request overwrites; first sender is dropped
         let mut map2 = BTreeMap::new();
         map2.insert("tool_name".to_string(), Value::String("write".to_string()));
         map2.insert("tool_input".to_string(), Value::Map(BTreeMap::new()));
-        let _second_deferred = store.write(&path!("request"), Record::parsed(Value::Map(map2)));
+        let _second_deferred =
+            store.write_detached(&path!("request"), Record::parsed(Value::Map(map2)));
 
         // The first deferred should error (sender dropped)
         let result = first_deferred.await;
@@ -270,7 +282,7 @@ mod tests {
         let mut input = BTreeMap::new();
         input.insert("command".to_string(), Value::String("ls".to_string()));
         map.insert("tool_input".to_string(), Value::Map(input));
-        let _deferred = store.write(&path!("request"), Record::parsed(Value::Map(map)));
+        let _deferred = store.write_detached(&path!("request"), Record::parsed(Value::Map(map)));
 
         assert_eq!(store.pending_tool_name(), Some("bash".to_string()));
     }

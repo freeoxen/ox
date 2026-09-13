@@ -556,9 +556,9 @@ impl InboxStore {
     }
 
     pub(crate) fn worker_read_path(&self, from: &Path) -> Result<Option<Record>, StoreError> {
-        let segments: Vec<&String> = from.iter().collect();
+        let segments: Vec<&str> = from.iter().collect();
         match segments.as_slice() {
-            [worker, pending] if worker.as_str() == "worker" && pending.as_str() == "pending" => {
+            [worker, pending] if *worker == "worker" && *pending == "pending" => {
                 Ok(Some(Record::parsed(Value::Array(
                     self.pending_worker_intents()?
                         .into_iter()
@@ -567,24 +567,20 @@ impl InboxStore {
                 ))))
             }
             [worker, pending, messages, thread_id]
-                if worker.as_str() == "worker"
-                    && pending.as_str() == "pending"
-                    && messages.as_str() == "messages" =>
+                if *worker == "worker" && *pending == "pending" && *messages == "messages" =>
             {
                 Ok(Some(Record::parsed(Value::Integer(
                     self.pending_worker_message_count(thread_id)? as i64,
                 ))))
             }
             [worker, reserved, threads]
-                if worker.as_str() == "worker"
-                    && reserved.as_str() == "reserved"
-                    && threads.as_str() == "threads" =>
+                if *worker == "worker" && *reserved == "reserved" && *threads == "threads" =>
             {
                 Ok(Some(Record::parsed(Value::Integer(
                     self.reserved_worker_thread_count()? as i64,
                 ))))
             }
-            [worker, kind, id] if worker.as_str() == "worker" => Ok(self
+            [worker, kind, id] if *worker == "worker" => Ok(self
                 .worker_intent(parse_kind(kind)?, &decode_id(id)?)?
                 .map(|intent| Record::parsed(intent.to_value()))),
             _ => Ok(None),
@@ -596,41 +592,33 @@ impl InboxStore {
         to: &Path,
         data: &Record,
     ) -> Result<Option<Path>, StoreError> {
-        let segments: Vec<&String> = to.iter().collect();
+        let segments: Vec<&str> = to.iter().collect();
         let value = data
             .as_value()
             .cloned()
             .ok_or_else(|| err("worker_write", "expected parsed record"))?;
         let accepted = match segments.as_slice() {
-            [worker, creates] if worker.as_str() == "worker" && creates.as_str() == "creates" => {
+            [worker, creates] if *worker == "worker" && *creates == "creates" => {
                 let envelope: CreateEnvelope = structfs_serde_store::from_value(value)
                     .map_err(|error| err("worker_create", error))?;
                 self.accept_worker_create(&envelope)?
             }
-            [worker, messages, thread_id]
-                if worker.as_str() == "worker" && messages.as_str() == "messages" =>
-            {
+            [worker, messages, thread_id] if *worker == "worker" && *messages == "messages" => {
                 let envelope: PromptEnvelope = structfs_serde_store::from_value(value)
                     .map_err(|error| err("worker_message", error))?;
                 self.accept_worker_message(thread_id, &envelope)?
             }
-            [worker, decisions, thread_id]
-                if worker.as_str() == "worker" && decisions.as_str() == "decisions" =>
-            {
+            [worker, decisions, thread_id] if *worker == "worker" && *decisions == "decisions" => {
                 let envelope: DecisionEnvelope = structfs_serde_store::from_value(value)
                     .map_err(|error| err("worker_decision", error))?;
                 self.accept_worker_decision(thread_id, &envelope)?
             }
-            [worker, cancels, thread_id]
-                if worker.as_str() == "worker" && cancels.as_str() == "cancels" =>
-            {
+            [worker, cancels, thread_id] if *worker == "worker" && *cancels == "cancels" => {
                 let envelope: CancelEnvelope = structfs_serde_store::from_value(value)
                     .map_err(|error| err("worker_cancel", error))?;
                 self.accept_worker_cancel(thread_id, &envelope)?
             }
-            [worker, kind, id, applied]
-                if worker.as_str() == "worker" && applied.as_str() == "applied" =>
-            {
+            [worker, kind, id, applied] if *worker == "worker" && *applied == "applied" => {
                 let result_path = match data.as_value() {
                     Some(Value::String(path)) => path,
                     _ => return Err(err("worker_mark_applied", "expected result path string")),

@@ -1,9 +1,7 @@
 use std::sync::Arc;
 
-use ox_broker::async_store::{
-    AsyncReader as BrokerAsyncReader, AsyncWriter as BrokerAsyncWriter, BoxFuture,
-};
-use structfs_core_store::{Error as StoreError, Path, Record};
+use ox_broker::async_store::BoxFuture;
+use structfs_core_store::{DetachedReader, DetachedWriter, Error as StoreError, Path, Record};
 use tokio::sync::Mutex;
 
 /// One immutable, path-confined Store root shared by transport connections.
@@ -39,7 +37,7 @@ impl<S> Clone for ExportRoot<S> {
 
 impl<S> ExportRoot<S>
 where
-    S: BrokerAsyncReader + BrokerAsyncWriter + Send + 'static,
+    S: DetachedReader + DetachedWriter + Send + 'static,
 {
     pub fn read(&self, relative: Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
         let store = self.store.clone();
@@ -47,7 +45,7 @@ where
         Box::pin(async move {
             let future = {
                 let mut store = store.lock().await;
-                store.read(&path)
+                store.read_detached(&path)
             };
             future.await
         })
@@ -60,7 +58,7 @@ where
         Box::pin(async move {
             let future = {
                 let mut store = store.lock().await;
-                store.write(&path, record)
+                store.write_detached(&path, record)
             };
             let result = future.await?;
             result.strip_prefix(&root).ok_or_else(|| {

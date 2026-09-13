@@ -15,7 +15,6 @@ categories = ["data-structures", "api-bindings"]
 [dependencies]
 tracing = { workspace = true }
 ox-store-util = { workspace = true }
-ox-path = { workspace = true }
 ox-types = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

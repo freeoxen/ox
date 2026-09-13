@@ -19,5 +19,4 @@ structfs-core-store = { workspace = true }
 
 [dev-dependencies]
 ox-kernel = { workspace = true }
-ox-path = { workspace = true }
 structfs-serde-store = { workspace = true }

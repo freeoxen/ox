@@ -5,10 +5,10 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use ox_broker::async_store::{
-    AsyncReader as BrokerAsyncReader, AsyncWriter as BrokerAsyncWriter, BoxFuture,
+use ox_broker::async_store::BoxFuture;
+use structfs_core_store::{
+    AsyncReader, AsyncWriter, DetachedReader, DetachedWriter, Error as StoreError, Path, Record,
 };
-use structfs_core_store::{AsyncReader, AsyncWriter, Error as StoreError, Path, Record};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{Semaphore, mpsc, oneshot};
@@ -69,8 +69,37 @@ impl From<WireError> for RemoteError {
 }
 
 impl RemoteError {
-    fn into_store_error(self, operation: &'static str) -> StoreError {
-        StoreError::store("remote_store", operation, self.to_string())
+    fn into_store_error(self, operation: &'static str, path: &Path) -> StoreError {
+        let message = self.to_string();
+        match self {
+            Self::Overloaded
+            | Self::Wire {
+                code: WireErrorCode::Overloaded,
+                ..
+            } => StoreError::overloaded(message),
+            Self::DeadlineExceeded
+            | Self::Wire {
+                code: WireErrorCode::DeadlineExceeded,
+                ..
+            } => StoreError::deadline_exceeded(message),
+            Self::Wire {
+                code: WireErrorCode::NotFound,
+                ..
+            } => StoreError::not_found(path.clone()),
+            Self::Wire {
+                code: WireErrorCode::PermissionDenied,
+                ..
+            } => StoreError::permission_denied(message),
+            Self::Wire {
+                code: WireErrorCode::Conflict,
+                ..
+            } => StoreError::conflict(message),
+            Self::Wire {
+                code: WireErrorCode::ResourceLimit,
+                ..
+            } => StoreError::resource_limit(message),
+            _ => StoreError::store("remote_store", operation, message),
+        }
     }
 }
 
@@ -246,43 +275,39 @@ impl RemoteStore {
 #[async_trait]
 impl AsyncReader for RemoteStore {
     async fn read_async(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
-        self.read_remote(from)
-            .await
-            .map_err(|error| error.into_store_error("read"))
+        self.read_detached(from).await
     }
 }
 
 #[async_trait]
 impl AsyncWriter for RemoteStore {
     async fn write_async(&mut self, to: &Path, data: Record) -> Result<Path, StoreError> {
-        self.write_remote(to, data)
-            .await
-            .map_err(|error| error.into_store_error("write"))
+        self.write_detached(to, data).await
     }
 }
 
-impl BrokerAsyncReader for RemoteStore {
-    fn read(&mut self, from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
+impl DetachedReader for RemoteStore {
+    fn read_detached(&mut self, from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
         let store = self.clone();
         let path = from.clone();
         Box::pin(async move {
             store
                 .read_remote(&path)
                 .await
-                .map_err(|error| error.into_store_error("read"))
+                .map_err(|error| error.into_store_error("read", &path))
         })
     }
 }
 
-impl BrokerAsyncWriter for RemoteStore {
-    fn write(&mut self, to: &Path, data: Record) -> BoxFuture<Result<Path, StoreError>> {
+impl DetachedWriter for RemoteStore {
+    fn write_detached(&mut self, to: &Path, data: Record) -> BoxFuture<Result<Path, StoreError>> {
         let store = self.clone();
         let path = to.clone();
         Box::pin(async move {
             store
                 .write_remote(&path, data)
                 .await
-                .map_err(|error| error.into_store_error("write"))
+                .map_err(|error| error.into_store_error("write", &path))
         })
     }
 }

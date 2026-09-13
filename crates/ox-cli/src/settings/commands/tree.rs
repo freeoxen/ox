@@ -14,9 +14,9 @@
 //! list won't find it; the navigation commands clamp to the first
 //! visible row.
 
-use ox_path::oxpath;
 use ox_types::AccountField;
 use ox_types::subscription::Write;
+use structfs_core_store::path;
 use structfs_core_store::{Reader, Record, Value};
 
 use super::super::visible_rows::{
@@ -33,7 +33,7 @@ command! {
     id: "tree.next",
     title: "Next Row",
     description: "Move the focus to the next visible row in the settings tree.",
-    cursor: Some(oxpath!("settings", "index")),
+    cursor: Some(path!("settings", "index")),
     run: |snap, _ctx| step(snap, Direction::Next),
 }
 
@@ -42,7 +42,7 @@ command! {
     id: "tree.prev",
     title: "Previous Row",
     description: "Move the focus to the previous visible row in the settings tree.",
-    cursor: Some(oxpath!("settings", "index")),
+    cursor: Some(path!("settings", "index")),
     run: |snap, _ctx| step(snap, Direction::Prev),
 }
 
@@ -51,7 +51,7 @@ command! {
     id: "tree.activate",
     title: "Open / Toggle Row",
     description: "Toggle expansion on a category row; descend into a leaf row.",
-    cursor: Some(oxpath!("settings", "index")),
+    cursor: Some(path!("settings", "index")),
     run: |snap, _ctx| activate(snap),
 }
 
@@ -60,7 +60,7 @@ command! {
     id: "tree.first",
     title: "First Row",
     description: "Move focus to the first visible row.",
-    cursor: Some(oxpath!("settings", "index")),
+    cursor: Some(path!("settings", "index")),
     run: |snap, _ctx| jump(snap, JumpTo::First),
 }
 
@@ -69,7 +69,7 @@ command! {
     id: "tree.last",
     title: "Last Row",
     description: "Move focus to the last visible row.",
-    cursor: Some(oxpath!("settings", "index")),
+    cursor: Some(path!("settings", "index")),
     run: |snap, _ctx| jump(snap, JumpTo::Last),
 }
 
@@ -78,7 +78,7 @@ command! {
     id: "tree.collapse_or_ascend",
     title: "Collapse / Back",
     description: "Collapse the focused row if expanded; otherwise exit the screen.",
-    cursor: Some(oxpath!("settings", "index")),
+    cursor: Some(path!("settings", "index")),
     run: |snap, _ctx| collapse_or_ascend(snap),
 }
 
@@ -104,7 +104,7 @@ fn jump(data: &mut dyn Reader, to: JumpTo) -> Vec<Write> {
         JumpTo::Last => &focus_ids[focus_ids.len() - 1].0,
     };
     vec![Write {
-        path: oxpath!("ui", "settings", "focused"),
+        path: path!("ui", "settings", "focused"),
         record: Record::parsed(path_to_value(target)),
     }]
 }
@@ -119,7 +119,7 @@ fn jump(data: &mut dyn Reader, to: JumpTo) -> Vec<Write> {
 /// of the conceptual `FocusId` — see `horns_core::view::FocusId`).
 fn read_focused(data: &mut dyn Reader) -> Option<structfs_core_store::Path> {
     let record = data
-        .read(&oxpath!("ui", "settings", "focused"))
+        .read(&path!("ui", "settings", "focused"))
         .ok()
         .flatten()?;
     let value = record.as_value()?;
@@ -142,7 +142,7 @@ fn step(data: &mut dyn Reader, direction: Direction) -> Vec<Write> {
     };
     let target = &focus_ids[next_idx].0;
     vec![Write {
-        path: oxpath!("ui", "settings", "focused"),
+        path: path!("ui", "settings", "focused"),
         record: Record::parsed(path_to_value(target)),
     }]
 }
@@ -170,7 +170,7 @@ fn activate(data: &mut dyn Reader) -> Vec<Write> {
             set.push(path_str);
         }
         vec![Write {
-            path: oxpath!("ui", "settings", "expanded"),
+            path: path!("ui", "settings", "expanded"),
             record: Record::parsed(expanded_set_to_value(&set)),
         }]
     } else {
@@ -232,7 +232,7 @@ fn with_account_selected(account: &str, mut writes: Vec<Write>) -> Vec<Write> {
         writes.insert(
             0,
             Write {
-                path: oxpath!("ui", "settings", "accounts", "selected"),
+                path: path!("ui", "settings", "accounts", "selected"),
                 record: Record::parsed(value),
             },
         );
@@ -245,43 +245,42 @@ fn collapse_or_ascend(data: &mut dyn Reader) -> Vec<Write> {
     let cursor = read_focused(data);
 
     // Collapse the focused row if it's an expanded entry.
-    if let Some(c) = &cursor {
-        if let Some(row) = visible_rows::position_of(&rows, c).map(|i| &rows[i]) {
-            if row.expandable && row.expanded {
-                let mut set = read_expanded_set(data);
-                let path_str = path_to_string(&row.path);
-                set.retain(|s| s != &path_str);
-                return vec![Write {
-                    path: oxpath!("ui", "settings", "expanded"),
-                    record: Record::parsed(expanded_set_to_value(&set)),
-                }];
-            }
-        }
+    if let Some(c) = &cursor
+        && let Some(row) = visible_rows::position_of(&rows, c).map(|i| &rows[i])
+        && row.expandable
+        && row.expanded
+    {
+        let mut set = read_expanded_set(data);
+        let path_str = path_to_string(&row.path);
+        set.retain(|s| s != &path_str);
+        return vec![Write {
+            path: path!("ui", "settings", "expanded"),
+            record: Record::parsed(expanded_set_to_value(&set)),
+        }];
     }
 
     // If the focused row is a leaf inside an expanded entry, walk up
     // to its parent entry and move the cursor there. Same shape as
     // a plain "back to parent" — keeps the user oriented.
-    if let Some(c) = &cursor {
-        if let Some(row) = visible_rows::position_of(&rows, c).map(|i| &rows[i]) {
-            if row.depth > 0 {
-                // Find the most recent entry above this row.
-                let pos = visible_rows::position_of(&rows, c).unwrap();
-                for upstream in rows[..pos].iter().rev() {
-                    if upstream.depth == 0 {
-                        return vec![Write {
-                            path: oxpath!("ui", "settings", "focused"),
-                            record: Record::parsed(path_to_value(&upstream.path)),
-                        }];
-                    }
-                }
+    if let Some(c) = &cursor
+        && let Some(row) = visible_rows::position_of(&rows, c).map(|i| &rows[i])
+        && row.depth > 0
+    {
+        // Find the most recent entry above this row.
+        let pos = visible_rows::position_of(&rows, c).unwrap();
+        for upstream in rows[..pos].iter().rev() {
+            if upstream.depth == 0 {
+                return vec![Write {
+                    path: path!("ui", "settings", "focused"),
+                    record: Record::parsed(path_to_value(&upstream.path)),
+                }];
             }
         }
     }
 
     // Top-level focus with nothing expanded → exit screen.
     vec![Write {
-        path: oxpath!("ui", "settings", "_request_exit"),
+        path: path!("ui", "settings", "_request_exit"),
         record: Record::parsed(Value::Bool(true)),
     }]
 }
@@ -328,11 +327,11 @@ mod tests {
 
     fn write_index(snap: &mut SettingsSnapshot) {
         snap.insert(
-            &oxpath!("settings", "index", "entries", "accounts"),
+            &path!("settings", "index", "entries", "accounts"),
             to_value(&entry("accounts", "settings/accounts")).unwrap(),
         );
         snap.insert(
-            &oxpath!("settings", "index", "entries", "models"),
+            &path!("settings", "index", "entries", "models"),
             to_value(&entry("models", "settings/models")).unwrap(),
         );
     }
@@ -344,7 +343,7 @@ mod tests {
     fn write_account(snap: &mut SettingsSnapshot, name: &str) {
         let comp = ox_kernel::PathComponent::try_new(name).unwrap();
         snap.insert(
-            &oxpath!("config", "gate", "accounts", comp, "provider"),
+            &path!("config", "gate", "accounts", comp, "provider"),
             Value::String(name.into()),
         );
     }
@@ -363,21 +362,21 @@ mod tests {
             })
             .collect();
         snap.insert(
-            &oxpath!("config", "gate", "accounts", comp, "models"),
+            &path!("config", "gate", "accounts", comp, "models"),
             to_value(&models).unwrap(),
         );
     }
 
     fn set_focused(snap: &mut SettingsSnapshot, target: &str) {
         snap.insert(
-            &oxpath!("ui", "settings", "focused"),
+            &path!("ui", "settings", "focused"),
             path_to_value(&structfs_core_store::Path::parse(target).unwrap()),
         );
     }
 
     fn read_focused_raw(snap: &mut SettingsSnapshot) -> Option<structfs_core_store::Path> {
         let r = snap
-            .read(&oxpath!("ui", "settings", "focused"))
+            .read(&path!("ui", "settings", "focused"))
             .ok()
             .flatten()?;
         path_from_value(r.as_value()?)
@@ -434,7 +433,7 @@ mod tests {
         write_account(&mut snap, "alpha");
         write_account(&mut snap, "beta");
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&["settings/accounts".to_string()]),
         );
         // Visible rows (j/k-focusable): [Accounts, alpha, beta, Models].
@@ -474,7 +473,7 @@ mod tests {
         set_focused(&mut snap, "settings/accounts");
         let writes = run(&TreeActivate::new(), &mut snap);
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "settings", "expanded"));
+        assert_eq!(writes[0].path, path!("ui", "settings", "expanded"));
         // Apply the write so we can read it back.
         snap.insert(
             &writes[0].path,
@@ -489,7 +488,7 @@ mod tests {
         let mut snap = SettingsSnapshot::empty();
         write_index(&mut snap);
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&["settings/accounts".to_string()]),
         );
         set_focused(&mut snap, "settings/accounts");
@@ -510,13 +509,13 @@ mod tests {
         write_index(&mut snap);
         write_account(&mut snap, "alpha");
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&["settings/accounts".to_string()]),
         );
         set_focused(&mut snap, "settings/accounts/alpha");
         let writes = run(&TreeActivate::new(), &mut snap);
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "settings", "expanded"));
+        assert_eq!(writes[0].path, path!("ui", "settings", "expanded"));
         snap.insert(
             &writes[0].path,
             writes[0].record.as_value().unwrap().clone(),
@@ -536,7 +535,7 @@ mod tests {
         write_index(&mut snap);
         write_account(&mut snap, "alpha");
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&[
                 "settings/accounts".to_string(),
                 "settings/accounts/alpha".to_string(),
@@ -548,14 +547,14 @@ mod tests {
         assert_eq!(writes.len(), 4);
         assert_eq!(
             writes[0].path,
-            oxpath!("ui", "settings", "edit", "target_path")
+            path!("ui", "settings", "edit", "target_path")
         );
-        assert_eq!(writes[1].path, oxpath!("ui", "settings", "edit", "buffer"));
+        assert_eq!(writes[1].path, path!("ui", "settings", "edit", "buffer"));
         assert_eq!(
             writes[2].path,
-            oxpath!("ui", "settings", "edit", "cursor_saved")
+            path!("ui", "settings", "edit", "cursor_saved")
         );
-        assert_eq!(writes[3].path, oxpath!("ui", "settings", "focused"));
+        assert_eq!(writes[3].path, path!("ui", "settings", "focused"));
     }
 
     #[test]
@@ -568,7 +567,7 @@ mod tests {
         write_index(&mut snap);
         write_account(&mut snap, "alpha"); // provider="alpha"
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&[
                 "settings/accounts".to_string(),
                 "settings/accounts/alpha".to_string(),
@@ -584,14 +583,14 @@ mod tests {
         assert!(
             writes
                 .iter()
-                .any(|w| w.path == oxpath!("config", "gate", "providers", prov_comp.clone())),
+                .any(|w| w.path == path!("config", "gate", "providers", prov_comp.clone())),
             "cycle must write to the provider record",
         );
         let acct_comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
         assert!(
             !writes
                 .iter()
-                .any(|w| w.path == oxpath!("config", "gate", "accounts", acct_comp)),
+                .any(|w| w.path == path!("config", "gate", "accounts", acct_comp)),
             "cycle must not write the account record",
         );
     }
@@ -604,7 +603,7 @@ mod tests {
         write_index(&mut snap);
         write_account(&mut snap, "alpha");
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&[
                 "settings/accounts".to_string(),
                 "settings/accounts/alpha".to_string(),
@@ -617,9 +616,9 @@ mod tests {
         assert_eq!(writes.len(), 4);
         assert_eq!(
             writes[0].path,
-            oxpath!("ui", "settings", "edit", "target_path"),
+            path!("ui", "settings", "edit", "target_path"),
         );
-        assert_eq!(writes[3].path, oxpath!("ui", "settings", "focused"));
+        assert_eq!(writes[3].path, path!("ui", "settings", "focused"));
     }
 
     #[test]
@@ -628,13 +627,13 @@ mod tests {
         write_index(&mut snap);
         write_account_with_models(&mut snap, "alpha", &["m1"]);
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&["settings/models".to_string()]),
         );
         set_focused(&mut snap, "settings/models/alpha/m1");
         let writes = run(&TreeActivate::new(), &mut snap);
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "settings", "expanded"));
+        assert_eq!(writes[0].path, path!("ui", "settings", "expanded"));
     }
 
     #[test]
@@ -648,7 +647,7 @@ mod tests {
         write_index(&mut snap);
         write_account_with_models(&mut snap, "alpha", &["m1"]);
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&[
                 "settings/models".to_string(),
                 "settings/models/alpha/m1".to_string(),
@@ -660,14 +659,14 @@ mod tests {
         assert_eq!(writes.len(), 4);
         assert_eq!(
             writes[0].path,
-            oxpath!("ui", "settings", "edit", "target_path")
+            path!("ui", "settings", "edit", "target_path")
         );
-        assert_eq!(writes[1].path, oxpath!("ui", "settings", "edit", "buffer"));
+        assert_eq!(writes[1].path, path!("ui", "settings", "edit", "buffer"));
         assert_eq!(
             writes[2].path,
-            oxpath!("ui", "settings", "edit", "cursor_saved")
+            path!("ui", "settings", "edit", "cursor_saved")
         );
-        assert_eq!(writes[3].path, oxpath!("ui", "settings", "focused"));
+        assert_eq!(writes[3].path, path!("ui", "settings", "focused"));
     }
 
     #[test]
@@ -702,13 +701,13 @@ mod tests {
         let mut snap = SettingsSnapshot::empty();
         write_index(&mut snap);
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&["settings/accounts".to_string()]),
         );
         set_focused(&mut snap, "settings/accounts");
         let writes = run(&TreeCollapseOrAscend::new(), &mut snap);
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "settings", "expanded"));
+        assert_eq!(writes[0].path, path!("ui", "settings", "expanded"));
         snap.insert(
             &writes[0].path,
             writes[0].record.as_value().unwrap().clone(),
@@ -722,13 +721,13 @@ mod tests {
         write_index(&mut snap);
         write_account(&mut snap, "alpha");
         snap.insert(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             expanded_set_to_value(&["settings/accounts".to_string()]),
         );
         set_focused(&mut snap, "settings/accounts/alpha");
         let writes = run(&TreeCollapseOrAscend::new(), &mut snap);
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "settings", "focused"));
+        assert_eq!(writes[0].path, path!("ui", "settings", "focused"));
         let target = path_from_value(writes[0].record.as_value().unwrap()).unwrap();
         assert_eq!(target.to_string(), "settings/accounts");
     }
@@ -740,7 +739,7 @@ mod tests {
         set_focused(&mut snap, "settings/accounts");
         let writes = run(&TreeCollapseOrAscend::new(), &mut snap);
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "settings", "_request_exit"));
+        assert_eq!(writes[0].path, path!("ui", "settings", "_request_exit"));
         match &writes[0].record {
             Record::Parsed(Value::Bool(b)) => assert!(*b),
             other => panic!("unexpected record: {other:?}"),
@@ -753,7 +752,7 @@ mod tests {
         write_index(&mut snap);
         let writes = run(&TreeCollapseOrAscend::new(), &mut snap);
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "settings", "_request_exit"));
+        assert_eq!(writes[0].path, path!("ui", "settings", "_request_exit"));
     }
 
     #[test]
@@ -763,7 +762,7 @@ mod tests {
         set_focused(&mut snap, "settings/nowhere");
         let writes = run(&TreeCollapseOrAscend::new(), &mut snap);
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "settings", "_request_exit"));
+        assert_eq!(writes[0].path, path!("ui", "settings", "_request_exit"));
     }
 
     // -- composite end-to-end -------------------------------------------
@@ -813,6 +812,6 @@ mod tests {
 
         // Esc again → exit screen
         let w = run(&TreeCollapseOrAscend::new(), &mut snap);
-        assert_eq!(w[0].path, oxpath!("ui", "settings", "_request_exit"));
+        assert_eq!(w[0].path, path!("ui", "settings", "_request_exit"));
     }
 }

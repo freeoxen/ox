@@ -448,7 +448,7 @@ impl AgentPool {
             .iter()
             .nth(1)
             .ok_or_else(|| "inbox did not return thread_id".to_string())?
-            .clone();
+            .to_string();
 
         self.spawn_worker(thread_id.clone(), title.to_string(), execution);
         Ok(thread_id)
@@ -570,7 +570,7 @@ impl AgentPool {
 
     fn read_thread_title(&mut self, thread_id: &str) -> Option<String> {
         let tid = ox_kernel::PathComponent::try_new(thread_id).ok()?;
-        let path = ox_path::oxpath!("threads", tid);
+        let path = structfs_core_store::path!("threads", tid);
         let record = self.inbox.read(&path).ok()??;
         let value = record.as_value()?;
         match value {
@@ -1574,7 +1574,7 @@ fn agent_worker(
     ) {
         Ok(acct_comp) => {
             let prov = adapter
-                .read_typed::<String>(&ox_path::oxpath!(
+                .read_typed::<String>(&structfs_core_store::path!(
                     "gate",
                     "accounts",
                     acct_comp.clone(),
@@ -1584,7 +1584,9 @@ fn agent_worker(
                 .flatten()
                 .unwrap_or_else(|| "anthropic".to_string());
             let key = adapter
-                .read_typed::<String>(&ox_path::oxpath!("gate", "accounts", acct_comp, "key"))
+                .read_typed::<String>(&structfs_core_store::path!(
+                    "gate", "accounts", acct_comp, "key"
+                ))
                 .ok()
                 .flatten()
                 .unwrap_or_default();
@@ -1602,7 +1604,11 @@ fn agent_worker(
     // too. Falls back to ProviderConfig::anthropic() only when the lookup fails.
     let provider_config = match ox_kernel::PathComponent::try_new(provider.as_str()) {
         Ok(prov_comp) => adapter
-            .read_typed::<ProviderConfig>(&ox_path::oxpath!("gate", "providers", prov_comp))
+            .read_typed::<ProviderConfig>(&structfs_core_store::path!(
+                "gate",
+                "providers",
+                prov_comp
+            ))
             .ok()
             .flatten()
             .unwrap_or_else(|| {
@@ -1862,7 +1868,7 @@ fn agent_worker(
             }));
             rt_handle
                 .block_on(broker_client.write(
-                    &ox_path::oxpath!("inbox", "inputs"),
+                    &structfs_core_store::path!("inbox", "inputs"),
                     Record::parsed(input_record),
                 ))
                 .ok();
@@ -2045,13 +2051,12 @@ fn finalize_one_cancel(
         "thread_state".to_string(),
         Value::String("interrupted".to_string()),
     );
-    if let Ok(path) = structfs_core_store::Path::parse(&format!("inbox/threads/{thread_id}")) {
-        if let Err(error) =
+    if let Ok(path) = structfs_core_store::Path::parse(&format!("inbox/threads/{thread_id}"))
+        && let Err(error) =
             rt_handle.block_on(broker_client.write(&path, Record::parsed(Value::Map(state))))
-        {
-            tracing::error!(cancel_id = %cancel.cancel_id, %error, "cancel state update failed");
-            return;
-        }
+    {
+        tracing::error!(cancel_id = %cancel.cancel_id, %error, "cancel state update failed");
+        return;
     }
     rt_handle.block_on(mark_ingress_control_applied(
         broker_client,
@@ -2221,7 +2226,7 @@ fn run_one_turn(
     if let Ok(tid_comp) = ox_kernel::PathComponent::try_new(thread_id) {
         rt_handle
             .block_on(broker_client.write(
-                &ox_path::oxpath!("inbox", "index", tid_comp),
+                &structfs_core_store::path!("inbox", "index", tid_comp),
                 Record::parsed(Value::Null),
             ))
             .ok();
@@ -2245,9 +2250,10 @@ fn run_one_turn(
             updated_at: Some(now),
         };
         rt_handle
-            .block_on(
-                broker_client.write_typed(&ox_path::oxpath!("inbox", "threads", tid_comp), &update),
-            )
+            .block_on(broker_client.write_typed(
+                &structfs_core_store::path!("inbox", "threads", tid_comp),
+                &update,
+            ))
             .ok();
     } else {
         tracing::warn!("invalid thread id for state update path");

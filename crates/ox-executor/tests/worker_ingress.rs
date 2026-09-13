@@ -67,7 +67,7 @@ fn create_plain_thread(root: &Path, title: &str) -> String {
         .iter()
         .last()
         .unwrap()
-        .clone()
+        .to_string()
 }
 
 async fn wait_for_state(root: &Path, kind: IntentKind, id: &str, state: &str) {

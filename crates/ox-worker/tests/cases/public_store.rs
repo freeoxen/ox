@@ -4,7 +4,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{os::unix::fs::PermissionsExt, time::Duration};
 
-use ox_broker::async_store::{AsyncReader, AsyncWriter};
+use structfs_core_store::{DetachedReader, DetachedWriter};
+
 use ox_executor::test_support::{FakeTransport, TransportFactory, factory_for};
 use ox_inbox::worker_ingress::{CancelEnvelope, CreateEnvelope, PromptEnvelope};
 use ox_worker::public_store::test_support as public_test_support;
@@ -182,21 +183,21 @@ async fn one_core_hosts_two_threads_with_bounded_nonblocking_public_control() {
         parent_id: None,
     };
     let first_path = store
-        .write(&path!("conversations"), record(&first))
+        .write_detached(&path!("conversations"), record(&first))
         .await
         .unwrap();
     let second_path = store
-        .write(&path!("conversations"), record(&second))
+        .write_detached(&path!("conversations"), record(&second))
         .await
         .unwrap();
-    let first_id = first_path.iter().nth(1).unwrap().clone();
-    let second_id = second_path.iter().nth(1).unwrap().clone();
+    let first_id = first_path.iter().nth(1).unwrap().to_string();
+    let second_id = second_path.iter().nth(1).unwrap().to_string();
     assert_ne!(first_id, second_id);
     assert!(root.join("threads").join(&first_id).is_dir());
     assert!(root.join("threads").join(&second_id).is_dir());
 
     let duplicate = store
-        .write(&path!("conversations"), record(&first))
+        .write_detached(&path!("conversations"), record(&first))
         .await
         .unwrap();
     assert_eq!(duplicate, first_path);
@@ -208,7 +209,7 @@ async fn one_core_hosts_two_threads_with_bounded_nonblocking_public_control() {
     };
     assert!(
         store
-            .write(&path!("conversations"), record(&third))
+            .write_detached(&path!("conversations"), record(&third))
             .await
             .unwrap_err()
             .to_string()
@@ -217,7 +218,7 @@ async fn one_core_hosts_two_threads_with_bounded_nonblocking_public_control() {
 
     let message_path = Path::parse(&format!("conversations/{first_id}/messages")).unwrap();
     store
-        .write(
+        .write_detached(
             &message_path,
             record(&PromptEnvelope {
                 message_id: "message-1".into(),
@@ -227,7 +228,7 @@ async fn one_core_hosts_two_threads_with_bounded_nonblocking_public_control() {
         .await
         .unwrap();
     let saturated = store
-        .write(
+        .write_detached(
             &message_path,
             record(&PromptEnvelope {
                 message_id: "message-2".into(),
@@ -245,7 +246,7 @@ async fn one_core_hosts_two_threads_with_bounded_nonblocking_public_control() {
     let mut health_store = service.public_store.clone();
     let health = tokio::time::timeout(
         Duration::from_millis(250),
-        health_store.read(&path!("health")),
+        health_store.read_detached(&path!("health")),
     )
     .await
     .expect("health must not wait for turn admission")
@@ -255,13 +256,14 @@ async fn one_core_hosts_two_threads_with_bounded_nonblocking_public_control() {
     let mut capacity_store = service.public_store.clone();
     let capacity = tokio::time::timeout(
         Duration::from_millis(250),
-        capacity_store.read(&path!("capacity")),
+        capacity_store.read_detached(&path!("capacity")),
     )
     .await
     .expect("capacity must not enter executor control queue")
     .unwrap()
     .unwrap();
-    let capacity_json = structfs_serde_store::value_to_json(capacity.as_value().unwrap().clone());
+    let capacity_json =
+        structfs_serde_store::value_to_json(capacity.as_value().unwrap().clone()).unwrap();
     assert_eq!(capacity_json["resident_threads"], 2);
     assert_eq!(capacity_json["total_threads"], 2);
     assert_eq!(
@@ -272,7 +274,7 @@ async fn one_core_hosts_two_threads_with_bounded_nonblocking_public_control() {
     let cancel_path = Path::parse(&format!("conversations/{second_id}/control/cancel")).unwrap();
     tokio::time::timeout(
         Duration::from_secs(1),
-        store.write(
+        store.write_detached(
             &cancel_path,
             record(&CancelEnvelope {
                 cancel_id: "cancel-2".into(),
@@ -284,10 +286,16 @@ async fn one_core_hosts_two_threads_with_bounded_nonblocking_public_control() {
     .expect("cancel remains independent of turn permit")
     .unwrap();
 
-    assert!(store.read(&path!("secret")).await.unwrap().is_none());
     assert!(
         store
-            .write(&path!("threads"), Record::parsed(Value::Null))
+            .read_detached(&path!("secret"))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .write_detached(&path!("threads"), Record::parsed(Value::Null))
             .await
             .is_err()
     );
@@ -317,30 +325,38 @@ async fn public_surface_is_typed_and_fail_closed_for_bad_or_unknown_mutations() 
     .unwrap();
     let mut store = service.public_store.clone();
 
-    let health = store.read(&path!("health")).await.unwrap().unwrap();
-    let health = structfs_serde_store::value_to_json(health.as_value().unwrap().clone());
+    let health = store
+        .read_detached(&path!("health"))
+        .await
+        .unwrap()
+        .unwrap();
+    let health = structfs_serde_store::value_to_json(health.as_value().unwrap().clone()).unwrap();
     assert_eq!(health["status"], "ready");
     assert_eq!(health["node_id"], "surface-node");
     assert_eq!(health["attempt_id"], "surface-attempt");
     assert_eq!(health["sandbox_enforcement"]["preflight"], "passed");
     assert!(health["agent_wasm_sha256"].as_str().unwrap().len() >= 64);
 
-    let capabilities = store.read(&path!("capabilities")).await.unwrap().unwrap();
+    let capabilities = store
+        .read_detached(&path!("capabilities"))
+        .await
+        .unwrap()
+        .unwrap();
     let capabilities =
-        structfs_serde_store::value_to_json(capabilities.as_value().unwrap().clone());
+        structfs_serde_store::value_to_json(capabilities.as_value().unwrap().clone()).unwrap();
     assert_eq!(capabilities["multiple_conversations"], true);
     assert_eq!(capabilities["protocol"], "ox-worker-v1");
     assert_eq!(capabilities["operations"].as_array().unwrap().len(), 5);
 
     assert!(
         store
-            .read(&path!("conversations/missing"))
+            .read_detached(&path!("conversations/missing"))
             .await
             .unwrap()
             .is_none()
     );
     let pending = store
-        .read(&path!("conversations/missing/approvals/pending"))
+        .read_detached(&path!("conversations/missing/approvals/pending"))
         .await
         .unwrap()
         .unwrap();
@@ -354,14 +370,14 @@ async fn public_surface_is_typed_and_fail_closed_for_bad_or_unknown_mutations() 
     ] {
         assert!(
             store
-                .write(&target, Record::parsed(Value::Null))
+                .write_detached(&target, Record::parsed(Value::Null))
                 .await
                 .is_err()
         );
     }
     assert!(
         store
-            .write(
+            .write_detached(
                 &path!("conversations"),
                 Record::raw(vec![1, 2, 3], Format::OCTET_STREAM),
             )
@@ -372,7 +388,7 @@ async fn public_surface_is_typed_and_fail_closed_for_bad_or_unknown_mutations() 
     );
 
     let message = store
-        .write(
+        .write_detached(
             &path!("conversations/missing/messages"),
             record(&PromptEnvelope {
                 message_id: "unknown-message".into(),
@@ -384,7 +400,7 @@ async fn public_surface_is_typed_and_fail_closed_for_bad_or_unknown_mutations() 
     assert!(message.to_string().contains("unknown conversation"));
 
     let approval = store
-        .write(
+        .write_detached(
             &path!("conversations/missing/approvals/approval_missing"),
             record(&ox_types::ApprovalResponse {
                 decision: ox_types::Decision::DenyOnce,
@@ -395,7 +411,7 @@ async fn public_surface_is_typed_and_fail_closed_for_bad_or_unknown_mutations() 
     assert!(approval.to_string().contains("stale or missing"));
 
     let cancel = store
-        .write(
+        .write_detached(
             &path!("conversations/missing/control/cancel"),
             record(&CancelEnvelope {
                 cancel_id: "unknown-cancel".into(),
@@ -407,7 +423,7 @@ async fn public_surface_is_typed_and_fail_closed_for_bad_or_unknown_mutations() 
     assert!(cancel.to_string().contains("unknown conversation"));
     assert!(
         store
-            .write(&path!("health"), Record::parsed(Value::Null))
+            .write_detached(&path!("health"), Record::parsed(Value::Null))
             .await
             .is_err()
     );
@@ -453,7 +469,7 @@ async fn approval_saturates_turn_capacity_but_not_public_control() {
     .unwrap();
     let mut store = service.public_store.clone();
     let first = store
-        .write(
+        .write_detached(
             &path!("conversations"),
             record(&CreateEnvelope {
                 create_id: "approval-create".into(),
@@ -464,11 +480,11 @@ async fn approval_saturates_turn_capacity_but_not_public_control() {
         )
         .await
         .unwrap();
-    let first_id = first.iter().nth(1).unwrap().clone();
+    let first_id = first.iter().nth(1).unwrap().to_string();
     let pending_path = Path::parse(&format!("conversations/{first_id}/approvals/pending")).unwrap();
     let pending = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            let pending = store.read(&pending_path).await.unwrap().unwrap();
+            let pending = store.read_detached(&pending_path).await.unwrap().unwrap();
             if pending.as_value() != Some(&Value::Null) {
                 break pending;
             }
@@ -477,16 +493,21 @@ async fn approval_saturates_turn_capacity_but_not_public_control() {
     })
     .await
     .expect("first turn parks on approval");
-    let pending_json = structfs_serde_store::value_to_json(pending.as_value().unwrap().clone());
+    let pending_json =
+        structfs_serde_store::value_to_json(pending.as_value().unwrap().clone()).unwrap();
     let approval_id = pending_json["approval_id"].as_str().unwrap();
 
-    let capacity = store.read(&path!("capacity")).await.unwrap().unwrap();
-    let json = structfs_serde_store::value_to_json(capacity.as_value().unwrap().clone());
+    let capacity = store
+        .read_detached(&path!("capacity"))
+        .await
+        .unwrap()
+        .unwrap();
+    let json = structfs_serde_store::value_to_json(capacity.as_value().unwrap().clone()).unwrap();
     assert_eq!(json["active_turns"], 1);
     assert_eq!(json["active_turns_include_approval_parked_wasm"], true);
 
     let second = store
-        .write(
+        .write_detached(
             &path!("conversations"),
             record(&CreateEnvelope {
                 create_id: "waiting-create".into(),
@@ -497,20 +518,26 @@ async fn approval_saturates_turn_capacity_but_not_public_control() {
         )
         .await
         .unwrap();
-    let second_id = second.iter().nth(1).unwrap().clone();
+    let second_id = second.iter().nth(1).unwrap().to_string();
     let status_path = Path::parse(&format!("conversations/{second_id}")).unwrap();
-    tokio::time::timeout(Duration::from_millis(250), store.read(&path!("health")))
-        .await
-        .expect("health bypasses saturated turn admission")
-        .unwrap();
-    tokio::time::timeout(Duration::from_millis(250), store.read(&status_path))
-        .await
-        .expect("status bypasses saturated turn admission")
-        .unwrap();
+    tokio::time::timeout(
+        Duration::from_millis(250),
+        store.read_detached(&path!("health")),
+    )
+    .await
+    .expect("health bypasses saturated turn admission")
+    .unwrap();
+    tokio::time::timeout(
+        Duration::from_millis(250),
+        store.read_detached(&status_path),
+    )
+    .await
+    .expect("status bypasses saturated turn admission")
+    .unwrap();
     let cancel_path = Path::parse(&format!("conversations/{second_id}/control/cancel")).unwrap();
     tokio::time::timeout(
         Duration::from_millis(500),
-        store.write(
+        store.write_detached(
             &cancel_path,
             record(&CancelEnvelope {
                 cancel_id: "cancel-waiting".into(),
@@ -527,14 +554,20 @@ async fn approval_saturates_turn_capacity_but_not_public_control() {
     let deny = ox_types::ApprovalResponse {
         decision: ox_types::Decision::DenyOnce,
     };
-    let first_result = store.write(&approval_path, record(&deny)).await.unwrap();
-    let retry_result = store.write(&approval_path, record(&deny)).await.unwrap();
+    let first_result = store
+        .write_detached(&approval_path, record(&deny))
+        .await
+        .unwrap();
+    let retry_result = store
+        .write_detached(&approval_path, record(&deny))
+        .await
+        .unwrap();
     assert_eq!(
         retry_result, first_result,
         "post-resolution retry is stable"
     );
     let conflict = store
-        .write(
+        .write_detached(
             &approval_path,
             record(&ox_types::ApprovalResponse {
                 decision: ox_types::Decision::DenyAlways,
@@ -548,7 +581,7 @@ async fn approval_saturates_turn_capacity_but_not_public_control() {
 
 async fn create_role(store: &mut ox_worker::PublicStore, create_id: &str, prompt: &str) -> String {
     store
-        .write(
+        .write_detached(
             &path!("conversations"),
             record(&CreateEnvelope {
                 create_id: create_id.into(),
@@ -562,7 +595,7 @@ async fn create_role(store: &mut ox_worker::PublicStore, create_id: &str, prompt
         .iter()
         .nth(1)
         .unwrap()
-        .clone()
+        .to_string()
 }
 
 async fn wait_flag(flag: &AtomicBool, label: &str) {
@@ -602,7 +635,7 @@ async fn cancel_role(store: &mut ox_worker::PublicStore, thread_id: &str, cancel
     let target = Path::parse(&format!("conversations/{thread_id}/control/cancel")).unwrap();
     tokio::time::timeout(
         Duration::from_millis(500),
-        store.write(
+        store.write_detached(
             &target,
             record(&CancelEnvelope {
                 cancel_id: cancel_id.into(),
@@ -646,7 +679,7 @@ async fn four_roles_progress_without_a_shared_logical_lock() {
     let a_pending = Path::parse(&format!("conversations/{a}/approvals/pending")).unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            let pending = store.read(&a_pending).await.unwrap().unwrap();
+            let pending = store.read_detached(&a_pending).await.unwrap().unwrap();
             if pending.as_value() != Some(&Value::Null) {
                 return;
             }
@@ -666,17 +699,21 @@ async fn four_roles_progress_without_a_shared_logical_lock() {
     let d = create_role(&mut store, "role-d", "ROLE_D cancel while active").await;
     wait_flag(&state.d_active, "D").await;
 
-    let capacity = tokio::time::timeout(Duration::from_millis(250), store.read(&path!("capacity")))
-        .await
-        .expect("capacity must bypass four active turns")
-        .unwrap()
-        .unwrap();
-    let capacity = structfs_serde_store::value_to_json(capacity.as_value().unwrap().clone());
+    let capacity = tokio::time::timeout(
+        Duration::from_millis(250),
+        store.read_detached(&path!("capacity")),
+    )
+    .await
+    .expect("capacity must bypass four active turns")
+    .unwrap()
+    .unwrap();
+    let capacity =
+        structfs_serde_store::value_to_json(capacity.as_value().unwrap().clone()).unwrap();
     assert_eq!(capacity["active_turns"], 4);
     assert_eq!(capacity["resident_threads"], 4);
     for id in [&a, &b, &c, &d] {
         let status = Path::parse(&format!("conversations/{id}")).unwrap();
-        tokio::time::timeout(Duration::from_millis(250), store.read(&status))
+        tokio::time::timeout(Duration::from_millis(250), store.read_detached(&status))
             .await
             .expect("status must bypass unrelated turns")
             .unwrap();

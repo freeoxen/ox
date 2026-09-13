@@ -29,11 +29,11 @@ use ox_gate::{
     AccountConfig, AccountTestStatus, ApiKey, CatalogRefreshStatus, ModelInfo, ModelInfoSource,
     ProviderConfig,
 };
-use ox_path::oxpath;
 use ox_store_util::local_config::LocalConfig;
 use ox_types::settings::ModelKey;
 use ox_types::{ClientModalFlags, CompletionRole, Screen};
 use ox_ui::UiStore;
+use structfs_core_store::path;
 use structfs_core_store::{Path, Record, Value};
 
 use ox_cli::dispatch::{KeyDispatchOutcome, send_key};
@@ -128,10 +128,10 @@ impl E2eHarness {
 
         // Mount the four namespaces the settings screen reads / writes.
         let mut mounts = Vec::new();
-        mounts.push(broker.mount(oxpath!("settings"), LocalConfig::new()).await);
-        mounts.push(broker.mount(oxpath!("config"), LocalConfig::new()).await);
-        mounts.push(broker.mount(oxpath!("ui"), LocalConfig::new()).await);
-        mounts.push(broker.mount(oxpath!("secret"), LocalConfig::new()).await);
+        mounts.push(broker.mount(path!("settings"), LocalConfig::new()).await);
+        mounts.push(broker.mount(path!("config"), LocalConfig::new()).await);
+        mounts.push(broker.mount(path!("ui"), LocalConfig::new()).await);
+        mounts.push(broker.mount(path!("secret"), LocalConfig::new()).await);
 
         // Wire subscriptions against the mock transport.
         let transport_dyn: Arc<dyn Transport> = transport.clone();
@@ -164,7 +164,7 @@ impl E2eHarness {
     async fn focused(&self) -> Option<Path> {
         let rec = self
             .client
-            .read(&oxpath!("ui", "settings", "focused"))
+            .read(&path!("ui", "settings", "focused"))
             .await
             .expect("read focused")?;
         let value = rec.as_value()?.clone();
@@ -183,7 +183,7 @@ impl E2eHarness {
         }
     }
 
-    /// Read the current settings focus cursor as an oxpath. There is a
+    /// Read the current settings focus cursor as an path. There is a
     /// single cursor at `ui/settings/focused`; the renderer walks its
     /// ancestor chain to find the registered page.
     async fn current_cursor(&self) -> Option<Path> {
@@ -196,7 +196,7 @@ impl E2eHarness {
     /// key see consistent state.
     async fn dispatch(&self, key: &str) -> KeyDispatchOutcome {
         let mut snap = self.snapshot().await;
-        let cursor = self.current_cursor().await.unwrap_or_else(|| oxpath!());
+        let cursor = self.current_cursor().await.unwrap_or_else(|| path!());
         send_key(
             &self.client,
             key,
@@ -271,16 +271,16 @@ async fn populate_index(h: &E2eHarness) {
 async fn populate_account(h: &E2eHarness, name: &str, key: &str) {
     let comp = ox_kernel::PathComponent::try_new(name).unwrap();
     h.write_typed(
-        &oxpath!("config", "gate", "accounts", comp.clone(), "provider"),
+        &path!("config", "gate", "accounts", comp.clone(), "provider"),
         &name.to_string(),
     )
     .await;
     h.write_typed(
-        &oxpath!("config", "gate", "providers", comp.clone()),
+        &path!("config", "gate", "providers", comp.clone()),
         &ProviderConfig::anthropic(),
     )
     .await;
-    h.write_typed(&oxpath!("secret", "keys", comp), &ApiKey::new(key))
+    h.write_typed(&path!("secret", "keys", comp), &ApiKey::new(key))
         .await;
 }
 
@@ -297,7 +297,7 @@ async fn write_models_for_account(h: &E2eHarness, name: &str, ids: &[&str]) {
         })
         .collect();
     h.write_typed(
-        &oxpath!("config", "gate", "accounts", comp, "models"),
+        &path!("config", "gate", "accounts", comp, "models"),
         &models,
     )
     .await;
@@ -318,8 +318,8 @@ async fn navigate_index_to_models_set_bootstrap() {
     // Single cursor: focused row inside settings/index. The renderer
     // walks the ancestor chain to find the page renderer.
     h.write_path(
-        &oxpath!("ui", "settings", "focused"),
-        &oxpath!("settings", "accounts"),
+        &path!("ui", "settings", "focused"),
+        &path!("settings", "accounts"),
     )
     .await;
 
@@ -327,7 +327,7 @@ async fn navigate_index_to_models_set_bootstrap() {
     // top-level row visible while nothing is expanded).
     assert!(matches!(h.dispatch("j").await, KeyDispatchOutcome::Handled));
     let focused = h.focused().await.expect("focused written");
-    assert_eq!(focused, oxpath!("settings", "models"));
+    assert_eq!(focused, path!("settings", "models"));
 
     // `Enter` on a category row toggles expansion in place.
     assert!(matches!(
@@ -336,7 +336,7 @@ async fn navigate_index_to_models_set_bootstrap() {
     ));
     let expanded: Vec<String> = h
         .client
-        .read_typed(&oxpath!("ui", "settings", "expanded"))
+        .read_typed(&path!("ui", "settings", "expanded"))
         .await
         .expect("read expanded")
         .expect("expanded present");
@@ -364,7 +364,7 @@ async fn navigate_index_to_models_set_bootstrap() {
     assert!(matches!(h.dispatch("P").await, KeyDispatchOutcome::Handled));
     let bootstrap: CompletionRole = h
         .client
-        .read_typed(&oxpath!("config", "gate", "completions", "bootstrap"))
+        .read_typed(&path!("config", "gate", "completions", "bootstrap"))
         .await
         .expect("read bootstrap")
         .expect("bootstrap present");
@@ -372,7 +372,7 @@ async fn navigate_index_to_models_set_bootstrap() {
     assert_eq!(bootstrap.model_id, "claude-haiku-4-5-20251001");
     let legacy: CompletionRole = h
         .client
-        .read_typed(&oxpath!("config", "gate", "completions", "primary"))
+        .read_typed(&path!("config", "gate", "completions", "primary"))
         .await
         .expect("read legacy primary")
         .expect("legacy primary present");
@@ -402,8 +402,8 @@ async fn drive_compose_full_flow(h: &E2eHarness, name: &str, endpoint: &str, api
     // the `Prefix(settings/accounts/<name>)` binding doesn't carry
     // `accounts.compose.open`.
     h.write_path(
-        &oxpath!("ui", "settings", "focused"),
-        &oxpath!("settings", "accounts"),
+        &path!("ui", "settings", "focused"),
+        &path!("settings", "accounts"),
     )
     .await;
 
@@ -464,8 +464,8 @@ async fn add_account_create_flow() {
     // Focus on the Accounts header so `a` resolves to
     // accounts.compose.open via Prefix(settings/accounts).
     h.write_path(
-        &oxpath!("ui", "settings", "focused"),
-        &oxpath!("settings", "accounts"),
+        &path!("ui", "settings", "focused"),
+        &path!("settings", "accounts"),
     )
     .await;
 
@@ -487,7 +487,7 @@ async fn add_account_create_flow() {
     let comp = ox_kernel::PathComponent::try_new(&path_id).unwrap();
     let account: AccountConfig = h
         .client
-        .read_typed(&oxpath!("config", "gate", "accounts", comp.clone()))
+        .read_typed(&path!("config", "gate", "accounts", comp.clone()))
         .await
         .expect("read account record")
         .expect("account record present after synchronous create");
@@ -502,7 +502,7 @@ async fn add_account_create_flow() {
     // auth=XApiKey (cycled by `l` from null), version=anthropic default.
     let provider: ProviderConfig = h
         .client
-        .read_typed(&oxpath!("config", "gate", "providers", comp.clone()))
+        .read_typed(&path!("config", "gate", "providers", comp.clone()))
         .await
         .expect("read provider record")
         .expect("provider record present after synchronous create");
@@ -514,7 +514,7 @@ async fn add_account_create_flow() {
     // a key.
     let key: ApiKey = h
         .client
-        .read_typed(&oxpath!("secret", "keys", comp.clone()))
+        .read_typed(&path!("secret", "keys", comp.clone()))
         .await
         .expect("read secret key")
         .expect("secret key present after commit with XApiKey auth");
@@ -524,13 +524,13 @@ async fn add_account_create_flow() {
     // ancestor chain back to settings/index where the page renderer
     // lives.
     let focused = h.focused().await.expect("focused present");
-    assert_eq!(focused, oxpath!("settings", "accounts", comp.clone()));
+    assert_eq!(focused, path!("settings", "accounts", comp.clone()));
 
     // Expanded set must include both settings/accounts and the new
     // account's row so the user sees the field rows immediately.
     let expanded: Vec<String> = h
         .client
-        .read_typed(&oxpath!("ui", "settings", "expanded"))
+        .read_typed(&path!("ui", "settings", "expanded"))
         .await
         .expect("read expanded")
         .flatten()
@@ -553,13 +553,13 @@ async fn add_account_create_flow() {
     // signal — so a cursor not in the form means compose is inactive.
     let focused: Option<Vec<String>> = h
         .client
-        .read_typed(&oxpath!("ui", "settings", "focused"))
+        .read_typed(&path!("ui", "settings", "focused"))
         .await
         .expect("read focused")
         .flatten();
     let in_form = focused
         .as_ref()
-        .map(|p| p.len() >= 2 && p[0] == "settings" && p[1] == "_compose_form")
+        .map(|p| p.len() >= 2 && &p[0] == "settings" && &p[1] == "_compose_form")
         .unwrap_or(false);
     assert!(
         !in_form,
@@ -581,12 +581,12 @@ async fn delete_account_flow() {
     // focus cursor's ancestor chain, so `Prefix(settings/accounts)`
     // bindings fire here.
     h.write_path(
-        &oxpath!("ui", "settings", "focused"),
-        &oxpath!("settings", "accounts"),
+        &path!("ui", "settings", "focused"),
+        &path!("settings", "accounts"),
     )
     .await;
     h.write_typed(
-        &oxpath!("ui", "settings", "accounts", "selected"),
+        &path!("ui", "settings", "accounts", "selected"),
         &Some("anthropic".to_string()),
     )
     .await;
@@ -599,19 +599,14 @@ async fn delete_account_flow() {
     assert!(matches!(h.dispatch("d").await, KeyDispatchOutcome::Handled));
     let target: Option<String> = h
         .client
-        .read_typed(&oxpath!(
-            "ui",
-            "settings",
-            "pending_delete",
-            "target_account"
-        ))
+        .read_typed(&path!("ui", "settings", "pending_delete", "target_account"))
         .await
         .ok()
         .flatten();
     assert_eq!(target.as_deref(), Some("anthropic"));
     assert_eq!(
         h.current_cursor().await.expect("cursor"),
-        oxpath!("settings", "_confirm_delete"),
+        path!("settings", "_confirm_delete"),
     );
 
     // `y` — confirm delete. The CLI's null-write removes the account
@@ -620,7 +615,7 @@ async fn delete_account_flow() {
     assert!(matches!(h.dispatch("y").await, KeyDispatchOutcome::Handled));
 
     let comp = ox_kernel::PathComponent::try_new("anthropic").unwrap();
-    let acct_path = oxpath!("config", "gate", "accounts", comp);
+    let acct_path = path!("config", "gate", "accounts", comp);
     let gone = poll_until(|| async {
         match h.client.read(&acct_path).await {
             Ok(None) => Some(()),
@@ -642,7 +637,7 @@ async fn delete_account_flow() {
     let cleared = poll_until(|| async {
         let opt: Option<Option<String>> = h
             .client
-            .read_typed(&oxpath!("ui", "settings", "accounts", "selected"))
+            .read_typed(&path!("ui", "settings", "accounts", "selected"))
             .await
             .ok();
         match opt {
@@ -661,15 +656,10 @@ async fn delete_account_flow() {
     // never moved it. The confirm-delete subtree (target_account +
     // cursor_saved) is cleared by accounts.confirm.delete.
     let cursor = h.current_cursor().await.expect("focus");
-    assert_eq!(cursor, oxpath!("settings", "accounts"));
+    assert_eq!(cursor, path!("settings", "accounts"));
     let target_after: Option<String> = h
         .client
-        .read_typed(&oxpath!(
-            "ui",
-            "settings",
-            "pending_delete",
-            "target_account"
-        ))
+        .read_typed(&path!("ui", "settings", "pending_delete", "target_account"))
         .await
         .ok()
         .flatten();
@@ -694,12 +684,12 @@ async fn test_account_progresses_status() {
     // Focus at the detail page so `Prefix(settings/accounts)` bindings
     // are on the dispatcher's scope path.
     h.write_path(
-        &oxpath!("ui", "settings", "focused"),
-        &oxpath!("settings", "accounts", "_detail"),
+        &path!("ui", "settings", "focused"),
+        &path!("settings", "accounts", "_detail"),
     )
     .await;
     h.write_typed(
-        &oxpath!("ui", "settings", "accounts", "selected"),
+        &path!("ui", "settings", "accounts", "selected"),
         &Some("anthropic".to_string()),
     )
     .await;
@@ -711,7 +701,7 @@ async fn test_account_progresses_status() {
     assert!(matches!(h.dispatch("t").await, KeyDispatchOutcome::Handled));
 
     let comp = ox_kernel::PathComponent::try_new("anthropic").unwrap();
-    let status_path = oxpath!("config", "gate", "accounts", comp, "test_status");
+    let status_path = path!("config", "gate", "accounts", comp, "test_status");
 
     // The Success transition is the load-bearing one — it proves the
     // spawned task ran end-to-end. Wait for it.
@@ -783,12 +773,12 @@ async fn refresh_writes_catalog() {
     // command reads `selected: Option<ModelKey>` and pulls `account`
     // off it.
     h.write_path(
-        &oxpath!("ui", "settings", "focused"),
-        &oxpath!("settings", "models"),
+        &path!("ui", "settings", "focused"),
+        &path!("settings", "models"),
     )
     .await;
     h.write_typed(
-        &oxpath!("ui", "settings", "models", "selected"),
+        &path!("ui", "settings", "models", "selected"),
         &Some(ModelKey {
             account: "anthropic".to_string(),
             model_id: "placeholder".to_string(),
@@ -800,8 +790,8 @@ async fn refresh_writes_catalog() {
     assert!(matches!(h.dispatch("r").await, KeyDispatchOutcome::Handled));
 
     let comp = ox_kernel::PathComponent::try_new("anthropic").unwrap();
-    let models_path = oxpath!("config", "gate", "accounts", comp.clone(), "models");
-    let refresh_status_path = oxpath!("config", "gate", "accounts", comp, "refresh_status");
+    let models_path = path!("config", "gate", "accounts", comp.clone(), "models");
+    let refresh_status_path = path!("config", "gate", "accounts", comp, "refresh_status");
 
     let saved = poll_until(|| async {
         h.client
@@ -863,10 +853,10 @@ async fn production_ui_store_routes_settings_writes() {
     let client = broker.client();
 
     let mut mounts = Vec::new();
-    mounts.push(broker.mount(oxpath!("settings"), LocalConfig::new()).await);
-    mounts.push(broker.mount(oxpath!("config"), LocalConfig::new()).await);
-    mounts.push(broker.mount(oxpath!("ui"), UiStore::new()).await);
-    mounts.push(broker.mount(oxpath!("secret"), LocalConfig::new()).await);
+    mounts.push(broker.mount(path!("settings"), LocalConfig::new()).await);
+    mounts.push(broker.mount(path!("config"), LocalConfig::new()).await);
+    mounts.push(broker.mount(path!("ui"), UiStore::new()).await);
+    mounts.push(broker.mount(path!("secret"), LocalConfig::new()).await);
 
     let mut renderers = RendererRegistry::new();
     ox_cli::settings::renderers::register_all(&mut renderers);
@@ -884,8 +874,8 @@ async fn production_ui_store_routes_settings_writes() {
     // the dispatcher's scope path is the focus cursor.
     client
         .write(
-            &oxpath!("ui", "settings", "focused"),
-            Record::parsed(path_to_value(&oxpath!("settings", "accounts"))),
+            &path!("ui", "settings", "focused"),
+            Record::parsed(path_to_value(&path!("settings", "accounts"))),
         )
         .await
         .expect(
@@ -894,7 +884,7 @@ async fn production_ui_store_routes_settings_writes() {
         );
 
     let mut snap = fetch_settings_view_state(&client).await;
-    let cursor = oxpath!("settings", "index");
+    let cursor = path!("settings", "index");
     let outcome = send_key(
         &client,
         "j",
@@ -913,7 +903,7 @@ async fn production_ui_store_routes_settings_writes() {
     // settings sub-store. `None` here would mean the sub-store has
     // been removed or replaced with a typed-command surface.
     let focused_record = client
-        .read(&oxpath!("ui", "settings", "focused"))
+        .read(&path!("ui", "settings", "focused"))
         .await
         .expect("read focused")
         .expect(
@@ -951,7 +941,7 @@ async fn cycling_protocol_with_toml_loaded_flat_keys_advances_through_broker() {
     let comp = ox_kernel::PathComponent::try_new("LMStudio").unwrap();
     h.client
         .write(
-            &oxpath!("config", "gate", "accounts", comp.clone(), "provider"),
+            &path!("config", "gate", "accounts", comp.clone(), "provider"),
             Record::parsed(Value::String("LMStudio".into())),
         )
         .await
@@ -959,28 +949,28 @@ async fn cycling_protocol_with_toml_loaded_flat_keys_advances_through_broker() {
     // Provider `LMStudio` record as flat sub-keys, dialect=openai.
     h.client
         .write(
-            &oxpath!("config", "gate", "providers", comp.clone(), "dialect"),
+            &path!("config", "gate", "providers", comp.clone(), "dialect"),
             Record::parsed(Value::String("openai".into())),
         )
         .await
         .expect("write dialect");
     h.client
         .write(
-            &oxpath!("config", "gate", "providers", comp.clone(), "endpoint"),
+            &path!("config", "gate", "providers", comp.clone(), "endpoint"),
             Record::parsed(Value::String("http://127.0.0.1:1234".into())),
         )
         .await
         .expect("write endpoint");
     h.client
         .write(
-            &oxpath!("config", "gate", "providers", comp.clone(), "auth"),
+            &path!("config", "gate", "providers", comp.clone(), "auth"),
             Record::parsed(Value::String("none".into())),
         )
         .await
         .expect("write auth");
     h.client
         .write(
-            &oxpath!("config", "gate", "providers", comp.clone(), "version"),
+            &path!("config", "gate", "providers", comp.clone(), "version"),
             Record::parsed(Value::String(String::new())),
         )
         .await
@@ -988,7 +978,7 @@ async fn cycling_protocol_with_toml_loaded_flat_keys_advances_through_broker() {
 
     h.client
         .write(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             Record::parsed(ox_cli::settings::visible_rows::expanded_set_to_value(&[
                 "settings/accounts".to_string(),
                 "settings/accounts/LMStudio".to_string(),
@@ -998,8 +988,8 @@ async fn cycling_protocol_with_toml_loaded_flat_keys_advances_through_broker() {
         .expect("write expanded set");
 
     h.write_path(
-        &oxpath!("ui", "settings", "focused"),
-        &oxpath!("settings", "accounts", comp.clone(), "protocol"),
+        &path!("ui", "settings", "focused"),
+        &path!("settings", "accounts", comp.clone(), "protocol"),
     )
     .await;
 
@@ -1007,7 +997,7 @@ async fn cycling_protocol_with_toml_loaded_flat_keys_advances_through_broker() {
     assert!(matches!(h.dispatch("l").await, KeyDispatchOutcome::Handled));
     let pc1: ProviderConfig = h
         .client
-        .read_typed(&oxpath!("config", "gate", "providers", comp.clone()))
+        .read_typed(&path!("config", "gate", "providers", comp.clone()))
         .await
         .expect("read provider")
         .expect("provider present after first cycle");
@@ -1025,7 +1015,7 @@ async fn cycling_protocol_with_toml_loaded_flat_keys_advances_through_broker() {
     assert!(matches!(h.dispatch("l").await, KeyDispatchOutcome::Handled));
     let pc2: ProviderConfig = h
         .client
-        .read_typed(&oxpath!("config", "gate", "providers", comp))
+        .read_typed(&path!("config", "gate", "providers", comp))
         .await
         .expect("read provider")
         .expect("provider present after second cycle");
@@ -1051,7 +1041,7 @@ async fn cycling_protocol_mutates_bound_provider_dialect_not_account() {
     // currently speaks the openai dialect.
     let acct_comp = ox_kernel::PathComponent::try_new("local").unwrap();
     h.write_typed(
-        &oxpath!("config", "gate", "accounts", acct_comp.clone()),
+        &path!("config", "gate", "accounts", acct_comp.clone()),
         &AccountConfig {
             provider: "LMStudio".to_string(),
             ..Default::default()
@@ -1060,7 +1050,7 @@ async fn cycling_protocol_mutates_bound_provider_dialect_not_account() {
     .await;
     let prov_comp = ox_kernel::PathComponent::try_new("LMStudio").unwrap();
     h.write_typed(
-        &oxpath!("config", "gate", "providers", prov_comp.clone()),
+        &path!("config", "gate", "providers", prov_comp.clone()),
         &ProviderConfig {
             dialect: "openai".to_string(),
             endpoint: "http://127.0.0.1:1234".to_string(),
@@ -1074,7 +1064,7 @@ async fn cycling_protocol_mutates_bound_provider_dialect_not_account() {
     // visible enumeration cycle_field walks.
     h.client
         .write(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             Record::parsed(ox_cli::settings::visible_rows::expanded_set_to_value(&[
                 "settings/accounts".to_string(),
                 "settings/accounts/local".to_string(),
@@ -1084,8 +1074,8 @@ async fn cycling_protocol_mutates_bound_provider_dialect_not_account() {
         .expect("write expanded set");
 
     h.write_path(
-        &oxpath!("ui", "settings", "focused"),
-        &oxpath!("settings", "accounts", acct_comp.clone(), "protocol"),
+        &path!("ui", "settings", "focused"),
+        &path!("settings", "accounts", acct_comp.clone(), "protocol"),
     )
     .await;
 
@@ -1095,7 +1085,7 @@ async fn cycling_protocol_mutates_bound_provider_dialect_not_account() {
     // idx 1 in [anthropic, openai]). Endpoint and auth survive.
     let pc: ProviderConfig = h
         .client
-        .read_typed(&oxpath!("config", "gate", "providers", prov_comp))
+        .read_typed(&path!("config", "gate", "providers", prov_comp))
         .await
         .expect("read provider")
         .expect("provider present");
@@ -1109,7 +1099,7 @@ async fn cycling_protocol_mutates_bound_provider_dialect_not_account() {
     // points at LMStudio, just with a different dialect now.
     let acct: AccountConfig = h
         .client
-        .read_typed(&oxpath!("config", "gate", "accounts", acct_comp))
+        .read_typed(&path!("config", "gate", "accounts", acct_comp))
         .await
         .expect("read account")
         .expect("account present");
@@ -1142,7 +1132,7 @@ async fn render_settings_to_string(h: &E2eHarness, width: u16, height: u16) -> S
 
     // Same fetch as the production event loop.
     let mut snap = fetch_settings_view_state(&h.client).await;
-    let cursor: Path = h.current_cursor().await.unwrap_or_else(|| oxpath!());
+    let cursor: Path = h.current_cursor().await.unwrap_or_else(|| path!());
 
     let theme = Theme::default();
     let view = {
@@ -1204,7 +1194,7 @@ async fn protocol_cycle_visibly_toggles_in_rendered_carousel() {
     let acct_comp = ox_kernel::PathComponent::try_new("LMStudio").unwrap();
     h.client
         .write(
-            &oxpath!("config", "gate", "accounts", acct_comp.clone(), "provider"),
+            &path!("config", "gate", "accounts", acct_comp.clone(), "provider"),
             Record::parsed(Value::String("LMStudio".into())),
         )
         .await
@@ -1219,7 +1209,7 @@ async fn protocol_cycle_visibly_toggles_in_rendered_carousel() {
         let sub_comp = ox_kernel::PathComponent::try_new(sub).unwrap();
         h.client
             .write(
-                &oxpath!("config", "gate", "providers", prov_comp.clone(), sub_comp),
+                &path!("config", "gate", "providers", prov_comp.clone(), sub_comp),
                 Record::parsed(Value::String(val.into())),
             )
             .await
@@ -1228,7 +1218,7 @@ async fn protocol_cycle_visibly_toggles_in_rendered_carousel() {
 
     h.client
         .write(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             Record::parsed(ox_cli::settings::visible_rows::expanded_set_to_value(&[
                 "settings/accounts".to_string(),
                 "settings/accounts/LMStudio".to_string(),
@@ -1240,8 +1230,8 @@ async fn protocol_cycle_visibly_toggles_in_rendered_carousel() {
     // the renderer walks its ancestor chain to find the settings/index
     // page renderer.
     h.write_path(
-        &oxpath!("ui", "settings", "focused"),
-        &oxpath!("settings", "accounts", acct_comp.clone(), "protocol"),
+        &path!("ui", "settings", "focused"),
+        &path!("settings", "accounts", acct_comp.clone(), "protocol"),
     )
     .await;
 
@@ -1285,8 +1275,8 @@ async fn add_connection_form_accepts_field_by_field_input() {
     // Focus on settings/accounts so the `a` binding
     // (Prefix(settings/accounts)) resolves to accounts.compose.open.
     h.write_path(
-        &oxpath!("ui", "settings", "focused"),
-        &oxpath!("settings", "accounts"),
+        &path!("ui", "settings", "focused"),
+        &path!("settings", "accounts"),
     )
     .await;
 
@@ -1378,7 +1368,7 @@ async fn add_connection_form_accepts_field_by_field_input() {
 
     let account: AccountConfig = h
         .client
-        .read_typed(&oxpath!("config", "gate", "accounts", comp.clone()))
+        .read_typed(&path!("config", "gate", "accounts", comp.clone()))
         .await
         .expect("read account record")
         .expect("account record present after commit");
@@ -1394,7 +1384,7 @@ async fn add_connection_form_accepts_field_by_field_input() {
 
     let provider: ProviderConfig = h
         .client
-        .read_typed(&oxpath!("config", "gate", "providers", comp.clone()))
+        .read_typed(&path!("config", "gate", "providers", comp.clone()))
         .await
         .expect("read provider record")
         .expect("provider record present at namecoded path");
@@ -1404,7 +1394,7 @@ async fn add_connection_form_accepts_field_by_field_input() {
 
     let key: ApiKey = h
         .client
-        .read_typed(&oxpath!("secret", "keys", comp.clone()))
+        .read_typed(&path!("secret", "keys", comp.clone()))
         .await
         .expect("read api key")
         .expect("secret key present for XApiKey auth");
@@ -1416,13 +1406,13 @@ async fn add_connection_form_accepts_field_by_field_input() {
     // clears the data, but the focus state is encoded in the cursor.
     let focused: Option<Vec<String>> = h
         .client
-        .read_typed(&oxpath!("ui", "settings", "focused"))
+        .read_typed(&path!("ui", "settings", "focused"))
         .await
         .expect("read focused")
         .flatten();
     let in_form = focused
         .as_ref()
-        .map(|p| p.len() >= 2 && p[0] == "settings" && p[1] == "_compose_form")
+        .map(|p| p.len() >= 2 && &p[0] == "settings" && &p[1] == "_compose_form")
         .unwrap_or(false);
     assert!(
         !in_form,
@@ -1458,7 +1448,7 @@ async fn delete_account_removes_connection_from_rendered_frame() {
     // section never asks the renderer to enumerate accounts.
     h.client
         .write(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             Record::parsed(ox_cli::settings::visible_rows::expanded_set_to_value(&[
                 "settings/accounts".to_string(),
             ])),
@@ -1473,12 +1463,12 @@ async fn delete_account_removes_connection_from_rendered_frame() {
     // is unambiguous.
     let acct_comp = ox_kernel::PathComponent::try_new("anthropic").unwrap();
     h.write_path(
-        &oxpath!("ui", "settings", "focused"),
-        &oxpath!("settings", "accounts", acct_comp.clone()),
+        &path!("ui", "settings", "focused"),
+        &path!("settings", "accounts", acct_comp.clone()),
     )
     .await;
     h.write_typed(
-        &oxpath!("ui", "settings", "accounts", "selected"),
+        &path!("ui", "settings", "accounts", "selected"),
         &Some("anthropic".to_string()),
     )
     .await;
@@ -1497,12 +1487,7 @@ async fn delete_account_removes_connection_from_rendered_frame() {
     assert!(matches!(h.dispatch("d").await, KeyDispatchOutcome::Handled));
     let target: Option<String> = h
         .client
-        .read_typed(&oxpath!(
-            "ui",
-            "settings",
-            "pending_delete",
-            "target_account"
-        ))
+        .read_typed(&path!("ui", "settings", "pending_delete", "target_account"))
         .await
         .ok()
         .flatten();
@@ -1527,7 +1512,7 @@ async fn delete_account_removes_connection_from_rendered_frame() {
 
     // Wait until the account record is at least Null at its canonical
     // path — proves the synchronous delete write landed.
-    let acct_path = oxpath!("config", "gate", "accounts", acct_comp.clone());
+    let acct_path = path!("config", "gate", "accounts", acct_comp.clone());
     let _ = poll_until(|| async {
         match h.client.read(&acct_path).await {
             Ok(None) => Some(()),
@@ -1546,7 +1531,7 @@ async fn delete_account_removes_connection_from_rendered_frame() {
     let _ = poll_until(|| async {
         match h
             .client
-            .read(&oxpath!("secret", "keys", acct_comp.clone()))
+            .read(&path!("secret", "keys", acct_comp.clone()))
             .await
         {
             Ok(None) => Some(()),
@@ -1579,16 +1564,16 @@ async fn delete_account_removes_connection_from_rendered_frame() {
     // the most direct proxy for what the renderer sees.
     let entries = h
         .client
-        .read_subtree(&oxpath!("config", "gate", "accounts"))
+        .read_subtree(&path!("config", "gate", "accounts"))
         .await
         .expect("read_subtree accounts");
     let mut child_names: Vec<String> = Vec::new();
-    let prefix_len = oxpath!("config", "gate", "accounts").len();
+    let prefix_len = path!("config", "gate", "accounts").len();
     for path in entries.keys() {
         if path.len() <= prefix_len {
             continue;
         }
-        let segment = path[prefix_len].clone();
+        let segment = path[prefix_len].to_string();
         if !child_names.contains(&segment) {
             child_names.push(segment);
         }
@@ -1600,7 +1585,7 @@ async fn delete_account_removes_connection_from_rendered_frame() {
     );
     let key_after = h
         .client
-        .read(&oxpath!("secret", "keys", acct_comp.clone()))
+        .read(&path!("secret", "keys", acct_comp.clone()))
         .await
         .expect("read secret key");
     let key_gone = match key_after {
@@ -1613,7 +1598,7 @@ async fn delete_account_removes_connection_from_rendered_frame() {
     );
     let prov_after = h
         .client
-        .read(&oxpath!("config", "gate", "providers", acct_comp))
+        .read(&path!("config", "gate", "providers", acct_comp))
         .await
         .expect("read provider");
     let prov_gone = match prov_after {
@@ -1657,7 +1642,7 @@ async fn auth_cycle_renders_bearer_token_after_one_cycle() {
     // Auth field row is visible in the rendered tree.
     h.client
         .write(
-            &oxpath!("ui", "settings", "expanded"),
+            &path!("ui", "settings", "expanded"),
             Record::parsed(ox_cli::settings::visible_rows::expanded_set_to_value(&[
                 "settings/accounts".to_string(),
                 "settings/accounts/anthropic".to_string(),
@@ -1669,8 +1654,8 @@ async fn auth_cycle_renders_bearer_token_after_one_cycle() {
     // Focus on the Auth field row so `cycle.field.next` (bound to `l`)
     // routes to `selector_cycle_auth_dir`.
     h.write_path(
-        &oxpath!("ui", "settings", "focused"),
-        &oxpath!("settings", "accounts", acct_comp.clone(), "auth"),
+        &path!("ui", "settings", "focused"),
+        &path!("settings", "accounts", acct_comp.clone(), "auth"),
     )
     .await;
 
@@ -1688,7 +1673,7 @@ async fn auth_cycle_renders_bearer_token_after_one_cycle() {
     // command, not the renderer. (Spoiler: it is the renderer.)
     let pc: ProviderConfig = h
         .client
-        .read_typed(&oxpath!("config", "gate", "providers", acct_comp.clone()))
+        .read_typed(&path!("config", "gate", "providers", acct_comp.clone()))
         .await
         .expect("read provider")
         .expect("provider present after cycle");
@@ -1754,8 +1739,8 @@ async fn add_connections_have_independent_providers() {
     // Focus on the Accounts header so the `a` binding
     // (Prefix(settings/accounts)) resolves to accounts.compose.open.
     h.write_path(
-        &oxpath!("ui", "settings", "focused"),
-        &oxpath!("settings", "accounts"),
+        &path!("ui", "settings", "focused"),
+        &path!("settings", "accounts"),
     )
     .await;
 
@@ -1770,7 +1755,7 @@ async fn add_connections_have_independent_providers() {
     let alpha_comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
     let account_alpha: AccountConfig = h
         .client
-        .read_typed(&oxpath!("config", "gate", "accounts", alpha_comp.clone()))
+        .read_typed(&path!("config", "gate", "accounts", alpha_comp.clone()))
         .await
         .expect("read alpha account record")
         .expect("alpha account record present after create");
@@ -1781,7 +1766,7 @@ async fn add_connections_have_independent_providers() {
     let beta_comp = ox_kernel::PathComponent::try_new("beta").unwrap();
     let account_beta: AccountConfig = h
         .client
-        .read_typed(&oxpath!("config", "gate", "accounts", beta_comp.clone()))
+        .read_typed(&path!("config", "gate", "accounts", beta_comp.clone()))
         .await
         .expect("read beta account record")
         .expect("beta account record present after create");
@@ -1790,7 +1775,7 @@ async fn add_connections_have_independent_providers() {
     // failure output makes the bug shape obvious. read_subtree returns a
     // flat map keyed by absolute path; the first segment past the prefix
     // is the provider record's name.
-    let providers_prefix = oxpath!("config", "gate", "providers");
+    let providers_prefix = path!("config", "gate", "providers");
     let provider_entries = h
         .client
         .read_subtree(&providers_prefix)
@@ -1802,7 +1787,7 @@ async fn add_connections_have_independent_providers() {
         if path.len() <= prefix_len {
             continue;
         }
-        let segment = path[prefix_len].clone();
+        let segment = path[prefix_len].to_string();
         if !provider_child_names.contains(&segment) {
             provider_child_names.push(segment);
         }
@@ -1842,13 +1827,13 @@ async fn add_connections_have_independent_providers() {
     // would have stomped on alpha's endpoint when it ran.
     let alpha_provider: ProviderConfig = h
         .client
-        .read_typed(&oxpath!("config", "gate", "providers", alpha_comp.clone()))
+        .read_typed(&path!("config", "gate", "providers", alpha_comp.clone()))
         .await
         .expect("read alpha provider")
         .expect("alpha provider record present after beta create");
     let beta_provider: ProviderConfig = h
         .client
-        .read_typed(&oxpath!("config", "gate", "providers", beta_comp.clone()))
+        .read_typed(&path!("config", "gate", "providers", beta_comp.clone()))
         .await
         .expect("read beta provider")
         .expect("beta provider record present after beta create");

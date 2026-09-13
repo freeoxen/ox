@@ -106,13 +106,13 @@ impl CompletionTransport for FakeTransport {
         let mut inner = self.inner.lock().unwrap();
         inner.calls += 1;
 
-        if let Some(cap) = inner.max_calls {
-            if inner.calls > cap {
-                return Err(format!(
-                    "FakeTransport: called {} times, cap is {}",
-                    inner.calls, cap
-                ));
-            }
+        if let Some(cap) = inner.max_calls
+            && inner.calls > cap
+        {
+            return Err(format!(
+                "FakeTransport: called {} times, cap is {}",
+                inner.calls, cap
+            ));
         }
         if Some(inner.calls) == inner.fail_at {
             return Err("FakeTransport: scripted failure".to_string());

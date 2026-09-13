@@ -21,14 +21,12 @@ pub fn last_session() -> Result<Option<PathBuf>, String> {
     let entries = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().is_some_and(|e| e == "json") {
-            if let Ok(meta) = path.metadata() {
-                if let Ok(modified) = meta.modified() {
-                    if best.as_ref().is_none_or(|(_, t)| modified > *t) {
-                        best = Some((path, modified));
-                    }
-                }
-            }
+        if path.extension().is_some_and(|e| e == "json")
+            && let Ok(meta) = path.metadata()
+            && let Ok(modified) = meta.modified()
+            && best.as_ref().is_none_or(|(_, t)| modified > *t)
+        {
+            best = Some((path, modified));
         }
     }
     Ok(best.map(|(p, _)| p))

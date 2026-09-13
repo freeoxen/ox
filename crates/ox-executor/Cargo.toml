@@ -12,7 +12,6 @@ publish = false
 
 [dependencies]
 parking_lot = { workspace = true }
-ox-path = { workspace = true }
 ox-context = { workspace = true }
 ox-kernel = { workspace = true }
 ox-gate = { workspace = true }

@@ -63,7 +63,7 @@ impl<B: Reader + Writer + Send, E: HostEffects> HostStore<B, E> {
         }
 
         // Route tools/* reads to ToolStore via effects.
-        if !path.is_empty() && path[0] == "tools" {
+        if !path.is_empty() && &path[0] == "tools" {
             let sub = path.slice(1, path.len());
             return self.effects.tool_store().read(&sub);
         }
@@ -82,11 +82,7 @@ impl<B: Reader + Writer + Send, E: HostEffects> HostStore<B, E> {
 
     /// Handle a write operation, intercepting effectful paths.
     pub fn handle_write(&mut self, path: &Path, data: Record) -> Result<Path, StoreError> {
-        let prefix = if path.is_empty() {
-            ""
-        } else {
-            path[0].as_str()
-        };
+        let prefix = if path.is_empty() { "" } else { &path[0] };
 
         match prefix {
             "tools" => {
@@ -99,7 +95,7 @@ impl<B: Reader + Writer + Send, E: HostEffects> HostStore<B, E> {
                 // to read through the full namespace.
                 if result_path.iter().next().is_some_and(|c| c == "exec") {
                     let mut components = vec!["tools".to_string()];
-                    components.extend(result_path.iter().cloned());
+                    components.extend(result_path.iter().map(str::to_owned));
                     Ok(Path::from_components(components))
                 } else {
                     Ok(result_path)
@@ -133,7 +129,7 @@ impl<B: Reader + Writer + Send, E: HostEffects> HostStore<B, E> {
             .as_value()
             .ok_or_else(|| StoreError::store("events", "emit", "expected parsed record"))?
             .clone();
-        let json = structfs_serde_store::value_to_json(value);
+        let json = structfs_serde_store::value_to_json(value)?;
         let event =
             json_to_agent_event(json).map_err(|e| StoreError::store("events", "emit", e))?;
 
@@ -371,7 +367,8 @@ mod tests {
         let result = store.handle_read(&path!("prompt")).unwrap();
         assert!(result.is_some());
         let json =
-            structfs_serde_store::value_to_json(result.unwrap().as_value().cloned().unwrap());
+            structfs_serde_store::value_to_json(result.unwrap().as_value().cloned().unwrap())
+                .unwrap();
         let request: ox_kernel::CompletionRequest = serde_json::from_value(json).unwrap();
         assert_eq!(request.model, "test-model");
         assert_eq!(request.system, "You are a test agent.");

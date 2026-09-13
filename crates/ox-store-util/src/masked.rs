@@ -1,60 +1,13 @@
-//! Masked — path-based masking wrapper that redacts specified paths on read.
+//! Re-export the upstream StructFS store combinator.
 
-use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value};
-
-/// Wraps a Reader, returning a mask value for specified paths.
-///
-/// Use this to hide sensitive data (API keys) when exposing config
-/// to display layers.
-pub struct Masked<S> {
-    inner: S,
-    masked_paths: Vec<String>,
-    mask_value: Value,
-}
-
-impl<S> Masked<S> {
-    /// Create a Masked wrapper.
-    ///
-    /// `masked_paths` are path strings to match against. A read path
-    /// matches if it starts with any masked path.
-    pub fn new(inner: S, masked_paths: Vec<String>, mask_value: Value) -> Self {
-        Self {
-            inner,
-            masked_paths,
-            mask_value,
-        }
-    }
-
-    fn is_masked(&self, path: &Path) -> bool {
-        let path_str = path.to_string();
-        self.masked_paths
-            .iter()
-            .any(|masked| path_str.starts_with(masked))
-    }
-}
-
-impl<S: Reader> Reader for Masked<S> {
-    fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
-        if self.is_masked(from) {
-            // Only return mask if the underlying value exists
-            match self.inner.read(from)? {
-                Some(_) => Ok(Some(Record::parsed(self.mask_value.clone()))),
-                None => Ok(None),
-            }
-        } else {
-            self.inner.read(from)
-        }
-    }
-}
-
-unsafe impl<S: Send> Send for Masked<S> {}
-unsafe impl<S: Sync> Sync for Masked<S> {}
+pub use structfs_core_store::Masked;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use structfs_core_store::path;
+    use structfs_core_store::{Error as StoreError, Path, PathPattern, Reader, Record, Value};
 
     struct MapStore {
         data: BTreeMap<String, Value>,
@@ -83,9 +36,9 @@ mod tests {
 
     #[test]
     fn unmasked_path_passes_through() {
-        let mut masked = Masked::new(
+        let mut masked = Masked::with_mask(
             test_store(),
-            vec!["gate/api_key".into()],
+            vec![PathPattern::prefix(path!("gate/api_key"))],
             Value::String("***".into()),
         );
         let result = masked.read(&path!("gate/model")).unwrap().unwrap();
@@ -94,9 +47,9 @@ mod tests {
 
     #[test]
     fn masked_path_returns_mask_value() {
-        let mut masked = Masked::new(
+        let mut masked = Masked::with_mask(
             test_store(),
-            vec!["gate/api_key".into()],
+            vec![PathPattern::prefix(path!("gate/api_key"))],
             Value::String("***".into()),
         );
         let result = masked.read(&path!("gate/api_key")).unwrap().unwrap();
@@ -105,9 +58,9 @@ mod tests {
 
     #[test]
     fn masked_nonexistent_returns_none() {
-        let mut masked = Masked::new(
+        let mut masked = Masked::with_mask(
             test_store(),
-            vec!["gate/api_key".into()],
+            vec![PathPattern::prefix(path!("gate/api_key"))],
             Value::String("***".into()),
         );
         let result = masked.read(&Path::parse("nonexistent").unwrap()).unwrap();
@@ -116,9 +69,12 @@ mod tests {
 
     #[test]
     fn multiple_masked_paths() {
-        let mut masked = Masked::new(
+        let mut masked = Masked::with_mask(
             test_store(),
-            vec!["gate/api_key".into(), "gate/model".into()],
+            vec![
+                PathPattern::prefix(path!("gate/api_key")),
+                PathPattern::prefix(path!("gate/model")),
+            ],
             Value::String("REDACTED".into()),
         );
         let key = masked.read(&path!("gate/api_key")).unwrap().unwrap();

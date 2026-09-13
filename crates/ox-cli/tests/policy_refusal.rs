@@ -17,8 +17,8 @@ use std::time::Duration;
 
 use ox_broker::ClientHandle;
 use ox_kernel::PathComponent;
-use ox_path::oxpath;
 use structfs_core_store::Value;
+use structfs_core_store::path;
 
 use ox_cli::app::App;
 use ox_cli::bindings::default_bindings;
@@ -29,7 +29,7 @@ use ox_cli::broker_setup;
 /// writes synchronously before exiting, so this should land quickly.
 async fn wait_for_refusal_in_history(client: &ClientHandle, thread_id: &str) -> Option<String> {
     let tid = PathComponent::try_new(thread_id).expect("valid thread id");
-    let history_path = oxpath!("threads", tid, "history", "messages");
+    let history_path = path!("threads", tid, "history", "messages");
 
     let deadline = std::time::Instant::now() + Duration::from_secs(3);
     while std::time::Instant::now() < deadline {

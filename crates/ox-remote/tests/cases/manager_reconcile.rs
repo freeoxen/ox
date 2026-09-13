@@ -3,7 +3,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use ox_broker::async_store::{AsyncReader, AsyncWriter};
+use structfs_core_store::{DetachedReader, DetachedWriter};
+
 use ox_inbox::InboxStore;
 use ox_inbox::remote_state::{
     RemoteAction, RemoteCleanupState, RemoteNodeDesiredState, RemoteNodeIntent,
@@ -45,7 +46,7 @@ struct FakeProvider(Mutex<ProviderState>);
 #[async_trait]
 impl StorePort for FakeProvider {
     async fn read(&self, path: &Path) -> Result<Option<Record>, StoreError> {
-        let parts: Vec<&str> = path.iter().map(String::as_str).collect();
+        let parts: Vec<&str> = path.iter().collect();
         let mut state = self.0.lock().unwrap();
         if let Some(behavior) = state
             .read_sequences
@@ -91,7 +92,7 @@ impl StorePort for FakeProvider {
     }
 
     async fn write(&self, path: &Path, record: Record) -> Result<Path, StoreError> {
-        let parts: Vec<&str> = path.iter().map(String::as_str).collect();
+        let parts: Vec<&str> = path.iter().collect();
         let mut state = self.0.lock().unwrap();
         if state.write_errors.contains(&path.to_string()) {
             return Err(StoreError::store(
@@ -254,7 +255,7 @@ impl FakeWorker {
 #[async_trait]
 impl StorePort for FakeWorker {
     async fn read(&self, path: &Path) -> Result<Option<Record>, StoreError> {
-        let parts: Vec<&str> = path.iter().map(String::as_str).collect();
+        let parts: Vec<&str> = path.iter().collect();
         let mut state = self.0.lock().unwrap();
         if let Some(behavior) = state
             .read_sequences
@@ -348,7 +349,7 @@ impl StorePort for FakeWorker {
     }
 
     async fn write(&self, path: &Path, record: Record) -> Result<Path, StoreError> {
-        let parts: Vec<&str> = path.iter().map(String::as_str).collect();
+        let parts: Vec<&str> = path.iter().collect();
         let mut state = self.0.lock().unwrap();
         if state.write_errors.contains(&path.to_string()) {
             return Err(StoreError::store("FakeWorker", "write", "injected failure"));
@@ -518,19 +519,31 @@ async fn manager_structfs_routes_cover_node_conversation_control_and_observation
         node: request().node,
     };
     let node_path = manager
-        .write(&path!("nodes"), parsed(&node_request))
+        .write_detached(&path!("nodes"), parsed(&node_request))
         .await
         .unwrap();
-    let node_id = node_path.iter().nth(1).unwrap().clone();
-    assert!(manager.read(&path!("nodes")).await.unwrap().is_some());
-    let node_storage = ox_inbox::remote_state::remote_item_path("nodes", &node_id).unwrap();
-    assert!(manager.read(&node_storage).await.unwrap().is_some());
-
-    let doctor = Path::parse(&format!("nodes/{node_id}/doctor")).unwrap();
-    assert!(manager.read(&doctor).await.unwrap().is_some());
+    let node_id = node_path.iter().nth(1).unwrap().to_string();
     assert!(
         manager
-            .read(&path!("doctor/provider"))
+            .read_detached(&path!("nodes"))
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let node_storage = ox_inbox::remote_state::remote_item_path("nodes", &node_id).unwrap();
+    assert!(
+        manager
+            .read_detached(&node_storage)
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    let doctor = Path::parse(&format!("nodes/{node_id}/doctor")).unwrap();
+    assert!(manager.read_detached(&doctor).await.unwrap().is_some());
+    assert!(
+        manager
+            .read_detached(&path!("doctor/provider"))
             .await
             .unwrap()
             .is_some()
@@ -539,27 +552,33 @@ async fn manager_structfs_routes_cover_node_conversation_control_and_observation
     let mut start = request();
     start.request_id = "store_start_request".into();
     start.placement = PlacementPolicy::RequireNode {
-        node_id: node_id.clone(),
+        node_id: node_id.to_string(),
     };
     let conversation_path = manager
-        .write(&path!("conversations"), parsed(&start))
+        .write_detached(&path!("conversations"), parsed(&start))
         .await
         .unwrap();
-    let conversation_id = conversation_path.iter().nth(1).unwrap().clone();
+    let conversation_id = conversation_path.iter().nth(1).unwrap().to_string();
     assert!(
         manager
-            .read(&path!("conversations"))
+            .read_detached(&path!("conversations"))
             .await
             .unwrap()
             .is_some()
     );
     let conversation_storage =
         ox_inbox::remote_state::remote_item_path("conversations", &conversation_id).unwrap();
-    assert!(manager.read(&conversation_storage).await.unwrap().is_some());
+    assert!(
+        manager
+            .read_detached(&conversation_storage)
+            .await
+            .unwrap()
+            .is_some()
+    );
 
     let message_path = Path::parse(&format!("conversations/{conversation_id}/messages")).unwrap();
     let message_receipt = manager
-        .write(
+        .write_detached(
             &message_path,
             parsed(&MessageRequest {
                 request_id: "store_message_request".into(),
@@ -573,7 +592,7 @@ async fn manager_structfs_routes_cover_node_conversation_control_and_observation
 
     let approval_path = Path::parse(&format!("conversations/{conversation_id}/approvals")).unwrap();
     let approval_receipt = manager
-        .write(
+        .write_detached(
             &approval_path,
             parsed(&ApprovalRequest {
                 request_id: "store_approval_request".into(),
@@ -588,7 +607,7 @@ async fn manager_structfs_routes_cover_node_conversation_control_and_observation
     let ledger_path = Path::parse(&format!("conversations/{conversation_id}/reconcile")).unwrap();
     assert_eq!(
         manager
-            .write(
+            .write_detached(
                 &ledger_path,
                 parsed(&serde_json::json!({"request_id":"store_ledger_request"})),
             )
@@ -598,16 +617,16 @@ async fn manager_structfs_routes_cover_node_conversation_control_and_observation
     );
     assert!(
         manager
-            .write(&ledger_path, parsed(&serde_json::json!({})))
+            .write_detached(&ledger_path, parsed(&serde_json::json!({})))
             .await
             .is_err()
     );
 
     let refresh = Path::parse(&format!("conversations/{conversation_id}/refresh")).unwrap();
-    assert!(manager.read(&refresh).await.unwrap().is_some());
+    assert!(manager.read_detached(&refresh).await.unwrap().is_some());
     let cancel_path = Path::parse(&format!("conversations/{conversation_id}/cancel")).unwrap();
     manager
-        .write(
+        .write_detached(
             &cancel_path,
             parsed(&CancelRequest {
                 request_id: "store_cancel_request".into(),
@@ -617,19 +636,19 @@ async fn manager_structfs_routes_cover_node_conversation_control_and_observation
         )
         .await
         .unwrap();
-    assert!(manager.read(&refresh).await.unwrap().is_some());
+    assert!(manager.read_detached(&refresh).await.unwrap().is_some());
 
     let drain_path = Path::parse(&format!("nodes/{node_id}/drain")).unwrap();
     assert_eq!(
         manager
-            .write(&drain_path, Record::parsed(Value::Null))
+            .write_detached(&drain_path, Record::parsed(Value::Null))
             .await
             .unwrap(),
         node_path
     );
     assert_eq!(
         manager
-            .write(&path!("reconcile"), Record::parsed(Value::Null))
+            .write_detached(&path!("reconcile"), Record::parsed(Value::Null))
             .await
             .unwrap(),
         path!("reconcile")
@@ -637,7 +656,7 @@ async fn manager_structfs_routes_cover_node_conversation_control_and_observation
     let delete_path = Path::parse(&format!("nodes/{node_id}/delete")).unwrap();
     assert_eq!(
         manager
-            .write(
+            .write_detached(
                 &delete_path,
                 parsed(&DeleteNodeManagerRequest {
                     request_id: "store_delete_request".into(),
@@ -651,7 +670,7 @@ async fn manager_structfs_routes_cover_node_conversation_control_and_observation
     );
     assert!(
         manager
-            .write(&path!("unsupported"), Record::parsed(Value::Null))
+            .write_detached(&path!("unsupported"), Record::parsed(Value::Null))
             .await
             .is_err()
     );

@@ -242,6 +242,28 @@ impl ClientHandle {
         Ok(BTreeMap::new())
     }
 
+    /// Await an accepted write without discarding its eventual reply on timeout.
+    /// The caller must independently supervise this future until completion;
+    /// dropping it can still lose a newly allocated handle. Subscriptions run
+    /// through the same dispatcher as ordinary writes.
+    pub async fn write_owned(&self, path: &Path, data: Record) -> Result<Path, StoreError> {
+        let full_path = self.resolve_path(path);
+        let inner = self.inner.clone();
+        let target = full_path.clone();
+        let record = data.clone();
+        let pending = Box::pin(async move {
+            let rx = inner.lock().await.submit_write(&target, record)?;
+            rx.await.map_err(|_| {
+                StoreError::store("client", "write", "server dropped accepted write")
+            })?
+        });
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.write_owned(&full_path, data, pending).await
+        } else {
+            pending.await
+        }
+    }
+
     /// Async write to the broker.
     ///
     /// When a subscription dispatcher is attached (the production path —
@@ -381,5 +403,95 @@ mod tests {
 
         let result = client.read(&path!("nonexistent")).await;
         assert!(result.is_err());
+    }
+}
+
+// Client handles can be mounted or exported through StructFS directly. The
+// detached futures own a cloned handle and path; they never borrow the client.
+impl structfs_core_store::DetachedReader for ClientHandle {
+    fn read_detached(
+        &mut self,
+        from: &Path,
+    ) -> structfs_core_store::DetachedFuture<Option<Record>> {
+        let client = self.clone();
+        let path = from.clone();
+        Box::pin(async move { client.read(&path).await })
+    }
+}
+impl structfs_core_store::DetachedWriter for ClientHandle {
+    fn write_detached(
+        &mut self,
+        to: &Path,
+        data: Record,
+    ) -> structfs_core_store::DetachedFuture<Path> {
+        let client = self.clone();
+        let path = to.clone();
+        Box::pin(async move { client.write(&path, data).await })
+    }
+}
+
+#[cfg(test)]
+mod detached_tests {
+    use super::*;
+    use structfs_core_store::{DetachedFuture, DetachedReader, DetachedWriter, path};
+
+    struct DeferredRead {
+        started: Arc<tokio::sync::Notify>,
+        send: Option<tokio::sync::oneshot::Sender<()>>,
+        recv: Option<tokio::sync::oneshot::Receiver<()>>,
+    }
+    impl DetachedReader for DeferredRead {
+        fn read_detached(&mut self, _: &Path) -> DetachedFuture<Option<Record>> {
+            let recv = self.recv.take().expect("one read");
+            let started = self.started.clone();
+            Box::pin(async move {
+                started.notify_one();
+                recv.await
+                    .map_err(|e| StoreError::store("test", "read", e.to_string()))?;
+                Ok(Some(Record::parsed(Value::Integer(42))))
+            })
+        }
+    }
+    impl DetachedWriter for DeferredRead {
+        fn write_detached(&mut self, to: &Path, _: Record) -> DetachedFuture<Path> {
+            let send = self.send.take().expect("one write");
+            let path = to.clone();
+            Box::pin(async move {
+                let _ = send.send(());
+                Ok(path)
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn detached_client_can_be_mounted_and_reused_while_read_is_parked() {
+        let broker = crate::BrokerStore::new(Duration::from_secs(2));
+        let started = Arc::new(tokio::sync::Notify::new());
+        let (send, recv) = tokio::sync::oneshot::channel();
+        broker
+            .mount_async(
+                path!("source"),
+                DeferredRead {
+                    started: started.clone(),
+                    send: Some(send),
+                    recv: Some(recv),
+                },
+            )
+            .await;
+        broker
+            .mount_async(path!("alias"), broker.client().scoped("source"))
+            .await;
+        let mut client = broker.client().scoped("alias");
+        let read = client.read_detached(&path!("value"));
+        // A borrowing AsyncReader would keep client exclusively borrowed here.
+        let write = client.write_detached(&path!("release"), Record::parsed(Value::Null));
+        drop(client);
+        let read = tokio::spawn(read);
+        started.notified().await;
+        assert_eq!(write.await.unwrap(), path!("release"));
+        assert_eq!(
+            read.await.unwrap().unwrap().unwrap().as_value(),
+            Some(&Value::Integer(42))
+        );
     }
 }

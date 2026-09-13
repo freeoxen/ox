@@ -41,9 +41,9 @@ use horns_core::{
     BindingEntry, BindingRegistry, BindingScope, CommandId, CommandRegistry, KeyChord,
     Write as HornsWrite,
 };
-use ox_path::oxpath;
 use ox_types::KeyHint;
 use serde::{Deserialize, Serialize};
+use structfs_core_store::path;
 use structfs_core_store::{Path, Reader, Record, Value};
 
 use crate::key_chord_canonical::encode_keychord_to_str;
@@ -52,7 +52,7 @@ use crate::settings::commands::account_model::path_ancestors;
 /// Path the resolver writes the cursor-filtered shortcut record to.
 /// Consumers (footer bar, shortcuts modal) read this and nothing else.
 pub fn shortcuts_path() -> Path {
-    oxpath!("ui", "settings", "shortcuts")
+    path!("ui", "settings", "shortcuts")
 }
 
 /// Path holding the full binding × command join. Materialized once at
@@ -60,7 +60,7 @@ pub fn shortcuts_path() -> Path {
 /// resolver whenever a write under `bindings_prefix` /
 /// `commands_prefix` says it might have changed.
 pub fn joined_registry_path() -> Path {
-    oxpath!("horns", "settings", "shortcut_registry")
+    path!("horns", "settings", "shortcut_registry")
 }
 
 /// One entry in the joined registry. Carries everything projection

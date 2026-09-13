@@ -10,8 +10,8 @@
 //! `field.delete_back`. The character payload is consumed by `field.insert`
 //! through `ctx.last_keystroke`.
 
-use ox_path::oxpath;
 use structfs_core_store::Path;
+use structfs_core_store::path;
 
 use ox_types::key_chord::{KeyCodeRepr, KeyModifierSet};
 use ox_types::{BindingEntry, BindingScope, CommandId, KeyChord, Phase};
@@ -237,7 +237,7 @@ fn register_index(reg: &mut BindingRegistry) {
     // `settings` scope sits at the outer end of every focused cursor's
     // path. Compound widgets register their own Target/Capture
     // bindings on inner scopes, which the Bubble walk reaches first.
-    let cursor = oxpath!("settings");
+    let cursor = path!("settings");
     // Core nav (j/k/Enter) and their arrow aliases get the lowest
     // priorities so they always claim a slot in the status bar.
     bind_bubble_with_priority(
@@ -358,7 +358,7 @@ fn register_row_prefixes(reg: &mut BindingRegistry) {
     // subtree, and an inner compound widget's leaf (compose field,
     // manual-model stage, edit-mode buffer) can shadow the same key
     // at `Phase::Target`.
-    let accounts_subtree = oxpath!("settings", "accounts");
+    let accounts_subtree = path!("settings", "accounts");
     bind_prefix_bubble_with_priority(
         reg,
         accounts_subtree.clone(),
@@ -411,7 +411,7 @@ fn register_row_prefixes(reg: &mut BindingRegistry) {
     ] {
         bind_prefix_bubble(reg, accounts_subtree.clone(), no_mods(), key, id);
     }
-    let models_subtree = oxpath!("settings", "models");
+    let models_subtree = path!("settings", "models");
     bind_prefix_bubble_with_priority(
         reg,
         models_subtree.clone(),
@@ -476,7 +476,7 @@ fn register_edit_mode(reg: &mut BindingRegistry) {
 
     use horns_core::HandlerEntry;
 
-    let scope = oxpath!("settings", "_edit");
+    let scope = path!("settings", "_edit");
     bind_target(
         reg,
         Some(scope.clone()),
@@ -511,8 +511,8 @@ fn register_edit_mode(reg: &mut BindingRegistry) {
     // printable char and produces the same buffer write the discrete
     // `edit.insert_char` command used to. Replaces ~96 `BindingEntry`s.
     let text_input = Arc::new(crate::settings::commands::edit::TextInputHandler::new(
-        oxpath!("ui", "settings", "edit", "buffer"),
-        oxpath!("ui", "settings", "edit", "target_path"),
+        path!("ui", "settings", "edit", "buffer"),
+        path!("ui", "settings", "edit", "target_path"),
     ));
     reg.register_handler(HandlerEntry {
         scope: BindingScope::Exact(scope),
@@ -549,7 +549,7 @@ fn register_compose_new_account(reg: &mut BindingRegistry) {
 /// leaf; Enter registers at `Phase::Bubble` so a future multiline text
 /// leaf could shadow it with a `Phase::Target` newline-insert binding.
 fn register_compose_form(reg: &mut BindingRegistry) {
-    let scope = oxpath!("settings", "_compose_form");
+    let scope = path!("settings", "_compose_form");
 
     // Capture phase: lifecycle keys the form claims before the leaf is
     // consulted.
@@ -625,7 +625,7 @@ fn register_compose_form(reg: &mut BindingRegistry) {
 fn register_compose_text_field(reg: &mut BindingRegistry, field: &str) {
     let comp = ox_kernel::PathComponent::try_new(field)
         .expect("compose text field id must be a valid identifier");
-    let scope = oxpath!("settings", "_compose_form", comp);
+    let scope = path!("settings", "_compose_form", comp);
 
     for byte in 0x20u8..=0x7E {
         let ch = byte as char;
@@ -663,7 +663,7 @@ fn register_compose_text_field(reg: &mut BindingRegistry, field: &str) {
 fn register_compose_selector_field(reg: &mut BindingRegistry, field: &str) {
     let comp = ox_kernel::PathComponent::try_new(field)
         .expect("compose selector field id must be a valid identifier");
-    let scope = oxpath!("settings", "_compose_form", comp);
+    let scope = path!("settings", "_compose_form", comp);
 
     for (key, id) in [
         (KeyCodeRepr::Char('h'), "accounts.compose.cycle_back"),
@@ -695,7 +695,7 @@ fn register_compose_selector_field(reg: &mut BindingRegistry, field: &str) {
 ///   names match compose's per-field convention; the dispatcher only
 ///   cares that the cursor-string and binding-scope-string agree.
 fn register_manual_model(reg: &mut BindingRegistry) {
-    let form_scope = oxpath!("settings", "_manual_model");
+    let form_scope = path!("settings", "_manual_model");
 
     // Esc — Capture phase: the form claims Esc before any leaf, so
     // a future per-field Esc handler can't shadow lifecycle cancel.
@@ -766,9 +766,9 @@ fn register_manual_model(reg: &mut BindingRegistry) {
     // share command ids; the commands read the active stage from the
     // cursor and apply per-stage rules (e.g. Ctx/Out digits-only).
     for stage_scope in [
-        oxpath!("settings", "_manual_model", "id"),
-        oxpath!("settings", "_manual_model", "ctx"),
-        oxpath!("settings", "_manual_model", "out"),
+        path!("settings", "_manual_model", "id"),
+        path!("settings", "_manual_model", "ctx"),
+        path!("settings", "_manual_model", "out"),
     ] {
         for byte in 0x20u8..=0x7E {
             let ch = byte as char;
@@ -808,7 +808,7 @@ fn register_manual_model(reg: &mut BindingRegistry) {
 /// is a lifecycle key that the scope claims before any leaf sees it
 /// (Capture) — same shape as compose-Esc.
 fn register_pending_delete(reg: &mut BindingRegistry) {
-    let scope = oxpath!("settings", "_confirm_delete");
+    let scope = path!("settings", "_confirm_delete");
     bind_target(
         reg,
         Some(scope.clone()),
@@ -912,7 +912,7 @@ mod tests {
         let reg = populated();
         let hit = reg
             .lookup(
-                &oxpath!("settings"),
+                &path!("settings"),
                 &key(no_mods(), KeyCodeRepr::Char('j')),
                 Phase::Bubble,
             )
@@ -925,7 +925,7 @@ mod tests {
         let reg = populated();
         let hit = reg
             .lookup(
-                &oxpath!("settings"),
+                &path!("settings"),
                 &key(no_mods(), KeyCodeRepr::Enter),
                 Phase::Bubble,
             )
@@ -938,7 +938,7 @@ mod tests {
         let reg = populated();
         let hit = reg
             .lookup(
-                &oxpath!("settings"),
+                &path!("settings"),
                 &key(no_mods(), KeyCodeRepr::Esc),
                 Phase::Bubble,
             )
@@ -954,11 +954,11 @@ mod tests {
         // can always get out without walking the ascend ladder.
         let reg = populated();
         for scope in [
-            oxpath!("settings"),
-            oxpath!("settings", "accounts"),
-            oxpath!("settings", "accounts", "alpha"),
-            oxpath!("settings", "accounts", "alpha", "endpoint"),
-            oxpath!("settings", "_compose_form", "name"),
+            path!("settings"),
+            path!("settings", "accounts"),
+            path!("settings", "accounts", "alpha"),
+            path!("settings", "accounts", "alpha", "endpoint"),
+            path!("settings", "_compose_form", "name"),
         ] {
             let hit = reg
                 .lookup(
@@ -977,7 +977,7 @@ mod tests {
         let reg = populated();
         let hit = reg
             .lookup(
-                &oxpath!("settings", "accounts"),
+                &path!("settings", "accounts"),
                 &key(no_mods(), KeyCodeRepr::Char('a')),
                 Phase::Bubble,
             )
@@ -994,7 +994,7 @@ mod tests {
         let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
         let hit = reg
             .lookup(
-                &oxpath!("settings", "accounts", comp),
+                &path!("settings", "accounts", comp),
                 &key(no_mods(), KeyCodeRepr::Char('t')),
                 Phase::Bubble,
             )
@@ -1008,7 +1008,7 @@ mod tests {
         let comp = ox_kernel::PathComponent::try_new("alpha").unwrap();
         let hit = reg
             .lookup(
-                &oxpath!("settings", "accounts", comp),
+                &path!("settings", "accounts", comp),
                 &key(no_mods(), KeyCodeRepr::Char('r')),
                 Phase::Bubble,
             )
@@ -1023,7 +1023,7 @@ mod tests {
         let model = ox_kernel::PathComponent::try_new("claude_haiku").unwrap();
         let hit = reg
             .lookup(
-                &oxpath!("settings", "models", acct, model),
+                &path!("settings", "models", acct, model),
                 &key(shift_only(), KeyCodeRepr::Char('P')),
                 Phase::Bubble,
             )
@@ -1038,7 +1038,7 @@ mod tests {
         // replaced by a single `TextInputHandler` at Target. The
         // discrete lookup must miss, and the handler lookup must hit.
         let reg = populated();
-        let cursor = oxpath!("settings", "_edit");
+        let cursor = path!("settings", "_edit");
         let chord = key(no_mods(), KeyCodeRepr::Char('x'));
 
         assert!(
@@ -1056,7 +1056,7 @@ mod tests {
         let reg = populated();
         let hit = reg
             .lookup(
-                &oxpath!("settings", "_edit"),
+                &path!("settings", "_edit"),
                 &key(no_mods(), KeyCodeRepr::Backspace),
                 Phase::Target,
             )
@@ -1069,7 +1069,7 @@ mod tests {
         let reg = populated();
         let hit = reg
             .lookup(
-                &oxpath!("settings", "_edit"),
+                &path!("settings", "_edit"),
                 &key(no_mods(), KeyCodeRepr::Enter),
                 Phase::Bubble,
             )
@@ -1082,7 +1082,7 @@ mod tests {
         let reg = populated();
         let hit = reg
             .lookup(
-                &oxpath!("settings", "_edit"),
+                &path!("settings", "_edit"),
                 &key(no_mods(), KeyCodeRepr::Esc),
                 Phase::Capture,
             )
@@ -1095,7 +1095,7 @@ mod tests {
         let reg = populated();
         let hit = reg
             .lookup(
-                &oxpath!("settings", "models"),
+                &path!("settings", "models"),
                 &key(shift_only(), KeyCodeRepr::Char('P')),
                 Phase::Bubble,
             )
@@ -1112,7 +1112,7 @@ mod tests {
         let reg = populated();
         let hit = reg
             .lookup(
-                &oxpath!("settings", "models"),
+                &path!("settings", "models"),
                 &key(no_mods(), KeyCodeRepr::Char('d')),
                 Phase::Bubble,
             )
@@ -1128,7 +1128,7 @@ mod tests {
         let reg = populated();
         let hit = reg
             .lookup(
-                &oxpath!("settings", "_manual_model"),
+                &path!("settings", "_manual_model"),
                 &key(no_mods(), KeyCodeRepr::Esc),
                 Phase::Capture,
             )
@@ -1144,7 +1144,7 @@ mod tests {
         let reg = populated();
         let hit = reg
             .lookup(
-                &oxpath!("settings", "_manual_model"),
+                &path!("settings", "_manual_model"),
                 &key(no_mods(), KeyCodeRepr::Enter),
                 Phase::Bubble,
             )
@@ -1160,7 +1160,7 @@ mod tests {
         let reg = populated();
         let hit = reg
             .lookup(
-                &oxpath!("settings", "_manual_model", "id"),
+                &path!("settings", "_manual_model", "id"),
                 &key(no_mods(), KeyCodeRepr::Char('x')),
                 Phase::Target,
             )
@@ -1173,7 +1173,7 @@ mod tests {
         let reg = populated();
         let hit = reg
             .lookup(
-                &oxpath!("settings", "_manual_model", "ctx"),
+                &path!("settings", "_manual_model", "ctx"),
                 &key(no_mods(), KeyCodeRepr::Backspace),
                 Phase::Target,
             )
@@ -1186,7 +1186,7 @@ mod tests {
         let reg = populated();
         let hit = reg
             .lookup(
-                &oxpath!("settings", "_manual_model", "out"),
+                &path!("settings", "_manual_model", "out"),
                 &key(no_mods(), KeyCodeRepr::Char('7')),
                 Phase::Target,
             )
@@ -1207,7 +1207,7 @@ mod tests {
         // is not — that would mean the entry is structurally orphaned.
         let reg = populated();
         let entries = reg.entries();
-        let empty_path = oxpath!();
+        let empty_path = path!();
 
         let mut directly_reachable = 0usize;
         let mut shadowed: Vec<(BindingEntry, CommandId)> = Vec::new();
@@ -1295,7 +1295,7 @@ mod tests {
     /// True iff the path's first two components are `settings/_*` —
     /// the synthetic compound-widget cursor convention.
     fn is_compound_widget_scope(p: &Path) -> bool {
-        p.len() >= 2 && p[0] == "settings" && p[1].starts_with('_')
+        p.len() >= 2 && &p[0] == "settings" && p[1].starts_with('_')
     }
 
     /// True iff `p` is the container scope for a widget that has a
@@ -1305,10 +1305,10 @@ mod tests {
         // The single-scope widgets (_confirm_delete, _edit) also
         // have shape settings/_name but no leaf below — they're handled
         // by the leaf classifier and explicitly excluded here.
-        if p.len() != 2 || p[0] != "settings" {
+        if p.len() != 2 || &p[0] != "settings" {
             return false;
         }
-        matches!(p[1].as_str(), "_compose_form" | "_manual_model")
+        matches!(&p[1], "_compose_form" | "_manual_model")
     }
 
     /// True iff `p` is a leaf scope of a compound widget.
@@ -1319,19 +1319,16 @@ mod tests {
     /// - single-scope widgets where the same scope hosts both lifecycle
     ///   and leaf bindings (`_confirm_delete`, `_edit`).
     fn is_leaf_scope(p: &Path) -> bool {
-        if p.len() < 2 || p[0] != "settings" {
+        if p.len() < 2 || &p[0] != "settings" {
             return false;
         }
-        let head = p[1].as_str();
+        let head = &p[1];
         // Split-widget leaves.
         if head == "_compose_form" && p.len() == 3 {
-            return matches!(
-                p[2].as_str(),
-                "name" | "protocol" | "endpoint" | "auth" | "key"
-            );
+            return matches!(&p[2], "name" | "protocol" | "endpoint" | "auth" | "key");
         }
         if head == "_manual_model" && p.len() == 3 {
-            return matches!(p[2].as_str(), "id" | "ctx" | "out");
+            return matches!(&p[2], "id" | "ctx" | "out");
         }
         // Single-scope widgets: scope IS the leaf.
         if p.len() == 2 {
@@ -1472,7 +1469,7 @@ mod tests {
         // regression — the opaque tier exists exactly so the discrete
         // tier stays small.
         let reg = populated();
-        let edit_scope = oxpath!("settings", "_edit");
+        let edit_scope = path!("settings", "_edit");
         let edit_count = reg
             .entries()
             .iter()
@@ -1489,7 +1486,7 @@ mod tests {
         // The opaque half of the migration: a single handler at
         // (Exact(_edit), Target) replaces the printable-ASCII bindings.
         let reg = populated();
-        let edit_scope = oxpath!("settings", "_edit");
+        let edit_scope = path!("settings", "_edit");
         let handler_count = reg
             .handlers()
             .iter()

@@ -145,21 +145,55 @@ writer. See [`save-and-restore.md`](save-and-restore.md).
 - `Writer::write(&mut self, &Path, Record) -> Result<Path, Error>`.
 - Used by kernel and in-process Stores. Calls may block.
 
-### Repository-local asynchronous StructFS
+### Detached asynchronous StructFS
 
-- Location: `crates/ox-broker/src/async_store.rs:1-20`.
-- `AsyncReader` and `AsyncWriter` preserve StructFS `Path`, `Record`, and
-  `Error` while returning `Send + 'static` futures.
+- Upstream `DetachedReader::read_detached` and
+  `DetachedWriter::write_detached` preserve StructFS `Path`, `Record`, and
+  `Error` while returning `Send + 'static` futures that do not borrow the store.
+- The broker's `async_store` module now only reexports a generic boxed-future
+  utility. Its former local store traits have been removed.
 - Broker `mount_async` independently spawns request futures; public cursor and
   remote Stores must use this seam so a parked request does not stall a mount.
+- Spawned stores retain an explicit `'static` bound. ClientHandle also implements
+  the upstream detached traits. Verified with
+  `rg -n 'DetachedReader|DetachedWriter|mount_async' crates/ox-broker/src/{client,server,lib}.rs`
+  at client.rs:411/421, server.rs:94 and lib.rs:341 during cleanup.
+
+Upstream borrowing `AsyncReader::read_async` and `AsyncWriter::write_async` are
+different interfaces: their futures retain the mutable store borrow. Remote
+transport clients support both families, but broker server scheduling uses the
+detached family.
+
+### Path serialization
+
+StructFS 0.2 implements Path Serde as a slash-separated string. Existing
+Ox/Horns record fields retain component arrays through the shared
+`horns_core::path_serde` adapter; ox-types reexports that implementation.
+Removing field adapters would change persisted and transmitted shapes.
 
 ### StructFS transport values
 
-The pinned StructFS `Value` and `Record` enums are non-exhaustive. Current
-`Value` shapes include null, bool, signed i64, f64, string, bytes, array, and
-string-keyed map. `Record` is raw bytes plus format or parsed `Value`. A wire
-codec must preserve all current shapes and reject unsupported future shapes
-explicitly; JSON-only conversion is lossy.
+The registry-pinned StructFS 0.2 `Value` and `Record` enums are non-exhaustive.
+`Value` shapes include null, bool, signed i64, unsigned u64, f64, string, bytes,
+array, and string-keyed map. Normalized integers use the unsigned variant only
+above `i64::MAX`. `Record` is raw bytes plus format or parsed `Value`.
+
+Ox wire v1 retains its original signed-i64 range: small unsigned values use the
+existing integer encoding; larger unsigned values fail explicitly. Bytes and
+non-finite floats remain supported by the wire codec. Plain JSON conversion is
+fallible and rejects those values; persistence callers propagate that failure
+before writing. Snapshot hashes retain the existing canonical JSON bytes for
+supported states. See `crates/ox-structfs-transport/WIRE.md` and the migration
+feedback document for the compatibility boundaries.
+
+Verified during the September 13 migration with:
+
+```sh
+rg -n 'Unsigned' crates/ox-structfs-transport/src/frame.rs
+cargo test -p ox-structfs-transport --test conformance --offline
+cargo test -p ox-kernel snapshot --offline
+cargo test -p ox-store-util --offline
+```
 
 ## Worker ingress records
 

@@ -20,5 +20,4 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 ox-broker = { workspace = true }
-ox-path = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time", "rt", "rt-multi-thread", "macros"] }

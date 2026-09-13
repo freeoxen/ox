@@ -176,7 +176,7 @@ async fn history_view_projects_latest_progress_into_turn_streaming_on_remount() 
     // when `turn.is_active()` — the streaming projection sets
     // `turn.thinking = true` so this path fires on a replayed thread.
     let tid_comp = ox_kernel::PathComponent::try_new(&tid).expect("valid thread id");
-    let msgs_path = ox_path::oxpath!("threads", tid_comp, "history", "messages");
+    let msgs_path = structfs_core_store::path!("threads", tid_comp, "history", "messages");
     let record = client
         .read(&msgs_path)
         .await
@@ -186,7 +186,7 @@ async fn history_view_projects_latest_progress_into_turn_streaming_on_remount() 
         .as_value()
         .expect("history/messages returns parsed value")
         .clone();
-    let json = structfs_serde_store::value_to_json(value);
+    let json = structfs_serde_store::value_to_json(value).unwrap();
     let arr = json.as_array().expect("messages is an array").clone();
 
     // Last entry must be an assistant partial carrying the latest
@@ -292,14 +292,14 @@ async fn assistant_final_supersedes_trailing_progress_projection() {
     // messages projection shows the completed Assistant turn, not the
     // progress text — `is_active()` stays false after clean replay.
     let tid_comp = ox_kernel::PathComponent::try_new(&tid).expect("valid thread id");
-    let msgs_path = ox_path::oxpath!("threads", tid_comp, "history", "messages");
+    let msgs_path = structfs_core_store::path!("threads", tid_comp, "history", "messages");
     let record = client
         .read(&msgs_path)
         .await
         .expect("read history/messages")
         .expect("messages record present");
     let value = record.as_value().expect("parsed").clone();
-    let json = structfs_serde_store::value_to_json(value);
+    let json = structfs_serde_store::value_to_json(value).unwrap();
     let arr = json.as_array().expect("array").clone();
     // Expect user + assistant — no trailing partial.
     assert_eq!(arr.len(), 2, "expected user + assistant; got {arr:?}");

@@ -27,13 +27,13 @@ use std::time::Duration;
 
 use ox_broker::{BrokerStore, ClientHandle};
 use ox_gate::AccountConfig;
-use ox_path::oxpath;
 use ox_store_util::local_config::LocalConfig;
 use ox_types::settings::{BadgeSource, SettingsIndexEntry};
 use ox_types::{KeyChord, KeyCodeRepr, KeyModifierSet};
 use parking_lot::Mutex;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use structfs_core_store::path;
 use structfs_core_store::{Path, Record, Value};
 
 use ox_cli::settings;
@@ -106,11 +106,11 @@ fn rendered_text(terminal: &Arc<Mutex<Terminal<TestBackend>>>) -> String {
 /// the test seed data the renderer needs to produce non-empty content.
 async fn build_broker_with_seeds() -> BrokerStore {
     let broker = BrokerStore::new(Duration::from_secs(5));
-    let _settings_mount = broker.mount(oxpath!("settings"), LocalConfig::new()).await;
-    let _config_mount = broker.mount(oxpath!("config"), LocalConfig::new()).await;
-    let _secret_mount = broker.mount(oxpath!("secret"), LocalConfig::new()).await;
-    let _ui_mount = broker.mount(oxpath!("ui"), LocalConfig::new()).await;
-    let _horns_mount = broker.mount(oxpath!("horns"), LocalConfig::new()).await;
+    let _settings_mount = broker.mount(path!("settings"), LocalConfig::new()).await;
+    let _config_mount = broker.mount(path!("config"), LocalConfig::new()).await;
+    let _secret_mount = broker.mount(path!("secret"), LocalConfig::new()).await;
+    let _ui_mount = broker.mount(path!("ui"), LocalConfig::new()).await;
+    let _horns_mount = broker.mount(path!("horns"), LocalConfig::new()).await;
     let client = broker.client();
     seed_index_entries(&client).await;
     broker
@@ -165,10 +165,7 @@ async fn seed_expanded(client: &ClientHandle, expanded: &[&str]) {
             .collect::<Vec<_>>(),
     );
     client
-        .write(
-            &oxpath!("ui", "settings", "expanded"),
-            Record::parsed(value),
-        )
+        .write(&path!("ui", "settings", "expanded"), Record::parsed(value))
         .await
         .unwrap();
 }
@@ -234,7 +231,7 @@ async fn initial_render_shows_accounts_and_models_section_headers() {
     // Seed the focus cursor — `RenderSubscription` wakes on cursor
     // changes and writes the View; `ViewRenderSubscription` then locks
     // the test terminal and draws into its buffer.
-    set_cursor(&client, &oxpath!("settings", "index")).await;
+    set_cursor(&client, &path!("settings", "index")).await;
     // Cascade settle. The render cascade is sync from the broker's
     // write path; the sleep guards spawned subscription work that
     // could arrive after this write returns (Problem 2 in the
@@ -260,7 +257,7 @@ async fn j_moves_focus_to_next_visible_row() {
     settings::install(&broker).await.expect("settings::install");
     // Seed focus at the Accounts header. Pressing `j` should advance
     // to the Models header (next visible row at the top level).
-    set_cursor(&client, &oxpath!("settings", "accounts")).await;
+    set_cursor(&client, &path!("settings", "accounts")).await;
 
     press_chord(&client, key_char('j')).await;
 
@@ -269,7 +266,7 @@ async fn j_moves_focus_to_next_visible_row() {
         .expect("cursor should be set after j");
     assert_eq!(
         cursor,
-        oxpath!("settings", "models"),
+        path!("settings", "models"),
         "j should advance focus from Accounts → Models",
     );
 }
@@ -279,7 +276,7 @@ async fn k_moves_focus_to_previous_visible_row() {
     let broker = build_broker_with_seeds().await;
     let client = broker.client();
     settings::install(&broker).await.expect("settings::install");
-    set_cursor(&client, &oxpath!("settings", "models")).await;
+    set_cursor(&client, &path!("settings", "models")).await;
 
     press_chord(&client, key_char('k')).await;
 
@@ -288,7 +285,7 @@ async fn k_moves_focus_to_previous_visible_row() {
         .expect("cursor should be set after k");
     assert_eq!(
         cursor,
-        oxpath!("settings", "accounts"),
+        path!("settings", "accounts"),
         "k should advance focus from Models → Accounts",
     );
 }
@@ -297,7 +294,7 @@ async fn k_moves_focus_to_previous_visible_row() {
 async fn enter_on_accounts_expands_the_accordion() {
     let (_broker, client, terminal) = build_horns_test_rig().await;
     seed_account(&client, "alpha").await;
-    set_cursor(&client, &oxpath!("settings", "accounts")).await;
+    set_cursor(&client, &path!("settings", "accounts")).await;
     tokio::task::yield_now().await;
     tokio::time::sleep(Duration::from_millis(10)).await;
 
@@ -325,7 +322,7 @@ async fn enter_on_expanded_accounts_collapses_the_accordion() {
     let (_broker, client, terminal) = build_horns_test_rig().await;
     seed_account(&client, "alpha").await;
     seed_expanded(&client, &["settings/accounts"]).await;
-    set_cursor(&client, &oxpath!("settings", "accounts")).await;
+    set_cursor(&client, &path!("settings", "accounts")).await;
     tokio::task::yield_now().await;
     tokio::time::sleep(Duration::from_millis(10)).await;
 
@@ -348,7 +345,7 @@ async fn enter_on_expanded_accounts_collapses_the_accordion() {
 async fn pressing_a_opens_compose_new_connection() {
     let (_broker, client, terminal) = build_horns_test_rig().await;
     seed_expanded(&client, &["settings/accounts"]).await;
-    set_cursor(&client, &oxpath!("settings", "accounts")).await;
+    set_cursor(&client, &path!("settings", "accounts")).await;
 
     // Press `a` — the page-level binding that opens the compose form.
     press_chord(&client, key_char('a')).await;
@@ -359,7 +356,7 @@ async fn pressing_a_opens_compose_new_connection() {
     let cursor = read_cursor(&client)
         .await
         .expect("cursor should be set after pressing a");
-    let components: Vec<String> = cursor.iter().map(|c| c.as_str().to_string()).collect();
+    let components: Vec<String> = cursor.iter().map(str::to_owned).collect();
     assert!(
         components.first().map(String::as_str) == Some("settings")
             && components
@@ -385,7 +382,7 @@ async fn typing_in_compose_form_appends_to_name_buffer() {
     let client = broker.client();
     settings::install(&broker).await.expect("settings::install");
     seed_expanded(&client, &["settings/accounts"]).await;
-    set_cursor(&client, &oxpath!("settings", "accounts")).await;
+    set_cursor(&client, &path!("settings", "accounts")).await;
 
     press_chord(&client, key_char('a')).await; // open compose
 
@@ -399,7 +396,7 @@ async fn typing_in_compose_form_appends_to_name_buffer() {
     // The name buffer (one per compose field, written by
     // `accounts.compose.insert_char`) should now contain "beta".
     let rec = client
-        .read(&oxpath!("ui", "settings", "new_account", "name"))
+        .read(&path!("ui", "settings", "new_account", "name"))
         .await
         .expect("read")
         .expect("name record present");
@@ -420,7 +417,7 @@ async fn esc_in_compose_form_cancels_and_restores_cursor() {
     let client = broker.client();
     settings::install(&broker).await.expect("settings::install");
     seed_expanded(&client, &["settings/accounts"]).await;
-    set_cursor(&client, &oxpath!("settings", "accounts")).await;
+    set_cursor(&client, &path!("settings", "accounts")).await;
 
     press_chord(&client, key_char('a')).await; // open compose
     // Cursor is now inside `settings/_compose_form/*`.
@@ -434,13 +431,13 @@ async fn esc_in_compose_form_cancels_and_restores_cursor() {
     // Accounts header.
     assert_eq!(
         cursor,
-        oxpath!("settings", "accounts"),
+        path!("settings", "accounts"),
         "Esc should restore the pre-compose cursor",
     );
     // The new_account subtree should be cleared too — any subsequent
     // open starts fresh.
     let name = client
-        .read(&oxpath!("ui", "settings", "new_account", "name"))
+        .read(&path!("ui", "settings", "new_account", "name"))
         .await
         .expect("read");
     assert!(
@@ -454,14 +451,14 @@ async fn esc_on_index_writes_request_exit() {
     let broker = build_broker_with_seeds().await;
     let client = broker.client();
     settings::install(&broker).await.expect("settings::install");
-    set_cursor(&client, &oxpath!("settings", "index")).await;
+    set_cursor(&client, &path!("settings", "index")).await;
 
     press_chord(&client, key_named(KeyCodeRepr::Esc)).await;
 
     // The horns loop's exit-watch is `ui/settings/_request_exit = true`.
     // `nav.ascend` at the index writes this.
     let exit = client
-        .read_typed::<bool>(&oxpath!("ui", "settings", "_request_exit"))
+        .read_typed::<bool>(&path!("ui", "settings", "_request_exit"))
         .await
         .expect("read exit");
     assert_eq!(
@@ -482,16 +479,12 @@ async fn q_from_deep_focus_writes_request_exit() {
     settings::install(&broker).await.expect("settings::install");
     seed_account(&client, "alpha").await;
     seed_expanded(&client, &["settings/accounts", "settings/accounts/alpha"]).await;
-    set_cursor(
-        &client,
-        &oxpath!("settings", "accounts", "alpha", "endpoint"),
-    )
-    .await;
+    set_cursor(&client, &path!("settings", "accounts", "alpha", "endpoint")).await;
 
     press_chord(&client, key_char('q')).await;
 
     let exit = client
-        .read_typed::<bool>(&oxpath!("ui", "settings", "_request_exit"))
+        .read_typed::<bool>(&path!("ui", "settings", "_request_exit"))
         .await
         .expect("read exit");
     assert_eq!(
@@ -522,7 +515,7 @@ async fn esc_after_full_horns_loop_pre_input_seeding_exits() {
         client
             .write(
                 &focus_path,
-                Record::parsed(path_to_value(&oxpath!("settings", "index"))),
+                Record::parsed(path_to_value(&path!("settings", "index"))),
             )
             .await
             .unwrap();
@@ -546,7 +539,7 @@ async fn esc_after_full_horns_loop_pre_input_seeding_exits() {
     press_chord(&client, key_named(KeyCodeRepr::Esc)).await;
 
     let exit = client
-        .read_typed::<bool>(&oxpath!("ui", "settings", "_request_exit"))
+        .read_typed::<bool>(&path!("ui", "settings", "_request_exit"))
         .await
         .expect("read exit");
     assert_eq!(
@@ -570,7 +563,7 @@ async fn j_advances_focus_from_section_header_into_expanded_account_row() {
     let (_broker, client, terminal) = build_horns_test_rig().await;
     seed_account(&client, "alpha").await;
     seed_expanded(&client, &["settings/accounts"]).await;
-    set_cursor(&client, &oxpath!("settings", "accounts")).await;
+    set_cursor(&client, &path!("settings", "accounts")).await;
     tokio::task::yield_now().await;
     tokio::time::sleep(Duration::from_millis(10)).await;
 
@@ -588,7 +581,7 @@ async fn j_advances_focus_from_section_header_into_expanded_account_row() {
     let after_cursor = read_cursor(&client).await.expect("cursor after j");
     assert_eq!(
         after_cursor,
-        oxpath!("settings", "accounts", "alpha"),
+        path!("settings", "accounts", "alpha"),
         "j should descend into the alpha account row",
     );
 }

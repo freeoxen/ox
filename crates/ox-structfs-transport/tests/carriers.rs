@@ -7,13 +7,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use ox_broker::async_store::{AsyncReader, AsyncWriter, BoxFuture};
+use ox_broker::async_store::BoxFuture;
 use ox_structfs_transport::{
     CodecLimits, ExportRoot, RemoteError, RemoteStore, RemoteStoreConfig, Request,
     RequestOperation, ResponseBody, ServerConfig, WireCodec, WireError, WireErrorCode, WireMessage,
     bridge_streams_to_unix, connect_unix, serve_stream, spawn_unix_server,
 };
-use structfs_core_store::{Error as StoreError, Path, Record, Value};
+use structfs_core_store::{
+    DetachedReader, DetachedWriter, Error as StoreError, Path, Record, Value,
+};
 use tempfile::TempDir;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::sync::{Mutex, Notify, Semaphore};
@@ -74,8 +76,8 @@ impl TestState {
     }
 }
 
-impl AsyncReader for TestStore {
-    fn read(&mut self, from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
+impl DetachedReader for TestStore {
+    fn read_detached(&mut self, from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
         let state = self.state.clone();
         let path = from.to_string();
         Box::pin(async move {
@@ -90,8 +92,8 @@ impl AsyncReader for TestStore {
     }
 }
 
-impl AsyncWriter for TestStore {
-    fn write(&mut self, to: &Path, data: Record) -> BoxFuture<Result<Path, StoreError>> {
+impl DetachedWriter for TestStore {
+    fn write_detached(&mut self, to: &Path, data: Record) -> BoxFuture<Result<Path, StoreError>> {
         let state = self.state.clone();
         let path = to.clone();
         Box::pin(async move {

@@ -7,7 +7,6 @@ mod common;
 use common::MemoryBacking;
 use ox_broker::BrokerStore;
 use ox_gate::completion_broker::mock::MockSseExecutor;
-use ox_path::oxpath;
 use ox_types::StreamEvent;
 use std::sync::Arc;
 use std::time::Duration;
@@ -49,19 +48,19 @@ async fn build_broker_with_traffic(
 
     let mut secret = LocalConfig::new();
     secret.set("keys/anthropic", to_value(&ApiKey::new("sk-test")).unwrap());
-    broker.mount(oxpath!("secret"), secret).await;
+    broker.mount(path!("secret"), secret).await;
 
     let usage = ox_gate::UsageStore::new(Box::new(MemoryBacking::new()));
-    broker.mount(oxpath!("gateway", "usage"), usage).await;
+    broker.mount(path!("gateway", "usage"), usage).await;
 
     let traffic = ox_gateway::traffic::TrafficLogStore::new(
         Box::new(MemoryBacking::new()),
         Some(threads_dir),
     );
-    broker.mount(oxpath!("gateway", "traffic"), traffic).await;
+    broker.mount(path!("gateway", "traffic"), traffic).await;
 
     let upstream = ox_gate::UpstreamStore::new(executor, tokio::runtime::Handle::current());
-    broker.mount_async(oxpath!("upstream"), upstream).await;
+    broker.mount_async(path!("upstream"), upstream).await;
     common::install_blocks(&broker, true).await;
 
     broker
@@ -118,12 +117,12 @@ async fn completion_logs_full_record_and_ledger_thread() {
     let mut records: Vec<serde_json::Value> = Vec::new();
     for _ in 0..50 {
         let raw = client
-            .read(&oxpath!("gateway", "traffic"))
+            .read(&path!("gateway", "traffic"))
             .await
             .unwrap()
             .and_then(|r| r.as_value().cloned())
             .unwrap_or(Value::Array(vec![]));
-        let json = structfs_serde_store::value_to_json(raw);
+        let json = structfs_serde_store::value_to_json(raw).unwrap();
         records = json.as_array().cloned().unwrap_or_default();
         if !records.is_empty() {
             break;
@@ -233,12 +232,12 @@ async fn failed_completion_still_logs_with_reason() {
     let mut records: Vec<serde_json::Value> = Vec::new();
     for _ in 0..50 {
         let raw = client
-            .read(&oxpath!("gateway", "traffic"))
+            .read(&path!("gateway", "traffic"))
             .await
             .unwrap()
             .and_then(|r| r.as_value().cloned())
             .unwrap_or(Value::Array(vec![]));
-        let json = structfs_serde_store::value_to_json(raw);
+        let json = structfs_serde_store::value_to_json(raw).unwrap();
         records = json.as_array().cloned().unwrap_or_default();
         if !records.is_empty() {
             break;
@@ -296,12 +295,12 @@ async fn http_middleware_appends_access_records() {
     let mut records: Vec<serde_json::Value> = Vec::new();
     for _ in 0..50 {
         let raw = client
-            .read(&oxpath!("gateway", "traffic"))
+            .read(&path!("gateway", "traffic"))
             .await
             .unwrap()
             .and_then(|r| r.as_value().cloned())
             .unwrap_or(Value::Array(vec![]));
-        let json = structfs_serde_store::value_to_json(raw);
+        let json = structfs_serde_store::value_to_json(raw).unwrap();
         records = json.as_array().cloned().unwrap_or_default();
         if !records.is_empty() {
             break;

@@ -15,7 +15,6 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 ox-broker = { workspace = true }
 ox-types = { workspace = true }
-ox-path = { workspace = true }
 ox-store-util = { workspace = true }
 structfs-core-store = { workspace = true }
 structfs-serde-store = { workspace = true }

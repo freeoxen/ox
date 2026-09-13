@@ -8,9 +8,9 @@
 
 use anyhow::Context;
 use ox_broker::{BrokerStore, SyncClientAdapter};
-use ox_path::oxpath;
 use std::sync::Arc;
 use std::time::Duration;
+use structfs_core_store::path;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main(flavor = "multi_thread")]
@@ -64,7 +64,7 @@ async fn main() -> anyhow::Result<()> {
     let base = ox_config.to_flat_map();
     let config_backing = ox_config::TomlFileBacking::new(toml_path.clone());
     let config = ox_ui::ConfigStore::with_backing(base, Box::new(config_backing));
-    broker.mount(oxpath!("config"), config).await;
+    broker.mount(path!("config"), config).await;
 
     // secret/ — ConfigStore over keys.json (same store type, different file).
     let secret_backing = ox_config::JsonFileBacking::new(keys_path.clone());
@@ -72,7 +72,7 @@ async fn main() -> anyhow::Result<()> {
         std::collections::BTreeMap::new(),
         Box::new(secret_backing),
     );
-    broker.mount(oxpath!("secret"), secret).await;
+    broker.mount(path!("secret"), secret).await;
 
     // gate/ — GateStore wired to config + secret handles. Same wiring
     // ox-cli uses; this is the cross-process shared substrate.
@@ -82,14 +82,14 @@ async fn main() -> anyhow::Result<()> {
     let gate = ox_gate::GateStore::new()
         .with_config(Box::new(config_adapter))
         .with_secrets(Box::new(secret_adapter));
-    broker.mount(oxpath!("gate"), gate).await;
+    broker.mount(path!("gate"), gate).await;
 
     // gateway/usage/ — JsonlFileBacking over ~/.ox/usage.jsonl.
     let usage_backing = Box::new(
         ox_store_util::JsonlFileBacking::new(&usage_path).context("opening usage.jsonl backing")?,
     );
     let usage = ox_gate::UsageStore::new(usage_backing);
-    broker.mount(oxpath!("gateway", "usage"), usage).await;
+    broker.mount(path!("gateway", "usage"), usage).await;
 
     // Traffic log — opt-in via OX_GATEWAY_TRAFFIC_LOG ("1"/"true" for the
     // default ~/.ox/traffic.jsonl, or an explicit file path). Captures full
@@ -125,7 +125,7 @@ async fn main() -> anyhow::Result<()> {
             Box::new(backing),
             Some(ox_dir.join("threads")),
         );
-        broker.mount(oxpath!("gateway", "traffic"), store).await;
+        broker.mount(path!("gateway", "traffic"), store).await;
         tracing::info!(path = %jsonl_path.display(), "traffic logging enabled");
     }
 
@@ -138,9 +138,7 @@ async fn main() -> anyhow::Result<()> {
             .context("constructing ReqwestSseExecutor")?,
     );
     let upstream_store = ox_gate::UpstreamStore::new(executor, tokio::runtime::Handle::current());
-    broker
-        .mount_async(oxpath!("upstream"), upstream_store)
-        .await;
+    broker.mount_async(path!("upstream"), upstream_store).await;
 
     // gateway/completions/ — the inflight substrate. Each queued request
     // runs one broker Block instance (wasm) against the manifest-derived
@@ -153,28 +151,25 @@ async fn main() -> anyhow::Result<()> {
         ox_gate::CompletionBrokerStore::new(
             tokio::runtime::Handle::current(),
             Arc::new(move |id, cancel| {
-                if let Err(e) = ox_gateway::broker_block::run_broker(
-                    format!("gateway/completions/outstanding/{id}"),
-                    traffic,
-                    wiring.clone(),
-                    cancel.clone(),
-                    client.clone(),
-                    runtime.clone(),
-                ) {
-                    // A cancelled run exits nonzero by design (teardown,
-                    // not failure); the guest's exit code hides the error
-                    // string, so ask the handle rather than the message.
-                    if cancel.is_cancelled() {
-                        tracing::debug!(id, "broker block run cancelled");
-                    } else {
-                        tracing::error!(error = %e, id, "broker block run failed");
-                    }
-                }
+                let client = client.clone();
+                let runtime = runtime.clone();
+                let wiring = wiring.clone();
+                Box::pin(async move {
+                    ox_gateway::broker_block::run_broker(
+                        format!("gateway/completions/outstanding/{id}"),
+                        traffic,
+                        wiring.clone(),
+                        cancel.clone(),
+                        client.clone(),
+                        runtime.clone(),
+                    )
+                    .await
+                })
             }),
         )
     };
     broker
-        .mount_async(oxpath!("gateway", "completions"), completions)
+        .mount_async(path!("gateway", "completions"), completions)
         .await;
 
     // Same gate subscriptions ox-cli registers (catalog refresh, account
@@ -190,7 +185,7 @@ async fn main() -> anyhow::Result<()> {
             let Ok(comp) = ox_kernel::PathComponent::try_new(name) else {
                 continue;
             };
-            let path = oxpath!("config", "gate", "accounts", comp, "refresh_now");
+            let path = path!("config", "gate", "accounts", comp, "refresh_now");
             if let Err(e) = client
                 .write(
                     &path,
@@ -218,41 +213,28 @@ async fn main() -> anyhow::Result<()> {
         let wire = ox_gateway::wire_store::WireStore::new(
             tokio::runtime::Handle::current(),
             Arc::new(move |id, cancel| {
-                // The dialect rides in the inbound record; the runner reads
-                // it back so the Block gets it in its config.
-                let path = format!("wire/outstanding/{id}");
-                let dialect = runtime
-                    .block_on(async {
-                        runner_client
-                            .read(
-                                &structfs_core_store::Path::parse(&format!("{path}/inbound"))
-                                    .unwrap(),
-                            )
-                            .await
-                            .ok()
-                            .flatten()
-                            .and_then(|r| r.as_value().cloned())
-                            .map(structfs_serde_store::value_to_json)
-                    })
-                    .and_then(|j| j["dialect"].as_str().map(|s| s.to_string()))
-                    .unwrap_or_else(|| "anthropic".into());
-                if let Err(e) = ox_gateway::broker_block::run_wire(
-                    path,
-                    dialect,
-                    wire_wiring.clone(),
-                    cancel.clone(),
-                    runner_client.clone(),
-                    runtime.clone(),
-                ) {
-                    if cancel.is_cancelled() {
-                        tracing::debug!(id, "wire block run cancelled");
-                    } else {
-                        tracing::error!(error = %e, id, "wire block run failed");
-                    }
-                }
+                let runner_client = runner_client.clone();
+                let runtime = runtime.clone();
+                let wire_wiring = wire_wiring.clone();
+                Box::pin(async move {
+                    // The dialect rides in the inbound record; the runner reads
+                    // it back so the Block gets it in its config.
+                    let path = format!("wire/outstanding/{id}");
+                    let dialect =
+                        ox_gateway::broker_block::wire_dialect(&runner_client, &path).await?;
+                    ox_gateway::broker_block::run_wire(
+                        path,
+                        dialect,
+                        wire_wiring.clone(),
+                        cancel.clone(),
+                        runner_client.clone(),
+                        runtime.clone(),
+                    )
+                    .await
+                })
             }),
         );
-        broker.mount_async(oxpath!("wire"), wire).await;
+        broker.mount_async(path!("wire"), wire).await;
     }
 
     // gateway/telemetry/ — one handle per stats request; the stats Block
@@ -263,23 +245,23 @@ async fn main() -> anyhow::Result<()> {
         let telemetry = ox_gateway::telemetry_store::TelemetryStore::new(
             tokio::runtime::Handle::current(),
             Arc::new(move |id, cancel| {
-                if let Err(e) = ox_gateway::broker_block::run_stats(
-                    format!("gateway/telemetry/outstanding/{id}"),
-                    stats_wiring.clone(),
-                    cancel.clone(),
-                    runner_client.clone(),
-                    runtime.clone(),
-                ) {
-                    if cancel.is_cancelled() {
-                        tracing::debug!(id, "stats block run cancelled");
-                    } else {
-                        tracing::error!(error = %e, id, "stats block run failed");
-                    }
-                }
+                let runner_client = runner_client.clone();
+                let runtime = runtime.clone();
+                let stats_wiring = stats_wiring.clone();
+                Box::pin(async move {
+                    ox_gateway::broker_block::run_stats(
+                        format!("gateway/telemetry/outstanding/{id}"),
+                        stats_wiring.clone(),
+                        cancel.clone(),
+                        runner_client.clone(),
+                        runtime.clone(),
+                    )
+                    .await
+                })
             }),
         );
         broker
-            .mount_async(oxpath!("gateway", "telemetry"), telemetry)
+            .mount_async(path!("gateway", "telemetry"), telemetry)
             .await;
     }
     let mut app = ox_gateway::routes::build_router(broker.client());

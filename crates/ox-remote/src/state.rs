@@ -2,8 +2,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use ox_broker::async_store::{AsyncReader, AsyncWriter};
-use structfs_core_store::{Error as StoreError, Path, Reader, Record, Writer};
+use structfs_core_store::{
+    DetachedReader, DetachedWriter, Error as StoreError, Path, Reader, Record, Writer,
+};
 use tokio::sync::Mutex;
 
 use ox_inbox::remote_state::RemoteNodeRecord;
@@ -37,12 +38,12 @@ impl<S> AsyncStorePort<S> {
 #[async_trait]
 impl<S> StorePort for AsyncStorePort<S>
 where
-    S: AsyncReader + AsyncWriter + Send,
+    S: DetachedReader + DetachedWriter + Send,
 {
     async fn read(&self, path: &Path) -> Result<Option<Record>, StoreError> {
         let future = {
             let mut store = self.inner.lock().await;
-            store.read(path)
+            store.read_detached(path)
         };
         future.await
     }
@@ -50,7 +51,7 @@ where
     async fn write(&self, path: &Path, record: Record) -> Result<Path, StoreError> {
         let future = {
             let mut store = self.inner.lock().await;
-            store.write(path, record)
+            store.write_detached(path, record)
         };
         future.await
     }

@@ -6,13 +6,13 @@ use crate::view_state::fetch_view_state;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
 use horns_ratatui::Theme;
 use ox_kernel::PathComponent;
-use ox_path::oxpath;
 use ox_types::{
     GlobalCommand, HistoryCommand, InboxCommand, Mode, PendingAction, Screen, ScreenSnapshot,
     ThreadCommand, UiCommand, UiSnapshot,
 };
 use ox_ui::text_input_store::EditSource;
 use std::time::Duration;
+use structfs_core_store::path;
 
 // ---------------------------------------------------------------------------
 // Scroll momentum — exponential boost for fast scrolling, decay for slow
@@ -148,7 +148,7 @@ pub async fn run_async(
     if needs_setup {
         client
             .write_typed(
-                &oxpath!("ui"),
+                &path!("ui"),
                 &UiCommand::Global(GlobalCommand::GoToSettings),
             )
             .await
@@ -171,7 +171,7 @@ pub async fn run_async(
         // -----------------------------------------------------------------
         let _ = client
             .write_typed(
-                &oxpath!("ui", "dialog", "show_shortcuts"),
+                &path!("ui", "dialog", "show_shortcuts"),
                 &dialog.show_shortcuts,
             )
             .await;
@@ -218,7 +218,7 @@ pub async fn run_async(
             if let Some(text) = vs.ui.command_line.pending_submit.clone() {
                 let _ = client
                     .write(
-                        &oxpath!("command", "exec"),
+                        &path!("command", "exec"),
                         structfs_core_store::Record::parsed(structfs_core_store::Value::String(
                             text,
                         )),
@@ -226,7 +226,7 @@ pub async fn run_async(
                     .await;
                 let _ = client
                     .write(
-                        &oxpath!("ui", "command_line", "clear_pending_submit"),
+                        &path!("ui", "command_line", "clear_pending_submit"),
                         structfs_core_store::Record::parsed(structfs_core_store::Value::Null),
                     )
                     .await;
@@ -237,7 +237,7 @@ pub async fn run_async(
                 let row_count = vs.inbox_threads.len();
                 let _ = client
                     .write_typed(
-                        &oxpath!("ui"),
+                        &path!("ui"),
                         &UiCommand::Inbox(InboxCommand::SetRowCount { count: row_count }),
                     )
                     .await;
@@ -257,7 +257,7 @@ pub async fn run_async(
                 let row_count = history_explorer.entry_count();
                 let _ = client
                     .write_typed(
-                        &oxpath!("ui"),
+                        &path!("ui"),
                         &UiCommand::History(HistoryCommand::SetRowCount { count: row_count }),
                     )
                     .await;
@@ -336,13 +336,13 @@ pub async fn run_async(
             let scroll_max = content_height.unwrap_or(0).saturating_sub(viewport_height);
             let _ = client
                 .write_typed(
-                    &oxpath!("ui"),
+                    &path!("ui"),
                     &UiCommand::Thread(ThreadCommand::SetScrollMax { max: scroll_max }),
                 )
                 .await;
             let _ = client
                 .write_typed(
-                    &oxpath!("ui"),
+                    &path!("ui"),
                     &UiCommand::Thread(ThreadCommand::SetViewportHeight {
                         height: viewport_height,
                     }),
@@ -358,7 +358,7 @@ pub async fn run_async(
         if let Some(action) = ui.pending_action() {
             let _ = client
                 .write_typed(
-                    &oxpath!("ui"),
+                    &path!("ui"),
                     &UiCommand::Global(GlobalCommand::ClearPendingAction),
                 )
                 .await;
@@ -384,7 +384,7 @@ pub async fn run_async(
             if let Some(id) = &effects.open_thread {
                 let _ = client
                     .write_typed(
-                        &oxpath!("ui"),
+                        &path!("ui"),
                         &UiCommand::Global(GlobalCommand::Open {
                             thread_id: id.clone(),
                         }),
@@ -407,35 +407,35 @@ pub async fn run_async(
                     tracing::error!(thread_id = %id, %error, "failed to ensure agent worker");
                 }
             }
-            if let Some(id) = &effects.archive_thread {
-                if let Ok(id_comp) = PathComponent::try_new(id.as_str()) {
-                    let update_path = ox_path::oxpath!("inbox", "threads", id_comp);
-                    let archive = ox_types::UpdateThread {
-                        id: None,
-                        thread_state: None,
-                        inbox_state: Some("done".to_string()),
-                        updated_at: None,
-                    };
-                    let val = structfs_serde_store::to_value(&archive).unwrap();
-                    let _ = client
-                        .write(&update_path, structfs_core_store::Record::parsed(val))
-                        .await;
-                }
+            if let Some(id) = &effects.archive_thread
+                && let Ok(id_comp) = PathComponent::try_new(id.as_str())
+            {
+                let update_path = structfs_core_store::path!("inbox", "threads", id_comp);
+                let archive = ox_types::UpdateThread {
+                    id: None,
+                    thread_state: None,
+                    inbox_state: Some("done".to_string()),
+                    updated_at: None,
+                };
+                let val = structfs_serde_store::to_value(&archive).unwrap();
+                let _ = client
+                    .write(&update_path, structfs_core_store::Record::parsed(val))
+                    .await;
             }
-            if let Some(decision) = effects.approval_response {
-                if let ScreenSnapshot::Thread(snap) = &ui.screen {
-                    let tid = Some(snap.thread_id.clone());
-                    crate::key_handlers::send_approval_response(client, &tid, decision).await;
-                }
+            if let Some(decision) = effects.approval_response
+                && let ScreenSnapshot::Thread(snap) = &ui.screen
+            {
+                let tid = Some(snap.thread_id.clone());
+                crate::key_handlers::send_approval_response(client, &tid, decision).await;
             }
             for cmd in &effects.broker_commands {
-                let _ = client.write_typed(&oxpath!("ui"), cmd).await;
+                let _ = client.write_typed(&path!("ui"), cmd).await;
             }
             // Load history search results if just entered
-            if matches!(action, PendingAction::EnterHistorySearch) {
-                if let Some(ref mut hs) = dialog.history_search {
-                    hs.results = load_recent_inputs(client).await;
-                }
+            if matches!(action, PendingAction::EnterHistorySearch)
+                && let Some(ref mut hs) = dialog.history_search
+            {
+                hs.results = load_recent_inputs(client).await;
             }
         }
 
@@ -445,10 +445,10 @@ pub async fn run_async(
         let events: Vec<Event> = tokio::task::block_in_place(|| {
             let mut buf = Vec::new();
             // Block up to 50ms for the first event
-            if event::poll(Duration::from_millis(50)).unwrap_or(false) {
-                if let Ok(evt) = event::read() {
-                    buf.push(evt);
-                }
+            if event::poll(Duration::from_millis(50)).unwrap_or(false)
+                && let Ok(evt) = event::read()
+            {
+                buf.push(evt);
             }
             // Drain remaining queued events without blocking
             while event::poll(Duration::ZERO).unwrap_or(false) {
@@ -527,7 +527,7 @@ pub async fn run_async(
                                 if history_explorer.at_content_top() {
                                     let _ = client
                                         .write_typed(
-                                            &oxpath!("ui"),
+                                            &path!("ui"),
                                             &UiCommand::History(HistoryCommand::SelectPrev),
                                         )
                                         .await;
@@ -540,7 +540,7 @@ pub async fn run_async(
                                 if history_explorer.at_content_bottom() {
                                     let _ = client
                                         .write_typed(
-                                            &oxpath!("ui"),
+                                            &path!("ui"),
                                             &UiCommand::History(HistoryCommand::SelectNext),
                                         )
                                         .await;
@@ -639,13 +639,13 @@ async fn send_via_input_store(
         screen,
         flags,
     };
-    let result = client.write_typed(&oxpath!("input", "key"), &event).await;
+    let result = client.write_typed(&path!("input", "key"), &event).await;
     match result {
-        Ok(p) if p.iter().next().map(|c| c.as_str()) == Some("unbound") => {
+        Ok(p) if p.iter().next() == Some("unbound") => {
             let mode = p
                 .iter()
                 .nth(1)
-                .and_then(|c| Mode::parse(c.as_str()))
+                .and_then(Mode::parse)
                 .unwrap_or(Mode::Normal);
             KeyDispatchOutcome::Unbound { mode }
         }
@@ -707,7 +707,7 @@ pub(crate) async fn refresh_thread_info_cache(
 
     // 1. Read UiSnapshot once.
     let ui: UiSnapshot = client
-        .read_typed::<UiSnapshot>(&oxpath!("ui"))
+        .read_typed::<UiSnapshot>(&path!("ui"))
         .await
         .ok()
         .flatten()
@@ -719,7 +719,7 @@ pub(crate) async fn refresh_thread_info_cache(
             let rows: Vec<crate::parse::InboxThread> = if s.search.active {
                 crate::view_state::fetch_search_results(client, &s.search).await
             } else {
-                match client.read(&oxpath!("inbox", "threads")).await {
+                match client.read(&path!("inbox", "threads")).await {
                     Ok(Some(rec)) => rec
                         .as_value()
                         .map(crate::parse::parse_inbox_threads)
@@ -742,7 +742,7 @@ pub(crate) async fn refresh_thread_info_cache(
                 }
             };
             match client
-                .read(&ox_path::oxpath!("inbox", "threads", id_comp))
+                .read(&structfs_core_store::path!("inbox", "threads", id_comp))
                 .await
             {
                 Ok(Some(rec)) => rec
@@ -793,7 +793,7 @@ pub(crate) async fn refresh_thread_info_cache(
             return;
         }
     };
-    let count_path = ox_path::oxpath!("threads", id_comp, "log", "count");
+    let count_path = structfs_core_store::path!("threads", id_comp, "log", "count");
     let log_count: i64 = match client.read(&count_path).await {
         Ok(Some(rec)) => match rec.as_value() {
             Some(Value::Integer(n)) => *n,
@@ -953,7 +953,7 @@ async fn dispatch_key(
     // sub-state (cursor, etc.) so reopening the screen returns to where
     // the user left off.
     if input_screen == Screen::Settings {
-        let exit_path = oxpath!("ui", "settings", "_request_exit");
+        let exit_path = path!("ui", "settings", "_request_exit");
         let want_exit = client
             .read_typed::<bool>(&exit_path)
             .await
@@ -964,7 +964,7 @@ async fn dispatch_key(
             // Clear the flag first so we don't loop on the next frame.
             let _ = client.write_typed(&exit_path, &false).await;
             let _ = client
-                .write_typed(&oxpath!("ui"), &UiCommand::Global(GlobalCommand::GoToInbox))
+                .write_typed(&path!("ui"), &UiCommand::Global(GlobalCommand::GoToInbox))
                 .await;
         }
     }
@@ -1000,7 +1000,7 @@ pub(crate) async fn handle_unbound_search_key(client: &ox_broker::ClientHandle, 
     if let KeyCode::Char(c) = code {
         let _ = client
             .write_typed(
-                &oxpath!("ui"),
+                &path!("ui"),
                 &UiCommand::Inbox(InboxCommand::SearchInsertChar { char: c }),
             )
             .await;
@@ -1055,7 +1055,7 @@ async fn handle_unbound_command_line_key(
         generation: 0,
     };
     let _ = client
-        .write_typed(&oxpath!("ui", "command_line", "edit"), &seq)
+        .write_typed(&path!("ui", "command_line", "edit"), &seq)
         .await;
 }
 
@@ -1076,42 +1076,42 @@ async fn handle_history_click(
 
     for entry in &hit_map.entries {
         // Check toolbar line first (pretty/full toggles)
-        if let Some(ref toolbar) = entry.toolbar {
-            if row_offset == toolbar.row {
-                // Select the entry first
+        if let Some(ref toolbar) = entry.toolbar
+            && row_offset == toolbar.row
+        {
+            // Select the entry first
+            let _ = client
+                .write_typed(
+                    &path!("ui"),
+                    &UiCommand::History(HistoryCommand::SelectRow {
+                        row: entry.entry_index,
+                    }),
+                )
+                .await;
+
+            if col_offset >= toolbar.pretty_cols.0 && col_offset < toolbar.pretty_cols.1 {
                 let _ = client
                     .write_typed(
-                        &oxpath!("ui"),
-                        &UiCommand::History(HistoryCommand::SelectRow {
-                            row: entry.entry_index,
-                        }),
+                        &path!("ui"),
+                        &UiCommand::History(HistoryCommand::TogglePretty),
                     )
                     .await;
-
-                if col_offset >= toolbar.pretty_cols.0 && col_offset < toolbar.pretty_cols.1 {
-                    let _ = client
-                        .write_typed(
-                            &oxpath!("ui"),
-                            &UiCommand::History(HistoryCommand::TogglePretty),
-                        )
-                        .await;
-                } else if col_offset >= toolbar.full_cols.0 && col_offset < toolbar.full_cols.1 {
-                    let _ = client
-                        .write_typed(
-                            &oxpath!("ui"),
-                            &UiCommand::History(HistoryCommand::ToggleFull),
-                        )
-                        .await;
-                }
-                return;
+            } else if col_offset >= toolbar.full_cols.0 && col_offset < toolbar.full_cols.1 {
+                let _ = client
+                    .write_typed(
+                        &path!("ui"),
+                        &UiCommand::History(HistoryCommand::ToggleFull),
+                    )
+                    .await;
             }
+            return;
         }
 
         // Check summary line (click to select + toggle expand)
         if row_offset == entry.summary_row {
             let _ = client
                 .write_typed(
-                    &oxpath!("ui"),
+                    &path!("ui"),
                     &UiCommand::History(HistoryCommand::SelectRow {
                         row: entry.entry_index,
                     }),
@@ -1119,7 +1119,7 @@ async fn handle_history_click(
                 .await;
             let _ = client
                 .write_typed(
-                    &oxpath!("ui"),
+                    &path!("ui"),
                     &UiCommand::History(HistoryCommand::ToggleExpand),
                 )
                 .await;

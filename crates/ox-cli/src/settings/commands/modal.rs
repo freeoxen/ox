@@ -8,8 +8,8 @@
 //! executor flips the dialog flag on the next tick; the shortcuts
 //! modal then renders itself from the key-hint stream.
 
-use ox_path::oxpath;
 use ox_types::subscription::Write;
+use structfs_core_store::path;
 use structfs_core_store::{Record, Value};
 
 use crate::settings::CommandRegistry;
@@ -24,7 +24,7 @@ command! {
     description: "Toggle the shortcuts modal.",
     cursor: None,
     run: |_snap, _ctx| vec![Write {
-        path: oxpath!("ui", "toggle_shortcuts"),
+        path: path!("ui", "toggle_shortcuts"),
         record: Record::parsed(Value::Null),
     }],
 }
@@ -52,7 +52,7 @@ mod tests {
         let mut snap = LocalConfig::default();
         let writes = cmd.run(&mut snap, &ctx);
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].path, oxpath!("ui", "toggle_shortcuts"));
+        assert_eq!(writes[0].path, path!("ui", "toggle_shortcuts"));
         assert_eq!(cmd.id(), &CommandId(String::from("modal.toggle_shortcuts")));
     }
 }

@@ -2,11 +2,13 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use ox_broker::async_store::{AsyncReader, AsyncWriter, BoxFuture};
+use ox_broker::async_store::BoxFuture;
 use ox_executor::{ExecutionHandle, derive_unresolved_approval_id};
 use ox_inbox::worker_ingress::{CancelEnvelope, CreateEnvelope, DecisionEnvelope, PromptEnvelope};
 use sha2::{Digest as _, Sha256};
-use structfs_core_store::{Error as StoreError, Path, Record, Value, path};
+use structfs_core_store::{
+    DetachedReader, DetachedWriter, Error as StoreError, Path, Record, Value, path,
+};
 use tokio::sync::{Mutex, Semaphore};
 
 use crate::ledger_cursor::{LedgerCursorLimits, read_batch, read_tail};
@@ -195,7 +197,7 @@ impl PublicStore {
     }
 
     async fn read_impl(self, from: Path) -> Result<Option<Record>, StoreError> {
-        let parts: Vec<&str> = from.iter().map(String::as_str).collect();
+        let parts: Vec<&str> = from.iter().collect();
         match parts.as_slice() {
             ["health"] => Ok(Some(parsed(object([
                 ("status", "ready".into()),
@@ -319,7 +321,7 @@ impl PublicStore {
                     .map_err(|error| Self::error("result", error))?;
                 drop(permit);
                 Ok(Some(parsed(serde_json::json!({
-                    "thread": metadata.as_value().cloned().map(structfs_serde_store::value_to_json),
+                    "thread": metadata.as_value().cloned().map(structfs_serde_store::value_to_json).transpose()?,
                     "ledger_tail": batch.entries,
                     "next_seq": batch.next_seq,
                     "projection": "durable_ledger_tail"
@@ -329,7 +331,7 @@ impl PublicStore {
                 match self.unresolved_approval(thread_id).await? {
                     Some((id, request)) => Ok(Some(parsed(serde_json::json!({
                         "approval_id": id,
-                        "request": structfs_serde_store::value_to_json(request)
+                        "request": structfs_serde_store::value_to_json(request)?
                     })))),
                     None => Ok(Some(Record::parsed(Value::Null))),
                 }
@@ -339,7 +341,7 @@ impl PublicStore {
     }
 
     async fn write_impl(self, to: Path, data: Record) -> Result<Path, StoreError> {
-        let parts: Vec<&str> = to.iter().map(String::as_str).collect();
+        let parts: Vec<&str> = to.iter().collect();
         match parts.as_slice() {
             ["conversations"] => {
                 let _admission = self.create_admission.lock().await;
@@ -469,16 +471,16 @@ impl PublicStore {
     }
 }
 
-impl AsyncReader for PublicStore {
-    fn read(&mut self, from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
+impl DetachedReader for PublicStore {
+    fn read_detached(&mut self, from: &Path) -> BoxFuture<Result<Option<Record>, StoreError>> {
         let store = self.clone();
         let from = from.clone();
         Box::pin(async move { store.read_impl(from).await })
     }
 }
 
-impl AsyncWriter for PublicStore {
-    fn write(&mut self, to: &Path, data: Record) -> BoxFuture<Result<Path, StoreError>> {
+impl DetachedWriter for PublicStore {
+    fn write_detached(&mut self, to: &Path, data: Record) -> BoxFuture<Result<Path, StoreError>> {
         let store = self.clone();
         let to = to.clone();
         Box::pin(async move { store.write_impl(to, data).await })

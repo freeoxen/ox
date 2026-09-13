@@ -174,15 +174,14 @@ fn op_write(args: &serde_json::Value) -> ExecResult {
     };
 
     // Create parent directories if needed
-    if let Some(parent) = std::path::Path::new(path).parent() {
-        if !parent.exists() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                return ExecResult {
-                    ok: false,
-                    value: serde_json::Value::String(format!("mkdir error: {e}")),
-                };
-            }
-        }
+    if let Some(parent) = std::path::Path::new(path).parent()
+        && !parent.exists()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        return ExecResult {
+            ok: false,
+            value: serde_json::Value::String(format!("mkdir error: {e}")),
+        };
     }
 
     match std::fs::write(path, content) {

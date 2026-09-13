@@ -23,8 +23,8 @@
 //! Today it logs and returns `vec![]`.
 
 use ox_broker::subscription::{SubCtx, Subscription};
-use ox_path::oxpath;
 use ox_types::subscription::{PathPattern, SubscriptionId, Write};
+use structfs_core_store::path;
 
 pub const ID: &str = "gate.config_save";
 
@@ -43,7 +43,7 @@ impl ConfigSaveSubscription {
     pub fn new() -> Self {
         Self {
             id: SubscriptionId(ID.to_string()),
-            watches: vec![PathPattern::Exact(oxpath!("config", "save"))],
+            watches: vec![PathPattern::Exact(path!("config", "save"))],
         }
     }
 }
@@ -72,8 +72,8 @@ mod tests {
     use std::sync::Arc;
 
     use ox_broker::subscription::{AsyncWriter, SubCtx, Subscription};
-    use ox_path::oxpath;
     use ox_types::subscription::PathChange;
+    use structfs_core_store::path;
     use structfs_core_store::{Record, Value};
 
     use super::*;
@@ -99,7 +99,7 @@ mod tests {
     fn handle_returns_empty_writes() {
         let sub = ConfigSaveSubscription::new();
         let change = PathChange {
-            path: oxpath!("config", "save"),
+            path: path!("config", "save"),
             before: None,
             after: Some(Record::parsed(Value::Null)),
         };

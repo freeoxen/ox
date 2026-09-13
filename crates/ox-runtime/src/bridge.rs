@@ -14,7 +14,7 @@ pub fn record_to_json(record: &Record) -> Result<String, String> {
     let value = record
         .as_value()
         .ok_or_else(|| "cannot serialize raw record".to_string())?;
-    let json = structfs_serde_store::value_to_json(value.clone());
+    let json = structfs_serde_store::value_to_json(value.clone()).map_err(|e| e.to_string())?;
     serde_json::to_string(&json).map_err(|e| e.to_string())
 }
 

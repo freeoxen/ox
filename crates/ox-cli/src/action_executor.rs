@@ -135,17 +135,17 @@ pub(crate) fn execute(
             });
         }
         PendingAction::HistorySearchCycle => {
-            if let Some(ref mut state) = dialog.history_search {
-                if !state.results.is_empty() {
-                    state.selected = (state.selected + 1) % state.results.len();
-                }
+            if let Some(ref mut state) = dialog.history_search
+                && !state.results.is_empty()
+            {
+                state.selected = (state.selected + 1) % state.results.len();
             }
         }
         PendingAction::AcceptHistorySearch => {
-            if let Some(ref state) = dialog.history_search {
-                if let Some(text) = state.results.get(state.selected).cloned() {
-                    *editor_content_setter = Some(text);
-                }
+            if let Some(ref state) = dialog.history_search
+                && let Some(text) = state.results.get(state.selected).cloned()
+            {
+                *editor_content_setter = Some(text);
             }
             dialog.history_search = None;
         }

@@ -6,7 +6,6 @@
 
 use ox_broker::BrokerStore;
 use ox_gate::completion_broker::CompletionBrokerStore;
-use ox_path::oxpath;
 use ox_store_util::StoreBacking;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -103,14 +102,14 @@ pub async fn build_test_broker(
         &format!("keys/{}", provider_dialect),
         to_value(&ApiKey::new("sk-test")).unwrap(),
     );
-    broker.mount(oxpath!("secret"), secret).await;
+    broker.mount(path!("secret"), secret).await;
 
     let usage_backing = Box::new(MemoryBacking::new());
     let usage_store = ox_gate::UsageStore::new(usage_backing);
-    broker.mount(oxpath!("gateway", "usage"), usage_store).await;
+    broker.mount(path!("gateway", "usage"), usage_store).await;
 
     let upstream = ox_gate::UpstreamStore::new(executor, tokio::runtime::Handle::current());
-    broker.mount_async(oxpath!("upstream"), upstream).await;
+    broker.mount_async(path!("upstream"), upstream).await;
     install_blocks(&broker, false).await;
 
     broker
@@ -133,20 +132,24 @@ pub async fn install_blocks(broker: &BrokerStore, traffic: bool) {
     let store = CompletionBrokerStore::new(
         runtime.clone(),
         Arc::new(move |id, cancel| {
-            if let Err(e) = ox_gateway::broker_block::run_broker(
-                format!("gateway/completions/outstanding/{id}"),
-                traffic,
-                broker_wiring.clone(),
-                cancel,
-                client.clone(),
-                runtime.clone(),
-            ) {
-                eprintln!("BROKER BLOCK ERROR: {e}");
-            }
+            let broker_wiring = broker_wiring.clone();
+            let client = client.clone();
+            let runtime = runtime.clone();
+            Box::pin(async move {
+                ox_gateway::broker_block::run_broker(
+                    format!("gateway/completions/outstanding/{id}"),
+                    traffic,
+                    broker_wiring.clone(),
+                    cancel,
+                    client.clone(),
+                    runtime.clone(),
+                )
+                .await
+            })
         }),
     );
     broker
-        .mount_async(oxpath!("gateway", "completions"), store)
+        .mount_async(path!("gateway", "completions"), store)
         .await;
 
     let wire_client = broker.client();
@@ -154,53 +157,48 @@ pub async fn install_blocks(broker: &BrokerStore, traffic: bool) {
     let wire = ox_gateway::wire_store::WireStore::new(
         tokio::runtime::Handle::current(),
         Arc::new(move |id, cancel| {
-            let path = format!("wire/outstanding/{id}");
-            let dialect = wire_runtime
-                .block_on(async {
-                    wire_client
-                        .read(
-                            &structfs_core_store::Path::parse(&format!("{path}/inbound")).unwrap(),
-                        )
-                        .await
-                        .ok()
-                        .flatten()
-                        .and_then(|r| r.as_value().cloned())
-                        .map(structfs_serde_store::value_to_json)
-                })
-                .and_then(|j| j["dialect"].as_str().map(|s| s.to_string()))
-                .unwrap_or_else(|| "anthropic".into());
-            if let Err(e) = ox_gateway::broker_block::run_wire(
-                path,
-                dialect,
-                wire_wiring.clone(),
-                cancel,
-                wire_client.clone(),
-                wire_runtime.clone(),
-            ) {
-                eprintln!("WIRE BLOCK ERROR: {e}");
-            }
+            let wire_client = wire_client.clone();
+            let wire_runtime = wire_runtime.clone();
+            let wire_wiring = wire_wiring.clone();
+            Box::pin(async move {
+                let path = format!("wire/outstanding/{id}");
+                let dialect = ox_gateway::broker_block::wire_dialect(&wire_client, &path).await?;
+                ox_gateway::broker_block::run_wire(
+                    path,
+                    dialect,
+                    wire_wiring.clone(),
+                    cancel,
+                    wire_client.clone(),
+                    wire_runtime.clone(),
+                )
+                .await
+            })
         }),
     );
-    broker.mount_async(oxpath!("wire"), wire).await;
+    broker.mount_async(path!("wire"), wire).await;
 
     let stats_client = broker.client();
     let stats_runtime = tokio::runtime::Handle::current();
     let telemetry = ox_gateway::telemetry_store::TelemetryStore::new(
         tokio::runtime::Handle::current(),
         Arc::new(move |id, cancel| {
-            if let Err(e) = ox_gateway::broker_block::run_stats(
-                format!("gateway/telemetry/outstanding/{id}"),
-                stats_wiring.clone(),
-                cancel,
-                stats_client.clone(),
-                stats_runtime.clone(),
-            ) {
-                eprintln!("STATS BLOCK ERROR: {e}");
-            }
+            let stats_client = stats_client.clone();
+            let stats_runtime = stats_runtime.clone();
+            let stats_wiring = stats_wiring.clone();
+            Box::pin(async move {
+                ox_gateway::broker_block::run_stats(
+                    format!("gateway/telemetry/outstanding/{id}"),
+                    stats_wiring.clone(),
+                    cancel,
+                    stats_client.clone(),
+                    stats_runtime.clone(),
+                )
+                .await
+            })
         }),
     );
     broker
-        .mount_async(oxpath!("gateway", "telemetry"), telemetry)
+        .mount_async(path!("gateway", "telemetry"), telemetry)
         .await;
 }
 
@@ -251,7 +249,7 @@ pub async fn build_test_broker_two_accounts() -> BrokerStore {
 
     // Mount GateStore at "gate/" so that gate/snapshot/state is served by
     // GateStore's own Reader (not a raw LocalConfig key).
-    broker.mount(oxpath!("gate"), gate).await;
+    broker.mount(path!("gate"), gate).await;
 
     // Secrets aren't needed for /v1/models (no upstream call), but populate
     // them so any key-read path that fires doesn't panic on a missing mount.
@@ -264,7 +262,7 @@ pub async fn build_test_broker_two_accounts() -> BrokerStore {
         "keys/openai",
         to_value(&ApiKey::new("sk-oai-test")).unwrap(),
     );
-    broker.mount(oxpath!("secret"), secret).await;
+    broker.mount(path!("secret"), secret).await;
 
     broker
 }

@@ -105,10 +105,10 @@ pub async fn fetch_settings_view_state(client: &ClientHandle) -> SettingsSnapsho
     // Fetch it explicitly so the settings renderer can show an
     // unsaved-changes indicator.
     let dirty_path = Path::parse("config/_dirty").expect("static path literal");
-    if let Ok(Some(record)) = client.read(&dirty_path).await {
-        if let Some(value) = record.as_value() {
-            snap.insert(&dirty_path, value.clone());
-        }
+    if let Ok(Some(record)) = client.read(&dirty_path).await
+        && let Some(value) = record.as_value()
+    {
+        snap.insert(&dirty_path, value.clone());
     }
     snap
 }
@@ -126,14 +126,14 @@ mod tests {
 
     use ox_broker::BrokerStore;
     use ox_gate::CompletionRole;
-    use ox_path::oxpath;
     use ox_ui::config_store::ConfigStore;
+    use structfs_core_store::path;
 
     /// Mount a `ConfigStore` at `config` and return broker + client.
     async fn broker_with_config() -> (BrokerStore, ClientHandle) {
         let broker = BrokerStore::new(Duration::from_secs(5));
         let store = ConfigStore::new(BTreeMap::new());
-        let _h = broker.mount(oxpath!("config"), store).await;
+        let _h = broker.mount(path!("config"), store).await;
         let client = broker.client();
         (broker, client)
     }
@@ -151,13 +151,13 @@ mod tests {
             model_id: "claude-sonnet-4-20250514".to_string(),
         };
         client
-            .write_typed(&oxpath!("config", "gate", "completions", "primary"), &role)
+            .write_typed(&path!("config", "gate", "completions", "primary"), &role)
             .await
             .expect("write_typed");
 
         let mut snap = fetch_settings_view_state(&client).await;
         let record = snap
-            .read(&oxpath!("config", "gate", "completions", "primary"))
+            .read(&path!("config", "gate", "completions", "primary"))
             .expect("read")
             .expect("record present");
         let value = record.as_value().expect("parsed value").clone();
@@ -175,7 +175,7 @@ mod tests {
         let mut snap = fetch_settings_view_state(&client).await;
         // Reading anything specific returns None.
         assert!(
-            snap.read(&oxpath!("config", "gate", "accounts", "anything"))
+            snap.read(&path!("config", "gate", "accounts", "anything"))
                 .unwrap()
                 .is_none()
         );
@@ -188,14 +188,14 @@ mod tests {
 
         client
             .write_typed(
-                &oxpath!("config", "gate", "accounts", "alpha", "endpoint"),
+                &path!("config", "gate", "accounts", "alpha", "endpoint"),
                 &"https://api.alpha.test".to_string(),
             )
             .await
             .unwrap();
         client
             .write_typed(
-                &oxpath!("config", "gate", "accounts", "beta", "endpoint"),
+                &path!("config", "gate", "accounts", "beta", "endpoint"),
                 &"https://api.beta.test".to_string(),
             )
             .await
@@ -203,11 +203,11 @@ mod tests {
 
         let mut snap = fetch_settings_view_state(&client).await;
         let alpha = snap
-            .read(&oxpath!("config", "gate", "accounts", "alpha", "endpoint"))
+            .read(&path!("config", "gate", "accounts", "alpha", "endpoint"))
             .unwrap()
             .unwrap();
         let beta = snap
-            .read(&oxpath!("config", "gate", "accounts", "beta", "endpoint"))
+            .read(&path!("config", "gate", "accounts", "beta", "endpoint"))
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -224,7 +224,7 @@ mod tests {
     #[test]
     fn empty_snapshot_returns_none_for_unknown_path() {
         let mut snap = SettingsSnapshot::empty();
-        let result = snap.read(&oxpath!("nope")).unwrap();
+        let result = snap.read(&path!("nope")).unwrap();
         assert!(result.is_none());
     }
 
@@ -233,13 +233,10 @@ mod tests {
     fn insert_then_read_preserves_value() {
         let mut snap = SettingsSnapshot::empty();
         snap.insert(
-            &oxpath!("ui", "global", "mode"),
+            &path!("ui", "global", "mode"),
             Value::String("normal".into()),
         );
-        let record = snap
-            .read(&oxpath!("ui", "global", "mode"))
-            .unwrap()
-            .unwrap();
+        let record = snap.read(&path!("ui", "global", "mode")).unwrap().unwrap();
         assert_eq!(record.as_value().unwrap(), &Value::String("normal".into()));
     }
 }

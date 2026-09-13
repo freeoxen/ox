@@ -377,11 +377,11 @@ impl AgentModule {
         // -- Instantiate and call run -----------------------------------------
         let mut store = Store::new(&self.engine, state);
         store.limiter(|state| &mut state.limits);
-        if let Some(fuel) = self.config.fuel_per_turn {
-            if let Err(error) = store.set_fuel(fuel) {
-                let state = store.into_data();
-                return (state.host_store, Err(error.to_string()));
-            }
+        if let Some(fuel) = self.config.fuel_per_turn
+            && let Err(error) = store.set_fuel(fuel)
+        {
+            let state = store.into_data();
+            return (state.host_store, Err(error.to_string()));
         }
 
         let instance = match linker.instantiate(&mut store, &self.module) {

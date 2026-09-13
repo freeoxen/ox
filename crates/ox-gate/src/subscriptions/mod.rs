@@ -55,7 +55,7 @@ mod tests {
     use std::time::Duration;
 
     use ox_broker::BrokerStore;
-    use ox_path::oxpath;
+    use structfs_core_store::path;
     use structfs_core_store::{Record, Value};
 
     use crate::subscriptions::register_all;
@@ -96,7 +96,7 @@ mod tests {
 
         let broker = BrokerStore::new(Duration::from_secs(2));
         let _h = broker
-            .mount(oxpath!("config"), MemStore(BTreeMap::new()))
+            .mount(path!("config"), MemStore(BTreeMap::new()))
             .await;
         register_all(&broker, Arc::new(HttpTransport));
 
@@ -104,7 +104,7 @@ mod tests {
         // and its handler is a no-op. The write itself must succeed.
         let client = broker.client();
         client
-            .write(&oxpath!("config", "save"), Record::parsed(Value::Null))
+            .write(&path!("config", "save"), Record::parsed(Value::Null))
             .await
             .expect("config/save write should succeed");
     }
