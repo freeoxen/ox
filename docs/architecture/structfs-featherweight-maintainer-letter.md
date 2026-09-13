@@ -10,6 +10,8 @@ Our gateway now uses Featherweight's guest SDK, assembly namespaces and async
 execution. We replaced our path proc macro, store combinators and cancellation
 token with upstream implementations. We're also using Shared<MemoryStore> for
 codec jobs, PathTrie for broker lookup, and the standard detached store traits.
+Horns, our UI framework, now also uses PathTrie for renderer selection and
+ancestor lookup in the CLI settings screen.
 
 The release covers substantially more of our needs than we were previously
 using. The requests below concern the remaining seams, rather than asking you
@@ -151,6 +153,39 @@ arguments to the documented type and add a compile-fail test for this case.
 An explicitly typed borrow could preserve reuse of the same component. Our
 current callers use validated components, so we've retained the upstream macro.
 
+## 8. Make prepared execution practical for existing synchronous hosts
+
+Our next target was the CLI conversation runner. We evaluated 0.2.0 and decided
+to retain the Ox runner for now: a direct replacement loses capabilities, while
+an async port adds integration machinery around our existing synchronous effects.
+
+Ox compiles once, runs fresh instances over a synchronous host store, and returns
+that store and its effects after success or failure. The executor then reuses
+them for the next turn. It also configures memory limits, traps on denied memory
+growth, and applies per-turn fuel, timeout and cancellation policy.
+
+We reproduced these distinctions in the published Featherweight API:
+
+- `CoreWasmBlock::run` rejects a prepared artifact. With raw bytes it creates a
+  new engine and compiles the module each run, and exposes no memory-cap option.
+- Prepared async execution does enforce the configured memory cap, but denied
+  `memory.grow` returns -1; a guest that ignores that result can return success.
+  We cannot request Ox's trap-on-growth-failure policy.
+- Prepared execution accepts only the 10 ms epoch interval. Our production
+  remote default already uses 10 ms; this is an API limitation, not a production
+  blocker by itself.
+
+Could you offer a prepared execution adapter for synchronous host stores,
+including recovery of the host state on failure, and configurable grow-failure
+policy? An official adapter over the async runner would also work if it keeps
+blocking effects off executor workers, retains accepted writes until completion,
+and returns the host state only after in-flight effects have finished.
+
+This is an embedding request, not a claim that Featherweight cannot run an
+agent. We could write channels, ownership wrappers and a cancellation bridge,
+but that would add code where the existing Ox runner already meets our needs.
+We prefer to revisit this when adoption removes that work.
+
 ## Documentation follow-ups
 
 A migration table would help distinguish intentional changes from integration
@@ -172,8 +207,15 @@ We retain our ledger writer, persistence formats, application subscription hooks
 provider protocols and conversation-agent runtime. We are not treating those as
 missing StructFS features. State's memory-durability contract and invalidation
 model are different from our disk ledger and post-write hooks; adopting it would
-be a deliberate architecture change. Likewise, moving the conversation runtime
-is further downstream porting work, not an established upstream blocker.
+be a deliberate architecture change. We also retain Horns' UI dispatch and
+shareable subscription writer: handlers hold an `Arc` and start independent
+operations through `&self`, whereas the upstream detached writer takes `&mut
+self`. We would welcome a standard shareable handle abstraction, but do not
+expect Featherweight to replace our UI behavior.
+
+Our CLI render snapshots also distinguish stored Null from absence and currently
+use flat configuration projection. Replacing them with MemoryStore writes would
+delete Null entries; that needs an explicit import/compatibility decision.
 
 The detached ergonomics, diagnostics, assembly validation and path-macro contract
 requests are our highest priorities. They would remove recurring adapter work

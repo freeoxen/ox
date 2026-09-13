@@ -2,18 +2,16 @@
 //!
 //! - A renderer is a *pure function* from a Reader to a View. It cannot
 //!   draw, await, or mutate observable state.
-//! - The registry indexes renderers by exact cursor `Path`. On a miss,
-//!   `render` returns `View::unknown_cursor_fallback(cursor)`.
+//! - The registry indexes renderers by cursor `Path`. Rendering selects
+//!   the deepest registered ancestor, falling back to an unknown-cursor View.
 //! - Esc-handling lives here: `ascend(cursor)` walks the display-tree
 //!   parent chain per the matched renderer's `AscendRule`.
 //! - Composition is value-shaped: a modal-over-page renderer constructs
 //!   its View by recursively asking the registry for the parent View
 //!   and wrapping it in `View::Modal { background, foreground, dim }`.
 
-use std::collections::HashMap;
-
 use serde::{Deserialize, Serialize};
-use structfs_core_store::{Path, Reader};
+use structfs_core_store::{Path, PathTrie, Reader};
 
 use crate::path_serde;
 use crate::view::View;
@@ -115,19 +113,19 @@ pub struct RendererMetadata {
 ///   registered ancestor exists for `NearestRegistered`, or a
 ///   `Fallback` whose target is unregistered).
 pub struct RendererRegistry {
-    specs: HashMap<Path, Box<dyn Renderer>>,
+    specs: PathTrie<Box<dyn Renderer>>,
 }
 
 impl RendererRegistry {
     pub fn new() -> Self {
         Self {
-            specs: HashMap::new(),
+            specs: PathTrie::new(),
         }
     }
 
     /// Register `renderer` at `cursor`. Replaces any existing entry.
     pub fn register(&mut self, cursor: Path, renderer: Box<dyn Renderer>) {
-        self.specs.insert(cursor, renderer);
+        self.specs.insert(&cursor, renderer);
     }
 
     /// Look up the renderer at `cursor`. Returns `None` if no exact match.
@@ -141,11 +139,8 @@ impl RendererRegistry {
     /// second cursor state path. Returns the fallback View only if
     /// neither the cursor nor any ancestor is registered.
     pub fn render(&self, cursor: &Path, ctx: &mut RenderCtx<'_>) -> View {
-        if let Some(r) = self.specs.get(cursor) {
+        if let Some((r, _)) = self.specs.find_ancestor(cursor) {
             return r.render(ctx);
-        }
-        if let Some(parent) = self.nearest_registered_parent(cursor) {
-            return self.specs[&parent].render(ctx);
         }
         View::unknown_cursor_fallback(cursor)
     }
@@ -156,10 +151,9 @@ impl RendererRegistry {
     /// `render` asks (e.g. `nav.ascend` needs the page-level ancestor
     /// of a deeply-focused compound widget).
     pub fn registered_ancestor_or_self(&self, cursor: &Path) -> Option<Path> {
-        if self.specs.contains_key(cursor) {
-            return Some(cursor.clone());
-        }
-        self.nearest_registered_parent(cursor)
+        self.specs
+            .find_ancestor(cursor)
+            .map(|(_, suffix)| cursor.slice(0, cursor.len() - suffix.len()))
     }
 
     /// Compute the cursor's "ascent" target per the matched renderer's
@@ -173,7 +167,7 @@ impl RendererRegistry {
             AscendRule::ExitScreen => None,
             AscendRule::NearestRegistered => self.nearest_registered_parent(cursor),
             AscendRule::Fallback(target) => {
-                if self.specs.contains_key(&target) {
+                if self.specs.contains_value(&target) {
                     Some(target)
                 } else {
                     None
@@ -187,15 +181,8 @@ impl RendererRegistry {
     /// strict ancestor is registered (including when `cursor` is the
     /// empty path).
     fn nearest_registered_parent(&self, cursor: &Path) -> Option<Path> {
-        let mut len = cursor.len();
-        while len > 0 {
-            len -= 1;
-            let candidate = cursor.slice(0, len);
-            if self.specs.contains_key(&candidate) {
-                return Some(candidate);
-            }
-        }
-        None
+        let parent_len = cursor.len().checked_sub(1)?;
+        self.registered_ancestor_or_self(&cursor.slice(0, parent_len))
     }
 }
 
@@ -340,6 +327,62 @@ mod tests {
     fn lookup_misses_return_none() {
         let reg = RendererRegistry::new();
         assert!(reg.lookup(&path!("settings", "accounts")).is_none());
+    }
+
+    #[test]
+    fn lookup_and_ascent_require_exact_registration_even_with_an_ancestor() {
+        let mut reg = RendererRegistry::new();
+        reg.register(path!("settings"), fake(AscendRule::NearestRegistered));
+        let cursor = path!("settings", "accounts");
+
+        assert_eq!(
+            reg.registered_ancestor_or_self(&cursor),
+            Some(path!("settings"))
+        );
+        assert!(reg.lookup(&cursor).is_none());
+        assert_eq!(reg.ascend(&cursor), None);
+    }
+
+    #[test]
+    fn registered_root_renders_descendants_but_has_no_strict_parent() {
+        let mut reg = RendererRegistry::new();
+        reg.register(path!(), fake(AscendRule::NearestRegistered));
+        reg.register(path!("settings"), fake(AscendRule::NearestRegistered));
+
+        assert_eq!(reg.registered_ancestor_or_self(&path!()), Some(path!()));
+        assert_eq!(reg.ascend(&path!()), None);
+        assert_eq!(reg.ascend(&path!("settings")), Some(path!()));
+        let cursor = path!("other", "page");
+        assert_eq!(reg.registered_ancestor_or_self(&cursor), Some(path!()));
+
+        let mut reader = EmptyReader;
+        let mut ctx = RenderCtx {
+            area: Rect::new(0, 0, 80, 24),
+            data: &mut reader,
+            registry: &reg,
+            theme: &(),
+        };
+        assert_eq!(reg.render(&cursor, &mut ctx), View::Empty);
+    }
+
+    #[test]
+    fn ancestor_selection_respects_component_boundaries() {
+        let mut reg = RendererRegistry::new();
+        reg.register(path!("settings", "account"), fake(AscendRule::ExitScreen));
+        let cursor = path!("settings", "accounts", "alpha");
+        assert_eq!(reg.registered_ancestor_or_self(&cursor), None);
+
+        let mut reader = EmptyReader;
+        let mut ctx = RenderCtx {
+            area: Rect::new(0, 0, 80, 24),
+            data: &mut reader,
+            registry: &reg,
+            theme: &(),
+        };
+        assert_eq!(
+            reg.render(&cursor, &mut ctx),
+            View::unknown_cursor_fallback(&cursor)
+        );
     }
 
     #[test]

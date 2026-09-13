@@ -233,3 +233,74 @@ owned by Ox; their absence upstream is not itself a defect.
 - Ox action: current migrated callers use validated components. Keep the upstream
   macro and report this discrepancy; do not recreate a private macro merely to
   change behavior for caller types we do not use.
+
+## FW-003 — Prepared execution over synchronous host effects
+
+- Type: embedding/resource-policy request. Status: reproduced; CLI runner
+  migration deliberately declined for this release.
+- Ox contract: `ox-runtime/src/engine.rs:151–185` compiles at load and shares the
+  module; :203–217 applies a memory limit with trap_on_grow_failure. Execution
+  returns the HostStore even on error. `ox-executor/src/agents.rs:2128–2132`
+  recovers the backend and policy/tool effects for subsequent bookkeeping and
+  reuse. Existing memory, fuel, timeout and independent-cancellation tests
+  are in `ox-runtime/src/engine.rs:563–669`.
+- Published upstream evidence: `featherweight-runtime-0.2.0/src/core_wasm.rs:864`
+  rejects synchronous execution of prepared artifacts; :879 recompiles raw
+  modules for synchronous runs. The public synchronous API :980–1009 has no
+  memory-cap parameter and returns only the guest exit code. Prepared async
+  execution does cap memory (:326), but uses the default non-trapping grow
+  failure policy; it accepts only 10 ms epochs (:716–726).
+- Reproduction: `CARGO_TARGET_DIR=target cargo run --manifest-path
+  local/structfs-migration-probe/Cargo.toml --bin cli_runtime --offline`
+  (`local/cli-featherweight-runtime-probe.log`) reports:
+
+  ```text
+  prepared synchronous execution: prepared artifacts require run_async
+  prepared async ignores denied memory.grow and returns success: Ok(0)
+  prepared custom epoch interval: prepared engine requires a 10 ms epoch interval
+  raw synchronous memory pages after growth: Ok(2)
+  ```
+
+  The prepared engine is constructed with `with_limits(1, 2, 65536)`.
+  The minimal guest exports one memory page, `block_alloc`, a manifest returning
+  `{}`, and this run body:
+
+  ```wat
+  (func (export "run") (result i32)
+    (drop (memory.grow (i32.const 1)))
+    (i32.const 0))
+  ```
+
+  For the raw synchronous case, returning `memory.size` instead of zero proves
+  growth to two pages. Setting Metering's epoch_interval to 5 ms reproduces the
+  prepared-interval rejection. Ox's existing memory-limit regression uses the
+  same ignored-growth behavior and expects a trap.
+- Request: prepared embedding over synchronous stores with host-state recovery
+  on success/error, plus configurable grow-failure policy. A documented adapter
+  over the async runner is acceptable if blocking host effects cannot stall
+  executor workers and accepted effects finish before returning the host store.
+- Decision: keep the current CLI runner, its guest ABI, approvals and durability
+  path. Switching the guest SDK alone would require replacing the ABI linker
+  without removing the runner. An async conversion is possible, but would add
+  channels/state wrappers/cancellation integration around working synchronous
+  code. This is a cost/contract decision, not an upstream correctness bug.
+  Production remote execution already uses 10 ms epochs; do not portray the
+  configurable-interval gap alone as blocking that path.
+
+## SF-012 — Shareable writer and snapshot-import ergonomics for UI hosts
+
+- Type: optional ergonomics request. Status: identified; existing Ox contracts
+  retained.
+- Horns `subscription.rs:181` exposes `write(&self, Path, Record)` through
+  `Arc<dyn AsyncWriter>` with Send + Sync and an independent static future.
+  Upstream DetachedWriter uses `&mut self`; borrowing AsyncWriter also does
+  not provide the same shareable handle contract. A standard cloneable/shareable
+  writer handle could remove this small local trait without adding a mutex.
+- CLI `settings/snapshot.rs:36` inserts with LocalConfig::set, preserving Null
+  values as data; the broker's subtree flattening preserves those leaves.
+  MemoryStore::write interprets Null as deletion. A documented snapshot import
+  path that preserves Null would help; with_root can preserve a prebuilt tree,
+  but flat leaf import still requires construction and conflict policy.
+- Ox action: retain these helpers. Keep UI dispatch, subscription ordering and
+  renderer ascent as application policy. Migrate the generic renderer index to
+  PathTrie, whose exact/deepest-ancestor contracts do match.

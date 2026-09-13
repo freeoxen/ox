@@ -4,6 +4,9 @@ The gateway uses published Featherweight 0.2.0 for core Wasm execution and
 assembly namespaces. StructFS dependencies are pinned to the coordinated 0.2.0
 release; the workspace requires Rust 1.96. The conversation agent runtime in
 `ox-runtime` remains a separate implementation.
+The CLI/Horns follow-up deliberately retains that runner after comparing
+prepared-module reuse, synchronous host effects and resource policy; see FW-003
+in the [feedback log](structfs-featherweight-feedback.md#fw-003--prepared-execution-over-synchronous-host-effects).
 
 ## Guest and capabilities
 

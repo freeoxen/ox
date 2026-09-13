@@ -16,6 +16,7 @@ tracked in the [cleanup plan](../superpowers/plans/2026-09-13-structfs-ergonomic
 | Gateway bespoke Wasm host and assembly parser | Featherweight SDK/runtime/AssemblyDef | codec, capability denial, aliases, failure and lifecycle parity tests |
 | Codec JobStore and its shared map | Shared<MemoryStore> | existing codec parity suite; only job/result leaves are used |
 | Broker sorted-vector prefix lookup | PathTrie | first duplicate registration still wins; exact unmount retains descendants; empty branches pruned after transient mounts |
+| Horns renderer HashMap and hand-written ancestor traversal | PathTrie | exact lookup/ascent, deepest rendering, replacing registration, root handling and component boundaries preserved |
 | Duplicate Ox/Horns Path Serde implementation and component-array Value encoders | one Horns compatibility adapter and encoder | existing component-array shape, optional paths and validation preserved |
 | Broker private detached async traits | upstream DetachedReader/DetachedWriter | parked-read/independent-write regression passes after dropping the original client; spawned servers retain explicit 'static bounds |
 
@@ -32,7 +33,8 @@ tracked in the [cleanup plan](../superpowers/plans/2026-09-13-structfs-ergonomic
 | `ox-context::Namespace` | First-component-only dispatch, missing reads returning None, and rebased write-result paths are its current contract. Upstream OverlayStore/service Router have broader routing/policy APIs; adopting them is a namespace contract change. |
 | StoreBacking, JSONL/TOML/JSON adapters and ledger writer | Application persistence formats and commit ordering. StructFS State explicitly promises memory durability; adopting it would not replace disk persistence. |
 | Remote wire v1 | Committed canonical fixtures and the original signed integer range remain a compatibility contract. Using a new value codec is a protocol version change. |
-| Conversation agent runtime | Still executes through ox-runtime/ox-executor. Porting tools, event effects, approvals, cancellation and resume behavior is a separate runtime migration, not a utility alias. No new upstream blocker is established by this audit. |
+| Conversation agent runtime | Retained after the CLI follow-up: synchronous Featherweight execution recompiles per run and exposes no memory cap; prepared async execution needs a host-effects adapter and does not expose Ox's trap-on-growth-failure policy. FW-003 records this adoption tradeoff, not a claim that async agent execution is impossible. |
+| CLI SettingsSnapshot | LocalConfig::set preserves stored Null leaves. MemoryStore::write deletes Null, so a direct alias would change render input. Existing scratch mounts also retain flat projection semantics. |
 
 ## Reproduced boundaries
 

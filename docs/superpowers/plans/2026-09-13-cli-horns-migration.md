@@ -66,11 +66,44 @@ authorized by an implementation shortcut.
 Execute one implementation sub-agent task at a time; parent reviews and probes
 adjacent contracts. Create new commits at validated milestones; keep hooks.
 
-1. [ ] Replace the Horns renderer index with PathTrie. Preserve exact lookup,
+1. [x] Replace the Horns renderer index with PathTrie. Preserve exact lookup,
    deepest selection, replacing registration and strict-parent AscendRule.
    Test root behavior and component boundaries as well as existing UI cases.
-2. [ ] Exercise published Featherweight APIs against CLI requirements. Adopt a
+2. [x] Exercise published Featherweight APIs against CLI requirements. Adopt a
    replacement only if it improves the current implementation; otherwise write
    concrete maintainers' requests and a clear retained-runtime decision.
-3. [ ] Update architecture/letter, format, run canonical quality gates and commit
+3. [x] Update architecture/letter, format, run canonical quality gates and commit
    the validated result.
+
+## Decisions and focused validation
+
+- Horns renderer selection now uses PathTrie. Parent reviewed the implementation
+  and root/exact-match/component-boundary regressions. `cargo test -p horns-core
+  --locked --offline` passed 139 unit and three integration tests
+  (`local/horns-pathtrie-tests.log`).
+- The published-runtime probe completed successfully:
+  `CARGO_TARGET_DIR=target cargo run --manifest-path
+  local/structfs-migration-probe/Cargo.toml --bin cli_runtime --offline`
+  (`local/cli-featherweight-runtime-probe.log`). It confirms prepared synchronous
+  rejection, absent synchronous memory-cap controls, non-trapping denied growth
+  in the prepared async API, and its fixed epoch interval.
+- Retain the CLI conversation runner. A raw synchronous replacement loses
+  compiled-module reuse and memory-cap configuration. A prepared async port is
+  possible, but needs additional host-effects lifetime/cancellation machinery
+  and does not expose Ox's grow-failure policy. FW-003 records the specific
+  request; this decision does not claim async agent execution is impossible.
+- Retain CLI snapshot/flat scratch-store semantics and Horns shareable writer
+  rather than adding compatibility wrappers. SF-012 records those opportunities.
+- The original completed gateway/utility work was committed as `d51df81`; the
+  verified follow-up plan was committed separately as `2017d50`. No hooks were
+  bypassed and no correspondence was sent.
+
+## Final validation
+
+- `./scripts/fmt.sh` passed.
+- `./scripts/quality_gates.sh` passed all 13 gates
+  (`local/cli-horns-quality-gates.log`), including 2,338 Rust tests, native and
+  browser lint, wasm build, UI checks/tests and production build. Region coverage
+  is 80.19% in `target/coverage/rust_summary.txt`.
+- `git diff --check` passed. Implementation and the retention decision are
+  committed together after validation; no local probe artifacts are staged.
