@@ -1,4 +1,7 @@
 [package]
+readme = "README.md"
+include = ["src/**", "tests/**", "Cargo.toml", "README.md", "LICENSE", "build.rs", "artifacts/**", "gateway.assembly.yaml"]
+publish = ["crates-io"]
 name = "ox-cli"
 version.workspace = true
 edition.workspace = true
@@ -8,7 +11,6 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 description = "Ratatui-based agentic coding CLI for the ox agent framework"
-publish = false
 
 [lib]
 name = "ox_cli"
@@ -17,6 +19,10 @@ path = "src/lib.rs"
 [[bin]]
 name = "ox"
 path = "src/main.rs"
+
+[[bin]]
+name = "ox-tool-exec"
+path = "src/bin/ox-tool-exec.rs"
 
 [dependencies]
 parking_lot = { workspace = true }

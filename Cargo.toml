@@ -76,27 +76,27 @@ authors = ["Adjective Noun, LLC"]
 # Internal crates — path deps live in one place so every member references
 # them as `name = { workspace = true }`. Add a feature here once and every
 # crate that opts in inherits it.
-horns = { path = "crates/horns" }
-horns-core = { path = "crates/horns-core" }
-horns-ratatui = { path = "crates/horns-ratatui" }
-ox-broker = { path = "crates/ox-broker" }
-ox-context = { path = "crates/ox-context" }
-ox-core = { path = "crates/ox-core" }
-ox-executor = { path = "crates/ox-executor" }
-ox-gate = { path = "crates/ox-gate" }
-ox-config = { path = "crates/ox-config" }
-ox-codec = { path = "crates/ox-codec" }
-ox-history = { path = "crates/ox-history" }
-ox-inbox = { path = "crates/ox-inbox" }
-ox-kernel = { path = "crates/ox-kernel" }
-ox-remote = { path = "crates/ox-remote" }
-ox-runtime = { path = "crates/ox-runtime" }
-ox-store-util = { path = "crates/ox-store-util" }
-ox-structfs-transport = { path = "crates/ox-structfs-transport" }
-ox-worker = { path = "crates/ox-worker" }
-ox-tools = { path = "crates/ox-tools" }
-ox-types = { path = "crates/ox-types" }
-ox-ui = { path = "crates/ox-ui" }
+horns = { path = "crates/horns", version = "0.1.0" }
+horns-core = { path = "crates/horns-core", version = "0.1.0" }
+horns-ratatui = { path = "crates/horns-ratatui", version = "0.1.0" }
+ox-broker = { path = "crates/ox-broker", version = "0.1.0" }
+ox-context = { path = "crates/ox-context", version = "0.1.0" }
+ox-core = { path = "crates/ox-core", version = "0.1.0" }
+ox-executor = { path = "crates/ox-executor", version = "0.1.0" }
+ox-gate = { path = "crates/ox-gate", version = "0.1.0" }
+ox-config = { path = "crates/ox-config", version = "0.1.0" }
+ox-codec = { path = "crates/ox-codec", version = "0.1.0" }
+ox-history = { path = "crates/ox-history", version = "0.1.0" }
+ox-inbox = { path = "crates/ox-inbox", version = "0.1.0" }
+ox-kernel = { path = "crates/ox-kernel", version = "0.1.0" }
+ox-remote = { path = "crates/ox-remote", version = "0.1.0" }
+ox-runtime = { path = "crates/ox-runtime", version = "0.1.0" }
+ox-store-util = { path = "crates/ox-store-util", version = "0.1.0" }
+ox-structfs-transport = { path = "crates/ox-structfs-transport", version = "0.1.0" }
+ox-worker = { path = "crates/ox-worker", version = "0.1.0" }
+ox-tools = { path = "crates/ox-tools", version = "0.1.0" }
+ox-types = { path = "crates/ox-types", version = "0.1.0" }
+ox-ui = { path = "crates/ox-ui", version = "0.1.0" }
 
 # StructFS — coordinated published release; keep the shared value types aligned.
 featherweight-runtime = "=0.2.0"

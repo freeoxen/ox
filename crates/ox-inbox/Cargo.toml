@@ -1,9 +1,15 @@
 [package]
+readme = "README.md"
+include = ["src/**", "tests/**", "Cargo.toml", "README.md", "LICENSE", "build.rs", "artifacts/**", "gateway.assembly.yaml"]
+publish = ["crates-io"]
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
 name = "ox-inbox"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 rust-version.workspace = true
-license = "Apache-2.0"
+license.workspace = true
 description = "StructFS-backed inbox store for ox agent thread management"
 
 [dependencies]
@@ -20,8 +26,8 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-ox-context = { workspace = true }
-ox-gate = { workspace = true }
-ox-history = { workspace = true }
-ox-store-util = { workspace = true }
-ox-tools = { workspace = true }
+ox-context = { path = "../ox-context" }
+ox-gate = { path = "../ox-gate" }
+ox-history = { path = "../ox-history" }
+ox-store-util = { path = "../ox-store-util" }
+ox-tools = { path = "../ox-tools" }

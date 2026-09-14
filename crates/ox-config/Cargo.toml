@@ -1,4 +1,7 @@
 [package]
+readme = "README.md"
+include = ["src/**", "tests/**", "Cargo.toml", "README.md", "LICENSE", "build.rs", "artifacts/**", "gateway.assembly.yaml"]
+publish = ["crates-io"]
 name = "ox-config"
 version.workspace = true
 edition.workspace = true

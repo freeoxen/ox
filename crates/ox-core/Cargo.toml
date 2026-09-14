@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "ox-core"
 version.workspace = true
 edition.workspace = true
@@ -8,7 +9,6 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 description = "Agent composition for the ox framework — wires kernel, namespace, and stores"
-readme = "README.md"
 keywords = ["agent", "ai", "llm", "agentic", "tools"]
 categories = ["api-bindings"]
 

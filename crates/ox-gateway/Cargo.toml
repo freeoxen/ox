@@ -1,4 +1,7 @@
 [package]
+readme = "README.md"
+include = ["src/**", "tests/**", "Cargo.toml", "README.md", "LICENSE", "build.rs", "artifacts/**", "gateway.assembly.yaml"]
+publish = ["crates-io"]
 name = "ox-gateway"
 version.workspace = true
 edition.workspace = true
@@ -47,4 +50,4 @@ thiserror = { workspace = true }
 [dev-dependencies]
 reqwest = { workspace = true, features = ["json", "stream"] }
 tempfile = { workspace = true }
-ox-gate = { workspace = true, features = ["test-utils"] }
+ox-gate = { path = "../ox-gate", features = ["test-utils"] }

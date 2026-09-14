@@ -1,4 +1,7 @@
 [package]
+readme = "README.md"
+include = ["src/**", "tests/**", "Cargo.toml", "README.md", "LICENSE", "build.rs", "artifacts/**", "gateway.assembly.yaml"]
+publish = ["crates-io"]
 name = "ox-tools"
 version.workspace = true
 edition.workspace = true
@@ -24,6 +27,8 @@ tracing = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 clash = { workspace = true }
+# Keep standalone consumers compatible with Clash's Starlark/hashbrown versions.
+allocative = ">=0.3, <0.3.6"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

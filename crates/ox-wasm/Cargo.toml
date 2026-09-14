@@ -1,11 +1,11 @@
 [package]
+publish = false
 name = "ox-wasm"
 version = "0.1.0"
 edition = "2024"
 rust-version.workspace = true
 license = "Apache-2.0"
 description = "Ox agent as a Wasm module — drives the kernel loop via host StructFS imports"
-publish = false
 
 [dependencies]
 tracing = { workspace = true }

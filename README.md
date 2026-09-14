@@ -1,82 +1,88 @@
-# ox<sup>™</sup>
+# Ox
 
-The ox is the oldest working animal. It does not sprint. It lowers its head,
-leans into the yoke, and pulls.
+Ox is an agentic coding assistant with a terminal UI, durable conversations,
+sandboxed tools, and a local LLM gateway. Its stores and capability boundaries
+use [StructFS](https://github.com/StructFS/structfs); the gateway runs on
+Featherweight 0.2.
 
-**ox**<sup>™</sup> is an agentic AI framework where every capability is a
-filesystem path. Built on [StructFS](https://github.com/StructFS/structfs), the
-agent's system prompt, conversation history, tool definitions, and model
-configuration all live as paths in a virtual namespace. Read a path to inspect
-state. Write a path to change it.
+## Install
 
-## Architecture
+The first crates.io release, **0.1.0**, is being prepared and is not yet published.
+Once available, on Linux or macOS with Rust 1.96+ and native build tools:
 
-| Crate | Role | Description |
-|-------|------|-------------|
-| `ox-kernel` | core | State machine, Tool/Transport traits, ToolRegistry, agentic loop, StructFS re-exports |
-| `ox-context` | namespace | Namespace store router, SystemProvider, ToolsProvider, ModelProvider, prompt synthesis |
-| `ox-history` | memory | HistoryProvider &mdash; conversation state as a StructFS store |
-| `ox-core` | agent | Agent composition, wires kernel + namespace + stores, re-exports all public types |
-| `ox-web` | browser | Wasm shell with JS tool registration, theme picker, debug UI |
-| `ox-dev-server` | proxy | Axum binary, Anthropic API proxy, serves the Wasm playground |
-| `ox-wasi` | stub | WASI target shell, re-exports ox-core |
-| `ox-emscripten` | stub | Emscripten target shell, re-exports ox-core |
-
-## Quick Start
-
-```bash
-# Prerequisites: Rust (edition 2024), wasm-pack, bun
-
-# Build the Wasm package
-wasm-pack build crates/ox-web --target web --out-dir ../../target/wasm-pkg
-
-# Start the dev server
-ANTHROPIC_API_KEY=sk-... cargo run -p ox-dev-server
-
-# Open http://localhost:3000
+```sh
+cargo install ox-cli --version 0.1.0 --locked
+ox --version
+ox --workspace /path/to/project
 ```
 
-## Design System
+Install the complete package: it supplies both `ox` and its required
+`ox-tool-exec` helper. Do not select only `--bin ox`. The packaged application
+includes its Wasm agent; installation does not require the repository checkout,
+Bun, wasm-pack, or the wasm32 Rust target.
 
-Seven colors. Twelve themes. Three typefaces. See the [brand book](https://freeoxen.github.io/ox/brand.html) for the full specification.
+On first launch Ox guides you through provider/account setup. Run `ox init` to
+open setup explicitly. Configuration, keys, logs and durable conversations live
+under `~/.ox`. See `ox --help` and `ox remote --help` for available commands.
+Normal execution uses policy checks and approvals; `--no-policy` explicitly
+disables that enforcement.
 
-## Project Structure
+Until publication, build from this repository:
 
-```
-ox/
-├── crates/
-│   ├── ox-kernel/       # Core types and agentic loop
-│   ├── ox-context/      # Namespace and providers
-│   ├── ox-history/      # Conversation history
-│   ├── ox-core/         # Agent composition
-│   ├── ox-web/          # Browser Wasm shell
-│   ├── ox-dev-server/   # Anthropic API proxy
-│   ├── ox-wasi/         # WASI stub
-│   └── ox-emscripten/   # Emscripten stub
-├── site/                # Static landing site (Cloudflare Pages)
-├── scripts/             # Quality gates, coverage
-├── BRAND_BOOK.md        # Design system specification
-└── README.md
+```sh
+cargo build --locked -p ox-cli
+./target/debug/ox --workspace /path/to/project
 ```
 
-## Development
+## Optional services
 
-```bash
-# Full quality gates (fmt, clippy, check, test, wasm-pack)
+After publication:
+
+```sh
+cargo install ox-gateway --version 0.1.0 --locked
+ox-gateway
+```
+
+The gateway serves Anthropic/OpenAI-compatible APIs at `127.0.0.1:11343`, using
+Ox's configured accounts. `OX_GATEWAY_BIND` changes the listener and `OX_DIR`
+selects a separate state directory. Its compiled Featherweight guests and
+assembly manifest ship inside the package.
+
+`ox-worker` supplies the headless remote worker. Install `ox-cli` (or the
+standalone `ox-tools` helper package) alongside it so `ox-tool-exec` is present.
+See [worker deployment](deploy/ox-worker/README.md) before exposing a worker.
+
+## Libraries
+
+| Packages | Purpose |
+| --- | --- |
+| `horns`, `horns-core`, `horns-ratatui` | Path-based UI framework and terminal renderer |
+| `ox-kernel`, `ox-types` | Conversation state machine and shared data types |
+| `ox-broker`, `ox-context`, `ox-store-util` | Store routing and application adapters |
+| `ox-config`, `ox-gate`, `ox-codec` | Configuration, providers and wire translation |
+| `ox-history`, `ox-inbox` | Conversation projections and durable storage |
+| `ox-tools`, `ox-runtime`, `ox-executor` | Tool effects and conversation execution |
+| `ox-structfs-transport`, `ox-remote`, `ox-worker` | Remote execution and transport |
+| `ox-ui`, `ox-cli`, `ox-gateway` | Applications and their supporting stores |
+
+The browser playground, development server, guest build crates and the legacy
+`ox-core` umbrella remain workspace-only. Their absence from the release set does
+not prevent installing the native applications.
+
+## Development and releases
+
+Use the pinned Rust toolchain, Python 3.12+, Bun and wasm-pack for full workspace
+checks. The native packages do not need the frontend toolchain to build.
+
+```sh
+python3 scripts/build-wasm-artifacts.py  # after changing guest inputs
+./scripts/fmt.sh
 ./scripts/quality_gates.sh
-
-# Coverage (Rust + TypeScript)
-./scripts/coverage.sh
-
-# Workspace check
-cargo check
-
-# Wasm target check
-cargo check --target wasm32-unknown-unknown -p ox-web
-
-# TypeScript tests
-cd crates/ox-web/ui && bun test
-
-# Build the site
-cd site && bun install && bun run build
+python3 scripts/release.py check        # clean commit; isolated package checks
 ```
+
+[Release preparation and publication](docs/releasing.md) documents package order,
+artifact provenance, installation tests, and the explicit publication step.
+[Architecture](docs/architecture/data-model.md) documents the data contracts.
+
+Licensed under [Apache-2.0](LICENSE).

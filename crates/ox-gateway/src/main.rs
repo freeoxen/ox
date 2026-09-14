@@ -305,8 +305,14 @@ async fn shutdown_signal() {
 }
 
 fn ox_dir() -> anyhow::Result<std::path::PathBuf> {
-    let home = std::env::var("HOME").map_err(|_| anyhow::anyhow!("HOME is not set"))?;
-    let dir = std::path::PathBuf::from(home).join(".ox");
+    let dir = match std::env::var_os("OX_DIR") {
+        Some(dir) if !dir.is_empty() => std::path::PathBuf::from(dir),
+        Some(_) => anyhow::bail!("OX_DIR must not be empty"),
+        None => {
+            let home = std::env::var("HOME").map_err(|_| anyhow::anyhow!("HOME is not set"))?;
+            std::path::PathBuf::from(home).join(".ox")
+        }
+    };
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     Ok(dir)
 }

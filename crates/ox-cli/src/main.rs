@@ -51,7 +51,7 @@ enum AppState {
 }
 
 #[derive(Parser)]
-#[command(name = "ox", about = "Agentic coding CLI")]
+#[command(name = "ox", version, about = "Agentic coding CLI")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,

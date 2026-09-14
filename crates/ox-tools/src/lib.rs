@@ -5,6 +5,8 @@ pub mod native;
 pub mod os;
 pub mod policy_store;
 pub mod sandbox;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod tool_exec;
 use std::collections::{BTreeMap, HashMap};
 
 use structfs_core_store::{Error as StoreError, Path, Reader, Record, Value, Writer};

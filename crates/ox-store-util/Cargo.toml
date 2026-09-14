@@ -1,4 +1,8 @@
 [package]
+readme = "README.md"
+include = ["src/**", "tests/**", "Cargo.toml", "README.md", "LICENSE", "build.rs", "artifacts/**", "gateway.assembly.yaml"]
+description = "ox-store-util support library for the Ox agentic coding system"
+publish = ["crates-io"]
 name = "ox-store-util"
 version.workspace = true
 edition.workspace = true

@@ -1,4 +1,7 @@
 [package]
+readme = "README.md"
+include = ["src/**", "tests/**", "Cargo.toml", "README.md", "LICENSE", "build.rs", "artifacts/**", "gateway.assembly.yaml"]
+publish = ["crates-io"]
 name = "ox-executor"
 version.workspace = true
 edition.workspace = true
@@ -8,7 +11,6 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 description = "Reusable headless execution core for ox conversations"
-publish = false
 
 [dependencies]
 parking_lot = { workspace = true }
