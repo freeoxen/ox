@@ -20,7 +20,7 @@ horns-core = { workspace = true }
 serde = { workspace = true }
 structfs-core-store = { workspace = true, features = ["async"] }
 structfs-serde-store = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [dev-dependencies]
 ox-store-util = { path = "../ox-store-util" }

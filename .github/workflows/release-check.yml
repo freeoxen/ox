@@ -1,0 +1,46 @@
+name: Registry package checks
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  packages:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check release tools
+        run: |
+          for tool in bash jq curl shasum tar; do command -v "$tool"; done
+      - uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            . -> local/wasm-artifacts/target
+            local/release/isolated -> local/release/target
+      - name: Verify registry archives and installed applications
+        run: ./scripts/release.sh check
+      - name: Save release evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-evidence-${{ matrix.os }}
+          path: |
+            local/release/*.log
+            local/release/verified.json
+            local/release/archives/*.crate
+            local/release/smoke/*.log
+            local/wasm-artifacts/build.log

@@ -69,11 +69,11 @@
     "crates/ox-types/src/ui.rs": "13c016ee2175afab306b2792f210b4021c027c1b647f03d9b1b4206d3f866e1e",
     "crates/ox-types/src/usage.rs": "94e5fd9d5a0c1dc8d88ae3944a36e5412aeab1db8b12d3de94791c1d74f63711",
     "rust-toolchain.toml": "31eaf7ba63c92878834157d2333486da48200b6ffbffec1a79d25c4790b715d5",
-    "scripts/build-wasm-artifacts.py": "5702540cf14a06447657d31ea1d139344fe1f5cb32145d258eab0634fcef4c86"
+    "scripts/build-wasm-artifacts.sh": "43d560972f78e55cca02a3e7e98139fc31e9a2e1f6d827dacd5a73cd23f737da"
   },
   "profile": "release",
   "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
   "schema_version": 1,
-  "source_sha256": "7f807c1ab0f7d5853f227e30d375b099ac0dbd19e7993f208e8c94bd9ce37884",
+  "source_sha256": "c9fff24af4a727a66645bded3da8736c7c01178e50ab74a6ca391f76b1f0355d",
   "target": "wasm32-unknown-unknown"
 }

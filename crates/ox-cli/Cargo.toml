@@ -42,7 +42,7 @@ ox-tools = { workspace = true }
 ox-types = { workspace = true }
 horns-core = { workspace = true }
 horns-ratatui = { workspace = true }
-tokio = { workspace = true, features = ["io-util", "io-std", "signal"] }
+tokio = { workspace = true, features = ["io-util", "io-std", "signal", "macros", "rt-multi-thread"] }
 clap = { workspace = true }
 crossterm = { workspace = true }
 ratatui = { workspace = true }

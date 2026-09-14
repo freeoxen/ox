@@ -7,7 +7,7 @@ fn main() {
     println!("cargo:rerun-if-changed=artifacts/codec_block.wasm");
     std::fs::copy(&artifact, &destination).unwrap_or_else(|error| {
         panic!(
-            "cannot copy packaged Wasm artifact {}: {error}; repository contributors should run python3 scripts/build-wasm-artifacts.py",
+            "cannot copy packaged Wasm artifact {}: {error}; repository contributors should run scripts/build-wasm-artifacts.sh",
             artifact.display()
         )
     });

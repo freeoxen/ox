@@ -71,14 +71,14 @@ not prevent installing the native applications.
 
 ## Development and releases
 
-Use the pinned Rust toolchain, Python 3.12+, Bun and wasm-pack for full workspace
+Use the pinned Rust toolchain, Bash, jq, Bun and wasm-pack for full workspace
 checks. The native packages do not need the frontend toolchain to build.
 
 ```sh
-python3 scripts/build-wasm-artifacts.py  # after changing guest inputs
+./scripts/build-wasm-artifacts.sh  # after changing guest inputs
 ./scripts/fmt.sh
 ./scripts/quality_gates.sh
-python3 scripts/release.py check        # clean commit; isolated package checks
+./scripts/release.sh check        # clean commit; isolated package checks
 ```
 
 [Release preparation and publication](docs/releasing.md) documents package order,

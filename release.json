@@ -1,0 +1,11 @@
+{
+  "version": "0.1.0",
+  "packages": [
+    "horns-core", "horns-ratatui", "horns",
+    "ox-store-util", "ox-types", "ox-kernel", "ox-broker", "ox-context",
+    "ox-codec", "ox-config", "ox-gate", "ox-history", "ox-inbox", "ox-tools",
+    "ox-runtime", "ox-ui", "ox-executor", "ox-structfs-transport", "ox-remote",
+    "ox-cli", "ox-gateway", "ox-worker"
+  ],
+  "install": ["ox-cli", "ox-gateway", "ox-worker"]
+}
