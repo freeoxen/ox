@@ -28,29 +28,18 @@ impl SyncClientAdapter {
         to: &Path,
         value: &T,
     ) -> Result<Path, StoreError> {
-        let v = structfs_serde_store::to_value(value)
-            .map_err(|e| StoreError::store("broker", "write_typed", e.to_string()))?;
-        self.write(to, Record::parsed(v))
+        structfs_serde_store::TypedWriter::write_as(self, to, value)
     }
 
     /// Read a deserializable value through the sync adapter.
     ///
-    /// Returns `Ok(None)` if the path does not exist or the record has no value.
+    /// Returns `Ok(None)` only if the path does not exist. Raw records fail with
+    /// `UnsupportedFormat`; typed conversion errors retain their codec details.
     pub fn read_typed<T: serde::de::DeserializeOwned>(
         &mut self,
         from: &Path,
     ) -> Result<Option<T>, StoreError> {
-        match self.read(from)? {
-            Some(record) => match record.as_value() {
-                Some(value) => {
-                    let typed = structfs_serde_store::from_value(value.clone())
-                        .map_err(|e| StoreError::store("broker", "read_typed", e.to_string()))?;
-                    Ok(Some(typed))
-                }
-                None => Ok(None),
-            },
-            None => Ok(None),
-        }
+        structfs_serde_store::TypedReader::read_as(self, from, &structfs_core_store::NoCodec)
     }
 }
 

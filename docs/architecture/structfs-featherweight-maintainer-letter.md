@@ -1,225 +1,198 @@
-# Feedback from migrating Ox to StructFS / Featherweight 0.2.0
+# What would help Ox migrate further to StructFS and Featherweight
 
-Draft for the StructFS and Featherweight maintainers — September 13, 2026.
+Draft for the maintainers — September 14, 2026. Not sent.
 
 Hello,
 
-We've been moving Ox onto the published 0.2.0 crates and wanted to share what
-has removed work for us, and what would let us delete more integration code.
-Our gateway now uses Featherweight's guest SDK, assembly namespaces and async
-execution. We replaced our path proc macro, store combinators and cancellation
-token with upstream implementations. We're also using Shared<MemoryStore> for
-codec jobs, PathTrie for broker lookup, and the standard detached store traits.
-Horns, our UI framework, now also uses PathTrie for renderer selection and
-ancestor lookup in the CLI settings screen.
+We have upgraded Ox to the published 0.3.0 packages. The changes you made in
+response to our earlier feedback have let us delete code: our component-array
+Path Serde implementation, duplicate PathComponent type, extra assembly
+validation pass, and hand-written broker typed conversion. We also disabled
+unused native HTTP and handles features. Our gateway uses Featherweight's
+prepared execution and guest SDK, and we rebuilt both packaged Wasm guests.
 
-The release covers substantially more of our needs than we were previously
-using. The requests below concern the remaining seams, rather than asking you
-to reproduce our application framework.
+All 13 downstream quality gates passed, including 2,342 Rust tests, native and
+browser checks, coverage, and the UI build. The improved Serde diagnostics and
+stricter path macro are working for us. We also reviewed the new example for
+HTTP disconnects during allocation, late replies, aliased handles and joined
+cleanup. It addresses the lifecycle example we requested; we have not separately
+run that upstream example, but our own gateway lifecycle tests pass.
 
-## 1. Extend the ergonomics around detached stores
+We would like to migrate further. Below are the remaining barriers, the work
+we currently own around them, and the changes that would make adoption easier.
+These requests concern the 0.3.0 contracts we inspected and tested.
 
-This would remove the most routine adapter code for us.
+## 1. Prepared execution with recoverable synchronous host state
 
-Our broker creates a future while briefly borrowing a store, then lets that
-future complete independently. One read can wait for streaming events while
-other reads and writes continue. DetachedReader/DetachedWriter fit this model;
-the borrowing AsyncReader/AsyncWriter traits do not substitute for it.
+This is the largest remaining Featherweight opportunity: replacing our CLI
+conversation runner.
 
-In 0.2.0, Serde's AsyncTypedReader/Writer helpers extend only the borrowing
-traits. Detached forwarding exists for references, boxes and Shared, but the
-ReadOnly, Rooted, Cascade and Masked combinators have no detached counterparts.
+Our runner compiles a module once and creates fresh instances for successive
+turns. Host effects are synchronous. After execution, it returns the host store
+and accumulated effects to the caller even when execution fails. The executor
+needs those effects for bookkeeping and the backend for subsequent turns. We
+also apply memory, fuel, timeout and cancellation policy, including trapping
+when a guest attempts growth beyond its memory limit.
 
-Could you provide detached typed read/write extensions and detached-capable
-combinators? Ideally:
+Against published 0.3.0, our probe still produces these results:
 
-- The returned future is Send + 'static and releases the store borrow before
-  it is awaited.
-- Typed reads specify raw-record/codec behavior and preserve validation errors.
-- Rooted documents result-path rebasing and rejects escaping result paths.
-- ReadOnly rejects a write before constructing an effectful underlying operation.
+| Operation | Observed result |
+|---|---|
+| Run a prepared artifact synchronously | Rejected: prepared artifacts require run_async |
+| Run raw module bytes synchronously | Compiles for the run; public API has no memory-cap argument and returns an exit result, not host state |
+| Prepared async run with a one-page memory cap; guest ignores failed growth | Guest returns success |
+| Prepared run with a 5 ms epoch interval | Rejected: prepared engine requires 10 ms |
 
-A compile test that starts two reads before awaiting either, and a parked-read
-test showing an unrelated write can finish, would make this contract concrete.
+The memory probe starts with one Wasm page and executes:
 
-## 2. Preserve useful Serde diagnostics
+```wat
+(func (export "run") (result i32)
+  (drop (memory.grow (i32.const 1)))
+  (i32.const 0))
+```
 
-The current `Error::custom` implementation discards the diagnostic text and
-returns TypeMismatch. For example:
+With `CoreWasmEngine::with_limits(1, 2, 65536)`, prepared async execution returns
+`Ok(0)`. It enforces the cap, but does not expose the trap-on-denied-growth policy
+our runner uses. In a separate raw synchronous run, returning `memory.size`
+after the growth yields `Ok(2)`.
+
+Could you provide prepared execution over synchronous stores with host-state
+recovery on success and failure, plus configurable growth-failure policy? An
+official adapter over the async runner would also help if it keeps blocking host
+effects off executor workers, retains accepted effects through cancellation,
+and returns host state only after those effects have finished. If cleanup is
+incomplete, ownership should remain explicit until it joins.
+
+Useful acceptance cases would cover prepared-module reuse, a trap after an
+accepted write, cancellation while a host operation is outstanding, independent
+cancellation of simultaneous runs, and a guest that ignores failed memory growth.
+Our production remote configuration already uses 10 ms epochs, so the interval
+restriction alone does not block it.
+
+We can build more channels, ownership wrappers and cancellation bridges, but
+that would add integration code around a runner that already meets our needs.
+Even with these APIs, migrating our guest ABI and host effects remains our work;
+we are asking for the execution contracts that would make that work worthwhile.
+
+## 2. Borrowed, allocation-free suffix matching
+
+The new minimum-middle option expresses our subscription rule correctly. We
+need `accounts/<one-or-more components>/provider` to match, while
+`accounts/provider` must not match. That expressiveness request is resolved.
+
+Two details still prevent a straightforward replacement of our matcher:
+
+- Upstream suffix matching calls `strip_prefix` and `slice`, which construct
+  owned paths by copying component vectors. Our matcher compares borrowed
+  components on each dispatched write. This is a source-level allocation
+  observation; we have not measured a latency regression.
+- Our persisted enum uses component-array paths and a struct-shaped
+  `prefix_suffix`. The upstream representation uses string paths and a separate
+  minimum-middle variant. A direct alias changes existing records.
+
+Could `PathPattern::matches` operate on borrowed components? A borrowed predicate
+accepting path, prefix, suffix and minimum-middle length would also let our
+legacy enum delegate without constructing an owned upstream pattern per match.
+
+That would remove our matching implementation while allowing us to keep the
+small serialization compatibility layer. An allocation-count regression for
+repeated suffix matches, including empty suffixes and misses, would make the
+performance contract useful to downstream users. We do not need the upstream
+serialization default changed.
+
+## 3. A standard shareable detached writer handle
+
+The detached store traits now fit our broker's scheduling model well. Our UI
+subscription tasks have a related client-handle contract that we still implement
+locally: an `Arc<dyn AsyncWriter>` with a method shaped like this:
 
 ```rust
-#[derive(Debug, serde::Deserialize)]
-enum Mode { Streaming }
-let value = structfs_serde_store::json_to_value(serde_json::json!("Misspelled"));
-println!("{}", structfs_serde_store::from_value::<Mode>(value).unwrap_err());
+fn write(&self, path: Path, record: Record)
+    -> BoxFuture<Result<Path, StoreError>>;
 ```
 
-With published 0.2.0 this reports TypeMismatch, losing the unknown variant and
-expected alternatives that Serde supplied. That makes malformed requests and
-old persisted records much harder to diagnose.
+The handle is `Send + Sync`, and its returned future is `Send + 'static`.
+Multiple tasks can begin independent writes through a shared reference.
+`DetachedWriter` instead takes `&mut self`. That is appropriate for constructing
+operations against a mutable store, but does not directly replace this erased,
+shared handle interface.
 
-Please retain bounded diagnostic text alongside the structured category.
-Nested field/index context would help too. We are happy with an explicit size
-limit; we need enough information to identify and repair the offending value.
+Could you supply a standard handle or adapter with this contract? Any internal
+lock should protect operation construction only, never remain held while a
+request is parked. Please make clear when an operation is accepted and what
+dropping its future does; detachment alone must not imply cancellation safety.
 
-## 3. Reject malformed assembly configuration
+This would let us retire a small local trait and its plumbing. Our ordering,
+post-write subscription hooks and cascade limits would remain application code.
 
-These otherwise valid assemblies currently parse successfully:
+## 4. Explicit snapshot construction that preserves Null
 
-```yaml
-assembly: example
-blocks: {a: 'embedded:a'}
-public: a
-config: false
-```
+We would like to use MemoryStore for more temporary UI data. Our settings
+snapshot currently imports `(Path, Value)` entries through `LocalConfig::set`,
+which preserves Null as a stored value. Replaying those entries through
+MemoryStore writes would instead delete Null leaves.
 
-The same happens with `config: {ghost: {}}`, even though there is no `ghost`
-block. Ox adds validation around AssemblyDef to catch these mistakes at startup.
+We understand that `MemoryStore::with_root` can preserve a prebuilt tree. The
+remaining work is constructing that tree from flat entries and choosing what
+happens when entries overlap. For example, importing `settings/example = Null`
+should be distinguishable from omitting it, while importing both `a = 1` and
+`a/b = 2` needs an explicit conflict policy.
 
-Please reject wrong types in standard sections and references to unknown
-blocks, while explicitly identifying any extension fields that may be ignored.
-We have a regression demonstrating upstream acceptance and downstream rejection
-of both examples.
+A documented flat-entry import recipe or builder would help. It should preserve
+present Null and empty containers, validate components, and define duplicate and
+ancestor/descendant conflict behavior. Rejecting ambiguous input would be a
+reasonable default. Construction can remain distinct from ordinary writes;
+we are not asking you to change Null-as-deletion semantics.
 
-## 4. Make platform features easier to compose
+This would make it easier to migrate selected scratch stores and snapshot
+construction. We still need to decide which of our flat-store behaviors to
+retain, and adapt subtree enumeration and renderer tests accordingly. It is
+partly a downstream compatibility project, not a missing generic store.
 
-Adding the HTTP/handles dependency to a crate shared with our browser build
-enabled Tokio's `rt-multi-thread`, which fails on wasm32-unknown-unknown. We
-worked around this by moving native dependencies behind target-specific Cargo
-sections.
+## 5. Smaller migration difficulties and documentation requests
 
-Could portable types and cancellation primitives be available without native
-executor features? A documented target/feature matrix would also help. A
-portable guest SDK is useful, but it doesn't by itself tell us which supporting
-crates can appear in browser-shared code.
+**Typed raw-record behavior differs between helper families.** Synchronous
+`TypedReader::read_typed` decodes raw JSON, while
+`DetachedTypedReader::read_typed_detached` rejects raw records through NoCodec.
+We explicitly use `read_as(..., &NoCodec)` for our synchronous broker facade so
+both facades behave alike. A side-by-side table for parsed, raw JSON, other raw
+formats and absent records would prevent surprises. Explicit codec methods
+already provide a workable choice; any alignment should preserve intentional
+compatibility choices.
 
-## 5. Support explicit compatibility choices for paths and patterns
+**The fixed macro requires migrating downstream wrapper types.** Ox still had
+a distinct validated component type. The stricter macro correctly rejected it,
+and reexporting yours removed that implementation. Please mention this migration
+case and the constructor error-type change consumers may encounter. Hygienic
+support for renamed dependencies and macro reexports would remain useful, though
+the documented direct-dependency requirement is workable today.
 
-Two small additions would let us retire remaining compatibility helpers:
+**Release documentation lagged publication in our inspected checkout.** All
+seven direct packages resolved at 0.3.0, while checkout `c8a9b15` still described
+0.3 as unreleased and said no publication had occurred. Synchronizing release
+status with registry availability would make downstream readiness checks easier.
+This observation is tied to that checkout, not a claim about later revisions.
 
-- **Path component-array Serde adapter.** Our existing records contain
-  `["settings", "accounts"]`; upstream Path now serializes as
-  `"settings/accounts"`. An opt-in `serde(with = ...)` adapter for Path and
-  Option<Path>, retaining component validation, would preserve existing formats
-  without changing your default. We've consolidated our two copies into one.
-- **Minimum middle length for suffix patterns.** Upstream
-  `prefix_suffix(accounts, provider)` matches `accounts/provider`. Our
-  subscriptions need at least one middle component to select account instances.
-  An option for zero versus one-or-more, with a documented Serde representation,
-  would let us replace our remaining pattern type without broadening watches.
+## Priorities and downstream responsibilities
 
-Neither difference is inherently a bug. We need to choose the policy explicitly
-and preserve records already on disk.
+Prepared synchronous hosting is the highest-impact request. Borrowed matching
+and a shared writer handle would remove smaller, recurring pieces of integration
+code. Snapshot import is useful, but needs downstream format and behavior choices
+before we can replace all affected stores. The documentation clarifications would
+make each of these migrations easier to assess.
 
-## 6. Publish a complete embedding lifecycle example
+We also found more cleanup we can do without waiting for you: backing our
+AccountName wrapper with your validated PathComponent and replacing the kernel's
+remaining manual typed-read helper. Those are our adoption tasks.
 
-We successfully embedded Featherweight, but coordinating the lifecycle remains
-substantial host code: reuse a prepared module, reserve capacity, expose broker
-imports, observe terminal errors, cancel, shut down, and retain ownership and
-capacity until cleanup actually joins.
+Our ledger durability, provider protocols, UI dispatch and existing remote wire
+format remain application responsibilities. We are not asking StructFS state to
+replace disk persistence or Featherweight to supply Ox's conversation policy.
+The goal is to use more of your implementation where the contracts fit, and keep
+our code focused on those application decisions.
 
-The example we'd most like is an HTTP request cancelled while an external
-broker is still allocating a handle. The broker may accept the write and return
-its result after cancellation. Cleanup must receive that result and release the
-resource even if the HTTP caller has disappeared.
-
-OwnerHandle::open provides the needed ownership mechanism. Our old adapter's
-reply timeout could discard an accepted result before ownership saw it; that
-was our integration problem. We fixed it and added tests for late replies,
-aliased handle paths, actual producer termination and client disconnects.
-
-An example should also show nonzero guest exit, an incomplete cleanup report,
-and which executor must outlive engine ticking and retained cleanup. A small
-embedding helper would be welcome if it preserves these explicit decisions.
-
-## 7. Enforce the path macro's documented expression type
-
-We found a release-mode discrepancy while testing the macro migration:
-
-```rust
-use structfs_core_store::{Path, path};
-struct PretendComponent;
-impl PretendComponent {
-    fn validated_str(&self) -> &str { "bad-name" }
-}
-let p = path!("safe", PretendComponent);
-assert!(Path::parse(&p.to_string()).is_err());
-```
-
-This compiles, and the assertion passes in release mode. The macro calls a
-method named `validated_str` without requiring PathComponent; its generated
-constructor revalidates only in debug builds. Please constrain expression
-arguments to the documented type and add a compile-fail test for this case.
-An explicitly typed borrow could preserve reuse of the same component. Our
-current callers use validated components, so we've retained the upstream macro.
-
-## 8. Make prepared execution practical for existing synchronous hosts
-
-Our next target was the CLI conversation runner. We evaluated 0.2.0 and decided
-to retain the Ox runner for now: a direct replacement loses capabilities, while
-an async port adds integration machinery around our existing synchronous effects.
-
-Ox compiles once, runs fresh instances over a synchronous host store, and returns
-that store and its effects after success or failure. The executor then reuses
-them for the next turn. It also configures memory limits, traps on denied memory
-growth, and applies per-turn fuel, timeout and cancellation policy.
-
-We reproduced these distinctions in the published Featherweight API:
-
-- `CoreWasmBlock::run` rejects a prepared artifact. With raw bytes it creates a
-  new engine and compiles the module each run, and exposes no memory-cap option.
-- Prepared async execution does enforce the configured memory cap, but denied
-  `memory.grow` returns -1; a guest that ignores that result can return success.
-  We cannot request Ox's trap-on-growth-failure policy.
-- Prepared execution accepts only the 10 ms epoch interval. Our production
-  remote default already uses 10 ms; this is an API limitation, not a production
-  blocker by itself.
-
-Could you offer a prepared execution adapter for synchronous host stores,
-including recovery of the host state on failure, and configurable grow-failure
-policy? An official adapter over the async runner would also work if it keeps
-blocking effects off executor workers, retains accepted writes until completion,
-and returns the host state only after in-flight effects have finished.
-
-This is an embedding request, not a claim that Featherweight cannot run an
-agent. We could write channels, ownership wrappers and a cancellation bridge,
-but that would add code where the existing Ox runner already meets our needs.
-We prefer to revisit this when adoption removes that work.
-
-## Documentation follow-ups
-
-A migration table would help distinguish intentional changes from integration
-mistakes: Path iteration, combinator accessors/matching, fallible JSON conversion,
-strict numeric conversion, empty-container behavior, and the two async trait
-families. In particular, typed integer Value → f64 fails where JSON integer
-syntax still decodes as f64; we needed an explicit compatibility boundary for
-existing usage records.
-
-Please also document the path macro's direct-dependency requirement, or support
-renamed dependencies/reexports hygienically. The release checkout we inspected
-still described the release as an unpublished candidate while 0.2.0 was already
-available in the registry; keeping those statuses aligned would simplify
-readiness checks.
-
-## What we still own
-
-We retain our ledger writer, persistence formats, application subscription hooks,
-provider protocols and conversation-agent runtime. We are not treating those as
-missing StructFS features. State's memory-durability contract and invalidation
-model are different from our disk ledger and post-write hooks; adopting it would
-be a deliberate architecture change. We also retain Horns' UI dispatch and
-shareable subscription writer: handlers hold an `Arc` and start independent
-operations through `&self`, whereas the upstream detached writer takes `&mut
-self`. We would welcome a standard shareable handle abstraction, but do not
-expect Featherweight to replace our UI behavior.
-
-Our CLI render snapshots also distinguish stored Null from absence and currently
-use flat configuration projection. Replacing them with MemoryStore writes would
-delete Null entries; that needs an explicit import/compatibility decision.
-
-The detached ergonomics, diagnostics, assembly validation and path-macro contract
-requests are our highest priorities. They would remove recurring adapter work
-and make the next round of adoption easier to debug. We can turn the examples above into focused
-issues or regression tests if useful.
+Thank you for the 0.3 work. The earlier changes already removed code and made
+failures easier to diagnose. These are the next contracts that would let us
+continue that migration.
 
 — The Ox team

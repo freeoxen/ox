@@ -31,16 +31,21 @@ the guest artifacts do need the wasm32 target declared in rust-toolchain.toml.
 3. Run `./scripts/build-wasm-artifacts.sh`. This builds locked release
    guests and records their source inputs, compiler and SHA256 hashes beside
    the Wasm files in `ox-executor/artifacts` and `ox-gateway/artifacts`.
-   Commit the artifacts and provenance with their source changes. Build scripts
-   only copy these packaged artifacts; they never build sibling workspace crates.
+   These generated files are ignored by Git; commit their source inputs only.
+   Cargo manifests explicitly include `artifacts/**` in the published archives.
+   Build scripts only copy these packaged artifacts; they never build sibling
+   workspace crates. A source checkout needs this preparation before direct
+   Cargo builds or tests.
 4. Run `./scripts/fmt.sh` and `./scripts/quality_gates.sh`. Commit the changes.
 5. Run `./scripts/release.sh registry` to recheck registry names, then
    `./scripts/release.sh check`. Use `--offline` when all dependencies are
    cached. `--allow-dirty` is only a development aid: its receipt cannot authorize
    the publishing command.
 
-`check` verifies guest freshness and packages the complete release set. It
-vendors external registry dependencies and the **actual generated `.crate`
+`check` builds the guests from locked source inputs and packages the complete
+release set. Quality gates and `scripts/run_cli.sh` also prepare artifacts
+automatically. Release verification vendors external registry dependencies and
+the **actual generated `.crate`
 archives**, builds every extracted package independently with `--locked`, then
 compiles CLI remount/approval/helper tests from its extracted archive.
 Internal dependencies resolve from archive contents, with no path
@@ -79,8 +84,9 @@ After explicit approval to publish this version:
 ```
 
 Without `--execute`, no upload occurs. The command requires a clean checkout and
-a successful verification receipt for the same commit, checks saved archive
-hashes, rechecks the index, and invokes `cargo publish --locked` in dependency
+a successful verification receipt for the same commit, checks generated artifact
+freshness and saved archive hashes, rechecks the index, and invokes
+`cargo publish --locked` in dependency
 order. Each Cargo invocation performs its own package verification. Publication
 can partially succeed; if interrupted, inspect registry versions before retrying
 and publish only the remaining packages. Never increment versions blindly or

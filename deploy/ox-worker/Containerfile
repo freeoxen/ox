@@ -4,6 +4,8 @@ FROM ${BUILD_IMAGE} AS build
 WORKDIR /src
 COPY . .
 RUN rustup target add wasm32-unknown-unknown
+# The build image supplies Bash, jq and shasum for artifact preparation.
+RUN ./scripts/build-wasm-artifacts.sh
 RUN cargo build --locked --release -p ox-worker -p ox-tools --bin ox-tool-exec
 
 ARG RUNTIME_IMAGE

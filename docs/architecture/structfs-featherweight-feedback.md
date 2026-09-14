@@ -1,13 +1,86 @@
 # StructFS / Featherweight migration feedback
 
 Running downstream integration notes from Ox, started September 13, 2026.
-Target: published 0.2.0 crates. This document is a draft for maintainers; nothing
+Current target: published 0.3.0 crates. This document is a draft for maintainers; nothing
 has been sent upstream. Entries distinguish confirmed problems from requests
 and expected migration work. Add reproducers and resolutions as work proceeds.
 
 The sendable draft is [the maintainer letter](structfs-featherweight-maintainer-letter.md).
 The [cleanup audit](structfs-ergonomics-audit.md) records what we removed and
 which remaining helpers encode compatibility or application policy.
+
+## 0.3.0 follow-up — September 13, 2026
+
+The entries below this follow-up preserve the original **0.2.0 findings**.
+This table supersedes their original status labels. All seven direct crates were
+verified with `cargo info <crate>@0.3.0`; Cargo.lock contains registry sources,
+not sibling paths or patches. The adoption and checks are tracked in the
+[0.3 plan](../superpowers/plans/2026-09-13-structfs-03-adoption.md).
+
+Final downstream acceptance: all 13 canonical quality gates passed, with 2,342
+Rust tests and 80.24% region coverage. Both packaged Wasm guests were rebuilt;
+native and browser checks passed. Logs: `local/structfs-03-quality-gates.log`
+and `local/structfs-03-artifacts.log`.
+
+| Request | Current status / action |
+|---|---|
+| SF-001 release status | Still open: sibling HEAD c8a9b15 CHANGELOG and migration guide say 0.3 is unreleased/no publication, while all direct packages are available. |
+| SF-002 combinator migration table | Addressed in `docs/migration-0.3.md`, including accessors, lazy fallback ownership and result rebasing. |
+| SF-003 assembly validation | Fixed; removed Ox's second YAML parse/config checks and direct gateway serde_yaml dependency. Regression tests exercise upstream rejection and x- extension acceptance. |
+| SF-004 Path iteration documentation | Addressed by migration table. |
+| SF-005 Serde diagnostics | Fixed; typed broker errors now preserve the upstream Codec category and diagnostic rather than wrapping them into Store errors. |
+| SF-006 macro reexports | Direct dependency requirement and lack of rename support are now documented. Hygienic rename/reexport support remains an optional request. |
+| SF-007 portable features | Addressed. Ox opts out of HTTP blocking and handles SyncBridge defaults; HTTP is used for request schemas and Ox uses its own streaming executor. |
+| SF-008 detached ergonomics | Provided. Adopted detached typed reader/writer helpers in the broker. Existing wrappers already use upstream types; no additional private detached combinator implementation was found to remove. |
+| SF-009 array Path Serde | Fixed and adopted through existing public adapter reexports, preserving persisted shapes. |
+| SF-010 suffix minimum | Provided. Remaining Ox compatibility/performance concern is SF-013 below. |
+| SF-011 macro expression type | Fixed. Compiler caught Ox's duplicate validated type; replaced it with upstream PathComponent and retained validation/reuse tests. Added the impostor compile-fail fixture. |
+| SF-012 UI writer/snapshot import | Still optional requests; retain shared `&self` writer and Null-preserving flat snapshot policy. |
+| FW-001/FW-002 lifecycle examples | Source now includes the requested executable example. Reviewed `tests/embedding/src/lifecycle.rs:143`, including actual disconnect, late reply, aliased resource cleanup and nonzero exit. Upstream example was inspected, not independently executed here; Ox's lifecycle tests remain the downstream acceptance checks. |
+| FW-003 synchronous prepared host | Still open, reproduced against registry 0.3.0; details below. |
+
+### Upgrade difficulties and remaining requests
+
+- **Nominal component migration:** the fixed macro correctly rejects Ox's
+  distinct type even though it was validated. Reexporting upstream eliminates
+  that code. `PathComponent::try_new` now returns upstream `PathError` instead
+  of our wrapped `StoreError`; all workspace consumers compile with this change.
+  A migration-guide sentence about downstream wrapper types would help.
+- **Typed raw-record policy:** `DetachedTypedReader::read_typed_detached`
+  rejects raw records; synchronous `TypedReader::read_typed` decodes raw JSON
+  (`serde-store/src/typed.rs:77`). We explicitly use `read_as(..., &NoCodec)`
+  for the sync broker facade so both facades reject raw data consistently.
+  Previously they silently returned absence. Please document this difference
+  between similarly named helpers; explicit codec methods remain available.
+- **FW-003 recheck:** `CARGO_TARGET_DIR=target cargo run --manifest-path
+  local/structfs-migration-probe/Cargo.toml --bin cli_runtime --offline` against
+  0.3 reproduces all four prior outputs, in `local/structfs-03-runtime-probe.log`:
+  prepared sync rejected, ignored denied memory growth returns success,
+  prepared 5 ms epoch rejected, raw sync grows to two pages. Registry source
+  `featherweight-runtime-0.3.0/src/core_wasm.rs:324,865,980` still exposes these
+  contracts. Keep the CLI runner until prepared synchronous effects, host-state
+  recovery and grow-failure policy can be preserved without extra machinery.
+
+### SF-013 — Borrowed, allocation-free suffix matching
+
+- Type: performance/ergonomics request; source-confirmed, no latency claim.
+- 0.3 provides the requested minimum-middle policy, but
+  `core-store/src/path_pattern.rs:92` calls `strip_prefix` and `slice`.
+  `core-store/src/path.rs:221,232` copies component vectors with `to_vec()`.
+  Matching a nonempty suffix after a matching prefix therefore constructs owned
+  temporary paths. Ox's current `horns-core/src/subscription.rs:74` compares
+  borrowed components without allocation.
+- The public enums also still serialize differently: Ox has component arrays
+  and a struct-shaped `prefix_suffix`; upstream has string paths and a separate
+  `prefix_suffix_min_middle` variant. Aliasing would change existing records.
+- Request: implement matching with borrowed components and consider a borrowed
+  predicate accepting `&Path` prefix/suffix plus minimum-middle length. That
+  lets a legacy enum delegate matching without cloning paths on each write.
+  No request to change the upstream default or automatically rewrite records.
+- Decision: retain the small compatibility enum/matcher. Minimum-middle support
+  itself is resolved; this is the remaining cost of adopting it in our hot path.
+
+## Original 0.2.0 investigation
 
 ## SF-001 — Published release still described as unpublished
 

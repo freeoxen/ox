@@ -2389,9 +2389,9 @@ dependencies = [
 
 [[package]]
 name = "featherweight-guest"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8044cdb22b819ba6398379237814d72a13aacd51cd5daed5070cb07c23d8dd3b"
+checksum = "794b23eb35e64735d64f908443625967c1614a897d134b3dddde31a0ce3afa8f"
 dependencies = [
  "serde",
  "serde_json",
@@ -2399,9 +2399,9 @@ dependencies = [
 
 [[package]]
 name = "featherweight-runtime"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "87bba4ba4f7a0dc9eabeb08a60742cd760ad765fd62c3ab23a9782eadb309e5d"
+checksum = "505c6dcbc0bfb99db58a3191e7eac174378ac18d4fa132be5507652e37672b9a"
 dependencies = [
  "async-trait",
  "bytes",
@@ -4584,7 +4584,6 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "serde_yaml",
  "structfs-core-store",
  "structfs-http",
  "structfs-serde-store",
@@ -6813,9 +6812,9 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "structfs-core-store"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ffff72470a4ad3689c1c6693acf59d979da30243ab308c1f658fb135e1d70c13"
+checksum = "df654a01a7d563dff968022719101be9758c81d029dcef02848c54efe1ae7b01"
 dependencies = [
  "async-trait",
  "bytes",
@@ -6831,9 +6830,9 @@ dependencies = [
 
 [[package]]
 name = "structfs-handles"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d6083672c23e2600b12275714e6b1c5a0c44927044a4a04a0dc339ec94d11e9f"
+checksum = "300384d3153c1ff4f1584b3dd6c5ede75135e24501d0ca0a798ca38667fb367b"
 dependencies = [
  "structfs-core-store",
  "tokio",
@@ -6841,28 +6840,25 @@ dependencies = [
 
 [[package]]
 name = "structfs-http"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8049176c40f109a7835aac37d766ba8daa67445105e183846bdcbc5eb7324987"
+checksum = "e467dd1bfde96ba6ee0618e779740959ef0313b1f82b501d68b38d324c045899"
 dependencies = [
  "collection_literals",
  "http",
- "reqwest",
  "serde",
  "serde_json",
  "structfs-core-store",
- "structfs-handles",
  "structfs-serde-store",
  "thiserror 2.0.18",
- "tokio",
  "url",
 ]
 
 [[package]]
 name = "structfs-ll-store"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c2c58e02b0ec92ed2789da7faa4f9b760eeba4a15380ccfa630dca49b97b715"
+checksum = "ef892e5233130028d560781e50b9c75e326e93ad3d0846314c5086700d58cd1c"
 dependencies = [
  "async-trait",
  "bytes",
@@ -6871,9 +6867,9 @@ dependencies = [
 
 [[package]]
 name = "structfs-path-macro"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4989f353b17f659632c53c4bf96875c60c4c479bd09b606d1f9af8fe9ef5692a"
+checksum = "dce903b8fc198200ede5d2e9375644f536f92c19f21fd7294a88d0d1f36ff7e5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6883,19 +6879,20 @@ dependencies = [
 
 [[package]]
 name = "structfs-path-validation"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a8b0473e6f338295a17657ce85703aefd99d59b5b10da5da506da61d933c7be"
+checksum = "8050e1b8176becbeccca974539c3d62ee102779a9a18ccf67815aab609a6a954"
 dependencies = [
  "unicode-ident",
 ]
 
 [[package]]
 name = "structfs-serde-store"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6fc2e2394045854927c38c8a91c20eff76d8774a62c8b444d7ac1e0a4c3331c2"
+checksum = "e1d50bb0b94bb8e606fa399b844aa2cfa8029fb1a9e06c6449f7eb4b279716e5"
 dependencies = [
+ "async-trait",
  "base64 0.22.1",
  "bytes",
  "ciborium",
@@ -6909,9 +6906,9 @@ dependencies = [
 
 [[package]]
 name = "structfs-service"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a19bfd28a6a4a6e7b1206a8b06a1b26b73c55b6640a2ebcbae17958d8d15039"
+checksum = "ce1790381ac8fc8d6e8d878de988106d3e451a02a9e23c428c81d1438ca557c0"
 dependencies = [
  "async-trait",
  "serde",
@@ -7093,7 +7090,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0136791f7c95b1f6dd99f9cc786b91bb81c3800b639b3478e561ddb7be95e5f1"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.1",
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",

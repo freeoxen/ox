@@ -18,6 +18,8 @@ esac
   exit 2
 }
 
+./scripts/build-wasm-artifacts.sh
+
 run_id=${OX_REMOTE_SOAK_RUN_ID:-soak-$(date -u +%Y%m%dT%H%M%SZ)-$$}
 report_dir=${OX_REMOTE_SOAK_REPORT_DIR:-target/remote-soak/$run_id}
 mkdir -p "$report_dir"

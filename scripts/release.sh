@@ -109,6 +109,8 @@ if [[ "$command_name" == publish ]]; then
     jq -e --arg head "$head" --arg version "$version" \
         '.head == $head and .dirty == false and .version == $version' "$receipt" >/dev/null \
         || fail "Run check on this clean commit before publication."
+    # Ignored generated package inputs must still match the verified source.
+    run_log wasm.log bash "$ROOT/scripts/build-wasm-artifacts.sh" --check
     for name in "${ordered[@]}"; do
         archive="$name-$version.crate"
         expected="$(jq -er --arg archive "$archive" '.archives[$archive]' "$receipt")"
@@ -120,7 +122,7 @@ if [[ "$command_name" == publish ]]; then
 fi
 # Invalidate old evidence even if the following check fails.
 if [[ -f "$receipt" ]]; then mv -f "$receipt" "$STAGE/previous-verified.json"; fi
-run_log wasm.log bash "$ROOT/scripts/build-wasm-artifacts.sh" --check
+run_log wasm.log bash "$ROOT/scripts/build-wasm-artifacts.sh"
 # Cargo 1.96 batch verification fails for unpublished dependencies ("no hash
 # listed"). Every actual archive is independently built below instead.
 package_args=(package --locked --no-verify --target-dir "$ROOT/target")

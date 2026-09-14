@@ -19,7 +19,7 @@ tracing = { workspace = true }
 horns-core = { workspace = true }
 serde = { workspace = true }
 structfs-core-store = { workspace = true, features = ["async"] }
-structfs-serde-store = { workspace = true }
+structfs-serde-store = { workspace = true, features = ["async"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [dev-dependencies]

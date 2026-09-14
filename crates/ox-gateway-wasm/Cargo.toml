@@ -12,7 +12,7 @@ ox-codec = { workspace = true }
 ox-kernel = { workspace = true }
 ox-types = { workspace = true }
 serde_json = { workspace = true }
-featherweight-guest = { version = "=0.2.0", default-features = false }
+featherweight-guest = { version = "=0.3.0", default-features = false }
 
 [lib]
 crate-type = ["cdylib"]

@@ -166,14 +166,16 @@ detached family.
 
 ### Path serialization
 
-StructFS 0.2 implements Path Serde as a slash-separated string. Existing
+StructFS 0.3 implements Path Serde as a slash-separated string. Existing
 Ox/Horns record fields retain component arrays through the shared
-`horns_core::path_serde` adapter; ox-types reexports that implementation.
+`horns_core::path_serde` adapter, which reexports upstream's opt-in component
+adapters; ox-types reexports that module. `ox_kernel::PathComponent` likewise
+reexports upstream's validated type so it satisfies the macro's nominal bound.
 Removing field adapters would change persisted and transmitted shapes.
 
 ### StructFS transport values
 
-The registry-pinned StructFS 0.2 `Value` and `Record` enums are non-exhaustive.
+The registry-pinned StructFS 0.3 `Value` and `Record` enums are non-exhaustive.
 `Value` shapes include null, bool, signed i64, unsigned u64, f64, string, bytes,
 array, and string-keyed map. Normalized integers use the unsigned variant only
 above `i64::MAX`. `Record` is raw bytes plus format or parsed `Value`.

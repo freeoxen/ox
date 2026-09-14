@@ -30,20 +30,7 @@ impl Manifest {
         )
     }
     pub fn parse(text: &str) -> Result<Self, String> {
-        // Upstream 0.2 ignores mistyped optional maps and unknown config blocks.
-        // Preserve the gateway's startup validation until that is tightened.
-        let raw: serde_json::Value = serde_yaml::from_str(text).map_err(|e| e.to_string())?;
-        for field in ["imports", "config"] {
-            if raw.get(field).is_some_and(|v| !v.is_object()) {
-                return Err(format!("{field} must be a map"));
-            }
-        }
         let definition = AssemblyDef::from_str(text).map_err(|e| e.to_string())?;
-        for name in definition.config.keys() {
-            if !definition.blocks.contains_key(name) {
-                return Err(format!("config section for unknown block '{name}'"));
-            }
-        }
         Ok(Self {
             assembly: definition.name.clone(),
             version: definition.version.clone().unwrap_or_default(),
@@ -300,17 +287,49 @@ wiring: [{wiring}]
 mod validation_regressions {
     use super::*;
     #[test]
-    fn gateway_rejects_config_maps_that_upstream_silently_accepts() {
-        for config in ["config: false", "config: {ghost: {}}"] {
-            let text = format!("assembly: t\nblocks: {{a: 'embedded:a'}}\npublic: a\n{config}\n");
-            assert!(
-                AssemblyDef::from_str(&text).is_ok(),
-                "tracks upstream 0.2 behavior"
-            );
-            assert!(
-                Manifest::parse(&text).is_err(),
-                "gateway must reject ambiguous config"
-            );
+    fn upstream_and_gateway_reject_malformed_sections_and_unknown_references() {
+        for section in [
+            "imports: false",
+            "config: false",
+            "failure: false",
+            "wiring: false",
+            "version: false",
+            "config: {ghost: {}}",
+            "failure: {ghost: isolate}",
+            "wiring: ['a:/p -> $ghost']",
+            "wiring: ['a:/p -> ghost']",
+            "wiring: ['ghost:/p -> a']",
+            "improts: {}",
+        ] {
+            let text = format!("assembly: t\nblocks: {{a: 'embedded:a'}}\npublic: a\n{section}\n");
+            assert!(AssemblyDef::from_str(&text).is_err(), "{section}");
+            assert!(Manifest::parse(&text).is_err(), "{section}");
         }
+        for field in ["env: false", "args: false", "spawn: []", "spwan: true"] {
+            let text = format!(
+                "assembly: t\nblocks: {{a: {{artifact: 'embedded:a', {field}}}}}\npublic: a\n"
+            );
+            assert!(AssemblyDef::from_str(&text).is_err(), "{field}");
+            assert!(Manifest::parse(&text).is_err(), "{field}");
+        }
+    }
+
+    #[test]
+    fn upstream_and_gateway_accept_namespaced_extensions_and_arbitrary_config() {
+        let text = r#"
+assembly: t
+x-owner: gateway
+blocks:
+  a:
+    artifact: embedded:a
+    x-build: {revision: test}
+public: a
+config:
+  a: {application_field: [true, 42]}
+"#;
+        let upstream = AssemblyDef::from_str(text).unwrap();
+        let gateway = Manifest::parse(text).unwrap();
+        assert_eq!(gateway.definition.config, upstream.config);
+        assert!(gateway.definition.config.contains_key("a"));
     }
 }

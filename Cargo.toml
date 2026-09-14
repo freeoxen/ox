@@ -99,11 +99,12 @@ ox-types = { path = "crates/ox-types", version = "0.1.0" }
 ox-ui = { path = "crates/ox-ui", version = "0.1.0" }
 
 # StructFS — coordinated published release; keep the shared value types aligned.
-featherweight-runtime = "=0.2.0"
-structfs-service = "=0.2.0"
-structfs-core-store = "=0.2.0"
-structfs-http = "=0.2.0"
-structfs-serde-store = "=0.2.0"
+featherweight-runtime = "=0.3.0"
+structfs-service = "=0.3.0"
+structfs-core-store = "=0.3.0"
+structfs-http = { version = "=0.3.0", default-features = false }
+structfs-handles = { version = "=0.3.0", default-features = false }
+structfs-serde-store = "=0.3.0"
 
 # Async runtime + tracing.
 tokio = { version = "1", features = ["sync", "time", "rt"] }

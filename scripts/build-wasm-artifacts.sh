@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Build registry-package Wasm with the pinned toolchain; --check never writes artifacts.
+# Generate ignored registry-package Wasm with the pinned toolchain.
+# --check verifies existing generated outputs without updating them.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"

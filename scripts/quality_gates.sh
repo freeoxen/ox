@@ -64,6 +64,18 @@ BUN="$(command -v bun 2>/dev/null || echo "${HOME}/.bun/bin/bun")"
 echo "running quality gates..."
 echo ""
 
+# Source checkouts do not contain generated guests. Build them before any host
+# compilation; package consumers receive them inside the release archives.
+gate "no tracked Wasm artifacts" bash -c '
+    tracked=$(git ls-files -- "*.wasm" "*.wasm.provenance.json")
+    if [ -n "$tracked" ]; then
+        echo "Generated artifacts must not be tracked:"
+        echo "$tracked"
+        exit 1
+    fi
+'
+gate "build Wasm artifacts" "$ROOT/scripts/build-wasm-artifacts.sh"
+
 # 1. Format (Rust)
 if "$FIX"; then
     gate "fmt"                    cargo fmt --all

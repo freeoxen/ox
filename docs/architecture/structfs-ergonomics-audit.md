@@ -1,10 +1,29 @@
-# StructFS 0.2 cleanup audit
+# StructFS cleanup audit
 
 Audited against published 0.2.0 registry sources on September 13, 2026. Source
 references below are crate-relative; local registry artifacts are authoritative.
 Matching sibling source files were compared byte-for-byte before use. No local
 upstream patches are required. The implementation and final validation are
 tracked in the [cleanup plan](../superpowers/plans/2026-09-13-structfs-ergonomics-cleanup.md).
+
+## 0.3 follow-up
+
+The original tables below describe the 0.2 cleanup. On 0.3 we additionally:
+
+- Reexport upstream component-array adapters and PathComponent, removing the
+  private implementations while retaining existing public paths and record shapes.
+- Delegate broker async and synchronous typed facades to upstream helpers;
+  retain shared-handle ergonomics and block_in_place transport. Raw records now
+  error explicitly; Codec diagnostics remain structured.
+- Remove duplicate assembly validation and the gateway serde_yaml dependency.
+- Disable unused HTTP blocking and handles SyncBridge defaults.
+
+The suffix-minimum request is supplied, but Horns retains its serialized enum
+and borrowed matching: upstream matching creates owned intermediate paths.
+The synchronous runtime probe still reproduces FW-003 against published 0.3.
+See the [current feedback status](structfs-featherweight-feedback.md) and
+[adoption plan](../superpowers/plans/2026-09-13-structfs-03-adoption.md) for evidence
+and validation. Historical limitations below are superseded by that status table.
 
 ## Removed or consolidated
 

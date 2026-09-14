@@ -12,6 +12,8 @@ case "$OX_REMOTE__EXE__WORKER_IMAGE" in
 esac
 command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 2; }
 
+./scripts/build-wasm-artifacts.sh
+
 run_id=${OX_REMOTE_LIVE_RUN_ID:-live-$(date -u +%Y%m%dT%H%M%SZ)-$$}
 node_id=
 cleanup_status=not-attempted

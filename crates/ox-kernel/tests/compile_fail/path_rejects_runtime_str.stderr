@@ -1,7 +1,9 @@
-error[E0599]: no method named `validated_str` found for reference `&str` in the current scope
+error[E0308]: mismatched types
  --> tests/compile_fail/path_rejects_runtime_str.rs:5:14
   |
 5 |     let _p = path!("gate", "accounts", account);
-  |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ method not found in `&str`
+  |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `&PathComponent`, found `&&str`
   |
+  = note: expected reference `&PathComponent`
+             found reference `&&str`
   = note: this error originates in the macro `path` (in Nightly builds, run with -Z macro-backtrace for more info)

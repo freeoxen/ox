@@ -12,7 +12,11 @@ performs an allowed-write, forbidden-write, and forbidden-network sandbox probe
 before it binds its socket or reports `health.status = ready`.
 
 Use `scripts/build-worker-image.sh`. It requires digest-pinned build and runtime
-base images and emits the built image ID/digest. Push/release builds fail closed
+base images and emits the built image ID/digest. The build image must provide
+the pinned Rust toolchain, rustup, native C/C++ build tools, Bash, jq and shasum.
+The Containerfile installs the `wasm32-unknown-unknown` target and generates the
+ignored Wasm artifacts before compiling the worker; no generated binaries need
+to be present in the source checkout. Push/release builds fail closed
 unless both Syft and Trivy are installed. Trivy also fails the build for high or
 critical findings; override that set with `OX_WORKER_VULN_SEVERITY`. Local
 non-push builds may opt into the same scanner requirement with

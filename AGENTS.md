@@ -74,6 +74,10 @@ If any of these is stale, update it before using it to ground a plan.
 
 ## Commits and hygiene
 
+- Do not track generated build outputs, including Wasm binaries and their
+  provenance sidecars. Generate them with `./scripts/build-wasm-artifacts.sh`
+  before direct native Cargo builds/tests. Launcher, quality and release scripts
+  prepare them automatically; release archives include the ignored outputs.
 - Create *new* commits; don't amend. See the tooling docs for why.
 - Don't skip hooks (`--no-verify`) without the user's explicit request. If a hook fails, diagnose rather than bypass.
 - Quality gates live in `./scripts/quality_gates.sh`. Run before claiming a task complete.

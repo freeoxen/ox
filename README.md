@@ -3,7 +3,7 @@
 Ox is an agentic coding assistant with a terminal UI, durable conversations,
 sandboxed tools, and a local LLM gateway. Its stores and capability boundaries
 use [StructFS](https://github.com/StructFS/structfs); the gateway runs on
-Featherweight 0.2.
+Featherweight 0.3.
 
 ## Install
 
@@ -27,9 +27,11 @@ under `~/.ox`. See `ox --help` and `ox remote --help` for available commands.
 Normal execution uses policy checks and approvals; `--no-policy` explicitly
 disables that enforcement.
 
-Until publication, build from this repository:
+Until publication, build from this repository with the pinned Rust toolchain,
+including its wasm32 target, Bash and jq:
 
 ```sh
+./scripts/build-wasm-artifacts.sh
 cargo build --locked -p ox-cli
 ./target/debug/ox --workspace /path/to/project
 ```
@@ -75,11 +77,17 @@ Use the pinned Rust toolchain, Bash, jq, Bun and wasm-pack for full workspace
 checks. The native packages do not need the frontend toolchain to build.
 
 ```sh
-./scripts/build-wasm-artifacts.sh  # after changing guest inputs
+./scripts/build-wasm-artifacts.sh  # before direct Cargo builds/tests
 ./scripts/fmt.sh
 ./scripts/quality_gates.sh
 ./scripts/release.sh check        # clean commit; isolated package checks
 ```
+
+Wasm binaries and their provenance files are generated locally and ignored by
+Git. Run the artifact builder before direct Cargo commands on a fresh checkout
+or after changing guest inputs. `scripts/run_cli.sh`, quality gates and release
+checks prepare them automatically. Published packages include these generated
+files, so package consumers do not need to build the guests.
 
 [Release preparation and publication](docs/releasing.md) documents package order,
 artifact provenance, installation tests, and the explicit publication step.

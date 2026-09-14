@@ -10,6 +10,7 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 
 use structfs_core_store::{Error as StoreError, Path, Record, Value};
+use structfs_serde_store::{DetachedTypedReader, DetachedTypedWriter};
 
 use crate::broker::BrokerInner;
 use crate::dispatching_store::DispatchingStore;
@@ -125,29 +126,18 @@ impl ClientHandle {
         to: &Path,
         value: &T,
     ) -> Result<Path, StoreError> {
-        let v = structfs_serde_store::to_value(value)
-            .map_err(|e| StoreError::store("broker", "write_typed", e.to_string()))?;
-        self.write(to, Record::parsed(v)).await
+        self.clone().write_typed_detached(to, value).await
     }
 
     /// Read a deserializable value from the broker.
     ///
-    /// Returns `Ok(None)` if the path does not exist or the record has no value.
-    pub async fn read_typed<T: serde::de::DeserializeOwned>(
+    /// Returns `Ok(None)` only if the path does not exist. Raw records fail with
+    /// `UnsupportedFormat`; typed conversion errors retain their codec details.
+    pub async fn read_typed<T: serde::de::DeserializeOwned + Send + 'static>(
         &self,
         from: &Path,
     ) -> Result<Option<T>, StoreError> {
-        match self.read(from).await? {
-            Some(record) => match record.as_value() {
-                Some(value) => {
-                    let typed = structfs_serde_store::from_value(value.clone())
-                        .map_err(|e| StoreError::store("broker", "read_typed", e.to_string()))?;
-                    Ok(Some(typed))
-                }
-                None => Ok(None),
-            },
-            None => Ok(None),
-        }
+        self.clone().read_typed_detached(from).await
     }
 
     /// Enumerate every leaf under `prefix` as `(full_path, record)` pairs.
@@ -376,6 +366,116 @@ mod tests {
     use super::*;
     use structfs_core_store::path;
 
+    struct RecordStore(BTreeMap<Path, Record>);
+
+    impl structfs_core_store::Reader for RecordStore {
+        fn read(&mut self, from: &Path) -> Result<Option<Record>, StoreError> {
+            Ok(self.0.get(from).cloned())
+        }
+    }
+
+    impl structfs_core_store::Writer for RecordStore {
+        fn write(&mut self, to: &Path, record: Record) -> Result<Path, StoreError> {
+            self.0.insert(to.clone(), record);
+            Ok(to.clone())
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn typed_facades_preserve_presence_and_structured_errors() {
+        use structfs_core_store::{CodecErrorKind, CodecOperation, Format};
+
+        #[derive(Debug, serde::Deserialize)]
+        enum Mode {
+            Ready,
+        }
+
+        let broker = crate::BrokerStore::default();
+        let _server = broker
+            .mount(path!("data"), RecordStore(BTreeMap::new()))
+            .await;
+        let client = broker.client().scoped("data");
+        let mut sync =
+            crate::SyncClientAdapter::new(client.clone(), tokio::runtime::Handle::current());
+        assert_eq!(
+            client.read_typed::<i64>(&path!("missing")).await.unwrap(),
+            None
+        );
+        assert_eq!(sync.read_typed::<i64>(&path!("missing")).unwrap(), None);
+        client.write_typed(&path!("parsed"), &42_i64).await.unwrap();
+        assert_eq!(
+            client.read_typed::<i64>(&path!("parsed")).await.unwrap(),
+            Some(42)
+        );
+        assert_eq!(sync.read_typed::<i64>(&path!("parsed")).unwrap(), Some(42));
+
+        for format in [Format::JSON, Format::OCTET_STREAM] {
+            client
+                .write(&path!("raw"), Record::raw(b"42".to_vec(), format.clone()))
+                .await
+                .unwrap();
+            for result in [
+                client.read_typed::<i64>(&path!("raw")).await,
+                sync.read_typed::<i64>(&path!("raw")),
+            ] {
+                assert!(
+                    matches!(result, Err(StoreError::UnsupportedFormat(found)) if found == format)
+                );
+            }
+        }
+
+        client
+            .write_typed(&path!("mode"), &"Unknown")
+            .await
+            .unwrap();
+        for error in [
+            client.read_typed::<Mode>(&path!("mode")).await.unwrap_err(),
+            sync.read_typed::<Mode>(&path!("mode")).unwrap_err(),
+        ] {
+            let StoreError::Codec {
+                kind,
+                operation,
+                message,
+                ..
+            } = error
+            else {
+                panic!("expected structured codec error: {error:?}");
+            };
+            assert_eq!(kind, CodecErrorKind::TypeMismatch);
+            assert_eq!(operation, CodecOperation::Decode);
+            assert!(message.contains("unknown variant"), "{message}");
+            assert!(message.contains("Unknown"), "{message}");
+            assert!(message.contains("Ready"), "{message}");
+        }
+    }
+
+    #[tokio::test]
+    async fn typed_serialization_failure_does_not_write() {
+        struct Invalid;
+        impl serde::Serialize for Invalid {
+            fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+                Err(serde::ser::Error::custom("intentional invalid input"))
+            }
+        }
+
+        let broker = crate::BrokerStore::default();
+        let _server = broker
+            .mount(path!("data"), RecordStore(BTreeMap::new()))
+            .await;
+        let client = broker.client().scoped("data");
+        client.write_typed(&path!("value"), &42_i64).await.unwrap();
+        let error = client
+            .write_typed(&path!("value"), &Invalid)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, StoreError::Codec { .. }));
+        assert!(error.to_string().contains("intentional invalid input"));
+        assert_eq!(
+            client.read_typed::<i64>(&path!("value")).await.unwrap(),
+            Some(42)
+        );
+    }
+
     #[tokio::test]
     async fn scoped_client_prepends_prefix() {
         let inner = Arc::new(Mutex::new(BrokerInner::new()));
@@ -464,7 +564,7 @@ mod detached_tests {
     }
 
     #[tokio::test]
-    async fn detached_client_can_be_mounted_and_reused_while_read_is_parked() {
+    async fn detached_typed_client_can_be_mounted_and_reused_while_read_is_parked() {
         let broker = crate::BrokerStore::new(Duration::from_secs(2));
         let started = Arc::new(tokio::sync::Notify::new());
         let (send, recv) = tokio::sync::oneshot::channel();
@@ -482,16 +582,13 @@ mod detached_tests {
             .mount_async(path!("alias"), broker.client().scoped("source"))
             .await;
         let mut client = broker.client().scoped("alias");
-        let read = client.read_detached(&path!("value"));
+        let read = client.read_typed_detached::<i64>(&path!("value"));
         // A borrowing AsyncReader would keep client exclusively borrowed here.
-        let write = client.write_detached(&path!("release"), Record::parsed(Value::Null));
+        let write = client.write_typed_detached(&path!("release"), &());
         drop(client);
         let read = tokio::spawn(read);
         started.notified().await;
         assert_eq!(write.await.unwrap(), path!("release"));
-        assert_eq!(
-            read.await.unwrap().unwrap().unwrap().as_value(),
-            Some(&Value::Integer(42))
-        );
+        assert_eq!(read.await.unwrap().unwrap(), Some(42));
     }
 }

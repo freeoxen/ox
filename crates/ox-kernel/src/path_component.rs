@@ -1,62 +1,6 @@
-//! A validated path component — can only be constructed from a string that
-//! passes UAX#31 validation (or is pure numeric).
-//!
-//! Use [`PathComponent::try_new`] for runtime validation, or the [`path!`]
-//! macro for compile-time validated literals.
+//! Validated components shared with StructFS and its path macro.
 
-use crate::{Path, StoreError};
-
-/// A single validated path component.
-///
-/// Guarantees: the inner string is a valid StructFS path component (UAX#31
-/// identifier or pure numeric). Cannot be constructed from an arbitrary string
-/// without validation.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct PathComponent(String);
-
-impl PathComponent {
-    /// Validate and wrap a string as a path component.
-    ///
-    /// Returns an error if the string is not a valid UAX#31 identifier
-    /// or pure numeric string.
-    pub fn try_new(s: impl Into<String>) -> Result<Self, StoreError> {
-        let s = s.into();
-        // Use Path::try_from_components as the validation oracle — it applies
-        // the same UAX#31 rules that structfs uses internally.
-        Path::try_from_components(vec![s.clone()])
-            .map_err(|e| StoreError::store("PathComponent", "try_new", e.to_string()))?;
-        Ok(Self(s))
-    }
-
-    /// Get the validated string.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    /// Borrow the validated string — used by the `path!` macro to enforce
-    /// that only `PathComponent` values (not bare `String`/`&str`) are accepted
-    /// as runtime path components. Named distinctly so no standard type matches.
-    pub fn validated_str(&self) -> &str {
-        &self.0
-    }
-
-    /// Consume and return the inner string.
-    pub fn into_string(self) -> String {
-        self.0
-    }
-}
-
-impl AsRef<str> for PathComponent {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for PathComponent {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
+pub use structfs_core_store::PathComponent;
 
 #[cfg(test)]
 mod tests {

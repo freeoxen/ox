@@ -4,6 +4,7 @@ set -eu
 # Deterministic, credential-free remote execution gates. Live provider and
 # long-running soak gates are intentionally separate scripts.
 ./scripts/test-remote-script-contracts.sh
+./scripts/build-wasm-artifacts.sh
 cargo test -p ox-worker
 cargo test -p ox-executor --test worker_ingress
 cargo test -p ox-structfs-transport --test conformance
